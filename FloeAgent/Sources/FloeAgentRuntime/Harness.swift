@@ -303,6 +303,9 @@ public enum HarnessEvent: Sendable, Codable, Hashable {
     case userInputConsumed(SteerConsumptionReceipt)
     case usageChanged(UsageSnapshot)
     case terminal(HarnessTerminal)
+    /// A human approval decision reached its durable record (checkpoint/grant
+    /// for allow, audit/result for deny). UI retires the approval card here.
+    case approvalResolved(callID: String)
 }
 
 /// Thread-safe multicast AsyncStream channel. Each subscriber gets a bounded

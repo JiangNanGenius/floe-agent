@@ -713,7 +713,7 @@ public actor SQLiteRunStore: RunStore {
             let conversationRows = try Row.fetchAll(db, sql: """
                 SELECT
                     r.conversation_id AS group_id,
-                    COALESCE(NULLIF(c.title, ''), '未命名会话') AS label,
+                    COALESCE(NULLIF(c.title, ''), '') AS label,
                     COALESCE(SUM(u.input_tokens), 0) AS input,
                     COALESCE(SUM(u.output_tokens), 0) AS output,
                     SUM(u.cache_read_tokens) AS cache_read,
@@ -736,10 +736,7 @@ public actor SQLiteRunStore: RunStore {
             let modelRows = try Row.fetchAll(db, sql: """
                 SELECT
                     COALESCE(r.model_id, 'legacy-model') AS group_id,
-                    COALESCE(
-                        MAX(NULLIF(r.model_name_snapshot, '')),
-                        '历史任务（模型未记录）'
-                    ) AS label,
+                    COALESCE(MAX(NULLIF(r.model_name_snapshot, '')), '') AS label,
                     COALESCE(SUM(u.input_tokens), 0) AS input,
                     COALESCE(SUM(u.output_tokens), 0) AS output,
                     SUM(u.cache_read_tokens) AS cache_read,
@@ -761,10 +758,7 @@ public actor SQLiteRunStore: RunStore {
             let providerRows = try Row.fetchAll(db, sql: """
                 SELECT
                     COALESCE(r.provider_id, 'legacy-provider') AS group_id,
-                    COALESCE(
-                        MAX(NULLIF(r.provider_name_snapshot, '')),
-                        '历史任务（供应商未记录）'
-                    ) AS label,
+                    COALESCE(MAX(NULLIF(r.provider_name_snapshot, '')), '') AS label,
                     COALESCE(SUM(u.input_tokens), 0) AS input,
                     COALESCE(SUM(u.output_tokens), 0) AS output,
                     SUM(u.cache_read_tokens) AS cache_read,
@@ -804,9 +798,13 @@ public actor SQLiteRunStore: RunStore {
     }
 
     private static func usageBreakdown(from row: Row) -> UsageBreakdown {
-        UsageBreakdown(
+        let rawLabel: String = row["label"]
+        let label = rawLabel.isEmpty
+            ? FloeL10n.l("persistence.run_store.legacy_usage_label")
+            : rawLabel
+        return UsageBreakdown(
             id: row["group_id"],
-            label: row["label"],
+            label: label,
             inputTokens: row["input"],
             outputTokens: row["output"],
             runs: row["runs"],

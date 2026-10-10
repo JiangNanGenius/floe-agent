@@ -167,12 +167,18 @@ public actor ShellSessionCenter {
         var result: ShellExchangeResult
         do {
             result = try await backend.exchangeSession(request, cancellation: cancellation)
+        } catch is CancellationError {
+            // Cooperative cancellation of the VIEW's poll loop is not a
+            // disconnect: keep the live session. The owner's explicit close()
+            // closes it itself, and genuine backend errors still take the
+            // branch below and tear the session down.
+            throw CancellationError()
         } catch {
             await close(sessionID: sessionID, runID: runID)
             throw error
         }
         guard sessions[sessionID]?.schedulerID == entry.schedulerID else {
-            return ShellExchangeResult(output: "", alive: false, exitCode: result.exitCode, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
+            return ShellExchangeResult(output: "", alive: false, exitCode: result.exitCode, failure: result.failure, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
         }
         entry.alive = result.alive
         entry.expiresAt = Date().addingTimeInterval(configuration.sessionLifetime)
@@ -187,7 +193,7 @@ public actor ShellSessionCenter {
         } else {
             await close(sessionID: sessionID, runID: runID)
         }
-        return ShellExchangeResult(output: cleanOutput, alive: result.alive, exitCode: result.exitCode, terminalOutput: forTerminal ? (result.terminalOutput ?? Data(result.output.utf8)) : nil, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
+        return ShellExchangeResult(output: cleanOutput, alive: result.alive, exitCode: result.exitCode, terminalOutput: forTerminal ? (result.terminalOutput ?? Data(result.output.utf8)) : nil, failure: result.failure, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
     }
 
     public func close(sessionID: String, runID: UUID) async {

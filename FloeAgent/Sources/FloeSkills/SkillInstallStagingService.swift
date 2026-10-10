@@ -81,10 +81,14 @@ public actor SkillInstallStagingService {
 
     /// Installs only the already-rewritten canonical package. The original
     /// download URL is metadata; its bytes are never accepted by this API.
+    /// `manifestOverride` carries a Floe sidecar manifest for traditional
+    /// packages without `floe.json`; it is validated but never written into
+    /// the package, so the upstream canonical digest is preserved.
     public func installRewrittenPackage(
         at rewrittenPackageURL: URL,
         provenance: SkillInstallProvenance,
         replaceExisting: Bool = false,
+        manifestOverride: SkillManifest? = nil,
         now: Date = Date()
     ) async throws -> SkillInstallationRecord {
         guard !rewrittenPackageURL.standardizedFileURL.path.hasPrefix(installationRoot.path + "/") else {
@@ -97,7 +101,7 @@ public actor SkillInstallStagingService {
         else {
             throw SkillInstallError.invalidProvenance
         }
-        let package = try validator.validate(packageAt: rewrittenPackageURL)
+        let package = try validator.validate(packageAt: rewrittenPackageURL, manifestOverride: manifestOverride)
         guard package.canonicalSHA256 == provenance.expectedRewrittenSHA256 else {
             throw SkillValidationError.digestMismatch
         }
@@ -110,7 +114,7 @@ public actor SkillInstallStagingService {
         var didInstallDestination = false
         do {
             try fileManager.copyItem(at: package.rootURL, to: staging)
-            let stagedPackage = try validator.validate(packageAt: staging)
+            let stagedPackage = try validator.validate(packageAt: staging, manifestOverride: manifestOverride)
             guard stagedPackage.canonicalSHA256 == package.canonicalSHA256 else {
                 throw SkillValidationError.digestMismatch
             }

@@ -127,6 +127,10 @@ public struct RunEventRecord: Sendable, Codable, Hashable, Identifiable {
         case status
         /// A tool call that was automatically approved by policy (no human).
         case autoApproved
+        /// Non-fatal informational notice (e.g. the local output safety cap
+        /// shortened a streamed reply). Never marks a run as failed and never
+        /// carries a retry affordance.
+        case notice
     }
 
     public var id: UUID

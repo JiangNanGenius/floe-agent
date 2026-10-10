@@ -209,7 +209,7 @@ extension WorkbenchAIBridge {
 
 enum FloeLocalized {
     static func t(_ zh: String, _ en: String) -> String {
-        Locale.current.identifier.hasPrefix("zh") ? zh : en
+        FloeL10n.isChinese ? zh : en
     }
 }
 

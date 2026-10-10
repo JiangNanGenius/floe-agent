@@ -45,18 +45,18 @@ final class MediaEditorModel: ObservableObject {
     }
 
     func load() async {
-        guard !inputPath.isEmpty else { exportStatus = "素材必须属于当前工作区"; return }
+        guard !inputPath.isEmpty else { exportStatus = FloeL10n.l("media.media_editor_view.the_asset_must_belong_to_the"); return }
         do {
             let asset = AVURLAsset(url: sourceURL)
             duration = try await asset.load(.duration).seconds
-            guard duration.isFinite, duration > 0 else { throw FloeError.validationFailed("素材时长无效") }
+            guard duration.isFinite, duration > 0 else { throw FloeError.validationFailed(FloeL10n.l("media.media_editor_view.invalid_asset_duration")) }
             trimEnd = duration
             guard projectURL.resolvingSymlinksInPath().path.hasPrefix(workspaceRoot.path + "/") else {
-                throw FloeError.validationFailed("编辑工程路径越出工作区")
+                throw FloeError.validationFailed(FloeL10n.l("media.media_editor_view.the_editing_project_path_is_outside"))
             }
             if FileManager.default.fileExists(atPath: projectURL.path) {
                 let saved = try JSONDecoder().decode(VideoEditPlan.self, from: Data(contentsOf: projectURL))
-                guard saved.input == inputPath else { throw FloeError.validationFailed("编辑工程与素材不匹配") }
+                guard saved.input == inputPath else { throw FloeError.validationFailed(FloeL10n.l("media.media_editor_view.the_editing_project_does_not_match")) }
                 outputPath = saved.output
                 container = saved.export.container
                 videoCodec = saved.export.videoCodec ?? "h264"
@@ -68,7 +68,7 @@ final class MediaEditorModel: ObservableObject {
                     case .trim(let start, let end): trimStart = start; trimEnd = end
                     case .speed(let rate): speed = rate
                     case .volume(let level): volume = level
-                    default: throw FloeError.validationFailed("此编辑工程包含当前工作台未支持的操作")
+                    default: throw FloeError.validationFailed(FloeL10n.l("media.media_editor_view.this_editing_project_contains_operations_not"))
                     }
                 }
             }
@@ -78,13 +78,13 @@ final class MediaEditorModel: ObservableObject {
     func plan() throws -> VideoEditPlan {
         func integer(_ text: String) throws -> Int? {
             if text.isEmpty { return nil }
-            guard let value = Int(text), value > 0 else { throw FloeError.validationFailed("尺寸必须是正整数") }
+            guard let value = Int(text), value > 0 else { throw FloeError.validationFailed(FloeL10n.l("media.media_editor_view.dimensions_must_be_positive_integers")) }
             return value
         }
         let fps: Double?
         if frameRate.isEmpty { fps = nil }
         else {
-            guard let value = Double(frameRate), value.isFinite, value > 0 else { throw FloeError.validationFailed("帧率必须是正数") }
+            guard let value = Double(frameRate), value.isFinite, value > 0 else { throw FloeError.validationFailed(FloeL10n.l("media.media_editor_view.the_frame_rate_must_be_positive")) }
             fps = value
         }
         let plan = VideoEditPlan(input: inputPath, output: outputPath,
@@ -99,11 +99,11 @@ final class MediaEditorModel: ObservableObject {
             let data = try JSONEncoder().encode(plan())
             let directory = projectURL.deletingLastPathComponent()
             guard directory.resolvingSymlinksInPath().path.hasPrefix(workspaceRoot.path + "/") else {
-                throw FloeError.validationFailed("编辑工程目录越出工作区")
+                throw FloeError.validationFailed(FloeL10n.l("media.media_editor_view.the_editing_project_directory_is_outside"))
             }
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try data.write(to: projectURL, options: .atomic)
-            exportStatus = "编辑参数已保存"
+            exportStatus = FloeL10n.l("media.media_editor_view.editing_parameters_saved")
         } catch { exportStatus = error.localizedDescription }
     }
 
@@ -115,15 +115,15 @@ final class MediaEditorModel: ObservableObject {
             let token = CancellationToken()
             cancellation = token
             isExporting = true
-            exportStatus = "正在处理与验证输出…"
+            exportStatus = FloeL10n.l("media.media_editor_view.processing_and_verifying_output")
             exportTask = Task {
                 defer { isExporting = false; cancellation = nil; exportTask = nil }
                 do {
                     let root = workspaceRoot
                     let result = try await MediaRenderer(rootProvider: { root }).render(plan: plan, cancellation: token)
                     exportedURL = result.outputPath.hasPrefix("/") ? URL(fileURLWithPath: result.outputPath) : workspaceRoot.appendingPathComponent(result.outputPath)
-                    exportStatus = "已导出到工作区：\(result.outputPath)"
-                } catch { exportStatus = "处理未完成：\(error.localizedDescription)" }
+                    exportStatus = FloeL10n.l("media.media_editor_view.exported_to_workspace", result.outputPath)
+                } catch { exportStatus = FloeL10n.l("media.media_editor_view.processing_did_not_finish", error.localizedDescription) }
             }
         } catch { exportStatus = error.localizedDescription }
     }
@@ -148,53 +148,53 @@ struct MediaEditorView: View {
 
     var body: some View {
         Form {
-            Section("可视化编辑") {
-                Button("剪裁、旋转与添加字幕") { showVisualEditor = true }
+            Section("media.media_editor_view.visual_editing") {
+                Button("media.media_editor_view.trim_rotate_and_add_subtitles") { showVisualEditor = true }
                     .disabled(model.isExporting)
             }
-            Section("预览") {
+            Section("media.media_editor_view.preview") {
                 if model.exportedURL != nil {
-                    Toggle("播放处理后的文件", isOn: $previewOutput)
+                    Toggle("media.media_editor_view.play_the_processed_file", isOn: $previewOutput)
                 }
                 MediaPlayerView(url: previewOutput ? (model.exportedURL ?? model.sourceURL) : model.sourceURL)
                     .id(previewOutput ? model.exportedURL : model.sourceURL)
                 Text(model.sourceURL.lastPathComponent).font(.caption).textSelection(.enabled)
             }
-            Section("单素材时间线") {
+            Section("media.media_editor_view.single_asset_timeline") {
                 Slider(value: $model.trimStart, in: 0...max(model.duration, 0.001))
-                LabeledContent("起点（秒）") { TextField("起点", value: $model.trimStart, format: .number).multilineTextAlignment(.trailing) }
+                LabeledContent("media.media_editor_view.start_seconds") { TextField("media.media_editor_view.trim_start", value: $model.trimStart, format: .number).multilineTextAlignment(.trailing) }
                 Slider(value: $model.trimEnd, in: 0...max(model.duration, 0.001))
-                LabeledContent("终点（秒）") { TextField("终点", value: $model.trimEnd, format: .number).multilineTextAlignment(.trailing) }
+                LabeledContent("media.media_editor_view.end_seconds") { TextField("media.media_editor_view.trim_end", value: $model.trimEnd, format: .number).multilineTextAlignment(.trailing) }
             }.disabled(model.isExporting)
-            Section("处理操作") {
-                LabeledContent("播放速度") { TextField("速度", value: $model.speed, format: .number).multilineTextAlignment(.trailing) }
-                LabeledContent("音量") { TextField("音量", value: $model.volume, format: .number).multilineTextAlignment(.trailing) }
-                Text("增强模型尚未完成推理验收").font(.footnote).foregroundStyle(.secondary)
+            Section("media.media_editor_view.process_action") {
+                LabeledContent("media.media_player_view.playback_speed") { TextField("media.media_editor_view.speed", value: $model.speed, format: .number).multilineTextAlignment(.trailing) }
+                LabeledContent("media.media_editor_view.volume") { TextField("media.media_editor_view.volume", value: $model.volume, format: .number).multilineTextAlignment(.trailing) }
+                Text("media.media_editor_view.the_enhancement_model_has_not_passed").font(.footnote).foregroundStyle(.secondary)
             }.disabled(model.isExporting)
-            Section("导出设置") {
-                Picker("编码器", selection: $model.videoCodec) {
+            Section("media.media_editor_view.export_settings") {
+                Picker("media.media_editor_view.encoder", selection: $model.videoCodec) {
                     Text("H.264").tag("h264")
                     Text("HEVC").tag("hevc")
                 }
-                TextField("宽度（留空沿用素材）", text: $model.width).keyboardType(.numberPad)
-                TextField("高度（留空沿用素材）", text: $model.height).keyboardType(.numberPad)
-                TextField("帧率（留空沿用素材）", text: $model.frameRate).keyboardType(.decimalPad)
-                Text("输出：\(model.outputPath)").font(.caption).textSelection(.enabled)
+                TextField("media.media_editor_view.width_blank_to_use_the_asset", text: $model.width).keyboardType(.numberPad)
+                TextField("media.media_editor_view.height_blank_to_use_the_asset", text: $model.height).keyboardType(.numberPad)
+                TextField("media.media_editor_view.frame_rate_blank_to_use_the", text: $model.frameRate).keyboardType(.decimalPad)
+                Text(FloeL10n.l("media.media_editor_view.output", model.outputPath)).font(.caption).textSelection(.enabled)
             }.disabled(model.isExporting)
-            Section("任务") {
+            Section("background.task.name_fallback") {
                 if model.isExporting {
-                    ProgressView("正在处理与验证")
-                    Button("取消", role: .cancel) { model.cancel() }
+                    ProgressView("media.media_editor_view.processing_and_verifying")
+                    Button("workspace.workspace_canvas_view.cancel", role: .cancel) { model.cancel() }
                 } else {
-                    Button("导出 / 重试") { model.startExport() }
-                    Button("保存编辑参数") { model.save() }
+                    Button("media.media_editor_view.export_retry") { model.startExport() }
+                    Button("media.media_editor_view.save_editing_parameters") { model.save() }
                 }
                 if !model.exportStatus.isEmpty { Text(model.exportStatus).font(.footnote).textSelection(.enabled) }
             }
         }
-        .navigationTitle("媒体工作台")
+        .navigationTitle("media.media_editor_view.media_workbench")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { model.cancel(); dismiss() } } }
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("media.media_editor_view.close") { model.cancel(); dismiss() } } }
         .task { await model.load() }
         .fullScreenCover(isPresented: $showVisualEditor) {
             FloeVisualVideoEditor(root: model.workspaceRoot, source: model.sourceURL) { url in
@@ -233,18 +233,18 @@ private struct FloeVisualVideoEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("手工字幕") {
-                    TextField("字幕文字（支持中文）", text: $text, axis: .vertical)
-                    LabeledContent("素材起点（秒）") { TextField("起点", value: $start, format: .number) }
-                    LabeledContent("素材终点（秒）") { TextField("终点", value: $end, format: .number) }
-                    Button("添加字幕") { addCaption() }.disabled(!loaded || copying)
-                    Text("时间以原素材为准；进入编辑器后可调整字幕文字、位置和大小。裁剪和变速会重新映射字幕时间。")
+                Section("media.media_editor_view.manual_subtitles") {
+                    TextField("media.media_editor_view.subtitle_text_chinese_supported", text: $text, axis: .vertical)
+                    LabeledContent("media.media_editor_view.asset_start_seconds") { TextField("media.media_editor_view.trim_start", value: $start, format: .number) }
+                    LabeledContent("media.media_editor_view.asset_end_seconds") { TextField("media.media_editor_view.trim_end", value: $end, format: .number) }
+                    Button("media.media_editor_view.add_subtitle") { addCaption() }.disabled(!loaded || copying)
+                    Text("media.media_editor_view.times_follow_the_original_asset_inside")
                         .font(.footnote).foregroundStyle(.secondary)
                     ForEach(configuration.transcript.document?.segments ?? []) { segment in
                         HStack {
                             Text(segment.editedText)
                             Spacer()
-                            Text("\(segment.timeMapping.sourceStartTime, specifier: "%.1f")–\(segment.timeMapping.sourceEndTime, specifier: "%.1f") 秒").font(.caption)
+                            Text(FloeL10n.l("media.media_editor_view.sec", segment.timeMapping.sourceStartTime, "%.1f", segment.timeMapping.sourceEndTime, "%.1f")).font(.caption)
                             Button(role: .destructive) {
                                 configuration.transcript.document?.segments.removeAll { $0.id == segment.id }
                             } label: { Image(systemName: "trash") }.buttonStyle(.borderless)
@@ -252,18 +252,18 @@ private struct FloeVisualVideoEditor: View {
                     }
                 }
                 Section {
-                    Button("打开可视化编辑器") { showEditor = true }.disabled(!loaded || copying)
-                    Button("保存工程参数") { persist() }.disabled(!loaded || copying)
-                    if copying { ProgressView("验证并保存到工作区…") }
+                    Button("media.media_editor_view.open_visual_editor") { showEditor = true }.disabled(!loaded || copying)
+                    Button("media.media_editor_view.save_project_parameters") { persist() }.disabled(!loaded || copying)
+                    if copying { ProgressView("media.media_editor_view.verify_and_save_to_workspace") }
                     if !message.isEmpty { Text(message).font(.footnote).textSelection(.enabled) }
                     if let output { MediaPlayerView(url: output) }
                 }
             }
-            .navigationTitle("剪裁与字幕")
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() }.disabled(copying) } }
+            .navigationTitle("media.media_editor_view.trim_and_subtitles")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("media.media_editor_view.close") { dismiss() }.disabled(copying) } }
             .task { await load() }
             .fullScreenCover(isPresented: $showEditor) {
-                VideoEditorView("媒体工作台", sourceVideoURL: source,
+                VideoEditorView(FloeL10n.l("media.media_editor_view.media_workbench"), sourceVideoURL: source,
                     editingConfiguration: configuration,
                     configuration: .init(transcription: .init(provider: FloeVideoTranscriptionProvider(root: root))),
                     onSavedVideo: { saved in
@@ -279,7 +279,7 @@ private struct FloeVisualVideoEditor: View {
     private func owned(_ url: URL) throws {
         guard url.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(
             root.resolvingSymlinksInPath().standardizedFileURL.path + "/") else {
-            throw FloeError.validationFailed("路径越出当前工作区")
+            throw FloeError.validationFailed(FloeL10n.l("media.media_editor_view.the_path_is_outside_the_current"))
         }
     }
 
@@ -287,7 +287,7 @@ private struct FloeVisualVideoEditor: View {
         do {
             try owned(source); try owned(projectURL)
             duration = try await AVURLAsset(url: source).load(.duration).seconds
-            guard duration.isFinite, duration > 0 else { throw FloeError.validationFailed("素材时长无效") }
+            guard duration.isFinite, duration > 0 else { throw FloeError.validationFailed(FloeL10n.l("media.media_editor_view.invalid_asset_duration")) }
             end = min(3, duration)
             configuration.trim = .init(lowerBound: 0, upperBound: duration)
             if FileManager.default.fileExists(atPath: projectURL.path) {
@@ -296,7 +296,7 @@ private struct FloeVisualVideoEditor: View {
             guard configuration.trim.lowerBound.isFinite, configuration.trim.upperBound.isFinite,
                   configuration.trim.lowerBound >= 0, configuration.trim.upperBound > configuration.trim.lowerBound,
                   configuration.trim.upperBound <= duration, configuration.playback.rate.isFinite,
-                  configuration.playback.rate > 0 else { throw FloeError.validationFailed("保存的剪辑范围或速度无效") }
+                  configuration.playback.rate > 0 else { throw FloeError.validationFailed(FloeL10n.l("media.media_editor_view.the_saved_clip_range_or_speed")) }
             loaded = true
         } catch { message = error.localizedDescription }
     }
@@ -305,12 +305,12 @@ private struct FloeVisualVideoEditor: View {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, value.count <= 2000, start.isFinite, end.isFinite,
               start >= 0, end > start, end <= duration else {
-            message = "请输入字幕及有效的素材时间范围（单条最多 2000 字）"; return
+            message = FloeL10n.l("media.media_editor_view.enter_subtitles_with_a_valid_asset"); return
         }
         var document = configuration.transcript.document ?? TranscriptDocument()
-        guard document.segments.count < 200 else { message = "单个工程最多添加 200 条字幕"; return }
+        guard document.segments.count < 200 else { message = FloeL10n.l("media.media_editor_view.a_project_can_contain_at_most"); return }
         guard !document.segments.contains(where: { start < $0.timeMapping.sourceEndTime && end > $0.timeMapping.sourceStartTime }) else {
-            message = "字幕时间不能重叠，请调整起止时间"; return
+            message = FloeL10n.l("media.media_editor_view.subtitle_times_cannot_overlap_adjust_the"); return
         }
         document.segments.append(.init(id: UUID(), timeMapping: .init(sourceStartTime: start, sourceEndTime: end), originalText: value, editedText: value))
         document.segments.sort { $0.timeMapping.sourceStartTime < $1.timeMapping.sourceStartTime }
@@ -324,12 +324,12 @@ private struct FloeVisualVideoEditor: View {
             try owned(projectURL)
             try FileManager.default.createDirectory(at: projectURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(configuration).write(to: projectURL, options: .atomic)
-            message = "工程参数已保存；成片请在编辑器内保存或导出"
-        } catch { message = "保存工程失败：" + error.localizedDescription }
+            message = FloeL10n.l("media.media_editor_view.project_parameters_saved_save_or_export")
+        } catch { message = FloeL10n.l("media.media_editor_view.failed_to_save_project") + error.localizedDescription }
     }
 
     private func receive(_ url: URL) {
-        guard !copying else { message = "请等待当前文件保存完成"; return }
+        guard !copying else { message = FloeL10n.l("media.media_editor_view.wait_for_the_current_file_to"); return }
         copying = true
         Task { @MainActor in
             defer { copying = false }
@@ -345,12 +345,12 @@ private struct FloeVisualVideoEditor: View {
                 let asset = AVURLAsset(url: staging)
                 let playable = try await asset.load(.isPlayable)
                 let seconds = try await asset.load(.duration).seconds
-                guard playable, seconds.isFinite, seconds > 0 else { throw FloeError.validationFailed("导出文件不可播放") }
+                guard playable, seconds.isFinite, seconds > 0 else { throw FloeError.validationFailed(FloeL10n.l("media.media_editor_view.the_exported_file_cannot_be_played")) }
                 try FileManager.default.moveItem(at: staging, to: destination)
                 output = destination
                 onExported(destination)
-                message = "已保存到工作区：" + destination.lastPathComponent
-            } catch { message = "保存成片失败：" + error.localizedDescription }
+                message = FloeL10n.l("media.media_editor_view.saved_to_workspace") + destination.lastPathComponent
+            } catch { message = FloeL10n.l("media.media_editor_view.failed_to_save_the_final_video") + error.localizedDescription }
         }
     }
 }

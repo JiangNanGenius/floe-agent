@@ -639,7 +639,7 @@ public struct AlibabaVideoAdapter: VideoProviderAdapter {
             // poll forever; reporting it as expired is the documented cause,
             // with the provider's own message attached when present.
             return .init(state: .expired, progress: nil, resultURL: nil, resultURLExpiresAt: nil,
-                         error: message ?? "供应商返回 UNKNOWN：任务不存在或状态未知（task_id 查询有效期 24 小时，超时后即为该状态）。")
+                         error: message ?? FloeL10n.l("providers.video_provider_adapter.the_provider_returned_unknown_the_task"))
         default:
             return .init(state: .running, progress: nil, resultURL: nil, resultURLExpiresAt: nil, error: nil)
         }

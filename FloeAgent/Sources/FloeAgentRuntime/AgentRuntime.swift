@@ -19,6 +19,17 @@ import FloeTools
 import FloeSecurity
 import Crypto
 
+/// Durable-record receipt for one human approval decision. Emitted after the
+/// decision's effect reached its awaited persistence point: an allow after
+/// the pre-dispatch checkpoint (which records the grant) and the
+/// executingTool state publish, a deny after its audit/result commit. The UI
+/// retires the approval card on this receipt, never on the in-memory
+/// decision alone.
+public struct ApprovalDecisionReceipt: Sendable, Hashable {
+    public let callID: String
+    public init(callID: String) { self.callID = callID }
+}
+
 /// Sink observing state transitions and normalized events. Implemented by
 /// the UI layer (iOS) and by tests.
 public protocol AgentEventSink: Sendable {
@@ -40,9 +51,19 @@ public protocol AgentEventSink: Sendable {
         _ runtime: FloeAgentRuntime,
         didChangeApprovalReview snapshot: ApprovalReviewSnapshot
     ) async
+    /// Fired after a human approval decision reached its awaited durable
+    /// record (checkpoint/grant for allow, audit/result for deny).
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didRecordApprovalDecision receipt: ApprovalDecisionReceipt
+    ) async
 }
 
 public extension AgentEventSink {
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didRecordApprovalDecision receipt: ApprovalDecisionReceipt
+    ) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didChangeLiveness snapshot: AgentLivenessSnapshot) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didChangeProviderAttempt snapshot: ProviderAttemptSnapshot) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async {}
@@ -544,6 +565,32 @@ public actor FloeAgentRuntime {
     /// approval.
     private var approvalContinuation: CheckedContinuation<ApprovalDecision, Never>?
 
+    /// Explicit lifecycle gate for the human-decision hand-off. A decision
+    /// may be buffered only while the escalation that published
+    /// `.waitingApproval` is still publishing (the durable sink write is in
+    /// flight and the continuation is not installed), and only for that
+    /// escalation's exact call; the wait below consumes it before parking.
+    /// Once resolved, the gate goes `.idle`, so a double tap or an old card
+    /// that outlived its escalation can never authorize a different tool.
+    private enum ApprovalGate {
+        case idle
+        case publishing(callID: String)
+        case waiting(callID: String)
+    }
+    private var approvalGate: ApprovalGate = .idle
+
+    /// Decision buffered during `.publishing`, tagged with the call it was
+    /// requested for; consumed only by that same escalation.
+    private var bufferedApprovalDecision: (callID: String, decision: ApprovalDecision)?
+
+    /// Set by `cancel()` when an approval escalation may still be in flight
+    /// (the state publish has not returned, or `policy.decide` has not
+    /// returned), i.e. the continuation is not installed yet. The escalation
+    /// wait consumes this one-shot flag and denies instead of parking on a
+    /// continuation nobody will resume. Resetting after consumption keeps a
+    /// later resume-from-checkpoint escalation askable.
+    private var approvalWaitInterrupted = false
+
     public init(
         configuration: Configuration,
         adapter: any ProviderAdapter,
@@ -787,7 +834,16 @@ public actor FloeAgentRuntime {
         streamTask = nil
         // 2. Stop the in-flight tool cooperatively.
         cancellationToken.cancel()
-        // 3. Expire any pending approval and audit it.
+        // 3. Expire any pending approval and audit it. The escalation wait may
+        // not have installed its continuation yet: the state publish can still
+        // be awaiting its sink, or `policy.decide` can still be running. Close
+        // the gate (one-shot, consumed by the wait) and drop any decision that
+        // raced the publish, so a late wait denies instead of parking on a
+        // continuation nobody will resume while `cancel()` owns the terminal
+        // transition.
+        approvalGate = .idle
+        bufferedApprovalDecision = nil
+        approvalWaitInterrupted = true
         if let continuation = approvalContinuation {
             approvalContinuation = nil
             continuation.resume(returning: .deny(reason: "cancelled"))
@@ -815,7 +871,7 @@ public actor FloeAgentRuntime {
         do {
             try await writeCheckpoint()
             await transition(to: .checkpointed(AgentState.CheckpointRef(
-                reason: "任务已由用户停止，当前进度已保存"
+                reason: FloeL10n.l("runtime.agent_runtime.the_task_was_stopped_by_you")
             )))
         } catch {
             await transition(to: .failed(AgentState.AgentFailure(
@@ -911,7 +967,7 @@ public actor FloeAgentRuntime {
         do {
             try await writeCheckpoint()
             await transition(to: .checkpointed(AgentState.CheckpointRef(
-                reason: "暂停等待已超时，当前进度已保存"
+                reason: FloeL10n.l("runtime.agent_runtime.the_paused_wait_timed_out_current")
             )))
         } catch {
             await transition(to: .failed(AgentState.AgentFailure(
@@ -926,7 +982,7 @@ public actor FloeAgentRuntime {
     public func checkpoint() async throws {
         try await writeCheckpoint()
         await transition(to: .checkpointed(AgentState.CheckpointRef(
-            reason: "任务已保存检查点，等待继续"
+            reason: FloeL10n.l("runtime.agent_runtime.task_checkpoint_saved_waiting_to_continue")
         )))
     }
 
@@ -953,6 +1009,12 @@ public actor FloeAgentRuntime {
         }
         pendingToolCalls = checkpoint.pendingToolCalls
         pendingToolResults = checkpoint.pendingToolResults
+        // A resumed run starts a fresh escalation lifecycle: any interruption
+        // flag, gate or buffered decision from a pre-cancel wait must not
+        // deny or authorize a legitimately re-asked approval.
+        approvalWaitInterrupted = false
+        approvalGate = .idle
+        bufferedApprovalDecision = nil
         replayableToolHistory = checkpoint.replayedToolPairs ?? []
         // A resumed run keeps the cross-task continuation contract: a
         // successful history lookup committed before or during the
@@ -1101,25 +1163,51 @@ public actor FloeAgentRuntime {
     }
 
     /// Human decision arriving for a `.waitingApproval` tool call.
-    /// waitingApproval → executingTool (allow) or → streamingModel (deny,
-    /// result injected back into the model context).
-    public func resolveApproval(_ decision: ApprovalDecision) async {
-        guard case .waitingApproval = state else { return }
-        if let continuation = approvalContinuation {
+    /// `callID` must be the id of the call the decision was requested for:
+    /// the current `.waitingApproval` gate matches it exactly, and decisions
+    /// targeting any other call (stale card, double tap after resolution)
+    /// are rejected so they can never authorize a different tool.
+    ///
+    /// Returns true exactly when the decision was bound to the pending
+    /// approval — resumed into the escalation, or buffered while its publish
+    /// is in flight. The caller must keep the approval visible until true is
+    /// returned: a false result means nothing was accepted. An accepted
+    /// allow is durably recorded by the existing pre-dispatch checkpoint and
+    /// grant persistence before any side effect runs; an accepted deny is
+    /// audited into the run events.
+    @discardableResult
+    public func resolveApproval(_ decision: ApprovalDecision, for callID: String) async -> Bool {
+        guard case .waitingApproval = state else { return false }
+        switch approvalGate {
+        case .waiting(let current):
+            guard current == callID, let continuation = approvalContinuation else { return false }
             approvalContinuation = nil
             continuation.resume(returning: decision)
+            return true
+        case .publishing(let current):
+            // The publish is still in flight (durable sink write); the
+            // continuation is not installed yet. Buffer only a decision for
+            // this exact escalation — the wait below consumes it instead of
+            // parking. An earlier buffered decision stays authoritative.
+            guard current == callID, bufferedApprovalDecision == nil else { return false }
+            bufferedApprovalDecision = (callID, decision)
+            return true
+        case .idle:
+            return false
         }
     }
 
     /// Re-evaluates an already visible approval after the user changes the
     /// task mode from the composer. An unchanged human/escalation result
     /// leaves the card in place; allow/deny/stopped resumes the suspended
-    /// continuation exactly once.
+    /// continuation exactly once. Safe during the publish phase: the gate
+    /// buffers the new decision for the same call, and the post-await check
+    /// verifies the run is still waiting on that exact call.
     public func approvalPolicyDidChange() async {
         guard case .waitingApproval(let waiting) = state,
-              approvalContinuation != nil,
               let descriptor = executor.descriptor(named: waiting.toolCall.toolName)
         else { return }
+        let callID = waiting.toolCall.id
         let action = ProposedAction(
             toolCall: waiting.toolCall,
             riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
@@ -1137,10 +1225,10 @@ public actor FloeAgentRuntime {
             return
         }
         guard case .waitingApproval(let current) = state,
-              current.toolCall.id == waiting.toolCall.id else { return }
+              current.toolCall.id == callID else { return }
         switch decision {
         case .allow, .deny, .stopped:
-            await resolveApproval(decision)
+            await resolveApproval(decision, for: callID)
         case .escalateToHuman:
             break
         }
@@ -2450,14 +2538,10 @@ public actor FloeAgentRuntime {
             }
             if requiresModelReview {
                 let outcomeSummary: String = switch decision {
-                case .allow:
-                    "已通过：该操作在当前任务授权和安全边界内。"
-                case .deny(let reason):
-                    "未通过：\(reason)"
-                case .escalateToHuman(let reason):
-                    "需要确认：\(reason)"
-                case .stopped(let gateReason):
-                    "已阻止：\(gateReason)"
+                case .allow:FloeL10n.l("runtime.agent_runtime.approved_this_action_is_within_the")
+                case .deny(let reason):FloeL10n.l("runtime.agent_runtime.failed", reason)
+                case .escalateToHuman(let reason):FloeL10n.l("background.approval.result", reason)
+                case .stopped(let gateReason):FloeL10n.l("runtime.agent_runtime.blocked", gateReason)
                 }
                 await sink?.agentRuntime(
                     self,
@@ -2481,11 +2565,34 @@ public actor FloeAgentRuntime {
         case .deny(let reason):
             return .denied(reason: reason, decision: "deny:\(reason)")
         case .escalateToHuman(let reason):
+            // Arm the gate before publishing so a decision racing the
+            // publish is attributed to this exact escalation.
+            approvalGate = .publishing(callID: call.id)
             await transition(to: .waitingApproval(AgentState.WaitingApproval(toolCall: call, reason: reason)))
-            let humanDecision = await withCheckedContinuation {
-                (continuation: CheckedContinuation<ApprovalDecision, Never>) in
-                approvalContinuation = continuation
+            // Consume a decision that raced the publish above, or an
+            // interruption installed by `cancel()` while the publish was in
+            // flight, before parking on the continuation. The checks, the
+            // buffered consume and the install below run in one uninterrupted
+            // actor turn, so a decision can never fall between them, and only
+            // a decision tagged with this call's id is consumed.
+            let humanDecision: ApprovalDecision
+            if approvalWaitInterrupted {
+                approvalWaitInterrupted = false
+                humanDecision = .deny(reason: "cancelled")
+            } else if let buffered = bufferedApprovalDecision, buffered.callID == call.id {
+                humanDecision = buffered.decision
+            } else {
+                humanDecision = await withCheckedContinuation {
+                    (continuation: CheckedContinuation<ApprovalDecision, Never>) in
+                    approvalContinuation = continuation
+                    approvalGate = .waiting(callID: call.id)
+                }
             }
+            // The escalation lifecycle is over: any later decision — double
+            // tap or a card that outlived this escalation — finds the gate
+            // closed and can never reach a different tool.
+            bufferedApprovalDecision = nil
+            approvalGate = .idle
             guard case .waitingApproval = state else {
                 return .denied(reason: "Cancelled while waiting for approval", decision: "deny:cancelled")
             }
@@ -2617,6 +2724,16 @@ public actor FloeAgentRuntime {
                 return result
             }
         }
+
+        // The human decision (when this dispatch crossed the approval
+        // boundary) is durably recorded now: the run state was published as
+        // executingTool, and for side-effecting tools the checkpoint above
+        // persisted the grant before any real-world effect. The UI may
+        // retire the approval card on this receipt.
+        await sink?.agentRuntime(
+            self,
+            didRecordApprovalDecision: ApprovalDecisionReceipt(callID: call.id)
+        )
 
         // Subagent delegation opens a child slot in the shared budget ledger
         // so the subagent's iterations are charged against this run's total.
@@ -2842,7 +2959,16 @@ public actor FloeAgentRuntime {
                 )
             case .denied(let reason, let decision):
                 let result = ToolResult(callID: call.id, status: .denied, outputSummary: reason, outputDigest: "")
-                await audit(toolCall: call, result: result, decision: decision)
+                let recorded = await audit(toolCall: call, result: result, decision: decision)
+                // The card retires on this receipt only when the denial was
+                // genuinely persisted; a failed record emits nothing and the
+                // owning surface sweeps the card once the run moves on.
+                if recorded {
+                    await sink?.agentRuntime(
+                        self,
+                        didRecordApprovalDecision: ApprovalDecisionReceipt(callID: call.id)
+                    )
+                }
                 resultsByID[call.id] = result
             case .stopped(let reason):
                 let result = ToolResult(callID: call.id, status: .denied, outputSummary: "Stopped: \(reason)", outputDigest: "")
@@ -3012,7 +3138,7 @@ public actor FloeAgentRuntime {
             do {
                 await transition(to: .checkpointed(AgentState.CheckpointRef(
                     reason: needsUserResult.outputSummary.isEmpty
-                        ? "工具需要你完成操作后继续"
+                        ? FloeL10n.l("runtime.agent_runtime.a_tool_needs_you_to_finish")
                         : needsUserResult.outputSummary
                 )))
                 try await writeCheckpoint()
@@ -3982,9 +4108,14 @@ public actor FloeAgentRuntime {
         Task { try? await discoveryStore.save(conversationID: conversationID, names: names, priority: priority) }
     }
 
-    private func audit(toolCall: ToolCall, result: ToolResult, decision: String) async {
+    /// Records the audit entry and reports whether the record actually
+    /// persisted. Receipts that claim a durable decision MUST gate on this
+    /// result: a missing sink or a failed record means nothing is durable
+    /// yet, and the caller must not emit a card-retirement receipt.
+    @discardableResult
+    private func audit(toolCall: ToolCall, result: ToolResult, decision: String) async -> Bool {
         activateReadTools(toolCall: toolCall, result: result)
-        guard let auditSink else { return }
+        guard let auditSink else { return false }
         let entry = AuditEntry(
             sequence: 0, // recomputed by the chain actor
             runID: runID,
@@ -3998,7 +4129,8 @@ public actor FloeAgentRuntime {
             prevHashSHA256: "",
             entryHashSHA256: ""
         )
-        try? await auditSink.record(entry)
+        do { try await auditSink.record(entry); return true }
+        catch { return false }
     }
 
     private func describe(scope: ToolScope) -> String {

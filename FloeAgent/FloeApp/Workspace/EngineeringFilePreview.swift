@@ -47,7 +47,7 @@ struct EngineeringReviewCapture: Identifiable {
 final class DrawingAssistantConversationStore: @unchecked Sendable {
     struct PersistenceFailure: Error, LocalizedError {
         var errorDescription: String? {
-            "无法持久化图纸助手会话绑定。"
+            FloeL10n.l("workspace.engineering_file_preview.cannot_persist_conversation_binding")
         }
     }
 
@@ -193,7 +193,7 @@ final class DrawingAssistantDecisionStore: @unchecked Sendable {
     /// Write/persistence failure is shared by the local stores; callers
     /// surface it instead of assuming durability.
     struct StoreFailure: Error, LocalizedError {
-        var errorDescription: String? { "无法持久化图纸助手记录。" }
+        var errorDescription: String? { FloeL10n.l("workspace.engineering_file_preview.cannot_persist_records") }
     }
 
     static let shared = DrawingAssistantDecisionStore()
@@ -438,7 +438,7 @@ final class CadAppliedReceiptJournal: @unchecked Sendable {
     }
 
     struct StoreFailure: Error, LocalizedError {
-        var errorDescription: String? { "无法持久化图纸应用回执。" }
+        var errorDescription: String? { FloeL10n.l("workspace.engineering_file_preview.cannot_persist_receipts") }
     }
 }
 

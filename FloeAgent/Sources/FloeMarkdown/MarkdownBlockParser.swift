@@ -46,11 +46,12 @@ public enum MarkdownBlockParser {
         return parser.parseBlocks(indent: 0, isTopLevel: true)
     }
 
-    /// Incremental variant for streaming text (see §1.2): re-parses only
-    /// the trailing, possibly-unfinished block. All content up to and
-    /// including the last newline is parsed as `completed`; the
-    /// remainder is parsed as `tail`. A renderer can cache the
-    /// completed prefix and re-render only the tail while tokens arrive.
+    /// Incremental variant for streaming text (see §1.2): splits at the
+    /// last newline into a `completed` prefix and a possibly-unfinished
+    /// `tail`, so a renderer can re-parse only the tail per token and cache
+    /// the completed blocks across ticks (`MarkdownRendererView` does).
+    /// This pure function itself parses both parts on every call; the
+    /// caching decision belongs to the render layer.
     public static func parseStreaming(
         _ markdown: String
     ) -> (completed: [MarkdownBlock], tail: [MarkdownBlock]) {

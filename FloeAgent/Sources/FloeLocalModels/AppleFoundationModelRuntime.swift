@@ -164,19 +164,18 @@ public actor AppleFoundationModelRuntime {
     ) async throws -> LocalRuntimeCompletion {
 #if compiler(>=6.4) && canImport(FoundationModels)
         guard #available(iOS 27.0, macOS 27.0, *) else {
-            throw FloeError.invalidConfiguration("请将 iPadOS 更新到支持 Apple Intelligence 模型的版本")
+            throw FloeError.invalidConfiguration(FloeL10n.l("localmodels.apple_foundation_model_runtime.update_ipados_to_a_version_that"))
         }
         let model = SystemLanguageModel.default
         guard case .available = model.availability else {
             throw FloeError.invalidConfiguration(Self.unavailableMessage(for: availability()))
         }
         guard model.supportsLocale(Locale.current) else {
-            throw FloeError.invalidConfiguration(
-                "Apple Intelligence 模型暂不支持当前语言或地区（\(Locale.current.identifier)）"
+            throw FloeError.invalidConfiguration(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_does_not", Locale.current.identifier)
             )
         }
         guard images.count <= 4 else {
-            throw FloeError.validationFailed("Apple Intelligence 模型每次最多处理四张图片")
+            throw FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_can_process"))
         }
 
         let traceID = UUID().uuidString
@@ -195,8 +194,7 @@ public actor AppleFoundationModelRuntime {
             Self.deferredTool(from: descriptor, recorder: recorder)
         }
         if !tools.isEmpty, nativeTools.isEmpty {
-            throw FloeError.invalidConfiguration(
-                "所选工具暂时无法交给 Apple Intelligence 模型使用，请减少工具后重试"
+            throw FloeError.invalidConfiguration(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_selected_tools_cannot_currently_be")
             )
         }
         let callableNames = nativeDescriptors.map(\.name).sorted().joined(separator: ", ")
@@ -311,8 +309,7 @@ public actor AppleFoundationModelRuntime {
             "appleFoundationPreflightFinished trace=\(traceID) inputTokens=\(inputTokenCount) reservedOutputTokens=\(effectiveMaxTokens) promptTokens=\(promptTokens) instructionTokens=\(instructionTokens) toolTokens=\(toolTokens) transcriptTokens=\(transcriptTokens) context=\(model.contextSize)"
         )
         guard inputTokenCount + effectiveMaxTokens <= model.contextSize else {
-            throw FloeError.validationFailed(
-                "当前对话超出 Apple Intelligence 模型的容量，请先整理对话后重试"
+            throw FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.this_conversation_exceeds_the_apple_intelligence")
             )
         }
         do {
@@ -350,7 +347,7 @@ public actor AppleFoundationModelRuntime {
             latest = ""
         }
         guard deferredToolCall != nil || !latest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw FloeError.validationFailed("Apple Intelligence 模型没有返回内容，请重试")
+            throw FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_returned_no"))
         }
         let elapsed = startedAt.duration(to: .now)
         let elapsedMs = Self.milliseconds(elapsed)
@@ -374,11 +371,10 @@ public actor AppleFoundationModelRuntime {
         )
 #elseif canImport(FoundationModels)
         guard #available(iOS 26.0, macOS 26.0, *) else {
-            throw FloeError.invalidConfiguration("请将 iPadOS 更新到支持 Apple Intelligence 模型的版本")
+            throw FloeError.invalidConfiguration(FloeL10n.l("localmodels.apple_foundation_model_runtime.update_ipados_to_a_version_that"))
         }
         guard images.isEmpty else {
-            throw FloeError.invalidConfiguration(
-                "当前系统仅支持 Apple Intelligence 文字对话；升级系统后才能直接处理图片"
+            throw FloeError.invalidConfiguration(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_current_system_supports_apple_intelligence")
             )
         }
         let model = SystemLanguageModel.default
@@ -404,12 +400,11 @@ public actor AppleFoundationModelRuntime {
             }
         } catch {
             if Task.isCancelled || error is CancellationError { throw FloeError.cancelled }
-            throw FloeError.syncUnavailable(
-                "Apple Intelligence 模型未能完成请求：\(error.localizedDescription)"
+            throw FloeError.syncUnavailable(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_could_not", error.localizedDescription)
             )
         }
         guard !latest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw FloeError.validationFailed("Apple Intelligence 模型没有返回内容，请重试")
+            throw FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_returned_no"))
         }
         let elapsed = startedAt.duration(to: .now)
         let elapsedParts = elapsed.components
@@ -432,8 +427,7 @@ public actor AppleFoundationModelRuntime {
             tokensPerSecond: Double(outputTokens) / (Double(decodeMs) / 1_000)
         )
 #else
-        throw FloeError.invalidConfiguration(
-            "当前安装无法使用 Apple Intelligence 模型，请更新 Floe 后重试"
+        throw FloeError.invalidConfiguration(FloeL10n.l("localmodels.apple_foundation_model_runtime.this_installation_cannot_use_apple_intelligence")
         )
 #endif
     }
@@ -445,17 +439,17 @@ public actor AppleFoundationModelRuntime {
         case .available:
             return "Available"
         case .unsupportedOS:
-            return "请将 iPadOS 更新到支持 Apple Intelligence 模型的版本"
+            return FloeL10n.l("localmodels.apple_foundation_model_runtime.update_ipados_to_a_version_that")
         case .deviceNotEligible:
-            return "这台设备不支持 Apple Intelligence"
+            return FloeL10n.l("localmodels.apple_foundation_model_runtime.this_device_does_not_support_apple")
         case .appleIntelligenceDisabled:
-            return "请先在系统设置中打开 Apple Intelligence"
+            return FloeL10n.l("localmodels.apple_foundation_model_runtime.turn_on_apple_intelligence_in_system")
         case .modelNotReady:
-            return "系统模型仍在下载或准备中，请稍后再试"
+            return FloeL10n.l("localmodels.apple_foundation_model_runtime.the_system_model_is_still_downloading")
         case .unsupportedLocale(let identifier):
-            return "系统模型暂不支持当前语言或地区（\(identifier)）"
+            return FloeL10n.l("localmodels.apple_foundation_model_runtime.the_system_model_does_not_yet", identifier)
         case .unsupportedToolchain:
-            return "当前安装无法使用 Apple Intelligence 模型，请更新 Floe 后重试"
+            return FloeL10n.l("localmodels.apple_foundation_model_runtime.this_installation_cannot_use_apple_intelligence")
         }
     }
 
@@ -470,22 +464,22 @@ public actor AppleFoundationModelRuntime {
         switch input {
         case .data(let data):
             guard data.count <= maximumBytes else {
-                throw FloeError.validationFailed("第 \(index + 1) 张图片超过 24 MB，请压缩后重试")
+                throw FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.image_exceeds_24_mb_compress_it", index + 1))
             }
             guard let decoded = CGImageSourceCreateWithData(data as CFData, nil) else {
-                throw FloeError.validationFailed("无法读取第 \(index + 1) 张图片，请更换文件后重试")
+                throw FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.could_not_read_image_choose_another", index + 1))
             }
             source = decoded
         case .file(let url):
             guard url.isFileURL else {
-                throw FloeError.validationFailed("第 \(index + 1) 张图片尚未安全导入 Floe，请重新选择文件")
+                throw FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.image_has_not_been_safely_imported", index + 1))
             }
             let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
             guard size <= maximumBytes else {
-                throw FloeError.validationFailed("第 \(index + 1) 张图片超过 24 MB，请压缩后重试")
+                throw FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.image_exceeds_24_mb_compress_it", index + 1))
             }
             guard let decoded = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-                throw FloeError.validationFailed("无法读取第 \(index + 1) 张图片，请更换文件后重试")
+                throw FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.could_not_read_image_choose_another", index + 1))
             }
             source = decoded
         }
@@ -493,7 +487,7 @@ public actor AppleFoundationModelRuntime {
         let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
         let height = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
         guard width > 0, height > 0, width * height <= 50_000_000 else {
-            throw FloeError.validationFailed("第 \(index + 1) 张图片的尺寸暂不支持，请调整尺寸后重试")
+            throw FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_dimensions_of_image_are_not", index + 1))
         }
         let orientationValue = properties?[kCGImagePropertyOrientation] as? UInt32
         let orientation = orientationValue.flatMap(CGImagePropertyOrientation.init(rawValue:))
@@ -503,7 +497,7 @@ public actor AppleFoundationModelRuntime {
                 .label("user-image-\(index)")
         case .data:
             guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-                throw FloeError.validationFailed("无法读取第 \(index + 1) 张图片，请更换文件后重试")
+                throw FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.could_not_read_image_choose_another", index + 1))
             }
             return Attachment<ImageAttachmentContent>(image, orientation: orientation)
                 .label("user-image-\(index)")
@@ -518,26 +512,25 @@ public actor AppleFoundationModelRuntime {
                 FloeLogger(category: .providers).warning(
                     "appleFoundationContextExceeded used=\(details.tokenCount) limit=\(details.contextSize)"
                 )
-                return FloeError.validationFailed(
-                    "当前对话超出 Apple Intelligence 模型的容量，请先整理对话后重试"
+                return FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.this_conversation_exceeds_the_apple_intelligence")
                 )
             case .rateLimited(let details):
-                let retry = details.resetDate.map { " 可在 \($0.formatted()) 后重试。" } ?? ""
-                return FloeError.syncUnavailable("Apple Intelligence 模型暂时请求过多。\(retry)")
+                let retry = details.resetDate.map { FloeL10n.l("localmodels.apple_foundation_model_runtime.you_can_try_again_after", $0.formatted()) } ?? ""
+                return FloeError.syncUnavailable(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_is_receiving", retry))
             case .unsupportedLanguageOrLocale:
-                return FloeError.invalidConfiguration("Apple Intelligence 模型暂不支持当前语言或地区")
+                return FloeError.invalidConfiguration(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_does_not_2"))
             case .timeout:
-                return FloeError.syncUnavailable("Apple Intelligence 模型响应超时，请重试")
+                return FloeError.syncUnavailable(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_timed_out"))
             case .guardrailViolation, .refusal:
-                return FloeError.validationFailed("Apple Intelligence 模型无法处理这项请求")
+                return FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_cannot_handle"))
             case .unsupportedCapability, .unsupportedTranscriptContent, .unsupportedGenerationGuide:
-                return FloeError.invalidConfiguration("Apple Intelligence 模型暂不支持请求中的部分内容")
+                return FloeError.invalidConfiguration(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_does_not_3"))
             @unknown default:
                 return FloeError.internalError(error.localizedDescription)
             }
         }
         if error is LanguageModelSession.Error {
-            return FloeError.syncUnavailable("Apple Intelligence 模型正忙，请稍后重试")
+            return FloeError.syncUnavailable(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_is_busy"))
         }
         return error
     }
@@ -586,8 +579,7 @@ private actor DeferredToolCallRecorder {
 
     func toolCall() throws -> FloeModels.ToolCall? {
         guard !additionalCallDetected else {
-            throw FloeError.validationFailed(
-                "Apple Intelligence 模型一次选择了多个工具，请重试"
+            throw FloeError.validationFailed(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_apple_intelligence_model_selected_multiple")
             )
         }
         guard let recorded else { return nil }

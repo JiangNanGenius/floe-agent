@@ -157,6 +157,7 @@ final class AppEnvironment: ObservableObject {
     private lazy var _sourceControlCenter = SourceControlCenter(environment: self)
     private lazy var _settingsCenter = SettingsCenter(environment: self)
     private lazy var _skillsCenter = SkillsCenter(environment: self)
+    private lazy var _contentUpdateCenter = ContentUpdateCenter(environment: self)
     private lazy var _memoryCenter = MemoryCenter(environment: self)
     private lazy var _memoryDreamService = MemoryDreamService(environment: self)
     private lazy var _skillDreamService = SkillDreamService(environment: self)
@@ -198,8 +199,19 @@ final class AppEnvironment: ObservableObject {
         bridge: WorkbenchAIBridge.live(environment: self)
     )
     /// Single mutation/commit authority for CAD documents (visible editor and
-    /// agent tools share it).
-    private lazy var _cadDocumentCenter = CadDocumentCenter()
+    /// agent tools share it). The decision deliverer routes native CAD
+    /// proposal outcomes to the originating conversation through the same
+    /// durable runtime-input ingress the 2D path uses; reconciliation of
+    /// interrupted applies and undelivered decisions runs at bootstrap.
+    private lazy var _cadDocumentCenter: CadDocumentCenter = {
+        let center = CadDocumentCenter { [weak self] conversationID, proposalID, decision, revision, sha256 in
+            guard let self else { return }
+            try await self.conversationCenter.recordProposalDecision(
+                conversationID: conversationID, proposalID: proposalID, decision: decision,
+                revision: revision, sha256: sha256)
+        }
+        return center
+    }()
     /// Single authority for engine-level Office edits (document.office.edit);
     /// routes through the live editor session registered per document.
     private lazy var _officeCommandCenter = OfficeCommandCenter()
@@ -216,6 +228,8 @@ final class AppEnvironment: ObservableObject {
     /// `defaultAgentMode` through it without a construction cycle.
     var settingsCenter: SettingsCenter { _settingsCenter }
     var skillsCenter: SkillsCenter { _skillsCenter }
+    /// Signed declarative-content updates (prompts/help/templates/providers).
+    var contentUpdateCenter: ContentUpdateCenter { _contentUpdateCenter }
     var memoryCenter: MemoryCenter { _memoryCenter }
     var memoryDreamService: MemoryDreamService { _memoryDreamService }
     var skillDreamService: SkillDreamService { _skillDreamService }
@@ -748,7 +762,7 @@ final class AppEnvironment: ObservableObject {
             )
         }
         let notification = UNMutableNotificationContent()
-        notification.title = job.state == .completed ? "后台任务完成" : "后台任务结束：\(job.state.rawValue)"
+        notification.title = job.state == .completed ? FloeL10n.l("app.app_environment.background_task_complete") : FloeL10n.l("app.app_environment.background_task_ended", job.state.rawValue)
         notification.body = "\(job.targetTool) · \(String(evidence.prefix(160)))"
         notification.userInfo = ["conversationID": job.conversationID.uuidString, "jobID": job.id.uuidString]
         try? await UNUserNotificationCenter.current().add(UNNotificationRequest(
@@ -986,6 +1000,9 @@ final class AppEnvironment: ObservableObject {
         // Bundled domain skills: seed/upgrade in the background; failures are
         // logged inside the seeder and never block startup.
         if shouldSeedBundledSkills { Task { await skillsCenter.seedBuiltinDomainSkills() } }
+        // Signed declarative content: foreground check at most once per day.
+        // Failures are logged inside the center and never block startup.
+        Task { await contentUpdateCenter.checkAutomaticallyIfDue() }
         // Durable memory.
         registerTaskChecklistTools(store: TaskChecklistStore(database: database))
         registerMemoryTools(store: intelligenceStore) { [runStore] runID in
@@ -1250,6 +1267,10 @@ final class AppEnvironment: ObservableObject {
             if let backgroundJobService {
                 _ = try? await backgroundJobService.reconcileInterruptedOnLaunch()
             }
+            // Native CAD proposals interrupted mid-apply and decision
+            // deliveries that never reached the originating task reconcile
+            // from durable records (never from ordering alone).
+            Task { await self.cadDocumentCenter.reconcileNativeProposals() }
             let fontActivationFailures = await fontStore.activateManagedFonts()
             if !fontActivationFailures.isEmpty {
                 FloeLogger(category: .tools).warning(

@@ -47,9 +47,9 @@ struct UserMessageBubble: View {
                 case .credential:
                     Label {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("安全凭据")
+                            Text("chat.user_message_bubble.secure_credentials")
                                 .font(FloeTheme.Typography.body.weight(.semibold))
-                            Text("已安全保存，可由本任务按用途引用")
+                            Text("chat.user_message_bubble.saved_securely_this_task_can_reference")
                                 .font(FloeTheme.Typography.metadata)
                                 .foregroundStyle(.secondary)
                         }
@@ -59,7 +59,7 @@ struct UserMessageBubble: View {
                     }
                     .padding(10)
                     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                    .accessibilityLabel("安全凭据卡")
+                    .accessibilityLabel("chat.user_message_bubble.secure_credentials_card")
                 }
             }
         }

@@ -616,8 +616,7 @@ public actor LocalModelRuntime {
         cancelIdleUnload()
         try Task.checkCancellation()
         guard images.isEmpty else {
-            throw FloeError.validationFailed(
-                "当前本地模型仅支持文字；图片会先通过系统 OCR 转成工作区文字文件。"
+            throw FloeError.validationFailed(FloeL10n.l("localmodels.local_provider_adapter.the_current_local_model_supports_text")
             )
         }
         let traceID = UUID().uuidString
@@ -1086,7 +1085,7 @@ public actor LocalModelRuntime {
         let completion = try await completeMeasured(
             modelID: modelID,
             instructions: Self.defaultInstructions,
-            prompt: "请仅输出从 1 到 32 的整数，以空格分隔，不要解释。",
+            prompt: FloeL10n.l("localmodels.local_provider_adapter.output_only_integers_from_1_to"),
             images: [],
             tools: [],
             maxTokens: 96
@@ -1172,12 +1171,11 @@ public actor LocalModelRuntime {
                 FloeLogger(category: .providers).warning(
                     "localInferenceUnavailable trace=\(traceID) model=\(modelID) reason=notInstalled"
                 )
-                throw FloeError.notFound("这个本地模型尚未下载，请先在设置中下载")
+                throw FloeError.notFound(FloeL10n.l("localmodels.local_provider_adapter.this_local_model_has_not_been"))
             }
             guard let entry = CuratedLocalModelCatalog.entries.first(where: { $0.id == modelID }),
                   entry.runtimeFormat == .mlx else {
-                throw FloeError.invalidConfiguration(
-                    "这个模型版本暂不受支持，请在本地模型列表中选择可用型号"
+                throw FloeError.invalidConfiguration(FloeL10n.l("localmodels.local_provider_adapter.this_model_version_is_not_supported")
                 )
             }
             // Deterministic damage first: no memory measurement or MLX call
@@ -1736,8 +1734,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     FloeLogger(category: .providers).warning(
                         "appleFoundationWatchdogExpired model=\(request.model.remoteModelID) timeoutSeconds=30"
                     )
-                    continuation.finish(throwing: FloeError.syncUnavailable(
-                        "Apple Intelligence 模型长时间没有响应，本次任务已停止，请重试"
+                    continuation.finish(throwing: FloeError.syncUnavailable(FloeL10n.l("localmodels.local_provider_adapter.the_apple_intelligence_model_did_not")
                     ))
                 }
             } else {
@@ -1759,8 +1756,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             }
                         }) ?? false
                     guard !latestUserHasImage else {
-                        throw FloeError.validationFailed(
-                            "当前本地模型仅支持文字；图片会先通过系统 OCR 转成工作区文字文件。"
+                        throw FloeError.validationFailed(FloeL10n.l("localmodels.local_provider_adapter.the_current_local_model_supports_text")
                         )
                     }
                     let promptBuild = Self.buildPrompt(for: request)
@@ -1795,8 +1791,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             FloeLogger(category: .providers).warning(
                                 "appleFoundationModelUnavailable model=\(request.model.remoteModelID) reason=\(reason)"
                             )
-                            throw FloeError.invalidConfiguration(
-                                "Apple Intelligence 模型当前无法调用：\(reason)"
+                            throw FloeError.invalidConfiguration(FloeL10n.l("localmodels.local_provider_adapter.the_apple_intelligence_model_is_currently", reason)
                             )
                         }
                         let resultByCallID = Dictionary(
@@ -2103,8 +2098,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             FloeLogger(category: .providers).warning(
                                 "localStreamEnded model=\(request.model.remoteModelID) reason=missingToolInvocation streamedCharacters=\(displayBuffer?.emitted.count ?? 0) outputCharacters=\(completion.text.count) selectedTools=\(promptBuild.selectedToolCount)"
                             )
-                            throw FloeError.validationFailed(
-                                "本地模型没有形成有效的工具调用。请重试，或切换到云端模型完成这项操作。"
+                            throw FloeError.validationFailed(FloeL10n.l("localmodels.local_provider_adapter.the_local_model_produced_no_valid")
                             )
                         }
                         let visibleAnswer = Self.visibleAnswer(from: channels.answer)
@@ -2216,7 +2210,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     )
                     continuation.yield(.error(AgentEvent.NormalizedError(
                         kind: .network,
-                        providerMessage: "本地模型长时间没有输出（阶段：\(snapshot.phase)，已等待 \(Int(snapshot.elapsedSeconds)) 秒）。已请求停止本次生成；模型完成收尾后可重试。"
+                        providerMessage: FloeL10n.l("localmodels.local_provider_adapter.the_local_model_produced_no_output", snapshot.phase, Int(snapshot.elapsedSeconds))
                     )))
                     continuation.finish()
                     task.cancel()
@@ -2258,7 +2252,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
     ) -> AgentEvent {
         .error(AgentEvent.NormalizedError(
             kind: .rateLimited,
-            providerMessage: "本地模型只能在前台运行：应用离开前台时本次生成已安全暂停（阶段：\(stage)，已等待 \(Int(max(0, elapsedSeconds))) 秒）。返回 Floe 后将尝试从保存的检查点恢复；若重试次数已用完，可点击“继续”。已完成的工具不会重放。"
+            providerMessage: FloeL10n.l(
+                "localmodels.local_provider_adapter.local_models_run_in_the_foreground_only",
+                stage,
+                Int(max(0, elapsedSeconds)))
         ))
     }
 
@@ -2298,7 +2295,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
         var appleLimits = ModelLimits(contextTokens: 4_096, maxOutputTokens: 512)
         var appleCapabilities: ModelCapabilities = [.text, .approval]
         var appleReasoning: ModelReasoningEffort? = .automatic
-        var appleSuffix = "（不可用：" + AppleFoundationModelRuntime.unavailableMessage(for: appleAvailability) + "）"
+        var appleSuffix = FloeL10n.l("localmodels.local_provider_adapter.unavailable") + AppleFoundationModelRuntime.unavailableMessage(for: appleAvailability) + "）"
         if case .available(let contextTokens, _, let supportsTools, let supportsReasoning) = appleAvailability {
             appleLimits = .init(
                 contextTokens: contextTokens,

@@ -535,7 +535,7 @@ public actor LocalGitService {
                 operation: "analyze merge"
             )
             if analysis.rawValue & GIT_MERGE_ANALYSIS_UP_TO_DATE.rawValue != 0 {
-                return GitMergeOutcome(result: .upToDate, message: "已经是最新")
+                return GitMergeOutcome(result: .upToDate, message: FloeL10n.l("git.local_git_service.already_up_to_date"))
             }
             if analysis.rawValue & GIT_MERGE_ANALYSIS_FASTFORWARD.rawValue != 0,
                let targetOID = git_annotated_commit_id(annotatedCommit) {
@@ -569,7 +569,7 @@ public actor LocalGitService {
                     operation: "fast-forward"
                 )
                 git_reference_free(updated)
-                return GitMergeOutcome(result: .fastForward, message: "已快进合并")
+                return GitMergeOutcome(result: .fastForward, message: FloeL10n.l("git.local_git_service.fast_forward_merged"))
             }
             var mergeOptions = git_merge_options()
             try Self.check(
@@ -590,12 +590,12 @@ public actor LocalGitService {
             if !conflicts.isEmpty {
                 return GitMergeOutcome(
                     result: .conflicts,
-                    message: "合并存在冲突，请逐个解决后提交",
+                    message: FloeL10n.l("git.local_git_service.the_merge_has_conflicts_resolve_each"),
                     conflictedPaths: conflicts
                 )
             }
             try Self.createMergeCommit(raw: repository, message: (try? Self.mergeMessage(at: root)) ?? "Merge")
-            return GitMergeOutcome(result: .merged, message: "合并完成")
+            return GitMergeOutcome(result: .merged, message: FloeL10n.l("git.local_git_service.merge_complete"))
         }
         postRepositoryDidChange(at: root)
         return outcome
@@ -646,7 +646,7 @@ public actor LocalGitService {
             guard remaining.isEmpty else {
                 return GitMergeOutcome(
                     result: .conflicts,
-                    message: "仍有未解决的冲突",
+                    message: FloeL10n.l("git.local_git_service.unresolved_conflicts_remain"),
                     conflictedPaths: remaining
                 )
             }
@@ -654,7 +654,7 @@ public actor LocalGitService {
                 raw: repository,
                 message: (try? Self.mergeMessage(at: root)) ?? "Merge"
             )
-            return GitMergeOutcome(result: .merged, message: "冲突已解决，合并完成")
+            return GitMergeOutcome(result: .merged, message: FloeL10n.l("git.local_git_service.conflicts_resolved_merge_complete"))
         }
         postRepositoryDidChange(at: root)
     }
@@ -997,10 +997,10 @@ public actor LocalGitService {
     private static func validateRemote(_ url: URL) throws {
         guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased(),
               host == "github.com" || host.hasSuffix(".github.com") else {
-            throw FloeError.validationFailed("目前仅支持通过 HTTPS 连接 GitHub 仓库")
+            throw FloeError.validationFailed(FloeL10n.l("git.local_git_service.currently_only_https_connections_to_github"))
         }
         guard url.user == nil, url.password == nil else {
-            throw FloeError.validationFailed("仓库地址不能包含账号或凭据，请在 GitHub 连接中单独保存")
+            throw FloeError.validationFailed(FloeL10n.l("git.local_git_service.the_repository_url_cannot_contain_an"))
         }
     }
 

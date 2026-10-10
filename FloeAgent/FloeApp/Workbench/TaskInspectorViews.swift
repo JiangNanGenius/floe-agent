@@ -26,10 +26,10 @@ struct TaskProgressInspectorView: View {
         }
         .overlay {
             if runs.isEmpty {
-                ContentUnavailableView("暂无运行进度", systemImage: "chart.bar")
+                ContentUnavailableView("workbench.task_inspector_views.no_run_progress_yet", systemImage: "chart.bar")
             }
         }
-        .navigationTitle("进度")
+        .navigationTitle("chat.thread_detail_view.progress")
         .task(id: conversationID) {
             guard let conversationID else { runs = []; return }
             runs = (try? await environment.runStore.runs(conversationID: conversationID)) ?? []
@@ -54,16 +54,16 @@ struct ChildAgentsInspectorView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Label(RunStateLocalizer.title(for: child.run.state), systemImage: "person.2")
                 Text(child.run.goal).lineLimit(2)
-                Text("预算 \(child.budget) · 父运行 \(child.parentID.uuidString.prefix(8))")
+                Text(FloeL10n.l("workbench.task_inspector_views.budget_parent_run", child.budget, String(String(child.parentID.uuidString.prefix(8)))))
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
         .overlay {
             if children.isEmpty {
-                ContentUnavailableView("暂无子 Agent", systemImage: "person.2.slash")
+                ContentUnavailableView("workbench.task_inspector_views.no_sub_agents", systemImage: "person.2.slash")
             }
         }
-        .navigationTitle("子 Agent")
+        .navigationTitle("chat.thread_detail_view.subagents")
         .task(id: conversationID) { await load() }
     }
 
@@ -115,11 +115,11 @@ struct TaskPermissionsInspectorView: View {
     var body: some View {
         Form {
             if policy != nil {
-                Section("审批模式") {
-                    Picker("本任务", selection: approvalModeBinding) {
-                        Text("询问").tag(TaskApprovalMode.ask.rawValue)
-                        Text("自动审批").tag(TaskApprovalMode.automatic.rawValue)
-                        Text("完全访问")
+                Section("home.draft_task_permissions_sheet.approval_mode") {
+                    Picker("workbench.task_inspector_views.this_task", selection: approvalModeBinding) {
+                        Text("settings.agent_permissions_view.ask").tag(TaskApprovalMode.ask.rawValue)
+                        Text("settings.agent_permissions_view.auto_approve").tag(TaskApprovalMode.automatic.rawValue)
+                        Text("settings.agent_permissions_view.full_access")
                             .tag(TaskApprovalMode.fullAccess.rawValue)
                             .disabled(resolvedIsLocalModel)
                     }
@@ -128,37 +128,37 @@ struct TaskPermissionsInspectorView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Section("任务设置") {
-                    Picker("后台恢复", selection: binding(\.recoveryPolicy, fallback: .safePoint)) {
-                        Text("安全点自动恢复").tag(TaskRecoveryPolicy.safePoint)
-                        Text("总是自动重试").tag(TaskRecoveryPolicy.alwaysRetry)
+                Section("workbench.task_inspector_views.task_settings") {
+                    Picker("workbench.task_inspector_views.background_recovery", selection: binding(\.recoveryPolicy, fallback: .safePoint)) {
+                        Text("workbench.task_inspector_views.auto_resume_from_safety_point").tag(TaskRecoveryPolicy.safePoint)
+                        Text("workbench.task_inspector_views.always_retry_automatically").tag(TaskRecoveryPolicy.alwaysRetry)
                     }
-                    Picker("通知", selection: binding(\.notificationPolicy, fallback: .stages)) {
-                        Text("关闭").tag(TaskNotificationPolicy.off)
-                        Text("仅完成/失败").tag(TaskNotificationPolicy.terminal)
-                        Text("审批与异常").tag(TaskNotificationPolicy.critical)
-                        Text("阶段进度").tag(TaskNotificationPolicy.stages)
+                    Picker("workbench.task_inspector_views.notifications", selection: binding(\.notificationPolicy, fallback: .stages)) {
+                        Text("media.media_editor_view.close").tag(TaskNotificationPolicy.off)
+                        Text("workbench.task_inspector_views.completion_failure_only").tag(TaskNotificationPolicy.terminal)
+                        Text("workbench.task_inspector_views.approvals_and_exceptions").tag(TaskNotificationPolicy.critical)
+                        Text("workbench.task_inspector_views.stage_progress").tag(TaskNotificationPolicy.stages)
                     }
                 }
                 Section {
                     if isSaving {
-                        Label("正在保存…", systemImage: "arrow.triangle.2.circlepath")
+                        Label("workspace.office_document_editor_view.saving", systemImage: "arrow.triangle.2.circlepath")
                     } else if didSave {
-                        Label("已保存并应用到当前任务", systemImage: "checkmark.circle.fill")
+                        Label("workbench.task_inspector_views.saved_and_applied_to_the_current", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                     } else {
-                        Text("修改会自动保存，并立即应用到当前运行的下一次工具调用。")
+                        Text("workbench.task_inspector_views.changes_save_automatically_and_apply_to")
                             .foregroundStyle(.secondary)
                     }
                 } footer: {
-                    Text("任务仍受工作区和工具范围限制；灾难性命令始终阻止。")
+                    Text("workbench.task_inspector_views.the_task_remains_limited_by_workspace")
                 }
             } else {
-                ContentUnavailableView("请选择任务", systemImage: "lock.shield")
+                ContentUnavailableView("workbench.task_inspector_views.choose_a_task", systemImage: "lock.shield")
             }
             if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
         }
-        .navigationTitle("权限")
+        .navigationTitle("workspace.file_inspector_view.permissions")
         .task(id: conversationID) { await load() }
     }
 
@@ -179,9 +179,9 @@ struct TaskPermissionsInspectorView: View {
 
     private var modeExplanation: String {
         switch policy?.resolvedApprovalMode ?? .ask {
-        case .ask: "读取自动运行，副作用操作会先询问。"
-        case .automatic: "以完成当前任务为目标自动放行范围内的常规步骤；审批模型只在目标不明确、权限明显扩大或存在高风险后果时介入。"
-        case .fullAccess: "本任务工具自动执行；灾难性命令始终阻止，软件包安装仍需模型审查。"
+        case .ask: FloeL10n.l("home.draft_task_permissions_sheet.reads_run_automatically_side_effecting_actions")
+        case .automatic: FloeL10n.l("workbench.task_inspector_views.routine_in_scope_steps_toward_the")
+        case .fullAccess: FloeL10n.l("workbench.task_inspector_views.tools_for_this_task_run_automatically")
         }
     }
 
@@ -189,7 +189,7 @@ struct TaskPermissionsInspectorView: View {
         guard !resolvedIsLocalModel else { return }
         do {
             let allowed = try await DeviceOwnerAuthenticator.authenticate(
-                reason: "确认本任务启用完全访问权限"
+                reason: FloeL10n.l("workbench.task_inspector_views.confirm_enabling_full_access_for_this")
             )
             if allowed {
                 policy?.approvalMode = TaskApprovalMode.fullAccess.rawValue

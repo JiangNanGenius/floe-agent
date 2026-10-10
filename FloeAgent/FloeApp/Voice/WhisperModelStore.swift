@@ -3,6 +3,7 @@
 import Foundation
 import CryptoKit
 
+import FloeCore
 actor WhisperModelStore {
     static let shared = WhisperModelStore()
     struct Manifest: Decodable, Sendable {
@@ -17,9 +18,9 @@ actor WhisperModelStore {
         case unavailable, corrupt, busy
         var errorDescription: String? {
             switch self {
-            case .unavailable: "Whisper 模型尚未安装。"
-            case .corrupt: "Whisper 资源不完整或校验失败，请重新下载。"
-            case .busy: "语音识别正在使用模型，请结束后再操作。"
+            case .unavailable: FloeL10n.l("voice.whisper_model_store.the_whisper_model_is_not_installed")
+            case .corrupt: FloeL10n.l("voice.whisper_model_store.the_whisper_resources_are_incomplete_or")
+            case .busy: FloeL10n.l("voice.whisper_model_store.speech_recognition_is_using_the_model")
             }
         }
     }

@@ -20,6 +20,7 @@ xcuserdata/
 
 # SPM
 .build/
+.build
 .swiftpm/
 Package.pins
 
@@ -55,6 +56,18 @@ FloeApp/Resources/python/
 # Bundled fonts: reproducible build inputs staged by scripts/fonts/fetch_fonts.py
 Vendor/Fonts/
 FloeApp/Resources/Fonts/Bundled/
+
+# Worktree-local provisioning symlinks to shared immutable inputs. These are
+# machine-specific paths and must never be committed; the trailing-slash rules
+# above do not match symlinks, so repeat the names without a trailing slash.
+Vendor/Fonts
+Vendor/Office
+Vendor/PDFium
+Vendor/LibArchive
+FloeApp/Resources/Fonts
+FloeApp/Resources/PDFiumLicenses
+FloeApp/Resources/LibArchiveLicenses
+Frameworks
 
 # Reproducible Node runtime and package-manager inputs (lock + host remain tracked).
 Vendor/NodeMobile/

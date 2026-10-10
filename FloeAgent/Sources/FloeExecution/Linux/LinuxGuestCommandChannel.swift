@@ -524,14 +524,20 @@ enum LinuxGuestFraming {
                     }
                 }
                 guard let hit else {
-                    // No marker yet: everything except a suffix that could
-                    // still be the start of a split marker is output.
-                    let tail = max(out.count, end.count, failed.count) - 1
-                    guard pending.count > tail else {
-                        return output.isEmpty ? .needMore : .output(output)
+                    // No marker: emit the payload now — holding a whole
+                    // marker-sized tail back used to delay the final bytes
+                    // of every quiet burst until the next burst (measured
+                    // 2026-10-09: the last <27 bytes stayed invisible until
+                    // more output arrived). Only an actual trailing run of
+                    // bytes that could still grow into a split OUT/END/
+                    // FAILED marker is kept; the router normally forwards
+                    // each frame as one whole element, but the parser never
+                    // half-eats a marker regardless.
+                    let hold = Self.markerPrefixSuffixLength(pending, markers: [out, end, failed])
+                    if hold < pending.count {
+                        output.append(pending.prefix(pending.count - hold))
+                        pending.removeFirst(pending.count - hold)
                     }
-                    output.append(pending.prefix(pending.count - tail))
-                    pending.removeFirst(pending.count - tail)
                     return output.isEmpty ? .needMore : .output(output)
                 }
                 output.append(pending[pending.startIndex..<hit.range.lowerBound])
@@ -559,6 +565,24 @@ enum LinuxGuestFraming {
         private mutating func trimToTail(_ count: Int) {
             guard count > 0, pending.count > count else { return }
             pending.removeFirst(pending.count - count)
+        }
+
+        /// Longest suffix of `data` that is a proper prefix of any marker —
+        /// the bytes a split marker could still grow from. Everything before
+        /// that suffix is guaranteed payload and can be emitted immediately.
+        static func markerPrefixSuffixLength(_ data: Data, markers: [Data]) -> Int {
+            let maxMarker = markers.reduce(0) { max($0, $1.count) }
+            let maxHold = min(data.count, max(0, maxMarker - 1))
+            guard maxHold > 0 else { return 0 }
+            for len in stride(from: maxHold, through: 1, by: -1) {
+                let suffix = data.suffix(len)
+                if markers.contains(where: { marker in
+                    marker.count > len && marker.prefix(len).elementsEqual(suffix)
+                }) {
+                    return len
+                }
+            }
+            return 0
         }
     }
 
@@ -774,22 +798,37 @@ public actor LinuxGuestInteractiveSession {
     /// writer, so session input can never interleave mid-frame with command
     /// or control traffic.
     private let sendFrame: @Sendable (Data) async throws -> Void
-    private let outputContinuation: AsyncStream<Data>.Continuation
-    private let outputStream: AsyncStream<Data>
     private var exitCode: Int32?
     private var failedReason: String?
     private var finished = false
     private var closeRequested = false
 
+    /// Output routed to this session and not read yet. Single buffered path:
+    /// `nextOutput` drains it (the terminal owner polls), so there is
+    /// deliberately no second stream duplicate — an unconsumed AsyncStream
+    /// used to retain a full copy of every session byte indefinitely.
+    ///
+    /// Bounded like the visible terminal ring (1 MB). Active output never
+    /// approaches the bound (one exchange drains ≤ 64 KB immediately); if an
+    /// UNPOLLED session exceeds it, the session fails closed with a
+    /// structured, recoverable `failure` (surfaced by the owner OUTSIDE the
+    /// terminal renderer), the unread bytes are cleared — a truncated tail
+    /// cannot preserve decoder state, so none is kept — and the guest
+    /// session is asked to CLOSE exactly once through the normal reap
+    /// lifecycle. Other sessions and the VM are unaffected; the owner
+    /// reconnects to continue.
+    static let maxPendingOutputBytes = 1 * 1024 * 1024
+
+    /// Stable machine-readable code carried by `failure` for the unread
+    /// output overflow, so owners can map it to a localized presentation
+    /// without string-fragment matching. Technical detail (byte counts etc.)
+    /// is logged at the failure site, not embedded in the code.
+    public static let outputOverflowFailureCode = "output-overflow"
+
     init(id: String, sendFrame: @escaping @Sendable (Data) async throws -> Void) {
         self.id = id
         self.sendFrame = sendFrame
-        var continuation: AsyncStream<Data>.Continuation!
-        self.outputStream = AsyncStream { continuation = $0 }
-        self.outputContinuation = continuation
     }
-
-    public func output() -> AsyncStream<Data> { outputStream }
 
     public var isFinished: Bool { finished }
     public var terminalExitCode: Int32? { exitCode }
@@ -797,48 +836,94 @@ public actor LinuxGuestInteractiveSession {
     public var failure: String? { failedReason }
 
     private var pendingChunks: [Data] = []
+    private var pendingBytes = 0
     private var outputWaiter: CheckedContinuation<Data?, Never>?
+    /// Identity of the live waiter. Timeout-expiry and cancellation hops are
+    /// scheduled as unstructured tasks, so they can land after a later read
+    /// has already installed a new waiter; both paths must affect ONLY the
+    /// generation they belong to and never a subsequent read.
+    private var outputWaitGeneration: UUID?
+    private var outputWaiterTimeout: Task<Void, Never>?
 
     /// Next buffered output chunk, waiting up to `timeoutMs`. Returns nil on
     /// timeout or when the session ended.
+    ///
+    /// The bounded wait is an actor-serialized timeout (not a racing task
+    /// group): `deliver` resumes the waiter with the chunk directly, and if
+    /// the timeout fires first the chunk stays in `pendingChunks` for the
+    /// next call. A task-group race here discarded chunks that were resumed
+    /// concurrently with the timeout, freezing terminal output after
+    /// arbitrary partial lines (measured 2026-10-09 on the real VM: the
+    /// guest had echoed and executed the whole command while the owner kept
+    /// only the bytes delivered outside the race window).
     public func nextOutput(timeoutMs: Int) async -> Data? {
-        if !pendingChunks.isEmpty { return pendingChunks.removeFirst() }
-        if finished { return nil }
-        let chunk: Data? = await withTaskGroup(of: Data?.self) { group in
-            group.addTask { await self.waitForChunk() }
-            group.addTask {
-                try? await Task.sleep(for: .milliseconds(max(0, timeoutMs)))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            self.cancelOutputWaiter()
-            return first
+        // A caller that is already cancelled must not consume buffered bytes:
+        // the caller treats cancellation as "no data" and the chunk would be
+        // lost to it. Queued data stays for the next live read.
+        if Task.isCancelled { return nil }
+        if !pendingChunks.isEmpty {
+            let chunk = pendingChunks.removeFirst()
+            pendingBytes -= chunk.count
+            return chunk
         }
-        if let chunk { return chunk }
-        if !pendingChunks.isEmpty { return pendingChunks.removeFirst() }
-        return nil
-    }
-
-    private func waitForChunk() async -> Data? {
-        if !pendingChunks.isEmpty { return pendingChunks.removeFirst() }
         if finished { return nil }
+        let generation = UUID()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                if !pendingChunks.isEmpty {
-                    continuation.resume(returning: pendingChunks.removeFirst())
-                } else if finished {
+                if Task.isCancelled {
                     continuation.resume(returning: nil)
-                } else {
-                    outputWaiter = continuation
+                    return
+                }
+                if !pendingChunks.isEmpty {
+                    let chunk = pendingChunks.removeFirst()
+                    pendingBytes -= chunk.count
+                    continuation.resume(returning: chunk)
+                    return
+                }
+                if finished {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                // Single-waiter ownership: displacing a stale waiter (only
+                // possible after a missed cancellation) completes it and
+                // cancels its timeout before the new one installs.
+                if let stale = outputWaiter {
+                    outputWaiter = nil
+                    stale.resume(returning: nil)
+                }
+                outputWaiterTimeout?.cancel()
+                outputWaiter = continuation
+                outputWaitGeneration = generation
+                let ms = max(0, timeoutMs)
+                outputWaiterTimeout = Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(ms))
+                    guard !Task.isCancelled else { return }
+                    await self?.expireOutputWaiter(generation)
                 }
             }
         } onCancel: {
-            Task { await self.cancelOutputWaiter() }
+            Task { await self.cancelOutputWait(generation) }
         }
     }
 
-    private func cancelOutputWaiter() {
+    /// Timeout expiry: only the generation that installed the current waiter
+    /// may complete it. A timeout task from an earlier read that wakes late
+    /// must leave a later read's waiter untouched.
+    private func expireOutputWaiter(_ generation: UUID) {
+        guard outputWaitGeneration == generation, let waiter = outputWaiter else { return }
+        outputWaiter = nil
+        outputWaitGeneration = nil
+        outputWaiterTimeout = nil
+        waiter.resume(returning: nil)
+    }
+
+    /// Cancellation of one read: generation-guarded for the same reason as
+    /// the timeout — a cancelled read must never complete a later read.
+    private func cancelOutputWait(_ generation: UUID) {
+        guard outputWaitGeneration == generation else { return }
+        outputWaiterTimeout?.cancel()
+        outputWaiterTimeout = nil
+        outputWaitGeneration = nil
         guard let waiter = outputWaiter else { return }
         outputWaiter = nil
         waiter.resume(returning: nil)
@@ -869,37 +954,61 @@ public actor LinuxGuestInteractiveSession {
         try? await sendFrame(LinuxGuestFraming.sessionCloseLine(sessionID: id))
     }
 
-    fileprivate func deliver(_ data: Data) {
+    fileprivate func deliver(_ data: Data) async {
         guard !finished else { return }
+        outputWaiterTimeout?.cancel()
+        outputWaiterTimeout = nil
+        outputWaitGeneration = nil
         if let waiter = outputWaiter {
             outputWaiter = nil
             waiter.resume(returning: data)
         } else {
             pendingChunks.append(data)
+            pendingBytes += data.count
         }
-        outputContinuation.yield(data)
+        guard pendingBytes > Self.maxPendingOutputBytes else { return }
+        // An unpolled terminal let output exceed the bound. Fail closed with
+        // a structured, recoverable error: the owner displays `failure`
+        // outside the terminal renderer, the unread bytes are cleared (a
+        // truncated tail cannot preserve UTF-8/ANSI decoder state, so none
+        // is retained or rendered), and the guest session is asked to CLOSE
+        // exactly once through the existing reap path (guest END retires the
+        // channel-side registration). Other sessions and the VM are
+        // unaffected; exactly-once holds because `fail` marks the session
+        // finished and later delivers return early.
+        pendingChunks.removeAll()
+        pendingBytes = 0
+        fail(Self.outputOverflowFailureCode)
+        FloeLogger(category: .tools).error(
+            "Linux guest terminal session \(id) overflowed the unread \(Self.maxPendingOutputBytes)-byte buffer; failed closed (reconnect to continue)"
+        )
+        try? await sendFrame(LinuxGuestFraming.sessionCloseLine(sessionID: id))
     }
 
     fileprivate func finish(exit: Int32) {
         guard !finished else { return }
         finished = true
         exitCode = exit
+        outputWaiterTimeout?.cancel()
+        outputWaiterTimeout = nil
+        outputWaitGeneration = nil
         if let waiter = outputWaiter {
             outputWaiter = nil
             waiter.resume(returning: nil)
         }
-        outputContinuation.finish()
     }
 
     fileprivate func fail(_ reason: String) {
         guard !finished else { return }
         finished = true
         failedReason = reason
+        outputWaiterTimeout?.cancel()
+        outputWaiterTimeout = nil
+        outputWaitGeneration = nil
         if let waiter = outputWaiter {
             outputWaiter = nil
             waiter.resume(returning: nil)
         }
-        outputContinuation.finish()
     }
 }
 

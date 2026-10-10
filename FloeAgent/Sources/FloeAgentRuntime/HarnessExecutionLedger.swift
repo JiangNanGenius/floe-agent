@@ -2,6 +2,7 @@ import Foundation
 import Crypto
 import FloeModels
 
+import FloeCore
 /// A bounded, activation-local account of work already performed. Provider
 /// tool-call pairs are necessarily detailed, but many APIs only carry the
 /// immediately preceding pair forward. This ledger gives later turns a small
@@ -213,7 +214,7 @@ struct HarnessExecutionLedger: Sendable {
         guard let ssh = value.range(of: "ssh"), let vnc = value.range(of: "vnc"),
               ssh.lowerBound < vnc.lowerBound else { return false }
         let between = value[ssh.lowerBound..<vnc.lowerBound]
-        return between.contains("先") || between.contains("再")
+        return between.contains(FloeL10n.l("runtime.harness_execution_ledger.first")) || between.contains(FloeL10n.l("runtime.harness_execution_ledger.again"))
             || between.contains("before") || between.contains("then")
             || value.contains("ssh first")
     }

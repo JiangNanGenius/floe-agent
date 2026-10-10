@@ -136,7 +136,7 @@ public extension ProviderPreset {
         // keys and reading the image API documentation. Keep the persisted
         // enum case for database compatibility, but use the recognizable API
         // product name in the UI.
-        displayName: "DashScope（阿里云百炼）",
+        displayName: FloeL10n.l("providers.provider_adapter_factory.dashscope_alibaba_cloud_bailian"),
         defaultProtocol: .openAIChatCompletions,
         supportedProtocols: [.openAIChatCompletions],
         defaultBaseURL: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!,
@@ -161,7 +161,8 @@ public extension ProviderPreset {
     static let custom = ProviderPreset(
         id: .custom,
         kind: .custom,
-        displayName: "Custom compatible endpoint",
+        // Generic category label (localized); brand names stay verbatim.
+        displayName: FloeL10n.l("providers.provider_adapter_factory.custom_compatible_endpoint"),
         defaultProtocol: .openAIChatCompletions,
         supportedProtocols: [.openAIResponses, .openAIChatCompletions, .anthropicMessages],
         defaultBaseURL: URL(string: "https://example.com/v1")!,
@@ -174,7 +175,8 @@ public extension ProviderPreset {
     static let local = ProviderPreset(
         id: .local,
         kind: .local,
-        displayName: "On-device models",
+        // Generic category label (localized); brand names stay verbatim.
+        displayName: FloeL10n.l("providers.provider_adapter_factory.on_device_models"),
         defaultProtocol: .openAIChatCompletions,
         supportedProtocols: [.openAIChatCompletions],
         defaultBaseURL: URL(string: "http://127.0.0.1")!,

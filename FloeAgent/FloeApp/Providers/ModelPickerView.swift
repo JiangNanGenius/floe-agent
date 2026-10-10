@@ -31,7 +31,7 @@ struct ModelPickerView: View {
         NavigationStack {
             List {
                 if !viewModel.officialMediaPresets.isEmpty {
-                    Section("官方模型") {
+                    Section("providers.model_picker_view.official_models") {
                         ForEach(viewModel.officialMediaPresets) { descriptor in
                             Button {
                                 viewModel.addOfficialMediaPreset(descriptor)

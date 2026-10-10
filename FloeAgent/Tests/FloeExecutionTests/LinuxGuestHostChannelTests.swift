@@ -847,3 +847,361 @@ func hostBridgeTestImage() -> LinuxGuestImage {
         artifacts: artifacts
     )
 }
+
+// MARK: - Interactive session output integrity (terminal transport)
+
+/// Regression host for the real-VM terminal stall fixed 2026-10-09. The
+/// instrumented real run proved the guest had echoed and executed the whole
+/// command — the engine, router and session buffer had delivered every byte
+/// — while the visible terminal froze after an arbitrary partial line
+/// (`printf 'FLOE_%s_READY\n' "$((6`): `nextOutput(timeoutMs:)` raced a
+/// task-group timeout against `deliver`'s waiter resume and discarded the
+/// winning chunk. These tests drive the real channel + session over a
+/// scripted console; nothing below the session is stubbed. Payloads are
+/// larger than the longest frame so no parser holdback is involved, and all
+/// deadlines are generous enough for XCTest hop latency.
+final class LinuxGuestInteractiveSessionOutputTests: XCTestCase {
+
+    private func makeSession(
+        _ apply: (ScriptedHostConsole, LinuxGuestInteractiveSession) async throws -> Void
+    ) async throws {
+        let console = ScriptedHostConsole { data in
+            let text = String(decoding: data, as: UTF8.self)
+            guard let hello = HostFrames.first("HELLO", in: text) else { return [] }
+            return [GuestFrames.caps(hello.token)]
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        let session = try await channel.openSession(
+            sessionID: "race-session-token",
+            argv: ["/bin/sh"],
+            workingDirectory: nil,
+            columns: 80,
+            rows: 24
+        )
+        try await apply(console, session)
+    }
+
+    /// Every byte the guest sent must reach the reader, across hundreds of
+    /// bounded reads whose timeouts interleave with deliveries while the
+    /// executor is congested (the condition of the measured real-VM run).
+    /// Pre-fix this loses chunks — deterministically enough under pressure
+    /// that the real terminal froze on the first command after boot.
+    func testSessionOutputIsNeverLostAcrossBoundedReadTimeouts() async throws {
+        try await makeSession { console, session in
+            // 64 bytes, larger than the longest frame: no parser holdback.
+            let unit = String(repeating: "u", count: 63) + "\n"
+            let fastChunks = 240
+            let slowChunks = 60
+            let unitBytes = unit.utf8.count
+            let expectedBytes = (fastChunks + slowChunks) * unitBytes
+
+            // Congest the cooperative pool like a booting app does: widens
+            // the window in which a completed timeout used to swallow a
+            // concurrently delivered chunk.
+            let congestion = (0..<3).map { _ in
+                Task {
+                    for _ in 0..<120_000 { await Task.yield() }
+                }
+            }
+            defer { congestion.forEach { $0.cancel() } }
+
+            let consumer = Task {
+                var collected = Data()
+                let deadline = Date().addingTimeInterval(120)
+                while collected.count < expectedBytes && Date() < deadline {
+                    if let chunk = await session.nextOutput(timeoutMs: 40) {
+                        collected.append(chunk)
+                    }
+                }
+                return collected
+            }
+            let producer = Task {
+                for i in 0..<fastChunks {
+                    console.push([GuestFrames.out("race-session-token", unit)])
+                    if i % 5 == 4 {
+                        try? await Task.sleep(for: .milliseconds(7))
+                    }
+                }
+                for _ in 0..<slowChunks {
+                    try? await Task.sleep(for: .milliseconds(45))
+                    console.push([GuestFrames.out("race-session-token", unit)])
+                }
+            }
+            _ = await producer.result
+            let collected = await consumer.value
+            XCTAssertEqual(
+                collected.count, expectedBytes,
+                "session output lost bytes across bounded reads (got \(collected.count), want \(expectedBytes))"
+            )
+            XCTAssertEqual(
+                String(decoding: collected, as: UTF8.self),
+                String(repeating: unit, count: fastChunks + slowChunks),
+                "session output content or order changed across bounded reads"
+            )
+        }
+    }
+
+    /// A timeout task scheduled by read A must never complete read B: A is
+    /// satisfied quickly, then B waits long enough that A's stale timeout
+    /// fires mid-wait, and B must still receive its chunk. Without the
+    /// generation guard this truncated B to a spurious nil at A's deadline.
+    func testStaleReadTimeoutCannotCompleteTheNextRead() async throws {
+        try await makeSession { console, session in
+            // A: long bounded read, satisfied well inside its own deadline.
+            let readA = Task { await session.nextOutput(timeoutMs: 800) }
+            try? await Task.sleep(for: .milliseconds(80))
+            console.push([GuestFrames.out("race-session-token", String(repeating: "A", count: 64))])
+            let gotA = await readA.value
+            XCTAssertEqual(String(decoding: gotA ?? Data(), as: UTF8.self), String(repeating: "A", count: 64))
+
+            // B installs its waiter before A's stale timeout fires (A's
+            // deadline is ~700 ms out; the timeout task wakes mid-wait).
+            let readB = Task { await session.nextOutput(timeoutMs: 4_000) }
+            try? await Task.sleep(for: .milliseconds(900))
+            console.push([GuestFrames.out("race-session-token", String(repeating: "B", count: 64))])
+            let gotB = await readB.value
+            XCTAssertEqual(
+                String(decoding: gotB ?? Data(), as: UTF8.self), String(repeating: "B", count: 64),
+                "the previous read's stale timeout truncated this read"
+            )
+            // Nothing phantom may be left for a later read.
+            let tail = await session.nextOutput(timeoutMs: 100)
+            XCTAssertNil(tail)
+        }
+    }
+
+    /// Cancelling a read completes it promptly (never waits out its long
+    /// bound) and must leave the next read fully functional — a late
+    /// cancellation hop can never complete a later read's waiter, and bytes
+    /// queued after the cancellation stay available to the next live read
+    /// (an already-cancelled poll never consumes buffered bytes).
+    func testCancelledReadReturnsPromptlyAndNeverCompletesTheNextRead() async throws {
+        try await makeSession { console, session in
+            let readA = Task { await session.nextOutput(timeoutMs: 30_000) }
+            try? await Task.sleep(for: .milliseconds(80))
+            let cancelStart = Date()
+            readA.cancel()
+            let gotA = await readA.value
+            XCTAssertNil(gotA)
+            XCTAssertLessThan(
+                Date().timeIntervalSince(cancelStart), 5,
+                "cancelled read was not completed promptly"
+            )
+            // The next read is unaffected by the cancelled read's teardown.
+            let readB = Task { await session.nextOutput(timeoutMs: 4_000) }
+            try? await Task.sleep(for: .milliseconds(150))
+            console.push([GuestFrames.out("race-session-token", "after-cancel")])
+            let gotB = await readB.value
+            XCTAssertEqual(String(decoding: gotB ?? Data(), as: UTF8.self), "after-cancel")
+
+            // An already-cancelled poll must not eat queued bytes.
+            console.push([GuestFrames.out("race-session-token", "queued")])
+            let cancelledPoll = Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return await session.nextOutput(timeoutMs: 4_000)
+            }
+            let gotCancelled = await cancelledPoll.value
+            XCTAssertNil(gotCancelled, "an already-cancelled poll returned data")
+            let readC = Task { await session.nextOutput(timeoutMs: 4_000) }
+            let gotC = await readC.value
+            XCTAssertEqual(
+                String(decoding: gotC ?? Data(), as: UTF8.self), "queued",
+                "bytes queued before an already-cancelled poll were consumed by it"
+            )
+        }
+    }
+
+    /// A hidden/unpolled terminal must not grow memory without bound. Past
+    /// the 1 MB pending bound the session FAILS CLOSED with a structured,
+    /// recoverable `failure` (displayed by the owner outside the terminal
+    /// renderer): the unread bytes are cleared — a truncated tail cannot
+    /// preserve decoder state — the guest receives CLOSE exactly once, and
+    /// the existing reap path retires the channel-side registration. Other
+    /// sessions on the same channel keep working. The pre-fix design
+    /// duplicated every byte into an unconsumed unbounded stream alongside
+    /// the unbounded pending buffer.
+    func testUnpolledSessionOverflowFailsClosedRecoveredAndIsolated() async throws {
+        let console = ScriptedHostConsole { data in
+            let text = String(decoding: data, as: UTF8.self)
+            guard let hello = HostFrames.first("HELLO", in: text) else { return [] }
+            return [GuestFrames.caps(hello.token)]
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        let overflowed = try await channel.openSession(
+            sessionID: "overflow-session",
+            argv: ["/bin/sh"],
+            workingDirectory: nil,
+            columns: 80,
+            rows: 24
+        )
+        let other = try await channel.openSession(
+            sessionID: "other-session",
+            argv: ["/bin/sh"],
+            workingDirectory: nil,
+            columns: 80,
+            rows: 24
+        )
+        // Push the overflowing session past the cap with nobody reading.
+        let chunk = String(repeating: "y", count: LinuxGuestInteractiveSession.maxPendingOutputBytes + 1)
+        console.push([GuestFrames.out("overflow-session", chunk)])
+        // The session must fail closed promptly with a recoverable reason.
+        let deadline = Date().addingTimeInterval(30)
+        var finished = false
+        while Date() < deadline {
+            if await overflowed.isFinished { finished = true; break }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(finished, "overflow did not fail the session closed")
+        let failure = await overflowed.failure
+        XCTAssertEqual(
+            failure, LinuxGuestInteractiveSession.outputOverflowFailureCode,
+            "overflow must carry the stable machine-readable failure code"
+        )
+        // Pending output was cleared: the reader sees a clean EOF, and the
+        // session stays within the documented bound.
+        let drained = await overflowed.nextOutput(timeoutMs: 100)
+        XCTAssertNil(drained, "unread overflow bytes were retained")
+        // CLOSE was sent to the guest exactly once.
+        let closeFrames = console.writtenText.components(separatedBy: "\u{1e}FLOE-CLOSE overflow-session\u{1e}").count - 1
+        XCTAssertEqual(closeFrames, 1, "guest CLOSE must be sent exactly once")
+        // Another session on the same channel is unaffected: it still
+        // streams output normally after the overflow.
+        console.push([GuestFrames.out("other-session", "still-alive")])
+        let otherRead = await other.nextOutput(timeoutMs: 4_000)
+        XCTAssertEqual(String(decoding: otherRead ?? Data(), as: UTF8.self), "still-alive")
+    }
+
+    /// Single-character and small quiet bursts must be delivered promptly:
+    /// the pre-fix parser held back every payload shorter than a marker
+    /// until the NEXT burst, so the final bytes of a quiet shell sat
+    /// invisible (the executed marker/prompt never reached the owner).
+    func testSmallQuietBurstIsDeliveredPromptly() async throws {
+        try await makeSession { console, session in
+            console.push([GuestFrames.out("race-session-token", "x")])
+            let one = await session.nextOutput(timeoutMs: 4_000)
+            XCTAssertEqual(String(decoding: one ?? Data(), as: UTF8.self), "x")
+
+            console.push([GuestFrames.out("race-session-token", "done\u{1b}[0m")])
+            let two = await session.nextOutput(timeoutMs: 4_000)
+            XCTAssertEqual(String(decoding: two ?? Data(), as: UTF8.self), "done\u{1b}[0m")
+        }
+    }
+}
+
+// MARK: - SessionParser framing contract
+
+final class LinuxGuestSessionParserFramingTests: XCTestCase {
+    private let token = "race-session-token"
+
+    private func makeParser() -> LinuxGuestFraming.SessionParser {
+        LinuxGuestFraming.SessionParser(sessionID: token)
+    }
+
+    /// A marker split across feeds must never be half-eaten as payload.
+    func testSplitMarkerAcrossFeedsIsNotHalfEaten() {
+        var parser = makeParser()
+        let out = LinuxGuestFraming.sessionOutputMarker(token)
+        // Feed the OUT marker one byte at a time.
+        for byte in out {
+            let progress = parser.feed(Data([byte]))
+            XCTAssertEqual(progress, .needMore, "marker byte emitted as payload")
+        }
+        let payload = parser.feed(Data("hello".utf8))
+        XCTAssertEqual(payload, .output(Data("hello".utf8)))
+    }
+
+    /// Payload is emitted immediately, keeping only a real marker-prefix
+    /// suffix: no whole-marker-length holdback on quiet bursts.
+    func testPayloadFlushesExceptActualMarkerPrefixSuffix() {
+        var parser = makeParser()
+        let out = LinuxGuestFraming.sessionOutputMarker(token)
+        _ = parser.feed(out) // open the stream
+        // Trailing ESC alone is a potential split marker and is held;
+        // everything before it flushes now.
+        let progress = parser.feed(Data("ab\u{1e}".utf8))
+        XCTAssertEqual(progress, .output(Data("ab".utf8)))
+        // The held ESC completes into a real marker and is stripped, not
+        // delivered; the following bytes are payload.
+        let rest = parser.feed(Data("FLOE-OUT \(token)\u{1e}ok".utf8))
+        XCTAssertEqual(rest, .output(Data("ok".utf8)))
+    }
+
+    /// An END marker split across feeds terminates the session without
+    /// losing payload that preceded the split.
+    func testSplitEndMarkerStillTerminatesCleanly() {
+        var parser = makeParser()
+        let out = LinuxGuestFraming.sessionOutputMarker(token)
+        let end = LinuxGuestFraming.sessionEndPrefix(token) // \x1eFLOE-END <token><space>
+        let first = parser.feed(out + Data("tail\u{1e}FLOE-EN".utf8))
+        XCTAssertEqual(first, .output(Data("tail".utf8)))
+        let second = parser.feed(Data("D \(token) 0\u{1e}".utf8))
+        XCTAssertEqual(second, .finished(0))
+    }
+}
+
+// MARK: - Overflow failure surface (registry → center → owner)
+
+/// The overflow failure must travel the real registry→backend→center chain
+/// as structured data so the owner can show it outside the terminal
+/// renderer; the pre-fix chain dropped it (readSession never surfaced
+/// handle.failure and the result type could not carry it).
+final class ShellSessionCenterFailureSurfaceTests: XCTestCase {
+
+    private struct FakeBackend: LocalShellBackend {
+        var exchangeResult: ShellExchangeResult
+        var exchanged = false
+
+        func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
+            .failed(message: "not implemented")
+        }
+
+        func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
+            ShellOpenResult(sessionID: "fake-session", initialOutput: "", alive: true)
+        }
+
+        func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {
+            exchangeResult
+        }
+
+        func closeSession(sessionID: String) async {}
+    }
+
+    func testExchangePassesRecoverableFailureThroughToOwnerResult() async throws {
+        // Any structured failure string flows through; the known overflow
+        // code maps to a localized owner presentation without the backend
+        // embedding user-facing text.
+        let reason = "output-overflow-detail-for-diagnostics"
+        let backend = FakeBackend(exchangeResult: ShellExchangeResult(
+            output: "",
+            alive: false,
+            terminalOutput: Data(),
+            failure: reason,
+            bytesRead: 0,
+            bytesWritten: 0
+        ))
+        let center = ShellSessionCenter(backend: backend)
+        let runID = UUID()
+        let opened = try await center.open(
+            command: "",
+            cwd: ".",
+            environment: [:],
+            columns: 80,
+            rows: 24,
+            runID: runID,
+            rootURL: FileManager.default.temporaryDirectory,
+            cancellation: nil,
+            forTerminal: true
+        )
+        let result = try await center.exchange(
+            sessionID: opened.sessionID,
+            input: nil,
+            waitMs: 50,
+            maxBytes: 64 * 1024,
+            runID: runID,
+            cancellation: nil,
+            forTerminal: true
+        )
+        XCTAssertFalse(result.alive)
+        XCTAssertEqual(result.failure, reason)
+    }
+}

@@ -392,11 +392,11 @@ public struct TaskNotificationDiagnostics: Sendable, Equatable {
     }
 
     public var authorizationSummary: String {
-        canPresentAlert ? "\(authorization)（可显示通知）" : "\(authorization)（无法显示通知）"
+        canPresentAlert ? FloeL10n.l("core.task_notification_outbox.notifications_available", authorization) : FloeL10n.l("core.task_notification_outbox.notifications_unavailable", authorization)
     }
 
     public var lastFailureSummary: String {
-        guard let lastFailure else { return "无" }
+        guard let lastFailure else { return FloeL10n.l("workspace.workspace_canvas_view.none") }
         return "\(lastFailure.identifier) · \(lastFailure.reason)"
     }
 }

@@ -34,12 +34,12 @@ actor EnvironmentLanguagePackageService {
     }
 
     func packages(environmentID: String, language: Language) async throws -> [Package] {
-        guard !busy.contains(environmentID) else { throw FloeError.validationFailed("依赖事务尚未结束") }
+        guard !busy.contains(environmentID) else { throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.the_dependency_transaction_has_not_finished")) }
         busy.insert(environmentID)
         defer { busy.remove(environmentID) }
         let lease = try await coordinator.acquireManagement(environmentID: environmentID, cancellation: CancellationToken())
         do {
-            guard let environment = lease.context.environment else { throw FloeError.invalidConfiguration("环境未解析") }
+            guard let environment = lease.context.environment else { throw FloeError.invalidConfiguration(FloeL10n.l("execution.environment_language_package_service.environment_unresolved")) }
             if let linux, await linux.owns(environmentID: environmentID) {
                 // The readback comes from the same guest installation the
                 // shell and the installers use. A stopped guest reports the
@@ -91,11 +91,11 @@ actor EnvironmentLanguagePackageService {
                     if language == .python {
                         let lines = String(decoding: data, as: UTF8.self).components(separatedBy: .newlines)
                         name = lines.first { $0.hasPrefix("Name: ") }.map { String($0.dropFirst(6)) } ?? directory.deletingPathExtension().lastPathComponent
-                        version = lines.first { $0.hasPrefix("Version: ") }.map { String($0.dropFirst(9)) } ?? "未知"
+                        version = lines.first { $0.hasPrefix("Version: ") }.map { String($0.dropFirst(9)) } ?? FloeL10n.l("execution.environment_language_package_service.unknown_2")
                     } else {
                         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
                         guard let packageName = json?["name"] as? String, let packageVersion = json?["version"] as? String else {
-                            throw FloeError.validationFailed("软件包清单不完整：\(directory.lastPathComponent)")
+                            throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.the_package_manifest_is_incomplete", directory.lastPathComponent))
                         }
                         name = packageName; version = packageVersion
                     }
@@ -109,7 +109,7 @@ actor EnvironmentLanguagePackageService {
     }
 
     func change(environmentID: String, language: Language, specification: String, remove: Bool) async throws -> String {
-        guard !busy.contains(environmentID) else { throw FloeError.validationFailed("此环境正在安装或卸载依赖") }
+        guard !busy.contains(environmentID) else { throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.dependencies_are_being_installed_or_removed")) }
         busy.insert(environmentID)
         defer { busy.remove(environmentID) }
         let token = CancellationToken()
@@ -117,10 +117,10 @@ actor EnvironmentLanguagePackageService {
             try Task.checkCancellation()
             let lease = try await coordinator.acquireManagement(environmentID: environmentID, cancellation: token)
             do {
-                guard let environment = lease.context.environment else { throw FloeError.invalidConfiguration("环境未解析") }
+                guard let environment = lease.context.environment else { throw FloeError.invalidConfiguration(FloeL10n.l("execution.environment_language_package_service.environment_unresolved")) }
                 let output: String
                 if language == .python {
-                    guard let python else { throw FloeError.invalidConfiguration("此构建未提供 Python 运行时") }
+                    guard let python else { throw FloeError.invalidConfiguration(FloeL10n.l("execution.environment_language_package_service.this_build_does_not_provide_a")) }
                     if let linux, await linux.owns(environmentID: environmentID) {
                         try await ensureGuestRunning(environmentID: environmentID)
                     }
@@ -130,7 +130,7 @@ actor EnvironmentLanguagePackageService {
                     switch outcome {
                     case .ok(let text): output = text
                     case .failed(let message): throw FloeError.validationFailed(message)
-                    case .timedOut(let partial): throw FloeError.validationFailed("安装超时，重新读取依赖后可重试。\n" + partial)
+                    case .timedOut(let partial): throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.installation_timed_out_reload_dependencies_and") + partial)
                     case .cancelled: throw CancellationError()
                     }
                 } else {
@@ -152,7 +152,7 @@ actor EnvironmentLanguagePackageService {
                     }
                 }
                 await lease.finish()
-                return output.isEmpty ? "依赖已更新" : output
+                return output.isEmpty ? FloeL10n.l("execution.environment_language_package_service.dependencies_updated") : output
             } catch { await lease.finish(); throw error }
         } onCancel: { token.cancel() }
     }
@@ -161,7 +161,7 @@ actor EnvironmentLanguagePackageService {
     /// here would wait on itself; serialize with UI transactions using busy.
     func changeNodeFromShell(environment: ToolEnvironment, change: NodePackageManagerPolicy.Change,
                              manager: NodePackageManager, cancellation: CancellationToken) async throws -> String {
-        guard !busy.contains(environment.id) else { throw FloeError.validationFailed("此环境正在安装或卸载依赖") }
+        guard !busy.contains(environment.id) else { throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.dependencies_are_being_installed_or_removed")) }
         busy.insert(environment.id)
         defer { busy.remove(environment.id) }
         if let linux, await linux.owns(environmentID: environment.id) {
@@ -185,8 +185,8 @@ actor EnvironmentLanguagePackageService {
 
     func pythonFromShell(environment: ToolEnvironment, operation: ManagedPythonPackageSpecParser.ShellOperation,
                          cancellation: CancellationToken) async throws -> String {
-        guard !busy.contains(environment.id) else { throw FloeError.validationFailed("此环境正在安装或卸载依赖") }
-        guard let python else { throw FloeError.invalidConfiguration("此构建未提供 Python 运行时") }
+        guard !busy.contains(environment.id) else { throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.dependencies_are_being_installed_or_removed")) }
+        guard let python else { throw FloeError.invalidConfiguration(FloeL10n.l("execution.environment_language_package_service.this_build_does_not_provide_a")) }
         busy.insert(environment.id)
         defer { busy.remove(environment.id) }
         if let linux, await linux.owns(environmentID: environment.id) {
@@ -202,7 +202,7 @@ actor EnvironmentLanguagePackageService {
         switch outcome {
         case .ok(let output): return output
         case .failed(let message): throw FloeError.validationFailed(message)
-        case .timedOut(let output): throw FloeError.validationFailed("pip 超时；依赖事务可恢复。\n" + output)
+        case .timedOut(let output): throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.pip_timed_out_the_dependency_transaction") + output)
         case .cancelled: throw CancellationError()
         }
     }
@@ -214,12 +214,12 @@ actor EnvironmentLanguagePackageService {
     }
 
     func sources(environmentID: String, set value: LanguagePackageSources? = nil) async throws -> LanguagePackageSources {
-        guard !busy.contains(environmentID) else { throw FloeError.validationFailed("依赖事务尚未结束") }
+        guard !busy.contains(environmentID) else { throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.the_dependency_transaction_has_not_finished")) }
         busy.insert(environmentID)
         defer { busy.remove(environmentID) }
         let lease = try await coordinator.acquireManagement(environmentID: environmentID, cancellation: CancellationToken())
         do {
-            guard let environment = lease.context.environment else { throw FloeError.invalidConfiguration("环境未解析") }
+            guard let environment = lease.context.environment else { throw FloeError.invalidConfiguration(FloeL10n.l("execution.environment_language_package_service.environment_unresolved")) }
             if let value { try value.save(in: environment.writableLayerURL) }
             let result = try LanguagePackageSources.load(in: environment.writableLayerURL)
             await lease.finish()
@@ -228,12 +228,12 @@ actor EnvironmentLanguagePackageService {
     }
 
     func nodeManagerSelection(environmentID: String, set preference: NodePackageManagerPreference? = nil) async throws -> NodeManagerSelection {
-        guard !busy.contains(environmentID) else { throw FloeError.validationFailed("依赖事务尚未结束") }
+        guard !busy.contains(environmentID) else { throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.the_dependency_transaction_has_not_finished")) }
         busy.insert(environmentID)
         defer { busy.remove(environmentID) }
         let lease = try await coordinator.acquireManagement(environmentID: environmentID, cancellation: CancellationToken())
         do {
-            guard let environment = lease.context.environment else { throw FloeError.invalidConfiguration("环境未解析") }
+            guard let environment = lease.context.environment else { throw FloeError.invalidConfiguration(FloeL10n.l("execution.environment_language_package_service.environment_unresolved")) }
             if let preference {
                 let file = try contained("var/node-package-manager.json", in: environment.writableLayerURL)
                 try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -251,19 +251,19 @@ actor EnvironmentLanguagePackageService {
                             // selection reports the missing guest manager
                             // before any change is attempted.
                             result = .init(preference: selected, resolved: resolved,
-                                           issue: "guest 中尚未发现 pnpm；请在 guest 中安装 pnpm 或改用 npm")
+                                           issue: FloeL10n.l("execution.environment_language_package_service.pnpm_was_not_found_in_the"))
                         } else {
                             result = .init(preference: selected, resolved: resolved)
                         }
                     } else {
                         result = .init(preference: selected, resolved: nil,
-                                       issue: "Linux 环境未运行；请先启动该环境再安装 Node 依赖")
+                                       issue: FloeL10n.l("execution.environment_language_package_service.the_linux_environment_is_not_running"))
                     }
                 } else {
                     // Native backend: the manager is resolved for the record,
                     // but installs run only inside the Linux guest.
                     result = .init(preference: selected, resolved: resolved,
-                                   issue: "当前环境使用 native 兼容后端；切换到 Linux 后端后才能安装/运行 Node 依赖")
+                                   issue: FloeL10n.l("execution.environment_language_package_service.the_current_environment_uses_the_native"))
                 }
             } catch { result = .init(preference: selected, issue: error.localizedDescription) }
             await lease.finish()
@@ -280,13 +280,13 @@ actor EnvironmentLanguagePackageService {
     private func contained(_ relative: String, in root: URL) throws -> URL {
         let base = root.resolvingSymlinksInPath().standardizedFileURL
         let candidate = base.appendingPathComponent(relative).resolvingSymlinksInPath().standardizedFileURL
-        guard candidate.path.hasPrefix(base.path + "/") else { throw FloeError.validationFailed("依赖路径越出环境") }
+        guard candidate.path.hasPrefix(base.path + "/") else { throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.the_dependency_path_is_outside_the")) }
         return candidate
     }
     private func boundedData(_ url: URL) throws -> Data {
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
         guard values.isRegularFile == true, (values.fileSize ?? Int.max) <= 2 * 1024 * 1024 else {
-            throw FloeError.validationFailed("软件包清单缺失或过大")
+            throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.the_package_manifest_is_missing_or"))
         }
         return try Data(contentsOf: url)
     }

@@ -6,6 +6,7 @@ import FloeNotes
 import FloeDocuments
 import PencilKit
 
+import FloeCore
 @MainActor @Observable
 final class NotesSession {
     private(set) var store: NotesStore?
@@ -134,7 +135,7 @@ final class NotesSession {
                 // Deferred collection failures remain retryable on next open;
                 // readable documents have already loaded independently.
                 do { _ = try await store.collectDeletedResources() }
-                catch { errorMessage = "未能回收已删除附件，可重新打开手记重试：" + error.localizedDescription }
+                catch { errorMessage = FloeL10n.l("notes.notes_session.deleted_attachments_could_not_be_reclaimed") + error.localizedDescription }
             }
         } catch { errorMessage = error.localizedDescription }
     }
@@ -251,16 +252,16 @@ final class NotesSession {
         isSwitchingDocument = true
         defer { isSwitchingDocument = false }
         await tail?.value
-        guard pendingWrites == 0 else { errorMessage = "正在保存，请稍后切换文档。"; return false }
+        guard pendingWrites == 0 else { errorMessage = FloeL10n.l("notes.notes_session.saving_switch_documents_shortly"); return false }
         if let current = document?.id {
             guard !unsavedDocumentIDs.contains(current) else {
-                errorMessage = "当前文档尚未保存，请先重试保存，再切换或关闭标签。"
+                errorMessage = FloeL10n.l("notes.notes_session.the_current_document_is_not_saved")
                 return false
             }
             if let save = leaveGuards[current], !(await save()) { return false }
         }
         let target = value.flatMap { selected in documents.first { $0.id == selected.id && $0.deletedAt == nil } }
-        if value != nil && target == nil { errorMessage = "此文档已被删除。"; return false }
+        if value != nil && target == nil { errorMessage = FloeL10n.l("notes.notes_session.this_document_was_deleted"); return false }
         do {
             if let id = target?.id, let store { try await store.markOpened(id) }
             document = target
@@ -284,12 +285,12 @@ final class NotesSession {
 
     @discardableResult
     func openSource(_ source: NoteSourceReference) async -> Bool {
-        guard source.space == .notes, let store else { errorMessage = "此引用不属于手记。"; return false }
+        guard source.space == .notes, let store else { errorMessage = FloeL10n.l("notes.notes_session.this_reference_does_not_belong_to"); return false }
         do {
             let value = try await store.document(source.documentID)
-            guard value.deletedAt == nil else { throw NoteError.invalidOperation("引用资料在回收站中，请先恢复。") }
+            guard value.deletedAt == nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_session.the_cited_material_is_in_trash")) }
             if let pageID = source.pageID, !value.pages.contains(where: { $0.id == pageID }) {
-                throw NoteError.invalidOperation("引用页面已被删除，可以在源手记中撤销相应删除操作。")
+                throw NoteError.invalidOperation(FloeL10n.l("notes.notes_session.the_cited_page_was_deleted_you"))
             }
             await select(value)
             requestedPageID = source.pageID
@@ -302,7 +303,7 @@ final class NotesSession {
             guard let store else { return }
             var value = NoteDocument(kind: kind, notebookID: notebookID, title: title)
             if value.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                value.title = kind == .mindMap ? "未命名导图" : "未命名手记"
+                value.title = kind == .mindMap ? FloeL10n.l("notes.notes_session.untitled_mind_map") : FloeL10n.l("notes.notes_session.untitled_note")
                 if !value.nodes.isEmpty { value.nodes[0].title = value.title }
             }
             showCreatedDocument(try await store.create(value), editorOnFirstOpen: kind == .office)
@@ -339,7 +340,7 @@ final class NotesSession {
                 case "docx": try OfficeDocumentBuilder.createWord(at: file, title: title, paragraphs: [""])
                 case "xlsx": try OfficeDocumentBuilder.createWorkbook(at: file, sheets: [.init(name: "Sheet1", rows: [[]])])
                 case "pptx": try OfficeDocumentBuilder.createPresentation(at: file, title: title, slides: [.init(title: title)])
-                default: throw NoteError.invalidOperation("不支持此 Office 格式。")
+                default: throw NoteError.invalidOperation(FloeL10n.l("notes.notes_session.this_office_format_is_not_supported"))
                 }
             }.value
             let value = try await NoteFileImporter.importFile(file, notebookID: notebookID, store: store)
@@ -442,7 +443,7 @@ final class NotesSession {
                 }
                 let resource = try await store.importResource(from: url, mediaType: "application/vnd.apple.pencilkit")
                 try await preserveEditConflict(.init(documentID: documentID, expectedRevision: base.revision,
-                    title: "恢复笔迹", edits: [.drawing(pageID: pageID, resourceID: resource)]), base: base)
+                    title: FloeL10n.l("notes.notes_document_editor.restore_strokes"), edits: [.drawing(pageID: pageID, resourceID: resource)]), base: base)
                 try FileManager.default.removeItem(at: url)
                 errorMessage = String(localized: "edit.conflict.notesPreserved")
             }
@@ -470,7 +471,7 @@ final class NotesSession {
                 defer { try? FileManager.default.removeItem(at: staging) }
                 let resource = try await store.importResource(from: staging, mediaType: "application/vnd.apple.pencilkit")
                 let batch = NoteEditBatch(documentID: key.documentID, expectedRevision: draft.base.revision,
-                    title: "书写", edits: [.drawing(pageID: key.pageID, resourceID: resource)])
+                    title: FloeL10n.l("notes.notes_session.writing"), edits: [.drawing(pageID: key.pageID, resourceID: resource)])
                 do {
                     let saved = try await store.applyRebased(batch, base: draft.base)
                     // Newer queued strokes include this accepted local drawing.
@@ -502,7 +503,7 @@ final class NotesSession {
         pendingWrites += 1
         defer { finishWrite() }
         guard let base = try await store.editingSnapshot(documentID, revision: expectedRevision) else { throw NoteError.conflict }
-        let result = try await commitPreservingConflict(.init(documentID: documentID, expectedRevision: expectedRevision, title: "编辑内容", edits: edits), base: base)
+        let result = try await commitPreservingConflict(.init(documentID: documentID, expectedRevision: expectedRevision, title: FloeL10n.l("notes.notes_session.edit_content"), edits: edits), base: base)
         try await reload()
         return result
     }

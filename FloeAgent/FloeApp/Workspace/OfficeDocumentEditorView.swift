@@ -688,7 +688,7 @@ final class OfficeFileSession: ObservableObject {
             // means nothing changed, or encourage a blind duplicate insertion.
             hasUncommittedChanges = true
             throw NSError(domain: "org.floeagent.office.attachment", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "附件插入未能完成，文档可能已有部分修改。请先检查当前文档，必要时撤销后再试；编辑副本已保留。",
+                NSLocalizedDescriptionKey: FloeL10n.l("workspace.office_document_editor_view.the_attachment_insertion_did_not_finish"),
                 NSUnderlyingErrorKey: error
             ])
         }
@@ -1022,8 +1022,8 @@ final class OfficeFileSession: ObservableObject {
             }
             self.error = self.openingPolicy?.warning.map { OfficeInkText.t($0.detailZh, $0.detailEn) }
                 ?? (readOnly
-                    ? "文档引擎未能在限定时间内打开预览；原文件未被修改。"
-                    : "文档引擎未能在限定时间内打开编辑副本；编辑副本已保留。")
+                    ? FloeL10n.l("workspace.office_document_editor_view.the_document_engine_could_not_open")
+                    : FloeL10n.l("workspace.office_document_editor_view.the_document_engine_could_not_open_2"))
             self.phase = .failed
         }
     }
@@ -1402,7 +1402,21 @@ final class OfficeFileSession: ObservableObject {
             defer { native.view.isUserInteractionEnabled = true }
             // Bounded: a save that neither acknowledges nor fails in time
             // surfaces a recoverable error instead of an endless "Saving…".
-            try await Self.saveWorkingCopy(native)
+            // A save dispatched while another tracked save is still open is
+            // rejected pre-dispatch (native error 9, the engine's one-save
+            // admission); retry that proven busy signal exactly once after
+            // the activity settles. Generic completion failures (code 8) are
+            // surfaced, never masked: they can be genuine save defects.
+            let saveAttempts = try await OfficeSaveAdmissionRetry.run(
+                onRetry: { [weak self] in
+                    Task { @MainActor [weak self] in self?.recordStage("save.busyRetry", [:]) }
+                }
+            ) {
+                try await Self.saveWorkingCopy(native)
+            }
+            if saveAttempts > 1 {
+                recordStage("save.busyRetry.ok", ["attempts": "\(saveAttempts)"])
+            }
             try await workspace.save(session)
             hasSaveConflict = false
             hasUncommittedChanges = try await workspace.hasUncommittedWorkingCopy(session)
@@ -2712,7 +2726,7 @@ struct OfficeDocumentSurface: View {
                     }
                 }
             } else if session.phase != .ready {
-                ProgressView(session.phase == .saving ? "正在保存…" : session.phase == .closing ? "正在关闭…" : session.phase == .insertingAttachment ? "正在插入附件…" : session.phase == .readingAttachments ? "正在读取附件…" : "正在打开文档…")
+                ProgressView(session.phase == .saving ? "workspace.office_document_editor_view.saving" : session.phase == .closing ? "workspace.office_document_editor_view.closing" : session.phase == .insertingAttachment ? "workspace.office_workspace_attachment_picker.inserting_attachment" : session.phase == .readingAttachments ? "workspace.office_attachment_list_view.reading_attachment" : "workspace.office_document_editor_view.opening_document")
                     .padding(16)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             }
@@ -2725,7 +2739,7 @@ struct OfficeDocumentSurface: View {
                     OfficeRenderUnverifiedBanner(session: session, warning: warning)
                 }
                 if session.readOnly && session.hasUncommittedChanges {
-                    Label("有未写回原文件的修改", systemImage: "doc.badge.clock")
+                    Label("workspace.office_document_editor_view.changes_have_not_been_saved_to", systemImage: "doc.badge.clock")
                         .font(.footnote).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity).padding(8)
                         .background(.regularMaterial)
@@ -2972,9 +2986,9 @@ struct OfficeDocumentEditorView: View {
                     }
                 }
             }
-            .alert("未能插入附件", isPresented: Binding(
+            .alert("workspace.office_workspace_attachment_picker.could_not_insert_the_attachment", isPresented: Binding(
                 get: { attachmentError != nil }, set: { if !$0 { attachmentError = nil } })) {
-                    Button("好", role: .cancel) { attachmentError = nil }
+                    Button("workspace.office_document_editor_view.ok", role: .cancel) { attachmentError = nil }
                 } message: { Text(attachmentError ?? "") }
             .sheet(item: $export, onDismiss: {
                 Task { await session.finishSaveCopy() }
@@ -2991,46 +3005,46 @@ struct OfficeDocumentEditorView: View {
             }) { snapshot in
                 OfficeDocumentShareSheet(url: snapshot.fileURL)
             }
-            .alert("副本已保存", isPresented: $savedCopyNotice) {
-                Button("好", role: .cancel) {}
-            } message: { Text("当前编辑仍对应原文件。") }
-            .alert("未能保存", isPresented: Binding(
+            .alert("workspace.office_document_editor_view.copy_saved", isPresented: $savedCopyNotice) {
+                Button("workspace.office_document_editor_view.ok", role: .cancel) {}
+            } message: { Text("workspace.office_document_editor_view.this_edit_still_matches_the_original") }
+            .alert("workspace.office_document_editor_view.could_not_save", isPresented: Binding(
                 get: { session.error != nil && session.phase == .ready },
                 set: { if !$0 { session.error = nil } })) {
-                    Button("继续编辑", role: .cancel) { session.error = nil }
+                    Button("workspace.office_document_editor_view.keep_editing", role: .cancel) { session.error = nil }
                     if session.hasSaveConflict {
                         Button("edit.conflict.compareVersions") { session.error = nil; comparingVersions = true }
                     }
-                    Button("另存副本…") {
+                    Button("workspace.office_document_editor_view.save_a_copy") {
                         session.error = nil
                         Task { export = await session.prepareSaveCopy() }
                     }
                     if onSaved == nil {
-                        Button("保留修改并返回") {
+                        Button("workspace.office_document_editor_view.keep_changes_and_return") {
                             session.error = nil
                             Task { if await session.keepChangesAndReturn() { dismissEditor() } }
                         }
                     }
                 } message: { Text(session.error ?? "") }
-            .confirmationDialog("放弃未保存的修改？", isPresented: $confirmingDiscard, titleVisibility: .visible) {
-                Button("放弃修改", role: .destructive) {
+            .confirmationDialog("workspace.office_document_editor_view.discard_unsaved_changes", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+                Button("engineering.cad.discard", role: .destructive) {
                     Task { if await session.discardAndReturn() { dismissEditor() } }
                 }
-                Button("继续编辑", role: .cancel) {}
+                Button("workspace.office_document_editor_view.keep_editing", role: .cancel) {}
             }
-            .confirmationDialog("关闭前保存修改？", isPresented: $confirmingClose, titleVisibility: .visible) {
-                Button("保存并关闭") {
+            .confirmationDialog("workspace.office_document_editor_view.save_changes_before_closing", isPresented: $confirmingClose, titleVisibility: .visible) {
+                Button("ide.save.close") {
                     Task { await saveAndDismiss() }
                 }
-                Button("放弃修改", role: .destructive) {
+                Button("engineering.cad.discard", role: .destructive) {
                     Task { if await session.discardAndReturn() { dismissEditor() } }
                 }
-                Button("取消", role: .cancel) {}
-            } message: { Text("保存会通过共享保存流程写回原文件；放弃会删除编辑副本。") }
+                Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
+            } message: { Text("workspace.office_document_editor_view.save_writes_changes_to_the_original") }
     }
 
     private var backButton: some View {
-        Button("返回", systemImage: "chevron.left") {
+        Button("settings.document_recovery_list_view.back", systemImage: "chevron.left") {
             if session.phase == .failed { dismissEditor() }
             else if ownsStandaloneExit {
                 // Save/discard/cancel instead of an implicit save: every
@@ -3048,7 +3062,7 @@ struct OfficeDocumentEditorView: View {
         .labelStyle(.iconOnly).frame(width: 44, height: 44)
         .disabled(!session.canAct && session.phase != .failed)
         .accessibilityIdentifier("office.editor.back")
-        .accessibilityHint(session.phase == .failed ? "保留编辑副本并关闭" : "保存文档并返回预览")
+        .accessibilityHint(session.phase == .failed ? "workspace.office_document_editor_view.keep_an_edited_copy_and_close" : "workspace.office_document_editor_view.save_document_and_return_to_preview")
     }
 
     /// The fully standalone workspace-preview editor owns its exit decision;
@@ -3076,11 +3090,11 @@ struct OfficeDocumentEditorView: View {
     @ViewBuilder private var primaryActions: some View {
         if session.supportsAttachmentInsertion {
             Menu {
-                Button("从工作区选择", systemImage: "folder") { choosingWorkspaceAttachment = true }
-                Button("从文件选择", systemImage: "doc") { choosingAttachment = true }
+                Button("workspace.office_document_editor_view.choose_from_workspace", systemImage: "folder") { choosingWorkspaceAttachment = true }
+                Button("workspace.office_document_editor_view.choose_from_files", systemImage: "doc") { choosingAttachment = true }
                 Divider()
-                Button("查看文档附件", systemImage: "paperclip") { showingAttachments = true }
-            } label: { Label("附件", systemImage: "paperclip").frame(minWidth: 44, minHeight: 44) }
+                Button("workspace.office_document_editor_view.view_document_attachments", systemImage: "paperclip") { showingAttachments = true }
+            } label: { Label("settings.data_management_view.attachments", systemImage: "paperclip").frame(minWidth: 44, minHeight: 44) }
                 .disabled(!session.canAct)
                 .accessibilityIdentifier("office.editor.insertAttachment")
         }
@@ -3111,7 +3125,7 @@ struct OfficeDocumentEditorView: View {
         if session.supportsPresentation {
             Button {
                 Task { do { try await session.startPresentation() } catch { session.error = error.localizedDescription } }
-            } label: { Label("放映", systemImage: "play.rectangle").frame(minWidth: 44, minHeight: 44) }
+            } label: { Label("workspace.office_document_editor_view.slide_show", systemImage: "play.rectangle").frame(minWidth: 44, minHeight: 44) }
                 .disabled(!session.canAct).accessibilityIdentifier("office.presentation.start")
         }
     }
@@ -3126,10 +3140,10 @@ struct OfficeDocumentEditorView: View {
             // the save/discard entries stay hidden. Export, save-copy and
             // share remain — those download truthfully to local files.
             if !session.isRemoteSnapshot {
-                Button("保存并返回") { Task { await saveAndDismiss() } }
+                Button("workspace.office_document_editor_view.save_and_return") { Task { await saveAndDismiss() } }
             }
             if !session.exportFormats.isEmpty {
-                Menu("导出格式", systemImage: "square.and.arrow.up") {
+                Menu("workspace.office_document_editor_view.export_format", systemImage: "square.and.arrow.up") {
                     ForEach(session.exportFormats, id: \.self) { format in
                         Button(format.uppercased()) {
                             Task {
@@ -3140,7 +3154,7 @@ struct OfficeDocumentEditorView: View {
                     }
                 }
             }
-            Button("另存副本…", systemImage: "doc.on.doc") { Task { export = await session.prepareSaveCopy() } }
+            Button("workspace.office_document_editor_view.save_a_copy", systemImage: "doc.on.doc") { Task { export = await session.prepareSaveCopy() } }
             // Explicit share of the current document from every Office
             // surface (preview and edit): a verified snapshot copy goes to the
             // system share sheet; the original file is never handed out.
@@ -3149,16 +3163,16 @@ struct OfficeDocumentEditorView: View {
             }
             .accessibilityIdentifier("office.editor.share")
             if onSaved == nil, !session.isRemoteSnapshot {
-                Button("保留修改并返回") {
+                Button("workspace.office_document_editor_view.keep_changes_and_return") {
                     Task { if await session.keepChangesAndReturn() { dismissEditor() } }
                 }
             }
             if !session.isRemoteSnapshot {
-                Button("放弃修改", role: .destructive) { confirmingDiscard = true }
+                Button("engineering.cad.discard", role: .destructive) { confirmingDiscard = true }
             }
         } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
             .disabled(!session.canAct)
-            .accessibilityLabel("文档操作")
+            .accessibilityLabel("workspace.office_document_editor_view.document_actions")
     }
 
     private var documentActions: some View {

@@ -23,17 +23,17 @@ struct ConversationSearchView: View {
     var body: some View {
         List {
             Section {
-                TextField("搜索对话内容…", text: $query)
+                TextField("chat.conversation_search_view.search_conversations", text: $query)
                     .textFieldStyle(.roundedBorder)
 
                 if isSearching {
                     ProgressView()
                 }
             }
-            Section("结果") {
+            Section("chat.conversation_search_view.result") {
                 if let searchError { Text(searchError).foregroundStyle(.red) }
                 if results.isEmpty, !query.isEmpty, !isSearching, searchError == nil {
-                    ContentUnavailableView("没有找到匹配的消息", systemImage: "magnifyingglass")
+                    ContentUnavailableView("chat.conversation_search_view.no_matching_messages_found", systemImage: "magnifyingglass")
                 } else {
                     ForEach(results) { hit in
                         Button {
@@ -55,7 +55,7 @@ struct ConversationSearchView: View {
                 }
             }
         }
-        .navigationTitle("搜索对话")
+        .navigationTitle("chat.search.prompt")
         .task(id: query) { await search() }
     }
 

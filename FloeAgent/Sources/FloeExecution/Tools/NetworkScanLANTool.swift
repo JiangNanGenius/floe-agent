@@ -62,15 +62,15 @@ public struct NetworkScanLANTool: AgentTool {
             let devices = try await service.discover(serviceTypes: types, timeoutSeconds: timeout)
             let summary: String
             if devices.isEmpty {
-                summary = "未发现局域网设备"
+                summary = FloeL10n.l("execution.network_scan_l_a_n_tool.no_local_network_devices_found")
             } else {
-                summary = "发现 \(devices.count) 个设备：\n" + devices.map {
+                summary = FloeL10n.l("execution.network_scan_l_a_n_tool.found_devices", devices.count) + devices.map {
                     "- \($0.name) (\($0.serviceType)) @ \($0.host)"
                 }.joined(separator: "\n")
             }
             return Self.output(summary, exitStatus: 0)
         } catch {
-            return Self.output("扫描失败：\(error.localizedDescription)", exitStatus: 2)
+            return Self.output(FloeL10n.l("execution.network_scan_l_a_n_tool.scan_failed", error.localizedDescription), exitStatus: 2)
         }
     }
 

@@ -3,6 +3,7 @@
 import SwiftUI
 import FloeExecution
 
+import FloeCore
 struct EnvironmentLanguagePackagesView: View {
     let environmentID: String
     let language: EnvironmentLanguagePackageService.Language
@@ -59,29 +60,29 @@ struct EnvironmentLanguagePackagesView: View {
                     Text("packages.node.policy").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Section("安装依赖") {
-                TextField(language == .python ? "例如 beautifulsoup4 或 requests==2.32.5" : "例如 marked 或 marked@15.0.12", text: $specification)
+            Section("settings.environment_language_packages_view.install_dependencies") {
+                TextField(language == .python ? "settings.environment_language_packages_view.for_example_beautifulsoup4_or_requests_2" : "settings.environment_language_packages_view.for_example_marked_or_marked_15", text: $specification)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.go)
                     .onSubmit { install() }
-                Button("安装", systemImage: "arrow.down.circle") { install() }
+                Button("settings.environment_language_packages_view.install", systemImage: "arrow.down.circle") { install() }
                     .disabled(running || loading || (language == .node && nodeSelection?.resolved == nil) || specification.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                Text("安装只写入当前选择的环境。离开此页面后任务会继续。").font(.caption).foregroundStyle(.secondary)
+                Text("settings.environment_language_packages_view.installation_writes_only_to_the_currently").font(.caption).foregroundStyle(.secondary)
             }
             if let message = jobs.messages[environmentID] {
-                Section("最近任务") {
+                Section("settings.environment_language_packages_view.recent_tasks") {
                     Text(message).font(.caption.monospaced()).textSelection(.enabled)
                         .foregroundStyle(jobs.failures.contains(environmentID) ? FloeTheme.destructive : .secondary)
                     if running {
-                        ProgressView("正在更新依赖…")
-                        Button("取消任务", role: .cancel) { jobs.cancel(id: environmentID) }
+                        ProgressView("settings.environment_language_packages_view.updating_dependencies")
+                        Button("action.cancel_task", role: .cancel) { jobs.cancel(id: environmentID) }
                     }
                 }
             }
-            if loading { ProgressView("读取依赖…") }
+            if loading { ProgressView("settings.environment_language_packages_view.reading_dependencies") }
             if let error {
                 Section {
                     Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(FloeTheme.destructive)
-                    Button("重新读取") { Task { await reload() } }.disabled(running || loading)
+                    Button("action.reload") { Task { await reload() } }.disabled(running || loading)
                 }
             }
             Section {
@@ -99,7 +100,7 @@ struct EnvironmentLanguagePackagesView: View {
             packageSection(inheritedTitle, writable: false)
         }
         .navigationTitle(language.title)
-        .searchable(text: $query, prompt: "搜索已安装的依赖")
+        .searchable(text: $query, prompt: "settings.environment_language_packages_view.search_installed_dependencies")
         .task { await reload() }
         .refreshable { await reload() }
         .onChange(of: jobs.revision) { Task { await reload() } }
@@ -117,21 +118,21 @@ struct EnvironmentLanguagePackagesView: View {
                     Text("packages.registry.policy").font(.caption).foregroundStyle(.secondary)
                     if let error { Text(error).foregroundStyle(FloeTheme.destructive) }
                 }
-                .navigationTitle("packages.registry.source")
+                .navigationTitle(FloeL10n.l("packages.registry.source"))
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("取消") { editingSource = false } }
+                    ToolbarItem(placement: .cancellationAction) { Button("workspace.workspace_canvas_view.cancel") { editingSource = false } }
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("保存") { Task { await saveSource() } }.disabled(loading || sourceDraft.isEmpty)
+                        Button("workspace.workspace_canvas_view.save") { Task { await saveSource() } }.disabled(loading || sourceDraft.isEmpty)
                     }
                 }
             }
         }
-        .confirmationDialog("卸载本层依赖？", isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } })) {
+        .confirmationDialog("settings.environment_language_packages_view.uninstall_this_layer_s_dependency", isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } })) {
             if let package = pendingRemoval {
-                Button("卸载 \(package.name)", role: .destructive) { change(package.name, remove: true); pendingRemoval = nil }
-                Button("取消", role: .cancel) { pendingRemoval = nil }
+                Button(FloeL10n.l("settings.environment_language_packages_view.uninstall", package.name), role: .destructive) { change(package.name, remove: true); pendingRemoval = nil }
+                Button("workspace.workspace_canvas_view.cancel", role: .cancel) { pendingRemoval = nil }
             }
-        } message: { Text("依赖此包的脚本可能无法运行；父环境中的版本会继续保留。") }
+        } message: { Text("settings.environment_language_packages_view.scripts_that_depend_on_this_package") }
     }
 
     private var writableTitle: String {
@@ -160,17 +161,17 @@ struct EnvironmentLanguagePackagesView: View {
     private func packageSection(_ title: String, writable: Bool) -> some View {
         Section(title) {
             let matches = packages.filter { $0.writable == writable && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }
-            if matches.isEmpty && !loading && error == nil { Text(query.isEmpty ? "暂无依赖" : "没有匹配的依赖").foregroundStyle(.secondary) }
+            if matches.isEmpty && !loading && error == nil { Text(query.isEmpty ? "settings.environment_language_packages_view.no_dependencies" : "settings.environment_language_packages_view.no_matching_dependencies").foregroundStyle(.secondary) }
             ForEach(matches) { package in
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(package.name).font(.headline)
                         Text(package.version).font(.caption).foregroundStyle(.secondary)
-                        if !writable { Text("来源：\(package.layerID)").font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+                        if !writable { Text(FloeL10n.l("settings.environment_language_packages_view.source", package.layerID)).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
                     }
                     Spacer()
                     if writable {
-                        Button("卸载", role: .destructive) { pendingRemoval = package }.buttonStyle(.borderless).disabled(running || loading)
+                        Button("settings.environment_language_packages_view.uninstall_2", role: .destructive) { pendingRemoval = package }.buttonStyle(.borderless).disabled(running || loading)
                     } else { Image(systemName: "arrow.down.forward").foregroundStyle(.secondary) }
                 }.padding(.vertical, 4)
             }
@@ -183,7 +184,7 @@ struct EnvironmentLanguagePackagesView: View {
     }
     private func change(_ value: String, remove: Bool) {
         let id = environmentID, selectedLanguage = language
-        jobs.start(id: id, title: "\(remove ? "卸载" : "安装") \(value)…") {
+        jobs.start(id: id, title: "\(remove ? FloeL10n.l("settings.environment_language_packages_view.uninstall_2") : FloeL10n.l("settings.environment_language_packages_view.install")) \(value)…") {
             let service = try FloePlatformServices.shared.languagePackageService()
             return try await service.change(environmentID: id, language: selectedLanguage, specification: value, remove: remove)
         }

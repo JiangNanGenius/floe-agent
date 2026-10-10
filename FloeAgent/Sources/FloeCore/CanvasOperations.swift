@@ -970,7 +970,7 @@ public enum CanvasGenerationGraphPlanner {
             ))
         }
 
-        let configurationText = request.kind == .image ? "图片生成" : "视频生成"
+        let configurationText = request.kind == .image ? FloeL10n.l("auxiliary.generation") : FloeL10n.l("core.canvas_operations.video_generation")
         if nodesByID[configurationNodeID] == nil {
             operations.append(CanvasPatchOperation(
                 kind: .create, nodeID: configurationNodeID, nodeKind: .generationTask,
@@ -991,7 +991,7 @@ public enum CanvasGenerationGraphPlanner {
             if nodesByID[resultID] == nil {
                 operations.append(CanvasPatchOperation(
                     kind: .create, nodeID: resultID, nodeKind: resultKind,
-                    text: request.kind == .image ? "图片生成中" : "视频生成中",
+                    text: request.kind == .image ? FloeL10n.l("core.canvas_operations.generating_image") : FloeL10n.l("core.canvas_operations.generating_video"),
                     position: layout.resultPositions[index],
                     size: .init(width: 320, height: request.kind == .image ? 260 : 220),
                     createdByRunID: request.createdByRunID,
@@ -1004,7 +1004,7 @@ public enum CanvasGenerationGraphPlanner {
             } else {
                 operations.append(CanvasPatchOperation(
                     kind: .update, nodeID: resultID,
-                    text: request.kind == .image ? "图片生成中" : "视频生成中",
+                    text: request.kind == .image ? FloeL10n.l("core.canvas_operations.generating_image") : FloeL10n.l("core.canvas_operations.generating_video"),
                     createdByRunID: request.createdByRunID,
                     metadata: metadata.merging([
                         "generationRole": "result",
@@ -1072,7 +1072,7 @@ public enum CanvasGenerationGraphPlanner {
                     kind: .connect, sourceNodeID: sourceID,
                     destinationNodeID: configurationNodeID,
                     connectionKind: .source, sourcePort: .trailing,
-                    destinationPort: .leading, label: "生成输入"
+                    destinationPort: .leading, label: FloeL10n.l("core.canvas_operations.generation_input")
                 ))
             }
         }
@@ -1083,7 +1083,7 @@ public enum CanvasGenerationGraphPlanner {
                     kind: .connect, sourceNodeID: configurationNodeID,
                     destinationNodeID: resultID,
                     connectionKind: .generatedFrom, sourcePort: .trailing,
-                    destinationPort: .leading, label: "生成结果"
+                    destinationPort: .leading, label: FloeL10n.l("core.canvas_operations.generation_result")
                 ))
             }
         }
@@ -1112,8 +1112,7 @@ public enum CanvasGenerationOutputContract {
         let expected = max(1, min(expectedCount, 4))
         guard actualCount == expected,
               preparedResultNodeIDs.count == expected else {
-            throw FloeError.validationFailed(
-                "图片服务应返回 \(expected) 张图片，但实际返回 \(actualCount) 张；本次没有按部分成功提交，请从配置节点重试。"
+            throw FloeError.validationFailed(FloeL10n.l("core.canvas_operations.the_image_service_should_return_images", expected, actualCount)
             )
         }
         return preparedResultNodeIDs
@@ -1299,7 +1298,7 @@ public enum CanvasGenerationCommitPlanner {
                 connectionKind: .source,
                 sourcePort: .trailing,
                 destinationPort: .leading,
-                label: "生成输入"
+                label: FloeL10n.l("core.canvas_operations.generation_input")
             ))
         }
         for resultNodeID in canonicalResultNodeIDs
@@ -1311,7 +1310,7 @@ public enum CanvasGenerationCommitPlanner {
                 connectionKind: .generatedFrom,
                 sourcePort: .trailing,
                 destinationPort: .leading,
-                label: "生成结果"
+                label: FloeL10n.l("core.canvas_operations.generation_result")
             ))
         }
 
@@ -1403,7 +1402,7 @@ public enum CanvasGenerationConfigurationPlanner {
         // Saving configuration supersedes any provider response that was
         // created from the previous prompt/model/source set.
         values["generationAttemptID"] = UUID().uuidString
-        let title = kind == .image ? "图片生成" : "视频生成"
+        let title = kind == .image ? FloeL10n.l("auxiliary.generation") : FloeL10n.l("core.canvas_operations.video_generation")
         var operations: [CanvasPatchOperation] = [
             CanvasPatchOperation(
                 kind: nodesByID[configurationNodeID] == nil ? .create : .update,
@@ -1437,7 +1436,7 @@ public enum CanvasGenerationConfigurationPlanner {
                 connectionKind: .source,
                 sourcePort: .trailing,
                 destinationPort: .leading,
-                label: "生成输入"
+                label: FloeL10n.l("core.canvas_operations.generation_input")
             ))
         }
         return (configurationNodeID, operations)

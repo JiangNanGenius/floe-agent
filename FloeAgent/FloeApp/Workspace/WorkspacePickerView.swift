@@ -63,22 +63,21 @@ struct WorkspacePickerView: View {
         } message: { message in
             Text(message)
         }
-        .confirmationDialog(
-            "移除工作区？",
+        .confirmationDialog("settings.files_settings_view.remove_workspace_2",
             isPresented: Binding(
                 get: { workspacePendingDeletion != nil },
                 set: { if !$0 { workspacePendingDeletion = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("移除", role: .destructive) {
+            Button("localmodels.remove", role: .destructive) {
                 guard let workspace = workspacePendingDeletion else { return }
                 workspacePendingDeletion = nil
                 Task { await remove(workspace.id) }
             }
-            Button("取消", role: .cancel) { workspacePendingDeletion = nil }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { workspacePendingDeletion = nil }
         } message: {
-            Text("只会移除 Floe 中的工作区记录，不会删除您选择的文件夹或其中的文件。")
+            Text("workspace.workspace_picker_view.only_the_workspace_record_in_floe")
         }
     }
 
@@ -126,14 +125,14 @@ struct WorkspacePickerView: View {
             Button(role: .destructive) {
                 workspacePendingDeletion = workspace
             } label: {
-                Label("移除", systemImage: "trash")
+                Label("localmodels.remove", systemImage: "trash")
             }
         }
         .contextMenu {
             Button(role: .destructive) {
                 workspacePendingDeletion = workspace
             } label: {
-                Label("移除工作区", systemImage: "trash")
+                Label("settings.files_settings_view.remove_workspace", systemImage: "trash")
             }
         }
     }

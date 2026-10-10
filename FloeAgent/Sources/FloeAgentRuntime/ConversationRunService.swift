@@ -103,6 +103,12 @@ public actor ConversationRunService {
     private let dynamicApprovalPolicy: DynamicApprovalPolicy
     private let logger = FloeLogger(category: .runtime)
     private var streamedText = ""
+    /// True once a provider text delta was dropped or shortened because
+    /// `streamedTextLimitBytes` was full. The completion path persists an
+    /// explicit truncation notice before the terminal event so lost output
+    /// is never silent. Reset only when a replayed attempt discards the
+    /// partial stream entirely.
+    private var streamedTextCapped = false
     /// Text generated since the previous durable interaction boundary.
     /// Each segment is persisted before the tool event that follows it.
     private var unflushedAssistantSegment = ""
@@ -182,6 +188,8 @@ public actor ConversationRunService {
         public var availableToolNames: Set<String>?
         /// Validated installed SKILL.md instructions selected for this run.
         public var skillInstructions: String?
+        /// Validated signed-content prompt overlay frozen for this run.
+        public var contentOverlay: AgentPromptOverlay
         /// Bounded durable memory projection. This is always framed as data,
         /// never as authority or executable instructions.
         public var memoryContext: String?
@@ -209,6 +217,7 @@ public actor ConversationRunService {
             executionTarget: String? = nil,
             availableToolNames: Set<String>? = nil,
             skillInstructions: String? = nil,
+            contentOverlay: AgentPromptOverlay = .empty,
             memoryContext: String? = nil,
             soulContext: String? = nil,
             userProfileContext: String? = nil,
@@ -224,6 +233,7 @@ public actor ConversationRunService {
             self.executionTarget = executionTarget
             self.availableToolNames = availableToolNames
             self.skillInstructions = skillInstructions
+            self.contentOverlay = contentOverlay
             self.memoryContext = memoryContext
             self.soulContext = soulContext
             self.userProfileContext = userProfileContext
@@ -341,6 +351,9 @@ public actor ConversationRunService {
         }
         forwarder.onApprovalReview = { [weak self] snapshot in
             await self?.handleApprovalReview(snapshot)
+        }
+        forwarder.onApprovalDecisionRecorded = { [weak self] receipt in
+            self?.eventChannel.yield(.approvalResolved(callID: receipt.callID))
         }
     }
 
@@ -527,9 +540,15 @@ public actor ConversationRunService {
         await persistRecoveryPointReliably(boundary: "externalRecoveryPoint")
     }
 
-    /// Resolves a pending human approval.
-    public func resolveApproval(_ decision: ApprovalDecision) async {
-        await runtime.resolveApproval(decision)
+    /// Resolves a pending human approval. `callID` is the id of the tool call
+    /// the decision was requested for; the runtime ignores decisions whose
+    /// call no longer matches the pending approval. Returns true exactly when
+    /// the decision was accepted into the run (the caller may then retire the
+    /// approval card); false means nothing was accepted and the card must
+    /// stay actionable.
+    @discardableResult
+    public func resolveApproval(_ decision: ApprovalDecision, for callID: String) async -> Bool {
+        await runtime.resolveApproval(decision, for: callID)
     }
 
     /// Applies a composer permission change to this live run. If the run is
@@ -562,6 +581,7 @@ public actor ConversationRunService {
             // checkpoint is replayed, otherwise the recovered answer would
             // concatenate a partial prefix and appear twice.
             streamedText = ""
+            streamedTextCapped = false
             unflushedAssistantSegment = ""
             unpublishedAnswerText = ""
             reasoningText = ""
@@ -769,7 +789,7 @@ public actor ConversationRunService {
         if isTerminal(projectedState), !Self.isCompleted(projectedState) {
             let reason: String
             if case .checkpointed(let reference) = projectedState {
-                reason = reference.reason ?? "任务已保存检查点"
+                reason = reference.reason ?? FloeL10n.l("runtime.conversation_run_service.task_checkpoint_saved")
             } else if case .failed(let failure) = projectedState {
                 reason = failure.message
             } else {
@@ -795,7 +815,7 @@ public actor ConversationRunService {
             eventChannel.finish()
         case .checkpointed(let reference):
             eventChannel.yield(.terminal(.interrupted(
-                reason: reference.reason ?? "任务已保存检查点"
+                reason: reference.reason ?? FloeL10n.l("runtime.conversation_run_service.task_checkpoint_saved")
             )))
             eventChannel.finish()
         default:
@@ -819,7 +839,12 @@ public actor ConversationRunService {
                 streamedText += accepted
                 unflushedAssistantSegment += accepted
                 unpublishedAnswerText += accepted
+                if accepted.utf8.count < delta.text.utf8.count {
+                    streamedTextCapped = true
+                }
                 scheduleAnswerPush()
+            } else if !delta.text.isEmpty {
+                streamedTextCapped = true
             }
             scheduleRecoveryPoint()
         case .reasoningSummary(let summary):
@@ -1054,6 +1079,28 @@ public actor ConversationRunService {
                 )
             } else {
                 logger.info("finalAnswerVerified run=\(runID.uuidString) result=confirmed")
+            }
+            // The byte safety cap rejected real provider output. Persist one
+            // non-fatal notice ahead of the terminal marker so the shortened
+            // reply is never silent. `.notice` is deliberately not `.error`:
+            // the run succeeded and must not render as a failed task. This
+            // deliberately does not retry the provider or raise the model's
+            // configured limit.
+            if streamedTextCapped {
+                logger.warning(
+                    "finalOutputTruncated run=\(runID.uuidString) receivedBytes=\(streamedText.utf8.count) limitBytes=\(streamedTextLimitBytes)"
+                )
+                _ = await appendEventReliably(
+                    runID: runID,
+                    kind: .notice,
+                    payloadJSON: Self.jsonPayload([
+                        "message": "outputTruncated",
+                        "receivedBytes": String(streamedText.utf8.count),
+                        "limitBytes": String(streamedTextLimitBytes)
+                    ]),
+                    boundary: "outputTruncated",
+                    completionCritical: false
+                )
             }
             if durabilityFailure == nil {
                 let terminalPersisted = await appendEventReliably(
@@ -1813,6 +1860,7 @@ public actor ConversationRunService {
             activePlan: context?.activePlan,
             activeGoal: context?.activeGoal,
             compactForLocal: compactForLocal,
+            overlay: context?.contentOverlay ?? .empty,
             localSectionBudgetTokens: localSectionBudgetTokens
         )
     }
@@ -1894,6 +1942,7 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onSteerConsumed: (@Sendable (RuntimeSteerInput) async -> Void)?
     var onCompaction: (@Sendable (ContextCompactionRecord) async -> Void)?
     var onApprovalReview: (@Sendable (ApprovalReviewSnapshot) async -> Void)?
+    var onApprovalDecisionRecorded: (@Sendable (ApprovalDecisionReceipt) async -> Void)?
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
         await onTransition?(state)
@@ -1928,5 +1977,12 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
         didChangeApprovalReview snapshot: ApprovalReviewSnapshot
     ) async {
         await onApprovalReview?(snapshot)
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didRecordApprovalDecision receipt: ApprovalDecisionReceipt
+    ) async {
+        await onApprovalDecisionRecorded?(receipt)
     }
 }

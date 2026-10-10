@@ -67,11 +67,15 @@ enum ReasoningCompatibility {
         guard effort != .automatic else { return ChatOptions() }
 
         if isDeepSeek(provider: provider, model: model) {
-            // DeepSeek V4 accepts only high/max. It intentionally aliases
-            // low/medium to high for OpenAI-client compatibility.
+            // Official chat contract (api-docs.deepseek.com/api/create-chat-completion):
+            // reasoning_effort accepts none/low/high/max. `minimal` is accepted
+            // as a compatibility alias for low and `medium`/`xhigh` are
+            // accepted and mapped to high. There is no native medium tier, so
+            // .medium intentionally becomes "high" rather than claiming a
+            // native medium value. .low must never silently become high.
             return ChatOptions(
                 thinkingType: "enabled",
-                reasoningEffort: effort == .maximum ? "max" : "high"
+                reasoningEffort: deepSeekEffort(effort)
             )
         }
         if provider.kind == .volcengineArk {
@@ -108,9 +112,13 @@ enum ReasoningCompatibility {
         guard effort != .automatic else { return AnthropicOptions() }
 
         if isDeepSeek(provider: provider, model: model) {
-            return AnthropicOptions(
-                effort: effort == .maximum ? "max" : "high"
-            )
+            // DeepSeek's Anthropic-compatible endpoint documents support for
+            // `output_config.effort` (api-docs.deepseek.com/guides/anthropic_api).
+            // It does not enumerate the value set separately from the chat
+            // contract, and it is the same backend, so apply the documented
+            // reasoning_effort mapping: low/high/max native, medium is the
+            // accepted compatibility alias that lands as high.
+            return AnthropicOptions(effort: deepSeekEffort(effort))
         }
         guard isAnthropicFamily(provider: provider, model: model) else {
             return AnthropicOptions()
@@ -126,6 +134,19 @@ enum ReasoningCompatibility {
 
     private static func isDeepSeek(provider: ProviderProfile, model: ModelProfile) -> Bool {
         provider.traits(model: model).isDeepSeek
+    }
+
+    /// DeepSeek's documented effort contract. There is no native `medium`
+    /// value: the endpoint accepts it as a compatibility alias and maps it to
+    /// `high`, so Floe sends the value the endpoint will actually use rather
+    /// than implying a distinct tier.
+    private static func deepSeekEffort(_ effort: ModelReasoningEffort) -> String {
+        switch effort {
+        case .low: return "low"
+        case .medium, .high: return "high"
+        case .maximum: return "max"
+        case .automatic: return "high"
+        }
     }
 
     private static func isDashScope(_ provider: ProviderProfile) -> Bool {

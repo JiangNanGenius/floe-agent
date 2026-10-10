@@ -187,9 +187,10 @@ final class RecordingApprovalBackend: ModelApprovalPolicy.DecisionBackend, @unch
 }
 
 final class MockSink: AgentEventSink, @unchecked Sendable {
-    private let storage = AsyncLock<(transitions: [String], events: [AgentEvent])>(([], []))
+    private let storage = AsyncLock<(transitions: [String], events: [AgentEvent], approvalReceipts: [String])>(([], [], []))
     var transitions: [String] { storage.withLock { $0.transitions } }
     var events: [AgentEvent] { storage.withLock { $0.events } }
+    var approvalReceipts: [String] { storage.withLock { $0.approvalReceipts } }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
         storage.withLock { $0.transitions.append(state.name) }
@@ -197,6 +198,13 @@ final class MockSink: AgentEventSink, @unchecked Sendable {
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didEmit event: AgentEvent) async {
         storage.withLock { $0.events.append(event) }
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didRecordApprovalDecision receipt: ApprovalDecisionReceipt
+    ) async {
+        storage.withLock { $0.approvalReceipts.append(receipt.callID) }
     }
 }
 
@@ -1102,12 +1110,15 @@ struct AgentRuntimeTests {
         await runtime.resolveApproval(.allow(
             scope: ApprovalScope(toolName: "test.echo"),
             expiresAt: nil
-        ))
+        ), for: "call_2")
         try await startTask.value
         let state = await runtime.state
         #expect(state.name == "completed")
         #expect(sink.transitions.contains("waitingApproval"))
         #expect(sink.transitions.contains("executingTool"))
+        // The card retires on the durable record, not the in-memory
+        // decision: the grant's checkpoint receipt carries the call id.
+        #expect(sink.approvalReceipts == ["call_2"])
     }
 
     @Test("Changing task permission mid-run re-evaluates the pending tool")
@@ -1147,6 +1158,7 @@ struct AgentRuntimeTests {
         let executor = MockExecutor()
         registerEcho(in: executor, sideEffecting: true)
         let audit = MockAuditSink()
+        let sink = MockSink()
         let runtime = makeRuntime(
             adapter: adapter,
             executor: executor,
@@ -1154,13 +1166,60 @@ struct AgentRuntimeTests {
             audit: audit,
             // The model-dispatch barrier succeeds; the second save is the
             // side-effect pre-dispatch barrier under test.
-            store: SecondSaveFailingCheckpointStore()
+            store: SecondSaveFailingCheckpointStore(),
+            sink: sink
         )
 
         try await runtime.start(goal: "perform one write")
 
         #expect(executor.executedCalls.isEmpty)
         #expect(audit.entries.contains { $0.decision == "deny:checkpoint-failed" })
+        // No durable record of an allow exists: the checkpoint failed before
+        // the grant could persist, so no card-retirement receipt may fire.
+        #expect(sink.approvalReceipts.isEmpty)
+    }
+
+    @Test("A failed deny audit emits no card-retirement receipt")
+    func failedDenyAuditEmitsNoReceipt() async throws {
+        struct ThrowingAuditSink: AuditSink, @unchecked Sendable {
+            func record(_ entry: AuditEntry) async throws {
+                throw NSError(domain: "FloeAgentRuntimeTests.Audit", code: 1, userInfo: nil)
+            }
+        }
+        let adapter = MockAdapter()
+        let call = try TestFixtures.toolCall(id: "call_audit_fails")
+        adapter.script = [
+            [.toolRequest(call)],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor, sideEffecting: true)
+        let sink = MockSink()
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: FloeAgentRuntime.Configuration(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                pauseTimeout: 0.1,
+                providerRetryBaseDelay: 0,
+                providerRetryMaxDelay: 0,
+                providerRetryJitterRatio: 0
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            auditSink: ThrowingAuditSink(),
+            checkpointStore: MockCheckpointStore(),
+            sink: sink
+        )
+        let startTask = Task { try await runtime.start(goal: "do it") }
+        try await waitForState("waitingApproval", in: runtime)
+        await runtime.resolveApproval(.deny(reason: "not now"), for: "call_audit_fails")
+        try await startTask.value
+        #expect(executor.executedCalls.isEmpty)
+        // Nothing was durably recorded: no receipt may fire, so the card
+        // cannot look retired on an unrecorded decision.
+        #expect(sink.approvalReceipts.isEmpty)
     }
 
     @Test("Human approval with a mismatched host scope does not execute")
@@ -1187,7 +1246,7 @@ struct AgentRuntimeTests {
         await runtime.resolveApproval(.allow(
             scope: ApprovalScope(toolName: "test.echo"),
             expiresAt: nil
-        ))
+        ), for: "call_scoped")
         try await startTask.value
 
         #expect(executor.executedCalls.isEmpty)
@@ -1221,7 +1280,7 @@ struct AgentRuntimeTests {
         await runtime.resolveApproval(.allow(
             scope: ApprovalScope(toolName: "test.echo", hostID: hostID),
             expiresAt: nil
-        ))
+        ), for: "call_hostpath")
         try await startTask.value
 
         #expect(executor.executedCalls.count == 1)
@@ -1240,14 +1299,17 @@ struct AgentRuntimeTests {
         let executor = MockExecutor()
         registerEcho(in: executor, sideEffecting: true)
         let audit = MockAuditSink()
-        let runtime = makeRuntime(adapter: adapter, executor: executor, audit: audit)
+        let sink = MockSink()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, audit: audit, sink: sink)
         let startTask = Task { try await runtime.start(goal: "do it") }
         try await waitForState("waitingApproval", in: runtime)
-        await runtime.resolveApproval(.deny(reason: "not now"))
+        await runtime.resolveApproval(.deny(reason: "not now"), for: "call_3")
         try await startTask.value
         #expect(executor.executedCalls.isEmpty)
         // Denial audited.
         #expect(audit.entries.contains { $0.decision.hasPrefix("deny:") })
+        // The deny path retires the card only after its audit/result record.
+        #expect(sink.approvalReceipts == ["call_3"])
     }
 
     // MARK: Cancellation
@@ -1294,7 +1356,8 @@ struct AgentRuntimeTests {
         registerEcho(in: executor, sideEffecting: true)
         let audit = MockAuditSink()
         let store = MockCheckpointStore()
-        let runtime = makeRuntime(adapter: adapter, executor: executor, audit: audit, store: store)
+        let sink = MockSink()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, audit: audit, store: store, sink: sink)
         let startTask = Task { try await runtime.start(goal: "do it") }
         try await waitForState("waitingApproval", in: runtime)
         await runtime.cancel()
@@ -1302,6 +1365,45 @@ struct AgentRuntimeTests {
         let state = await runtime.state
         #expect(state.name == "checkpointed")
         #expect(audit.entries.contains { $0.decision == "deny:cancelled" })
+        // The cancel-expiry is a recorded denial: its receipt retires the card.
+        #expect(sink.approvalReceipts == ["call_4"])
+    }
+
+    @Test("A human allow whose pre-dispatch checkpoint fails emits no acceptance receipt")
+    func humanAllowWithFailingCheckpointEmitsNoReceipt() async throws {
+        let adapter = MockAdapter()
+        let call = try TestFixtures.toolCall(id: "call_checkpoint_denied")
+        adapter.script = [
+            [.toolRequest(call)],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor, sideEffecting: true)
+        let audit = MockAuditSink()
+        let sink = MockSink()
+        let runtime = makeRuntime(
+            adapter: adapter,
+            executor: executor,
+            audit: audit,
+            // The model-dispatch barrier succeeds; the side-effect
+            // pre-dispatch checkpoint fails.
+            store: SecondSaveFailingCheckpointStore(),
+            sink: sink
+        )
+        let startTask = Task { try await runtime.start(goal: "perform one write") }
+        try await waitForState("waitingApproval", in: runtime)
+        await runtime.resolveApproval(.allow(
+            scope: ApprovalScope(toolName: "test.echo"),
+            expiresAt: nil
+        ), for: "call_checkpoint_denied")
+        try await startTask.value
+
+        // The grant never persisted: no tool ran, the refusal is audited, and
+        // no card-retirement receipt may fire. (The owning center retires the
+        // card via its moved-on sweep instead.)
+        #expect(executor.executedCalls.isEmpty)
+        #expect(audit.entries.contains { $0.decision == "deny:checkpoint-failed" })
+        #expect(sink.approvalReceipts.isEmpty)
     }
 
     // MARK: Checkpoint / resume

@@ -1,4 +1,5 @@
 import Foundation
+import FloeCore
 
 /// Composes replaceable instruction layers for one activation. Mode changes
 /// replace the mode layer instead of accumulating contradictory historical
@@ -13,6 +14,12 @@ public enum AgentPromptComposer {
         activePlan: PlanDraft? = nil,
         activeGoal: ConversationGoal? = nil,
         compactForLocal: Bool = false,
+        /// Validated signed-content overlay. Only the method layer (inserted
+        /// after the base agent), the communication discipline and the
+        /// delivery contract can be replaced; every permission, approval and
+        /// tool-protocol layer stays compiled. Compact local runs ignore the
+        /// overlay to preserve their hard envelope budget.
+        overlay: AgentPromptOverlay = .empty,
         /// Per-section heuristic-token allowance for the optional data
         /// layers (soul, profile, plan, goal) on a local run. Each present
         /// layer is head/tail-clipped with an explicit marker so the layer
@@ -20,19 +27,23 @@ public enum AgentPromptComposer {
         /// verbatim cloud behaviour.
         localSectionBudgetTokens: Int? = nil
     ) -> String {
-        var layers = [
-            immutableRuntime,
-            baseAgent,
-            toolsAvailable ? operatingProtocol : toolFreeProtocol,
-            capabilityRoutingProtocol,
-            stepSettlementProtocol,
-            contextContinuityProtocol,
-            failureProtocol,
-            deliveringWork,
-            communicationDiscipline,
-            harnessMessages,
-            modeLayer(mode, toolsAvailable: toolsAvailable)
-        ]
+        var layers: [String] = [immutableRuntime, baseAgent]
+        if !compactForLocal {
+            if let method = overlay.method {
+                layers.append("# Task method\n\(method)")
+            }
+            layers.append(contentsOf: [
+                toolsAvailable ? operatingProtocol : toolFreeProtocol,
+                capabilityRoutingProtocol,
+                stepSettlementProtocol,
+                contextContinuityProtocol,
+                failureProtocol,
+                overlay.delivery ?? deliveringWork,
+                overlay.communication ?? communicationDiscipline,
+                harnessMessages,
+                modeLayer(mode, toolsAvailable: toolsAvailable)
+            ])
+        }
         if compactForLocal {
             layers = [localRuntimeContract, localModeLayer(mode, toolsAvailable: toolsAvailable)]
         }
@@ -328,6 +339,16 @@ public enum AgentPromptComposer {
     # Delivering work
     Do what was asked — no less, no more. Before calling the work done, verify the deliverable in the form the user will receive it: exercise real tool calls against the real feature, not merely that a schema loaded, a file was created, or a request was sent. A successful intermediate step never proves the end result. Do not mark work complete while known failures remain or the implementation is partial; say plainly what you could not verify, and never present unverified work as done. When the standard path is blocked, do not quietly route around it and do not shrink the deliverable on your own: first try to make the standard path work, finish every part that is not blocked, then state plainly what remains — accepting a smaller result is the user's decision, not yours. Do not give up too early. Before the final reply, re-read the user's latest message and check every explicit requirement in it, one by one.
     """
+
+    /// The compiled bodies of the remotely replaceable sections, in compose
+    /// order. The internal-prompts review surface shows these whenever no
+    /// signed prompts package is installed, so the offline view stays
+    /// truthful about what the runtime actually uses. The method layer has
+    /// no compiled body: an overlay may add one, but nothing is replaced.
+    public static let builtInReplaceablePromptBodies: [(id: String, body: String)] = [
+        (AgentPromptOverlay.deliverySectionID, deliveringWork),
+        (AgentPromptOverlay.communicationSectionID, communicationDiscipline)
+    ]
 
     /// Visible progress should explain meaningful changes without narrating every call.
     private static let communicationDiscipline = """

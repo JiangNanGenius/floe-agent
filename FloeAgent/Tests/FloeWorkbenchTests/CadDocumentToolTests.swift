@@ -39,6 +39,19 @@ actor FakeCadHost: CadDocumentHost {
         if !authorized { throw FloeError.unauthorized }
     }
 
+    // MARK: Native bridge recording
+
+    var threeDRequests: [String] = []
+    var threeDReply: String = #"{"ok":true,"state":{"bodies":[]}}"#
+
+    func setThreeDReply(_ reply: String) { threeDReply = reply }
+
+    func threeDAction(documentID: String, requestJSON: String,
+                      access: CadDocumentAccess) async throws -> String {
+        threeDRequests.append(requestJSON)
+        return threeDReply
+    }
+
     func capabilities(access: CadDocumentAccess) async throws -> String {
         #"{"version":2,"operations":["addLine","trim"]}"#
     }
@@ -185,6 +198,90 @@ struct CadDocumentToolTests {
         let output = try await execute(tool, #"{"action":"capabilities"}"#)
         #expect(output.summary.contains("\"version\":2"))
         #expect(output.requiresUserAction == false)
+    }
+
+    @Test("schema enum matches every runtime action and advertises native arguments")
+    func schemaMatchesRuntimeActions() throws {
+        let data = Data(CadDocumentTool.parametersJSON.utf8)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let properties = try #require(object["properties"] as? [String: Any])
+        let action = try #require(properties["action"] as? [String: Any])
+        let enumValues = Set(try #require(action["enum"] as? [String]))
+        let runtime = Set(CadDocumentAction.allCases.map(\.rawValue))
+        #expect(enumValues == runtime,
+                "the JSON schema enum must equal the runtime CadDocumentAction cases")
+        #expect(object["additionalProperties"] as? Bool == false)
+        for field in ["op", "args", "payload", "task_id", "output", "kind"] {
+            #expect(properties[field] != nil, "schema must declare \(field)")
+        }
+        let kind = try #require(properties["kind"] as? [String: Any])
+        let kindDescription = try #require(kind["description"] as? String)
+        for scope in CadDocumentTool.nativeQueryScopes {
+            #expect(kindDescription.contains(scope), "native query scope \(scope) must be advertised")
+        }
+        for measure in CadDocumentTool.nativeMeasureKinds {
+            #expect(kindDescription.contains(measure), "native measure kind \(measure) must be advertised")
+        }
+        // The tool description names the native surface too.
+        #expect(CadDocumentTool.toolDescription.contains("floecad"))
+    }
+
+    @Test("a .floecad path routes to the native host and never the 2D loader")
+    func nativeRepresentationRouting() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"summary":{"revision":1}}"#)
+        let tool = CadDocumentTool(host: host)
+
+        _ = try await execute(tool, #"{"action":"read","path":"parts/plate.floecad"}"#)
+        let readRequests = await host.threeDRequests
+        #expect(readRequests.count == 1)
+        #expect(readRequests.first?.contains("\"kind\":\"snapshot\"") == true)
+        #expect(await host.snapshotCalls == 0,
+                "the 2D snapshot loader must not see a .floecad path")
+
+        _ = try await execute(tool, #"{"action":"capabilities","path":"parts/plate.floecad"}"#)
+        let capabilityRequests = await host.threeDRequests
+        #expect(capabilityRequests.last?.contains("capabilities") == true)
+        #expect(await host.snapshotCalls == 0)
+
+        _ = try await execute(tool, #"{"action":"query","path":"parts/plate.floecad","kind":"bodies"}"#)
+        let queryRequests = await host.threeDRequests
+        #expect(queryRequests.last?.contains("\"scope\":\"bodies\"") == true)
+        #expect(await host.queryRequests.isEmpty, "the 2D engine query must not run")
+
+        // A 2D drawing still uses the 2D host.
+        _ = try await execute(tool, #"{"action":"read","path":"plans/plate.dwg"}"#)
+        #expect(await host.snapshotCalls == 1)
+    }
+
+    @Test("native validate enforces typed operations, scopes and task ids")
+    func nativeValidation() throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        // Native propose needs an op.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"propose","path":"p.floecad"}"#))
+        }
+        try tool.validate(try decode(
+            #"{"action":"propose","path":"p.floecad","op":"feature.extrude","args":"{\"sketchID\":\"x\"}"}"#))
+        // Native query scopes are enumerated.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"query","path":"p.floecad","kind":"entities"}"#))
+        }
+        try tool.validate(try decode(#"{"action":"query","path":"p.floecad","kind":"assembly"}"#))
+        // Native measure kinds are enumerated and arity-checked.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"measure","path":"p.floecad","kind":"radius"}"#))
+        }
+        try tool.validate(try decode(#"{"action":"measure","path":"p.floecad","kind":"dof"}"#))
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"measure","path":"p.floecad","kind":"distance","points":[[0,0,0]]}"#))
+        }
+        // status needs no id; cancel does.
+        try tool.validate(try decode(#"{"action":"status","path":"p.floecad"}"#))
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"cancel","path":"p.floecad"}"#))
+        }
+        try tool.validate(try decode(#"{"action":"cancel","path":"p.floecad","task_id":"t-1"}"#))
     }
 
     @Test("validate enforces path, action and operation rules")

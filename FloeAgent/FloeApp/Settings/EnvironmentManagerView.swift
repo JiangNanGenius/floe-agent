@@ -264,7 +264,7 @@ struct EnvironmentManagerView: View {
                 )
             }
         }
-        .navigationTitle("environment.manager.title")
+        .navigationTitle(FloeL10n.l("environment.manager.title"))
         .searchable(text: $query, prompt: "envmgr.search_prompt")
         .refreshable { await reload() }
         .toolbar {
@@ -1064,7 +1064,7 @@ struct ToolRouteCatalogView: View {
                 }
             }
         }
-        .navigationTitle("environment.tools.routes.title")
+        .navigationTitle(FloeL10n.l("environment.tools.routes.title"))
     }
 
     @ViewBuilder
@@ -1172,7 +1172,7 @@ struct WasmCapabilityCatalogView: View {
                                        description: Text("environment.capabilities.unavailable"))
             }
         }
-        .navigationTitle("environment.capabilities.title")
+        .navigationTitle(FloeL10n.l("environment.capabilities.title"))
         .task { await reload() }
         .refreshable { await reload() }
         .onChange(of: jobs.revision) { Task { await reload() } }

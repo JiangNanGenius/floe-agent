@@ -32,6 +32,11 @@ packages:
     path: ThirdParty/VideoEditorKit
   FloeShellEngine:
     path: ThirdParty/FloeShellEngine
+  FloeCADKit:
+    # Native CAD kernel package: OCCT 7.8.1 B-rep bridge, parametric feature
+    # graph, sketch solver, Metal viewport and the workbench editor, vendored
+    # from OpenShape3D (MIT) with Floe's document/session adaptations.
+    path: ThirdParty/FloeCADKit
 
 targets:
   FloeAgent:
@@ -218,6 +223,8 @@ targets:
         product: FloeMedia
       - package: FloeAgentPackages
         product: FloeWorkbench
+      - package: FloeCADKit
+        product: FloeCAD
       - package: FloeAgentPackages
         product: FloeNotes
       - package: FloeAgentPackages
@@ -454,6 +461,7 @@ targets:
     sources:
       - path: Tests/FloeAgentUITests
         excludes:
+          - TerminalPollCadenceTests.swift
           - IDERunSourceStagingTests.swift
           - IDELanguageRunPolicyTests.swift
           - HomeChatSeparationTests.swift
@@ -498,6 +506,13 @@ targets:
       - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
       - path: Tests/FloeAppTests/OfficePresentationOpeningTests.swift
+      - path: Tests/FloeAppTests/OfficeSelectedObjectSaveTests.swift
+      - path: Tests/FloeAppTests/ApprovalCardRegistryTests.swift
+      - path: Tests/FloeAppTests/ContentUpdateRealSignedFeedTests.swift
+      - path: Tests/FloeAppTests/LocalLinuxTerminalRealVMTests.swift
+      - path: Tests/FloeAgentUITests/TerminalPollCadenceTests.swift
+      - path: Tests/FloeAgentUITests/floe-sim-qual.pptx
+        buildPhase: resources
       - path: Tests/FloeAppTests/OfficeEditEntryAckTests.swift
       - path: Tests/FloeAppTests/SourceControlRootIdentityTests.swift
       - path: Tests/FloeAppTests/IDEMarkdownOutlineTests.swift
@@ -506,6 +521,12 @@ targets:
       - path: Tests/FloeAppTests/WorkbenchAIReviewTests.swift
       - path: Tests/FloeAppTests/WorkbenchExportDeliveryTests.swift
       - path: Tests/FloeAppTests/CadWebEngineSessionTests.swift
+      - path: Tests/FloeAppTests/FloeCADWorkbenchTests.swift
+      - path: Tests/FloeAppTests/NativeCADProposalAuthorityTests.swift
+      - path: Tests/FloeAppTests/NativeCADProposalPersistenceTests.swift
+      - path: Tests/FloeAppTests/NativeCADDocumentCreationTests.swift
+      - path: Tests/FloeAppTests/NativeCADCanvasCreationTests.swift
+      - path: Tests/FloeAppTests/NativeCADCanvasBackupTests.swift
       - path: Tests/FloeAppTests/EngineeringWebSessionReparentTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift
@@ -533,6 +554,8 @@ targets:
       - path: Tests/FloeAgentUITests/RARFixtures.generated.swift
     dependencies:
       - target: FloeAgent
+      - package: FloeCADKit
+        product: FloeCAD
     settings:
       base:
         DEVELOPMENT_TEAM: QYL72C43K6

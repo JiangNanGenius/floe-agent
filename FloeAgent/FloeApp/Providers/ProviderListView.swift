@@ -17,9 +17,24 @@ struct ProviderListView: View {
     @StateObject private var viewModel: ProviderListViewModel
     @State private var presentedEditor: ProviderEditorRoute?
     @State private var showsProviderTypePicker = false
+    @State private var showsCatalogAdd = false
+    /// Entry chosen in the catalog sheet; the editor is presented from the
+    /// sheet's onDismiss so the two sheets never overlap.
+    @State private var pendingCatalogSelection: ProviderCatalogEntry?
 
-    init(center: ConversationCenter) {
+    /// Optional validated catalog plus refresh closure. Both stay nil for
+    /// call sites that only support manual provider setup.
+    private let catalog: ProviderCatalogIndex?
+    private let onRefreshCatalog: (() async -> Void)?
+
+    init(
+        center: ConversationCenter,
+        catalog: ProviderCatalogIndex? = nil,
+        onRefreshCatalog: (() async -> Void)? = nil
+    ) {
         _viewModel = StateObject(wrappedValue: ProviderListViewModel(center: center))
+        self.catalog = catalog
+        self.onRefreshCatalog = onRefreshCatalog
     }
 
     var body: some View {
@@ -50,16 +65,32 @@ struct ProviderListView: View {
                 .accessibilityIdentifier("providers.add")
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showsCatalogAdd = true
+                } label: {
+                    Label("providers.add_from_catalog", systemImage: "books.vertical")
+                }
+                .disabled(catalog == nil)
+                .accessibilityIdentifier("providers.add_from_catalog")
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            }
         }
         .task { await viewModel.load() }
         .refreshable { await viewModel.load() }
-        .confirmationDialog("添加模型服务商", isPresented: $showsProviderTypePicker) {
-            Button("对话模型服务商") { presentedEditor = .new(.conversation) }
-            Button("图片生成/编辑服务商") { presentedEditor = .new(.image) }
-            Button("视频生成服务商") { presentedEditor = .new(.video) }
-            Button("取消", role: .cancel) {}
+        .confirmationDialog("providers.provider_list_view.add_model_provider", isPresented: $showsProviderTypePicker) {
+            if catalog != nil {
+                // Discovery lives in the same catalog sheet as the toolbar
+                // route; no second editor is created.
+                Button("providers.add_from_catalog") { showsCatalogAdd = true }
+                    .accessibilityIdentifier("providers.add_from_catalog.menu")
+            }
+            Button("providers.provider_list_view.chat_model_provider") { presentedEditor = .new(.conversation) }
+            Button("providers.provider_list_view.image_generation_editing_provider") { presentedEditor = .new(.image) }
+            Button("providers.provider_list_view.video_generation_provider") { presentedEditor = .new(.video) }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
         } message: {
-            Text("先选择用途，再配置端点、凭据和模型能力。")
+            Text("providers.provider_list_view.choose_a_use_first_then_configure")
         }
         .sheet(item: $presentedEditor, onDismiss: {
             Task { await viewModel.load() }
@@ -68,10 +99,34 @@ struct ProviderListView: View {
                 ProviderEditorView(
                     center: viewModel.center,
                     existing: route.provider,
-                    initialRole: route.role
+                    initialRole: route.role,
+                    initialCatalogEntry: route.catalogEntry
                 )
             }
             .presentationSizing(.page)
+        }
+        .sheet(isPresented: $showsCatalogAdd, onDismiss: {
+            // Hop once so the editor sheet presents after the catalog sheet
+            // has fully finished dismissing.
+            Task { @MainActor in presentPendingCatalogSelection() }
+        }) {
+            if let catalog {
+                ProviderCatalogAddView(
+                    catalog: catalog,
+                    configuredPresetIDs: Set(
+                        viewModel.center.configuredProviders.compactMap(\.presetID)
+                    ),
+                    onRefresh: onRefreshCatalog,
+                    onSelect: { entry in
+                        pendingCatalogSelection = entry
+                        showsCatalogAdd = false
+                    }
+                )
+                // Page-sized presentation (same as the editor sheet) keeps
+                // search and filters visible instead of a compact sheet
+                // dominated by the keyboard.
+                .presentationSizing(.page)
+            }
         }
         .alert(
             "providers.delete_failed",
@@ -88,7 +143,7 @@ struct ProviderListView: View {
 
     private var providerList: some View {
         List {
-            Section("对话模型服务商") {
+            Section("providers.provider_list_view.chat_model_provider") {
                 ForEach(viewModel.providers) { provider in
                     providerButton(
                         provider,
@@ -108,9 +163,9 @@ struct ProviderListView: View {
                         )
                     }
                 } header: {
-                    Text("图像模型服务商")
+                    Text("providers.provider_list_view.image_model_provider")
                 } footer: {
-                    Text("用于图片生成与编辑；默认路由在“辅助模型”中设置。")
+                    Text("providers.provider_list_view.used_for_image_generation_and_editing")
                 }
             }
 
@@ -124,13 +179,81 @@ struct ProviderListView: View {
                         )
                     }
                 } header: {
-                    Text("视频模型服务商")
+                    Text("providers.provider_list_view.video_model_provider")
                 } footer: {
-                    Text("视频是创意模式的可选增强，不影响私人画布和图片创作。")
+                    Text("providers.provider_list_view.video_is_an_optional_enhancement_in")
+                }
+            }
+
+            if let catalog, onRefreshCatalog != nil {
+                Section {
+                    Button {
+                        Task {
+                            await onRefreshCatalog?()
+                            await viewModel.load()
+                        }
+                    } label: {
+                        Label("providers.catalog.refresh", systemImage: "arrow.clockwise")
+                    }
+                    .frame(minHeight: FloeTheme.minimumTarget)
+                    .accessibilityIdentifier("providers.catalog.refresh")
+                } header: {
+                    Text("providers.catalog.official")
+                } footer: {
+                    Text(FloeL10n.l(
+                        "providers.catalog.official_footer",
+                        catalog.document.source.project,
+                        catalog.all.count
+                    ))
                 }
             }
         }
         .listStyle(.insetGrouped)
+    }
+
+    // MARK: - Catalog selection
+
+    /// Presents the editor for the catalog entry chosen in the sheet. An
+    /// existing provider with the same presetID or normalized base-URL host
+    /// is edited instead, so saved credentials and models are never
+    /// duplicated or overwritten by a catalog add.
+    private func presentPendingCatalogSelection() {
+        guard let entry = pendingCatalogSelection else { return }
+        pendingCatalogSelection = nil
+        if let existing = existingProvider(for: entry) {
+            presentedEditor = .existing(
+                existing,
+                ProviderServiceRole.infer(
+                    from: viewModel.center.configuredModelsByProvider[existing.id] ?? []
+                )
+            )
+        } else {
+            presentedEditor = .newFromCatalog(entry, Self.serviceRole(for: entry))
+        }
+    }
+
+    private func existingProvider(for entry: ProviderCatalogEntry) -> ProviderProfile? {
+        if let match = viewModel.center.configuredProviders.first(where: {
+            $0.presetID == entry.presetID
+        }) {
+            return match
+        }
+        guard let host = Self.normalizedHost(entry.baseURL) else { return nil }
+        return viewModel.center.configuredProviders.first(where: {
+            Self.normalizedHost($0.baseURL) == host
+        })
+    }
+
+    private static func normalizedHost(_ url: URL?) -> String? {
+        guard var host = url?.host?.lowercased(), !host.isEmpty else { return nil }
+        while host.hasSuffix(".") { host.removeLast() }
+        return host
+    }
+
+    /// Google Gemini entries are image-only in Floe; every other catalog
+    /// entry starts as a conversation provider.
+    private static func serviceRole(for entry: ProviderCatalogEntry) -> ProviderServiceRole {
+        entry.kind == .googleGemini ? .image : .conversation
     }
 
     private func providerButton(
@@ -167,13 +290,13 @@ struct ProviderListView: View {
             Button {
                 presentedEditor = .existing(provider, role)
             } label: {
-                Label("编辑", systemImage: "pencil")
+                Label("workspace.workspace_canvas_view.edit", systemImage: "pencil")
             }
             .tint(.blue)
             Button(role: .destructive) {
                 Task { await viewModel.delete(provider) }
             } label: {
-                Label("删除", systemImage: "trash")
+                Label("workspace.workspace_canvas_view.delete", systemImage: "trash")
             }
         }
     }
@@ -182,11 +305,14 @@ struct ProviderListView: View {
 private enum ProviderEditorRoute: Identifiable {
     case new(ProviderServiceRole)
     case existing(ProviderProfile, ProviderServiceRole)
+    case newFromCatalog(ProviderCatalogEntry, ProviderServiceRole)
 
     var id: String {
         switch self {
         case .new(let role): "new-\(role.rawValue)"
         case .existing(let provider, let role): "\(provider.id.uuidString)-\(role.rawValue)"
+        case .newFromCatalog(let entry, let role):
+            "catalog-\(entry.presetID)-\(role.rawValue)"
         }
     }
 
@@ -197,8 +323,13 @@ private enum ProviderEditorRoute: Identifiable {
 
     var role: ProviderServiceRole? {
         switch self {
-        case .new(let role), .existing(_, let role): role
+        case .new(let role), .existing(_, let role), .newFromCatalog(_, let role): role
         }
+    }
+
+    var catalogEntry: ProviderCatalogEntry? {
+        if case .newFromCatalog(let entry, _) = self { return entry }
+        return nil
     }
 }
 
@@ -220,7 +351,7 @@ private struct ProviderRow: View {
                         .foregroundStyle(FloeTheme.pending)
                 }
                 if !provider.isEnabled {
-                    Text("已停用")
+                    Text("providers.provider_list_view.disabled")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.secondary)
                 }

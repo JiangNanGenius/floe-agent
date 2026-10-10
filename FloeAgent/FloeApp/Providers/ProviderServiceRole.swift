@@ -14,9 +14,9 @@ enum ProviderServiceRole: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .conversation: "对话模型"
-        case .image: "图片生成与编辑"
-        case .video: "视频生成（Extra）"
+        case .conversation: FloeL10n.l("providers.provider_service_role.chat_model")
+        case .image: FloeL10n.l("providers.provider_service_role.image_generation_and_editing")
+        case .video: FloeL10n.l("providers.provider_service_role.video_generation_extra")
         }
     }
 

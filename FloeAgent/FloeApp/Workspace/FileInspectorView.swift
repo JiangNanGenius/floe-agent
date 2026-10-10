@@ -15,6 +15,7 @@ import FloeExecution
 import FloeWorkspace
 import UniformTypeIdentifiers
 
+import FloeCore
 /// The file inspector surface: workspace header + tree/search + preview
 /// navigation. Presented in the iPad third column or the iPhone sheet via
 /// AppRouter's inspectorContent.
@@ -50,7 +51,7 @@ struct FileInspectorView: View {
     private enum InspectorMode: String, CaseIterable, Identifiable {
         case files, sourceControl
         var id: String { rawValue }
-        var title: String { self == .files ? "文件" : "源码管理" }
+        var title: String { self == .files ? FloeL10n.l("app.floe_agent_app.files") : FloeL10n.l("workspace.file_inspector_view.source_control") }
         var icon: String { self == .files ? "folder" : "arrow.triangle.branch" }
     }
 
@@ -176,7 +177,7 @@ struct FileInspectorView: View {
             VStack(spacing: 0) {
                 workspaceHeader(workspace)
                 Divider()
-                Picker("工作区面板", selection: $inspectorMode) {
+                Picker("workspace.file_inspector_view.workspace_panel", selection: $inspectorMode) {
                     ForEach(InspectorMode.allCases) { mode in
                         Label(mode.title, systemImage: mode.icon).tag(mode)
                     }
@@ -211,12 +212,12 @@ struct FileInspectorView: View {
                     } label: {
                         Label(
                             WorkspaceCanvasRegistry.exists(workspaceID: workspace.id)
-                                ? "画布" : "新建画布",
+                                ? "settings.settings_root_view.canvas" : "workspace.workspace_canvas_view.new_canvas",
                             systemImage: "rectangle.and.pencil.and.ellipsis"
                         )
                     }
                     .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                    .accessibilityHint("打开这个工作区唯一的画布入口")
+                    .accessibilityHint("workspace.file_inspector_view.open_the_only_canvas_entry_in")
                 }
                 if workspace.kind == .privateTask || workspace.kind == .project {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -291,34 +292,34 @@ struct FileInspectorView: View {
                 Button {
                     showMountPicker = true
                 } label: {
-                    Label("链接外部文件夹", systemImage: "folder.badge.plus")
+                    Label("workspace.file_inspector_view.link_external_folder", systemImage: "folder.badge.plus")
                 }
                 Button {
                     showImportPicker = true
                 } label: {
-                    Label("导入整个文件夹", systemImage: "square.and.arrow.down")
+                    Label("workspace.file_inspector_view.import_an_entire_folder", systemImage: "square.and.arrow.down")
                 }
                 Button {
                     showCloudWorkspaceLink = true
                 } label: {
-                    Label("链接云工作区", systemImage: "cloud")
+                    Label("workspace.file_inspector_view.link_cloud_workspace", systemImage: "cloud")
                 }
             }
             Button {
                 showNetworkMount = true
             } label: {
-                Label("挂载 SMB / WebDAV", systemImage: "externaldrive.connected.to.line.below")
+                Label("workspace.file_inspector_view.mount_smb_webdav", systemImage: "externaldrive.connected.to.line.below")
             }
             Button {
                 do { exportURL = try center.prepareWorkspaceExport() }
                 catch { center.actionError = error.localizedDescription }
             } label: {
-                Label("导出工作区", systemImage: "square.and.arrow.up")
+                Label("workspace.file_inspector_view.export_workspace", systemImage: "square.and.arrow.up")
             }
         } label: {
-            Label("工作区操作", systemImage: "ellipsis.circle")
+            Label("workspace.file_inspector_view.workspace_actions", systemImage: "ellipsis.circle")
         }
-        .accessibilityLabel("工作区操作")
+        .accessibilityLabel("workspace.file_inspector_view.workspace_actions")
     }
 
     private func mountFolder(_ url: URL) async {
@@ -365,19 +366,19 @@ struct FileInspectorView: View {
                     Label("\(center.activeMountNames.count)", systemImage: "externaldrive.connected.to.line.below")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.secondary)
-                        .accessibilityLabel("已链接 \(center.activeMountNames.count) 个外部文件夹")
+                        .accessibilityLabel(FloeL10n.l("workspace.file_inspector_view.external_folders_linked", center.activeMountNames.count))
                 }
                 if !center.cloudWorkspaceLinks.isEmpty {
                     Label("\(center.cloudWorkspaceLinks.count)", systemImage: "cloud.fill")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(FloeTheme.primary)
-                        .accessibilityLabel("已链接 \(center.cloudWorkspaceLinks.count) 个云工作区")
+                        .accessibilityLabel(FloeL10n.l("workspace.file_inspector_view.cloud_workspaces_linked", center.cloudWorkspaceLinks.count))
                 }
                 if !center.networkWorkspaceMounts.isEmpty {
                     Label("\(center.networkWorkspaceMounts.count)", systemImage: "network")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(FloeTheme.primary)
-                        .accessibilityLabel("已挂载 \(center.networkWorkspaceMounts.count) 个网络存储")
+                        .accessibilityLabel(FloeL10n.l("workspace.file_inspector_view.network_storages_mounted", center.networkWorkspaceMounts.count))
                 }
                 Spacer()
                 if showsSwitch {
@@ -428,7 +429,7 @@ struct FileInspectorView: View {
             )
             guard added else { return }
             withAnimation(.snappy) {
-                contextNotice = "已加入任务上下文"
+                contextNotice = FloeL10n.l("workspace.file_inspector_view.added_to_task_context")
             }
             try? await Task.sleep(for: .seconds(2))
             withAnimation(.snappy) { contextNotice = nil }
@@ -453,33 +454,33 @@ private struct NetworkWorkspaceMountSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("网络存储") {
-                    Picker("协议", selection: $transport) {
+                Section("workspace.file_inspector_view.network_storage") {
+                    Picker("workspace.file_inspector_view.protocol", selection: $transport) {
                         Text("WebDAV").tag(NetworkWorkspaceProtocol.webDAV)
                         Text("SMB2").tag(NetworkWorkspaceProtocol.smb)
                     }
                     .pickerStyle(.segmented)
-                    TextField("显示名称", text: $name)
+                    TextField("workspace.file_inspector_view.display_name", text: $name)
                     TextField(
                         transport == .smb ? "smb://server/share" : "https://server/dav/",
                         text: $endpoint
                     )
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
-                    TextField("远程子目录（可选）", text: $rootPath)
+                    TextField("workspace.file_inspector_view.remote_subdirectory_optional", text: $rootPath)
                         .textInputAutocapitalization(.never)
                 }
-                Section("认证") {
-                    TextField("用户名", text: $username)
+                Section("workspace.file_inspector_view.authentication") {
+                    TextField("mail.settings.username", text: $username)
                         .textInputAutocapitalization(.never)
-                    SecureField("密码", text: $password)
-                    Text("密码只写入 Keychain；挂载配置、同步、日志和模型上下文只保存凭据引用。")
+                    SecureField("hosts.auth.password", text: $password)
+                    Text("workspace.file_inspector_view.passwords_are_written_only_to_keychain")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                Section("权限") {
-                    Toggle("只读挂载", isOn: $readOnly)
-                    Text(readOnly ? "禁止写入、移动和删除。" : "首次写操作仍会经过 Floe 的文件写入审批。")
+                Section("workspace.file_inspector_view.permissions") {
+                    Toggle("workspace.file_inspector_view.mount_read_only", isOn: $readOnly)
+                    Text(readOnly ? "workspace.file_inspector_view.writing_moving_and_deleting_are_prohibited" : "workspace.file_inspector_view.the_first_write_action_still_goes")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -490,12 +491,12 @@ private struct NetworkWorkspaceMountSheet: View {
                     }
                 }
                 if !center.networkWorkspaceMounts.isEmpty {
-                    Section("已挂载") {
+                    Section("workspace.file_inspector_view.mounted") {
                         ForEach(center.networkWorkspaceMounts) { mount in
                             HStack {
                                 VStack(alignment: .leading) {
                                     Text(mount.name)
-                                    Text("\(mount.transport == .smb ? "SMB2" : "WebDAV") · \(mount.readOnly ? "只读" : "读写")")
+                                    Text("\(mount.transport == .smb ? "SMB2" : "WebDAV") · \(mount.readOnly ? "workspace.file_inspector_view.read_only" : "workspace.file_inspector_view.read_write")")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -512,13 +513,13 @@ private struct NetworkWorkspaceMountSheet: View {
                     }
                 }
             }
-            .navigationTitle("网络存储")
+            .navigationTitle("workspace.file_inspector_view.network_storage")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("workspace.workspace_canvas_view.cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "连接中…" : "连接并保存") {
+                    Button(isSaving ? "workspace.file_inspector_view.connecting" : "workspace.file_inspector_view.connect_and_save") {
                         Task { await save() }
                     }
                     .disabled(isSaving || endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -529,7 +530,7 @@ private struct NetworkWorkspaceMountSheet: View {
 
     private func save() async {
         guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            errorMessage = "地址格式无效。"
+            errorMessage = FloeL10n.l("workspace.file_inspector_view.invalid_address_format")
             return
         }
         isSaving = true
@@ -572,24 +573,24 @@ private struct CloudWorkspaceLinkSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("云工作区") {
-                    Picker("受信任主机", selection: $selectedHostID) {
-                        Text("请选择主机").tag(UUID?.none)
+                Section("workspace.file_inspector_view.cloud_workspace") {
+                    Picker("settings.remote.hosts", selection: $selectedHostID) {
+                        Text("workspace.file_inspector_view.choose_a_host").tag(UUID?.none)
                         ForEach(remoteCenter.hosts) { host in
                             Text("\(host.displayName) · \(host.user)@\(host.address)")
                                 .tag(Optional(host.id))
                         }
                     }
-                    TextField("显示名称", text: $name)
-                    TextField("守护程序工作区 ID / 相对路径", text: $remotePath)
+                    TextField("workspace.file_inspector_view.display_name", text: $name)
+                    TextField("workspace.file_inspector_view.daemon_workspace_id_relative_path", text: $remotePath)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    TextField("守护程序端口", text: $port)
+                    TextField("workspace.file_inspector_view.daemon_port", text: $port)
                         .keyboardType(.numberPad)
-                    Toggle("永久删除任务时清理云工作区", isOn: $cleanupOnDelete)
+                    Toggle("workspace.file_inspector_view.clean_up_cloud_workspaces_when_permanently", isOn: $cleanupOnDelete)
                 }
                 Section {
-                    Text("这里只创建连接标记。守护程序仅在你于对话中明确要求安装后，才由模型通过已验证的 SSH 主机执行引导；默认服务只监听远端回环地址，并通过 SSH 隧道访问。")
+                    Text("workspace.file_inspector_view.this_only_creates_a_connection_marker")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -597,13 +598,13 @@ private struct CloudWorkspaceLinkSheet: View {
                     Section { Text(errorMessage).foregroundStyle(.red) }
                 }
             }
-            .navigationTitle("链接云工作区")
+            .navigationTitle("workspace.file_inspector_view.link_cloud_workspace")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("workspace.workspace_canvas_view.cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("链接") { link() }
+                    Button("workspace.file_inspector_view.link") { link() }
                         .disabled(selectedHostID == nil || remotePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }

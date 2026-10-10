@@ -236,7 +236,8 @@ public enum CanvasDrawingRevisionHistory {
     /// built from the bytes the node currently carries. Returns nil when the
     /// node lacks a bounded drawing asset.
     public static func seedOriginal(for node: CanvasNode) -> CanvasDrawingRevision? {
-        guard CanvasDrawingNodePlanner.isDrawingNode(node),
+        guard CanvasDrawingNodePlanner.isDrawingNode(node)
+                || CADCanvasNodePlanner.isNativeCADAsset(node.asset),
               let asset = node.asset,
               let hash = asset.contentHash, !hash.isEmpty,
               let path = asset.localRelativePath,
@@ -266,7 +267,7 @@ public enum CanvasDrawingRevisionHistory {
     /// from a successful backup.
     public static func requireClosableHistory(in project: CanvasProject) throws {
         for document in project.documents {
-            for node in document.nodes where CanvasDrawingNodePlanner.isDrawingNode(node) {
+            for node in document.nodes where carriesCADHistory(node) {
                 if case .unsupported = read(from: node) {
                     throw FloeError.invalidConfiguration("unsupportedCADHistory")
                 }
@@ -280,7 +281,7 @@ public enum CanvasDrawingRevisionHistory {
     public static func revisionRelativePaths(in project: CanvasProject) -> [String] {
         var paths = Set<String>()
         for document in project.documents {
-            for node in document.nodes where CanvasDrawingNodePlanner.isDrawingNode(node) {
+            for node in document.nodes where carriesCADHistory(node) {
                 for revision in revisions(from: node) {
                     guard isValidStoredPath(revision.relativePath) else { continue }
                     paths.insert(revision.relativePath)
@@ -307,6 +308,14 @@ public enum CanvasDrawingRevisionHistory {
         return updated
     }
 
+    /// True for any node that may carry typed CAD history: a DWG/DXF drawing
+    /// node or a native `.floecad` node (whose live asset becomes the PNG
+    /// render while its history keeps the package revisions).
+    static func carriesCADHistory(_ node: CanvasNode) -> Bool {
+        CanvasDrawingNodePlanner.isDrawingNode(node)
+            || CADCanvasNodePlanner.isNativeCADNode(node)
+    }
+
     /// Every asset reference reachable in the project as a multiset:
     /// each node's current asset PLUS each typed CAD revision reference.
     /// An asset carried both as current and as a historical revision is
@@ -320,7 +329,7 @@ public enum CanvasDrawingRevisionHistory {
                 if let currentID = node.asset?.id {
                     result.append(currentID)
                 }
-                if CanvasDrawingNodePlanner.isDrawingNode(node),
+                if carriesCADHistory(node),
                    case .usable(let revisions) = read(from: node) {
                     result.append(contentsOf: revisions.map(\.assetID))
                 }

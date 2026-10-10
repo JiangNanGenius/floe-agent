@@ -24,7 +24,7 @@ import UIKit
 /// `OfficeInkText.t` pattern used by other newer app surfaces.
 enum WorkbenchText {
     static var isChinese: Bool {
-        Locale.current.identifier.hasPrefix("zh")
+        FloeL10n.isChinese
     }
 
     static func t(_ zh: String, _ en: String) -> String {

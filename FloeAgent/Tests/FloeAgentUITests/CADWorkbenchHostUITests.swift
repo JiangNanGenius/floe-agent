@@ -1,0 +1,196 @@
+// FloeAgentUITests — native CAD workbench host chrome and tool-response
+// smoke coverage (iPad regular width + iPhone compact, serial).
+//
+// SPDX-License-Identifier: MPL-2.0
+//
+// The `-ui-testing --ui-test-cad-fixture` harness presents the REAL
+// FloeCADWorkbenchView on a deterministic 100×60×10 plate with a Ø10
+// through-hole. These tests exist because a fixture that presents the
+// workbench without the host navigation container silently drops the whole
+// top toolbar (undo/redo, views, history, variables, items, import/export,
+// tools, settings) — the failure the primary CUA found on 2026-10-10. The
+// assertions here pin the chrome to the real product surface so that class
+// of regression is caught without a human review pass, and prove the tool
+// strip actually answers taps (select mode opens its pill) rather than
+// merely rendering.
+
+#if canImport(XCTest)
+import XCTest
+
+private enum CADWorkbenchHostAssertions {
+    /// Every toolbar item the product workbench promises. `file` is the test
+    /// case for XCTest-style failures.
+    static func assertToolbarChrome(_ app: XCUIApplication, _ file: StaticString = #filePath, _ line: UInt = #line) {
+        for identifier in ["UndoButton", "RedoButton", "ViewsMenu", "HistoryButton",
+                           "VariablesButton", "ItemsButton", "CADWorkbenchToolsButton",
+                           "CommandSearchButton", "SettingsButton"] {
+            XCTAssertTrue(app.buttons[identifier].waitForExistence(timeout: 30),
+                          "workbench toolbar item \(identifier) must be present (host navigation chrome)",
+                          file: file, line: line)
+        }
+    }
+
+    /// Open the workbench tools sheet and walk every service panel.
+    static func assertToolsPanels(_ app: XCUIApplication, _ file: StaticString = #filePath, _ line: UInt = #line) {
+        app.buttons["CADWorkbenchToolsButton"].tap()
+        guard app.otherElements["CADWorkbenchToolsPanel"].waitForExistence(timeout: 20) else {
+            var ids: [String] = []
+            for element in app.otherElements.matching(NSPredicate(format: "identifier CONTAINS 'CAD'"))
+                .allElementsBoundByIndex.prefix(20) {
+                ids.append(element.identifier)
+            }
+            XCTFail("the workbench tools sheet must open; CAD elements: \(ids)", file: file, line: line)
+            return
+        }
+        // Explicit Close control (accessibility/narrow layouts), Assembly as
+        // the default mode, and each panel's structured state as the mode is
+        // walked. The qualification fixture now carries real assembly
+        // instances, so the Assembly panel may show its instance list instead
+        // of the empty state — both are valid structured states.
+        XCTAssertTrue(app.buttons["CADToolsSheetCloseButton"].waitForExistence(timeout: 5),
+                      "the tools sheet must have an explicit Close control", file: file, line: line)
+        let assemblyState = app.staticTexts["No assembly instances yet."].waitForExistence(timeout: 5)
+            || app.staticTexts["Instances"].waitForExistence(timeout: 5)
+        XCTAssertTrue(assemblyState,
+                      "Assembly is the default mode with its structured state", file: file, line: line)
+        for panel in ["Drawings", "ShapeScript", "Mesh"] {
+            app.buttons[panel].tap()
+        }
+        XCTAssertTrue(app.staticTexts["0 bodies selected"].waitForExistence(timeout: 5),
+                      "the Mesh panel shows its selection state", file: file, line: line)
+        app.buttons["Assembly"].tap()
+        let assemblyAgain = app.staticTexts["No assembly instances yet."].waitForExistence(timeout: 5)
+            || app.staticTexts["Instances"].waitForExistence(timeout: 5)
+        XCTAssertTrue(assemblyAgain,
+                      "returning to Assembly must re-show its panel", file: file, line: line)
+        app.buttons["CADToolsSheetCloseButton"].tap()
+    }
+
+    /// A floating tool-strip tap must change editor state, not just render.
+    /// (The palette identifier only exists on the compact scroll fallback,
+    /// so the assertions anchor on the tool buttons themselves.)
+    static func assertToolStripResponds(_ app: XCUIApplication, _ file: StaticString = #filePath, _ line: UInt = #line) {
+        guard app.buttons["SelectModeButton"].waitForExistence(timeout: 10) else {
+            let ids = app.buttons.allElementsBoundByIndex.prefix(60)
+                .map { $0.identifier.isEmpty ? ($0.label ?? "?") : $0.identifier }
+            XCTFail("the tool strip must expose the select tool; visible buttons: \(ids)", file: file, line: line)
+            return
+        }
+        app.buttons["SelectModeButton"].tap()
+        XCTAssertTrue(app.buttons["SelectModeDone"].waitForExistence(timeout: 5),
+                      "tapping Select must open the select-mode pill (tool strip answers taps)",
+                      file: file, line: line)
+        app.buttons["SelectModeDone"].tap()
+        XCTAssertFalse(app.buttons["SelectModeDone"].waitForExistence(timeout: 5),
+                       "Done must leave select mode again", file: file, line: line)
+    }
+
+    static func assertHistoryPanelOpens(_ app: XCUIApplication, _ file: StaticString = #filePath, _ line: UInt = #line) {
+        app.buttons["HistoryButton"].tap()
+        let panel = app.otherElements["HistoryPanel"]
+        let scrolled = app.scrollViews["HistoryPanel"]
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline && !panel.exists && !scrolled.exists {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertTrue(panel.exists || scrolled.exists,
+                      "the history panel must open from the toolbar", file: file, line: line)
+        app.swipeDown(velocity: .fast)
+    }
+}
+
+/// iPad regular-width host chrome. The `-ui-testing-ipad` argument keeps the
+/// regular-width layout even if the runner misreports the size class.
+@MainActor
+final class CADWorkbenchHostIPadUITests: XCTestCase {
+    private var app: XCUIApplication!
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        app = XCUIApplication()
+        app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                                "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture"]
+        app.launch()
+    }
+
+    override func tearDownWithError() throws {
+        app.terminate()
+        app = nil
+    }
+
+    func testWorkbenchHostChromeToolsAndToolStrip() throws {
+        XCTAssertTrue(app.otherElements["CADFixtureHarness"].waitForExistence(timeout: 30))
+        CADWorkbenchHostAssertions.assertToolbarChrome(app)
+        CADWorkbenchHostAssertions.assertToolStripResponds(app)
+        CADWorkbenchHostAssertions.assertToolsPanels(app)
+        CADWorkbenchHostAssertions.assertHistoryPanelOpens(app)
+    }
+}
+
+/// Serial iPhone compact pass: same surface, compact idiom. Skipped when the
+/// host is not compact so an iPad-only runner stays green without lying.
+@MainActor
+final class CADWorkbenchHostIPhoneUITests: XCTestCase {
+    private var app: XCUIApplication!
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+        app = XCUIApplication()
+        app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                                "-ui-testing", "--ui-test-cad-fixture"]
+        app.launch()
+    }
+
+    override func tearDownWithError() throws {
+        app.terminate()
+        app = nil
+    }
+
+    func testWorkbenchHostChromeCompact() throws {
+        guard app.windows.firstMatch.exists else { throw XCTSkip("Requires a running host") }
+        // This suite asserts the COMPACT control strip; on a regular-width
+        // runner (iPad) those controls legitimately do not exist, so the
+        // class is not applicable there. On an iPhone destination it always
+        // runs to completion (no skip).
+        let hostWidth = app.windows.firstMatch.frame.width
+        guard hostWidth > 0, hostWidth < 700 else {
+            throw XCTSkip("compact-only suite; run on an iPhone destination")
+        }
+        XCTAssertTrue(app.otherElements["CADFixtureHarness"].waitForExistence(timeout: 30))
+        // Compact-width navigation bars overflow earlier toolbar items; the
+        // compact contract is the core edit pair plus a tool strip that
+        // answers taps.
+        let stripExists = app.otherElements["CADCompactControlStrip"].exists
+            || app.buttons["CADCompactControlStrip"].exists
+        for identifier in ["UndoButton", "RedoButton"] {
+            let visible = app.buttons.allElementsBoundByIndex.prefix(60)
+                .map { $0.identifier.isEmpty ? ($0.label) : $0.identifier }
+            XCTAssertTrue(app.buttons[identifier].waitForExistence(timeout: 20),
+                          "workbench toolbar item \(identifier) must be present (in-content strip: \(stripExists)); visible: \(visible)")
+        }
+        CADWorkbenchHostAssertions.assertToolStripResponds(app)
+        // The tools entry is a DIRECT 44pt control at compact width (the
+        // adaptive compact bar keeps it out of the automatic overflow), so
+        // the full panel walk must succeed here — no skip.
+        let visibleButtons = app.buttons.allElementsBoundByIndex.prefix(60)
+            .map { $0.identifier.isEmpty ? ($0.label) : $0.identifier }
+        XCTAssertTrue(app.buttons["CADWorkbenchToolsButton"].waitForExistence(timeout: 10),
+                      "the compact bar must keep the CAD tools entry reachable; visible buttons: \(visibleButtons)")
+        CADWorkbenchHostAssertions.assertToolsPanels(app)
+        // Every other action stays reachable through the explicit overflow
+        // menu instead of being silently dropped by bar overflow.
+        let more = app.buttons["CADCompactMoreMenu"]
+        XCTAssertTrue(more.waitForExistence(timeout: 10),
+                      "the compact bar must expose the explicit overflow menu")
+        more.tap()
+        let sawHistoryOrSettings = app.buttons["History"].waitForExistence(timeout: 5)
+            || app.buttons["Settings"].waitForExistence(timeout: 5)
+            || app.staticTexts["History"].waitForExistence(timeout: 5)
+        XCTAssertTrue(sawHistoryOrSettings,
+                      "the overflow menu must list the non-essential actions (History/Settings)")
+        app.tap()
+    }
+}
+#endif

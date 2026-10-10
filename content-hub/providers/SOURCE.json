@@ -1,0 +1,24 @@
+{
+  "attributionNotes": [
+    "Provider names, model identifiers and documentation links are derived from the open models.dev catalog (MIT).",
+    "Floe curates, filters and maps the data to its own provider kinds, protocols and auth styles.",
+    "No upstream code, JS SDK content, API keys or user credentials are copied.",
+    "Merged upstream ids are listed in each provider's upstreamIDs field."
+  ],
+  "availableCount": 16,
+  "canonicalProject": "anomalyco/models.dev",
+  "documentSHA256": "fa2b8822f1f8c9157f526dc477b86008f73e463414f4e7765ed0ce50006eeef1",
+  "documentURL": "https://models.dev/api.json",
+  "fetchedAt": "2026-10-09T02:10:34Z",
+  "generatedBy": "content-hub/providers/import_models_dev.py",
+  "license": "MIT",
+  "licenseURL": "https://github.com/sst/models.dev/blob/dev/LICENSE",
+  "modelEntryCount": 581,
+  "pinPolicy": "canonical pin is documentSHA256 of the served api.json; the recorded repository revision is informational and not assumed byte-identical to the served response",
+  "project": "sst/models.dev",
+  "providerCount": 20,
+  "repositoryRevisionAtFetchTime": "64bb4673a1a2dae3702f1802d724cdaa99c9fe73",
+  "repositoryRevisionDate": "2026-10-09T01:50:03Z",
+  "unsupportedCount": 4,
+  "url": "https://models.dev"
+}

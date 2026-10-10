@@ -13,8 +13,16 @@ import FloeCore
 
 struct GeneralSettingsView: View {
     @ObservedObject var center: SettingsCenter
+    /// Optional content-update center. Present when the settings center hosts
+    /// this view; other call sites remain valid without it.
+    var contentUpdates: ContentUpdateCenter?
     @AppStorage(VoiceRecognitionLanguage.defaultsKey)
     private var voiceLanguage = VoiceRecognitionLanguage.automatic.rawValue
+
+    init(center: SettingsCenter, contentUpdates: ContentUpdateCenter? = nil) {
+        self.center = center
+        self.contentUpdates = contentUpdates
+    }
 
     var body: some View {
         Form {
@@ -32,43 +40,61 @@ struct GeneralSettingsView: View {
                     }
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
+                Text("settings.general.language.restart_note")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
             }
 
-            Section("语音输入") {
-                NavigationLink("Whisper 与语音识别") { WhisperSettingsView() }
-                Picker("识别语言", selection: $voiceLanguage) {
-                    Text("自动").tag(VoiceRecognitionLanguage.automatic.rawValue)
-                    Text("简体中文").tag(VoiceRecognitionLanguage.simplifiedChinese.rawValue)
-                    Text("繁體中文").tag(VoiceRecognitionLanguage.traditionalChinese.rawValue)
+            Section("settings.general_settings_view.voice_input") {
+                NavigationLink("settings.general_settings_view.whisper_speech_recognition") { WhisperSettingsView() }
+                Picker("settings.general_settings_view.recognition_language", selection: $voiceLanguage) {
+                    Text("settings.general_settings_view.automatic").tag(VoiceRecognitionLanguage.automatic.rawValue)
+                    Text("settings.general.language.zh_hans").tag(VoiceRecognitionLanguage.simplifiedChinese.rawValue)
+                    Text("settings.general_settings_view.text").tag(VoiceRecognitionLanguage.traditionalChinese.rawValue)
                     Text("English").tag(VoiceRecognitionLanguage.english.rawValue)
                 }
-                Text("自动识别无结果时，请明确选择正在使用的语言。")
+                Text("settings.general_settings_view.when_automatic_recognition_has_no_result")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("运行中输入") {
-                Picker("默认发送方式", selection: Binding(
+            Section("settings.general_settings_view.input_while_running") {
+                Picker("settings.general_settings_view.default_send_method", selection: Binding(
                     get: { center.runningInputMode },
                     set: { value in Task { await center.setRunningInputMode(value) } }
                 )) {
-                    Text("加入消息队列").tag(RunningInputMode.queue)
-                    Text("引导当前运行").tag(RunningInputMode.steer)
+                    Text("chat.thread_composer_view.add_to_message_queue").tag(RunningInputMode.queue)
+                    Text("chat.thread_composer_view.steer_the_current_run").tag(RunningInputMode.steer)
                 }
-                Text("队列会在当前任务结束后启动新一轮；引导会在当前模型输出或工具调用完整结束后插入上下文。")
+                Text("settings.general_settings_view.the_queue_starts_a_new_turn")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("回答质量") {
-                Toggle("完成前复核最终答案", isOn: Binding(
+            Section("settings.general_settings_view.answer_quality") {
+                Toggle("settings.general_settings_view.review_the_final_answer_before_completion", isOn: Binding(
                     get: { center.verifyFinalAnswer },
                     set: { value in Task { await center.setVerifyFinalAnswer(value) } }
                 ))
-                Text("开启后会额外进行一次不调用工具的自检；确认无误时不会显示 CONFIRM，发现问题时会追加修正版。")
+                Text("settings.general_settings_view.when_on_an_extra_self_check")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if let contentUpdates {
+                Section("settings.content_updates.section") {
+                    NavigationLink {
+                        ContentUpdatesSettingsView(center: contentUpdates)
+                    } label: {
+                        Label("settings.content_updates.row", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .frame(minHeight: FloeTheme.minimumTarget)
+                    .accessibilityIdentifier("settings.general.content_updates")
+                    Text("settings.content_updates.footer")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("settings.general.accessibility") {
@@ -88,7 +114,7 @@ struct GeneralSettingsView: View {
             }
 
         }
-        .navigationTitle("settings.section.general")
+        .navigationTitle(FloeL10n.l("settings.section.general"))
         .task { await center.load() }
     }
 

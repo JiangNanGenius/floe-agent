@@ -78,7 +78,10 @@ public enum WorkspaceTextPolicy {
     ]
 
     public static let cadExtensions: Set<String> = [
-        "dxf", "dwg", "step", "stp", "iges", "igs", "stl", "obj"
+        "dxf", "dwg", "step", "stp", "iges", "igs", "stl", "obj",
+        // Native FloeCAD document package (directory): parametric history +
+        // B-rep, opened by the FloeCAD workbench, never as text.
+        "floecad"
     ]
 
     public static let imageExtensions: Set<String> = [

@@ -5,6 +5,9 @@ import FloeSecurity
 import FloeTools
 import FloeSkills
 
+import FloeCore
+import UniformTypeIdentifiers
+
 struct SkillsView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @ObservedObject var center: SkillsCenter
@@ -15,6 +18,11 @@ struct SkillsView: View {
     @State private var showingFinder = false
     @State private var pendingRemoval: PersistedSkill?
     @State private var updatingSkill: PersistedSkill?
+    @State private var showingFolderImporter = false
+    /// Shared scripted auto-update policy; the same defaults value is managed
+    /// by Settings → Content updates. Never a second copy.
+    @AppStorage(ContentUpdateCenter.scriptedAutoInstallDefaultsKey)
+    private var autoScriptedUpdates = false
 
     init(center: SkillsCenter, mcpCenter: MCPSettingsCenter = .shared) {
         self.center = center
@@ -60,7 +68,7 @@ struct SkillsView: View {
                             Text(pluginSummary(definition)).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
                             if let installed = center.installed.first(where: { $0.id == definition.id }) {
                                 if let version = center.availableVersion(for: installed) {
-                                    Button("更新至 v\(version)") { updatingSkill = installed }
+                                    Button(FloeL10n.l("skills.skills_view.update_to_v", version)) { updatingSkill = installed }
                                 } else if installed.status == "enabled" {
                                     Label("plugins.ready", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
                                 } else {
@@ -74,7 +82,16 @@ struct SkillsView: View {
                 }
                 Section {
                     Button("plugins.import", systemImage: "square.and.arrow.down") { showingFinder = true }
+                    Button("skills.import_folder", systemImage: "folder") { showingFolderImporter = true }
                     Button("skills.creator", systemImage: "plus") { showingCreator = true }
+                }
+                Section {
+                    Toggle("skills.auto_scripted_updates.label", isOn: $autoScriptedUpdates)
+                        .accessibilityIdentifier("skills.auto_scripted_updates")
+                } header: {
+                    Text("skills.auto_scripted_updates.title")
+                } footer: {
+                    Text("skills.auto_scripted_updates.footer")
                 }
             }
             Section("connectors.title") {
@@ -118,7 +135,7 @@ struct SkillsView: View {
                                 updatingSkill = skill
                             } label: {
                                 if let version = center.availableVersion(for: skill) {
-                                    Label("更新至 v\(version)", systemImage: "arrow.down.circle")
+                                    Label(FloeL10n.l("skills.skills_view.update_to_v", version), systemImage: "arrow.down.circle")
                                 } else { Label("skills.update", systemImage: "arrow.down.circle") }
                             }.buttonStyle(.borderless)
                         }
@@ -146,6 +163,15 @@ struct SkillsView: View {
                 Button("skills.creator", systemImage: "plus") { showingCreator = true }
             }
         }
+        .fileImporter(
+            isPresented: $showingFolderImporter,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                Task { await importTraditionalFolder(url) }
+            }
+        }
         .task { await center.load(); await center.refreshOfficialCatalog() }
         .refreshable { await center.load(); await center.refreshOfficialCatalog(force: true) }
         .sheet(isPresented: $showingCreator) { SkillCreatorSheet(center: center) }
@@ -162,6 +188,24 @@ struct SkillsView: View {
                 if let skill = pendingRemoval { Task { await center.remove(skill) } }
                 pendingRemoval = nil
             }
+        }
+    }
+    /// Imports a traditional skill folder (SKILL.md, optional floe.json,
+    /// scripts/references/assets/agents). The source directory is copied to a
+    /// temporary location; installation never executes scripts and never
+    /// writes Floe metadata back into the user's folder.
+    private func importTraditionalFolder(_ url: URL) async {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-skill-import-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        do {
+            try FileManager.default.copyItem(at: url, to: temporary)
+            guard let source = URL(string: "floe-folder://local/\(url.lastPathComponent)") else { return }
+            await center.installTraditionalPackage(at: temporary, sourceURL: source)
+        } catch {
+            center.errorMessage = error.localizedDescription
         }
     }
 }
@@ -186,11 +230,11 @@ private struct SkillGitHubUpgradeSheet: View {
                     if let candidate = center.pendingUpgrade {
                         LabeledContent("skills.update.available", value: "v\(candidate.snapshot.package.manifest.version)")
                         if !candidate.addedCapabilities.isEmpty || !candidate.addedTools.isEmpty {
-                            Label("本次更新需要新增访问权限，请在详情中查看。", systemImage: "hand.raised")
+                            Label("skills.skills_view.this_update_requires_new_access_permissions", systemImage: "hand.raised")
                                 .font(.callout)
                         }
                         if candidate.changedFiles.isEmpty {
-                            Label("已是最新版本", systemImage: "checkmark.circle").foregroundStyle(.secondary)
+                            Label("skills.skills_view.already_the_latest_version", systemImage: "checkmark.circle").foregroundStyle(.secondary)
                         }
                         Button("skills.update.now") {
                             Task {
@@ -216,8 +260,8 @@ private struct SkillGitHubUpgradeSheet: View {
                         if let notes = candidate.releaseNotes[Locale.current.language.languageCode?.identifier == "zh" ? "zh-Hans" : "en"] {
                             Text(notes).font(.callout)
                         }
-                        LabeledContent("新增权限 / New capabilities", value: candidate.addedCapabilities.sorted().joined(separator: ", "))
-                        LabeledContent("新增工具 / New tools", value: candidate.addedTools.sorted().joined(separator: ", "))
+                        LabeledContent("skills.skills_view.new_capabilities", value: candidate.addedCapabilities.sorted().joined(separator: ", "))
+                        LabeledContent("skills.skills_view.new_tools", value: candidate.addedTools.sorted().joined(separator: ", "))
                         ForEach(candidate.changedFiles, id: \.self) { file in
                             DisclosureGroup(file) {
                                 Text("Before").font(.caption.bold())
@@ -235,8 +279,8 @@ private struct SkillGitHubUpgradeSheet: View {
             .overlay { if center.isWorking { ProgressView() } }
             .navigationTitle(skill.name)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("action.cancel") { center.cancelUpgrade(); dismiss() }.disabled(center.isWorking) } }
-            .confirmationDialog("回退会恢复上次更新前的内容与授权 / Restore previous content and grants?", isPresented: $confirmingRollback) {
-                Button("回退 / Roll back", role: .destructive) { Task { await center.rollbackLatestUpgrade(skill: skill); if center.errorMessage == nil { dismiss() } } }
+            .confirmationDialog("skills.skills_view.restore_previous_content_and_grants", isPresented: $confirmingRollback) {
+                Button("skills.skills_view.roll_back", role: .destructive) { Task { await center.rollbackLatestUpgrade(skill: skill); if center.errorMessage == nil { dismiss() } } }
             }
             .interactiveDismissDisabled(center.isWorking)
             .onAppear {
@@ -551,10 +595,9 @@ private struct MCPServersView: View {
         List {
             Section {
                 if center.servers.isEmpty {
-                    ContentUnavailableView(
-                        "尚未添加 MCP 服务器",
+                    ContentUnavailableView("skills.skills_view.no_mcp_server_added_yet",
                         systemImage: "network",
-                        description: Text("添加标准远程 MCP，让普通 Agent 使用服务器提供的工具。")
+                        description: Text("skills.skills_view.add_a_standard_remote_mcp_so")
                     )
                 }
                 ForEach(center.servers) { server in
@@ -577,20 +620,20 @@ private struct MCPServersView: View {
                         }
                     }
                     .swipeActions {
-                        Button("删除", role: .destructive) { center.remove(serverID: server.id) }
+                        Button("workspace.workspace_canvas_view.delete", role: .destructive) { center.remove(serverID: server.id) }
                     }
                 }
             } footer: {
-                Text("支持标准 Streamable HTTP。远程工具仍经过 Floe 的本地权限与审批；画布默认不能使用 MCP。")
+                Text("skills.skills_view.supports_standard_streamable_http_remote_tools")
             }
             if let error = center.errorMessage {
                 Text(error).foregroundStyle(.red).font(.footnote)
             }
         }
-        .navigationTitle("标准 MCP")
+        .navigationTitle("connectors.mcp.title")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("添加", systemImage: "plus") { showingNewServer = true }
+                Button("portforward.add", systemImage: "plus") { showingNewServer = true }
             }
         }
         .sheet(isPresented: $showingNewServer) {
@@ -604,10 +647,10 @@ private struct MCPServersView: View {
 
     private func stateText(_ state: MCPSettingsCenter.ConnectionState?) -> String {
         switch state {
-        case .inactive, nil: "未连接"
-        case .connecting: "正在读取工具…"
-        case .ready(let count): "可用工具 \(count) 个"
-        case .failed(let message): "连接失败：\(message)"
+        case .inactive, nil: FloeL10n.l("skills.skills_view.not_connected")
+        case .connecting: FloeL10n.l("skills.skills_view.reading_tools")
+        case .ready(let count): FloeL10n.plural("skills.skills_view.tools_available", count: count)
+        case .failed(let message): FloeL10n.l("skills.skills_view.connection_failed", message)
         }
     }
 
@@ -653,44 +696,44 @@ private struct MCPServerEditor: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("名称", text: $server.displayName)
+                    TextField("notes.notes_root_view.name", text: $server.displayName)
                     TextField("https://…/mcp", text: $endpointText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
-                    Toggle("启用", isOn: $server.enabled)
-                    Toggle("允许画布使用", isOn: $server.allowInCanvas)
+                    Toggle("skills.skills_view.enabled", isOn: $server.enabled)
+                    Toggle("skills.skills_view.allow_canvas_to_use", isOn: $server.allowInCanvas)
                 } header: {
-                    Text("服务器")
+                    Text("skills.skills_view.server")
                 } footer: {
-                    Text("画布默认关闭 MCP。只有你明确打开此服务器后，画布 Agent 才能看到它的工具。")
+                    Text("skills.skills_view.mcp_is_off_by_default_for")
                 }
-                Section("认证") {
-                    Picker("方式", selection: $server.authentication) {
-                        Text("无").tag(MCPServerConfiguration.Authentication.none)
+                Section("workspace.file_inspector_view.authentication") {
+                    Picker("hosts.auth", selection: $server.authentication) {
+                        Text("workspace.workspace_canvas_view.none").tag(MCPServerConfiguration.Authentication.none)
                         Text("Bearer Token").tag(MCPServerConfiguration.Authentication.bearerToken)
-                        Text("自定义请求头").tag(MCPServerConfiguration.Authentication.customHeader)
+                        Text("skills.skills_view.custom_request_headers").tag(MCPServerConfiguration.Authentication.customHeader)
                     }
                     if server.authentication == .customHeader {
-                        TextField("请求头名称", text: $server.credentialHeaderName)
+                        TextField("skills.skills_view.request_header_name", text: $server.credentialHeaderName)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                     }
                     if server.authentication != .none {
                         SecureField(
-                            center.hasStoredCredential(serverID: server.id) ? "输入新凭据以替换已保存凭据" : "凭据",
+                            center.hasStoredCredential(serverID: server.id) ? "skills.skills_view.enter_new_credentials_to_replace_the" : "providers.credentials",
                             text: $credential
                         )
                         if center.hasStoredCredential(serverID: server.id) {
-                            Label("凭据已安全保存在钥匙串", systemImage: "checkmark.shield")
+                            Label("skills.skills_view.credentials_saved_securely_in_keychain", systemImage: "checkmark.shield")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
-                Section("网络安全") {
-                    Toggle("允许不安全的 HTTP（仅可信局域网）", isOn: $server.allowInsecureHTTP)
+                Section("skills.skills_view.network_security") {
+                    Toggle("skills.skills_view.allow_insecure_http_trusted_lan_only", isOn: $server.allowInsecureHTTP)
                 }
                 if let tools = center.toolsByServerID[server.id], !tools.isEmpty {
-                    Section("工具") {
+                    Section("skills.skills_view.tools") {
                         ForEach(tools, id: \.remoteName) { tool in
                             Toggle(isOn: Binding(
                                 get: { !server.disabledRemoteToolNames.contains(tool.remoteName) },
@@ -711,13 +754,13 @@ private struct MCPServerEditor: View {
                     Text(validationMessage).foregroundStyle(.red)
                 }
             }
-            .navigationTitle(server.displayName.isEmpty ? "添加 MCP" : server.displayName)
+            .navigationTitle(server.displayName.isEmpty ? "skills.skills_view.add_mcp" : server.displayName)
             .disabled(isSaving)
             .overlay { if isSaving { ProgressView() } }
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("workspace.workspace_canvas_view.cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存并连接") { save() }
+                    Button("skills.skills_view.save_and_connect") { save() }
                         .disabled(server.displayName.trimmingCharacters(in: .whitespaces).isEmpty || endpointText.isEmpty)
                 }
             }
@@ -727,7 +770,7 @@ private struct MCPServerEditor: View {
     private func save() {
         validationMessage = nil
         guard let endpoint = URL(string: endpointText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            validationMessage = "请输入有效的 MCP 地址。"
+            validationMessage = FloeL10n.l("skills.skills_view.enter_a_valid_mcp_url")
             return
         }
         server.endpoint = endpoint
@@ -761,7 +804,7 @@ private struct SkillInstallReviewSheet: View {
                     Section("skills.review.tools") { ForEach(pending.toolNames, id: \.self) { Text($0) } }
                 }
                 if pending.containsScripts {
-                    Section("Python 脚本（安装时审计）") {
+                    Section("skills.skills_view.python_scripts_audited_at_install") {
                         ForEach(pending.files.keys.filter { $0.hasPrefix("scripts/") }.sorted(), id: \.self) {
                             Label($0, systemImage: "doc.text")
                                 .font(FloeTheme.Typography.evidence)
@@ -769,7 +812,7 @@ private struct SkillInstallReviewSheet: View {
                     }
                 }
                 if !pending.manifest.pythonPackages.isEmpty {
-                    Section("纯 Python 依赖（安装时审计）") {
+                    Section("skills.skills_view.pure_python_dependencies_audited_at_install") {
                         ForEach(pending.manifest.pythonPackages, id: \.spec) { package in
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(package.spec).font(FloeTheme.Typography.evidence)
@@ -778,7 +821,7 @@ private struct SkillInstallReviewSheet: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        Text("只接受固定版本的 PyPI none-any wheel；安装后仅相同脚本与依赖可免重复审核。")
+                        Text("skills.skills_view.only_pinned_version_pypi_none_any")
                             .font(FloeTheme.Typography.metadata)
                             .foregroundStyle(.secondary)
                     }

@@ -23,9 +23,18 @@ struct MarkdownRendererView: View {
     /// block is re-parsed on every update instead of the full document.
     var isStreaming: Bool = false
 
+    /// Cache for the streaming completed prefix. `parseStreaming` splits at
+    /// the last newline, but the completed portion only changes when a new
+    /// line lands; caching it per source makes token ticks re-parse the
+    /// unfinished tail only, which is what the streaming contract promised.
+    /// The window is append-only during streaming, so the cached prefix
+    /// stays valid until it grows. The cache object never publishes, so
+    /// reading/writing it during `body` cannot schedule a render.
+    @StateObject private var prefixCache = StreamingPrefixCache()
+
     var body: some View {
         if isStreaming {
-            let parts = MarkdownBlockParser.parseStreaming(source)
+            let parts = streamingParts()
             // One stable sequence avoids remounting the visible tail whenever
             // a newline moves it into the completed portion. Only new blocks
             // animate; token updates never fade the entire answer.
@@ -36,6 +45,27 @@ struct MarkdownRendererView: View {
             MarkdownBlockSequenceView(blocks: MarkdownBlockParser.parse(source))
         }
     }
+
+    private func streamingParts() -> (completed: [MarkdownBlock], tail: [MarkdownBlock]) {
+        let visibleWindow = source.suffix(MarkdownBlockParser.maximumStreamingCharacters)
+        guard let lastNewline = visibleWindow.lastIndex(of: "\n") else {
+            return ([], MarkdownBlockParser.parse(String(visibleWindow)))
+        }
+        let completedSource = String(visibleWindow[...lastNewline])
+        let tailSource = String(visibleWindow[visibleWindow.index(after: lastNewline)...])
+        if completedSource != prefixCache.source {
+            prefixCache.source = completedSource
+            prefixCache.blocks = MarkdownBlockParser.parse(completedSource)
+        }
+        return (prefixCache.blocks, MarkdownBlockParser.parse(tailSource))
+    }
+}
+
+/// Non-publishing reference cache; `@StateObject` keeps one instance per
+/// view identity without SwiftUI observing its writes.
+private final class StreamingPrefixCache: ObservableObject {
+    var source: String = ""
+    var blocks: [MarkdownBlock] = []
 }
 
 /// A vertical stack of rendered blocks. Recursive: quotes and list

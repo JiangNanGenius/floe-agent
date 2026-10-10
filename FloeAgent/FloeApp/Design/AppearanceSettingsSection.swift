@@ -22,8 +22,8 @@ struct AppearanceSettingsSection: View {
                 appearancePicker.pickerStyle(.segmented)
             }
             Text(selection == .system
-                 ? "自动随系统外观切换。定时或日落切换可在 iOS「设置 → 显示与亮度 → 自动」中设置。"
-                 : "当前已固定外观，选择「自动」即可恢复跟随系统。")
+                 ? "design.appearance_settings_section.switches_automatically_with_the_system_appearance"
+                 : "design.appearance_settings_section.appearance_is_currently_fixed_choose_automatic")
                 .font(.footnote).foregroundStyle(.secondary)
         } header: { Text("settings.appearance.day_night") }
     }

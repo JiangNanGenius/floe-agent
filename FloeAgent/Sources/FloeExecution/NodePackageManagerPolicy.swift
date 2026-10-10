@@ -36,28 +36,28 @@ public enum NodePackageManagerPolicy {
             if FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path) { locks.insert(manager) }
         }
         let manifest = root.appendingPathComponent("package.json").resolvingSymlinksInPath()
-        guard manifest.path.hasPrefix(root.path + "/") else { throw FloeError.validationFailed("package.json 越出工作区") }
+        guard manifest.path.hasPrefix(root.path + "/") else { throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.package_json_is_outside_the_workspace")) }
         var declared: String?
         if FileManager.default.fileExists(atPath: manifest.path) {
             let values = try manifest.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
             guard values.isRegularFile == true, (values.fileSize ?? Int.max) <= 2_097_152,
                   let json = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any] else {
-                throw FloeError.validationFailed("无法读取项目 package.json")
+                throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.could_not_read_the_project_package"))
             }
             if let value = json["packageManager"] {
                 guard let value = value as? String, let separator = value.firstIndex(of: "@") else {
-                    throw FloeError.validationFailed("项目 packageManager 格式无效")
+                    throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.the_project_packagemanager_format_is_invalid"))
                 }
                 declared = String(value[..<separator])
             }
         }
         guard locks.count <= 1, declared == nil || locks.isEmpty || locks.contains(declared!) else {
-            throw FloeError.validationFailed("项目的 packageManager 与锁文件冲突。请整理项目，或明确选择本环境使用的 npm / pnpm；环境安装不会改写项目锁文件。")
+            throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.the_project_s_packagemanager_conflicts_with"))
         }
         let selected = declared ?? locks.first
         guard let selected else { return .npm }
         guard let manager = NodePackageManager(rawValue: selected) else {
-            throw FloeError.validationFailed("项目要求 \(selected)。本环境支持 npm / pnpm，请明确选择；原项目锁文件会保留。")
+            throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.the_project_requires_this_environment_supports", selected))
         }
         return manager
     }
@@ -85,7 +85,7 @@ public extension NodePackageManagerPolicy {
             ? #"^(?:@[a-z0-9._-]+/)?[a-z0-9][a-z0-9._-]*$"#
             : #"^(?:@[a-z0-9._-]+/)?[a-z0-9][a-z0-9._-]*(?:@[A-Za-z0-9.*~^+_><=-][A-Za-z0-9.*~^+_><=| -]*)?$"#
         guard value.utf8.count <= 512, value.range(of: pattern, options: .regularExpression) != nil else {
-            throw FloeError.validationFailed("请输入 npm 包名，可附加 @版本范围；不接受路径或 Git URL")
+            throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.enter_an_npm_package_name_optionally"))
         }
     }
 
@@ -99,41 +99,41 @@ public extension NodePackageManagerPolicy {
         let installing = ["install", "i", "add"].contains(command)
         let removing = ["uninstall", "un", "remove", "rm"].contains(command)
         if ["ci", "update", "up", "dedupe", "rebuild", "link", "unlink"].contains(command) {
-            throw FloeError.validationFailed("受管理环境请使用 npm/pnpm install 或 remove；项目锁文件不会在这里改写")
+            throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.in_managed_environments_use_npm_pnpm"))
         }
         guard installing || removing else {
             if command.hasPrefix("-"), args.contains(where: { ["install", "i", "add", "remove", "rm", "uninstall"].contains($0) }) {
-                throw FloeError.validationFailed("请将 install/remove 放在管理器名称后；安装位置由当前环境决定")
+                throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.put_install_remove_after_the_manager"))
             }
             return nil
         }
         args.removeFirst()
         args.removeAll { ["-g", "--global", "--save", "--save-dev", "-D", "--save-prod", "-P", "--ignore-scripts", "--no-audit", "--no-fund"].contains($0) }
         guard !args.contains(where: { $0.hasPrefix("-") }) else {
-            throw FloeError.validationFailed("安装位置和安装脚本由环境管理；不支持此命令选项")
+            throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.install_location_and_scripts_are_managed"))
         }
         if args.isEmpty && !removing {
             let root = workspace.resolvingSymlinksInPath().standardizedFileURL
             let manifest = directory.appendingPathComponent("package.json").resolvingSymlinksInPath().standardizedFileURL
-            guard manifest.path.hasPrefix(root.path + "/") else { throw FloeError.validationFailed("项目清单越出当前工作区") }
+            guard manifest.path.hasPrefix(root.path + "/") else { throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.the_project_manifest_is_outside_the")) }
             let values = try manifest.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
             guard values.isRegularFile == true, (values.fileSize ?? Int.max) <= 2 * 1024 * 1024,
                   let json = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any] else {
-                throw FloeError.validationFailed("项目 package.json 不可读取或过大")
+                throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.the_project_package_json_cannot_be"))
             }
             var dependencies: [String: String] = [:]
             for key in ["dependencies", "devDependencies"] {
                 if let value = json[key] {
-                    guard let entries = value as? [String: String] else { throw FloeError.validationFailed("项目依赖清单无效") }
+                    guard let entries = value as? [String: String] else { throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.the_project_dependency_manifest_is_invalid")) }
                     for (name, version) in entries {
-                        if let existing = dependencies[name], existing != version { throw FloeError.validationFailed("项目依赖存在冲突：" + name) }
+                        if let existing = dependencies[name], existing != version { throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.the_project_dependencies_have_a_conflict") + name) }
                         dependencies[name] = version
                     }
                 }
             }
             args = dependencies.sorted { $0.key < $1.key }.map { $0.key + "@" + $0.value }
-        } else if args.isEmpty { throw FloeError.validationFailed("请指定要卸载的包名") }
-        guard args.count <= 256 else { throw FloeError.validationFailed("一次最多更新 256 个依赖") }
+        } else if args.isEmpty { throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.specify_the_package_name_to_uninstall")) }
+        guard args.count <= 256 else { throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.at_most_256_dependencies_can_be")) }
         for spec in args { try validateSpecification(spec, remove: removing) }
         return Change(specifications: args, remove: removing)
     }

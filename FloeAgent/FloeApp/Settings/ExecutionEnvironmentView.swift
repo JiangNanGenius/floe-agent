@@ -130,7 +130,7 @@ struct ExecutionEnvironmentView: View {
                 stopEnvironmentID = nil
             }
         } message: { Text(stopImpact) }
-        .navigationTitle("settings.section.execution")
+        .navigationTitle(FloeL10n.l("settings.section.execution"))
         .task {
             async let settings: Void = center.load()
             async let hosts: Void = center.environment.remoteSessionCenter.loadHosts()

@@ -4,6 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import FloeNotes
 
+import FloeCore
 /// A draft owns its revision. Concurrent Agent edits produce a conflict instead of being overwritten.
 struct MindMapTopicInspector: View {
     let session: NotesSession
@@ -36,13 +37,13 @@ struct MindMapTopicInspector: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("主题") {
-                    TextField("标题", text: $node.title)
-                    TextField("详细说明", text: $node.note, axis: .vertical).lineLimit(4...12)
-                    TextField("网页链接 https://…", text: Binding(get: { node.hyperLink ?? "" }, set: { node.hyperLink = $0.isEmpty ? nil : $0 }))
+                Section("notes.notes_document_editor.topic") {
+                    TextField("shortcuts.floe_shortcuts.title", text: $node.title)
+                    TextField("notes.mind_map_topic_inspector.details", text: $node.note, axis: .vertical).lineLimit(4...12)
+                    TextField("notes.mind_map_topic_inspector.web_link_https", text: Binding(get: { node.hyperLink ?? "" }, set: { node.hyperLink = $0.isEmpty ? nil : $0 }))
                         .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                     if let source = node.source {
-                        Button("打开来源", systemImage: "arrow.up.forward.app") {
+                        Button("notes.mind_map_topic_inspector.open_source", systemImage: "arrow.up.forward.app") {
                             requestSource(source)
                         }
                     }
@@ -51,21 +52,21 @@ struct MindMapTopicInspector: View {
                     ForEach(node.attachments ?? []) { attachment in
                         attachmentRow(attachment)
                     }
-                    Button("添加图片、文档或音视频", systemImage: "paperclip") {
+                    Button("notes.mind_map_topic_inspector.add_images_documents_audio_or_video", systemImage: "paperclip") {
                         replacing = nil; importing = true
                     }.disabled((node.attachments ?? []).count >= 32 || busy)
-                } header: { Text("附件 · \((node.attachments ?? []).count) / 32") }
-                footer: { Text("附件随导图长期保存。移除附件可在保存后撤销；网页链接在系统浏览器中打开。") }
+                } header: { Text(FloeL10n.l("notes.mind_map_topic_inspector.attachment_32", (node.attachments ?? []).count)) }
+                footer: { Text("notes.mind_map_topic_inspector.attachments_are_saved_with_the_mind") }
             }
             .disabled(busy)
-            .navigationTitle("主题内容")
+            .navigationTitle("notes.mind_map_topic_inspector.topic_content")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() }.disabled(busy) }
+                ToolbarItem(placement: .cancellationAction) { Button("workspace.workspace_canvas_view.cancel") { dismiss() }.disabled(busy) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { save() }.disabled(busy || node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("workspace.workspace_canvas_view.save") { save() }.disabled(busy || node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
-            .overlay { if busy { ProgressView("正在处理…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16)) } }
+            .overlay { if busy { ProgressView("envdetail.working").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16)) } }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
                 importAttachment(result)
             }
@@ -76,16 +77,16 @@ struct MindMapTopicInspector: View {
                 }
                 .onDisappear { try? FileManager.default.removeItem(at: item.url.deletingLastPathComponent()) }
             }
-            .alert("主题内容", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-                Button("好") { error = nil }
+            .alert("notes.mind_map_topic_inspector.topic_content", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("workspace.office_document_editor_view.ok") { error = nil }
             } message: { Text(error ?? "") }
         }.presentationDetents([.large])
-            .confirmationDialog("离开前保存主题修改？", isPresented: Binding(get: { pendingSource != nil }, set: { if !$0 { pendingSource = nil } }), titleVisibility: .visible) {
+            .confirmationDialog("notes.mind_map_topic_inspector.save_topic_changes_before_leaving", isPresented: Binding(get: { pendingSource != nil }, set: { if !$0 { pendingSource = nil } }), titleVisibility: .visible) {
                 if let source = pendingSource {
-                    Button("保存并打开来源") { navigate(source, saveChanges: true) }
-                    Button("放弃修改并打开来源", role: .destructive) { navigate(source, saveChanges: false) }
+                    Button("notes.mind_map_topic_inspector.save_and_open_source") { navigate(source, saveChanges: true) }
+                    Button("notes.mind_map_topic_inspector.discard_changes_and_open_source", role: .destructive) { navigate(source, saveChanges: false) }
                 }
-                Button("取消", role: .cancel) { pendingSource = nil }
+                Button("workspace.workspace_canvas_view.cancel", role: .cancel) { pendingSource = nil }
             }.interactiveDismissDisabled(busy)
     }
 
@@ -94,21 +95,21 @@ struct MindMapTopicInspector: View {
             Button { preparePreview(attachment) } label: {
                 Label(attachment.fileName, systemImage: icon(attachment.kind)).lineLimit(2)
             }
-            TextField("附件说明", text: Binding(get: {
+            TextField("notes.mind_map_topic_inspector.attachment_description", text: Binding(get: {
                 node.attachments?.first(where: { $0.id == attachment.id })?.caption ?? ""
             }, set: { text in
                 if let index = node.attachments?.firstIndex(where: { $0.id == attachment.id }) { node.attachments?[index].caption = text }
             }), axis: .vertical)
             HStack {
                 if attachment.kind == .image {
-                    Button("设为主题图片") { node.imageResourceID = attachment.resourceID }
+                    Button("notes.mind_map_topic_inspector.set_as_topic_image") { node.imageResourceID = attachment.resourceID }
                 }
-                Button("替换") { replacing = attachment.id; importing = true }
+                Button("workspace.text_file_editor_view.replace") { replacing = attachment.id; importing = true }
                 if let source = attachment.source {
-                    Button("来源") { requestSource(source) }
+                    Button("skills.review.source") { requestSource(source) }
                 }
                 Spacer()
-                Button("移除", role: .destructive) {
+                Button("localmodels.remove", role: .destructive) {
                     node.attachments?.removeAll { $0.id == attachment.id }
                     if node.imageResourceID == attachment.resourceID { node.imageResourceID = nil }
                 }
@@ -139,7 +140,7 @@ struct MindMapTopicInspector: View {
                 if let onOpenSource { opened = await onOpenSource(source) }
                 else { opened = await session.openSource(source) }
                 if opened { dismiss() }
-                else { error = session.errorMessage ?? "无法打开来源，请检查资料是否仍然可用。" }
+                else { error = session.errorMessage ?? FloeL10n.l("notes.mind_map_topic_inspector.could_not_open_the_source_check") }
             } catch { self.error = error.localizedDescription }
         }
     }

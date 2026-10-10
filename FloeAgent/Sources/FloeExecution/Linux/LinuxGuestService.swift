@@ -868,11 +868,15 @@ public struct LinuxGuestSessionInfo: Sendable, Equatable {
     public var sessionID: String
     public var alive: Bool
     public var exitCode: Int32?
+    /// Recoverable session failure (e.g. the unread-output overflow): the
+    /// session ended deliberately and the owner can reconnect to continue.
+    public var failure: String?
 
-    public init(sessionID: String, alive: Bool, exitCode: Int32? = nil) {
+    public init(sessionID: String, alive: Bool, exitCode: Int32? = nil, failure: String? = nil) {
         self.sessionID = sessionID
         self.alive = alive
         self.exitCode = exitCode
+        self.failure = failure
     }
 }
 

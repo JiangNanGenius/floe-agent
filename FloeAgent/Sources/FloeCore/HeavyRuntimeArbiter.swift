@@ -173,13 +173,13 @@ public final class HeavyRuntimeArbiter: Sendable {
         public var errorDescription: String? {
             switch self {
             case .confirmationUnavailable:
-                return "本地模型需要先停止正在运行的 Linux 环境，但当前无法确认该操作。"
+                return FloeL10n.l("core.heavy_runtime_arbiter.the_local_model_needs_the_running")
             case .deferredByCaller:
-                return "本地模型已取消：Linux 环境仍在运行，两者不能同时使用。"
+                return FloeL10n.l("core.heavy_runtime_arbiter.the_local_model_run_was_canceled")
             case .linuxStopIncomplete:
-                return "Linux 环境未能在预期时间内停止，已取消本次本地模型请求。"
+                return FloeL10n.l("core.heavy_runtime_arbiter.the_linux_environment_did_not_stop")
             case .linuxModelRetained:
-                return "本地模型仍被某个任务占用，无法在释放前启动 Linux 环境；请结束该任务后重试。"
+                return FloeL10n.l("core.heavy_runtime_arbiter.a_task_is_still_using_the")
             }
         }
     }

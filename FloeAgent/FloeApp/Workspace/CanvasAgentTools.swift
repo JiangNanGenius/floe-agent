@@ -722,7 +722,7 @@ actor CanvasToolCoordinator {
             CanvasPatchOperation(
                 kind: .update,
                 nodeID: resultNodeID,
-                text: "生成失败，可从配置节点重试",
+                text: FloeL10n.l("workspace.canvas_agent_tools.generation_failed_retry_from_the_configuration"),
                 metadata: [
                     "generationState": CanvasGenerationTaskState.failed.rawValue,
                     "generationError": message,

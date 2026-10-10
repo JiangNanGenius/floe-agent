@@ -2888,7 +2888,8 @@ public actor TinyEMULinuxGuestRegistry {
         let info = LinuxGuestSessionInfo(
             sessionID: sessionID,
             alive: await !terminal.handle.isFinished,
-            exitCode: await terminal.handle.terminalExitCode
+            exitCode: await terminal.handle.terminalExitCode,
+            failure: await terminal.handle.failure
         )
         if await terminal.handle.isFinished {
             terminalSessions[sessionID] = nil

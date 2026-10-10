@@ -12,6 +12,7 @@ import SwiftUI
 import FloeWorkspace
 import FloeTools
 
+import FloeCore
 /// The workspace directory tree (lazy) with an inline search field.
 struct FileTreeView: View {
     @ObservedObject var viewModel: FileTreeViewModel
@@ -28,6 +29,9 @@ struct FileTreeView: View {
     @State private var showingNewFolder = false
     @State private var newFolderParent = ""
     @State private var newFolderName = ""
+    @State private var showingNewCAD = false
+    @State private var newCADParent = ""
+    @State private var newCADName = ""
     @State private var showingRename = false
     @State private var renameTarget: FileTreeNode?
     @State private var renameName = ""
@@ -63,17 +67,39 @@ struct FileTreeView: View {
         .toolbar {
             if showsToolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button(selecting ? "完成选择" : "选择", systemImage: "checklist") {
+                    Menu {
+                        Button {
+                            newCADParent = ""
+                            newCADName = ""
+                            showingNewCAD = true
+                        } label: {
+                            Label("workspace.file_tree_view.new_cad_document",
+                                  systemImage: "cube.transparent")
+                        }
+                        .accessibilityIdentifier("fileTree.newCADDocument")
+                        Button {
+                            newFolderParent = ""
+                            newFolderName = ""
+                            showingNewFolder = true
+                        } label: {
+                            Label("workspace.file_tree_view.new_folder",
+                                  systemImage: "folder.badge.plus")
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityIdentifier("fileTree.createMenu")
+                    Button(selecting ? "workspace.file_tree_view.done_selecting" : "workspace.file_tree_view.select", systemImage: "checklist") {
                         selecting.toggle(); selection.removeAll()
                     }
                     if selecting {
-                        Button("全选") { selection = Set(viewModel.visibleNodes.map { $0.node.relativePath }) }
+                        Button("composer.editor.select_all") { selection = Set(viewModel.visibleNodes.map { $0.node.relativePath }) }
                         Button("files.compress.action", systemImage: "doc.zipper") { beginCompress() }
                             .disabled(selection.isEmpty || compressing)
-                        Button("删除 \(selection.count) 项", systemImage: "trash", role: .destructive) { deletingBatch = true }
+                        Button(FloeL10n.plural("workspace.file_tree_view.delete_items", count: selection.count), systemImage: "trash", role: .destructive) { deletingBatch = true }
                             .disabled(selection.isEmpty)
                     }
-                    Button("刷新", systemImage: "arrow.clockwise") { Task { await viewModel.loadRoot() } }
+                    Button("envmgr.refresh", systemImage: "arrow.clockwise") { Task { await viewModel.loadRoot() } }
                 }
             }
         }
@@ -85,8 +111,8 @@ struct FileTreeView: View {
         }
         .sheet(item: $exportedURL) { url in FileTreeShareSheet(url: url) }
         .sheet(isPresented: $showingCompress) { compressSheet }
-        .confirmationDialog("删除所选文件？", isPresented: $deletingBatch, titleVisibility: .visible) {
-            Button("删除", role: .destructive) {
+        .confirmationDialog("workspace.file_tree_view.delete_the_selected_files", isPresented: $deletingBatch, titleVisibility: .visible) {
+            Button("workspace.workspace_canvas_view.delete", role: .destructive) {
                 Task {
                     busy = true
                     let failures = await viewModel.deleteBatch(selection)
@@ -95,53 +121,58 @@ struct FileTreeView: View {
                     busy = false
                 }
             }
-        } message: { Text("文件夹包含其中全部内容，此操作不可撤销。") }
-        .alert("移动文件", isPresented: Binding(get: { movingNode != nil }, set: { if !$0 { movingNode = nil } })) {
-            TextField("目标路径（包含文件名）", text: $destinationPath)
-            Button("移动") {
+        } message: { Text("workspace.file_tree_view.the_folder_includes_all_of_its") }
+        .alert("workspace.file_tree_view.move_file", isPresented: Binding(get: { movingNode != nil }, set: { if !$0 { movingNode = nil } })) {
+            TextField("workspace.file_tree_view.destination_path_including_file_name", text: $destinationPath)
+            Button("workspace.file_tree_view.move") {
                 guard let node = movingNode else { return }
                 let destination = destinationPath
                 movingNode = nil
                 Task { do { try await viewModel.move(node, to: destination) } catch { operationError = error.localizedDescription } }
             }
             Button("action.cancel", role: .cancel) { movingNode = nil }
-        } message: { Text("输入当前工作区内的目标路径。") }
-        .alert("新建文件夹", isPresented: $showingNewFolder) {
-            TextField("文件夹名称", text: $newFolderName)
-            Button("创建") { Task { await createFolder() } }
-            Button("取消", role: .cancel) {}
+        } message: { Text("workspace.file_tree_view.enter_a_destination_path_inside_the") }
+        .alert("workspace.file_tree_view.new_folder", isPresented: $showingNewFolder) {
+            TextField("workspace.file_tree_view.folder_name", text: $newFolderName)
+            Button("settings.git_hub_settings_view.create") { Task { await createFolder() } }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
         }
-        .alert("重命名", isPresented: $showingRename) {
-            TextField("新名称", text: $renameName)
-            Button("确定") { Task { await rename() } }
-            Button("取消", role: .cancel) {}
+        .alert("workspace.file_tree_view.new_cad_document", isPresented: $showingNewCAD) {
+            TextField("workspace.file_tree_view.cad_document_name", text: $newCADName)
+            Button("settings.git_hub_settings_view.create") { Task { await createCADDocument() } }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
+        } message: {
+            Text("workspace.file_tree_view.new_cad_document_message")
         }
-        .alert(
-            "确认删除？",
+        .alert("workspace.file_tree_view.rename", isPresented: $showingRename) {
+            TextField("workspace.file_tree_view.new_name", text: $renameName)
+            Button("workspace.file_tree_view.ok") { Task { await rename() } }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
+        }
+        .alert("workspace.file_tree_view.confirm_deletion",
             isPresented: Binding(
                 get: { pendingDelete != nil },
                 set: { if !$0 { pendingDelete = nil } }
             ),
             presenting: pendingDelete
         ) { node in
-            Button("删除", role: .destructive) {
+            Button("workspace.workspace_canvas_view.delete", role: .destructive) {
                 pendingDelete = nil
                 Task { await deleteNode(node) }
             }
-            Button("取消", role: .cancel) { pendingDelete = nil }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { pendingDelete = nil }
         } message: { node in
             Text(node.isDirectory
-                ? "将递归删除“\(node.name)”及其中的全部内容，此操作不可撤销。"
-                : "将删除“\(node.name)”，此操作不可撤销。")
+                ? FloeL10n.l("workspace.file_tree_view.and_all_of_its_contents_will", node.name)
+                : FloeL10n.l("workspace.file_tree_view.will_be_deleted_this_cannot_be", node.name))
         }
-        .alert(
-            "操作失败",
+        .alert("chat.conversation_list_view.action_failed",
             isPresented: Binding(
                 get: { operationError != nil },
                 set: { if !$0 { operationError = nil } }
             )
         ) {
-            Button("好", role: .cancel) {}
+            Button("workspace.office_document_editor_view.ok", role: .cancel) {}
         } message: {
             Text(operationError ?? "")
         }
@@ -223,7 +254,14 @@ struct FileTreeView: View {
                 newFolderName = ""
                 showingNewFolder = true
             } label: {
-                Label("新建文件夹", systemImage: "folder.badge.plus")
+                Label("workspace.file_tree_view.new_folder", systemImage: "folder.badge.plus")
+            }
+            Button {
+                newCADParent = node.relativePath
+                newCADName = ""
+                showingNewCAD = true
+            } label: {
+                Label("workspace.file_tree_view.new_cad_document", systemImage: "cube.transparent")
             }
         }
         Button {
@@ -231,23 +269,23 @@ struct FileTreeView: View {
             renameName = node.name
             showingRename = true
         } label: {
-            Label("重命名", systemImage: "pencil")
+            Label("workspace.file_tree_view.rename", systemImage: "pencil")
         }
-        Button("移动", systemImage: "folder") { movingNode = node; destinationPath = node.relativePath }
+        Button("workspace.file_tree_view.move", systemImage: "folder") { movingNode = node; destinationPath = node.relativePath }
         Button("files.compress.action", systemImage: "doc.zipper") {
             selection = [node.relativePath]
             selecting = true
             beginCompress()
         }
         if !node.isDirectory {
-            Button("导出", systemImage: "square.and.arrow.up") {
+            Button("files.export", systemImage: "square.and.arrow.up") {
                 do { exportedURL = try viewModel.exportURL(node) } catch { operationError = error.localizedDescription }
             }
         }
         Button(role: .destructive) {
             pendingDelete = node
         } label: {
-            Label("删除", systemImage: "trash")
+            Label("workspace.workspace_canvas_view.delete", systemImage: "trash")
         }
     }
 
@@ -256,6 +294,21 @@ struct FileTreeView: View {
         guard !name.isEmpty else { return }
         do {
             try await viewModel.createDirectory(parent: newFolderParent, name: name)
+        } catch {
+            operationError = error.localizedDescription
+        }
+    }
+
+    /// Production native CAD creation: builds the `.floecad` package through
+    /// the versioned store and opens it immediately so the user lands in the
+    /// workbench (sketch → solid → save all work from here).
+    private func createCADDocument() async {
+        let name = newCADName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            let relative = try await viewModel.createNativeCADDocument(
+                parent: newCADParent, name: name)
+            onSelectFile(relative)
         } catch {
             operationError = error.localizedDescription
         }
@@ -474,9 +527,9 @@ struct FileTreeView: View {
     private var searchResults: some View {
         Group {
             if viewModel.searchInProgress {
-                ProgressView("正在搜索文件名与文本内容…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                ProgressView("workspace.file_tree_view.searching_file_names_and_text_content").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = viewModel.errorMessage {
-                ContentUnavailableView("无法完成搜索", systemImage: "magnifyingglass", description: Text(error))
+                ContentUnavailableView("workspace.file_tree_view.the_search_could_not_be_completed", systemImage: "magnifyingglass", description: Text(error))
             } else if viewModel.searchHits.isEmpty {
                 ContentUnavailableView {
                     Label("inspector.search.empty", systemImage: "magnifyingglass")

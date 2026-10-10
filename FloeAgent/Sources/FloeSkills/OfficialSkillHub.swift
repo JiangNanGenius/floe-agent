@@ -15,8 +15,8 @@ public enum OfficialSkillHub {
                                              installedVersion: String, bundledVersion: String,
                                              sourceDigest: String?, installedDigest: String) -> Bool {
         guard skillIDs.contains(id), sourceDigest == installedDigest,
-              let installed = try? version(installedVersion),
-              let bundled = try? version(bundledVersion), installed.lexicographicallyPrecedes(bundled) else { return false }
+              let installed = try? SignedContentVersion(installedVersion),
+              let bundled = try? SignedContentVersion(bundledVersion), installed < bundled else { return false }
         if sourceURL == BundledDomainSkills.sourceURL(for: id) { return true }
         guard let sourceURL, let url = URL(string: sourceURL), url.scheme == "https",
               url.host == "github.com", url.user == nil, url.password == nil,
@@ -67,36 +67,37 @@ public enum OfficialSkillHub {
               source.path == catalogPath else { throw Failure.source }
     }
 
-    static func version(_ value: String) throws -> [Int] {
-        let pieces = value.split(separator: ".", omittingEmptySubsequences: false)
-        guard pieces.count == 3, pieces.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) && ($0 == "0" || !$0.hasPrefix("0")) }),
-              pieces.allSatisfy({ Int($0) != nil }) else { throw Failure.catalog }
-        return pieces.map { Int($0)! }
-    }
-
     public static func verifiedPackage(catalog bytes: Data, signature: Data, id: String,
                                        appVersion: String, trustedKeys: [String: Data]) throws -> Package {
-        guard bytes.count <= 262_144, signature.count <= 4096 else { throw Failure.catalog }
-        let envelope = try JSONDecoder().decode(Signature.self, from: signature)
-        guard let keyBytes = trustedKeys[envelope.keyID],
-              let key = try? Curve25519.Signing.PublicKey(rawRepresentation: keyBytes),
-              let proof = Data(base64Encoded: envelope.signature),
-              key.isValidSignature(proof, for: bytes) else { throw Failure.signature }
-        let catalog = try JSONDecoder().decode(Catalog.self, from: bytes)
+        do {
+            _ = try SignedContentFeedVerifier.verifyEnvelope(
+                bytes: bytes, signature: signature, trustedKeys: trustedKeys
+            )
+        } catch {
+            throw Failure.signature
+        }
+        let catalog: Catalog
+        do {
+            catalog = try JSONDecoder().decode(Catalog.self, from: bytes)
+        } catch {
+            throw Failure.catalog
+        }
         guard [1, 2].contains(catalog.schemaVersion), catalog.publisher == owner,
               catalog.packages.count == skillIDs.count,
               Set(catalog.packages.map(\.id)) == skillIDs else { throw Failure.catalog }
         for package in catalog.packages {
-            _ = try version(package.version)
-            _ = try version(package.minimumAppVersion)
-            guard package.path == "skill-hub/packages/\(package.id)/\(package.version)/\(package.id).zip",
+            guard (try? SignedContentVersion(package.version)) != nil,
+                  (try? SignedContentVersion(package.minimumAppVersion)) != nil,
+                  package.path == "skill-hub/packages/\(package.id)/\(package.version)/\(package.id).zip",
                   (1...8_388_608).contains(package.size),
                   [package.sha256, package.contentDigest].allSatisfy({ $0.count == 64 && $0.allSatisfy(\.isHexDigit) }),
                   package.releaseNotes["zh-Hans"]?.isEmpty == false,
                   package.releaseNotes["en"]?.isEmpty == false else { throw Failure.catalog }
         }
         guard let package = catalog.packages.first(where: { $0.id == id }) else { throw Failure.catalog }
-        guard try !version(appVersion).lexicographicallyPrecedes(version(package.minimumAppVersion)) else { throw Failure.incompatible }
+        guard let app = try? SignedContentVersion(appVersion),
+              let minimum = try? SignedContentVersion(package.minimumAppVersion),
+              minimum <= app else { throw Failure.incompatible }
         return package
     }
 
@@ -127,41 +128,32 @@ public enum OfficialSkillHub {
 
     /// Bounded in-memory extraction validates every entry before creating files.
     /// A fresh root and no symlinks prevent output paths escaping staging.
+    /// The shared archive gate owns path/size/checksum bounds; the skill
+    /// validator owns the package contract.
     public static func unpack(_ zip: Data, at root: URL) throws -> SkillContentSnapshot {
-        guard zip.count <= 8_388_608, !FileManager.default.fileExists(atPath: root.path) else { throw Failure.archive }
-        let archive = try Archive(data: zip, accessMode: .read)
-        var paths = Set<String>(), files: [String: Data] = [:], total = 0, entries = 0
-        for entry in archive {
-            try Task.checkCancellation()
-            entries += 1
-            guard entries <= 128, entry.type == .file,
-                  entry.uncompressedSize <= 2_097_152 else { throw Failure.archive }
-            try GitHubSkillSource.validatePath(entry.path)
-            let normalized = entry.path.precomposedStringWithCanonicalMapping.lowercased()
-            guard paths.insert(normalized).inserted else { throw Failure.archive }
-            var data = Data()
-            let checksum = try archive.extract(entry, bufferSize: 32_768) { chunk in
-                try Task.checkCancellation()
-                total += chunk.count
-                guard total <= 8_388_608, data.count + chunk.count <= 2_097_152 else { throw Failure.archive }
-                data.append(chunk)
-            }
-            guard checksum == entry.checksum, data.count == entry.uncompressedSize else { throw Failure.archive }
-            files[entry.path] = data
-        }
-        guard files["SKILL.md"] != nil, files["floe.json"] != nil else { throw Failure.archive }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let allowedTopLevel: Set<String> = ["SKILL.md", "floe.json", "scripts", "references", "assets", "agents"]
         do {
-            for (path, bytes) in files {
-                let target = root.appendingPathComponent(path)
-                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try bytes.write(to: target, options: .atomic)
-            }
+            let files = try SignedContentArchive.extract(
+                zip, at: root,
+                limits: SignedContentArchiveLimits(
+                    maximumEntries: 128,
+                    maximumFileBytes: 2_097_152,
+                    maximumTotalBytes: 8_388_608
+                ),
+                allowedTopLevel: allowedTopLevel
+            )
+            guard files["SKILL.md"] != nil, files["floe.json"] != nil else { throw Failure.archive }
             let package = try SkillPackageValidator().validate(packageAt: root)
             return try SkillContentSnapshot(root: root, expectedDigest: package.canonicalSHA256)
+        } catch let failure as Failure {
+            try? FileManager.default.removeItem(at: root)
+            throw failure
+        } catch let validation as SkillValidationError {
+            try? FileManager.default.removeItem(at: root)
+            throw validation
         } catch {
             try? FileManager.default.removeItem(at: root)
-            throw error
+            throw Failure.archive
         }
     }
 

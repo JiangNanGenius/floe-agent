@@ -21,8 +21,11 @@ public actor DatabaseManager {
     private let queue: DatabaseQueue?
     private var migrator = DatabaseMigrator()
 
-    /// Schema version tracked in `user_version`-aligned migrations.
-    public static let currentSchemaVersion = 44
+    /// Schema version tracked in `user_version`-aligned migrations. Must
+    /// match the highest registered migration (v45); every historical bump
+    /// paired this constant with the new migration so that
+    /// `user_version == currentSchemaVersion` after `migrate()`.
+    public static let currentSchemaVersion = 45
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())

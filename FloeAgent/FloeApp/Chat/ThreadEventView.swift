@@ -13,6 +13,7 @@
 import SwiftUI
 import FloeModels
 
+import FloeCore
 /// Renders a single persisted run event by kind.
 struct ThreadEventView: View {
     let event: RunEventRecord
@@ -162,6 +163,9 @@ struct ThreadEventView: View {
         case .status:
             statusBody
 
+        case .notice:
+            NoticeEventView(machineMessage: payload["message"] ?? "", payload: payload)
+
         case .terminal, .file, .checkpoint:
             foldableBody(
                 summary: payload["stopReason"]
@@ -174,7 +178,7 @@ struct ThreadEventView: View {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.shield")
                     .foregroundStyle(FloeTheme.success)
-                Text("已自动批准：\(payload["tool"] ?? "")")
+                Text(FloeL10n.l("chat.thread_event_view.auto_approved", payload["tool"] ?? ""))
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             }
@@ -257,7 +261,7 @@ struct ThreadEventView: View {
     private var isFoldable: Bool {
         switch event.kind {
         case .assistantText, .approval, .error, .usage, .reasoning,
-             .toolRequest, .toolResult, .status, .autoApproved:
+             .toolRequest, .toolResult, .status, .autoApproved, .notice:
             // These kinds carry their own folding affordance
             // (DisclosureGroup / card chevron); no outer fold.
             return false
@@ -280,6 +284,7 @@ struct ThreadEventView: View {
         case .usage: "chart.bar"
         case .checkpoint: "bookmark"
         case .status: "info.circle"
+        case .notice: "exclamationmark.triangle"
         }
     }
 
@@ -308,6 +313,63 @@ struct ThreadEventView: View {
         case .usage: "thread.kind.usage"
         case .checkpoint: "thread.kind.checkpoint"
         case .status: "thread.kind.status"
+        case .notice: "thread.kind.notice"
+        }
+    }
+}
+
+/// Non-fatal notice card. Uses the pending/warning accent, never the
+/// destructive error color, so a successful run that was locally truncated
+/// does not read as a failure. Known machine messages resolve through the
+/// bilingual catalog; unknown ones fall back to the raw payload.
+private struct NoticeEventView: View {
+    let machineMessage: String
+    let payload: [String: String]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(FloeTheme.pending)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(titleKey)
+                    .font(FloeTheme.Typography.metadata.weight(.semibold))
+                    .foregroundStyle(FloeTheme.pending)
+                Text(message)
+                    .font(FloeTheme.Typography.body)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            FloeTheme.pending.opacity(0.10),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    private var titleKey: LocalizedStringKey {
+        switch machineMessage {
+        case "outputTruncated": "chat.notice.output_truncated.title"
+        default: "thread.kind.notice"
+        }
+    }
+
+    private var message: String {
+        switch machineMessage {
+        case "outputTruncated":
+            let received = Int(payload["receivedBytes"] ?? "") ?? 0
+            let limit = Int(payload["limitBytes"] ?? "") ?? 0
+            return FloeL10n.l(
+                "chat.notice.output_truncated.message",
+                received,
+                limit
+            )
+        default:
+            return payload["message"] ?? payload["summary"] ?? ""
         }
     }
 }

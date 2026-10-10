@@ -3,6 +3,7 @@ import SwiftUI
 import LocalAuthentication
 import FloeModels
 
+import FloeCore
 /// The new-task policy editor. It mutates only the draft value; persistence
 /// happens atomically with the first task/run launch.
 struct DraftTaskPermissionsSheet: View {
@@ -14,11 +15,11 @@ struct DraftTaskPermissionsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("审批模式") {
-                    Picker("新任务", selection: modeBinding) {
-                        Text("询问").tag(TaskApprovalMode.ask)
-                        Text("自动审批").tag(TaskApprovalMode.automatic)
-                        Text("完全访问")
+                Section("home.draft_task_permissions_sheet.approval_mode") {
+                    Picker("home.draft_task_permissions_sheet.new_task", selection: modeBinding) {
+                        Text("settings.agent_permissions_view.ask").tag(TaskApprovalMode.ask)
+                        Text("settings.agent_permissions_view.auto_approve").tag(TaskApprovalMode.automatic)
+                        Text("settings.agent_permissions_view.full_access")
                             .tag(TaskApprovalMode.fullAccess)
                             .disabled(isLocalModel)
                     }
@@ -31,16 +32,16 @@ struct DraftTaskPermissionsSheet: View {
                     Text(errorMessage).foregroundStyle(.red)
                 }
                 Section {
-                    Text("删除、付款、凭据、上传和灾难性命令仍受强制保护。")
+                    Text("home.draft_task_permissions_sheet.deletion_payments_credentials_uploads_and_catastrophic")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("任务权限")
+            .navigationTitle("home.draft_task_permissions_sheet.task_permissions")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                    Button("workspace.workspace_canvas_view.done") { dismiss() }
                 }
             }
         }
@@ -65,9 +66,9 @@ struct DraftTaskPermissionsSheet: View {
 
     private var explanation: String {
         switch policy.approvalMode {
-        case .ask: "读取自动运行，副作用操作会先询问。"
-        case .automatic: "低风险自动批准，敏感操作仍会询问。"
-        case .fullAccess: "普通操作自动执行，强制保护仍然有效。"
+        case .ask: FloeL10n.l("home.draft_task_permissions_sheet.reads_run_automatically_side_effecting_actions")
+        case .automatic: FloeL10n.l("home.draft_task_permissions_sheet.low_risk_actions_are_approved_automatically")
+        case .fullAccess: FloeL10n.l("home.draft_task_permissions_sheet.ordinary_actions_run_automatically_mandatory_protections")
         }
     }
 
@@ -75,7 +76,7 @@ struct DraftTaskPermissionsSheet: View {
         guard !isLocalModel else { return }
         do {
             if try await DeviceOwnerAuthenticator.authenticate(
-                reason: "确认新任务启用完全访问权限"
+                reason: FloeL10n.l("home.draft_task_permissions_sheet.confirm_enabling_full_access_for_the")
             ) {
                 policy.approvalMode = .fullAccess
                 errorMessage = nil

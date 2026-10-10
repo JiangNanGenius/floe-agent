@@ -141,7 +141,7 @@ final class HostEditorViewModel: ObservableObject {
     func addAuxiliaryConnection(kind: RemoteAuxiliaryConnectionKind) {
         auxiliaryConnections.append(AuxiliaryConnectionDraft(
             id: UUID(),
-            displayName: kind == .telnet ? "Telnet" : (kind == .tcp ? "TCP" : "BLE 串口"),
+            displayName: kind == .telnet ? "Telnet" : (kind == .tcp ? "TCP" : FloeL10n.l("hosts.host_editor_view.ble_serial")),
             kind: kind, host: address, port: kind == .telnet ? 23 : 0
         ))
     }
@@ -160,11 +160,11 @@ final class HostEditorViewModel: ObservableObject {
         errorMessage = nil
         do {
             guard try await DeviceOwnerAuthenticator.authenticate(
-                reason: "查看已保存的主机凭据"
+                reason: FloeL10n.l("hosts.host_editor_view_model.view_saved_host_credentials")
             ) else { return }
             let data = try await secretStore.readSecret(scope: .hostSSH(hostID))
             guard let value = String(data: data, encoding: .utf8) else {
-                throw FloeError.validationFailed("保存的主机凭据不是可显示的文本")
+                throw FloeError.validationFailed(FloeL10n.l("hosts.host_editor_view_model.the_saved_host_credentials_are_not"))
             }
             secretInput = value
             isSecretVisible = true

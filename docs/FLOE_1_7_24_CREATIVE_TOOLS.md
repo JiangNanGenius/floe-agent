@@ -103,6 +103,13 @@ an unknown submission is never automatically re-issued. 编辑绑定工程改变
 
 ## 3. `cad.document` — 2D DWG/DXF / 二维图纸
 
+> **2026-10-09:** a native `.floecad` 3D workbench (parametric history,
+> exact B-rep, AI propose/apply) exists unreleased on
+> `codex/content-upgrade-20261009`; its honest state and open items are in
+> [FLOE_CAD_AND_DRAWING_ASSISTANT.md](FLOE_CAD_AND_DRAWING_ASSISTANT.md),
+> not in the shipped 1.7.24 table below. 原生 `.floecad` 三维工作台尚未发布，
+> 真实状态见该文档。
+
 Registration: registered in the app's tool environment. Read-only actions need
 document read access; `propose/apply/save/export` need the CAD document grant and
 a UI-issued token for `apply`. Source:

@@ -662,6 +662,41 @@ struct RequestContractTests {
         #expect((deepSeekBody["thinking"] as? [String: Any])?["type"] as? String == "enabled")
         #expect(deepSeekBody["reasoning_effort"] as? String == "max")
 
+        // Each UI depth maps to the value DeepSeek's documented contract
+        // actually uses: low stays low, high stays high, and medium is the
+        // accepted compatibility alias that the endpoint resolves to high
+        // (there is no native medium tier). Thinking stays enabled throughout.
+        for (effort, expected) in [
+            (ModelReasoningEffort.low, "low"),
+            (.medium, "high"),
+            (.high, "high")
+        ] {
+            var variant = deepSeekModel
+            variant.reasoningEffort = effort
+            let body = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: .init(
+                provider: deepSeek,
+                model: variant,
+                messages: [(role: "user", content: "hello")]
+            )))
+            #expect((body["thinking"] as? [String: Any])?["type"] as? String == "enabled")
+            #expect(body["reasoning_effort"] as? String == expected)
+        }
+
+        // The Anthropic wire path keeps the same direct DeepSeek contract.
+        var anthropicDeepSeek = deepSeekModel
+        anthropicDeepSeek.reasoningEffort = .low
+        let anthropicDeepSeekBody = try jsonObject(AnthropicMessagesAdapter().buildBody(from: .init(
+            provider: ProviderProfile(
+                id: deepSeekID,
+                kind: .custom,
+                wireProtocol: .anthropicMessages,
+                baseURL: try #require(URL(string: "https://api.deepseek.com"))
+            ),
+            model: anthropicDeepSeek,
+            messages: [(role: "user", content: "hello")]
+        )))
+        #expect((anthropicDeepSeekBody["output_config"] as? [String: Any])?["effort"] as? String == "low")
+
         let arkID = UUID()
         let ark = ProviderProfile(
             id: arkID,

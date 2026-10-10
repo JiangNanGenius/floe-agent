@@ -6,8 +6,10 @@ public struct SkillContentSnapshot: Sendable {
     public let package: ValidatedSkillPackage
     public let files: [String: Data]
 
-    public init(root: URL, expectedDigest: String) throws {
-        let package = try SkillPackageValidator().validate(packageAt: root)
+    public init(root: URL, expectedDigest: String, manifestOverride: SkillManifest? = nil) throws {
+        let package = try SkillPackageValidator().validate(
+            packageAt: root, manifestOverride: manifestOverride
+        )
         guard package.canonicalSHA256 == expectedDigest else { throw SkillValidationError.digestMismatch }
         var files: [String: Data] = [:]
         var hasher = SHA256()
