@@ -279,8 +279,9 @@ struct ImageAdapterTests {
                 "data": [["b64_json": output.base64EncodedString()]]
             ]))
         ])
+        // Real PNG signatures (8-byte magic), one per reference.
         let sources = (0..<5).map { index in
-            Data([0x89, 0x50, 0x4E, 0x47, UInt8(index)])
+            Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, UInt8(index)])
         }
         let adapter = OpenAIImageAdapter(session: session)
         let result = try await adapter.perform(
@@ -296,7 +297,9 @@ struct ImageAdapterTests {
         #expect(request.timeoutInterval >= 300)
         let body = String(decoding: try #require(request.httpBody), as: UTF8.self)
         #expect(body.components(separatedBy: "name=\"image[]\"").count - 1 == 5)
-        #expect(body.contains("filename=\"source-5.png\""))
+        // The multipart MIME comes from the real bytes, never a spoofed png.
+        #expect(body.components(separatedBy: "Content-Type: image/png").count - 1 == 5)
+        #expect(body.contains("filename=\"source-5\""))
     }
 
     @Test("Volcengine Seedream edits transmit all five reference images")

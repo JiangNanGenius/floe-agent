@@ -165,6 +165,38 @@ private final class SafeImageRedirectDelegate: NSObject, URLSessionTaskDelegate,
     }
 }
 
+
+/// Wire MIME type derived from the actual image bytes (magic numbers), never
+/// from a caller-supplied label: a JPEG source must not be sent as image/png.
+enum ImageWireFormat {
+    /// Wire MIME type derived from the actual image bytes. WebP requires the
+    /// full RIFF/WEBP container header (a bare RIFF prefix is WAV/AVI, not
+    /// WebP); PNG requires the full 8-byte signature; GIF the GIF8 magic.
+    static func sniffMimeType(_ data: Data) -> String? {
+        if data.count >= 8, data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return "image/png"
+        }
+        if data.count >= 6, data.starts(with: [0x47, 0x49, 0x46, 0x38]),
+           data[4] == 0x39 || data[4] == 0x37, data[5] == 0x61 {
+            return "image/gif"
+        }
+        if data.count >= 12, data.starts(with: [0x52, 0x49, 0x46, 0x46]),
+           data[8] == 0x57, data[9] == 0x45, data[10] == 0x42, data[11] == 0x50 {
+            return "image/webp"
+        }
+        if data.count >= 4, data.starts(with: [0xFF, 0xD8, 0xFF]) {
+            // Any valid marker may follow SOI: APP0...APP15 (E0-EF, incl.
+            // EXIF E1 and ICC APP2), DQT (DB) or SOFn (C0-CF). Range check,
+            // not an allowlist, so ICC-bearing JPEGs are accepted.
+            let marker = data[3]
+            if (0xE0...0xEF).contains(marker) || marker == 0xDB || (0xC0...0xCF).contains(marker) {
+                return "image/jpeg"
+            }
+        }
+        return nil
+    }
+}
+
 // MARK: - OpenAI
 
 /// OpenAI Images API (`/v1/images/...`). Supports generation and edit;
@@ -281,8 +313,13 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         func field(_ name: String, _ value: String) {
             body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
         }
-        func file(_ name: String, _ filename: String, _ data: Data) {
-            body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\nContent-Type: image/png\r\n\r\n".utf8))
+        func file(_ name: String, _ filename: String, _ data: Data) throws {
+            // The declared multipart type must match the real bytes; an
+            // unknown payload is rejected instead of spoofed as PNG.
+            guard let mime = ImageWireFormat.sniffMimeType(data) else {
+                throw RemoteImageError.requestFailed("Source image bytes are not a supported image format (png/jpeg/gif/webp)")
+            }
+            body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\nContent-Type: \(mime)\r\n\r\n".utf8))
             body.append(data)
             body.append(Data("\r\n".utf8))
         }
@@ -301,9 +338,16 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         if let quality { field("quality", quality) }
         let imageField = request.sourceImages.count == 1 ? "image" : "image[]"
         for (index, source) in request.sourceImages.enumerated() {
-            file(imageField, "source-\(index + 1).png", source)
+            try file(imageField, "source-\(index + 1)", source)
         }
-        if let mask = request.mask { file("mask", "mask.png", mask) }
+        if let mask = request.mask {
+            // OpenAI masks must be transparent PNG; a JPEG/WebP mask is
+            // rejected before submission rather than mislabeled.
+            guard ImageWireFormat.sniffMimeType(mask) == "image/png" else {
+                throw RemoteImageError.requestFailed("Image masks must be transparent PNG")
+            }
+            try file("mask", "mask", mask)
+        }
         body.append(Data("--\(boundary)--\r\n".utf8))
 
         var urlRequest = URLRequest(url: provider.baseURL.appendingPathComponent("images/edits"))
@@ -387,11 +431,11 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
         }
 
         var parts = [GeminiPart(text: request.prompt, inlineData: nil)]
-        parts.append(contentsOf: request.sourceImages.map {
+        parts.append(contentsOf: try request.sourceImages.map {
             GeminiPart(
                 text: nil,
                 inlineData: GeminiInlineData(
-                    mimeType: Self.mimeType(for: $0),
+                    mimeType: try Self.mimeType(for: $0),
                     data: $0.base64EncodedString()
                 )
             )
@@ -532,11 +576,14 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
         return max(a, 1)
     }
 
-    private static func mimeType(for data: Data) -> String {
-        if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "image/png" }
-        if data.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "image/gif" }
-        if data.starts(with: [0x52, 0x49, 0x46, 0x46]) { return "image/webp" }
-        return "image/jpeg"
+    /// Returns the wire MIME for the actual bytes; throws before submission
+    /// when the bytes are not a supported image (never defaults a foreign
+    /// container to image/jpeg).
+    private static func mimeType(for data: Data) throws -> String {
+        guard let mime = ImageWireFormat.sniffMimeType(data) else {
+            throw RemoteImageError.requestFailed("Source image bytes are not a supported image format (png/jpeg/gif/webp)")
+        }
+        return mime
     }
 }
 
