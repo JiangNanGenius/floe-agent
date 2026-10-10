@@ -34,6 +34,10 @@ FloeAgent/Vendor/PDFium/
 FloeAgent/FloeApp/Resources/PDFiumLicenses/
 FloeAgent/Vendor/LibArchive/
 FloeAgent/FloeApp/Resources/LibArchiveLicenses/
+# FloeCADKit native OCCT slices are bootstrapped from pinned upstream Git-LFS
+# objects (FloeAgent/ThirdParty/FloeCADKit/DEPENDENCIES.json); kept out of Git
+# history because they exceed the ordinary block-push limit.
+FloeAgent/ThirdParty/FloeCADKit/Vendor/OCCT.xcframework/**/*.a
 pandas-wheelhouse/
 ios-wheelhouse/out/
 

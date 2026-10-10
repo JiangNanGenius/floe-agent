@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "package": "FloeCADKit",
+  "manifestPurpose": "Pinned native OCCT static slices for FloeCADKit. The .a files are too large for ordinary Git block push, so they are NOT committed as Git blobs: bootstrap.py fetches the exact, content-addressed Git-LFS objects from the pinned upstream repository and installs them only after size and SHA-256 verification. Header files remain Git-tracked and are not managed here.",
+  "lastVerified": "2026-10-10",
+  "installRoot": ".",
+  "artifacts": [
+    {
+      "name": "OCCT device slice (ios-arm64)",
+      "installPath": "Vendor/OCCT.xcframework/ios-arm64/libOCCT-OS64.a",
+      "size": 149038832,
+      "sha256": "b4abdbf22f704cfad0be3e67a686f727cc9bb0429d09dbef2153728b81850b50",
+      "executable": false,
+      "source": {
+        "kind": "git-lfs",
+        "sourceId": "openshape3d",
+        "upstreamPath": "ThirdParty/OCCT.xcframework/ios-arm64/libOCCT-OS64.a",
+        "oid": "b4abdbf22f704cfad0be3e67a686f727cc9bb0429d09dbef2153728b81850b50",
+        "oidAlgorithm": "sha256"
+      }
+    },
+    {
+      "name": "OCCT simulator slice (ios-arm64-simulator)",
+      "installPath": "Vendor/OCCT.xcframework/ios-arm64-simulator/libOCCT-SIMULATORARM64.a",
+      "size": 147189584,
+      "sha256": "a46899cb51e03fcf57c159bfca2b99e2931b2fdfbd457fd2e1074c19c2b4b087",
+      "executable": false,
+      "source": {
+        "kind": "git-lfs",
+        "sourceId": "openshape3d",
+        "upstreamPath": "ThirdParty/OCCT.xcframework/ios-arm64-simulator/libOCCT-SIMULATORARM64.a",
+        "oid": "a46899cb51e03fcf57c159bfca2b99e2931b2fdfbd457fd2e1074c19c2b4b087",
+        "oidAlgorithm": "sha256"
+      }
+    }
+  ],
+  "sources": {
+    "openshape3d": {
+      "kind": "git-lfs",
+      "repositoryWeb": "https://github.com/laanlabs/OpenShape3D",
+      "repositoryClone": "https://github.com/laanlabs/OpenShape3D.git",
+      "commit": "30b3c7c1784754f237466e093ab42ff085175d40",
+      "commitBranch": "main",
+      "lfsBatchApi": "https://github.com/laanlabs/OpenShape3D.git/info/lfs/objects/batch",
+      "lfsTransfer": "basic",
+      "lfsPointerRule": "ThirdParty/OCCT.xcframework/**/*.a filter=lfs diff=lfs merge=lfs -text",
+      "note": "The batch API returns a short-lived, content-addressed pre-signed download URL per object oid. Only the endpoint and oid are durable pins; the pre-signed URL is fetched at run time and must never be hard-coded."
+    }
+  },
+  "trackedButNotBootstrapped": {
+    "headers": "Vendor/OCCT.xcframework/ios-arm64/Headers/** (7,963 flat OCCT 7.8.1 headers) and the ios-arm64-simulator/Headers symlink remain Git-tracked; they are platform-independent and are not downloaded by bootstrap.py.",
+    "xcframeworkInfo": "Vendor/OCCT.xcframework/Info.plist remains Git-tracked.",
+    "excludedSlice": "The upstream ios-arm64-maccatalyst slice is intentionally not vendored; see UPSTREAM.md."
+  },
+  "relink": {
+    "guide": "OCCT_RELINK.md",
+    "kit": "relink/",
+    "status": "Pinned relink inputs are available (OCCT source, upstream build program, toolchain). Floe has NOT independently rebuilt OCCT and claims no byte-identical reproduction; local replacement of the pinned slices is an explicit opt-in (FLOECAD_LOCAL_RELINK=1 / --local-relink) and is never performed for official builds.",
+    "occt": {
+      "name": "Open CASCADE Technology",
+      "version": "7.8.1",
+      "license": "LGPL-2.1-only with Open CASCADE exception 1.0",
+      "licenseFiles": ["license.occt.txt", "OCCT_LGPL_EXCEPTION.txt"],
+      "repositoryWeb": "https://github.com/Open-Cascade-SAS/OCCT",
+      "repositoryClone": "https://github.com/Open-Cascade-SAS/OCCT.git",
+      "tag": "V7_8_1",
+      "tagType": "lightweight",
+      "commit": "bd2a789f15235755ce4d1a3b07379a2e062fdc2e",
+      "commitDate": "2024-03-31T22:05:22Z",
+      "commitResolution": "Resolved 2026-10-10: refs/tags/V7_8_1 is a lightweight tag, so git ls-remote and the GitHub ref API both report the commit bd2a789f15235755ce4d1a3b07379a2e062fdc2e directly (message 'Update version to 7.8.1').",
+      "sourceArchive": "https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V7_8_1.tar.gz",
+      "sourceOffer": "relink/SOURCE_OFFER.md"
+    },
+    "buildProgram": {
+      "origin": "OpenShape3D scripts/build_occt_ios.sh",
+      "repositoryWeb": "https://github.com/laanlabs/OpenShape3D",
+      "commit": "30b3c7c1784754f237466e093ab42ff085175d40",
+      "upstreamPath": "scripts/build_occt_ios.sh",
+      "retainedCopy": "relink/build_occt_ios.sh",
+      "size": 5831,
+      "sha256": "6d46c488bec5c37d7ba543ce7a08b86caf66e92dd79216da1d9ea90b2f471289"
+    },
+    "toolchain": {
+      "name": "leetal ios-cmake ios.toolchain.cmake",
+      "repositoryWeb": "https://github.com/leetal/ios-cmake",
+      "repositoryClone": "https://github.com/leetal/ios-cmake.git",
+      "tag": "4.6.1",
+      "commit": "b36d5bce6f9a2d11d9f144bd5882ba31cfdca420",
+      "filePath": "ios.toolchain.cmake",
+      "fileSize": 58209,
+      "fileSha256": "8d17b77feb69999ebcf9aa4ce3e07babc3d39f9daa23151b1a4f05b825021f2e",
+      "retainedCopy": "relink/ios.toolchain.cmake",
+      "license": "BSD-3-Clause",
+      "licenseFile": "relink/LICENSE-ios-cmake.txt",
+      "note": "Upstream OpenShape3D does not pin the toolchain revision; Floe pins the concrete tag/commit and file hash here so the relink route is reproducible. The build script documents CMake >= 3.16 and was tested by upstream with CMake 4.4."
+    }
+  }
+}

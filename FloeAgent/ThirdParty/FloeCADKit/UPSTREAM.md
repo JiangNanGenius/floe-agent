@@ -41,6 +41,40 @@ actually recorded during extraction on 2026-10-09/10.
   `OCCT_LGPL_EXCEPTION.txt` and the relink statement are copied here;
   see `OCCT_RELINK.md`.
 
+### Distribution and bootstrap (added 2026-10-10)
+
+Both slices exceed GitHub's ordinary block-push limit (each is >100 MiB), so
+they must not be committed as Git blobs; the copies currently present in
+unpublished local history are being untracked by the coordinator's history
+cleanup. Headers and `Info.plist` remain Git-tracked. Instead:
+
+- `DEPENDENCIES.json` pins each slice by install path, byte size and SHA-256,
+  plus the durable upstream Git-LFS source (repository, commit
+  `30b3c7c1784754f237466e093ab42ff085175d40`, in-repo path and object oid).
+  Git-LFS object oids are content-addressed and equal the SHA-256 values above.
+- `bootstrap.py` requests the exact objects from the pinned LFS batch endpoint
+  `https://github.com/laanlabs/OpenShape3D.git/info/lfs/objects/batch`, verifies
+  byte size and SHA-256 before installing, refuses paths outside this package,
+  never rewrites an already-matching file, and installs atomically (a partial
+  or wrong-hash download cannot corrupt existing bytes). The LFS batch response
+  is size-bounded, HTTPS redirects may not downgrade to plain HTTP, and remote
+  error text is redacted so short-lived pre-signed URLs never reach logs.
+  - install/repair (official pinned slices): `python3 bootstrap.py`
+  - read-only verification (no network, no writes): `python3 bootstrap.py --check`
+  - deliberate local rebuild/replacement opt-in: `python3 bootstrap.py --check
+    --local-relink` (or `FLOECAD_LOCAL_RELINK=1`), which keeps local bytes and
+    reports them `LOCAL` instead of restoring the pinned slices; the hook
+    contract is documented in `OCCT_RELINK.md` and `relink/README.md`.
+- `OCCT_RELINK.md` and `relink/` record the pinned relink material (upstream
+  build program, toolchain, OCCT commit and source-availability statement).
+  The shipped slices are upstream-built; Floe has not independently rebuilt
+  OCCT and claims no byte-identical local reproduction.
+- `Vendor/OCCT.xcframework/**/*.a` is Git-ignored (see `.gitignore` beside this
+  file and the repository root) so future history never re-adds the blobs.
+- Tests for the integrity/partial-download/wrong-hash/read-only/offline/absent,
+  path-escape, schema-version, bounded-batch, redaction, redirect-downgrade and
+  local-relink behaviours live in `Tests/bootstrap_tests.py`.
+
 ## ShapeScript (scripted mesh workflow)
 
 - Repository: https://github.com/nicklockwood/ShapeScript

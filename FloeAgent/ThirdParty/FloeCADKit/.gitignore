@@ -3,3 +3,9 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
+
+# Native OCCT static slices are fetched and verified by bootstrap.py from the
+# pinned upstream Git-LFS objects recorded in DEPENDENCIES.json. Both exceed the
+# ordinary Git block-push limit and must not be committed as blobs; the OCCT
+# headers and Info.plist stay Git-tracked.
+Vendor/OCCT.xcframework/**/*.a
