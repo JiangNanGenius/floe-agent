@@ -46,6 +46,12 @@ jobs:
         project = pathlib.Path('project.yml').read_text()
         version = re.search(r'MARKETING_VERSION: "([0-9.]+)"', project).group(1)
         build = re.search(r'CURRENT_PROJECT_VERSION: "([0-9]+)"', project).group(1)
+        assert os.environ['RELEASE_TAG'] == 'v' + version
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('tag=' + os.environ['RELEASE_TAG'] + '\n')
+            output.write('version=' + version + '\n')
+            output.write('build=' + build + '\n')
+            output.write('source_sha=' + subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() + '\n')
         series = '.'.join(version.split('.')[:2])
         paths = [
             f'docs/releases/testflight/TESTFLIGHT_{series}_WHATS_NEW_BUILD_{build}.json',
@@ -231,19 +237,27 @@ jobs:
           --apiKey "$ASC_KEY_ID" \
           --apiIssuer "$ASC_ISSUER_ID" \
           | tee "$RUNNER_TEMP/TestFlightExport/UPLOAD-RECEIPT.txt"
-        {
-          echo "tag=${{ steps.source.outputs.tag }}"
-          echo "version=${{ steps.source.outputs.version }}"
-          echo "build=${{ steps.source.outputs.build }}"
-          echo "commit=${{ steps.source.outputs.source_sha }}"
-          echo "local_build_toolchain=Xcode 27.0 (27A266a)"
-          echo "qualification_policy=user_requested_focused_local_validation_no_full_cloud_matrix"
-          echo "app_rebuilt=false; source=verified_local_build"
-          echo "symbols_state=retained_local_and_private_artifact"
-          echo "testflight_upload=accepted_by_transport"
-          echo "apple_processing_state=not_verified"
-          echo "floe_qa_visibility=not_verified"
-        } > "$RUNNER_TEMP/TestFlightExport/TESTFLIGHT-SUMMARY.txt"
+        python3 - <<'SUMMARY'
+        import json, os, pathlib
+        root = pathlib.Path(os.environ['RUNNER_TEMP'])
+        provenance = json.loads((root / 'FloeSignedPayload/provenance.json').read_text())
+        summary = {
+            'tag': os.environ['RELEASE_TAG'],
+            'version': provenance['version'],
+            'build': provenance['build'],
+            'commit': provenance['source_sha'],
+            'local_build_toolchain': provenance['xcode_build'],
+            'sdk': provenance['sdk'],
+            'qualification_policy': provenance['qualification'],
+            'app_rebuilt': False,
+            'symbols_state': 'retained_local_and_private_artifact',
+            'testflight_upload': 'accepted_by_transport',
+            'apple_processing_state': 'not_verified',
+            'floe_qa_visibility': 'not_verified',
+        }
+        (root / 'TestFlightExport/TESTFLIGHT-SUMMARY.txt').write_text(
+            json.dumps(summary, indent=2) + '\n')
+        SUMMARY
     - name: Upload TestFlight evidence
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
