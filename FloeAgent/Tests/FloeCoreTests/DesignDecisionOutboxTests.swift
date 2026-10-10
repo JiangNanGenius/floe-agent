@@ -58,13 +58,23 @@ struct DesignDecisionOutboxTests {
             Issue.record("mutations must throw while state is unavailable")
         } catch DesignDecisionOutboxError.stateUnavailable { }
         #expect(await outbox.pendingIntents().isEmpty)
-        // The original bytes are quarantined, not deleted or overwritten.
-        let quarantined = try #require(
-            FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)
-                .first { $0.hasPrefix("outbox.json.quarantine.") }
-        )
-        _ = quarantined
-        #expect(!FileManager.default.fileExists(atPath: url.path))
+        // The canonical bytes are preserved untouched; a diagnostic copy is
+        // kept alongside.
+        let original = try Data(contentsOf: url)
+        #expect(original == Data("not json".utf8))
+        let directoryContents = try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)
+        #expect(directoryContents.contains { $0.hasPrefix("outbox.json.unavailable-copy.") })
+        // SECOND and THIRD reopen: the read-only guard is durable, never a
+        // writable empty store.
+        for _ in 0..<2 {
+            let again = DesignDecisionOutbox(fileURL: url)
+            #expect(await again.unavailableReason != nil)
+            do {
+                try await again.prepare(intent())
+                Issue.record("reopen must keep rejecting mutations while canonical state is unusable")
+            } catch DesignDecisionOutboxError.stateUnavailable { }
+            #expect(try Data(contentsOf: url) == original)
+        }
     }
 
     @Test func newerSchemaIsQuarantinedAndCannotBeReplacedByOlderBuild() async throws {
@@ -78,6 +88,17 @@ struct DesignDecisionOutboxTests {
             try await outbox.prepare(intent())
             Issue.record("older build must not replace newer-schema state")
         } catch DesignDecisionOutboxError.stateUnavailable { }
+        // Reopen twice: newer-schema bytes stay canonical and keep rejecting.
+        let newerBytes = try Data(contentsOf: url)
+        for _ in 0..<2 {
+            let again = DesignDecisionOutbox(fileURL: url)
+            #expect(await again.unavailableReason?.contains("newer schema") == true)
+            do {
+                try await again.prepare(intent())
+                Issue.record("newer-schema state must keep rejecting prepares")
+            } catch DesignDecisionOutboxError.stateUnavailable { }
+            #expect(try Data(contentsOf: url) == newerBytes)
+        }
     }
 
     @Test func unavailableSupportDirectoryFailsClosed() async throws {

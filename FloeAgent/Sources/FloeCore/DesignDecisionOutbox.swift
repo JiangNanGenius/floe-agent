@@ -134,10 +134,6 @@ public actor DesignDecisionOutbox {
             state = .unavailable(reason: "Application Support is unavailable")
             return
         }
-        guard manager.fileExists(atPath: fileURL.path) else {
-            state = .empty
-            return
-        }
         do {
             let data = try Data(contentsOf: fileURL)
             let decoder = JSONDecoder()
@@ -150,14 +146,27 @@ public actor DesignDecisionOutbox {
             }
             state = .loaded(Self.compacted(decoded))
         } catch let error as DesignDecisionOutboxError {
-            // Corrupt/newer-schema: quarantine the original so nothing in
-            // this (older) build can ever replace it, then go read-only.
-            let quarantine = fileURL.appendingPathExtension("quarantine.\(UUID().uuidString.lowercased())")
-            try? manager.moveItem(at: fileURL, to: quarantine)
-            state = .unavailable(reason: "\(error) quarantined=\(quarantine.lastPathComponent)")
+            // Corrupt/newer-schema: the canonical bytes stay untouched (this
+            // build never writes while unavailable, and the next launch
+            // re-detects the same condition, so the read-only guard is
+            // durable). A diagnostic COPY is kept alongside; nothing is
+            // moved or replaced — an older build must never destroy or
+            // substitute newer data.
+            let copy = fileURL.appendingPathExtension("unavailable-copy.\(UUID().uuidString.lowercased())")
+            try? manager.copyItem(at: fileURL, to: copy)
+            state = .unavailable(reason: "\(error) preserved=\(fileURL.lastPathComponent)")
         } catch {
-            // I/O failure on an existing file: read-only, original untouched.
-            state = .unavailable(reason: "read failure: \(error.localizedDescription)")
+            let nsError = error as NSError
+            let isMissing = (nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoSuchFileError)
+                || (nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(ENOENT))
+            if isMissing {
+                // True ENOENT: fresh, writable start.
+                state = .empty
+            } else {
+                // Permission/I/O failure on an existing path: read-only, the
+                // original is left untouched; the next launch re-tests.
+                state = .unavailable(reason: "read failure: \(error.localizedDescription)")
+            }
         }
     }
 
