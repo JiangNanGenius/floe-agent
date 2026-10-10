@@ -79,6 +79,8 @@ final class DesignWorkflowPanelModel: ObservableObject {
     func createDesign(type: DesignContentType, goal: String, audience: String?) async {
         guard let nodeID, let revision = snapshot?.canvasRevision else { return }
         guard !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        // Inherit the canvas-level (project) spec when one exists.
+        let inherited = await canvasSharedSpec()
         // The user's selected content type must be the one stored; the node-kind
         // mapping is only a fallback for agent-created subdocuments.
         await mutate(nodeID: nodeID, expectedRevision: revision, contentType: type) { design in
@@ -86,6 +88,7 @@ final class DesignWorkflowPanelModel: ObservableObject {
                 DesignBrief(goal: goal, audience: audience, constraints: []),
                 in: &design
             )
+            if let inherited { DesignWorkflowEngine.updateSpec(inherited, in: &design) }
         }
     }
 
@@ -131,6 +134,57 @@ final class DesignWorkflowPanelModel: ObservableObject {
         await mutate(nodeID: nodeID, expectedRevision: revision) { design in
             DesignWorkflowEngine.updateSpec(DesignMDCodec.parse(markdown), in: &design)
         }
+    }
+
+    /// The canvas-level (project) spec: the newest spec across every
+    /// design subdocument on this canvas. New node designs inherit it, and
+    /// `propagateSpec` pushes the current node's spec to all of them, so the
+    /// brief/spec applies at the Canvas engineering level rather than
+    /// unrelated per-node projects.
+    func canvasSharedSpec() async -> DesignSpec? {
+        guard let project = try? await FileCanvasDocumentRepository().project(canvasID: canvasID) else { return nil }
+        var newest: DesignSpec? = nil
+        var newestDate = Date.distantPast
+        for document in project.documents {
+            for node in document.nodes {
+                guard let design = try? DesignCanvasMetadata.decode(
+                    node.metadata[DesignCanvasMetadata.key],
+                    nodeID: node.id.uuidString.lowercased()
+                ), let spec = design.spec, design.updatedAt > newestDate else { continue }
+                newest = spec
+                newestDate = design.updatedAt
+            }
+        }
+        return newest
+    }
+
+    /// Pushes the current node's spec to every design subdocument on the
+    /// canvas (per-node CAS, conflict-safe: a conflicting node is skipped
+    /// and reported, never overwritten blindly).
+    @discardableResult
+    func propagateSpecToCanvas() async -> (updated: Int, skipped: Int) {
+        guard let nodeID, let spec = design?.spec else { return (0, 0) }
+        guard let project = try? await FileCanvasDocumentRepository().project(canvasID: canvasID) else { return (0, 0) }
+        var updated = 0
+        var skipped = 0
+        for document in project.documents {
+            for node in document.nodes where node.id != nodeID {
+                guard node.metadata[DesignCanvasMetadata.key] != nil else { continue }
+                do {
+                    _ = try await service.mutate(
+                        canvasID: canvasID, nodeID: node.id,
+                        expectedRevision: project.revision,
+                        operationID: "propagate-spec-\(node.id.uuidString.lowercased())"
+                    ) { design in
+                        DesignWorkflowEngine.updateSpec(spec, in: &design)
+                    }
+                    updated += 1
+                } catch {
+                    skipped += 1
+                }
+            }
+        }
+        return (updated, skipped)
     }
 
     /// Exports the current spec as DESIGN.md (unknown sections preserved).
@@ -476,7 +530,17 @@ final class DesignWorkflowPanelModel: ObservableObject {
         await DesignWorkflowActions.recordDecision(
             outbox: outbox,
             environment: environment,
-            decisionSink: { _, _, _, _, _ in },
+            decisionSink: { conversationID, proposalID, decision, revision, sha256 in
+                // The REAL durable ingress: queued runtime input on the
+                // originating conversation + idempotent transcript upsert.
+                try? await environment.conversationCenter.recordProposalDecision(
+                    conversationID: conversationID,
+                    proposalID: proposalID,
+                    decision: "design-candidate-\(decision)",
+                    revision: revision,
+                    sha256: sha256
+                )
+            },
             canvasID: canvasID,
             candidateID: candidateID,
             decision: decision,
@@ -564,6 +628,7 @@ struct DesignWorkflowPanel: View {
     @State private var exportedArtifact: NotesExport.Artifact?
     @State private var previewItem: PreviewItem?
     @State private var feedbackDraft: FeedbackDraft = FeedbackDraft()
+    @State private var specPropagation: String?
 
     private struct FeedbackDraft {
         var artifactID = ""
@@ -664,6 +729,19 @@ struct DesignWorkflowPanel: View {
                         Button("design.panel.save_spec") {
                             fieldsDirty = false
                             Task { await model.updateSpec(specFromFields(design)) }
+                        }
+                        Button("design.panel.propagate_spec") {
+                            Task {
+                                let result = await model.propagateSpecToCanvas()
+                                specPropagation = FloeL10n.l(
+                                    "design.panel.propagate_spec_result",
+                                    result.updated, result.skipped
+                                )
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        if let specPropagation {
+                            Text(specPropagation).font(.caption2).foregroundStyle(.secondary)
                         }
                         HStack {
                             Button("design.panel.export_designmd") {

@@ -80498,6 +80498,57 @@
           }
         }
       }
+    },
+    "design.panel.propagate_spec": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apply this spec to the whole canvas"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将此规格应用到整个画布"
+          }
+        }
+      }
+    },
+    "design.panel.propagate_spec_result": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$d updated · %2$d skipped (conflict)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已更新 %1$d 处 · 跳过 %2$d 处（冲突）"
+          }
+        }
+      }
+    },
+    "design.panel.canvas_spec_inherited": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New designs inherit the canvas spec."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建设计会继承画布级规格。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
