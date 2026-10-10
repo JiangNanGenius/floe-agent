@@ -108,8 +108,21 @@ final class DesignWorkflowPanelModel: ObservableObject {
 
     func applyTemplate(_ template: DesignTemplateManifest) async {
         guard let nodeID, let revision = snapshot?.canvasRevision else { return }
-        await mutate(nodeID: nodeID, expectedRevision: revision) { design in
-            design.template = template
+        do {
+            snapshot = try await DesignWorkflowActions.applyTemplate(
+                service: service,
+                templateStore: templateStore,
+                caller: .trustedUI,
+                canvasID: canvasID,
+                nodeID: nodeID,
+                expectedRevision: revision,
+                template: template
+            )
+            lastSavedAt = Date()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+            await reload()
         }
     }
 
@@ -126,14 +139,33 @@ final class DesignWorkflowPanelModel: ObservableObject {
         return DesignMDCodec.export(spec).data(using: .utf8)
     }
 
+    /// UI parity: the SAME shared adoption path as `canvas.designAdopt` —
+    /// one CAS commit for metadata + real node content, then the durable
+    /// notice to the ORIGINATING assistant conversation.
     func adopt(candidateID: String, mode: DesignAdoptMode) async {
-        guard let nodeID, let revision = snapshot?.canvasRevision else { return }
-        let outcome = await mutate(nodeID: nodeID, expectedRevision: revision) { design in
-            _ = try DesignWorkflowEngine.adoptCandidate(in: &design, candidateID: candidateID, mode: mode)
-        }
-        if outcome == .succeeded {
+        guard let nodeID, let revision = snapshot?.canvasRevision, let environment else { return }
+        let outcome = await DesignWorkflowActions.adopt(
+            service: service,
+            adapters: environment.designAdapterCenter,
+            environment: environment,
+            caller: .trustedUI,
+            canvasID: canvasID,
+            nodeID: nodeID,
+            expectedRevision: revision,
+            operationID: UUID().uuidString.lowercased(),
+            candidateID: candidateID,
+            mode: mode
+        )
+        switch outcome {
+        case .succeeded(let snapshot, _, _):
+            self.snapshot = snapshot
+            lastSavedAt = Date()
+            errorMessage = nil
             await notifyDecision(candidateID: candidateID, decision: "adopted")
             candidatePreviews[candidateID] = nil
+        case .failed(let error):
+            errorMessage = error.localizedDescription
+            await reload()
         }
     }
 
@@ -149,18 +181,26 @@ final class DesignWorkflowPanelModel: ObservableObject {
     }
 
     func reject(candidateID: String) async {
-        guard let nodeID, let revision = snapshot?.canvasRevision else { return }
-        let outcome = await mutate(nodeID: nodeID, expectedRevision: revision) { design in
-            try DesignWorkflowEngine.rejectCandidate(in: &design, candidateID: candidateID)
-        }
-        if outcome == .succeeded {
+        guard let nodeID, let revision = snapshot?.canvasRevision, environment != nil else { return }
+        do {
+            snapshot = try await DesignWorkflowActions.reject(
+                service: service, caller: .trustedUI,
+                canvasID: canvasID, nodeID: nodeID,
+                expectedRevision: revision, operationID: UUID().uuidString.lowercased(),
+                candidateID: candidateID
+            )
+            lastSavedAt = Date()
+            errorMessage = nil
             await notifyDecision(candidateID: candidateID, decision: "rejected")
             candidatePreviews[candidateID] = nil
+        } catch {
+            errorMessage = error.localizedDescription
+            await reload()
         }
     }
 
     func restoreLatestRevision(artifactID: String) async {
-        guard let nodeID, let revision = snapshot?.canvasRevision,
+        guard let nodeID, let revision = snapshot?.canvasRevision, let environment,
               let artifact = design?.artifact(artifactID),
               let currentID = artifact.currentRevisionID else { return }
         let previous = artifact.revisions
@@ -168,10 +208,24 @@ final class DesignWorkflowPanelModel: ObservableObject {
             .sorted { $0.number > $1.number }
             .first
         guard let previous else { return }
-        await mutate(nodeID: nodeID, expectedRevision: revision) { design in
-            _ = try DesignWorkflowEngine.restoreRevision(
-                in: &design, artifactID: artifactID, revisionID: previous.id
+        do {
+            snapshot = try await DesignWorkflowActions.restore(
+                service: service,
+                adapters: environment.designAdapterCenter,
+                environment: environment,
+                caller: .trustedUI,
+                canvasID: canvasID,
+                nodeID: nodeID,
+                expectedRevision: revision,
+                operationID: UUID().uuidString.lowercased(),
+                artifactID: artifactID,
+                revisionID: previous.id
             )
+            lastSavedAt = Date()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+            await reload()
         }
     }
 
@@ -302,25 +356,32 @@ final class DesignWorkflowPanelModel: ObservableObject {
     }
 
     /// Durable, structured decision notice to the ORIGINATING assistant
-    /// conversation of this canvas (never any other conversation).
+    /// conversation recorded on the candidate (never the currently selected
+    /// chat).
     private func notifyDecision(candidateID: String, decision: String) async {
-        guard let environment,
-              let project = try? await FileCanvasDocumentRepository().project(canvasID: canvasID),
-              let conversationID = project.agentConversationID
-            ?? project.assistantSessions.first?.conversationID,
-              let candidateUUID = UUID(uuidString: candidateID) else { return }
+        guard let environment, let templateRoot = DesignTemplateStore.defaultRoot() else { return }
+        _ = templateRoot
         let sha = design.flatMap { project -> String? in
             guard let candidate = project.candidate(candidateID) else { return nil }
             return project.artifacts.flatMap(\.revisions)
                 .first(where: { $0.id == candidate.proposedRevisionID })?
                 .contentSHA256
         }
-        try? await environment.conversationCenter.recordProposalDecision(
-            conversationID: conversationID,
-            proposalID: candidateUUID,
-            decision: "design-candidate-\(decision)",
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let outbox = DesignDecisionOutbox(fileURL: support?
+            .appendingPathComponent("FloeAgent/DesignDecisions/outbox.json")
+            ?? URL(fileURLWithPath: "/dev/null/design-decisions-unavailable"))
+        await DesignWorkflowActions.recordDecision(
+            outbox: outbox,
+            environment: environment,
+            decisionSink: { _, _, _, _, _ in },
+            canvasID: canvasID,
+            candidateID: candidateID,
+            decision: decision,
             revision: snapshot?.canvasRevision,
-            sha256: sha
+            sha256: sha,
+            operationID: "panel-\(candidateID)-\(decision)",
+            conversationID: nil
         )
     }
 
@@ -429,7 +490,7 @@ struct DesignWorkflowPanel: View {
                     Section("design.panel.new_design") {
                         Picker("design.panel.type", selection: $newType) {
                             ForEach(DesignContentType.allCases, id: \.self) { type in
-                                Text("design.panel.type.\(type.rawValue)").tag(type)
+                                Text(FloeL10n.l("design.panel.type.\(type.rawValue)")).tag(type)
                             }
                         }
                         TextField("design.panel.goal", text: $newGoal, axis: .vertical).lineLimit(1...3)

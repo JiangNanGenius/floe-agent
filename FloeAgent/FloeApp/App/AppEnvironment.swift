@@ -1599,12 +1599,20 @@ final class AppEnvironment: ObservableObject {
             .webpage: WebpageDesignAdapter(kind: .webpage, importPort: importPort, capturePort: capturePort),
             .prototype: WebpageDesignAdapter(kind: .prototype, importPort: importPort, capturePort: capturePort),
             .cad: CADDesignAdapter(exportPort: cadPort),
-            // Office and presentation content changes flow through the office
-            // proposal system bound to chat-task workspaces (grant-gated);
-            // raw import would bypass it, so no adapter port is connected here
-            // and the capability registry says so.
-            .officeDocument: OfficeDesignAdapter(kind: .document, exportPort: nil, workspacePath: nil),
-            .presentation: OfficeDesignAdapter(kind: .presentation, exportPort: nil, workspacePath: nil)
+            // Office/presentation connect through an explicit Canvas-owned
+            // workspace binding (canvas.designBindDocument); verified export
+            // runs through OfficeCommandCenter. Engine-command edits stay in
+            // the existing office proposal flow.
+            .officeDocument: OfficeDesignAdapter(
+                kind: .document,
+                exportPort: OfficeDesignExportPort(environment: environment),
+                bindingProvider: DesignBindingResolution.provider
+            ),
+            .presentation: OfficeDesignAdapter(
+                kind: .presentation,
+                exportPort: OfficeDesignExportPort(environment: environment),
+                bindingProvider: DesignBindingResolution.provider
+            )
         ]
     }
 

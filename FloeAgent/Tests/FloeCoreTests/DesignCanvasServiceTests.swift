@@ -289,3 +289,67 @@ struct DesignCanvasProjectMutationTests {
         #expect(after.documents.first?.nodes.count == 2)
     }
 }
+
+// MARK: - Canvas-owned workspace binding
+
+@Suite("Design workspace binding")
+struct DesignWorkspaceBindingTests {
+    @Test func bindCopiesBytesAndRejectsTraversal() throws {
+        let canvasID = UUID()
+        let nodeID = UUID()
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bind-source-\(UUID().uuidString).txt")
+        try Data("office-bytes".utf8).write(to: source, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let binding = try DesignWorkspace.bind(
+            canvasID: canvasID, nodeID: nodeID, sourceFile: source, format: "docx"
+        )
+        #expect(binding.relativeDocumentPath == "docs/\(nodeID.uuidString.lowercased()).docx")
+        let written = try Data(contentsOf: URL(fileURLWithPath: binding.documentAbsolutePath))
+        #expect(written == Data("office-bytes".utf8))
+        // Round trip: adopted bytes replace the bound document.
+        try DesignWorkspace.write(bytes: Data("adopted".utf8), to: binding)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: binding.documentAbsolutePath)) == Data("adopted".utf8))
+        // Traversal is rejected.
+        #expect(throws: DesignWorkspaceBindingError.invalidRelativePath("../escape.txt")) {
+            guard let root = DesignWorkspace.root(canvasID: canvasID) else {
+                throw DesignWorkspaceBindingError.invalidRelativePath("no root")
+            }
+            _ = try DesignWorkspace.contained(relativePath: "../escape.txt", in: root)
+        }
+        // Per-canvas isolation: a second canvas has its own root.
+        let other = try DesignWorkspace.bind(
+            canvasID: UUID(), nodeID: nodeID, sourceFile: source, format: "docx"
+        )
+        #expect(other.workspaceRootPath != binding.workspaceRootPath)
+    }
+
+    @Test func bindingPersistsThroughDesignCAS() async throws {
+        let canvasID = UUID()
+        let nodeID = UUID()
+        var node = CanvasNode.placeholder(kind: .file, position: CanvasPoint(x: 0, y: 0), zIndex: 0)
+        node.id = nodeID
+        let document = CanvasDocument(id: UUID(), name: "doc", nodes: [node])
+        var project = CanvasProject(id: canvasID, name: "T", documents: [document], selectedDocumentID: document.id)
+        project.revision = 1
+        let repo = InMemoryCanvasRepository(project: project)
+        let service = DesignCanvasService(repository: repo)
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bind-source-\(UUID().uuidString).txt")
+        try Data("cad-bytes".utf8).write(to: source, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let binding = try DesignWorkspace.bind(
+            canvasID: canvasID, nodeID: nodeID, sourceFile: source, format: "floecad"
+        )
+        let snapshot = try await service.mutate(
+            canvasID: canvasID, nodeID: nodeID, expectedRevision: 1, operationID: "op-bind"
+        ) { design in
+            design.workspaceBinding = binding
+        }
+        let restored = try #require(snapshot.design?.workspaceBinding)
+        #expect(restored == binding)
+        // Replay-safe: binding survives a second read.
+        let again = try await service.designState(canvasID: canvasID, nodeID: nodeID)
+        #expect(again?.workspaceBinding == binding)
+    }
+}

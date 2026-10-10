@@ -380,6 +380,12 @@ public struct DesignCandidate: Codable, Sendable, Equatable, Identifiable {
     public var resolvedAt: Date?
     /// Artifact created by an explicit variant adoption, when chosen.
     public var variantArtifactID: String?
+    /// Originating task persisted at PROPOSAL time; durable notices go here
+    /// — never the currently selected conversation. Optional so candidates
+    /// written before this field decode unchanged.
+    public var originConversationID: String?
+    /// Originating environment/container identity, when any.
+    public var originEnvironmentID: String?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -392,7 +398,9 @@ public struct DesignCandidate: Codable, Sendable, Equatable, Identifiable {
         status: DesignCandidateStatus = .pending,
         createdAt: Date = Date(),
         resolvedAt: Date? = nil,
-        variantArtifactID: String? = nil
+        variantArtifactID: String? = nil,
+        originConversationID: String? = nil,
+        originEnvironmentID: String? = nil
     ) {
         self.id = id
         self.artifactID = artifactID
@@ -405,6 +413,8 @@ public struct DesignCandidate: Codable, Sendable, Equatable, Identifiable {
         self.createdAt = createdAt
         self.resolvedAt = resolvedAt
         self.variantArtifactID = variantArtifactID
+        self.originConversationID = originConversationID
+        self.originEnvironmentID = originEnvironmentID
     }
 }
 
@@ -433,6 +443,10 @@ public struct DesignProject: Codable, Sendable, Equatable, Identifiable {
     public var artifacts: [DesignArtifact]
     public var feedback: [DesignFeedback]
     public var candidates: [DesignCandidate]
+    /// Explicit Canvas-owned workspace binding (office/presentation/CAD):
+    /// the existing editors address this workspace-relative document. nil
+    /// for byte-based content (image/video/pdf/notes/web).
+    public var workspaceBinding: DesignWorkspaceBinding?
     /// The run currently frozen for generation/edit, if any.
     public var frozenRun: DesignRunFrozen?
     /// Applied idempotency keys, bounded. Replaying an operation ID is a no-op.
@@ -445,7 +459,8 @@ public struct DesignProject: Codable, Sendable, Equatable, Identifiable {
         contentType: DesignContentType,
         brief: DesignBrief? = nil,
         spec: DesignSpec? = nil,
-        template: DesignTemplateManifest? = nil
+        template: DesignTemplateManifest? = nil,
+        workspaceBinding: DesignWorkspaceBinding? = nil
     ) {
         self.nodeID = nodeID
         self.schemaVersion = Self.currentSchemaVersion
@@ -453,6 +468,7 @@ public struct DesignProject: Codable, Sendable, Equatable, Identifiable {
         self.brief = brief
         self.spec = spec
         self.template = template
+        self.workspaceBinding = workspaceBinding
         self.artifacts = []
         self.feedback = []
         self.candidates = []
@@ -731,7 +747,12 @@ public enum DesignWorkflowEngine {
         proposedContentSHA256: String,
         summary: String,
         diff: [String] = [],
-        feedbackIDs: [String] = []
+        feedbackIDs: [String] = [],
+        proposedRevisionID: String? = nil,
+        payloadRelativePath: String? = nil,
+        payloadFormat: String? = nil,
+        originConversationID: String? = nil,
+        originEnvironmentID: String? = nil
     ) throws -> DesignCandidate {
         guard let index = project.artifacts.firstIndex(where: { $0.id == artifactID }) else {
             throw DesignWorkflowError.artifactNotFound(artifactID)
@@ -751,11 +772,14 @@ public enum DesignWorkflowEngine {
         }
         let number = (artifact.revisions.map(\.number).max() ?? 0) + 1
         let revision = DesignRevision(
+            id: proposedRevisionID ?? UUID().uuidString.lowercased(),
             artifactID: artifactID,
             number: number,
             contentSHA256: proposedContentSHA256,
             origin: .generate,
-            parentRevisionID: base
+            parentRevisionID: base,
+            payloadRelativePath: payloadRelativePath,
+            payloadFormat: payloadFormat
         )
         project.artifacts[index].revisions.append(revision)
 
@@ -765,7 +789,9 @@ public enum DesignWorkflowEngine {
             proposedRevisionID: revision.id,
             feedbackIDs: feedbackIDs,
             summary: summary,
-            diff: diff
+            diff: diff,
+            originConversationID: originConversationID,
+            originEnvironmentID: originEnvironmentID
         )
         // Supersede any older pending candidate for the same artifact.
         for i in project.candidates.indices

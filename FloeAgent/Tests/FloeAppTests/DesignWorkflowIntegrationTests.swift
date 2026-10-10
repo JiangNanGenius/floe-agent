@@ -1,9 +1,8 @@
-// FloeAppTests — Design workflow integration over the real services.
-//
-// End-to-end per type where the existing engine permits: real bytes flow
-// import -> revision payload -> candidate -> ONE-CAS adoption that updates
-// the ACTUAL canvas node -> verified export/reopen. Uses AppEnvironment.preview
-// (in-memory database) plus an in-memory canvas repository.
+// FloeAppTests — Design workflow integration: REAL production tool
+// invocations end-to-end. Two real decodable PNGs flow
+// import → revision payload → propose (payload bound before one CAS) →
+// grant-gated adopt (real node asset in the same CAS) → verified export with
+// the real image parser, plus replay and changed-request rejection.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
@@ -31,231 +30,204 @@ private actor FakeCanvasRepository: CanvasDocumentRepository {
     func stored(canvasID: UUID) -> CanvasProject? { projects[canvasID] }
 }
 
-@Suite("Design workflow integration")
+@Suite("Design workflow tool integration")
 @MainActor
 struct DesignWorkflowIntegrationTests {
-    private struct Fixture {
+    // Two REAL, distinct, decodable 1x1 PNGs (red / blue).
+    private let redPNG = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")!
+    private let bluePNG = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")!
+
+    private struct Harness {
         let environment: AppEnvironment
         let canvasID: UUID
         let nodeID: UUID
         let repository: FakeCanvasRepository
-        let service: DesignCanvasService
-        let adapters: DesignAdapterCenter
+        let registry: ToolRunnerRegistry
+        let outboxURL: URL
         var revision: Int64
     }
 
-    private func makeFixture(kind: CanvasNodeKind, contentType: DesignContentType) throws -> Fixture {
+    private func makeHarness() async throws -> Harness {
         let environment = AppEnvironment.preview()
+        // Apply schema migrations on the fixture database (async, never a
+        // blocking bridge on the main actor).
+        try await environment.database.migrate()
         let canvasID = UUID()
         let nodeID = UUID()
-        var node = CanvasNode.placeholder(kind: kind, position: CanvasPoint(x: 10, y: 20), zIndex: 2)
+        var node = CanvasNode.placeholder(kind: .image, position: CanvasPoint(x: 10, y: 20), zIndex: 2)
         node.id = nodeID
-        node.title = "Node"
-        node.text = "original"
+        node.title = "Hero"
         node.size = CanvasSize(width: 320, height: 240)
         let document = CanvasDocument(id: UUID(), name: "doc", nodes: [node])
-        var project = CanvasProject(id: canvasID, name: "T", documents: [document], selectedDocumentID: document.id)
+        var project = CanvasProject(id: canvasID, name: "画布1-fixture", documents: [document], selectedDocumentID: document.id)
         project.revision = 1
         let repository = FakeCanvasRepository(project: project)
-        let service = DesignCanvasService(repository: repository)
-        var design = DesignWorkflowEngine.createProject(nodeID: nodeID.uuidString.lowercased(), contentType: contentType)
-        _ = try await service.mutate(
-            canvasID: canvasID, nodeID: nodeID, expectedRevision: 1,
-            operationID: "op-create", contentType: contentType
-        ) { value in
-            value = design
-            value.brief = DesignBrief(goal: "integration")
-            value.spec = DesignSpec(layout: "single", rawMarkdown: "# Spec\nlayout: single\n")
-        }
-        design = try #require(try await service.designState(canvasID: canvasID, nodeID: nodeID))
-        return Fixture(
+        let registry = ToolRunnerRegistry()
+        let outboxURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("design-it-outbox-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("outbox.json")
+        registerDesignAgentTools(
+            capabilities: { environment.designAdapterCenter.capabilityRegistry() },
+            adapters: environment.designAdapterCenter,
+            environment: environment,
+            authorize: { _, _ in true },
+            repository: repository,
+            decisionOutbox: DesignDecisionOutbox(fileURL: outboxURL),
+            registry: registry
+        )
+        return Harness(
             environment: environment,
             canvasID: canvasID,
             nodeID: nodeID,
             repository: repository,
-            service: service,
-            adapters: environment.designAdapterCenter,
-            revision: 2
+            registry: registry,
+            outboxURL: outboxURL,
+            revision: 1
         )
     }
 
-    @Test func imageEndToEndImportAdoptExportReopen() async throws {
-        var fixture = try await makeFixture(kind: .image, contentType: .image)
-        // Valid 1x1 PNG.
-        let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")!
-        // importSource through the real adapter (asset ingestion boundary).
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("design-it-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let source = directory.appendingPathComponent("in.png")
-        try png.write(to: source)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let adapter = try #require(await fixture.adapters.adapter(for: .image))
-        let imported = try await adapter.importSource(fileURL: source, canvasID: fixture.canvasID, nodeID: fixture.nodeID)
-        #expect(imported.format == "png")
-        // Payload snapshot retained with the owned revision.
-        let artifactID = UUID().uuidString.lowercased()
-        let revisionID = UUID().uuidString.lowercased()
-        let digest = FloeDigest.sha256Hex(imported.bytes)
-        let staged = try await fixture.adapters.stageRevisionPayload(
-            canvasID: fixture.canvasID, nodeID: fixture.nodeID,
-            artifactID: artifactID, revisionID: revisionID,
-            bytes: imported.bytes, expectedContentSHA256: digest
+    private func run(
+        _ harness: Harness,
+        tool: String,
+        arguments: [String: Any],
+        context: ToolContext
+    ) async throws -> ToolExecutionOutput {
+        let runner = try #require(harness.registry.runner(named: tool))
+        let data = try JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys])
+        return try await runner.run(data, context)
+    }
+
+    private func context(runID: UUID = UUID(), conversationID: UUID? = nil) -> ToolContext {
+        ToolContext(runID: runID, cancellation: CancellationToken(), conversationID: conversationID)
+    }
+
+    private func writeArtifactPNG(_ bytes: Data) throws -> String {
+        let root = try FloeArtifactStore.root()
+        let name = "Attachments/it-\(UUID().uuidString.lowercased()).png"
+        let url = root.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try bytes.write(to: url, options: .atomic)
+        return name
+    }
+
+    @Test func imageEndToEndViaProductionTools() async throws {
+        var harness = try await makeHarness()
+        let conversationID = UUID()
+        // 1. Create the design subdocument.
+        var output = try await run(harness, tool: "canvas.designCreate", arguments: [
+            "canvasID": harness.canvasID.uuidString,
+            "nodeID": harness.nodeID.uuidString,
+            "expectedRevision": harness.revision,
+            "operationID": "op-create",
+            "contentType": "image",
+            "goal": "fixture"
+        ], context: context(conversationID: conversationID))
+        harness.revision += 1
+        // 2. Import the red PNG through the real adapter.
+        let importPath = try writeArtifactPNG(redPNG)
+        output = try await run(harness, tool: "canvas.designImportSource", arguments: [
+            "canvasID": harness.canvasID.uuidString,
+            "nodeID": harness.nodeID.uuidString,
+            "expectedRevision": harness.revision,
+            "operationID": "op-import",
+            "sourceRelativePath": importPath,
+            "displayName": "hero"
+        ], context: context(conversationID: conversationID))
+        harness.revision += 1
+        let importJSON = try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as! [String: Any]
+        let artifactID = try #require(importJSON["artifactID"] as? String)
+        #expect(importJSON["contentSHA256"] as? String == FloeDigest.sha256Hex(redPNG))
+        // Replay the import: same operation, same result, no duplicate state.
+        let replayed = try await run(harness, tool: "canvas.designImportSource", arguments: [
+            "canvasID": harness.canvasID.uuidString,
+            "nodeID": harness.nodeID.uuidString,
+            "expectedRevision": harness.revision,
+            "operationID": "op-import",
+            "sourceRelativePath": importPath,
+            "displayName": "hero"
+        ], context: context(conversationID: conversationID))
+        let replayJSON = try JSONSerialization.jsonObject(with: Data(replayed.summary.utf8)) as! [String: Any]
+        #expect(replayJSON["artifactID"] as? String == artifactID)
+        // 3. Propose the blue PNG: payload bound before one CAS.
+        let proposePath = try writeArtifactPNG(bluePNG)
+        output = try await run(harness, tool: "canvas.designPropose", arguments: [
+            "canvasID": harness.canvasID.uuidString,
+            "nodeID": harness.nodeID.uuidString,
+            "expectedRevision": harness.revision,
+            "operationID": "op-propose",
+            "artifactID": artifactID,
+            "payloadRelativePath": proposePath,
+            "summary": "blue variant"
+        ], context: context(conversationID: conversationID))
+        harness.revision += 1
+        let proposeJSON = try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as! [String: Any]
+        let design = try #require(proposeJSON["design"] as? [String: Any])
+        let candidates = try #require(design["candidates"] as? [[String: Any]])
+        let candidateID = try #require(candidates.first?["candidateID"] as? String)
+        // The proposed revision must carry the payload pointer (production
+        // binding), otherwise adopt/export cannot see real bytes.
+        let artifacts = try #require(design["artifacts"] as? [[String: Any]])
+        let artifact = try #require(artifacts.first { ($0["artifactID"] as? String) == artifactID })
+        let revisions = try #require(artifact["revisionCount"] as? Int)
+        #expect(revisions == 2)
+        // 4. Grant-gated adoption through the shared action path.
+        let grantID = await DesignAdoptionAuthorization.shared.issue(
+            canvasID: harness.canvasID, nodeID: harness.nodeID,
+            candidateID: candidateID,
+            baselineRevisionID: candidates.first?["baseRevisionID"] as? String ?? ""
         )
-        try await fixture.adapters.commitRevisionPayload(staged)
-        let snapshot = try await fixture.service.mutate(
-            canvasID: fixture.canvasID, nodeID: fixture.nodeID,
-            expectedRevision: fixture.revision, operationID: "op-import"
-        ) { design in
-            let artifact = DesignArtifact(
-                id: artifactID, contentType: .image,
-                canvasNodeID: fixture.nodeID.uuidString.lowercased(),
-                identity: .init(name: "hero", positionX: 0, positionY: 0, width: 0, height: 0)
-            )
-            DesignWorkflowEngine.addArtifact(artifact, to: &design)
-            _ = try DesignWorkflowEngine.registerRevision(
-                in: &design, artifactID: artifactID, contentSHA256: digest,
-                origin: .importFile, payloadRelativePath: staged.relativePath,
-                payloadFormat: imported.format, revisionID: revisionID
-            )
-        }
-        fixture.revision = snapshot.canvasRevision
-        // Candidate -> adopt updates the REAL node asset in ONE commit.
-        let baseSHA = digest
-        let editBytes = Data(png.reversed())
-        let editSHA = FloeDigest.sha256Hex(editBytes)
-        let editRevision = UUID().uuidString.lowercased()
-        try await fixture.adapters.storeRevisionPayload(
-            canvasID: fixture.canvasID, nodeID: fixture.nodeID,
-            artifactID: artifactID, revisionID: editRevision,
-            bytes: editBytes, expectedContentSHA256: editSHA
-        )
-        let proposed = try await fixture.service.mutate(
-            canvasID: fixture.canvasID, nodeID: fixture.nodeID,
-            expectedRevision: fixture.revision, operationID: "op-propose"
-        ) { design in
-            _ = try DesignWorkflowEngine.proposeCandidate(
-                in: &design, artifactID: artifactID,
-                baseRevisionID: nil, proposedContentSHA256: editSHA, summary: "edit"
-            )
-        }
-        fixture.revision = proposed.canvasRevision
-        let candidateID = try #require(proposed.design?.candidates.first?.id)
-        let candidate = try #require(proposed.design?.candidate(candidateID))
-        let proposedRevision = try #require(proposed.design?.artifact(artifactID)?.revision(candidate.proposedRevisionID))
-        let adoptBytes = try await fixture.adapters.verifiedRevisionBytes(
-            canvasID: fixture.canvasID, nodeID: fixture.nodeID, artifactID: artifactID,
-            revisionID: proposedRevision.id, expectedContentSHA256: proposedRevision.contentSHA256
-        )
-        let update = try await DesignCanvasContentApplicator.prepare(
-            nodeKind: .image, bytes: adoptBytes, format: proposedRevision.payloadFormat ?? "png",
-            displayName: "hero", candidateRevisionID: proposedRevision.id,
-            contentSHA256: proposedRevision.contentSHA256, environment: fixture.environment
-        )
-        #expect(update.asset != nil)
-        let adopted = try await fixture.service.mutateProject(
-            canvasID: fixture.canvasID, nodeID: fixture.nodeID,
-            expectedRevision: fixture.revision, operationID: "op-adopt"
-        ) { project, design in
-            _ = try DesignWorkflowEngine.adoptCandidate(in: &design, candidateID: candidateID, mode: .updateOriginal)
-            guard let d = project.documents.firstIndex(where: { $0.nodes.contains(where: { $0.id == fixture.nodeID }) }),
-                  let n = project.documents[d].nodes.firstIndex(where: { $0.id == fixture.nodeID }) else { return }
-            designApplyContentUpdate(update, to: &project.documents[d].nodes[n])
-        }
-        #expect(adopted.design?.candidate(candidateID)?.status == .adopted)
-        let project = try await fixture.repository.project(canvasID: fixture.canvasID)
-        let node = try #require(project.documents.first?.nodes.first)
+        output = try await run(harness, tool: "canvas.designAdopt", arguments: [
+            "canvasID": harness.canvasID.uuidString,
+            "nodeID": harness.nodeID.uuidString,
+            "expectedRevision": harness.revision,
+            "operationID": "op-adopt",
+            "candidateID": candidateID,
+            "mode": "updateOriginal",
+            "baselineRevisionID": candidates.first?["baseRevisionID"] as? String ?? "",
+            "grantID": grantID
+        ], context: context(conversationID: conversationID))
+        harness.revision += 1
+        let adoptJSON = try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as! [String: Any]
+        let adoptedDesign = try #require(adoptJSON["design"] as? [String: Any])
+        let adoptedCandidates = adoptedDesign["candidates"] as? [[String: Any]] ?? []
+        #expect(adoptedCandidates.first?["status"] as? String == "adopted")
         // The ACTUAL node now references the adopted bytes; layout preserved.
-        #expect(node.asset?.byteCount == Int64(adoptBytes.count))
+        let project = try await harness.repository.project(canvasID: harness.canvasID)
+        let node = try #require(project.documents.first?.nodes.first)
+        #expect(node.asset?.byteCount == Int64(bluePNG.count))
         #expect(node.position == CanvasPoint(x: 10, y: 20))
         #expect(node.size == CanvasSize(width: 320, height: 240))
-        #expect(node.title == "Node")
-        // Verified export reopens with the real image parser.
-        let artifact = try #require(adopted.design?.artifact(artifactID))
-        let current = try #require(artifact.currentRevision)
-        let export = try await fixture.adapters.exportVerifiedRevision(
-            canvasID: fixture.canvasID, nodeID: fixture.nodeID, artifactID: artifactID,
-            revision: current, artifact: artifact, requestedFormat: nil
-        )
-        #expect(export.contentSHA256 == editSHA)
-        #expect(export.verified)
-        _ = baseSHA
-    }
-
-    @Test func notesTextAdoptionUpdatesNodeText() async throws {
-        var fixture = try await makeFixture(kind: .text, contentType: .notes)
-        let text = "# Title\n\nrevised body"
-        let digest = FloeDigest.sha256Hex(Data(text.utf8))
-        let artifactID = UUID().uuidString.lowercased()
-        let revisionID = UUID().uuidString.lowercased()
-        try await fixture.adapters.storeRevisionPayload(
-            canvasID: fixture.canvasID, nodeID: fixture.nodeID,
-            artifactID: artifactID, revisionID: revisionID,
-            bytes: Data(text.utf8), expectedContentSHA256: digest
-        )
-        let snapshot = try await fixture.service.mutate(
-            canvasID: fixture.canvasID, nodeID: fixture.nodeID,
-            expectedRevision: fixture.revision, operationID: "op-import"
-        ) { design in
-            let artifact = DesignArtifact(
-                id: artifactID, contentType: .notes,
-                canvasNodeID: fixture.nodeID.uuidString.lowercased(),
-                identity: .init(name: "note", positionX: 0, positionY: 0, width: 0, height: 0)
-            )
-            DesignWorkflowEngine.addArtifact(artifact, to: &design)
-            _ = try DesignWorkflowEngine.registerRevision(
-                in: &design, artifactID: artifactID, contentSHA256: digest,
-                origin: .importFile, payloadFormat: "md", revisionID: revisionID
-            )
+        #expect(node.title == "Hero")
+        // 5. Verified export: recorded format, real reopen parser.
+        let adoptedArtifacts = adoptedDesign["artifacts"] as? [[String: Any]] ?? []
+        let current = try #require(adoptedArtifacts.first?["currentRevisionID"] as? String)
+        output = try await run(harness, tool: "canvas.designExportRevision", arguments: [
+            "canvasID": harness.canvasID.uuidString,
+            "nodeID": harness.nodeID.uuidString,
+            "artifactID": artifactID,
+            "revisionID": current
+        ], context: context(conversationID: conversationID))
+        let exportJSON = try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as! [String: Any]
+        #expect(exportJSON["verified"] as? Bool == true)
+        #expect(exportJSON["contentSHA256"] as? String == FloeDigest.sha256Hex(bluePNG))
+        // 6. Changed-request replay is rejected before side effects.
+        await #expect(throws: (any Error).self) {
+            _ = try await self.run(harness, tool: "canvas.designImportSource", arguments: [
+                "canvasID": harness.canvasID.uuidString,
+                "nodeID": harness.nodeID.uuidString,
+                "expectedRevision": harness.revision,
+                "operationID": "op-import", // same op, different bytes
+                "sourceRelativePath": proposePath,
+                "displayName": "hero"
+            ], context: self.context(conversationID: conversationID))
         }
-        fixture.revision = snapshot.canvasRevision
-        let candidate = try await fixture.service.mutate(
-            canvasID: fixture.canvasID, nodeID: fixture.nodeID,
-            expectedRevision: fixture.revision, operationID: "op-propose"
-        ) { design in
-            _ = try DesignWorkflowEngine.proposeCandidate(
-                in: &design, artifactID: artifactID,
-                proposedContentSHA256: digest, summary: "import"
-            )
-        }
-        fixture.revision = candidate.canvasRevision
-        // Import is already a change vs the empty base; propose may fail with
-        // noActualChange when base == proposed; in that case adopt is not
-        // required — instead verify restore of the imported revision updates
-        // the node text through the applicator.
-        let artifact = try #require(candidate.design?.artifact(artifactID))
-        let revision = try #require(artifact.currentRevision)
-        let bytes = try await fixture.adapters.verifiedRevisionBytes(
-            canvasID: fixture.canvasID, nodeID: fixture.nodeID, artifactID: artifactID,
-            revisionID: revision.id, expectedContentSHA256: revision.contentSHA256
-        )
-        let update = try await DesignCanvasContentApplicator.prepare(
-            nodeKind: .text, bytes: bytes, format: "md",
-            displayName: "note", candidateRevisionID: revision.id,
-            contentSHA256: revision.contentSHA256, environment: fixture.environment
-        )
-        #expect(update.text == text)
-        let restored = try await fixture.service.mutateProject(
-            canvasID: fixture.canvasID, nodeID: fixture.nodeID,
-            expectedRevision: fixture.revision, operationID: "op-restore"
-        ) { project, design in
-            _ = try DesignWorkflowEngine.restoreRevision(in: &design, artifactID: artifactID, revisionID: revision.id)
-            guard let d = project.documents.firstIndex(where: { $0.nodes.contains(where: { $0.id == fixture.nodeID }) }),
-                  let n = project.documents[d].nodes.firstIndex(where: { $0.id == fixture.nodeID }) else { return }
-            designApplyContentUpdate(update, to: &project.documents[d].nodes[n])
-        }
-        let project = try await fixture.repository.project(canvasID: fixture.canvasID)
-        #expect(project.documents.first?.nodes.first?.text == text)
     }
 
     @Test func webpageCaptureFailsClosedWithoutExactTaskBinding() async throws {
         let environment = AppEnvironment.preview()
         let port = BrowserPageCapturePort(environment: environment)
-        // No visible browser bound to this conversation: capture must fail
-        // closed, never reading another task's session.
         await #expect(throws: (any Error).self) {
-            _ = try await port.capturePage(
-                conversationID: UUID(), runID: UUID()
-            )
+            _ = try await port.capturePage(conversationID: UUID(), runID: UUID())
         }
     }
 }

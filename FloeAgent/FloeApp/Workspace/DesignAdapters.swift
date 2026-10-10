@@ -20,6 +20,7 @@ import FloeProviders
 import FloePersistence
 import FloeWorkbench
 import FloeSkills
+import FloeDocuments
 
 // MARK: - Errors and value types
 
@@ -117,6 +118,10 @@ struct DesignCADBinding: Sendable {
     let sourceFormat: String
 }
 
+/// Binding provider: resolves the explicit Canvas-owned workspace binding
+/// recorded on the node's design subdocument, when any.
+typealias DesignBindingProvider = @MainActor @Sendable (UUID, UUID) async -> DesignWorkspaceBinding?
+
 /// CAD verified export through CadDocumentCenter.
 @MainActor
 protocol DesignCADExportPort: Sendable {
@@ -129,7 +134,12 @@ protocol DesignCADExportPort: Sendable {
 /// Office verified export through OfficeCommandCenter.
 @MainActor
 protocol DesignOfficeExportPort: Sendable {
-    func exportSource(workspacePath: String, relativeOutput: String?) async throws -> DesignAdapterImportedSource
+    func exportSource(
+        documentID: String,
+        workspacePath: String,
+        relativeOutput: String?,
+        ownerID: UUID
+    ) async throws -> DesignAdapterImportedSource
 }
 
 // MARK: - Type adapters
@@ -454,28 +464,44 @@ struct OfficeDesignAdapter: DesignTypeAdapter {
     enum Kind: Sendable { case document, presentation }
     let kind: Kind
     let exportPort: DesignOfficeExportPort?
-    let workspacePath: String?
+    let bindingProvider: DesignBindingProvider?
 
     var contentType: DesignContentType { kind == .presentation ? .presentation : .officeDocument }
 
+    /// Connected when the office center is available and the node has an
+    /// explicit Canvas-owned workspace binding.
     var connectedOperations: Set<DesignOperation> {
-        (exportPort != nil && workspacePath != nil)
-            ? [.preview, .sourceExport, .verifiedExport]
-            : []
+        exportPort.map { _ in [.importSource, .preview, .sourceExport, .verifiedExport] } ?? []
     }
 
     func unavailableReason(_ operation: DesignOperation) -> String? {
-        if exportPort == nil || workspacePath == nil {
-            return "Office design revisions bind to a workspace office file; none is connected here"
+        if exportPort == nil {
+            return "The office command center is unavailable"
         }
-        return DesignTypeAdapter_defaultReason(operation, contentType: contentType, connected: connectedOperations)
+        return "Bind a design workspace document first (canvas.designBindDocument) — office proposals stay in the existing office flow"
     }
 
+    /// Verified export of the bound workspace document through
+    /// OfficeCommandCenter (digest-verified snapshot).
     func importSource(fileURL: URL, canvasID: UUID, nodeID: UUID) async throws -> DesignAdapterImportedSource {
-        // Office edits flow through the office proposal system
-        // (OfficeCommandCenter.prepareProposal/apply); importing arbitrary
-        // bytes would bypass it, so the honest path is export-verified copies.
-        throw DesignAdapterError.unavailable("Office content changes go through the office proposal flow (cad-style grants), not raw imports")
+        guard let exportPort else { throw DesignAdapterError.unavailable("Office export is not connected") }
+        guard let binding = await bindingProvider?(canvasID, nodeID) else {
+            throw DesignAdapterError.unavailable(unavailableReason(.importSource) ?? "No design workspace binding")
+        }
+        let relativeOutput = "design-export-\(UUID().uuidString.lowercased()).\(binding.format)"
+        return try await exportPort.exportSource(
+            documentID: binding.relativeDocumentPath,
+            workspacePath: binding.workspaceRootPath,
+            relativeOutput: relativeOutput,
+            ownerID: canvasID
+        )
+    }
+
+    func verifyExportReopen(bytes: Data, format: String) async throws {
+        // Office export receipts are digest-verified by OfficeCommandCenter at
+        // capture; the immutable-payload hash equality in the export path is
+        // the verification. A non-empty sanity check only.
+        guard !bytes.isEmpty else { throw FloeError.validationFailed("Office export is empty") }
     }
 }
 
@@ -585,11 +611,26 @@ struct MediaGenerationDesignPort: DesignImageGenerationPort {
 struct CanvasCADDesignExportPort: DesignCADExportPort {
     let environment: AppEnvironment
 
-    /// Resolves the guarded canonical binding recorded on the node (never by
-    /// inferring ownership from a path): the source-path key is parsed and
-    /// re-resolved through CanvasCADStorage containment, and the dimension
-    /// (native 3D package vs 2D drawing) comes from the real file extension.
+    /// 1) Explicit design-workspace binding (canvas.designBindDocument) —
+    /// the existing CAD engine addresses the workspace document directly.
+    /// 2) Otherwise the guarded CanvasCAD source path recorded on the node.
     func binding(for canvasID: UUID, nodeID: UUID) async -> DesignCADBinding? {
+        let designService = DesignCanvasService(repository: FileCanvasDocumentRepository())
+        if let design = try? await designService.designState(canvasID: canvasID, nodeID: nodeID),
+           let workspace = design.workspaceBinding {
+            let ext = (workspace.relativeDocumentPath as NSString).pathExtension.lowercased()
+            let dimension: DesignCADBinding.Dimension
+            if ext == "floecad" { dimension = .native3D }
+            else if ext == "dwg" || ext == "dxf" { dimension = .drawing2D }
+            else { return nil }
+            return DesignCADBinding(
+                documentID: workspace.relativeDocumentPath,
+                workspacePath: workspace.workspaceRootPath,
+                ownerID: canvasID,
+                dimension: dimension,
+                sourceFormat: ext
+            )
+        }
         guard let project = try? await FileCanvasDocumentRepository().project(canvasID: canvasID),
               let node = project.documents.flatMap({ $0.nodes }).first(where: { $0.id == nodeID }),
               let key = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath],
@@ -949,7 +990,9 @@ enum DesignCanvasContentApplicator {
         displayName: String,
         candidateRevisionID: String,
         contentSHA256: String,
-        environment: AppEnvironment
+        environment: AppEnvironment,
+        canvasID: UUID? = nil,
+        nodeID: UUID? = nil
     ) async throws -> PreparedUpdate {
         var update = PreparedUpdate(provenance: [
             "\(provenancePrefix)revision": candidateRevisionID,
@@ -957,7 +1000,7 @@ enum DesignCanvasContentApplicator {
             "\(provenancePrefix)format": format
         ])
         switch nodeKind {
-        case .image, .video, .file:
+        case .image, .video:
             let type = UTType(filenameExtension: format.lowercased())
             let service = CreativeAssetIngestionService(assetStore: environment.creativeAssetStore)
             let record = try await service.importPhotoData(bytes, contentType: type, displayName: displayName)
@@ -969,16 +1012,47 @@ enum DesignCanvasContentApplicator {
                 byteCount: record.byteCount,
                 license: record.license
             )
+        case .file:
+            // Office/presentation with an explicit binding: adopted bytes
+            // become the bound workspace document (the existing editor
+            // reopens it). Unbound file nodes keep the asset path.
+            if let canvasID, let nodeID,
+               let binding = try await boundWorkspaceDocument(
+                canvasID: canvasID, nodeID: nodeID, format: format
+            ) {
+                try DesignWorkspace.write(bytes: bytes, to: binding)
+                update.provenance["\(provenancePrefix)workspaceDocument"] = binding.relativeDocumentPath
+            } else {
+                let type = UTType(filenameExtension: format.lowercased())
+                let service = CreativeAssetIngestionService(assetStore: environment.creativeAssetStore)
+                let record = try await service.importPhotoData(bytes, contentType: type, displayName: displayName)
+                update.asset = CanvasAssetReference(
+                    id: record.id,
+                    contentHash: record.contentHash,
+                    localRelativePath: record.localRelativePath,
+                    mimeType: record.mimeType,
+                    byteCount: record.byteCount,
+                    license: record.license
+                )
+            }
         case .text, .stickyNote:
             guard let text = String(data: bytes, encoding: .utf8) else {
                 throw FloeError.validationFailed("The payload is not valid UTF-8 text for this node")
             }
             update.text = text
         case .scene3D:
-            // CAD content changes flow through the CAD proposal authority
-            // (cad.document tools with grants); the design adoption records
-            // provenance only — the editable package is never rewritten here.
-            update.provenance["\(provenancePrefix)cadDelegated"] = "cad.document"
+            // With an explicit Canvas-owned workspace binding, CAD bytes are
+            // written to the bound document (the CAD editor reopens it);
+            // without one, adoption stays provenance-only and says so.
+            if let canvasID, let nodeID,
+               let binding = try await boundWorkspaceDocument(
+                canvasID: canvasID, nodeID: nodeID, format: format
+            ) {
+                try DesignWorkspace.write(bytes: bytes, to: binding)
+                update.provenance["\(provenancePrefix)workspaceDocument"] = binding.relativeDocumentPath
+            } else {
+                update.provenance["\(provenancePrefix)cadDelegated"] = "bind a design workspace document first (canvas.designBindDocument)"
+            }
         case .card, .shape, .group, .generationTask, .audio:
             // No editable content body on these node kinds; provenance only.
             break
@@ -986,6 +1060,18 @@ enum DesignCanvasContentApplicator {
         return update
     }
 
+
+    /// Resolves the explicit Canvas-owned workspace binding recorded on the
+    /// node's design subdocument, when any.
+    static func boundWorkspaceDocument(
+        canvasID: UUID,
+        nodeID: UUID,
+        format: String
+    ) async throws -> DesignWorkspaceBinding? {
+        let service = DesignCanvasService(repository: FileCanvasDocumentRepository())
+        guard let design = try? await service.designState(canvasID: canvasID, nodeID: nodeID) else { return nil }
+        return design.workspaceBinding
+    }
 }
 
 /// Applies the update to the node in place (update-original). Never touches
@@ -1085,5 +1171,58 @@ enum DesignSignedTemplateSource {
             rollbackVersion: rollbackVersion,
             origin: .signedContent
         )
+    }
+}
+
+// MARK: - Office export port + design binding resolution
+
+struct OfficeDesignExportPort: DesignOfficeExportPort {
+    let environment: AppEnvironment
+
+    func exportSource(
+        documentID: String,
+        workspacePath: String,
+        relativeOutput: String?,
+        ownerID: UUID
+    ) async throws -> DesignAdapterImportedSource {
+        let access = OfficeCommandAccess(
+            environmentID: nil,
+            workspacePath: workspacePath,
+            ownerKind: "design-workspace",
+            ownerID: ownerID,
+            conversationID: nil
+        )
+        let receipt = try await environment.officeCommandCenter.export(
+            documentID: documentID,
+            relativeOutput: relativeOutput ?? "design-export.\(documentID.pathExtension)",
+            access: access
+        )
+        let root = URL(fileURLWithPath: workspacePath, isDirectory: true)
+        let bytes = try Data(contentsOf: root.appendingPathComponent(receipt.relativePath), options: [.mappedIfSafe])
+        guard FloeDigest.sha256Hex(bytes) == receipt.sha256.lowercased() else {
+            throw FloeError.storageCorrupted("Office export failed hash verification")
+        }
+        return DesignAdapterImportedSource(
+            bytes: bytes,
+            format: (receipt.relativePath as NSString).pathExtension.lowercased(),
+            displayName: receipt.relativePath
+        )
+    }
+}
+
+extension String {
+    fileprivate var pathExtension: String {
+        (self as NSString).pathExtension
+    }
+}
+
+/// Shared binding resolution for adapters: reads the explicit Canvas-owned
+/// workspace binding recorded on the node's design subdocument.
+@MainActor
+enum DesignBindingResolution {
+    static let provider: DesignBindingProvider = { canvasID, nodeID in
+        let service = DesignCanvasService(repository: FileCanvasDocumentRepository())
+        guard let design = try? await service.designState(canvasID: canvasID, nodeID: nodeID) else { return nil }
+        return design.workspaceBinding
     }
 }

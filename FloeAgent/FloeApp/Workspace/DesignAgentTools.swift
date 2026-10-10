@@ -429,21 +429,23 @@ private struct DesignProposeTool: AgentTool {
     struct Arguments: Decodable, Sendable {
         var canvasID: String; var nodeID: String; var expectedRevision: Int64; var operationID: String
         var artifactID: String; var baseRevisionID: String?
-        /// App-storage relative path of the proposed bytes. The tool reads and
-        /// hashes these bytes itself; a model-supplied hash is never trusted.
+        /// App-storage relative path of the proposed bytes. The tool reads
+        /// and hashes these bytes itself; a model-supplied hash alone is
+        /// never a candidate.
         var payloadRelativePath: String
-        /// Optional caller-provided digest, rejected when it disagrees with the
-        /// bytes actually read.
+        /// Optional caller-provided digest, rejected when it disagrees with
+        /// the bytes actually read.
         var proposedContentSHA256: String?
         var summary: String; var diff: [String]?; var feedbackIDs: [String]?
     }
     static let name = "canvas.designPropose"
-    static let toolDescription = "Propose a revision-bound candidate from real app-storage bytes (the tool verifies the hash itself). It never applies until the user adopts it with a user grant."
+    static let toolDescription = "Propose a revision-bound candidate from real app-storage bytes: ownership is validated first, the payload is published under the exact proposed revision identity BEFORE one Canvas CAS commit binds candidate + payload pointer + frozen run inputs; replay returns the recorded candidate and changed arguments are rejected. It never applies until the user adopts it with a user grant."
     static let parametersJSON = #"{"type":"object","properties":{"canvasID":{"type":"string"},"nodeID":{"type":"string"},"expectedRevision":{"type":"integer"},"operationID":{"type":"string"},"artifactID":{"type":"string"},"baseRevisionID":{"type":"string"},"payloadRelativePath":{"type":"string"},"proposedContentSHA256":{"type":"string"},"summary":{"type":"string"},"diff":{"type":"array","items":{"type":"string"}},"feedbackIDs":{"type":"array","items":{"type":"string"}}},"required":["canvasID","nodeID","expectedRevision","operationID","artifactID","payloadRelativePath","summary"],"additionalProperties":false}"#
-    static let riskLabels: Set<RiskLabel> = [.readsFiles, .persistsPersonalData]
+    static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles, .persistsPersonalData]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .internalState
     let service: DesignCanvasService
+    let adapters: DesignAdapterCenter
     func validate(_ args: Arguments) throws {
         _ = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
         _ = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
@@ -453,35 +455,94 @@ private struct DesignProposeTool: AgentTool {
         }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        // Resolve inside the artifact store (namespace + containment + size
-        // cap) and hash the real bytes. The model cannot propose an
-        // unverified hash. VNC screen content is not a design payload source.
+        let canvasID = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
+        let nodeID = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
+        // 1. Ownership/authorization BEFORE reading the source bytes.
+        let preRead = try await service.snapshot(runID: context.runID, canvasID: canvasID, nodeID: nodeID)
+        // Replay: return the recorded candidate; a changed request reusing
+        // the operationID is rejected before any side effect.
+        if preRead.design?.hasApplied(operationID: args.operationID) == true {
+            guard let recorded = preRead.design?.candidates.first(where: {
+                $0.artifactID == args.artifactID && $0.baseRevisionID == (args.baseRevisionID ?? $0.baseRevisionID)
+            }), recorded.status == .pending else {
+                throw FloeError.validationFailed("operationID '\(args.operationID)' was already applied to a different request")
+            }
+            let recordedSHA = preRead.design?.artifact(recorded.artifactID)
+                .flatMap { artifact in artifact.revision(recorded.proposedRevisionID) }?
+                .contentSHA256
+            guard let recordedSHA else {
+                throw FloeError.validationFailed("operationID '\(args.operationID)' replay lost the recorded revision")
+            }
+            if let claimed = args.proposedContentSHA256, claimed != recordedSHA {
+                throw FloeError.validationFailed("operationID '\(args.operationID)' was reused with different payload content")
+            }
+            return DesignToolOutput.make(DesignToolOutput.state(preRead))
+        }
+        // 2. Resolve + hash the real bytes (the model's hash alone is never
+        // trusted). VNC screen content is not a design payload source.
         let url = try FloeArtifactStore.resolve(
             args.payloadRelativePath,
             allowed: DesignImportSourceTool.allowedSourceNamespaces,
             maxBytes: 64 * 1_024 * 1_024
         )
-        let data = try Data(contentsOf: url)
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
         let verifiedSHA = FloeDigest.sha256Hex(data)
         if let claimed = args.proposedContentSHA256, claimed != verifiedSHA {
             throw FloeError.validationFailed("proposedContentSHA256 does not match the payload bytes")
         }
-        let snapshot = try await service.mutate(
-            runID: context.runID,
-            canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
-            nodeID: try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID"),
-            expectedRevision: args.expectedRevision,
-            operationID: args.operationID
-        ) { design in
-            _ = try DesignWorkflowEngine.proposeCandidate(
-                in: &design,
-                artifactID: args.artifactID,
-                baseRevisionID: args.baseRevisionID,
-                proposedContentSHA256: verifiedSHA,
-                summary: args.summary,
-                diff: args.diff ?? [],
-                feedbackIDs: args.feedbackIDs ?? []
+        let format = (args.payloadRelativePath as NSString).pathExtension.lowercased()
+        guard !format.isEmpty else {
+            throw FloeError.validationFailed("payloadRelativePath must carry a format extension")
+        }
+        // 3. Publish the immutable payload under the EXACT proposed revision
+        // identity BEFORE the CAS, so a crash never leaves a candidate whose
+        // revision points at missing bytes.
+        let proposedRevisionID = UUID().uuidString.lowercased()
+        let staged = try await adapters.stageRevisionPayload(
+            canvasID: canvasID, nodeID: nodeID, artifactID: args.artifactID,
+            revisionID: proposedRevisionID, bytes: data, expectedContentSHA256: verifiedSHA
+        )
+        try await adapters.commitRevisionPayload(staged)
+        // 4. ONE Canvas CAS commit: candidate + payload pointer + frozen run
+        //    (spec hash + input/target revisions) in the same revision.
+        let snapshot: DesignCanvasService.Snapshot
+        do {
+            snapshot = try await service.mutate(
+                runID: context.runID,
+                canvasID: canvasID,
+                nodeID: nodeID,
+                expectedRevision: args.expectedRevision,
+                operationID: args.operationID
+            ) { design in
+                let artifact = design.artifact(args.artifactID)
+                let candidate = try DesignWorkflowEngine.proposeCandidate(
+                    in: &design,
+                    artifactID: args.artifactID,
+                    baseRevisionID: args.baseRevisionID,
+                    proposedContentSHA256: verifiedSHA,
+                    summary: args.summary,
+                    diff: args.diff ?? [],
+                    feedbackIDs: args.feedbackIDs ?? [],
+                    proposedRevisionID: proposedRevisionID,
+                    payloadRelativePath: staged.relativePath,
+                    payloadFormat: format,
+                    originConversationID: context.conversationID?.uuidString.lowercased(),
+                    originEnvironmentID: context.environmentID
+                )
+                DesignWorkflowEngine.freezeRun(
+                    operationID: args.operationID,
+                    in: &design,
+                    inputRevisionID: candidate.baseRevisionID,
+                    targetRevisionID: artifact?.currentRevisionID
+                )
+            }
+        } catch {
+            // The CAS failed: remove only this call's exact orphan payload.
+            try? await adapters.removeRevisionPayload(
+                canvasID: canvasID, nodeID: nodeID, artifactID: args.artifactID,
+                revisionID: proposedRevisionID
             )
+            throw error
         }
         return DesignToolOutput.make(DesignToolOutput.state(snapshot))
     }
@@ -517,10 +578,6 @@ private struct DesignImportSourceTool: AgentTool {
         let nodeID = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
         // 1. Authorize run -> canvas BEFORE touching the source file.
         let design = try await service.snapshot(runID: context.runID, canvasID: canvasID, nodeID: nodeID)
-        // Replay: return the recorded import without re-reading the source.
-        if design.design?.hasApplied(operationID: args.operationID) == true {
-            return DesignToolOutput.make(DesignToolOutput.state(design))
-        }
         let contentType = design.design?.contentType
             ?? DesignContentTypeMapper.contentType(for: design.nodeKind)
         guard let adapter = await adapters.adapter(for: contentType) else {
@@ -536,9 +593,22 @@ private struct DesignImportSourceTool: AgentTool {
             allowed: Self.allowedSourceNamespaces,
             maxBytes: 64 * 1_024 * 1_024
         )
-        // 4. Adapter validation with the real editor boundary.
+        // 4. Adapter validation with the real editor boundary + digest.
         let imported = try await adapter.importSource(fileURL: sourceURL, canvasID: canvasID, nodeID: nodeID)
         let digest = FloeDigest.sha256Hex(imported.bytes)
+        // Replay fingerprint: return the recorded import for the identical
+        // request; reject a changed request reusing the operationID.
+        if design.design?.hasApplied(operationID: args.operationID) == true {
+            if let recorded = Self.recordedRevision(matching: digest, in: design.design) {
+                return DesignToolOutput.make([
+                    "imported": true, "operationReplayed": true,
+                    "artifactID": recorded.artifactID, "revisionID": recorded.revisionID,
+                    "contentSHA256": digest, "format": imported.format,
+                    "byteCount": imported.bytes.count
+                ])
+            }
+            throw FloeError.validationFailed("operationID '\(args.operationID)' was already applied with different content; idempotency replay requires the identical request")
+        }
         let artifactID = args.artifactID ?? UUID().uuidString.lowercased()
         let revisionID = UUID().uuidString.lowercased()
         // 5. Stage then PUBLISH the immutable payload BEFORE the CAS, so an
@@ -615,11 +685,14 @@ private struct DesignImportSourceTool: AgentTool {
         ])
     }
 
+    /// The recorded IMPORT revision for a replayed operation: digest match,
+    /// payload retained, and import origin (proposed `.generate` revisions
+    /// never satisfy an import replay — same bytes, different operation).
     private static func recordedRevision(matching digest: String, in design: DesignProject?) -> (artifactID: String, revisionID: String)? {
         guard let design else { return nil }
         for artifact in design.artifacts {
             for revision in artifact.revisions where revision.contentSHA256 == digest
-                && revision.payloadRelativePath != nil {
+                && revision.payloadRelativePath != nil && revision.origin == .importFile {
                 return (artifact.id, revision.id)
             }
         }
@@ -664,6 +737,62 @@ private struct DesignExportRevisionTool: AgentTool {
             "byteCount": export.byteCount,
             "contentSHA256": export.contentSHA256,
             "verified": export.contentSHA256 == revision.contentSHA256
+        ])
+    }
+}
+
+private struct DesignBindDocumentTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        var canvasID: String; var nodeID: String; var expectedRevision: Int64; var operationID: String
+        /// Artifact-store relative path of the source document
+        /// (docx/xlsx/pptx/dwg/dxf/floecad).
+        var sourceRelativePath: String
+        var format: String
+    }
+    static let name = "canvas.designBindDocument"
+    static let toolDescription = "Bind an explicit Canvas-owned workspace document for office/presentation/CAD design work: the source bytes are copied into the per-canvas design workspace through a path guard and the binding is recorded in the design subdocument through ONE Canvas CAS commit. The existing OfficeCommandCenter/CadDocumentCenter services then address the bound document (verified export, editor reopen). Never binds outside the workspace."
+    static let parametersJSON = #"{"type":"object","properties":{"canvasID":{"type":"string"},"nodeID":{"type":"string"},"expectedRevision":{"type":"integer"},"operationID":{"type":"string"},"sourceRelativePath":{"type":"string"},"format":{"type":"string"}},"required":["canvasID","nodeID","expectedRevision","operationID","sourceRelativePath","format"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles, .persistsPersonalData]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .internalState
+    let service: DesignCanvasService
+    func validate(_ args: Arguments) throws {
+        _ = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
+        _ = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
+        guard !args.operationID.isEmpty else { throw FloeError.validationFailed("operationID is required") }
+        guard ["docx", "xlsx", "pptx", "dwg", "dxf", "floecad"].contains(args.format.lowercased()) else {
+            throw FloeError.validationFailed("format must be docx/xlsx/pptx/dwg/dxf/floecad")
+        }
+    }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let canvasID = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
+        let nodeID = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
+        // Ownership BEFORE touching the source.
+        _ = try await service.snapshot(runID: context.runID, canvasID: canvasID, nodeID: nodeID)
+        let source = try FloeArtifactStore.resolve(
+            args.sourceRelativePath,
+            allowed: DesignImportSourceTool.allowedSourceNamespaces,
+            maxBytes: 64 * 1_024 * 1_024
+        )
+        let format = args.format.lowercased()
+        let binding = try DesignWorkspace.bind(
+            canvasID: canvasID, nodeID: nodeID, sourceFile: source, format: format
+        )
+        let snapshot = try await service.mutate(
+            runID: context.runID,
+            canvasID: canvasID,
+            nodeID: nodeID,
+            expectedRevision: args.expectedRevision,
+            operationID: args.operationID
+        ) { design in
+            design.workspaceBinding = binding
+        }
+        return DesignToolOutput.make([
+            "bound": true,
+            "workspaceRoot": binding.workspaceRootPath,
+            "document": binding.relativeDocumentPath,
+            "format": binding.format,
+            "state": DesignToolOutput.state(snapshot)
         ])
     }
 }
@@ -743,78 +872,26 @@ private struct DesignAdoptTool: AgentTool {
                 operationID: args.operationID
             ))
         }
-        // Prepare the REAL content update from the verified payload bytes.
-        let update: DesignCanvasContentApplicator.PreparedUpdate?
-        var contentNote = "applied"
-        let nodeKind = preRead.nodeKind
-        if let relative = proposed.payloadRelativePath {
-            do {
-                let bytes = try await adapters.verifiedRevisionBytes(
-                    canvasID: canvasID, nodeID: nodeID, artifactID: artifact.id,
-                    revisionID: proposed.id, expectedContentSHA256: proposed.contentSHA256
-                )
-                _ = relative
-                update = try await DesignCanvasContentApplicator.prepare(
-                    nodeKind: nodeKind, bytes: bytes,
-                    format: proposed.payloadFormat ?? "bin",
-                    displayName: artifact.identity.name,
-                    candidateRevisionID: proposed.id,
-                    contentSHA256: proposed.contentSHA256,
-                    environment: environment
-                )
-                if let prepared = update, prepared.asset == nil && prepared.text == nil {
-                    // Provenance-only (e.g. CAD-delegated or bodiless node):
-                    // never reported as an actual content adoption.
-                    contentNote = prepared.provenance["design.adopt.cadDelegated"].map { "delegated:\($0)" } ?? "provenance-only"
-                }
-            } catch {
-                if let intent { try? await decisionOutbox.cancel(id: intent.id) }
-                throw error
-            }
-        } else {
-            update = nil
-            contentNote = "no-payload"
-        }
+        // The shared production path: ONE CAS for metadata + real content
+        // (the UI uses the exact same DesignWorkflowActions.adopt).
+        let outcome = await DesignWorkflowActions.adopt(
+            service: service,
+            adapters: adapters,
+            environment: environment,
+            caller: .run(context.runID),
+            canvasID: canvasID,
+            nodeID: nodeID,
+            expectedRevision: args.expectedRevision,
+            operationID: args.operationID,
+            candidateID: args.candidateID,
+            mode: mode,
+            expectedArtifactRevisionID: args.expectedArtifactRevisionID
+        )
         let snapshot: DesignCanvasService.Snapshot
-        do {
-            snapshot = try await service.mutateProject(
-                runID: context.runID,
-                canvasID: canvasID,
-                nodeID: nodeID,
-                expectedRevision: args.expectedRevision,
-                operationID: args.operationID
-            ) { project, design in
-                let adopted = try DesignWorkflowEngine.adoptCandidate(
-                    in: &design,
-                    candidateID: args.candidateID,
-                    mode: mode,
-                    expectedRevisionID: args.expectedArtifactRevisionID
-                )
-                guard let documentIndex = project.documents.firstIndex(where: { $0.nodes.contains(where: { $0.id == nodeID }) }),
-                      let nodeIndex = project.documents[documentIndex].nodes.firstIndex(where: { $0.id == nodeID }) else {
-                    throw FloeError.validationFailed("Canvas node disappeared during adoption")
-                }
-                if let update {
-                    switch mode {
-                    case .updateOriginal:
-                        designApplyContentUpdate(
-                            update, to: &project.documents[documentIndex].nodes[nodeIndex]
-                        )
-                    case .variant:
-                        let variant = designApplyVariantUpdate(
-                            update,
-                            from: project.documents[documentIndex].nodes[nodeIndex],
-                            into: &project.documents[documentIndex].nodes
-                        )
-                        // Record the real variant node on the design candidate.
-                        if let candidateIndex = design.candidates.firstIndex(where: { $0.id == args.candidateID }) {
-                            design.candidates[candidateIndex].variantArtifactID = adopted.id
-                        }
-                        _ = variant
-                    }
-                }
-            }
-        } catch {
+        switch outcome {
+        case .succeeded(let value, _, _):
+            snapshot = value
+        case .failed(let error):
             if DesignDecisionNotifier.isRevisionConflict(error) {
                 await notifyDecision(
                     conversationID: context.conversationID, candidateID: args.candidateID,
@@ -839,10 +916,7 @@ private struct DesignAdoptTool: AgentTool {
             // intent .committing for launch-time reconcile.
             try? await decisionOutbox.markDelivered(id: intent.id)
         }
-        var output = DesignToolOutput.state(snapshot)
-        output["contentApplied"] = (update?.asset != nil || update?.text != nil)
-        output["contentNote"] = contentNote
-        return DesignToolOutput.make(output)
+        return DesignToolOutput.make(DesignToolOutput.state(snapshot))
     }
 
     private func notifyDecision(
@@ -966,40 +1040,21 @@ private struct DesignRestoreTool: AgentTool {
         if preRead.design?.hasApplied(operationID: args.operationID) == true {
             return DesignToolOutput.make(DesignToolOutput.state(preRead))
         }
-        guard let relative = target.payloadRelativePath else {
+        guard target.payloadRelativePath != nil else {
             throw FloeError.validationFailed("This revision has no retained payload to restore")
         }
-        let bytes = try await adapters.verifiedRevisionBytes(
-            canvasID: canvasID, nodeID: nodeID, artifactID: artifact.id,
-            revisionID: target.id, expectedContentSHA256: target.contentSHA256
-        )
-        _ = relative
-        let update = try await DesignCanvasContentApplicator.prepare(
-            nodeKind: preRead.nodeKind, bytes: bytes,
-            format: target.payloadFormat ?? "bin",
-            displayName: artifact.identity.name,
-            candidateRevisionID: target.id,
-            contentSHA256: target.contentSHA256,
-            environment: environment
-        )
-        let snapshot = try await service.mutateProject(
-            runID: context.runID,
+        let snapshot = try await DesignWorkflowActions.restore(
+            service: service,
+            adapters: adapters,
+            environment: environment,
+            caller: .run(context.runID),
             canvasID: canvasID,
             nodeID: nodeID,
             expectedRevision: args.expectedRevision,
-            operationID: args.operationID
-        ) { project, design in
-            _ = try DesignWorkflowEngine.restoreRevision(
-                in: &design, artifactID: args.artifactID, revisionID: args.revisionID
-            )
-            guard let documentIndex = project.documents.firstIndex(where: { $0.nodes.contains(where: { $0.id == nodeID }) }),
-                  let nodeIndex = project.documents[documentIndex].nodes.firstIndex(where: { $0.id == nodeID }) else {
-                throw FloeError.validationFailed("Canvas node disappeared during restore")
-            }
-            designApplyContentUpdate(
-                update, to: &project.documents[documentIndex].nodes[nodeIndex]
-            )
-        }
+            operationID: args.operationID,
+            artifactID: args.artifactID,
+            revisionID: args.revisionID
+        )
         return DesignToolOutput.make(DesignToolOutput.state(snapshot))
     }
 }
@@ -1089,7 +1144,8 @@ func registerDesignAgentTools(
     ToolCatalog.register(DesignImportSourceTool.self); registry.register(DesignImportSourceTool(service: service, adapters: adapters))
     ToolCatalog.register(DesignExportRevisionTool.self); registry.register(DesignExportRevisionTool(service: service, adapters: adapters))
     ToolCatalog.register(DesignAddFeedbackTool.self); registry.register(DesignAddFeedbackTool(service: service))
-    ToolCatalog.register(DesignProposeTool.self); registry.register(DesignProposeTool(service: service))
+    ToolCatalog.register(DesignProposeTool.self); registry.register(DesignProposeTool(service: service, adapters: adapters))
+    ToolCatalog.register(DesignBindDocumentTool.self); registry.register(DesignBindDocumentTool(service: service))
     ToolCatalog.register(DesignAdoptTool.self); registry.register(DesignAdoptTool(service: service, grants: grants, adapters: adapters, environment: environment, decisionSink: decisionSink, decisionOutbox: decisionOutbox))
     ToolCatalog.register(DesignRejectTool.self); registry.register(DesignRejectTool(service: service, decisionSink: decisionSink, decisionOutbox: decisionOutbox))
     ToolCatalog.register(DesignRestoreTool.self); registry.register(DesignRestoreTool(service: service, adapters: adapters, environment: environment))
