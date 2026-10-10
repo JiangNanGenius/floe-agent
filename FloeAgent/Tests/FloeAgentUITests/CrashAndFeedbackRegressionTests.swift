@@ -820,7 +820,11 @@ struct CrashAndFeedbackRegressionTests {
         )
         #expect(service.shouldOfferManualControl)
         #expect(service.canPerformManualControl)
-        #expect(service.manualControlTitle == "准备画中画")
+        // Locale-independent: prepared state maps to the prepare title via the
+        // localization catalog (English in CI, Chinese on a zh-Hans device).
+        #expect(service.manualControlTitle == FloeL10n.l(
+            "platform.background_video_service.preparing_picture_in_picture"
+        ))
         service.stop()
         #expect(!service.shouldOfferManualControl)
     }

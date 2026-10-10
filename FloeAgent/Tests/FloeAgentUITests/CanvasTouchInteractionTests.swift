@@ -146,13 +146,23 @@ struct CanvasTouchInteractionTests {
             to: task.id,
             document: document
         ) == 2)
-        #expect(CanvasGenerationReferenceLimitPolicy.rejectionMessage(
+        let limited = CanvasGenerationReferenceLimitPolicy.rejectionMessage(
             afterConnecting: second.id,
             to: task.id,
             document: document,
             maximumReferenceImages: 1,
             modelName: "Single Reference Model"
-        )?.contains("2 张参考图") == true)
+        )
+        // Locale-independent: the message is resolved through FloeL10n, so CI
+        // (English) and local (Chinese) runs must both see the catalog string
+        // with the model name and the actual vs allowed reference counts.
+        #expect(limited != nil)
+        #expect(limited?.contains("Single Reference Model") == true)
+        #expect(limited?.contains("2") == true)
+        #expect(limited == FloeL10n.l(
+            "workspace.workspace_canvas_view.supports_up_to_reference_images_this",
+            "Single Reference Model", 1, 2
+        ))
         #expect(CanvasGenerationReferenceLimitPolicy.rejectionMessage(
             afterConnecting: second.id,
             to: task.id,
