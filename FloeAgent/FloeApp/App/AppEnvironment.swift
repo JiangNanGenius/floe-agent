@@ -800,6 +800,10 @@ final class AppEnvironment: ObservableObject {
         // Native canvas inspection and mutation tools. Canvas runs are scoped
         // back to their durable hidden assistant conversation at execution.
         registerCanvasAgentTools(environment: self)
+        // Design workflow tools (brief/spec/revisions/anchored feedback/
+        // candidate/adopt/reject/restore) on the shared design project model.
+        // Capability flags reflect this build's actually connected operations.
+        registerDesignAgentTools(capabilities: .designCoreDefaults())
         // Provider-backed semantic visual inspection plus generation through
         // the independently configured auxiliary models. These must be in
         // the agent catalog, not UI-only.

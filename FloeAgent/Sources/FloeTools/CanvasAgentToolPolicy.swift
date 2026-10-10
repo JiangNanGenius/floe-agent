@@ -22,7 +22,15 @@ public enum CanvasAgentToolPolicy {
         "video.models",
         "canvas.getState", "canvas.applyOperations", "canvas.delete",
         "canvas.assetSearch", "canvas.assetInsert", "canvas.assetImport",
-        "canvas.generate", "canvas.generationStatus"
+        "canvas.generate", "canvas.generationStatus",
+        // Design workflow tools (brief/spec/revisions/anchored feedback/
+        // candidate/adopt/reject/restore). They operate on FloeCore's design
+        // project model bound to canvas nodes; adopting is approval-gated.
+        "canvas.designGetState", "canvas.designCapabilities",
+        "canvas.designCreate", "canvas.designUpdateBrief", "canvas.designUpdateSpec",
+        "canvas.designRegisterRevision", "canvas.designAddFeedback",
+        "canvas.designPropose", "canvas.designAdopt", "canvas.designReject",
+        "canvas.designRestore"
     ]
 
     public static func allowedToolNames(
