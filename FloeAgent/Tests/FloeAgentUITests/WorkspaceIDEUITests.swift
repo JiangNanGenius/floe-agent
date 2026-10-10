@@ -264,9 +264,23 @@ final class WorkspaceIDEUITests: XCTestCase {
         let settings = app.buttons["sidebar.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 15)); settings.tap()
         // Compact NavigationLink rows are buttons and virtualize below the
-        // fold. The iPad sidebar uses text labels. Exercise the real list.
+        // fold. The iPad sidebar uses text labels. Both are lazy lists: the
+        // settings sections ahead of Files can push the row just past the
+        // first realizable page (reproduced on an iPad mini in landscape), so
+        // scroll the visible sidebar until the row exists and can be tapped.
         let files = ipad ? app.staticTexts["settings.section.files"].firstMatch : app.buttons["settings.section.files"]
-        if !ipad {
+        if ipad {
+            // Swipe on a *visible* settings row: the sidebar behind the sheet
+            // and the detail column are also collection views, so querying a
+            // collection view by index is ambiguous.
+            for _ in 0..<8 {
+                if files.exists && files.isHittable { break }
+                let anchor = app.staticTexts
+                    .matching(NSPredicate(format: "identifier BEGINSWITH %@", "settings.section."))
+                    .allElementsBoundByIndex.first { $0.isHittable }
+                if let anchor { anchor.swipeUp() } else { app.swipeUp() }
+            }
+        } else {
             let sections = app.collectionViews["settings.sections"]
             XCTAssertTrue(sections.waitForExistence(timeout: 10))
             for _ in 0..<6 {
