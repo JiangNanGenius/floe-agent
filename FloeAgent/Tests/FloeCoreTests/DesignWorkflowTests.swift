@@ -7,7 +7,7 @@ struct DesignWorkflowTests {
 
     private func makeProject() -> DesignProject {
         DesignWorkflowEngine.createProject(
-            canvasID: "canvas-1",
+            nodeID: "node-1",
             contentType: .webpage,
             brief: DesignBrief(goal: "Landing page for Floe", audience: "iPad developers"),
             spec: DesignSpec(palette: ["#111111", "#FFFFFF"], typography: "SF Pro")
@@ -259,5 +259,105 @@ struct DesignMDCodecTests {
         let c = DesignSpec(palette: ["#FFFFFF"])
         #expect(DesignMDCodec.sha256(of: a) == DesignMDCodec.sha256(of: b))
         #expect(DesignMDCodec.sha256(of: a) != DesignMDCodec.sha256(of: c))
+    }
+}
+
+@Suite("Design canvas metadata binding")
+struct DesignCanvasMetadataTests {
+    @Test func roundTripAndBindingEnforced() throws {
+        var project = DesignWorkflowEngine.createProject(nodeID: "node-a", contentType: .image)
+        let artifact = DesignArtifact(
+            contentType: .image,
+            canvasNodeID: "node-a",
+            identity: DesignArtifactIdentity(name: "Hero", positionX: 0, positionY: 0, width: 10, height: 10)
+        )
+        DesignWorkflowEngine.addArtifact(artifact, to: &project)
+        _ = try DesignWorkflowEngine.registerRevision(
+            in: &project,
+            artifactID: artifact.id,
+            contentSHA256: "rev-1",
+            origin: .importFile
+        )
+        let raw = try DesignCanvasMetadata.encode(project)
+        let decoded = try #require(try DesignCanvasMetadata.decode(raw, nodeID: "node-a"))
+        #expect(decoded.nodeID == "node-a")
+        #expect(decoded.artifacts.count == 1)
+
+        // Binding mismatch fails closed.
+        #expect(throws: DesignCanvasMetadata.CodecError.self) {
+            _ = try DesignCanvasMetadata.decode(raw, nodeID: "node-b")
+        }
+        // Malformed fails closed.
+        #expect(throws: DesignCanvasMetadata.CodecError.self) {
+            _ = try DesignCanvasMetadata.decode("{not json", nodeID: "node-a")
+        }
+        // Absent is nil, not an error.
+        #expect(try DesignCanvasMetadata.decode(nil, nodeID: "node-a") == nil)
+    }
+
+    @Test func newerSchemaRejected() throws {
+        let raw = #"{"appliedOperationIDs":[],"artifacts":[],"candidates":[],"contentType":"image","createdAt":"2026-01-01T00:00:00Z","feedback":[],"nodeID":"node-a","schemaVersion":99,"updatedAt":"2026-01-01T00:00:00Z"}"#
+        do {
+            _ = try DesignCanvasMetadata.decode(raw, nodeID: "node-a")
+            Issue.record("expected newerSchema")
+        } catch let error as DesignCanvasMetadata.CodecError {
+            guard case .newerSchema(let found, _) = error else {
+                Issue.record("unexpected \(error)")
+                return
+            }
+            #expect(found == 99)
+        }
+    }
+
+    @Test func operationIDDedup() throws {
+        var project = DesignWorkflowEngine.createProject(nodeID: "node-a", contentType: .image)
+        #expect(DesignWorkflowEngine.recordOperation("op-1", in: &project) == true)
+        #expect(project.hasApplied(operationID: "op-1"))
+        // Replay is rejected.
+        #expect(DesignWorkflowEngine.recordOperation("op-1", in: &project) == false)
+        #expect(project.appliedOperationIDs == ["op-1"])
+    }
+}
+
+@Suite("Design adapter capabilities")
+struct DesignCapabilityTests {
+    @Test func everyUnavailableOperationCarriesAReason() {
+        let capability = DesignAdapterCapability(
+            contentType: .video,
+            available: [.importSource]
+        )
+        #expect(capability.supports(.importSource))
+        #expect(!capability.supports(.verifiedExport))
+        #expect(capability.reason(for: .importSource) == nil)
+        for operation in DesignOperation.allCases where operation != .importSource {
+            #expect(capability.reason(for: operation)?.isEmpty == false)
+        }
+    }
+
+    @Test func disconnectedRegistryIsHonest() {
+        let registry = DesignCapabilityRegistry.disconnected()
+        for type in DesignContentType.allCases {
+            let capability = registry.capability(for: type)
+            #expect(capability.available.isEmpty)
+            for operation in DesignOperation.allCases {
+                #expect(registry.reason(operation, for: type)?.isEmpty == false)
+            }
+        }
+        #expect(!registry.supports(.preview, for: .webpage))
+    }
+
+    @Test func onlyConnectedOperationsAreAdvertised() {
+        let registry = DesignCapabilityRegistry(capabilities: [
+            .webpage: DesignAdapterCapability(
+                contentType: .webpage,
+                available: [.importSource, .preview, .sourceExport],
+                unavailableReasons: [.generate: "No webpage generator is connected"]
+            )
+        ])
+        #expect(registry.supports(.preview, for: .webpage))
+        #expect(registry.supports(.sourceExport, for: .webpage))
+        #expect(!registry.supports(.generate, for: .webpage))
+        #expect(registry.reason(.generate, for: .webpage) == "No webpage generator is connected")
+        #expect(!registry.supports(.preview, for: .cad))
     }
 }

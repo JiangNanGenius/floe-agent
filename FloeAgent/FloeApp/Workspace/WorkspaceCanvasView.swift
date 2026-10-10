@@ -5341,6 +5341,7 @@ struct WorkspaceCanvasView: View {
     @State private var pendingAgentRequest: CanvasAgentRequest?
     @State private var enteredGroupID: UUID?
     @State private var showsGeneration = false
+    @State private var showsDesignWorkflow = false
     @State private var activeGenerationTasks: [UUID: Task<Void, Never>] = [:]
     @State private var activeGenerationTokens: [UUID: UUID] = [:]
     @State private var generationSourceNodeIDs = Set<UUID>()
@@ -5503,6 +5504,9 @@ struct WorkspaceCanvasView: View {
                 preferredResultPoint: generationResultPoint
             )
                 .environmentObject(environment)
+        }
+        .sheet(isPresented: $showsDesignWorkflow) {
+            DesignWorkflowPanel(canvasID: store.project.id, nodeID: selectedNodeIDs.first)
         }
         .sheet(isPresented: $showsCanvasOnboarding) {
             CanvasOnboardingView {
@@ -6265,6 +6269,10 @@ struct WorkspaceCanvasView: View {
                 }
             }
             Toggle("workspace.workspace_canvas_view.show_minimap", isOn: $showsMiniMap)
+            Button("design.panel.title", systemImage: "square.on.square.dashed") {
+                showsDesignWorkflow = true
+            }
+            .accessibilityIdentifier("canvas.designWorkflow")
             Button("canvas.onboarding.replay", systemImage: "questionmark.circle") {
                 showsCanvasOnboarding = true
             }

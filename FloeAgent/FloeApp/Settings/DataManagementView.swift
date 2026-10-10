@@ -13,6 +13,7 @@ struct DataManagementView: View {
     @State private var isCleaning = false
     @State private var confirmsCleanup = false
     @State private var cleanupOutcome: StorageCleanupPlanResult?
+    @State private var cleanupEstimateBytes: Int64 = 0
     @AppStorage("creative.canvas.sync.enabled") private var canvasSyncEnabled = true
     @State private var creativeStorage: CreativeStorageSummary?
     @State private var isReleasingCloudSpace = false
@@ -39,7 +40,7 @@ struct DataManagementView: View {
                     )
                     StorageUsageRow(title: FloeL10n.l("settings.data_management_view.app_installer"), icon: "shippingbox", bytes: report.bundleBytes)
                     StorageUsageRow(title: FloeL10n.l("settings.data_management_view.user_data"), icon: "externaldrive", bytes: report.totalAllocatedBytes)
-                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.safe_to_clean"), icon: "sparkles", bytes: report.safeCleanupEstimateBytes)
+                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.safe_to_clean"), icon: "sparkles", bytes: cleanupEstimateBytes)
                 } else {
                     HStack {
                         ProgressView()
@@ -164,14 +165,29 @@ struct DataManagementView: View {
                 .disabled(isCleaning)
             } footer: {
                 if let outcome = cleanupOutcome {
-                    let reclaimed = ByteCountFormatter.string(fromByteCount: outcome.measuredReclaimedAllocatedBytes, countStyle: .file)
+                    let observed = ByteCountFormatter.string(
+                        fromByteCount: outcome.observedAllocatedChangeBytes, countStyle: .file
+                    )
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(FloeL10n.l("settings.data_management_view.cleanup_reclaimed_measured", reclaimed))
+                        Text(FloeL10n.l("settings.data_management_view.cleanup_observed_allocation", observed))
+                        if let volume = outcome.volumeAvailableCapacityChangeBytes {
+                            let volumeText = ByteCountFormatter.string(fromByteCount: max(0, volume), countStyle: .file)
+                            Text(FloeL10n.l("settings.data_management_view.cleanup_volume_change", volumeText))
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                         let deleted = outcome.perCandidate.values.reduce(0) { $0 + $1.deletedCount }
-                        let skipped = outcome.perCandidate.values.reduce(0) { $0 + $1.skippedActiveCount + $1.skippedProtectedCount }
+                        let skipped = outcome.perCandidate.values.reduce(0) {
+                            $0 + $1.skippedOwnerBusyCount + $1.skippedProtectedCount + $1.skippedRecentCount
+                        }
                         let failed = outcome.perCandidate.values.reduce(0) { $0 + $1.failedCount }
                         Text(FloeL10n.l("settings.data_management_view.cleanup_deleted_skipped_failed", deleted, skipped, failed))
                             .font(.caption2).foregroundStyle(.secondary)
+                        if deleted == 0 {
+                            Text("settings.data_management_view.cleanup_nothing_eligible")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Text("settings.data_management_view.cleanup_estimate_note")
+                            .font(.caption2).foregroundStyle(.tertiary)
                     }
                 } else {
                     Text("settings.data_management_view.cleans_only_rebuildable_caches_in_floe")
@@ -216,6 +232,7 @@ struct DataManagementView: View {
             orphanedAssetBytes = orphans.reduce(0) { $0 + $1.byteCount }
         }
         await storage.scan()
+        await refreshCleanupEstimate(authority: await makeCleanupAuthority())
     }
 
     private func clean() async {
@@ -223,25 +240,51 @@ struct DataManagementView: View {
         isCleaning = true
         defer { isCleaning = false }
 
-        // Re-check ownership immediately before cleanup. A running environment
-        // protects VM-related scratch; disks, drafts, adopted/shared assets,
-        // models and fonts are never in the plan at all.
-        let activeContainers = (try? await environment.environmentRegistry.all()) ?? []
-        let environmentActive = activeContainers.contains { $0.state == .active }
-        let authority = SnapshotCleanupAuthority(
-            environmentActive: environmentActive,
-            transferActive: false,
-            retainedNames: []
-        )
-        let plan = StorageCleanup.defaultPlan(
-            caches: FloeStorageLayout.cachesRoot(),
-            temporary: FloeStorageLayout.temporaryRoot
-        )
+        // Ownership is probed now, immediately before cleaning, and the cleaner
+        // re-probes per candidate and per item. Unknown/busy owners delete
+        // nothing (fail closed).
+        let authority = await makeCleanupAuthority()
+        let plan = FloeStorageCleanupRegistry.plan()
+        let volumeBefore = Self.availableCapacityBytes()
         let outcome = await Task.detached(priority: .utility) {
             StorageCleanup.execute(plan: plan, authority: authority)
         }.value
-        cleanupOutcome = outcome
+        var measured = outcome
+        if let volumeBefore, let volumeAfter = Self.availableCapacityBytes() {
+            measured.volumeAvailableCapacityChangeBytes = volumeAfter - volumeBefore
+        }
+        cleanupOutcome = measured
+        await refreshCleanupEstimate(authority: authority)
         await storage.scan()
+    }
+
+    private func makeCleanupAuthority() async -> AppStorageCleanupAuthority {
+        let activeContainers = (try? await environment.environmentRegistry.all()) ?? []
+        let environmentActive = activeContainers.contains { $0.state == .active }
+        let modelDownloadsActive = await MainActor.run { !environment.localModelsCenter.activeDownloads.isEmpty }
+        var mediaActive = true // fail closed when the probe errors
+        if let jobs = try? await MediaGenerationJobStore(database: environment.database).allJobs(limit: 200) {
+            mediaActive = jobs.contains { !$0.state.isTerminal }
+        }
+        let idle = !environmentActive && !modelDownloadsActive && !mediaActive
+        return AppStorageCleanupAuthority(appIdle: idle)
+    }
+
+    private func refreshCleanupEstimate(authority: AppStorageCleanupAuthority) async {
+        let plan = FloeStorageCleanupRegistry.plan()
+        let estimate = await Task.detached(priority: .utility) {
+            StorageCleanup.estimate(plan: plan, authority: authority)
+        }.value
+        cleanupEstimateBytes = estimate.eligibleAllocatedBytes
+    }
+
+    private static func availableCapacityBytes() -> Int64? {
+        if let value = try? FloeStorageLayout.documentsRoot()?.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        ).volumeAvailableCapacityForImportantUsage {
+            return value
+        }
+        return nil
     }
 
     private func releaseCloudSpace() async {
@@ -260,15 +303,23 @@ struct DataManagementView: View {
     }
 }
 
-/// A point-in-time activity snapshot used by the ownership-aware cleaner.
-private struct SnapshotCleanupAuthority: StorageCleanupAuthority {
-    let environmentActive: Bool
-    let transferActive: Bool
-    let retainedNames: Set<String>
+/// Fail-closed ownership probe: only the app's own scratch is owned by this
+/// cleaner, and it is idle only when no environment, model download or media
+/// job is active. Any owner this authority cannot positively prove idle (or a
+/// probe error) results in nothing being deleted.
+private struct AppStorageCleanupAuthority: StorageCleanupAuthority {
+    let appIdle: Bool
 
-    func isEnvironmentActive() -> Bool { environmentActive }
-    func isTransferOrExportActive() -> Bool { transferActive }
-    func retainedNames() -> Set<String> { retainedNames }
+    func isOwnerIdle(_ owner: StorageCleanupOwner) -> Bool {
+        switch owner {
+        case .temporary, .floeCache:
+            return appIdle
+        }
+    }
+
+    func shouldRetain(itemURL: URL, name: String, owner: StorageCleanupOwner) -> Bool {
+        false
+    }
 }
 
 private struct ManagementRow: View {

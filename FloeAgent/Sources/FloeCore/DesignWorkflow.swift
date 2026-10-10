@@ -412,10 +412,14 @@ public enum DesignAdoptMode: String, Codable, Sendable {
 public struct DesignProject: Codable, Sendable, Equatable, Identifiable {
     public static let currentSchemaVersion = 1
 
+    /// The Canvas node this design state is attached to. This is the *only*
+    /// identity: design state is a typed subdocument of the Canvas project,
+    /// persisted through the Canvas compare-and-swap authority. There is no
+    /// independent design project/gallery identity.
+    public var nodeID: String
+    public var id: String { nodeID }
+
     public var schemaVersion: Int
-    public var id: String
-    /// Canvas that owns the node graph for this project.
-    public var canvasID: String?
     public var contentType: DesignContentType
     public var brief: DesignBrief?
     public var spec: DesignSpec?
@@ -425,20 +429,20 @@ public struct DesignProject: Codable, Sendable, Equatable, Identifiable {
     public var candidates: [DesignCandidate]
     /// The run currently frozen for generation/edit, if any.
     public var frozenRun: DesignRunFrozen?
+    /// Applied idempotency keys, bounded. Replaying an operation ID is a no-op.
+    public var appliedOperationIDs: [String]
     public var createdAt: Date
     public var updatedAt: Date
 
     public init(
-        id: String = UUID().uuidString.lowercased(),
-        canvasID: String? = nil,
+        nodeID: String,
         contentType: DesignContentType,
         brief: DesignBrief? = nil,
         spec: DesignSpec? = nil,
         template: DesignTemplateManifest? = nil
     ) {
+        self.nodeID = nodeID
         self.schemaVersion = Self.currentSchemaVersion
-        self.id = id
-        self.canvasID = canvasID
         self.contentType = contentType
         self.brief = brief
         self.spec = spec
@@ -447,6 +451,7 @@ public struct DesignProject: Codable, Sendable, Equatable, Identifiable {
         self.feedback = []
         self.candidates = []
         self.frozenRun = nil
+        self.appliedOperationIDs = []
         self.createdAt = Date()
         self.updatedAt = Date()
     }
@@ -461,6 +466,10 @@ public struct DesignProject: Codable, Sendable, Equatable, Identifiable {
 
     public func candidate(_ id: String) -> DesignCandidate? {
         candidates.first { $0.id == id }
+    }
+
+    public func hasApplied(operationID: String) -> Bool {
+        appliedOperationIDs.contains(operationID)
     }
 
     /// Feedback still needing work, including stale anchors.
@@ -491,14 +500,26 @@ public enum DesignWorkflowEngine {
     // MARK: - Project/brief/spec
 
     public static func createProject(
-        id: String = UUID().uuidString.lowercased(),
-        canvasID: String?,
+        nodeID: String,
         contentType: DesignContentType,
         brief: DesignBrief? = nil,
         spec: DesignSpec? = nil,
         template: DesignTemplateManifest? = nil
     ) -> DesignProject {
-        DesignProject(id: id, canvasID: canvasID, contentType: contentType, brief: brief, spec: spec, template: template)
+        DesignProject(nodeID: nodeID, contentType: contentType, brief: brief, spec: spec, template: template)
+    }
+
+    /// Record an idempotency key. Returns false when it was already applied, in
+    /// which case the caller must not repeat the mutation.
+    @discardableResult
+    public static func recordOperation(_ operationID: String, in project: inout DesignProject) -> Bool {
+        guard !operationID.isEmpty, !project.appliedOperationIDs.contains(operationID) else { return false }
+        project.appliedOperationIDs.append(operationID)
+        if project.appliedOperationIDs.count > 512 {
+            project.appliedOperationIDs.removeFirst(project.appliedOperationIDs.count - 512)
+        }
+        project.updatedAt = Date()
+        return true
     }
 
     public static func updateBrief(_ brief: DesignBrief, in project: inout DesignProject) {

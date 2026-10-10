@@ -40,10 +40,6 @@ struct StorageDiagnosticReport: Sendable {
     let unattributed: StorageCategoryDiagnostic?
     let totalAllocatedBytes: Int64
     let totalLogicalBytes: Int64
-    /// Upper estimate of rebuildable bytes the ownership-aware cleaner may
-    /// reclaim (Caches/ + tmp). Not guaranteed freeable byte-for-byte because
-    /// files may be active or share APFS blocks.
-    let safeCleanupEstimateBytes: Int64
     let isSharedAllocationEstimate: Bool
     let scanErrorCount: Int
     let changedOrVanishedCount: Int
@@ -221,86 +217,106 @@ final class StorageDiagnosticService: ObservableObject {
             "documents": (FloeL10n.l("settings.data_management_view.documents"), "doc")
         ]
 
-        let clonedRoots = Set(result.buckets.enumerated().compactMap { index, _ in
-            roots.indices.contains(index) && roots[index].potentiallyCloned ? roots[index].id : nil
-        })
+        // Pure arithmetic lives in FloeCore and is unit-tested; each bucket is
+        // counted exactly once there (caches/tmp are in the total but not listed
+        // as user-data categories).
+        let report = StorageReportBuilder.build(
+            census: result,
+            bundleBytes: Self.bundleAllocatedBytes()
+        )
 
-        var categories: [StorageCategoryDiagnostic] = []
-        for bucket in result.buckets {
-            // Caches and tmp are surfaced as the safe-cleanup estimate, not as
-            // user-data categories.
-            if bucket.id == "caches" || bucket.id == "temporary" { continue }
-            guard bucket.exists || bucket.size.allocatedBytes > 0 || bucket.size.logicalBytes > 0 else { continue }
-            let meta = names[bucket.id] ?? (bucket.id, "questionmark.folder")
-            categories.append(
-                StorageCategoryDiagnostic(
-                    id: bucket.id,
-                    name: meta.0,
-                    systemImage: meta.1,
-                    allocatedBytes: bucket.size.allocatedBytes,
-                    logicalBytes: bucket.size.logicalBytes,
-                    fileCount: bucket.fileCount,
-                    isSharedEstimate: clonedRoots.contains(bucket.id)
-                        || bucket.attribution == .shared
-                )
+        let categories = report.categories.map { category in
+            let meta = names[category.id] ?? (category.id, "questionmark.folder")
+            return StorageCategoryDiagnostic(
+                id: category.id,
+                name: meta.0,
+                systemImage: meta.1,
+                allocatedBytes: category.allocatedBytes,
+                logicalBytes: category.logicalBytes,
+                fileCount: category.fileCount,
+                isSharedEstimate: category.isSharedEstimate
             )
         }
 
-        let cleanupBytes = (result.bucket("caches")?.size.allocatedBytes ?? 0)
-            + (result.bucket("temporary")?.size.allocatedBytes ?? 0)
-
-        var unattributed: StorageCategoryDiagnostic?
-        if result.unattributedCount > 0 || result.unattributedSize.allocatedBytes > 0 {
-            unattributed = StorageCategoryDiagnostic(
-                id: "unattributed",
+        let unattributed = report.unattributed.map { other in
+            StorageCategoryDiagnostic(
+                id: other.id,
                 name: FloeL10n.l("settings.data_management_view.other_application_data"),
                 systemImage: "ellipsis.circle",
-                allocatedBytes: result.unattributedSize.allocatedBytes,
-                logicalBytes: result.unattributedSize.logicalBytes,
-                fileCount: result.unattributedCount,
+                allocatedBytes: other.allocatedBytes,
+                logicalBytes: other.logicalBytes,
+                fileCount: other.fileCount,
                 isSharedEstimate: false
             )
         }
 
         return StorageDiagnosticReport(
-            bundleBytes: Self.bundleAllocatedBytes(),
+            bundleBytes: report.bundleBytes,
             categories: categories,
             unattributed: unattributed,
-            // Caches/tmp are real on-device bytes and belong in the total even
-            // though they are presented separately as reclaimable.
-            totalAllocatedBytes: result.totalAllocatedBytes + max(0, cleanupBytes),
-            totalLogicalBytes: result.totalLogicalBytes,
-            safeCleanupEstimateBytes: max(0, cleanupBytes),
-            isSharedAllocationEstimate: result.isSharedAllocationEstimate,
-            scanErrorCount: result.diagnostics.errorCount,
-            changedOrVanishedCount: result.diagnostics.changedOrVanishedCount,
-            scanDuration: result.diagnostics.duration,
-            metricLabel: result.diagnostics.metricLabel
+            totalAllocatedBytes: report.totalAllocatedBytes,
+            totalLogicalBytes: report.totalLogicalBytes,
+            isSharedAllocationEstimate: report.isSharedAllocationEstimate,
+            scanErrorCount: report.scanErrorCount,
+            changedOrVanishedCount: report.changedOrVanishedCount,
+            scanDuration: report.scanDuration,
+            metricLabel: report.metricLabel
         )
     }
+}
 
-    /// Allocated size of the installed app bundle (read-only, shared with the
-    /// OS, sparse-aware).
-    static func bundleAllocatedBytes() -> Int64 {
-        let keys: Set<URLResourceKey> = [
-            .isRegularFileKey, .isSymbolicLinkKey,
-            .fileAllocatedSizeKey, .totalFileAllocatedSizeKey
-        ]
-        let root = Bundle.main.bundleURL
-        let manager = FileManager.default
-        guard let enumerator = manager.enumerator(
-            at: root,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
-        ) else { return 0 }
-        var total: Int64 = 0
-        for case let url as URL in enumerator {
-            guard let values = try? url.resourceValues(forKeys: keys),
-                  values.isSymbolicLink != true,
-                  values.isRegularFile == true else { continue }
-            total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+/// Registered, explicit cleanup plan. Only Floe-owned regenerable scratch is a
+/// candidate; user data and recovery state that live under Caches are
+/// registered as *retained* with reasons and are never swept.
+enum FloeStorageCleanupRegistry {
+    static func plan(
+        caches: URL? = FloeStorageLayout.cachesRoot(),
+        temporary: URL = FloeStorageLayout.temporaryRoot,
+        now: Date = Date()
+    ) -> StorageCleanupPlan {
+        var candidates: [StorageCleanupCandidate] = []
+        var retained: [StorageCleanupRetained] = []
+
+        // Stale app scratch only, older than one hour, owner-probed and
+        // revalidated per item. The root is the app's own tmp directory.
+        candidates.append(
+            StorageCleanupCandidate(
+                id: "temporary",
+                owner: .temporary,
+                title: FloeL10n.l("settings.data_management_view.temporary_files_older_than_one_hour"),
+                purpose: FloeL10n.l("settings.data_management_view.finished_scratch_left_in_temporary"),
+                retentionReason: FloeL10n.l("settings.data_management_view.recent_and_active_scratch_is_kept"),
+                kind: .staleTemporary,
+                root: temporary,
+                olderThan: now.addingTimeInterval(-3_600)
+            )
+        )
+
+        if let caches {
+            let floeCaches = caches.appendingPathComponent("FloeAgent", isDirectory: true)
+            retained.append(StorageCleanupRetained(
+                id: "promptLibrary",
+                owner: .floeCache,
+                title: "Prompt library",
+                retentionReason: "User-authored prompts; never treated as a cache",
+                root: floeCaches.appendingPathComponent("PromptLibrary", isDirectory: true)
+            ))
+            retained.append(StorageCleanupRetained(
+                id: "diagnosticsLog",
+                owner: .floeCache,
+                title: "Diagnostics log",
+                retentionReason: "Diagnostic evidence kept on purpose",
+                root: floeCaches.appendingPathComponent("diagnostics-log.json")
+            ))
+            retained.append(StorageCleanupRetained(
+                id: "pdfOperationJournal",
+                owner: .floeCache,
+                title: "PDF operation journal",
+                retentionReason: "Recovery journal; deleting it could break PDF recovery",
+                root: floeCaches.appendingPathComponent("pdf-operation-journal.jsonl")
+            ))
         }
-        return total
+        return StorageCleanupPlan(candidates: candidates, retained: retained, generatedAt: now)
     }
 }
 #endif
