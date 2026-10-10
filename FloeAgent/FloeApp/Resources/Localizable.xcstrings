@@ -78169,6 +78169,431 @@
           }
         }
       }
+    },
+    "settings.data_management_view.shared_materials": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shared materials"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共享素材"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.canvases": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Canvases"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "画布"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.media_projects": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Media projects"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "媒体项目"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.cad_packages": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CAD packages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CAD 包"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.linux_environments": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux environments"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux 环境"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.virtual_machine_disks": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Virtual machine disks"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "虚拟机磁盘"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.runtime_images": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Runtime images"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行时镜像"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.system_library_data": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System library data"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统库数据"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.other_application_data": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Other application data"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "其他应用数据"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.rebuildable_caches": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rebuildable caches"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可重建缓存"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.caches_regenerated_on_demand": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cached data that Floe regenerates on demand; active downloads and recent work are skipped."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 可按需重新生成的缓存；正在进行的下载和最近的工作会被跳过。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.active_downloads_are_skipped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Active downloads, imports and exports are skipped."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在进行的下载、导入和导出会被跳过。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.temporary_files_older_than_one_hour": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Temporary files older than one hour"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "超过一小时的临时文件"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.finished_scratch_left_in_temporary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finished scratch files left in the temporary directory."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "临时目录中遗留的、已完成的临时文件。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.recent_and_active_scratch_is_kept": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent scratch and active editor sessions are kept."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最近的临时文件和正在使用的编辑器会话会保留。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.configured_capacity": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configured capacity: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配置容量：%@"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.host_allocated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Host-allocated: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主机实际占用：%@"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.shared_allocation_note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Counts shared runtime-image blocks in full, so this is an upper estimate; iOS Storage may show a different number, and it is not an exact amount that can be freed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已将共享的运行时镜像块全额计入，因此这是上限估算；iOS“储存空间”可能显示不同数值，且这并非可精确释放的容量。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.files_count": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ items"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个项目"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.partial_scan_warning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some files could not be read or changed during the scan (%@ errors, %@ vanished). Totals are an estimate."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描期间部分文件无法读取或发生变化（%@ 个错误，%@ 个已消失）。总量为估算值。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.stop_scan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop scan"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止扫描"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.scanning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanning storage…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在扫描储存空间…"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.cleanup_reclaimed_measured": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reclaimed about %@ of allocated storage (measured). Workspaces, documents, models, environments and fonts were not touched."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实际释放约 %@ 已分配储存空间（实测）。未改动工作区、文稿、模型、环境和字体。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.cleanup_deleted_skipped_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removed %@ items, skipped %@ active/protected, %@ failed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已删除 %@ 项，跳过 %@ 个活跃/受保护项，%@ 项失败。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.documents": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Documents"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文稿"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

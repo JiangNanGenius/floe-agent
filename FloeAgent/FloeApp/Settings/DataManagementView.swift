@@ -9,11 +9,10 @@ import FloePersistence
 struct DataManagementView: View {
     let environment: AppEnvironment
     let conversationCenter: ConversationCenter
-    @State private var snapshot: AppStorageSnapshot?
-    @State private var isLoading = false
+    @StateObject private var storage = StorageDiagnosticService()
     @State private var isCleaning = false
     @State private var confirmsCleanup = false
-    @State private var cleanupResult: Int64?
+    @State private var cleanupOutcome: StorageCleanupPlanResult?
     @AppStorage("creative.canvas.sync.enabled") private var canvasSyncEnabled = true
     @State private var creativeStorage: CreativeStorageSummary?
     @State private var isReleasingCloudSpace = false
@@ -31,32 +30,70 @@ struct DataManagementView: View {
     var body: some View {
         Form {
             Section("settings.data_management_view.space_overview") {
-                if let snapshot {
+                if let report = storage.report {
                     StorageUsageRow(
                         title: FloeL10n.l("settings.data_management_view.floe_total_usage"),
                         icon: "internaldrive",
-                        bytes: snapshot.combinedBytes,
+                        bytes: report.combinedBytes,
                         emphasized: true
                     )
-                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.app_installer"), icon: "shippingbox", bytes: snapshot.bundleBytes)
-                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.user_data"), icon: "externaldrive", bytes: snapshot.dataBytes)
-                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.safe_to_clean"), icon: "sparkles", bytes: snapshot.safeCleanupBytes)
+                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.app_installer"), icon: "shippingbox", bytes: report.bundleBytes)
+                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.user_data"), icon: "externaldrive", bytes: report.totalAllocatedBytes)
+                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.safe_to_clean"), icon: "sparkles", bytes: report.safeCleanupEstimateBytes)
                 } else {
                     HStack {
                         ProgressView()
-                        Text("settings.data_management_view.calculating_actual_usage").foregroundStyle(.secondary)
+                        if storage.isScanning {
+                            Button(role: .destructive) { storage.cancel() } label: {
+                                Text("settings.data_management_view.stop_scan")
+                            }
+                        } else {
+                            Text("settings.data_management_view.calculating_actual_usage").foregroundStyle(.secondary)
+                        }
                     }
+                }
+            } footer: {
+                if let report = storage.report, report.isSharedAllocationEstimate {
+                    Text("settings.data_management_view.shared_allocation_note")
                 }
             }
 
-            if let snapshot {
+            if let report = storage.report {
                 Section("settings.data_management_view.data_categories") {
-                    ForEach(snapshot.categories) { category in
-                        StorageUsageRow(
-                            title: category.name,
-                            icon: category.systemImage,
-                            bytes: category.bytes
-                        )
+                    ForEach(report.categories) { category in
+                        VStack(alignment: .leading, spacing: 2) {
+                            StorageUsageRow(
+                                title: category.name,
+                                icon: category.systemImage,
+                                bytes: category.allocatedBytes
+                            )
+                            if category.showsLogicalCapacity {
+                                Text(FloeL10n.l(
+                                    "settings.data_management_view.host_allocated",
+                                    ByteCountFormatter.string(fromByteCount: category.allocatedBytes, countStyle: .file)
+                                ) + " · " + FloeL10n.l(
+                                    "settings.data_management_view.configured_capacity",
+                                    ByteCountFormatter.string(fromByteCount: category.logicalBytes, countStyle: .file)
+                                ))
+                                .font(.caption2).foregroundStyle(.secondary)
+                            } else if category.isSharedEstimate {
+                                Text("settings.data_management_view.shared_allocation_note")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            Text(FloeL10n.l("settings.data_management_view.files_count", category.fileCount))
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        }
+                    }
+                    if let other = report.unattributed {
+                        StorageUsageRow(title: other.name, icon: other.systemImage, bytes: other.allocatedBytes)
+                    }
+                }
+                if report.scanErrorCount > 0 || report.changedOrVanishedCount > 0 {
+                    Section {
+                        Text(FloeL10n.l("settings.data_management_view.partial_scan_warning",
+                                       report.scanErrorCount, report.changedOrVanishedCount))
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -91,7 +128,7 @@ struct DataManagementView: View {
                 Text("settings.data_management_view.syncs_only_when_both_the_master")
             }
 
-            Section("settings.data_management_view.manage") {
+            Section {
                 NavigationLink {
                     ArchivedConversationsView(
                         center: conversationCenter,
@@ -126,8 +163,16 @@ struct DataManagementView: View {
                 }
                 .disabled(isCleaning)
             } footer: {
-                if let cleanupResult {
-                    Text(FloeL10n.l("settings.data_management_view.last_cleanup_workspaces_documents_models_fonts", ByteCountFormatter.string(fromByteCount: cleanupResult, countStyle: .file)))
+                if let outcome = cleanupOutcome {
+                    let reclaimed = ByteCountFormatter.string(fromByteCount: outcome.measuredReclaimedAllocatedBytes, countStyle: .file)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(FloeL10n.l("settings.data_management_view.cleanup_reclaimed_measured", reclaimed))
+                        let deleted = outcome.perCandidate.values.reduce(0) { $0 + $1.deletedCount }
+                        let skipped = outcome.perCandidate.values.reduce(0) { $0 + $1.skippedActiveCount + $1.skippedProtectedCount }
+                        let failed = outcome.perCandidate.values.reduce(0) { $0 + $1.failedCount }
+                        Text(FloeL10n.l("settings.data_management_view.cleanup_deleted_skipped_failed", deleted, skipped, failed))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                 } else {
                     Text("settings.data_management_view.cleans_only_rebuildable_caches_in_floe")
                 }
@@ -158,9 +203,7 @@ struct DataManagementView: View {
     }
 
     private func reload() async {
-        guard !isLoading else { return }
-        isLoading = true
-        snapshot = await AppStorageInspector.snapshot()
+        importCanvasSyncPreferenceFromCloud()
         if let value = try? await environment.creativeAssetStore.storageSummary() {
             creativeStorage = CreativeStorageSummary(
                 local: value.local, cloud: value.cloud,
@@ -172,15 +215,33 @@ struct DataManagementView: View {
             orphanedAssetCount = orphans.count
             orphanedAssetBytes = orphans.reduce(0) { $0 + $1.byteCount }
         }
-        isLoading = false
+        await storage.scan()
     }
 
     private func clean() async {
         guard !isCleaning else { return }
         isCleaning = true
-        cleanupResult = await AppStorageInspector.cleanSafeCaches()
-        snapshot = await AppStorageInspector.snapshot()
-        isCleaning = false
+        defer { isCleaning = false }
+
+        // Re-check ownership immediately before cleanup. A running environment
+        // protects VM-related scratch; disks, drafts, adopted/shared assets,
+        // models and fonts are never in the plan at all.
+        let activeContainers = (try? await environment.environmentRegistry.all()) ?? []
+        let environmentActive = activeContainers.contains { $0.state == .active }
+        let authority = SnapshotCleanupAuthority(
+            environmentActive: environmentActive,
+            transferActive: false,
+            retainedNames: []
+        )
+        let plan = StorageCleanup.defaultPlan(
+            caches: FloeStorageLayout.cachesRoot(),
+            temporary: FloeStorageLayout.temporaryRoot
+        )
+        let outcome = await Task.detached(priority: .utility) {
+            StorageCleanup.execute(plan: plan, authority: authority)
+        }.value
+        cleanupOutcome = outcome
+        await storage.scan()
     }
 
     private func releaseCloudSpace() async {
@@ -197,6 +258,17 @@ struct DataManagementView: View {
         let remoteValue = cloud.bool(forKey: "creative.canvas.sync.enabled")
         if canvasSyncEnabled != remoteValue { canvasSyncEnabled = remoteValue }
     }
+}
+
+/// A point-in-time activity snapshot used by the ownership-aware cleaner.
+private struct SnapshotCleanupAuthority: StorageCleanupAuthority {
+    let environmentActive: Bool
+    let transferActive: Bool
+    let retainedNames: Set<String>
+
+    func isEnvironmentActive() -> Bool { environmentActive }
+    func isTransferOrExportActive() -> Bool { transferActive }
+    func retainedNames() -> Set<String> { retainedNames }
 }
 
 private struct ManagementRow: View {
@@ -384,121 +456,6 @@ struct FontManagementView: View {
             await reload()
         } catch {
             errorMessage = error.localizedDescription
-        }
-    }
-}
-
-struct AppStorageCategory: Identifiable, Sendable {
-    let id: String
-    let name: String
-    let systemImage: String
-    let bytes: Int64
-}
-
-struct AppStorageSnapshot: Sendable {
-    let bundleBytes: Int64
-    let dataBytes: Int64
-    let safeCleanupBytes: Int64
-    let categories: [AppStorageCategory]
-    var combinedBytes: Int64 { bundleBytes + dataBytes }
-}
-
-enum AppStorageInspector {
-    static func snapshot() async -> AppStorageSnapshot {
-        await Task.detached(priority: .utility) {
-            let manager = FileManager.default
-            let support = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            let floe = support?.appendingPathComponent("FloeAgent", isDirectory: true)
-            let library = manager.urls(for: .libraryDirectory, in: .userDomainMask).first
-            let documents = manager.urls(for: .documentDirectory, in: .userDomainMask).first
-            let cache = manager.urls(for: .cachesDirectory, in: .userDomainMask).first
-            let temporary = manager.temporaryDirectory
-            let named: [(String, String, String, String)] = [
-                ("models", FloeL10n.l("localmodels.title"), "cpu", "LocalModels"),
-                ("workspaces", FloeL10n.l("settings.data_management_view.private_workspace"), "folder.badge.gearshape", "PrivateTasks"),
-                ("fonts", FloeL10n.l("settings.data_management_view.font_resources"), "textformat", "Fonts"),
-                ("attachments", FloeL10n.l("settings.data_management_view.attachments"), "paperclip", "Attachments"),
-                ("generated", FloeL10n.l("platform.background_run_coordinator.generate_content"), "photo.on.rectangle", "GeneratedImages"),
-                ("browser", FloeL10n.l("settings.data_management_view.browser_downloads"), "globe", "BrowserArtifacts"),
-                ("checkpoints", FloeL10n.l("settings.data_management_view.task_checkpoint"), "arrow.trianglehead.2.clockwise", "Checkpoints")
-            ]
-            var categories = named.map { id, name, icon, component in
-                AppStorageCategory(
-                    id: id,
-                    name: name,
-                    systemImage: icon,
-                    bytes: floe.map { allocatedBytes(at: $0.appendingPathComponent(component)) } ?? 0
-                )
-            }
-            let categorizedSupport = categories.reduce(Int64(0)) { $0 + $1.bytes }
-            let supportBytes = floe.map(allocatedBytes(at:)) ?? 0
-            categories.append(AppStorageCategory(
-                id: "other",
-                name: FloeL10n.l("settings.data_management_view.databases_configuration_and_other_data"),
-                systemImage: "cylinder",
-                bytes: max(0, supportBytes - categorizedSupport)
-            ))
-            return AppStorageSnapshot(
-                bundleBytes: allocatedBytes(at: Bundle.main.bundleURL),
-                dataBytes: (library.map(allocatedBytes(at:)) ?? 0)
-                    + (documents.map(allocatedBytes(at:)) ?? 0)
-                    + allocatedBytes(at: temporary),
-                safeCleanupBytes: (cache.map(allocatedBytes(at:)) ?? 0) + allocatedBytes(at: temporary),
-                categories: categories
-            )
-        }.value
-    }
-
-    static func cleanSafeCaches() async -> Int64 {
-        await Task.detached(priority: .utility) {
-            let manager = FileManager.default
-            let cache = manager.urls(for: .cachesDirectory, in: .userDomainMask).first
-            let temporary = manager.temporaryDirectory
-            let before = (cache.map(allocatedBytes(at:)) ?? 0) + allocatedBytes(at: temporary)
-            if let cache { removeChildren(of: cache, olderThan: nil) }
-            removeChildren(of: temporary, olderThan: Date().addingTimeInterval(-3_600))
-            let after = (cache.map(allocatedBytes(at:)) ?? 0) + allocatedBytes(at: temporary)
-            return max(0, before - after)
-        }.value
-    }
-
-    private static func allocatedBytes(at root: URL) -> Int64 {
-        let manager = FileManager.default
-        guard manager.fileExists(atPath: root.path) else { return 0 }
-        let keys: Set<URLResourceKey> = [
-            .isRegularFileKey, .isSymbolicLinkKey,
-            .fileAllocatedSizeKey, .totalFileAllocatedSizeKey
-        ]
-        guard let enumerator = manager.enumerator(
-            at: root,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
-        ) else {
-            let values = try? root.resourceValues(forKeys: keys)
-            return Int64(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0)
-        }
-        var total: Int64 = 0
-        for case let url as URL in enumerator {
-            guard let values = try? url.resourceValues(forKeys: keys),
-                  values.isSymbolicLink != true,
-                  values.isRegularFile == true else { continue }
-            total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
-        }
-        return total
-    }
-
-    private static func removeChildren(of directory: URL, olderThan cutoff: Date?) {
-        let manager = FileManager.default
-        let children = (try? manager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isSymbolicLinkKey],
-            options: [.skipsHiddenFiles]
-        )) ?? []
-        for child in children {
-            let values = try? child.resourceValues(forKeys: [.contentModificationDateKey, .isSymbolicLinkKey])
-            guard values?.isSymbolicLink != true else { continue }
-            if let cutoff, let modified = values?.contentModificationDate, modified >= cutoff { continue }
-            try? manager.removeItem(at: child)
         }
     }
 }
