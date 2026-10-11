@@ -534,12 +534,14 @@ jobs:
         # successful build are still reported and never retried into passes.
         if: ${{ !cancelled() && steps.app_regression_build.outcome == 'success' }}
         # Two device legs, each booting its simulator and running the full
-        # five-test WorkspaceIDEUITests class (native save/cold-reopen, native
-        # Explorer/Git, DXF preview, DWG edit). Slow runners have spent almost
-        # seven minutes before the first test and over fifteen minutes per
-        # leg, so the phase budget covers a worst-case boot plus leg per
-        # device; a stalled leg is still bounded by the runner's total cap.
-        timeout-minutes: 50
+        # six-test WorkspaceIDEUITests class (native save/cold-reopen, native
+        # Explorer/Git, DXF preview, DWG edit, engineering assistant, first-run
+        # sheet). The class grew past the five-test budget: a measured leg took
+        # 1089s, and the slowest observed leg was killed 6s past the previous
+        # 1500s wrapper cap while its six tests were still progressing. The
+        # container budgets below are sized for six tests (per-test allowance
+        # 420s and the 210s quiet-stall detection are unchanged).
+        timeout-minutes: 85
         run: |
           set -o pipefail
           status=0
@@ -565,13 +567,13 @@ jobs:
               # Allow a separate bounded startup margin (420s), collecting
               # xcodebuild stacks rather than assuming a quiet launch is
               # healthy. Tests keep their 210s quiet limit; the total cap
-              # covers a slow simulator boot plus the whole four-test class
-              # (a fully passing leg has taken 664s, a slow one needed ~1100s
-              # before the previous 900s cap killed the last test).
+              # covers a slow simulator boot plus the whole six-test class
+              # (measured: a fast leg 1089s, a slow leg killed 6s past the
+              # previous 1500s cap while still progressing).
               diag_dir="$RUNNER_TEMP/SwiftTestDiagnostics/ide-$name-attempt-$leg_attempt"
               python3 scripts/run_test_with_diagnostics.py \
                 --output-dir "$diag_dir" \
-                --timeout 1500 --stall-timeout 210 --startup-stall-timeout 420 --simulator-id "$test_device" -- \
+                --timeout 2400 --stall-timeout 210 --startup-stall-timeout 420 --simulator-id "$test_device" -- \
                 xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
                 -destination "platform=iOS Simulator,id=$test_device" \
                 -resultBundlePath "FloeAgent-IDE-$name.xcresult" \
