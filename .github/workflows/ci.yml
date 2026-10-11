@@ -1,5 +1,14 @@
 # Floe Agent CI.
-# Three jobs:
+#
+# Default (push, pull_request and a manual dispatch with no selector):
+#   lean-checks (ubuntu-latest, Python 3.13): read-only independent-value
+#     contracts only — bundled asset hashes and network policy, committed
+#     dependency pins, license inventory, localization catalog, native-runtime
+#     audit, strict diagnostic/result-verifier contract tests and the pinned
+#     full-history secret scan. No App compilation, dependency bootstrap,
+#     package resolution, simulator or archive work.
+#
+# Explicit manual matrix (workflow_dispatch, full: true):
 #   build-test (macOS 26 arm64, Xcode 27): SPM build/test + xcodegen +
 #     xcodebuild for the iOS app, secret scan, SBOM, license inventory.
 #   appstore-sdk-compatibility (macOS 26, Xcode 26.6): keeps the explicit
@@ -8,25 +17,32 @@
 #     SSE parser, catastrophic gate, canonical JSON, audit chain, GRDB
 #     schema remain portable. Tests run on the Apple job because Debian's
 #     system SQLite omits GRDB's SQLITE_ENABLE_SNAPSHOT linker symbols.
-# The manual ide_only input reruns ONLY the dual-device WorkspaceIDEUITests
-# leg after a fresh build-for-testing, reusing this job's dependency prep,
-# asset verification and the real App test host. It skips unrelated module
-# qualification, Notes checks, other App regressions, the SPM suite and the
-# two SDK/Linux jobs; it is targeted rerun evidence, never release
-# acceptance, and never changes the default push/PR gates.
+#   Local Xcode 27 qualification is the primary release path; this matrix is
+#   supplementary and is never a release waiting gate.
+#
+# Existing narrow special modes remain available and unchanged in intent:
+#   live_agent_demo (paid demo), local_inference, feedback_ui (+ palette
+#   modifiers), publish_skill_hub (write), build_test_only and ide_only.
+#   At most one top-level mode may be dispatched: validate-selectors rejects
+#   ambiguous combinations (and palette modifiers without feedback_ui) before
+#   any paid, write-capable or heavy job can start.
 name: CI
 
 # Superseded branch checks may stop; release uploads have a separate,
-# non-cancelling concurrency group. ide_only dispatches get their own group
-# so a targeted IDE rerun cannot cancel or be cancelled by a full run of
-# the same ref; the default group string is unchanged when ide_only is off.
+# non-cancelling concurrency group. full and ide_only dispatches get their own
+# group so a targeted rerun cannot cancel or be cancelled by a full run of the
+# same ref; the default group string is unchanged when those inputs are off.
 concurrency:
-  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.live_agent_demo && '-live-demo' || '' }}${{ inputs.local_inference && '-inference' || '' }}${{ inputs.ide_only && '-ide' || '' }}
+  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.full && '-full' || '' }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.live_agent_demo && '-live-demo' || '' }}${{ inputs.local_inference && '-inference' || '' }}${{ inputs.ide_only && '-ide' || '' }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 on:
   workflow_dispatch:
     inputs:
+      full:
+        description: 'Explicit opt-in for the complete build-test, SDK-compatibility and Linux matrix; never the default'
+        type: boolean
+        default: false
       live_agent_demo:
         description: 'Only record one explicitly authorized paid text Agent demo'
         type: boolean
@@ -70,16 +86,126 @@ on:
   push:
     branches: [main]
     # Documentation-only delivery updates do not change the App.
-    # Mixed code/docs pushes and all PR/manual checks keep the full gates.
+    # Mixed code/docs pushes keep the lean default; the full matrix is an
+    # explicit manual opt-in (full: true), not a push/PR gate.
     paths-ignore:
       - 'docs/**'
   pull_request:
 
 jobs:
+  # One cheap stdlib validation gate for every manual dispatch. It runs before
+  # (and gates) every other lane through `needs`, so an ambiguous selector
+  # combination fails here instead of silently running, dropping or paying
+  # for a lane. Push/PR carry no manual selectors and skip it.
+  validate-selectors:
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Reject conflicting selector combinations
+        run: |
+          python3 FloeAgent/scripts/ci_scope.py --event workflow_dispatch \
+            --set "full=${{ inputs.full }}" \
+            --set "live_agent_demo=${{ inputs.live_agent_demo }}" \
+            --set "local_inference=${{ inputs.local_inference }}" \
+            --set "feedback_ui=${{ inputs.feedback_ui }}" \
+            --set "publish_skill_hub=${{ inputs.publish_skill_hub }}" \
+            --set "build_test_only=${{ inputs.build_test_only }}" \
+            --set "ide_only=${{ inputs.ide_only }}" \
+            --set "palette_only=${{ inputs.palette_only }}" \
+            --set "palette_unit_only=${{ inputs.palette_unit_only }}"
+
+  # Default lane for push/PR and selector-free manual dispatches: read-only
+  # checks that add independent value beyond the local Xcode 27 qualification
+  # and never build, resolve, bootstrap, boot a simulator or archive.
+  lean-checks:
+    permissions:
+      contents: read
+    if: ${{ !inputs.full && !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && !inputs.build_test_only && !inputs.ide_only && !inputs.palette_only && !inputs.palette_unit_only }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: FloeAgent
+    steps:
+      # Full history: secret_scan.sh promises a full-history scan, and a
+      # shallow clone would only see the tip.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Verify bundled engineering viewer hashes and network policy
+        run: python3 scripts/check_engineering_viewer_assets.py
+
+      - name: Verify committed dependency pins without resolving
+        run: scripts/pin_check.sh
+
+      # Read-only first: a stale tracked manifest must fail the lane, never be
+      # rewritten by the generator to make the check pass.
+      - name: Verify license inventory is current (read-only)
+        run: scripts/license_inventory.sh --check
+
+      - name: Verify localization catalog completeness
+        run: |
+          python3 scripts/validate_localization_catalog.py FloeApp/Resources/Localizable.xcstrings
+          python3 -m unittest discover -s scripts/tests -p test_localization_catalog.py
+
+      - name: Verify no retired native runtime returns to the project
+        run: |
+          python3 scripts/audit_native_runtime_free.py --project
+          python3 -m unittest discover -s scripts/tests -p test_native_runtime_free_audit.py
+
+      - name: Verify strict diagnostic and result-verifier contracts
+        run: |
+          python3 -m unittest discover -s scripts -p test_run_test_with_diagnostics.py
+          python3 -m unittest discover -s scripts/tests -p test_select_test_simulator.py
+          python3 -m unittest discover -s scripts/tests -p test_app_regression_xcresult.py
+          python3 -m unittest discover -s scripts/tests -p test_deadline_suite_coverage.py
+          python3 -m unittest discover -s scripts/tests -p test_notes_ui_startup_retry.py
+          python3 -m unittest discover -s scripts/tests -p test_release_preflight_versions.py
+
+      - name: Verify CI selector truth table and workflow wiring
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_ci_scope.py
+          python3 -m unittest discover -s scripts/tests -p test_ci_ide_only.py
+
+      # Pinned, checksum-verified release binary: this lane runs on
+      # ubuntu-latest, where no macOS package manager exists. The digest comes
+      # from gitleaks' published release checksums file.
+      - name: Install the pinned gitleaks release
+        run: |
+          version=8.30.1
+          tarball="gitleaks_${version}_linux_x64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/$tarball"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Secret scan (full history, redacted report)
+        run: scripts/secret_scan.sh
+
+      - name: Upload secret-scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lean-ci-secret-scan-${{ github.sha }}
+          path: FloeAgent/.gitleaks-report.json
+          if-no-files-found: ignore
+          retention-days: 7
+
   live-agent-demo:
-    # ide_only conflicts are rejected by build-test's validation step; never
-    # start a potentially paid demo leg from an ambiguous combination.
-    if: github.event_name == 'workflow_dispatch' && inputs.live_agent_demo && !inputs.ide_only
+    # validate-selectors runs first and rejects every ambiguous combination,
+    # so a potentially paid demo leg can never start from an ambiguous one.
+    needs: validate-selectors
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.live_agent_demo }}
     permissions:
       contents: read
       actions: read
@@ -91,16 +217,20 @@ jobs:
     secrets:
       FLOE_LIVE_DEMO_ARK_KEY: ${{ secrets.FLOE_LIVE_DEMO_ARK_KEY }}
   local-inference:
-    if: ${{ !inputs.live_agent_demo && !inputs.ide_only && github.event_name == 'workflow_dispatch' && inputs.local_inference }}
+    needs: validate-selectors
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.local_inference }}
     uses: ./.github/workflows/local-inference-qualification.yml
   feedback-ui:
-    if: ${{ !inputs.live_agent_demo && !inputs.ide_only && github.event_name == 'workflow_dispatch' && inputs.feedback_ui }}
+    needs: validate-selectors
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.feedback_ui }}
     uses: ./.github/workflows/feedback-ui.yml
     with:
       palette_only: ${{ inputs.palette_only }}
       palette_unit_only: ${{ inputs.palette_unit_only }}
   publish-skill-hub:
-    if: ${{ !inputs.live_agent_demo && !inputs.ide_only && github.event_name == 'workflow_dispatch' && inputs.publish_skill_hub }}
+    # Write-capable lane: only the validated single-purpose dispatch reaches it.
+    needs: validate-selectors
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_skill_hub }}
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -147,14 +277,14 @@ jobs:
             git push origin HEAD
           fi
   build-test:
+    # Only an explicit manual selector starts this heavy lane; push/PR run
+    # lean-checks instead. Conflicting combinations were already rejected by
+    # validate-selectors before this job could start.
+    needs: validate-selectors
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.full || inputs.build_test_only || inputs.ide_only) }}
     permissions:
       contents: read
       actions: read
-    # Normally excluded whenever another single-purpose mode is selected.
-    # ide_only is allowed through even together with another selector so the
-    # validation step below can fail the ambiguous combination explicitly
-    # instead of silently ignoring ide_only.
-    if: ${{ (!inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub) || inputs.ide_only }}
     # Foundation Models is guarded by Swift 6.4. Building on the generic
     # macOS 26 image (Xcode 26.6) silently selects the unsupported stub.
     runs-on: xcode-27
@@ -165,17 +295,6 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       GH_TOKEN: ${{ github.token }}
     steps:
-      # Fail fast, before checkout and dependency preparation: ide_only is a
-      # standalone rerun mode and never combines with another selector.
-      # This step runs before checkout, so it cannot rely on the job-level
-      # working-directory (FloeAgent does not exist yet).
-      - name: Reject ambiguous ide_only combinations
-        if: ${{ inputs.ide_only && (inputs.live_agent_demo || inputs.local_inference || inputs.feedback_ui || inputs.publish_skill_hub || inputs.build_test_only) }}
-        working-directory: .
-        run: |
-          echo "ide_only must be dispatched alone: it cannot combine with live_agent_demo, local_inference, feedback_ui, publish_skill_hub or build_test_only." >&2
-          exit 1
-
       - uses: actions/checkout@v5
 
       # Authenticate the signed catalog and stage the pinned lua.wasm fixture.
@@ -725,16 +844,14 @@ jobs:
           if-no-files-found: ignore
 
   appstore-sdk-compatibility:
+    # Only the explicit full manual matrix recompiles the SDK 26 / non-iOS-27
+    # source. Push/PR and the narrow rerun modes never pay for it; local
+    # Xcode 27 qualification remains the primary path.
+    needs: validate-selectors
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
     permissions:
       contents: read
       actions: read
-    # build_test_only reruns the failed build-test leg of an otherwise-green
-    # matrix without paying another ~33-minute SDK 26 compile that already
-    # passed.  It is rerun evidence only, never release acceptance, and never
-    # gates push/PR runs (inputs are empty there, so this condition is true).
-    # The ide_only rerun also skips this job; it re-verifies the IDE UI legs
-    # only and never substitutes for release qualification.
-    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && !inputs.build_test_only && !inputs.ide_only }}
     # TestFlight upload currently rebuilds the exact release commit with the
     # App Store-accepted Xcode 26.6 toolchain. Keep this independent gate so
     # the explicit unsupported-Foundation-Models path and the rest of Floe's
@@ -802,11 +919,10 @@ jobs:
             build
 
   spm-linux-build:
-    # Skipped together with appstore-sdk-compatibility by build_test_only;
-    # that input only reruns the failed build-test leg and never gates
-    # push/PR runs (inputs are empty there, so this condition is true).
-    # Also skipped by the ide_only rerun.
-    if: ${{ !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && !inputs.build_test_only && !inputs.ide_only }}
+    # Only the explicit full manual matrix runs the Linux cross-compile;
+    # push/PR, build_test_only and ide_only skip it.
+    needs: validate-selectors
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
     runs-on: ubuntu-latest
     # mlx-swift 0.31.6 declares Swift tools 6.3 even though the targets built
     # below do not link MLX. Resolution must therefore use a 6.3 toolchain.
