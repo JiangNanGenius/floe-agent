@@ -69,6 +69,15 @@ fluidity belongs to the user.
 - The upload receipt alone is not availability; independent readback and the external
   submission state are recorded below and in [CURRENT_STATUS.md](../../CURRENT_STATUS.md).
   Build 269 remains internal-only and was never promoted.
+- **Signed-IPA retention status.** The signed IPA is the `testflight-1.7.29-build270`
+  artifact of run [38137064773](https://github.com/JiangNanGenius/floe-agent/actions/runs/38137064773)
+  (759,161,160 bytes, unexpired until 2027-01-09). The verified **local** package is the
+  pre-signing exact-source device zip above; a local copy of the *signed* IPA had not yet
+  been retained when this was written (the slow transfer was stopped ahead of a project
+  directory move). The signed IPA can be fetched from that unexpired artifact and verified
+  against the same frozen source and UUID (`org.floeagent.ios` 1.7.29/270,
+  LC_UUID `F12587B9-E443-3105-92C0-46D18B12BE22`). This is therefore not presented as
+  locally verified signed retention.
 
 <!-- EXTERNAL-STATE -->
 ## External (publictest1) submission
@@ -116,6 +125,9 @@ retained as history; neither was a review rejection or a build problem.
   checking that no process held it open; the internal data volume gained 10,864,300 KB
   (~10.36 GiB) of reported free space (`df -k` readings before/after).
 - Removed one-off build scratch after exporting the build log into the private T8 evidence.
+- The incomplete, non-resumable signed-IPA transfer staging (~176 MiB, 24% of the file) was
+  removed only after recording the exact unexpired artifact recovery metadata; no valid
+  deliverable was deleted and no signed IPA is claimed as locally retained.
 - Retained: `Local/Artifacts/build270` (raw device app + normalized transport + provenance,
   matching the build269 retention shape), all T1–T8 evidence, the draft transport release,
   the immutable tag and the previous build 269 artifacts as the rollback version.
