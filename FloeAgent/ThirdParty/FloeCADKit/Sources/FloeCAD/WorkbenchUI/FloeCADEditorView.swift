@@ -2177,22 +2177,27 @@ struct FloeCADEditorView: View {
                 Text("Save the selected sketch entities as a reusable symbol.")
             }
             .alert(
-                "Something Went Wrong",
+                FloeCADStrings.text("cad.ui.error.title", "Something Went Wrong"),
                 isPresented: Binding(
                     get: { viewModel.errorMessage != nil },
                     set: { if !$0 { viewModel.errorMessage = nil } }
                 )
             ) {
-                Button("OK") { viewModel.errorMessage = nil }
+                Button(FloeCADStrings.text("cad.ui.common.ok", "OK")) { viewModel.errorMessage = nil }
             } message: {
                 Text(viewModel.errorMessage ?? "")
             }
             .onChange(of: viewModel.session.lastSaveError) { _, saveError in
-                // A failed SwiftData save means recent work isn't reaching
-                // disk — the one storage problem worth an alert mid-session.
+                // A failed save means recent work isn't reaching disk — the one
+                // storage problem worth an alert mid-session. The document
+                // deliberately stays open and dirty (the host bridge keeps the
+                // live owner on failure); the message says so and names the
+                // retry path instead of implying the work was lost.
                 if let saveError {
-                    viewModel.errorMessage =
-                        "Saving failed — recent changes may not be stored. (\(saveError))"
+                    viewModel.errorMessage = FloeCADStrings.format(
+                        "cad.ui.save.failedMessage",
+                        "Saving failed — recent changes may not be stored. (%@) The document stays open; free storage or fix access, then save again.",
+                        saveError)
                 }
             }
     }

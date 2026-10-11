@@ -145,6 +145,81 @@ final class NativeCADCanvasCreationTests: XCTestCase {
         XCTAssertTrue(packageURL.lastPathComponent.hasSuffix(".floecad"))
     }
 
+    /// T7S — the canvas-owned document created from the real "+ ▸ 3D Model"
+    /// route must open through ONE shared `FloeCAD3DBridge` session (the
+    /// unified workbench's fullscreen cover presents that same instance, same
+    /// document id — no reopen, no second node), render a real viewport
+    /// preview for the EMPTY document, save through the verified store, and
+    /// reopen with unchanged identity. The thumbnail-save regression itself
+    /// (empty package, no blob files) is pinned in FloeCADKit's
+    /// `StoreRecoveryTests.testEmptyDocumentThumbnailSaveCommitsPreviewAndReopensIdentical`.
+    func testCanvasOwnedEmptyPackageReusesOneBridgeSessionAndReopensIdentity() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let assetStore = CreativeAssetStore(database: database)
+
+        let project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let documentID = try XCTUnwrap(project.documents.first?.id)
+        let created = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: canvasID, documentID: documentID,
+            position: CanvasPoint(x: 300, y: 300), assetStore: assetStore)
+        let nodeID = try XCTUnwrap(created.nodeID, created.message)
+        let updated = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let node = try XCTUnwrap(updated.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        let key = try XCTUnwrap(node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])
+        let packageURL = try XCTUnwrap(CADCanvasActionBridge.packageURL(forSourceKey: key))
+
+        // The creation path schedules a deferred release on the same MainActor
+        // queue; drain it so this test observes only its own session.
+        try await Task.sleep(for: .milliseconds(200))
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+
+        // The workbench (and its fullscreen presentation) must reuse ONE live
+        // session/document instance for the same package: a fullscreen toggle
+        // never reopens a second document or creates a second node.
+        let first = try await FloeCAD3DBridge.shared.openDocument(at: packageURL)
+        let second = try await FloeCAD3DBridge.shared.openDocument(at: packageURL)
+        XCTAssertTrue(first === second,
+                      "the fullscreen presentation must reuse the same live document session")
+        XCTAssertEqual(first.summary().bodyCount, 0, "a brand-new unified 3D document is empty")
+
+        // Real viewport preview bytes for the empty document — not a
+        // placeholder: the canvas node and the workbench both show this.
+        let render = try XCTUnwrap(first.viewportThumbnailPNG(width: 320, height: 240),
+                                   "the empty workbench must render a real preview on a Metal device")
+        XCTAssertEqual(render.prefix(2), Data([0x89, 0x50]), "preview must be PNG bytes")
+        XCTAssertGreaterThan(render.count, 1_000, "a real render, not a stub image")
+
+        // The canvas publish route refuses an uncommitted draft, so its bytes
+        // carry the exact committed revision/package identity.
+        let exported = try await CADCanvasActionBridge.exportPNG(document: first, url: packageURL)
+        XCTAssertFalse(exported.isPlaceholder, "the empty workbench preview is a real render")
+        XCTAssertEqual(exported.data.prefix(2), Data([0x89, 0x50]))
+        XCTAssertEqual(exported.revision, first.summary().revision)
+        XCTAssertEqual(exported.packageSHA256, first.summary().contentSHA256)
+
+        // Close and reopen: same package identity, still empty and editable;
+        // the original node was neither duplicated nor re-pointed.
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+        let stored = await FloeCADDocument.storedIdentity(at: packageURL)
+        let onDisk = try XCTUnwrap(stored)
+        XCTAssertGreaterThanOrEqual(onDisk.revision, exported.revision)
+        let reopened = try await FloeCAD3DBridge.shared.openDocument(at: packageURL)
+        XCTAssertEqual(reopened.summary().revision, onDisk.revision)
+        XCTAssertEqual(reopened.summary().contentSHA256, onDisk.contentSHA256)
+        XCTAssertEqual(reopened.summary().bodyCount, 0)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: packageURL.appendingPathComponent("manifest.json").path))
+
+        let finalProject = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let cadNodes = finalProject.documents.flatMap(\.nodes).filter {
+            CADCanvasNodePlanner.isNativeCADNode($0)
+        }
+        XCTAssertEqual(cadNodes.count, 1, "one creation must not leave a duplicate CAD node")
+        XCTAssertEqual(cadNodes.first?.id, nodeID)
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+    }
+
     /// The preview pipeline must refuse an uncommitted/conflicted draft BEFORE
     /// any canvas publish (review 2026-10-10): a failed save throws, keeps the
     /// draft alive, and produces no bytes for a node.

@@ -11,6 +11,7 @@
 //
 
 import XCTest
+import UIKit
 @testable import FloeCAD
 
 final class StoreRecoveryTests: XCTestCase {
@@ -139,6 +140,143 @@ final class StoreRecoveryTests: XCTestCase {
         XCTAssertTrue(retried.succeeded, retried.error ?? "")
         XCTAssertGreaterThan(retried.revision, first.revision)
         second.close()
+        XCTAssertTrue(siblingDebris().isEmpty, "debris: \(siblingDebris())")
+    }
+
+    // MARK: Preview artifact (T7S)
+
+    /// Real PNG bytes (CoreGraphics), standing in for the viewport thumbnail
+    /// `EditorViewModel.saveThumbnail()` records from the live renderer. Not a
+    /// fabricated header: the save/reopen assertions compare actual bytes.
+    private func previewPNGBytes() throws -> Data {
+        let size = CGSize(width: 96, height: 72)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+        }
+        return try XCTUnwrap(image.pngData())
+    }
+
+    /// Regression (T7S, actual iPhone fullscreen return): the workbench records
+    /// the live viewport thumbnail when the fullscreen editor disappears and
+    /// saves the SAME session. A brand-new CAD document has no mesh/brep/image
+    /// payloads, so its package has no `blobs/` directory yet — the thumbnail
+    /// write used to fail with NSCocoaError 4 (“thumbnail.img doesn’t exist”),
+    /// the workbench surfaced a save-failure alert, and the preview was never
+    /// committed. The save must commit the preview and reopen byte-identical.
+    func testEmptyDocumentThumbnailSaveCommitsPreviewAndReopensIdentical() async throws {
+        let url = workDir.appendingPathComponent("Empty.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Empty")
+        XCTAssertEqual(document.summary().bodyCount, 0)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: url.appendingPathComponent("blobs/thumbnail.img").path),
+            "a brand-new package carries no preview yet")
+
+        // The exact production close/fullscreen-return sequence:
+        // ViewportView installs `thumbnailProvider`, FloeCADEditorView
+        // .onDisappear calls `saveThumbnail()` (which writes
+        // `session.project.thumbnail`), then `document.save()`.
+        let png = try previewPNGBytes()
+        XCTAssertEqual(png.prefix(2), Data([0x89, 0x50]), "PNG signature")
+        let model = document.viewModel()
+        XCTAssertTrue(model === document.viewModel(),
+                      "the fullscreen toggle must reuse one editor view model/session")
+        model.thumbnailProvider = { png }
+        model.saveThumbnail()
+        XCTAssertEqual(document.session.project.thumbnail, png)
+
+        let save = await document.save()
+        XCTAssertTrue(save.succeeded, save.error ?? "the empty package must commit its preview")
+        XCTAssertNil(document.session.lastSaveError)
+        XCTAssertGreaterThan(save.revision, 0)
+        XCTAssertEqual(save.contentSHA256.count, 64)
+
+        // The preview artifact really landed in the committed package.
+        let thumbnailURL = url.appendingPathComponent("blobs/thumbnail.img")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: thumbnailURL.path),
+                      "the committed package must carry blobs/thumbnail.img")
+        XCTAssertEqual(try Data(contentsOf: thumbnailURL), png)
+
+        // Reopen: the registered preview comes back byte-identical.
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        XCTAssertEqual(reopened.session.project.thumbnail, png,
+                       "reopening must read the committed preview bytes")
+        XCTAssertEqual(reopened.summary().revision, save.revision)
+        XCTAssertEqual(reopened.summary().contentSHA256, save.contentSHA256)
+        XCTAssertEqual(reopened.summary().bodyCount, 0)
+        reopened.close()
+        XCTAssertTrue(siblingDebris().isEmpty, "debris: \(siblingDebris())")
+    }
+
+    /// A genuinely failing preview save must surface the error, keep the draft
+    /// (and its preview) alive in the same session, leave the on-disk package
+    /// untouched, and commit normally on retry — never a silent success and
+    /// never a half-written package.
+    func testThumbnailSaveFailureKeepsDraftAndRetryCommitsPreview() async throws {
+        let url = workDir.appendingPathComponent("Retry.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Retry")
+        addBox(document, size: 6)
+        let png = try previewPNGBytes()
+        let model = document.viewModel()
+        model.thumbnailProvider = { png }
+        model.saveThumbnail()
+        let revisionBefore = document.revision
+
+        CADDocumentFaultInjection.beforeCommit = {
+            throw NSError(domain: "FloeCADTest", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "injected preview-save failure"])
+        }
+        let failed = await document.save()
+        CADDocumentFaultInjection.beforeCommit = nil
+
+        XCTAssertFalse(failed.succeeded, "an injected failure must be reported")
+        XCTAssertNotNil(document.session.lastSaveError,
+                        "the failure must be surfaced, never swallowed")
+        // The draft and its preview stay alive for retry; disk did not move.
+        XCTAssertTrue(document.hasUnsavedChanges)
+        XCTAssertEqual(document.session.project.thumbnail, png)
+        XCTAssertEqual(document.revision, revisionBefore)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: url.appendingPathComponent("blobs/thumbnail.img").path))
+        let onDisk = await FloeCADDocument.storedIdentity(at: url)
+        XCTAssertEqual(onDisk?.revision, revisionBefore,
+                       "a failed preview save must not move the committed revision")
+
+        // Retry after the fault clears: the same session commits the preview.
+        let retried = await document.save()
+        XCTAssertTrue(retried.succeeded, retried.error ?? "")
+        XCTAssertNil(document.session.lastSaveError)
+        XCTAssertFalse(document.hasUnsavedChanges)
+        XCTAssertEqual(try Data(contentsOf: url.appendingPathComponent("blobs/thumbnail.img")), png)
+        document.close()
+
+        let reopened = try await FloeCADDocument.open(at: url)
+        XCTAssertEqual(reopened.session.project.thumbnail, png)
+        XCTAssertEqual(reopened.summary().bodyCount, 1)
+        reopened.close()
+        XCTAssertTrue(siblingDebris().isEmpty, "debris: \(siblingDebris())")
+    }
+
+    /// The package-level staged create (`FloeCADDocument.create` and the
+    /// overwrite/import routes) shares the same rule as an in-place commit: a
+    /// payload with a preview but no mesh/brep/image blobs must create its
+    /// `blobs/` directory while staging, or the create fails with
+    /// “thumbnail.img doesn’t exist”.
+    func testStagedCreateWithThumbnailAndNoBlobsCommitsPreview() async throws {
+        let url = workDir.appendingPathComponent("Created.floecad")
+        let store = FileCADDocumentStore(packageURL: url)
+        let project = Project(name: "Created")
+        let png = try previewPNGBytes()
+        project.thumbnail = png
+        let payload = try store.makePayload(project)
+        try FileCADDocumentStore.createPackage(at: url, payload: payload, overwrite: false)
+
+        let reopened = try await FloeCADDocument.open(at: url)
+        XCTAssertEqual(reopened.session.project.thumbnail, png)
+        XCTAssertEqual(reopened.summary().bodyCount, 0)
+        reopened.close()
         XCTAssertTrue(siblingDebris().isEmpty, "debris: \(siblingDebris())")
     }
 

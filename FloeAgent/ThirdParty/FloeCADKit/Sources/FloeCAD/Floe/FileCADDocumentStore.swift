@@ -514,7 +514,18 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             if let thumbnail = payload.thumbnail, !thumbnail.isEmpty {
                 let sha = Self.sha256(thumbnail)
                 thumbnailSHA256 = sha
-                try thumbnail.write(to: staging.appendingPathComponent("blobs/thumbnail.img"))
+                // A document with no mesh/brep/image payloads never created
+                // the `blobs/` directory in the loop above; the thumbnail is
+                // still a real commit artifact of its own and must land. (T7S
+                // regression: the first save of a brand-new, empty CAD
+                // document — the workbench records its viewport thumbnail on
+                // fullscreen return/close — failed with NSCocoaError 4,
+                // “thumbnail.img doesn’t exist”, because that directory was
+                // missing.)
+                let thumbnailURL = staging.appendingPathComponent("blobs/thumbnail.img")
+                try fileManager.createDirectory(at: thumbnailURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+                try thumbnail.write(to: thumbnailURL)
                 contentHasher.update(data: Data(sha.utf8))
             }
             let contentDigest = Self.hex(contentHasher.finalize())
@@ -540,6 +551,15 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             let stagedDocument = try readDocument(at: staging)
             guard stagedDocument.bodies.count == payload.document.bodies.count else {
                 throw CADDocumentStoreError.commitFailed("staged body count mismatch")
+            }
+            if let thumbnailSHA256 {
+                // The manifest now claims a thumbnail; the staged bytes must
+                // back that claim. Never report a committed save whose preview
+                // artifact did not actually land.
+                let stagedThumbnail = staging.appendingPathComponent("blobs/thumbnail.img")
+                guard Self.sha256(contentsOf: stagedThumbnail) == thumbnailSHA256 else {
+                    throw CADDocumentStoreError.commitFailed("staged thumbnail mismatch")
+                }
             }
 
             try CADDocumentFaultInjection.beforeCommit?()
@@ -640,7 +660,12 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         if let thumbnail = payload.thumbnail, !thumbnail.isEmpty {
             let sha = Self.sha256(thumbnail)
             thumbnailSHA256 = sha
-            try thumbnail.write(to: packageURL.appendingPathComponent("blobs/thumbnail.img"))
+            // Same rule as `performWrite`: a payload with no blobs has no
+            // `blobs/` directory, and the thumbnail must still be written.
+            let thumbnailURL = packageURL.appendingPathComponent("blobs/thumbnail.img")
+            try fileManager.createDirectory(at: thumbnailURL.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+            try thumbnail.write(to: thumbnailURL)
             contentHasher.update(data: Data(sha.utf8))
         }
         let contentDigest = Self.hex(contentHasher.finalize())

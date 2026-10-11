@@ -70656,6 +70656,57 @@
         }
       }
     },
+    "cad.ui.common.ok": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "好"
+          }
+        }
+      }
+    },
+    "cad.ui.error.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Something Went Wrong"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "出现问题"
+          }
+        }
+      }
+    },
+    "cad.ui.save.failedMessage": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saving failed — recent changes may not be stored. (%@) The document stays open; free storage or fix access, then save again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存失败——最近的更改可能尚未写入磁盘。（%@）文档仍保持打开；请释放存储空间或修复访问权限后再次保存。"
+          }
+        }
+      }
+    },
     "cad.ui.common.delete": {
       "extractionState": "manual",
       "localizations": {
