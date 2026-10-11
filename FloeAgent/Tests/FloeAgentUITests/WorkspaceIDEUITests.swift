@@ -288,12 +288,30 @@ final class WorkspaceIDEUITests: XCTestCase {
         // first realizable page (reproduced on an iPad mini in landscape), so
         // scroll the visible sidebar until the row exists and can be tapped.
         let files = ipad ? app.staticTexts["settings.section.files"].firstMatch : app.buttons["settings.section.files"]
+        // Capture the on-screen point while the row is verified hittable: a
+        // later `tap()` re-evaluates the query and can time out when the
+        // runner's accessibility snapshot stalls (observed on CI while the
+        // retry passed). A coordinate tap from the just-verified frame skips
+        // the second query.
+        var filesCenter: CGPoint?
+        func verifiedFilesCenter() -> CGPoint? {
+            let frame = files.frame
+            let screen = app.windows.firstMatch.frame
+            let center = CGPoint(x: frame.midX, y: frame.midY)
+            guard frame.width > 0, frame.height > 0,
+                  frame.origin.x.isFinite, frame.origin.y.isFinite,
+                  screen.contains(center) else { return nil }
+            return center
+        }
         if ipad {
             // Swipe on a *visible* settings row: the sidebar behind the sheet
             // and the detail column are also collection views, so querying a
             // collection view by index is ambiguous.
             for _ in 0..<8 {
-                if files.exists && files.isHittable { break }
+                if files.exists && files.isHittable {
+                    filesCenter = verifiedFilesCenter()
+                    break
+                }
                 let anchor = app.staticTexts
                     .matching(NSPredicate(format: "identifier BEGINSWITH %@", "settings.section."))
                     .allElementsBoundByIndex.first { $0.isHittable }
@@ -303,11 +321,22 @@ final class WorkspaceIDEUITests: XCTestCase {
             let sections = app.collectionViews["settings.sections"]
             XCTAssertTrue(sections.waitForExistence(timeout: 10))
             for _ in 0..<6 {
-                if files.exists && files.isHittable { break }
+                if files.exists && files.isHittable {
+                    filesCenter = verifiedFilesCenter()
+                    break
+                }
                 sections.swipeUp()
             }
         }
-        XCTAssertTrue(files.waitForExistence(timeout: 30)); files.tap()
+        XCTAssertTrue(files.waitForExistence(timeout: 30))
+        if let filesCenter {
+            let screen = app.windows.firstMatch.frame
+            app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: filesCenter.x - screen.minX, dy: filesCenter.y - screen.minY))
+                .tap()
+        } else {
+            files.tap()
+        }
         let manage = app.buttons["settings.files.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10)); manage.tap()
         let workspace = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "批量选择测试")).firstMatch
