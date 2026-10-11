@@ -21,6 +21,11 @@ final class CameraAnimator {
     private var startTime: CFTimeInterval = 0
     private var duration: CFTimeInterval = 0.35
 
+    /// The pose the latest `animate` is flying to (nil when idle). Read by
+    /// tests to verify explicit view commands target the visible viewport
+    /// without waiting on a display link.
+    var pendingTarget: TurntableCamera? { target }
+
     /// Fired on every animation step (the camera moved).
     var cameraChanged: (() -> Void)?
 

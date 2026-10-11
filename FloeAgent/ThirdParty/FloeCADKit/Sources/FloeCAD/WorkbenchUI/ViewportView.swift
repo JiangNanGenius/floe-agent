@@ -31,7 +31,8 @@ struct ViewportView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> MTKView {
-        let view = MTKView(frame: .zero)
+        let view = CADViewportMTKView(frame: .zero)
+        view.coordinator = context.coordinator
         context.coordinator.attach(to: view)
         return view
     }
@@ -39,6 +40,39 @@ struct ViewportView: UIViewRepresentable {
     func updateUIView(_ view: MTKView, context: Context) {
         context.coordinator.sceneDidChange()
         context.coordinator.setPalette(frame: paletteFrame, onRight: paletteOnRight)
+    }
+
+    /// A transient re-presentation of the SAME workbench (the fullscreen
+    /// cover) removes this representable's view from the hierarchy. The
+    /// coordinator then hands the shared viewport bindings — camera control
+    /// plus the thumbnail/screenshot providers — back to the presenting
+    /// viewport: the camera lives on a per-renderer value, so continuity is an
+    /// explicit copy, never a re-attach or a re-fit. (T7W)
+    static func dismantleUIView(_ view: MTKView, coordinator: ViewportCoordinator) {
+        coordinator.viewportDidLeaveWindow()
+    }
+}
+
+/// MTKView that reports window membership to its coordinator. A fullScreen
+/// presentation removes the presenting workbench's view from the window and
+/// re-adds it on dismissal, while the cover's view does the opposite. The
+/// newest on-screen appearance therefore owns the shared camera-control and
+/// provider bindings, and a dismissal hands them back with the camera the
+/// user last saw — the presenter's frozen callbacks (stale orientation-cube
+/// labels, a stale thumbnail renderer) can no longer survive a round trip.
+/// (T7W)
+final class CADViewportMTKView: MTKView {
+    weak var coordinator: ViewportCoordinator?
+
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        // `newWindow` is the incoming window; `self.window` still reports the
+        // old one here, so the coordinator must be told which is current.
+        if newWindow != nil {
+            coordinator?.viewportDidEnterWindow()
+        } else {
+            coordinator?.viewportDidLeaveWindow()
+        }
     }
 }
 
@@ -49,6 +83,10 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     private let gestures = ViewportGestureController()
     private weak var view: MTKView?
     private var cameraAnimator: CameraAnimator?
+    /// The coordinator that owned the shared viewport bindings when this one
+    /// was created — the presenter of a fullscreen cover. Weak: a dismantled
+    /// presenter is simply nothing to hand back to. (T7W)
+    private weak var presenter: ViewportCoordinator?
     /// The camera the latest automatic opening fit produced. The attach-time
     /// fit runs before the view has a size or the palette has been measured,
     /// so each arriving re-fits — only while the camera is still exactly this
@@ -63,7 +101,79 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     init(viewModel: EditorViewModel) {
         self.viewModel = viewModel
         super.init()
+        // A coordinator created while another live viewport owns the shared
+        // bindings is a re-presentation of that viewport (the fullscreen
+        // cover); remember it so a dismantle can hand the camera back. (T7W)
+        presenter = viewModel.cameraControl as? ViewportCoordinator
         viewModel.cameraControl = self
+    }
+
+    /// The pose the latest explicit view command is flying to (nil when no
+    /// animation is running). Read by tests; production code only observes the
+    /// resulting camera.
+    var pendingCameraTarget: TurntableCamera? { cameraAnimator?.pendingTarget }
+
+    /// The opening-fit camera while the automatic fit is still owed (nil once
+    /// the user has moved the camera). Read by tests.
+    var pendingOpeningFit: TurntableCamera? { openingFit }
+
+    /// The live viewport's view moves onto the screen: the newest appearance
+    /// owns the shared bindings, and it CONTINUES from the camera the previous
+    /// visible viewport showed instead of re-fitting its own. Called from
+    /// `CADViewportMTKView.willMove(toWindow:)`; tests may call it directly.
+    /// (T7W)
+    func viewportDidEnterWindow() {
+        guard let renderer else { return }
+        if let current = viewModel.cameraControl as? ViewportCoordinator,
+           current !== self, let currentRenderer = current.renderer {
+            // A presenter returning from a fullscreen round trip (or a cover
+            // mounting over the presenter): keep the exact handoff camera.
+            renderer.camera = currentRenderer.camera
+            openingFit = nil
+        }
+        bindSharedViewport()
+        sceneDidChange()
+    }
+
+    /// The view left the screen. If this coordinator owned the shared
+    /// bindings, hand them — and the camera the user was just looking at —
+    /// back to the presenting viewport. When no presenter is alive the
+    /// bindings are left alone: there is no visible viewport to correct, and
+    /// a close-time thumbnail still needs a renderer. Called from
+    /// `CADViewportMTKView.willMove(toWindow:)` and `dismantleUIView`; the
+    /// second call is a no-op. (T7W)
+    func viewportDidLeaveWindow() {
+        guard viewModel.cameraControl === self else { return }
+        guard let presenter, presenter !== self, let presenterRenderer = presenter.renderer else {
+            // No live presenter to promote: keep the last visible bindings
+            // (the weak cameraControl/providers release with this coordinator).
+            return
+        }
+        if let renderer {
+            presenterRenderer.camera = renderer.camera
+        }
+        presenter.openingFit = nil
+        presenter.bindSharedViewport()
+    }
+
+    /// Install this coordinator's renderer as the one shared viewport the
+    /// camera commands and offscreen captures go through. (T7W)
+    private func bindSharedViewport() {
+        guard let renderer else { return }
+        viewModel.cameraControl = self
+        viewModel.thumbnailProvider = { renderer.makeThumbnailPNG() }
+        viewModel.screenshotProvider = { width, height, transparent, showGrid in
+            renderer.makeThumbnailPNG(
+                width: width,
+                height: height,
+                transparentBackground: transparent,
+                showGrid: showGrid
+            )
+        }
+        // Re-publish the camera for every SwiftUI overlay that projects world
+        // points, and redraw the view that may have just come back on screen.
+        cameraDidMove()
+        view?.setNeedsDisplay()
     }
 
     func attach(to view: MTKView) {
@@ -117,9 +227,14 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
 
         // A migrated legacy scene opens on its authored camera, exactly as the
         // old director framed it; a resize must not re-fit that view (no
-        // openingFit is recorded). Every other document keeps the automatic
-        // opening fit.
-        if let saved = viewModel.savedSceneCamera {
+        // openingFit is recorded). A transient re-presentation of an
+        // already-live workbench (the fullscreen cover) CONTINUES on the
+        // presenting viewport's camera — a mere presentation must never
+        // re-frame the model. Every other document keeps the automatic opening
+        // fit. (T7W)
+        if let presenterCamera = presenter?.renderer?.camera {
+            renderer.camera = presenterCamera
+        } else if let saved = viewModel.savedSceneCamera {
             renderer.camera = saved
         } else if let bounds = renderer.scene.worldBounds {
             renderer.camera.fit(boundsMin: bounds.min, boundsMax: bounds.max, aspect: fitAspect)
