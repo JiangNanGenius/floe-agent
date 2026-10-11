@@ -8,14 +8,19 @@ from verify_app_regression_xcresult import nodes, xcresult_json
 
 def verify(summary, tree):
     cases = [n for n in nodes(tree) if n.get("nodeType") == "Test Case"]
-    # Require every current WorkspaceIDEUITests case, including the compact
-    # Git sidebar added after the original four-case acceptance set.
+    # Require every current WorkspaceIDEUITests case: the compact Git sidebar,
+    # the engineering preview/assistant flow and the first-run sheet were all
+    # added to the class after the original acceptance set. This verifier was
+    # still pinned to five cases, so every IDE leg failed the harness check
+    # even when all six tests passed (CI 38082419506/38092249148/38098843601);
+    # the missing case is added here so the gate requires all six for real.
     expected = {
         "WorkspaceIDEUITests/testNativeEditorSaveAndColdReopen",
         "WorkspaceIDEUITests/testNativeExplorerAndActivityRail",
         "WorkspaceIDEUITests/testEngineeringDrawingInlineAndFullScreen",
         "WorkspaceIDEUITests/testDWGEditSaveAndColdReopen",
         "WorkspaceIDEUITests/testGitSidebarCompactSyncRow",
+        "WorkspaceIDEUITests/testFirstRunSheetAndWebServiceEntry",
     }
     found = {str(case.get("nodeIdentifier", "")).removesuffix("()") for case in cases}
     if (summary.get("result") != "Passed" or summary.get("totalTestCount") != len(expected)
@@ -23,8 +28,8 @@ def verify(summary, tree):
             or summary.get("skippedTests") != 0 or summary.get("expectedFailures") != 0
             or len(cases) != len(expected) or found != expected
             or any(case.get("result") != "Passed" for case in cases)):
-        raise ValueError("Native IDE save/reopen, rail/Explorer, engineering preview and Git sidebar did not all pass")
-    return {"tests": sorted(expected), "result": "Passed", "coverage": "app-workbench-native-save-cold-reopen-rail-explorer-engineering-preview-and-git-sidebar"}
+        raise ValueError("Native IDE save/reopen, rail/Explorer, engineering preview, Git sidebar and first-run sheet did not all pass")
+    return {"tests": sorted(expected), "result": "Passed", "coverage": "app-workbench-native-save-cold-reopen-rail-explorer-engineering-preview-git-sidebar-and-first-run-sheet"}
 
 
 
