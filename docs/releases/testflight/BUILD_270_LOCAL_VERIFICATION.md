@@ -95,7 +95,34 @@ failure (draft-marker validator, run 38139250336) happened before any Apple
 call and is retained as evidence.
 <!-- /EXTERNAL-STATE -->
 
+## Documentation and website sync
+
+- `docs/CURRENT_STATUS.md`, the bilingual unified-design migration pages, the docs index and
+  `docs/releases/notes/RELEASE_NOTES_1.7.29_BUILD_270.md` were updated on `main` (commits
+  `13d4dfc0`, `880004f1`, `a8383379`) to state the observed facts: internal availability,
+  the API 403 external-submission block, and the precise iPad layout qualification.
+- The private website source (commit `b136881`) adds the two migration routes to the
+  public PAGES map and re-renders all ten public documents from `a8383379`. Deployed image
+  `floe-official:1.2.29-docs270`
+  (`sha256:38507a8c286b4837dea70276cbadaf4695811393c22884372f5d35c4d8e2bc15`),
+  rollback `floe-official:rollback-pre-docs270-20261011T124001Z` and
+  `backups/deploy-docs270-20261011T124001Z`.
+- Origin and public `/healthz` both `ok`; all eleven checked files (`status.html`,
+  `unified-design-zh/en.html`, `zh/en.html`, `index.html` and five Markdown downloads)
+  matched byte-for-byte across local, origin loopback and public HTTPS
+  (`website-verify.json`, `all_match: true`).
+
 ## Cleanup
 
-Recorded in [CURRENT_STATUS.md](../../CURRENT_STATUS.md) and the T8 private evidence
-directory; regenerable build caches were measured and removed only after their last use.
+- Removed the task's build cache `~/Library/Caches/CodexBuild/FloeAgent/t7c-local`
+  (11,891,828 KB / ~11.34 GiB) after checking no process held it open; the internal data
+  volume gained 10,864,300 KB (~10.36 GiB) of reported free space (`df -k` before/after
+  recorded in the T8 evidence). The one-off `Local/Scratch/t8-device-build.log` was
+  removed after exporting a copy into the T8 evidence directory.
+- Retained: `Local/Artifacts/build270` (raw device app + normalized transport + provenance,
+  matching the build269 retention shape), all T1–T8 evidence, the draft transport release,
+  the immutable tag and the previous build 269 artifacts as the rollback version.
+- No simulator was booted, installed to, shut down or deleted by this task. The booted
+  iPhone 18 Pro `ED94CEF5` was started at 20:39 by an unrelated `CallRelay.xcodeproj`
+  test run (`xcodebuild` pid 94307, its own cache path) and was deliberately left
+  untouched. The retained iPad `6366F0FB` was released and shut down by the primary.
