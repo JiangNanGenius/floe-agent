@@ -48,8 +48,11 @@
 
 Original failures (T7S missing-thumbnail save error PNG18, T7T empty-draft PNG21, T7W
 camera reset PNG24/25) are retained in their evidence directories and were not rewritten.
-iPad split-window and large-font interaction remain unqualified; physical-device fluidity
-belongs to the user.
+On the retained iPad, the largest **standard** text size passed on the Creative home and
+design form (PNG31); accessibility extra-large text was not tested; split-window remains
+unqualified after an unconfirmed windowing black frame (process alive, no specific crash
+report, device restarted with data preserved and Floe normal, PNG32/34). Physical-device
+fluidity belongs to the user.
 
 ## TestFlight delivery
 
