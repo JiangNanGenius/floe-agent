@@ -70,7 +70,26 @@ belongs to the user.
 <!-- EXTERNAL-STATE -->
 ## External (publictest1) submission
 
-_Pending: recorded after the authorized submission and readback._
+One authorized API submission ([38139521326](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139521326))
+was dispatched from `main` with the corrected review notes. Apple refused the
+first write — `PATCH /v1/betaAppReviewDetails/6801209053` — with
+**HTTP 403 `FORBIDDEN_ERROR`**: the current API credential can read the build
+and group state but cannot write the app-level beta review detail (final
+review notes). The helper is fail-closed, so nothing was attached and nothing
+was submitted. A post-failure GET-only readback
+([38139655286](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139655286))
+confirmed zero partial writes: `READY_FOR_BETA_SUBMISSION`, submission count 0,
+`publictest1` attachedToBuild false, `VALID`, unexpired, `IN_BETA_TESTING`,
+issues empty.
+
+This is an API-permission limitation, **not** an Apple review rejection and
+**not** a submission. The remaining step is the same existing App Store Connect
+web flow used for builds 241/243/255/262/263 (save the final review notes from
+`docs/public-beta/build270/review-notes.en-US.md`, attach build 270 to the
+existing `publictest1` group, submit for Beta App Review, read back). No
+public-link, group or permission change is part of it. The first submission
+failure (draft-marker validator, run 38139250336) happened before any Apple
+call and is retained as evidence.
 <!-- /EXTERNAL-STATE -->
 
 ## Cleanup

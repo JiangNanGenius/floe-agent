@@ -1,7 +1,16 @@
-<!-- docs-updated: 2026-10-09 -->
+<!-- docs-updated: 2026-10-11 -->
 # 当前版本与验证状态 / Current release and verification status
 
-文档更新时间 / Document updated: 2026-10-09. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
+文档更新时间 / Document updated: 2026-10-11. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
+
+## 1.7.29（270）内部可用；公测提交待已登录网页完成 / Internal available; external submission pending an authenticated browser
+
+- 不可变 `v1.7.29` 固定源码 `3286444c2c167f2a49305785dc78a06f60402ece`（版本检查点，位于已验收功能提交 `3c0e6fbd` 之上），并已合并 main（文档提交 `13d4dfc0` 随行）。Immutable tag/source merged into main with its docs-only follow-up. Earlier local candidate 1.7.28（269）remains internal-only and was never promoted.
+- 本地 Xcode 27.0（27A266a）/ iPhoneOS 27.0 Release 设备构建成功，签名前已立即留存设备包、匹配 dSYM/UUID、SHA-256 与 provenance；该精确产物经私有 draft 传输由云端仅做签名/校验/上传（未重新编译 App）：[签名与内部核验](https://github.com/JiangNanGenius/floe-agent/actions/runs/38137064773)。App 二进制 `7519d466…`，传输包 `5d1f00ee…`（877,827,483 B），App/dSYM UUID `F12587B9-E443-3105-92C0-46D18B12BE22`。A local exact-source Release device build was retained before signing; the cloud lane only signed, validated and uploaded it. 本地核验细节见 [BUILD_270_LOCAL_VERIFICATION.md](releases/testflight/BUILD_270_LOCAL_VERIFICATION.md)。
+- 内部核验：Build 270 为 `VALID`、未过期、`APP_STORE_ELIGIBLE`，现有 Floe QA 组 `IN_BETA_TESTING`，中英文测试说明已读回（独立 GET-only [回读](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139400836) 确认同一状态）。内部 TestFlight 可安装。Independent readback confirms VALID, unexpired, APP_STORE_ELIGIBLE and existing Floe QA availability.
+- 公测 publictest1：一次授权 API 提交（[38139521326](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139521326)）在首个写入 `PATCH /v1/betaAppReviewDetails/{id}`（保存最终审核备注）处被 Apple 以 **HTTP 403 `FORBIDDEN_ERROR`** 拒绝——当前 API 密钥缺少 App 级审核信息的写权限；未附着公开组、未提交、无任何部分写入（失败后只读[回读](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139655286) 仍为 `READY_FOR_BETA_SUBMISSION`、submission count 0、attachedToBuild false）。这**不是**审核拒绝，也**不等于**已提交或已批准。The one authorized API submission was refused by Apple at the first write (review-notes PATCH) with 403; nothing was attached or submitted and no partial write exists. Not a review rejection, not submitted, not approved.
+- 剩余步骤：在已登录的 App Store Connect 网页中保存最终审核备注（`docs/public-beta/build270/review-notes.en-US.md`），将 270 加入现有 publictest1 并提交 Beta 审核（与 241/243/255/262/263 相同的既有流程；当前 Edge 登录待恢复）。不改变公开链接，不新增组或权限。Remaining step: the same existing web flow in App Store Connect; no public-link, group or permission change.
+- 实测边界：T7 已验收 iPhone 全屏 3D 相机保持/返回与全屏取消（PNG26–30）；iPad 分屏与大字体交互尚未验收；实体设备流畅度属用户验收。禁止把本页读作外审已通过。iPhone fullscreen 3D camera/cancel acceptance passed; iPad split-window and large-font remain unqualified; physical-device fluidity belongs to the user.
 
 ## 渠道只读复核 / Channel readback · 2026-10-09
 
