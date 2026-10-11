@@ -4,6 +4,9 @@ Status: implemented by T5 (typed shared-target tools). The FloeApp object
 compile and the integrated behavioral run are executed by T7 in the full
 App; the schemas below are the compiled tool contracts the model sees.
 Localization of panel copy is T6-owned; this page is the human reference.
+Delivery state: shipped in the 1.7.29 (270) source (tag `v1.7.29`);
+TestFlight/public installation state is tracked in
+[CURRENT_STATUS.md](CURRENT_STATUS.md), not on this page.
 
 The design workflow has ONE state machine (`DesignWorkflowEngine` over a
 `DesignProject`) and TWO owner authorities:

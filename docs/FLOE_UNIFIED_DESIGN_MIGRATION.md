@@ -1,7 +1,7 @@
 <!-- docs-updated: 2026-10-11 -->
 # Unified 3D and shared design workflow — migration and recovery
 
-Status: this page documents the **next** update from its source candidate (2026-10-11). It is not released, not installed and not qualified yet — the build you have may not contain these features. Do not rely on this page alone before migrating the only copy of important work; installation state is tracked in [CURRENT_STATUS.md](CURRENT_STATUS.md).
+Status: this update is released as **1.7.29 (270)** from the frozen source tag `v1.7.29` (2026-10-11); its internal TestFlight availability in the existing Floe QA group was independently confirmed. The build you have may predate it, and external (public beta) review is a separate gate — do not rely on this page alone before migrating the only copy of important work; live installation state is tracked in [CURRENT_STATUS.md](CURRENT_STATUS.md).
 
 Related: [User manual](USER_GUIDE.md) · [Floe 1.7 migration and recovery](FLOE_1_7_MIGRATION.md) · [Design workflow](FLOE_DESIGN_WORKFLOW.md) · [Design workflow tool contract](DESIGN_WORKFLOW_TOOLS.md)
 

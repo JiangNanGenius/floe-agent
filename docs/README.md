@@ -41,13 +41,14 @@
 | [媒体工作台（1.7.23／264）](FLOE_MEDIA_WORKBENCH.md) | 统一图像/视频工作台：版本化项目、渲染器、`media.project` 工具契约与已执行验证 |
 | [储存空间诊断与安全清理（中英）](FLOE_STORAGE_DIAGNOSTICS.md) | 稀疏/克隆感知的计量引擎、真实根清单、诚实上限估算、所有权安全清理；含[中文版](FLOE_STORAGE_DIAGNOSTICS.zh-CN.md) |
 | [设计流程（简报到导出，中英）](FLOE_DESIGN_WORKFLOW.md) | 冻结运行、锚定反馈、修订候选、采纳/拒绝/恢复、DESIGN.md 保留、能力诚实表；含[中文版](FLOE_DESIGN_WORKFLOW.zh-CN.md) |
+| [统一 3D 与共享设计流程迁移（中英，1.7.29／270）](FLOE_UNIFIED_DESIGN_MIGRATION.md) | 底部插入菜单创建原生 `.floecad` 节点、旧版 3D 场景首次编辑转换与恢复、四个设计入口共用服务；含[中文版](FLOE_UNIFIED_DESIGN_MIGRATION.zh-CN.md)，安装状态见 CURRENT_STATUS |
 | [CAD 引擎、cad.document 与画布子工程（1.7.24／265）](FLOE_CAD_AND_DRAWING_ASSISTANT.md) | 二维 CAD 引擎能力、无界面 Worker 宿主、`cad.document` 契约、画布绑定/分支语义与图像/视频细化（安装状态见 CURRENT_STATUS） |
 | [创作工具契约与格式能力表（1.7.24／265，中英）](FLOE_1_7_24_CREATIVE_TOOLS.md) | 共享 discover→read→propose→confirm→apply→verify 契约，`cad.document`/`document.office.edit`/手记/`media.project` 模式与示例，图纸助手，以及区分已验证/引擎层待真机/不支持的 CAD 与 Office 真实格式能力表 |
 | [截图档案](evidence/floe-1.7/SCREENSHOTS.md) | 界面截图与对应证据 |
 
 ## 发布档案（只追加、不回改）
 
-逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。
+逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。本轮 1.7.29（270）的本地核验与 TestFlight 交付记录见 [BUILD_270_LOCAL_VERIFICATION.md](releases/testflight/BUILD_270_LOCAL_VERIFICATION.md)，公开发布说明见 [RELEASE_NOTES_1.7.29_BUILD_270.md](releases/notes/RELEASE_NOTES_1.7.29_BUILD_270.md)。
 
 ## 历史研究（结论以现行代码为准）
 

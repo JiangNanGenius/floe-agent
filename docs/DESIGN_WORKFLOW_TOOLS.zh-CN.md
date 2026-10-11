@@ -2,7 +2,9 @@
 
 状态：由 T5 实现（强类型共享目标工具）。FloeApp 目标编译与集成行为测试由
 T7 在完整 App 中执行；下表的 schema 即模型实际看到的已编译工具契约。面板
-文案本地化归 T6；本文是人类可读参考。
+文案本地化归 T6；本文是人类可读参考。交付状态：已随 1.7.29（270）源码
+（标签 `v1.7.29`）出包；TestFlight／安装可用状态以
+[CURRENT_STATUS.md](CURRENT_STATUS.md) 为准，不在本页声明。
 
 设计工作流只有一个状态机（`DesignWorkflowEngine` 基于 `DesignProject`）
 和两个所有者权威：

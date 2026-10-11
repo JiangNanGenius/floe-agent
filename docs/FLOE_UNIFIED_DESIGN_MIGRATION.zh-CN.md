@@ -1,7 +1,7 @@
 <!-- docs-updated: 2026-10-11 -->
 # 统一 3D 与共享设计流程：迁移与恢复
 
-状态：本页依据 **下一更新** 的源码候选编写（2026-10-11），尚未发布、尚未安装、尚未验收——你当前安装的版本可能不包含这些功能。不要在只有一份重要数据时仅凭本页直接迁移；安装状态以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 为准。
+状态：本更新已作为 **1.7.29（270）** 从冻结源码标签 `v1.7.29`（2026-10-11）发布，现有 Floe QA 组的内部 TestFlight 可用性已独立核验。你当前安装的版本可能早于此版本；外部（公测）审核是独立门槛——不要在只有一份重要数据时仅凭本页直接迁移；实时安装状态以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 为准。
 
 相关文档：[使用手册](USER_GUIDE.zh-CN.md) · [Floe 1.7 迁移与恢复](FLOE_1_7_MIGRATION.md) · [设计流程](FLOE_DESIGN_WORKFLOW.zh-CN.md) · [设计流程工具契约](DESIGN_WORKFLOW_TOOLS.zh-CN.md)
 
