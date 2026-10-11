@@ -73,26 +73,34 @@ fluidity belongs to the user.
 <!-- EXTERNAL-STATE -->
 ## External (publictest1) submission
 
-One authorized API submission ([38139521326](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139521326))
-was dispatched from `main` with the corrected review notes. Apple refused the
-first write — `PATCH /v1/betaAppReviewDetails/6801209053` — with
-**HTTP 403 `FORBIDDEN_ERROR`**: the current API credential can read the build
-and group state but cannot write the app-level beta review detail (final
-review notes). The helper is fail-closed, so nothing was attached and nothing
-was submitted. A post-failure GET-only readback
+The one authorized **API** submission ([38139521326](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139521326))
+was refused by Apple at the first write — `PATCH /v1/betaAppReviewDetails/6801209053`
+— with **HTTP 403 `FORBIDDEN_ERROR`**: the API credential can read the build and
+group state but cannot write the app-level beta review detail (final review
+notes). The helper is fail-closed; nothing was attached and nothing was
+submitted. A post-failure GET-only readback
 ([38139655286](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139655286))
-confirmed zero partial writes: `READY_FOR_BETA_SUBMISSION`, submission count 0,
-`publictest1` attachedToBuild false, `VALID`, unexpired, `IN_BETA_TESTING`,
-issues empty.
+confirmed zero partial writes (`READY_FOR_BETA_SUBMISSION`, count 0). This
+first 403 attempt and the draft-marker validator failure
+([38139250336](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139250336),
+before any Apple call) are retained as history.
 
-This is an API-permission limitation, **not** an Apple review rejection and
-**not** a submission. The remaining step is the same existing App Store Connect
-web flow used for builds 241/243/255/262/263 (save the final review notes from
-`docs/public-beta/build270/review-notes.en-US.md`, attach build 270 to the
-existing `publictest1` group, submit for Beta App Review, read back). No
-public-link, group or permission change is part of it. The first submission
-failure (draft-marker validator, run 38139250336) happened before any Apple
-call and is retained as evidence.
+The submission then completed through the existing authenticated App Store
+Connect web flow: the final review notes were saved and read back at 3,588
+characters, matching the repository file exactly (the file is 3,588 bytes
+including its single trailing newline; the API helper compares the stripped
+3,587-character text, which is why its report shows an exact-string mismatch
+while the browser readback matches). Build 270 was attached to the existing
+`publictest1` group and submitted once
+(`WEB-SUBMISSION.json`, primary screenshot 36).
+
+Independent GET-only API readback
+([38141425415](https://github.com/JiangNanGenius/floe-agent/actions/runs/38141425415))
+confirms: `VALID`, `expired false`, `APP_STORE_ELIGIBLE`, `IN_BETA_TESTING`,
+`publictest1` `attachedToBuild true`, submission count 1 with `pending_review`,
+external state **`WAITING_FOR_BETA_REVIEW`**, `ok true`. External approval is a
+separate gate and is **not** claimed; nothing is externally installable until
+Apple approves. No public-link, group or permission change was made.
 <!-- /EXTERNAL-STATE -->
 
 ## Documentation and website sync
