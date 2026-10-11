@@ -109,16 +109,19 @@ Apple approves. No public-link, group or permission change was made.
   `docs/releases/notes/RELEASE_NOTES_1.7.29_BUILD_270.md` were updated on `main` (commits
   `13d4dfc0`, `880004f1`, `a8383379`) to state the observed facts: internal availability,
   the API 403 external-submission block, and the precise iPad layout qualification.
-- The private website source (commit `b136881`) adds the two migration routes to the
-  public PAGES map and re-renders all ten public documents from `a8383379`. Deployed image
-  `floe-official:1.2.29-docs270`
-  (`sha256:38507a8c286b4837dea70276cbadaf4695811393c22884372f5d35c4d8e2bc15`),
-  rollback `floe-official:rollback-pre-docs270-20261011T124001Z` and
-  `backups/deploy-docs270-20261011T124001Z`.
+- The private website source (commits `b136881`, `90bbf53`) adds the two migration routes
+  to the public PAGES map and re-renders all ten public documents from `a8383379`/
+  `31b4a837`. Deployed images `floe-official:1.2.29-docs270`
+  (`sha256:38507a8c286b4837dea70276cbadaf4695811393c22884372f5d35c4d8e2bc15`) and, after
+  the submission readback, `floe-official:1.2.30-docs270`
+  (`sha256:16e39029ebe07718ca9d8957aff19d56b898a3f562a97ee9926afe4723b792cc`) with
+  rollbacks `floe-official:rollback-pre-docs270-20261011T124001Z` and
+  `rollback-pre-docs270r-20261011T131000Z` plus their `backups/deploy-docs270*` directories.
 - Origin and public `/healthz` both `ok`; all eleven checked files (`status.html`,
   `unified-design-zh/en.html`, `zh/en.html`, `index.html` and five Markdown downloads)
   matched byte-for-byte across local, origin loopback and public HTTPS
-  (`website-verify.json`, `all_match: true`).
+  (`website-verify.json`, `all_match: true`); the post-submission `status.html` and
+  `CURRENT_STATUS.md` were re-verified byte-identical after the second deploy.
 
 ## Cleanup
 
