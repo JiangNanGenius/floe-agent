@@ -58,14 +58,21 @@ struct CanvasNativeCADEditor: View {
     /// Cancel of a JUST-CREATED model: an untouched document is removed
     /// together with its node and package; an edited/unverifiable document is
     /// kept as the recoverable draft and the outcome says so.
+    ///
+    /// The LIVE session this workbench is showing is passed along: its own
+    /// last-committed revision/hash is the ownership proof for the
+    /// preview-only commits a fullscreen return/close flush produces, so
+    /// merely viewing the model cannot read as an edit while a foreign write
+    /// (even with identical content) still refuses.
     private func cancelNewCreation() {
         guard !cancelBusy else { return }
         cancelBusy = true
         let owner = presentation
+        let liveDocument = document
         Task { @MainActor in
             let outcome = await CADCanvasActionBridge.discardNewCADDocument(
                 canvasID: owner.canvasID, documentID: owner.documentID,
-                nodeID: owner.id, assetStore: assetStore)
+                nodeID: owner.id, liveDocument: liveDocument, assetStore: assetStore)
             cancelBusy = false
             if outcome.kind == .success {
                 onClose()

@@ -9,6 +9,24 @@ import UniformTypeIdentifiers
 import CoreTransferable
 import PhotosUI
 
+// MARK: - Transient presentation ownership
+
+/// Set by a host whose workbench is covered by a TRANSIENT presentation (the
+/// workbench's own fullscreen cover). A disappearance caused by such a cover
+/// is NOT a close — the live session is re-adopted on return — so the
+/// close-time preview flush must not fire; the editor still flushes on its
+/// real close and on backgrounding. (T7T)
+nonisolated public struct CADWorkbenchTransientCoverKey: EnvironmentKey {
+    public static let defaultValue = false
+}
+
+public extension EnvironmentValues {
+    nonisolated var cadWorkbenchTransientlyCovered: Bool {
+        get { self[CADWorkbenchTransientCoverKey.self] }
+        set { self[CADWorkbenchTransientCoverKey.self] = newValue }
+    }
+}
+
 /// Minimal FileDocument wrapper so `.fileExporter` can save any export
 /// payload (STL/OBJ/3MF/GLB/DXF/USDZ/PNG); the concrete type travels with
 /// the data.
@@ -194,6 +212,9 @@ struct FloeCADEditorView: View {
     var canvasActions: CADCanvasActions? = nil
 
     @Environment(\.scenePhase) private var scenePhase
+    /// True while this editor is covered by a transient presentation (the
+    /// workbench fullscreen cover); its disappearance is not a close.
+    @Environment(\.cadWorkbenchTransientlyCovered) private var transientlyCovered
     @State private var viewModel: EditorViewModel?
     @State private var exportDocument: ExportDocument?
     @State private var showItemsPanel = false
@@ -305,11 +326,23 @@ struct FloeCADEditorView: View {
         .onChange(of: document.name) { _, name in MacWindowTitle.want(name) }
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear {
+            // A RELEASED document (e.g. a successful Cancel already deleted
+            // the package through the bridge) must never be written by this
+            // late view-lifetime flush. A disappearance caused by a TRANSIENT
+            // cover (the workbench fullscreen presentation) is not a close
+            // either: the live session is re-adopted on return, so the
+            // close-time preview flush must not fire for it. For a REAL close
+            // of a live document the flush is safe: the preview-only commit
+            // keeps the semantic MODEL identity exact, and the cancel route
+            // verifies that identity plus the session's own committed
+            // revision before treating the model as untouched.
+            guard !document.isClosed, !transientlyCovered else { return }
             viewModel?.saveThumbnail()
             Task { _ = await document.save() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background || phase == .inactive {
+                guard !document.isClosed else { return }
                 viewModel?.saveThumbnail()
                 Task { _ = await document.save() }
             }

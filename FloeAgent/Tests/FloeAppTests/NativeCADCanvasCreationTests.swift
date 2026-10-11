@@ -565,12 +565,14 @@ final class NativeCADCanvasCreationTests: XCTestCase {
     func testMigrationPreviewGateRefusesPlaceholders() throws {
         let placeholder = CADCanvasActionBridge.ExportedRender(
             data: Data([0x89, 0x50, 0x4E, 0x47]), hash: "placeholder",
-            revision: 1, packageSHA256: "sha", isPlaceholder: true)
+            revision: 1, packageSHA256: "sha", packageModelSHA256: "model",
+            isPlaceholder: true)
         XCTAssertNil(LegacySceneMigrationService.migrationRender(from: placeholder),
                      "a placeholder must never be committed as a migrated preview")
         let real = CADCanvasActionBridge.ExportedRender(
             data: Data([0x89, 0x50, 0x4E, 0x47]), hash: "render",
-            revision: 1, packageSHA256: "sha", isPlaceholder: false)
+            revision: 1, packageSHA256: "sha", packageModelSHA256: "model",
+            isPlaceholder: false)
         XCTAssertNotNil(LegacySceneMigrationService.migrationRender(from: real))
     }
 
@@ -975,6 +977,8 @@ final class NativeCADCanvasCreationTests: XCTestCase {
 
     /// Cancel of a newly created, untouched model removes the exact created
     /// node and its orphan package: the user-cancel path leaves no empty node.
+    /// The live workbench session is passed exactly like the production host
+    /// does; its own last-committed identity owns the deferred release save.
     func testCancelUntouchedNewCreationRemovesNodeAndPackage() async throws {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
@@ -986,21 +990,71 @@ final class NativeCADCanvasCreationTests: XCTestCase {
             position: CanvasPoint(x: 100, y: 100), assetStore: assetStore)
         let nodeID = try XCTUnwrap(create.nodeID, create.message)
         XCTAssertEqual(CanvasCADStorage.packageURLs(canvasID: canvasID).count, 1)
+        let project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let node = try XCTUnwrap(project.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        let sourceKey = try XCTUnwrap(
+            node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])
+        let packageURL = try XCTUnwrap(CADCanvasActionBridge.packageURL(forSourceKey: sourceKey))
+        // Drain the creation route's deferred release, then open the live
+        // session the workbench would show.
+        try await Task.sleep(for: .milliseconds(200))
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: packageURL)
 
         let outcome = await CADCanvasActionBridge.discardNewCADDocument(
             canvasID: canvasID, documentID: documentID, nodeID: nodeID,
-            assetStore: assetStore)
+            liveDocument: live, assetStore: assetStore)
         XCTAssertEqual(outcome.kind, .success, outcome.message)
-        let project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
-        XCTAssertNil(project.documents.flatMap(\.nodes).first { $0.id == nodeID },
+        let after = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        XCTAssertNil(after.documents.flatMap(\.nodes).first { $0.id == nodeID },
                      "cancel of an untouched creation must remove the created node")
         XCTAssertTrue(CanvasCADStorage.packageURLs(canvasID: canvasID).isEmpty,
                       "cancel of an untouched creation must remove the orphan package")
         XCTAssertNil(CanvasCADStorage.pendingPackage(canvasID: canvasID, documentID: documentID))
     }
 
-    /// Cancel of a model the user already edited preserves the recoverable
-    /// draft: the node and package stay, and nothing is deleted.
+    /// Cancel of a model the user already edited (in-session, UNSAVED) keeps
+    /// the recoverable draft: nothing is deleted while real edits exist only
+    /// in the live session.
+    func testCancelRefusesAfterInSessionUnsavedEdit() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let assetStore = CreativeAssetStore(database: database)
+        let documentID = try XCTUnwrap(
+            try WorkspaceCanvasRegistry.project(canvasID: canvasID).documents.first?.id)
+        let create = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: canvasID, documentID: documentID,
+            position: CanvasPoint(x: 100, y: 100), assetStore: assetStore)
+        let nodeID = try XCTUnwrap(create.nodeID, create.message)
+        let project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let node = try XCTUnwrap(project.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        let packageURL = try XCTUnwrap(CADCanvasActionBridge.packageURL(
+            forSourceKey: try XCTUnwrap(
+                node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])))
+        try await Task.sleep(for: .milliseconds(200))
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+
+        // The workbench's live session: a REAL geometry edit, not yet autosaved.
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: packageURL)
+        let sketch = live.executeJSON(
+            Data(#"{"op":"sketch.create","args":{"name":"Unsaved"}}"#.utf8))
+        XCTAssertTrue(sketch.isOK, sketch.message ?? "")
+        XCTAssertTrue(live.hasUnsavedChanges, "the edit is deliberately uncommitted")
+
+        let outcome = await CADCanvasActionBridge.discardNewCADDocument(
+            canvasID: canvasID, documentID: documentID, nodeID: nodeID,
+            liveDocument: live, assetStore: assetStore)
+        XCTAssertEqual(outcome.kind, .status,
+                       "an unsaved in-session edit must never be discarded")
+        let after = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        XCTAssertNotNil(after.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        XCTAssertEqual(CanvasCADStorage.packageURLs(canvasID: canvasID).count, 1)
+        live.close()
+    }
+
+    /// Cancel of a model a FOREIGN writer already edited preserves the
+    /// recoverable draft: the live session is stale relative to the package,
+    /// so the exact ownership check refuses and nothing is deleted.
     func testCancelEditedNewCreationKeepsRecoverableDraft() async throws {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
@@ -1017,8 +1071,12 @@ final class NativeCADCanvasCreationTests: XCTestCase {
             node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])
         let packageURL = try XCTUnwrap(
             CADCanvasActionBridge.packageURL(forSourceKey: sourceKey))
+        try await Task.sleep(for: .milliseconds(200))
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
 
-        // A REAL edit through the document API changes the stored identity.
+        // The workbench's live session (what the user is looking at)...
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: packageURL)
+        // ...while a REAL edit lands through a separate writer instance.
         let document = try await FloeCADDocument.open(at: packageURL)
         let payload = CADLegacyScene(
             objects: [CADLegacyScene.Object(
@@ -1044,12 +1102,332 @@ final class NativeCADCanvasCreationTests: XCTestCase {
 
         let outcome = await CADCanvasActionBridge.discardNewCADDocument(
             canvasID: canvasID, documentID: documentID, nodeID: nodeID,
-            assetStore: assetStore)
+            liveDocument: live, assetStore: assetStore)
         XCTAssertEqual(outcome.kind, .status, outcome.message)
         let after = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
         XCTAssertNotNil(after.documents.flatMap(\.nodes).first { $0.id == nodeID },
                         "an edited draft must never be silently discarded")
         XCTAssertEqual(CanvasCADStorage.packageURLs(canvasID: canvasID).count, 1)
+        live.close()
     }
+
+    // MARK: Fullscreen-only lifecycle (T7T)
+
+    /// T7T — the exact Primary iPhone sequence: create a new CAD model, open
+    /// the workbench, tap the fullscreen icon, return with Done (the covered
+    /// presenter's editor and the dismissed cover's editor each record the
+    /// viewport preview and save the SAME shared session), then tap Cancel.
+    ///
+    /// Viewing/returning must not read as an edit. The preview-only commits
+    /// move the package's legacy `contentSHA256` (its inputs are unchanged),
+    /// but the creation's semantic MODEL identity stays exact and the on-disk
+    /// revision/hash is EXACTLY the live creation session's own last commit —
+    /// so the protected cancellation removes the empty node and its package
+    /// while a foreign revision (or a real edit) still refuses.
+    func testFullscreenPreviewOnlyReturnCancelsUntouchedCreation() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let assetStore = CreativeAssetStore(database: database)
+        let documentID = try XCTUnwrap(
+            try WorkspaceCanvasRegistry.project(canvasID: canvasID).documents.first?.id)
+        let create = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: canvasID, documentID: documentID,
+            position: CanvasPoint(x: 100, y: 100), assetStore: assetStore)
+        let nodeID = try XCTUnwrap(create.nodeID, create.message)
+        let project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let node = try XCTUnwrap(project.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        let sourceKey = try XCTUnwrap(
+            node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])
+        let creationHash = try XCTUnwrap(
+            node.metadata[CADCanvasNodePlanner.MetadataKeys.sourceHash])
+        let creationModelHash = try XCTUnwrap(
+            node.metadata[CADCanvasActionBridge.sourceModelHashMetadataKey],
+            "the creation must record the model identity")
+        let packageURL = try XCTUnwrap(CADCanvasActionBridge.packageURL(forSourceKey: sourceKey))
+
+        // The creation path schedules a deferred release on the same MainActor
+        // queue; drain it so this test observes only the fullscreen flush.
+        try await Task.sleep(for: .milliseconds(200))
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+
+        // The fullscreen presentation shares ONE live session: the presenter's
+        // editor disappears when the cover covers it and the cover's editor
+        // disappears on Done — each flush records the viewport preview and
+        // saves (the exact `FloeCADEditorView.onDisappear` behavior).
+        let document = try await FloeCAD3DBridge.shared.openDocument(at: packageURL)
+        let png = try XCTUnwrap(document.viewportThumbnailPNG(width: 320, height: 240),
+                                "the empty workbench must render a real preview")
+        let coveredFlush = await document.saveViewportPreview(png)
+        XCTAssertTrue(coveredFlush.succeeded, coveredFlush.error ?? "")
+        let returnFlush = await document.saveViewportPreview(png)
+        XCTAssertTrue(returnFlush.succeeded, returnFlush.error ?? "")
+
+        // The preview really committed: revision moved, artifact present.
+        XCTAssertGreaterThan(returnFlush.revision, coveredFlush.revision)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: packageURL.appendingPathComponent("blobs/thumbnail.img").path))
+        // The legacy content identity DOES move with a preview commit (its
+        // inputs are unchanged)...
+        let storedAfterFullscreen = await FloeCADDocument.storedIdentity(at: packageURL)
+        let afterFullscreen = try XCTUnwrap(storedAfterFullscreen)
+        XCTAssertNotEqual(afterFullscreen.contentSHA256, creationHash,
+                          "the legacy content identity keeps its preview-inclusive semantics")
+        // ...but the semantic MODEL identity is still the creation's, and the
+        // on-disk commit is exactly this session's own last commit.
+        XCTAssertEqual(afterFullscreen.modelSHA256, creationModelHash,
+                       "a fullscreen-only round trip must not move the model identity")
+        XCTAssertEqual(afterFullscreen.revision, document.revision)
+        XCTAssertEqual(afterFullscreen.contentSHA256, document.contentSHA256)
+
+        // Cancel must remove the untouched creation through the protected
+        // session-owned cancellation.
+        let outcome = await CADCanvasActionBridge.discardNewCADDocument(
+            canvasID: canvasID, documentID: documentID, nodeID: nodeID,
+            liveDocument: document, assetStore: assetStore)
+        XCTAssertEqual(outcome.kind, .success, outcome.message)
+        let after = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        XCTAssertNil(after.documents.flatMap(\.nodes).first { $0.id == nodeID },
+                     "an untouched fullscreen-only creation must not leave a blank node")
+        XCTAssertTrue(CanvasCADStorage.packageURLs(canvasID: canvasID).isEmpty,
+                      "an untouched fullscreen-only creation must not leave a package")
+        XCTAssertNil(CanvasCADStorage.pendingPackage(canvasID: canvasID, documentID: documentID))
+    }
+
+    /// The preview flush must never MASK real content: a foreign writer's
+    /// real edit is committed AFTER this session's own preview flush, so the
+    /// exact live-session revision/hash ownership check refuses — the edited
+    /// draft stays recoverable.
+    func testCancelRefusesAfterForeignEditEvenWithPreviewFlush() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let assetStore = CreativeAssetStore(database: database)
+        let documentID = try XCTUnwrap(
+            try WorkspaceCanvasRegistry.project(canvasID: canvasID).documents.first?.id)
+        let create = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: canvasID, documentID: documentID,
+            position: CanvasPoint(x: 100, y: 100), assetStore: assetStore)
+        let nodeID = try XCTUnwrap(create.nodeID, create.message)
+        let project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let node = try XCTUnwrap(project.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        let packageURL = try XCTUnwrap(CADCanvasActionBridge.packageURL(
+            forSourceKey: try XCTUnwrap(
+                node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])))
+        try await Task.sleep(for: .milliseconds(200))
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+
+        // The live workbench session makes its own preview-only commit...
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: packageURL)
+        let png = try XCTUnwrap(live.viewportThumbnailPNG(width: 320, height: 240))
+        let preview = await live.saveViewportPreview(png)
+        XCTAssertTrue(preview.succeeded, preview.error ?? "")
+
+        // ...then a foreign writer commits a REAL edit on top.
+        let writer = try await FloeCADDocument.open(at: packageURL)
+        let payload = CADLegacyScene(
+            objects: [CADLegacyScene.Object(
+                id: UUID(), name: "ForeignEdit", kind: .box,
+                positionX: 0, positionY: 1, positionZ: 0,
+                rotationX: 0, rotationY: 0, rotationZ: 0,
+                scaleX: 1, scaleY: 1, scaleZ: 1,
+                colorHex: "#FFFFFF", roughness: 0.5, metallic: false,
+                isHidden: false)],
+            camera: CADLegacyScene.Camera(
+                yawDegrees: 0, pitchDegrees: 0, distance: 4,
+                targetX: 0, targetY: 0, targetZ: 0, fieldOfViewDegrees: 45),
+            lighting: CADLegacyScene.Lighting(
+                keyIntensity: 1, fillIntensity: 0.5, castsShadows: false),
+            background: .studio,
+            showsGrid: true,
+            sourceDigest: "foreign-edit",
+            sourceSceneJSON: Data("{}".utf8))
+        _ = try writer.importLegacyScene(payload)
+        let edited = await writer.save()
+        XCTAssertTrue(edited.succeeded, edited.error ?? "the foreign edit must save")
+        writer.close()
+
+        let outcome = await CADCanvasActionBridge.discardNewCADDocument(
+            canvasID: canvasID, documentID: documentID, nodeID: nodeID,
+            liveDocument: live, assetStore: assetStore)
+        XCTAssertEqual(outcome.kind, .status,
+                       "a foreign edit must never be cancelled away")
+        let after = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        XCTAssertNotNil(after.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        XCTAssertEqual(CanvasCADStorage.packageURLs(canvasID: canvasID).count, 1)
+        let retained = try await FloeCADDocument.open(at: packageURL)
+        defer { retained.close() }
+        XCTAssertEqual(retained.summary().bodyCount, 1,
+                       "the edited draft must stay recoverable")
+        live.close()
+    }
+
+    /// A SAME-CONTENT foreign save (no logical edit at all) is still a foreign
+    /// revision: the live session no longer matches the package on disk, so
+    /// the exact revision/hash ownership check refuses and the draft survives.
+    func testCancelRefusesAfterSameContentForeignSave() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let assetStore = CreativeAssetStore(database: database)
+        let documentID = try XCTUnwrap(
+            try WorkspaceCanvasRegistry.project(canvasID: canvasID).documents.first?.id)
+        let create = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: canvasID, documentID: documentID,
+            position: CanvasPoint(x: 100, y: 100), assetStore: assetStore)
+        let nodeID = try XCTUnwrap(create.nodeID, create.message)
+        let project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let node = try XCTUnwrap(project.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        let packageURL = try XCTUnwrap(CADCanvasActionBridge.packageURL(
+            forSourceKey: try XCTUnwrap(
+                node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])))
+        try await Task.sleep(for: .milliseconds(200))
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: packageURL)
+        let liveRevision = live.revision
+        XCTAssertFalse(live.hasUnsavedChanges)
+
+        // A foreign instance opens the same package and commits with NO
+        // logical change — still a revision this session does not own.
+        let foreign = try await FloeCADDocument.open(at: packageURL)
+        let sameContentSave = await foreign.save()
+        XCTAssertTrue(sameContentSave.succeeded, sameContentSave.error ?? "")
+        foreign.close()
+        XCTAssertGreaterThan(sameContentSave.revision, liveRevision)
+
+        let outcome = await CADCanvasActionBridge.discardNewCADDocument(
+            canvasID: canvasID, documentID: documentID, nodeID: nodeID,
+            liveDocument: live, assetStore: assetStore)
+        XCTAssertEqual(outcome.kind, .status,
+                       "a foreign revision must never be cancelled away")
+        let after = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        XCTAssertNotNil(after.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        XCTAssertEqual(CanvasCADStorage.packageURLs(canvasID: canvasID).count, 1)
+        live.close()
+    }
+
+    // MARK: Late-write boundary (T7T review)
+
+    #if DEBUG
+    /// A late write landing at the EXACT post-fence/pre-remove boundary —
+    /// after the first identity check, before removal — must be DETECTED by
+    /// the final re-check: the cancellation refuses and preserves both the
+    /// node and the foreign bytes.
+    ///
+    /// The probe deliberately bypasses the in-process package gate (a
+    /// non-cooperating writer simulation); supported in-app writers are
+    /// additionally serialized by that gate (see
+    /// `testCancelSerializesSupportedLateWriterAtBoundary`).
+    func testCancelRefusesLateForeignWriteAtPostFenceBoundary() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let assetStore = CreativeAssetStore(database: database)
+        let documentID = try XCTUnwrap(
+            try WorkspaceCanvasRegistry.project(canvasID: canvasID).documents.first?.id)
+        let create = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: canvasID, documentID: documentID,
+            position: CanvasPoint(x: 100, y: 100), assetStore: assetStore)
+        let nodeID = try XCTUnwrap(create.nodeID, create.message)
+        let project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let node = try XCTUnwrap(project.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        let packageURL = try XCTUnwrap(CADCanvasActionBridge.packageURL(
+            forSourceKey: try XCTUnwrap(
+                node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])))
+        try await Task.sleep(for: .milliseconds(200))
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: packageURL)
+        // A preview flush first, so cancellation is on the session-owned path
+        // (exactly like the Primary fullscreen return).
+        let png = try XCTUnwrap(live.viewportThumbnailPNG(width: 320, height: 240))
+        let preview = await live.saveViewportPreview(png)
+        XCTAssertTrue(preview.succeeded, preview.error ?? "")
+
+        let manifestURL = packageURL.appendingPathComponent("manifest.json")
+        CADCanvasActionBridge.discardBoundaryProbe = {
+            // Late NON-cooperating writer: bump the revision and forge the
+            // content hash directly on disk.
+            var raw = (try? JSONSerialization.jsonObject(
+                with: Data(contentsOf: manifestURL))) as? [String: Any] ?? [:]
+            raw["revision"] = ((raw["revision"] as? Int) ?? 0) + 1
+            raw["contentSHA256"] = "late-foreign-write"
+            if let data = try? JSONSerialization.data(withJSONObject: raw,
+                                                      options: [.sortedKeys]) {
+                try? data.write(to: manifestURL)
+            }
+        }
+        defer { CADCanvasActionBridge.discardBoundaryProbe = nil }
+
+        let outcome = await CADCanvasActionBridge.discardNewCADDocument(
+            canvasID: canvasID, documentID: documentID, nodeID: nodeID,
+            liveDocument: live, assetStore: assetStore)
+        XCTAssertEqual(outcome.kind, .status, outcome.message)
+
+        let after = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        XCTAssertNotNil(after.documents.flatMap(\.nodes).first { $0.id == nodeID },
+                        "the node must be preserved when a late write is detected")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: packageURL.path))
+        let preserved = (try? JSONSerialization.jsonObject(
+            with: Data(contentsOf: manifestURL))) as? [String: Any]
+        XCTAssertEqual(preserved?["contentSHA256"] as? String, "late-foreign-write",
+                       "the late writer's committed bytes must not be deleted")
+        live.close()
+    }
+
+    /// A SUPPORTED in-app writer started at the exact boundary is serialized
+    /// by the in-process package gate: it cannot land inside the
+    /// verify→delete section, and once the cancellation has removed the
+    /// package its commit is refused (no overwrite, no resurrection) — its
+    /// bytes are never deleted because they never landed.
+    func testCancelSerializesSupportedLateWriterAtBoundary() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let assetStore = CreativeAssetStore(database: database)
+        let documentID = try XCTUnwrap(
+            try WorkspaceCanvasRegistry.project(canvasID: canvasID).documents.first?.id)
+        let create = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: canvasID, documentID: documentID,
+            position: CanvasPoint(x: 100, y: 100), assetStore: assetStore)
+        let nodeID = try XCTUnwrap(create.nodeID, create.message)
+        let project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let node = try XCTUnwrap(project.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        let packageURL = try XCTUnwrap(CADCanvasActionBridge.packageURL(
+            forSourceKey: try XCTUnwrap(
+                node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])))
+        try await Task.sleep(for: .milliseconds(200))
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: packageURL)
+        let png = try XCTUnwrap(live.viewportThumbnailPNG(width: 320, height: 240))
+        let preview = await live.saveViewportPreview(png)
+        XCTAssertTrue(preview.succeeded, preview.error ?? "")
+        let foreign = try await FloeCADDocument.open(at: packageURL)
+
+        let box = CADBoundaryWriterBox()
+        CADCanvasActionBridge.discardBoundaryProbe = {
+            box.task = Task { await foreign.save() }
+        }
+        defer { CADCanvasActionBridge.discardBoundaryProbe = nil }
+
+        let outcome = await CADCanvasActionBridge.discardNewCADDocument(
+            canvasID: canvasID, documentID: documentID, nodeID: nodeID,
+            liveDocument: live, assetStore: assetStore)
+        XCTAssertEqual(outcome.kind, .success, outcome.message)
+
+        let writerOutcome = await box.task?.value
+        XCTAssertNotNil(writerOutcome, "the probe must have started the supported writer")
+        XCTAssertFalse(writerOutcome?.succeeded ?? true,
+                       "a serialized late writer must be refused, not overwrite or resurrect")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: packageURL.path),
+                       "the cancelled package must stay removed")
+        let after = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        XCTAssertNil(after.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        foreign.close()
+    }
+    #endif
 }
+
+#if DEBUG
+/// Test-only box carrying the boundary writer task across the probe closure.
+private final class CADBoundaryWriterBox: @unchecked Sendable {
+    var task: Task<CADSaveOutcome, Never>?
+}
+#endif
 #endif

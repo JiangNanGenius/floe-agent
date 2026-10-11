@@ -32,6 +32,11 @@ struct FloeCADHostChrome: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            // While the fullscreen cover is presented, the editor underneath
+            // is TRANSIENTLY covered — its disappearance is not a close, so
+            // the close-time preview flush is suppressed (T7T). A real close
+            // (cover dismissed) leaves this false and flushes normally.
+            .environment(\.cadWorkbenchTransientlyCovered, fullScreen)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
@@ -55,7 +60,11 @@ struct FloeCADHostChrome: ViewModifier {
             }
             .fullScreenCover(isPresented: $fullScreen) {
                 NavigationStack {
+                    // The cover's editor is a re-presentation of the SAME live
+                    // session: its dismissal returns to the host editor, so it
+                    // never performs a close-time flush either.
                     FloeCADWorkbenchView(document: document, canvasActions: canvasActions)
+                        .environment(\.cadWorkbenchTransientlyCovered, true)
                         .navigationTitle(document.name)
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar {

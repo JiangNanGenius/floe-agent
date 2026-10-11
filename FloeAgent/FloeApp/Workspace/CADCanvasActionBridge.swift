@@ -383,6 +383,11 @@ enum CADCanvasActionBridge {
                         "preview": exported.isPlaceholder ? "placeholder" : "viewport",
                         "appliedRevision": String(exported.revision),
                         "appliedContentHash": exported.hash,
+                        // The exact MODEL identity of the creation commit:
+                        // `discardNewCADDocument` re-verifies it so preview
+                        // flushes (fullscreen return/close) can never fake an
+                        // edit and real edits/foreign revisions still refuse.
+                        Self.sourceModelHashMetadataKey: exported.packageModelSHA256,
                     ])
                 // The bridge keeps the document open; release it now that the
                 // node binds the package on disk — regardless of the canvas
@@ -427,15 +432,48 @@ enum CADCanvasActionBridge {
         }
     }
 
+    /// Node metadata carrying the creation-time MODEL identity
+    /// (`CADSaveOutcome.modelSHA256`: user-editable name/unit/tolerance +
+    /// canonical document records + blobs; preview excluded). Written only by
+    /// the creation route; used here to prove the semantic document is still
+    /// the untouched creation.
+    static let sourceModelHashMetadataKey = "canvas.nativeCAD.sourceModelHash"
+
+    #if DEBUG
+    /// TEST-ONLY probe invoked inside `discardNewCADDocument` at the exact
+    /// post-fence/pre-remove boundary, while the in-process package gate is
+    /// held. Production never sets it (DEBUG builds only).
+    static var discardBoundaryProbe: (@MainActor () async -> Void)?
+    #endif
+
     /// Cancels a JUST-CREATED native CAD document the user has not accepted
     /// (the workbench's Cancel for a newly created model).
     ///
-    /// - Untouched proof: the on-disk package's real stored identity must
-    ///   still equal the creation identity recorded on the node
-    ///   (`sourceHash`). Only then is the exact created node removed through
-    ///   the same revision-CAS primitives, the canvas-owned package deleted,
-    ///   and the pending record cleared — cancelling creation leaves no empty
-    ///   node and no orphan package.
+    /// Untouched proof — two EXACT paths; nothing is guessed and no
+    /// hash/revision is ignored:
+    ///
+    /// 1. **Pristine**: the on-disk commit is still the creation commit —
+    ///    the exact committed REVISION and content identity — and the live
+    ///    session (when given) has no uncommitted edit. A same-content
+    ///    foreign save moves the revision and fails here.
+    /// 2. **Session-owned preview writes**: exactly the fullscreen/close
+    ///    preview flushes this creation session itself made. The on-disk
+    ///    revision + `contentSHA256` must EQUAL the live `FloeCADDocument`'s
+    ///    own last-committed identity (so any foreign revision — even a
+    ///    same-content save — or a writer that landed after our session
+    ///    refuses), that live document must be bound to THIS exact package
+    ///    URL, the revision never moved backwards from the creation, the
+    ///    semantic metadata/content is still the creation's (`modelSHA256`
+    ///    equals the recorded model identity), and no in-session edit is
+    ///    uncommitted.
+    ///
+    /// Only then are OWNED writes drained/fenced (the store's disk CAS makes
+    /// a save refuse rather than overwrite a foreign commit), the committed
+    /// identity is RE-VERIFIED after fencing, and the exact created node is
+    /// removed through the same revision-CAS primitives, the canvas-owned
+    /// package deleted, and the pending record cleared. A failed package
+    /// removal is reported honestly, never as a clean cancel.
+    ///
     /// - A document with user edits (or one whose bytes can no longer be
     ///   verified against the creation identity) is NEVER discarded: the node
     ///   and package stay as the recoverable draft and the outcome reports
@@ -446,6 +484,7 @@ enum CADCanvasActionBridge {
         canvasID: UUID,
         documentID: UUID,
         nodeID: UUID,
+        liveDocument: FloeCADDocument?,
         assetStore: CreativeAssetStore
     ) async -> CADCanvasActionResult {
         do {
@@ -464,19 +503,87 @@ enum CADCanvasActionBridge {
                     "该 CAD 节点已不存在；未做任何修改。",
                     "The CAD node no longer exists; nothing was changed."))
             }
-            // The creation recorded the exact package identity; a readable
-            // package whose identity moved means the user edited the draft.
+            // The live session the user is looking at: its identity moves only
+            // through its OWN commits, so equality with the package on disk is
+            // the exact ownership proof for the preview-only writes a
+            // fullscreen return/close flush produces. The SAME document must
+            // be the one bound to THIS package URL.
+            let liveDocument = liveDocument
+            let liveDirty = liveDocument?.hasUnsavedChanges ?? false
             let creationHash = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourceHash]
+            let recordedModelHash = node.metadata[Self.sourceModelHashMetadataKey]
+            let creationRevision = Int(node.metadata["appliedRevision"] ?? "")
             let identity = await FloeCADDocument.storedIdentity(at: packageURL)
             guard let creationHash, !creationHash.isEmpty,
-                  identity?.contentSHA256 == creationHash else {
-                return .status(canvasLocalized(
-                    "文档已有修改或无法验证，已保留为可恢复草稿；未删除任何内容。",
-                    "The document has edits or can no longer be verified; it was kept as a recoverable draft. Nothing was deleted."))
+                  let identity, !liveDirty else {
+                return refuseChangedDraft()
             }
-            // Release the live session (saves are no-ops for untouched bytes)
-            // before removing the package from disk.
+            let packagePath = packageURL.standardizedFileURL.resolvingSymlinksInPath().path
+            let livePath = liveDocument?.url.standardizedFileURL
+                .resolvingSymlinksInPath().path
+            let liveIsThisPackage = livePath == packagePath
+            // The semantic proof: the additive canonical model identity (or,
+            // for historical manifests without it, the exact content identity)
+            // must still be the creation's.
+            let semanticMatch: Bool
+            if let recordedModelHash, !recordedModelHash.isEmpty {
+                semanticMatch = identity.modelSHA256 == recordedModelHash
+            } else {
+                semanticMatch = identity.contentSHA256 == creationHash
+            }
+            // (1) Nothing on disk moved at all since creation — the exact
+            //     committed revision AND content identity, so a same-content
+            //     foreign save (which moves the revision) cannot pass.
+            let pristine = identity.contentSHA256 == creationHash
+                && (creationRevision == nil || identity.revision == creationRevision)
+            // (2) The current commit is EXACTLY this live creation session's
+            //     own last commit for THIS package, the semantic model is
+            //     still the creation's, and the revision never moved backwards.
+            var sessionOwnedPreview = false
+            if !pristine, semanticMatch,
+               let liveDocument, liveIsThisPackage,
+               !liveDocument.isClosed, !liveDocument.hasUnsavedChanges,
+               let creationRevision, identity.revision >= creationRevision,
+               liveDocument.revision == identity.revision,
+               liveDocument.contentSHA256 == identity.contentSHA256 {
+                sessionOwnedPreview = true
+            }
+            guard pristine || sessionOwnedPreview else {
+                return refuseChangedDraft()
+            }
+            // Fence + drain OWNED writes (saves are no-ops for untouched
+            // bytes; the store's disk CAS refuses to overwrite anything a
+            // foreign writer landed) before touching the package again.
             await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+            // Serialize every SUPPORTED writer of this package with the
+            // verify→delete section below: all store commits acquire the same
+            // in-process package gate, so a foreign session either lands
+            // BEFORE the final re-check (which refuses and preserves it) or
+            // waits until after the removal, where the missing manifest and
+            // the disk CAS refuse its commit — its data is never deleted.
+            await CADPackageGate.acquireAsync(packageURL)
+            defer { CADPackageGate.release(packageURL) }
+            #if DEBUG
+            // Test-only probe at the exact post-fence/pre-remove boundary
+            // (production never sets it).
+            if let probe = discardBoundaryProbe { await probe() }
+            #endif
+            // FINAL re-verify of the EXACT committed identity, immediately
+            // before anything is deleted. If a foreign write raced the
+            // release (it refused instead of clobbering) or a non-cooperating
+            // writer changed the package at this boundary, the disk no longer
+            // equals this session's identity and the deletion must NOT
+            // proceed.
+            let expectedRevision = liveDocument?.revision ?? identity.revision
+            let expectedContent = liveDocument?.contentSHA256 ?? identity.contentSHA256
+            guard let afterFence = await FloeCADDocument.storedIdentity(at: packageURL),
+                  afterFence.revision == expectedRevision,
+                  afterFence.contentSHA256 == expectedContent,
+                  (recordedModelHash?.isEmpty == false
+                       ? afterFence.modelSHA256 == recordedModelHash
+                       : afterFence.contentSHA256 == creationHash) else {
+                return refuseChangedDraft()
+            }
             let delete = CanvasPatchOperation(kind: .delete, nodeID: nodeID)
             guard try await commit(
                 operations: [delete], nodeID: nodeID,
@@ -494,8 +601,19 @@ enum CADCanvasActionBridge {
             let stillReferenced = after.documents.flatMap(\.nodes).contains {
                 $0.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath] == sourceKey
             }
-            if !stillReferenced {
-                try? FileManager.default.removeItem(at: packageURL)
+            if stillReferenced {
+                return .status(canvasLocalized(
+                    "画布中仍有节点引用该文档；节点已取消，未删除文档。",
+                    "A canvas node still references this document; the node was cancelled but the document was not deleted."))
+            }
+            do {
+                try FileManager.default.removeItem(at: packageURL)
+            } catch {
+                // Honest outcome: never report a clean cancel when the
+                // package could not actually be removed.
+                return .status(canvasLocalized(
+                    "已取消创建并移除节点，但本机文档未能删除：\(error.localizedDescription)",
+                    "Creation cancelled and the node removed, but the on-device document could not be deleted: \(error.localizedDescription)"))
             }
             return .success(canvasLocalized(
                 "已取消创建；未留下空节点或孤立文档。",
@@ -503,6 +621,15 @@ enum CADCanvasActionBridge {
         } catch {
             return .status(error.localizedDescription)
         }
+    }
+
+    /// The single honest refusal for a draft whose creation identity can no
+    /// longer be verified as exact (edits, foreign/concurrent revision, or an
+    /// unreadable package). Nothing is deleted.
+    private static func refuseChangedDraft() -> CADCanvasActionResult {
+        .status(canvasLocalized(
+            "文档已有修改或无法验证，已保留为可恢复草稿；未删除任何内容。",
+            "The document has edits or can no longer be verified; it was kept as a recoverable draft. Nothing was deleted."))
     }
 
     /// Creates the first Canvas node for this package in the user's explicit
@@ -583,6 +710,12 @@ enum CADCanvasActionBridge {
         /// rendered from (AFTER a verified save).
         let revision: Int
         let packageSHA256: String
+        /// The committed MODEL identity of the same save (user-editable
+        /// name/unit/tolerance + canonical document records + blobs, preview
+        /// excluded). The creation route records it on the node so
+        /// `discardNewCADDocument` can prove the semantic document is still
+        /// the untouched creation across preview-only commits.
+        let packageModelSHA256: String
         /// True when the device could not render the viewport and an explicit
         /// empty placeholder was used (recorded in node metadata).
         let isPlaceholder: Bool
@@ -609,12 +742,14 @@ enum CADCanvasActionBridge {
             return ExportedRender(data: data, hash: FloeDigest.sha256Hex(data),
                                   revision: save.revision,
                                   packageSHA256: save.contentSHA256,
+                                  packageModelSHA256: save.modelSHA256,
                                   isPlaceholder: false)
         }
         if let placeholder = CADCanvasPreview.placeholderPNG(), !placeholder.isEmpty {
             return ExportedRender(data: placeholder, hash: FloeDigest.sha256Hex(placeholder),
                                   revision: save.revision,
                                   packageSHA256: save.contentSHA256,
+                                  packageModelSHA256: save.modelSHA256,
                                   isPlaceholder: true)
         }
         throw CADDocumentError(code: "empty_export",

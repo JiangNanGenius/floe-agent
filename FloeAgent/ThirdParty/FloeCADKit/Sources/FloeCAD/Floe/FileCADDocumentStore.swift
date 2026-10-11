@@ -6,7 +6,13 @@
 //
 //  Layout (directory `<name>.floecad/`):
 //    manifest.json          schema version, revision, units/tolerance, counts,
-//                           content SHA-256 (atomic-commit identity)
+//                           content SHA-256 (atomic-commit identity; its
+//                           inputs are unchanged), plus the ADDITIVE
+//                           `modelSHA256` — a canonical identity of the
+//                           document records + every blob, preview excluded
+//                           (absent on historical manifests; nil-safe). The
+//                           preview artifact stays part of `contentSHA256`,
+//                           exactly as before.
 //    document.json          sketches / planes / axes / images / symbols /
 //                           features / variables / folders / assembly /
 //                           drawings metadata (no binary inline)
@@ -79,10 +85,29 @@ struct CADManifest: Codable, Sendable {
     var modifiedAt: Date
     var unit: String?
     var tolerance: Double?
+    /// Existing atomic-commit identity — inputs (canonical? no: as-stored
+    /// document bytes + every blob + the preview artifact) unchanged.
     var contentSHA256: String
+    /// ADDITIVE (2026-T7T): a canonical, deterministic identity of the
+    /// DOCUMENT MODEL — document records + every blob, with the viewport
+    /// preview artifact excluded. Absent on historical manifests; readers
+    /// treat it as `nil`. It exists so a caller can prove the semantic
+    /// document is byte-identical to a recorded state even after a
+    /// preview-only commit re-encoded the JSON. `contentSHA256` semantics
+    /// are deliberately untouched.
+    var modelSHA256: String?
     var thumbnailSHA256: String?
     var appBuild: String
     var counts: [String: Int]
+}
+
+/// The user-editable semantic manifest metadata folded into `modelSHA256`.
+/// Deliberately excludes timestamps/schema/appBuild: those move on a
+/// preview-only commit and are not user content.
+private struct CADModelDigestMetadata: Codable, Sendable {
+    var name: String
+    var unit: String?
+    var tolerance: Double?
 }
 
 struct CADBodyRecord: Codable, Sendable {
@@ -190,6 +215,9 @@ protocol CADDocumentStore: AnyObject {
     var revision: Int { get }
     /// Content identity of the last successful commit.
     var contentSHA256: String { get }
+    /// Canonical model identity of the last successful read/write. Empty when
+    /// the manifest predates the additive `modelSHA256` field.
+    var modelSHA256: String { get }
 }
 
 // MARK: - File store
@@ -203,6 +231,12 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     private let lock = NSLock()
     private var storedRevision: Int = 0
     private var storedContentSHA256: String = ""
+    private var storedModelSHA256: String = ""
+    /// Fenced release flag. Set by `revoke()` under the same lock every
+    /// commit holds, so once it is set no `performWrite` can commit and any
+    /// write already in flight has finished. A later flush of a released
+    /// document can therefore never resurrect a removed package.
+    private var revoked = false
 
     init(packageURL: URL, fileManager: FileManager = .default) {
         self.packageURL = packageURL
@@ -212,6 +246,16 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     var url: URL { packageURL }
     var revision: Int { lock.withLock { storedRevision } }
     var contentSHA256: String { lock.withLock { storedContentSHA256 } }
+    var modelSHA256: String { lock.withLock { storedModelSHA256 } }
+
+    /// Fence the store: after this returns, no commit can land. Any write
+    /// already in flight is waited out (both share `lock`), so the caller may
+    /// safely delete the package knowing no late write will re-create it.
+    func revoke() {
+        lock.lock()
+        revoked = true
+        lock.unlock()
+    }
 
     private var manifestURL: URL { packageURL.appendingPathComponent("manifest.json") }
     private var documentURL: URL { packageURL.appendingPathComponent("document.json") }
@@ -241,6 +285,8 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         lock.withLock {
             storedRevision = manifest.revision
             storedContentSHA256 = manifest.contentSHA256
+            // Historical manifests predate the additive field: absent => "".
+            storedModelSHA256 = manifest.modelSHA256 ?? ""
         }
 
         return makeProject(manifest: manifest, document: document, root: packageURL)
@@ -454,6 +500,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             unit: project.unitRaw,
             tolerance: project.tolerance,
             contentSHA256: "",
+            modelSHA256: nil,
             thumbnailSHA256: project.thumbnail.map { Self.sha256($0) },
             appBuild: Self.appBuild,
             counts: [:]
@@ -480,11 +527,45 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     /// than clobbering the newer revision.
     @discardableResult
     func performWrite(_ payload: CADWritePayload) throws -> (revision: Int, contentSHA256: String) {
+        // Serialize every supported writer of this package with the
+        // cancellation route's verify→delete critical section and with other
+        // store instances for the same path (see `CADPackageGate`).
+        CADPackageGate.acquire(packageURL)
+        defer { CADPackageGate.release(packageURL) }
         lock.lock()
         defer { lock.unlock() }
+        // Fenced release: a write that starts after `revoke()` (or finds the
+        // fence already set) never commits. Together with `revoke()` taking
+        // this same lock, a close/delete can never race a late commit.
+        guard !revoked else {
+            throw CADDocumentStoreError.commitFailed("store revoked (document released)")
+        }
         guard payload.expectedRevision == storedRevision else {
             throw CADDocumentStoreError.revisionMoved(expected: payload.expectedRevision,
                                                       actual: storedRevision)
+        }
+        // Disk CAS fence: the in-memory `storedRevision` only tracks THIS
+        // store instance, so a commit must also verify the package on disk is
+        // still at that revision. Without this, a save from a session that
+        // read an older revision would silently OVERWRITE a foreign commit
+        // (revision guard passes on the stale in-memory value). Refusing here
+        // preserves the foreign package; the caller surfaces the failure and
+        // the draft/node are kept.
+        if fileManager.fileExists(atPath: manifestURL.path) {
+            let onDisk: CADManifest
+            do {
+                onDisk = try readManifest(at: packageURL)
+            } catch {
+                throw CADDocumentStoreError.commitFailed(
+                    "on-disk manifest unreadable: \(error.localizedDescription)")
+            }
+            guard onDisk.revision == storedRevision else {
+                throw CADDocumentStoreError.revisionMoved(expected: storedRevision,
+                                                          actual: onDisk.revision)
+            }
+        } else if storedRevision != 0 {
+            // A package this store committed to is gone from disk.
+            throw CADDocumentStoreError.commitFailed("package manifest missing")
         }
         let commitRevision = storedRevision + 1
 
@@ -529,6 +610,13 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
                 contentHasher.update(data: Data(sha.utf8))
             }
             let contentDigest = Self.hex(contentHasher.finalize())
+            // ADDITIVE model identity (canonical encode, preview excluded);
+            // `contentDigest` above is byte-for-byte the existing semantics.
+            let modelDigest = try Self.modelDigest(name: payload.name,
+                                                   unit: payload.unit,
+                                                   tolerance: payload.tolerance,
+                                                   document: payload.document,
+                                                   blobs: payload.blobs)
 
             let manifest = CADManifest(
                 schemaVersion: payload.schemaVersion,
@@ -539,6 +627,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
                 unit: payload.unit,
                 tolerance: payload.tolerance,
                 contentSHA256: contentDigest,
+                modelSHA256: modelDigest,
                 thumbnailSHA256: thumbnailSHA256,
                 appBuild: payload.appBuild,
                 counts: payload.counts
@@ -566,6 +655,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             try commit(staging: staging, transaction: transaction)
             storedRevision = commitRevision
             storedContentSHA256 = contentDigest
+            storedModelSHA256 = modelDigest
             return (commitRevision, contentDigest)
         } catch {
             transaction.rollback()
@@ -594,6 +684,11 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         guard !packageExists || overwrite else {
             throw CADDocumentStoreError.commitFailed("package already exists")
         }
+        // The package-level swap is a supported write of THIS package path:
+        // serialize it with the same gate as in-place commits and the
+        // cancellation critical section.
+        CADPackageGate.acquire(packageURL)
+        defer { CADPackageGate.release(packageURL) }
         let staging = packageURL.deletingLastPathComponent()
             .appendingPathComponent(".\(packageURL.lastPathComponent).create-\(UUID().uuidString)")
         let backup = packageURL.deletingLastPathComponent()
@@ -669,6 +764,11 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             contentHasher.update(data: Data(sha.utf8))
         }
         let contentDigest = Self.hex(contentHasher.finalize())
+        let modelDigest = try Self.modelDigest(name: payload.name,
+                                               unit: payload.unit,
+                                               tolerance: payload.tolerance,
+                                               document: payload.document,
+                                               blobs: payload.blobs)
         let manifest = CADManifest(
             schemaVersion: payload.schemaVersion,
             revision: max(payload.expectedRevision, 0) + 1,
@@ -678,6 +778,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             unit: payload.unit,
             tolerance: payload.tolerance,
             contentSHA256: contentDigest,
+            modelSHA256: modelDigest,
             thumbnailSHA256: thumbnailSHA256,
             appBuild: payload.appBuild,
             counts: payload.counts
@@ -748,6 +849,40 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
         return "FloeCAD/\(version)(\(build))"
     }()
+
+    /// Canonical, deterministic identity of the DOCUMENT MODEL. Domain
+    /// separated into: the USER-EDITABLE semantic metadata (name, unit,
+    /// tolerance — `modifiedAt`/`createdAt`/schema/appBuild are deliberately
+    /// excluded because a preview-only commit moves them), then the document
+    /// records encoded with SORTED keys, then every blob (path + content
+    /// SHA). The viewport preview artifact is excluded.
+    ///
+    /// Sorted keys are required because Swift's default `JSONEncoder` emits an
+    /// UNSPECIFIED key order (observed: a different order for every encode of
+    /// the same value on Xcode 27 / Swift 6), which is why `contentSHA256`
+    /// alone cannot express “semantically unchanged” across commits.
+    /// Additive: callers may treat a manifest without this field as
+    /// unverifiable.
+    static func modelDigest(name: String, unit: String?, tolerance: Double?,
+                            document: CADDocumentRecord,
+                            blobs: [String: Data]) throws -> String {
+        var hasher = SHA256()
+        let metadata = CADModelDigestMetadata(name: name, unit: unit,
+                                              tolerance: tolerance)
+        hasher.update(data: try canonicalJSON(metadata))
+        hasher.update(data: try canonicalJSON(document))
+        for (path, data) in blobs.sorted(by: { $0.key < $1.key }) {
+            hasher.update(data: Data(path.utf8))
+            hasher.update(data: Data(Self.sha256(data).utf8))
+        }
+        return hex(hasher.finalize())
+    }
+
+    private static func canonicalJSON<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(value)
+    }
 
     static func sha256(_ data: Data) -> String {
         hex(SHA256.hash(data: data))

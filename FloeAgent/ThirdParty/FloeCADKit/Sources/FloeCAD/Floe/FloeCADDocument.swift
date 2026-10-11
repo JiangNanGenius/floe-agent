@@ -17,6 +17,11 @@ import simd
 public nonisolated struct CADSaveOutcome: Sendable, Equatable {
     public var revision: Int
     public var contentSHA256: String
+    /// ADDITIVE canonical model identity (user-editable name/unit/tolerance +
+    /// document records + blobs; preview excluded); empty when the package
+    /// predates the manifest field. The existing `contentSHA256` semantics
+    /// are unchanged.
+    public var modelSHA256: String = ""
     public var error: String?
 
     public var succeeded: Bool { error == nil }
@@ -111,11 +116,15 @@ public final class FloeCADDocument {
     /// Verified committed identity of a package on disk WITHOUT opening a
     /// live document: the versioned store reads the manifest, the document
     /// JSON and every blob, and the returned identity binds them (the
-    /// content digest incorporates each blob's SHA-256). Nil when the
-    /// package is unreadable or corrupt. Recovery code must use this —
-    /// hashing a package directory is meaningless, and trusting a bare
-    /// manifest without the store's read path skips blob validation.
-    public static func storedIdentity(at url: URL) async -> (revision: Int, contentSHA256: String)? {
+    /// content digest incorporates each blob's SHA-256). `modelSHA256` is the
+    /// additive canonical model identity (document records + blobs, preview
+    /// excluded) — nil on historical manifests that predate the field.
+    /// Nil overall when the package is unreadable or corrupt. Recovery code
+    /// must use this — hashing a package directory is meaningless, and
+    /// trusting a bare manifest without the store's read path skips blob
+    /// validation.
+    public static func storedIdentity(at url: URL) async
+    -> (revision: Int, contentSHA256: String, modelSHA256: String?)? {
         let store = FileCADDocumentStore(packageURL: url)
         do {
             _ = try await Task.detached(priority: .userInitiated) {
@@ -124,7 +133,8 @@ public final class FloeCADDocument {
         } catch {
             return nil
         }
-        return (store.revision, store.contentSHA256)
+        return (store.revision, store.contentSHA256,
+                store.modelSHA256.isEmpty ? nil : store.modelSHA256)
     }
 
     /// Create (or recreate) a package at `url`. An existing package is
@@ -172,11 +182,21 @@ public final class FloeCADDocument {
     public func markClosed() {
         session.flushPendingAutosave()
         closed = true
+        // Fence the store: waits out any in-flight commit and forbids later
+        // ones, so the release/delete sequence cannot be resurrected by a
+        // late asynchronous flush.
+        store.revoke()
     }
 
     public func close() {
         markClosed()
     }
+
+    /// True once this document was released (`close()`/`markClosed()`).
+    /// A released document must never be written again: the editor's
+    /// asynchronous close flush can still fire after a successful Cancel
+    /// removed the package, and a late write would resurrect it (T7T).
+    public var isClosed: Bool { closed }
 
     // MARK: Summary / queries
 
@@ -333,15 +353,25 @@ public final class FloeCADDocument {
     /// against the revision-guarded store.
     @discardableResult
     public func save() async -> CADSaveOutcome {
+        // A released document is ownerless: a late editor flush (the
+        // fullscreen cover dismissing after a successful Cancel already
+        // deleted the package) must be a no-op rather than re-create the
+        // package from the still-cached in-memory session.
+        guard !closed else {
+            return CADSaveOutcome(revision: revision, contentSHA256: contentSHA256,
+                                  modelSHA256: store.modelSHA256,
+                                  error: "The CAD document is closed and cannot be saved.")
+        }
         await session.saveAsync()
         if let error = session.lastSaveError {
             return CADSaveOutcome(revision: store.revision, contentSHA256: store.contentSHA256,
-                                  error: error)
+                                  modelSHA256: store.modelSHA256, error: error)
         }
         revision = store.revision
         contentSHA256 = store.contentSHA256
         lastCommittedChangeCount = session.changeCount
-        return CADSaveOutcome(revision: revision, contentSHA256: contentSHA256, error: nil)
+        return CADSaveOutcome(revision: revision, contentSHA256: contentSHA256,
+                              modelSHA256: store.modelSHA256, error: nil)
     }
 
     /// Flush only when there is something to flush; used by the proposal
@@ -349,6 +379,28 @@ public final class FloeCADDocument {
     @discardableResult
     func flushIfDirty() async -> CADSaveOutcome? {
         guard hasUnsavedChanges else { return nil }
+        return await save()
+    }
+
+    /// The workbench's close/background/flush preview commit, with explicit
+    /// viewport bytes: records `png` exactly like
+    /// `EditorViewModel.saveThumbnail()` then commits through the SAME
+    /// verified, revision-guarded store save. `contentSHA256` keeps its
+    /// existing semantics (the preview artifact is part of it); the additive
+    /// `modelSHA256` stays stable across preview-only commits.
+    ///
+    /// A CLOSED document is rejected BEFORE the in-memory session is touched:
+    /// a late flush must neither write nor mutate a released draft.
+    @discardableResult
+    public func saveViewportPreview(_ png: Data?) async -> CADSaveOutcome {
+        guard !closed else {
+            return CADSaveOutcome(revision: revision, contentSHA256: contentSHA256,
+                                  modelSHA256: store.modelSHA256,
+                                  error: "The CAD document is closed and cannot be saved.")
+        }
+        if let png, !png.isEmpty {
+            session.project.thumbnail = png
+        }
         return await save()
     }
 

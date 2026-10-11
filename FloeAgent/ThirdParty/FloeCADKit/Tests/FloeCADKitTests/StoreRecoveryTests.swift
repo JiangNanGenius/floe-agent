@@ -280,6 +280,249 @@ final class StoreRecoveryTests: XCTestCase {
         XCTAssertTrue(siblingDebris().isEmpty, "debris: \(siblingDebris())")
     }
 
+    // MARK: Creation identity vs preview-only commits (T7T)
+
+    /// The ADDITIVE `modelSHA256` is deterministic and stable across repeated
+    /// saves. Swift's default `JSONEncoder` emits an UNSPECIFIED key order
+    /// (observed: a different order for every encode of the same value on
+    /// Xcode 27 / Swift 6), so the legacy `contentSHA256` alone cannot express
+    /// “semantically unchanged” across commits; the canonical model identity
+    /// is what the creation/cancel guard uses for that proof, while the
+    /// legacy content identity keeps its existing inputs and semantics.
+    func testModelIdentityIsStableAcrossRepeatedUntouchedSaves() async throws {
+        let url = workDir.appendingPathComponent("Stable.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Stable")
+        let first = await document.save()
+        XCTAssertTrue(first.succeeded, first.error ?? "")
+        XCTAssertFalse(first.modelSHA256.isEmpty)
+        let second = await document.save()
+        XCTAssertTrue(second.succeeded, second.error ?? "")
+        let third = await document.save()
+        XCTAssertTrue(third.succeeded, third.error ?? "")
+
+        XCTAssertGreaterThan(second.revision, first.revision)
+        XCTAssertGreaterThan(third.revision, second.revision)
+        XCTAssertEqual(second.modelSHA256, first.modelSHA256,
+                       "the canonical model identity must be deterministic")
+        XCTAssertEqual(third.modelSHA256, first.modelSHA256)
+
+        // The manifest persists the additive identity; a fresh (off-main)
+        // store read returns it.
+        let stored = await FloeCADDocument.storedIdentity(at: url)
+        XCTAssertEqual(stored?.modelSHA256, first.modelSHA256)
+        document.close()
+        XCTAssertTrue(siblingDebris().isEmpty, "debris: \(siblingDebris())")
+    }
+
+    /// The workbench's REAL close/fullscreen-return flush — provider records
+    /// the viewport thumbnail, the same session saves — is a PREVIEW-only
+    /// commit: the artifact lands and the revision advances; the legacy
+    /// `contentSHA256` keeps its existing preview-inclusive semantics while
+    /// the semantic model identity the creation recorded stays EXACT, so an
+    /// untouched new model survives any number of fullscreen round trips
+    /// while a real edit still moves the model identity.
+    func testPreviewFlushKeepsModelIdentityAndRealEditMovesIt() async throws {
+        let url = workDir.appendingPathComponent("Preview.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Preview")
+        let created = await document.save()
+        XCTAssertTrue(created.succeeded, created.error ?? "")
+        let creationContent = created.contentSHA256
+        let creationModel = created.modelSHA256
+        XCTAssertFalse(creationModel.isEmpty)
+
+        let png = try previewPNGBytes()
+        let model = document.viewModel()
+        model.thumbnailProvider = { png }
+        model.saveThumbnail()
+        let preview = await document.save()
+        XCTAssertTrue(preview.succeeded, preview.error ?? "")
+        XCTAssertGreaterThan(preview.revision, created.revision)
+        XCTAssertEqual(preview.modelSHA256, creationModel,
+                       "a preview-only commit must not move the model identity")
+        XCTAssertNotEqual(preview.contentSHA256, creationContent,
+                          "the legacy content identity keeps its preview-inclusive semantics")
+        XCTAssertEqual(try Data(contentsOf: url.appendingPathComponent("blobs/thumbnail.img")), png)
+
+        // The creation's model identity is still re-verifiable from disk.
+        let stored = await FloeCADDocument.storedIdentity(at: url)
+        XCTAssertEqual(stored?.modelSHA256, creationModel)
+
+        // A real edit moves the model identity.
+        addBox(document, size: 8)
+        let edited = await document.save()
+        XCTAssertTrue(edited.succeeded, edited.error ?? "")
+        XCTAssertNotEqual(edited.modelSHA256, creationModel,
+                          "a real body edit must move the model identity")
+        document.close()
+        XCTAssertTrue(siblingDebris().isEmpty, "debris: \(siblingDebris())")
+    }
+
+    /// The model identity covers the USER-EDITABLE manifest metadata: a
+    /// rename, a unit change or a tolerance change is semantic content, not a
+    /// preview, and must move the digest — otherwise a metadata-only edit
+    /// could be classified as a preview-only commit and discarded.
+    func testModelIdentityCoversUserEditableMetadata() async throws {
+        let url = workDir.appendingPathComponent("Metadata.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Metadata")
+        let base = await document.save()
+        XCTAssertTrue(base.succeeded, base.error ?? "")
+
+        document.project.unitRaw = "in"
+        let unit = await document.save()
+        XCTAssertTrue(unit.succeeded, unit.error ?? "")
+        XCTAssertNotEqual(unit.modelSHA256, base.modelSHA256, "a unit change is an edit")
+
+        document.project.name = "Renamed"
+        let name = await document.save()
+        XCTAssertTrue(name.succeeded, name.error ?? "")
+        XCTAssertNotEqual(name.modelSHA256, unit.modelSHA256, "a rename is an edit")
+
+        document.project.tolerance = 0.05
+        let tolerance = await document.save()
+        XCTAssertTrue(tolerance.succeeded, tolerance.error ?? "")
+        XCTAssertNotEqual(tolerance.modelSHA256, name.modelSHA256,
+                          "a tolerance change is an edit")
+
+        // A preview-only commit still keeps the CURRENT (edited) identity.
+        let png = try previewPNGBytes()
+        let model = document.viewModel()
+        model.thumbnailProvider = { png }
+        model.saveThumbnail()
+        let preview = await document.save()
+        XCTAssertTrue(preview.succeeded, preview.error ?? "")
+        XCTAssertEqual(preview.modelSHA256, tolerance.modelSHA256,
+                       "a preview refresh must not look like another edit")
+        document.close()
+        XCTAssertTrue(siblingDebris().isEmpty, "debris: \(siblingDebris())")
+    }
+
+    /// A store that read an older revision must NOT overwrite a foreign
+    /// commit: the on-disk revision is part of the commit fence, so a
+    /// concurrent edit is preserved and surfaced as a save failure instead of
+    /// being silently clobbered (T7T cancellation-boundary review).
+    func testForeignCommitIsPreservedNotOverwrittenByStaleStore() async throws {
+        let url = workDir.appendingPathComponent("Concurrent.floecad")
+        let stale = try await FloeCADDocument.create(at: url, name: "Concurrent")
+        addBox(stale, size: 4)
+        let first = await stale.save()
+        XCTAssertTrue(first.succeeded, first.error ?? "")
+
+        // A second live instance reads the same package and commits.
+        let foreign = try await FloeCADDocument.open(at: url)
+        addBox(foreign, size: 7)
+        let foreignSave = await foreign.save()
+        XCTAssertTrue(foreignSave.succeeded, foreignSave.error ?? "")
+
+        // The stale session must refuse, not clobber the foreign revision.
+        addBox(stale, size: 2)
+        let staleSave = await stale.save()
+        XCTAssertFalse(staleSave.succeeded,
+                       "a stale store must not commit over a foreign revision")
+        let stored = await FloeCADDocument.storedIdentity(at: url)
+        XCTAssertEqual(stored?.revision, foreignSave.revision,
+                       "the foreign commit must still be the committed revision")
+        XCTAssertEqual(stored?.contentSHA256, foreignSave.contentSHA256,
+                       "the foreign content must be untouched")
+        stale.close()
+        foreign.close()
+        XCTAssertTrue(siblingDebris().isEmpty, "debris: \(siblingDebris())")
+    }
+
+    /// The in-process package gate serializes every supported writer with the
+    /// cancellation route's verify→delete critical section: a commit started
+    /// while the gate is held cannot land until it is released.
+    func testPackageGateSerializesSupportedWriters() async throws {
+        let url = workDir.appendingPathComponent("Gate.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Gate")
+        addBox(document, size: 4)
+        let first = await document.save()
+        XCTAssertTrue(first.succeeded, first.error ?? "")
+
+        // Hold the gate exactly like the cancellation critical section does.
+        CADPackageGate.acquire(url)
+        let completed = DispatchSemaphore(value: 0)
+        let writer = Task { () -> CADSaveOutcome in
+            let outcome = await document.save()
+            completed.signal()
+            return outcome
+        }
+        // Give the writer time to reach the store; it must not pass the gate.
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(completed.wait(timeout: .now()), .timedOut,
+                       "a gated save must not commit while the gate is held")
+
+        CADPackageGate.release(url)
+        let outcome = await writer.value
+        XCTAssertTrue(outcome.succeeded, outcome.error ?? "")
+        XCTAssertGreaterThan(outcome.revision, first.revision)
+        document.close()
+        XCTAssertTrue(siblingDebris().isEmpty, "debris: \(siblingDebris())")
+    }
+
+    /// A released document must never write again: after the Cancel path
+    /// deleted the package, the editor's late `onDisappear` flush is a no-op
+    /// instead of re-creating the package from the still-cached session.
+    /// `saveViewportPreview` must also refuse BEFORE mutating the session.
+    func testClosedDocumentSaveDoesNotRecreateThePackage() async throws {
+        let url = workDir.appendingPathComponent("Closed.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Closed")
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let png = try previewPNGBytes()
+        document.close()
+
+        // The exact post-Cancel state: released session, package removed.
+        try FileManager.default.removeItem(at: url)
+        let late = await document.save()
+        XCTAssertFalse(late.succeeded, "a closed document must never save")
+        XCTAssertNotNil(late.error)
+        let latePreview = await document.saveViewportPreview(png)
+        XCTAssertFalse(latePreview.succeeded,
+                       "a closed document must reject a preview flush")
+        XCTAssertNil(document.session.project.thumbnail,
+                     "the rejected flush must not even mutate the session preview")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
+                       "a late flush must not resurrect a deleted package")
+    }
+
+    /// A save ALREADY IN FLIGHT when `close()`/delete happens must be fenced:
+    /// `close()` waits out the writer and revokes the store under the same
+    /// lock, so no late write can land after the package was removed.
+    func testSaveInFlightIsFencedByCloseAndCannotResurrectThePackage() async throws {
+        let url = workDir.appendingPathComponent("Inflight.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "InFlight")
+        addBox(document, size: 5)
+
+        // Park the writer INSIDE the commit (holding the store lock). The
+        // expectation suspends the test, so the main actor stays free for the
+        // save task; only the writer's own thread blocks on the gate.
+        let entered = expectation(description: "writer in flight")
+        let gate = DispatchSemaphore(value: 0)
+        CADDocumentFaultInjection.beforeCommit = {
+            entered.fulfill()
+            gate.wait()
+        }
+        let saveTask = Task { await document.save() }
+        await fulfillment(of: [entered], timeout: 5)
+
+        // Close while the write is parked. `revoke()` shares the commit lock,
+        // so it waits the writer out; release the gate from a background
+        // thread (the main actor is inside `close()`).
+        let closeTask = Task { document.close() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { gate.signal() }
+        await closeTask.value
+        try FileManager.default.removeItem(at: url)
+        _ = await saveTask.value
+        CADDocumentFaultInjection.beforeCommit = nil
+
+        // No later write may resurrect the removed package.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
+                       "the fenced store must not re-create a removed package")
+        let after = await document.save()
+        XCTAssertFalse(after.succeeded, "the revoked store must refuse later writes")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
     // MARK: Revision guard
 
     func testStalePayloadIsRefusedByRevisionGuard() async throws {
