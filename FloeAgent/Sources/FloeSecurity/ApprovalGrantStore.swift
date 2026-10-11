@@ -49,6 +49,35 @@ public actor ApprovalGrantStore {
         }
     }
 
+    /// Atomically validates and CLAIMS (burns) one single-use grant by id,
+    /// requiring an EXACT scope match: tool name, host, path set,
+    /// single-use flag and descriptor authorization identity must all equal
+    /// the request scope. Returns the claimed grant, or nil when the grant
+    /// is missing, revoked, expired, already burned, not single-use, or
+    /// does not match exactly — a mismatched grant is NEVER burned. The
+    /// whole check-and-burn runs in one actor-isolated synchronous call, so
+    /// two concurrent claims cannot both succeed and a grant can never be
+    /// read as valid and then burned later (no read-then-burn window).
+    public func claimSingleUse(
+        id: UUID,
+        matching scope: ApprovalScope,
+        at now: Date = Date()
+    ) -> ApprovalGrant? {
+        guard let grant = grants[id],
+              !burnedSingleUse.contains(id),
+              !grant.isExpired(at: now),
+              grant.scope.singleUse,
+              scope.singleUse,
+              grant.scope.toolName == scope.toolName,
+              grant.scope.hostID == scope.hostID,
+              grant.scope.toolAuthorizationIdentity == scope.toolAuthorizationIdentity,
+              Set(grant.scope.paths) == Set(scope.paths) else {
+            return nil
+        }
+        burnedSingleUse.insert(id)
+        return grant
+    }
+
     /// Removes a grant entirely (user revocation).
     public func revoke(id: UUID) {
         grants.removeValue(forKey: id)

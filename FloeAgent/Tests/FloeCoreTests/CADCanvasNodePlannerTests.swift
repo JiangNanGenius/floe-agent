@@ -169,4 +169,138 @@ struct CADCanvasNodePlannerTests {
         #expect(CanvasDrawingRevisionHistory.reachableAssetReferences(in: project)
             .contains(try #require(create.asset?.id)))
     }
+
+    // MARK: - Legacy 3D scene migration
+
+    private func legacySceneNode(
+        id: UUID = UUID(),
+        name: String = "Scene",
+        scene: CanvasScene3D? = nil
+    ) -> CanvasNode {
+        CanvasNode(
+            id: id, kind: .scene3D, text: name,
+            position: .init(x: 40, y: 80), size: .init(width: 420, height: 300),
+            rotation: 0, zIndex: 3, isLocked: false,
+            scene3D: scene ?? CanvasScene3D(objects: [
+                CanvasSceneObject(name: "Cube", kind: .box,
+                                  position: .init(x: 0, y: 0.6, z: 0))
+            ]))
+    }
+
+    private func marker(for scene: CanvasScene3D) -> LegacySceneMigrationMarker {
+        LegacySceneMigrationMarker(
+            sceneDigest: LegacySceneMigration.canonicalDigest(of: scene),
+            objectCount: scene.objects.count)
+    }
+
+    @Test("migration patch flips the same node to a file binding and preserves identity")
+    func migrationPatchPreservesNodeIdentity() throws {
+        let node = legacySceneNode()
+        let scene = try #require(node.scene3D)
+        let operation = try CADCanvasNodePlanner.legacyMigrationPatch(
+            liveNode: node,
+            sourcePath: "canvas-cad:\(UUID().uuidString)/Scene.floecad",
+            sourceAssetHash: String(repeating: "d", count: 64),
+            renderedAsset: render(),
+            marker: marker(for: scene))
+        #expect(operation.kind == .update)
+        #expect(operation.nodeID == node.id)
+        #expect(operation.nodeKind == .file)
+        // Identity fields are NOT emitted: the reducer preserves name, position,
+        // size, rotation and every edge.
+        #expect(operation.text == nil)
+        #expect(operation.position == nil)
+        #expect(operation.size == nil)
+        #expect(operation.rotation == nil)
+        let metadata = try #require(operation.metadata)
+        #expect(metadata[CADCanvasNodePlanner.MetadataKeys.editor] == "native-cad")
+        #expect(metadata["migratedFrom"] == "legacy-scene-3d")
+        #expect(metadata[CADCanvasNodePlanner.MetadataKeys.sourceHash]
+                == String(repeating: "d", count: 64))
+        // The marker is present and decodes to the exact embedded digest.
+        let raw = try #require(metadata[CADCanvasNodePlanner.MetadataKeys.legacyMigration])
+        let marker = try JSONDecoder().decode(
+            LegacySceneMigrationMarker.self, from: Data(raw.utf8))
+        #expect(marker.sceneDigest == LegacySceneMigration.canonicalDigest(of: scene))
+        #expect(marker.objectCount == scene.objects.count)
+        // The seeded history makes the render reachable.
+        let historyRaw = try #require(metadata[CanvasDrawingRevisionHistory.metadataKey])
+        let revisions = try JSONDecoder().decode(
+            [CanvasDrawingRevision].self, from: Data(historyRaw.utf8))
+        #expect(revisions.count == 1)
+        #expect(revisions.first?.contentHash == Self.renderHash)
+    }
+
+    @Test("migration refuses a non-scene node, an already-migrated node and a bad render")
+    func migrationRefusals() throws {
+        let scene = CanvasScene3D(objects: [])
+        // Not a legacy scene node.
+        do {
+            _ = try CADCanvasNodePlanner.legacyMigrationPatch(
+                liveNode: cadNode(),
+                sourcePath: "canvas-cad:x/Scene.floecad",
+                sourceAssetHash: "hash", renderedAsset: render(),
+                marker: marker(for: scene))
+            Issue.record("expected notLegacySceneNode")
+        } catch let refusal as CADCanvasNodePlanner.Refusal {
+            #expect(refusal == .notLegacySceneNode)
+        }
+
+        // Already migrated (marker present) — no second migration.
+        var migrated = legacySceneNode()
+        let current = try #require(migrated.scene3D)
+        migrated.metadata[CADCanvasNodePlanner.MetadataKeys.legacyMigration] =
+            String(data: try JSONEncoder().encode(marker(for: current)), encoding: .utf8)
+        do {
+            _ = try CADCanvasNodePlanner.legacyMigrationPatch(
+                liveNode: migrated,
+                sourcePath: "canvas-cad:x/Scene.floecad",
+                sourceAssetHash: "hash", renderedAsset: render(),
+                marker: marker(for: current))
+            Issue.record("expected alreadyMigrated")
+        } catch let refusal as CADCanvasNodePlanner.Refusal {
+            #expect(refusal == .alreadyMigrated)
+        }
+
+        // Missing render bytes never produce a patch.
+        let emptyRender = CanvasAssetReference(
+            id: UUID(), contentHash: nil, localRelativePath: nil)
+        do {
+            _ = try CADCanvasNodePlanner.legacyMigrationPatch(
+                liveNode: legacySceneNode(),
+                sourcePath: "canvas-cad:x/Scene.floecad",
+                sourceAssetHash: "hash", renderedAsset: emptyRender,
+                marker: marker(for: scene))
+            Issue.record("expected emptyRender")
+        } catch let refusal as CADCanvasNodePlanner.Refusal {
+            #expect(refusal == .emptyRender)
+        }
+    }
+
+    @Test("a migrated node routes through the native CAD planner")
+    func migratedNodeRoutesToNativePlanner() throws {
+        let node = legacySceneNode()
+        let scene = try #require(node.scene3D)
+        let migration = try CADCanvasNodePlanner.legacyMigrationPatch(
+            liveNode: node,
+            sourcePath: "canvas-cad:x/Scene.floecad",
+            sourceAssetHash: Self.sourceHash,
+            renderedAsset: render(),
+            marker: marker(for: scene))
+        // Apply the patch exactly as the reducer does, then verify the native
+        // planner accepts the node (identity + recorded hash) on the next edit.
+        var migrated = node
+        migrated.kind = migration.nodeKind ?? migrated.kind
+        migrated.asset = migration.asset
+        for (key, value) in migration.metadata ?? [:] { migrated.metadata[key] = value }
+        #expect(CADCanvasNodePlanner.isNativeCADNode(migrated))
+        let apply = try CADCanvasNodePlanner.applyPatch(
+            liveNode: migrated,
+            sourcePath: "canvas-cad:x/Scene.floecad",
+            capturedSourceAssetHash: CADCanvasNodePlanner.capturedSourceHash(for: migrated),
+            renderedAsset: render())
+        #expect(apply.kind == .update)
+        #expect(apply.nodeID == node.id)
+        #expect(apply.asset?.contentHash == Self.renderHash)
+    }
 }

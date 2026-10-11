@@ -6,6 +6,17 @@ Flat image/video edits migrate to typed media child projects on first opening. K
 
 旧图像/视频编辑首次打开时迁移为类型化子工程；保留原文件并核对重开。画布备份已包含 CAD 草稿和修订素材，定向测试与完整 App 恢复验收分开。手记 `.floenote` 导出保留独立资料归属，不依赖原聊天继续存在。
 
+## 统一 3D 与跨入口设计流程 / Unified 3D and shared design workflow · 2026-10-11（下一更新 / upcoming update）
+
+This section documents the **next** update from its source candidate: it is not installed, tested or released yet, and the build you have may not contain it. Check [CURRENT_STATUS.md](CURRENT_STATUS.md) before relying on it for the only copy of your data. The upgrade itself does **not** convert legacy 3D scenes; a scene node keeps its read-only preview until you explicitly open it for editing. Step-by-step conversion, disclosed differences and recovery notes: [unified 3D and design migration](FLOE_UNIFIED_DESIGN_MIGRATION.md).
+
+- 升级不会自动转换旧 3D 场景；只有你首次明确打开编辑某个旧场景节点时才转换。转换前在本机写入可恢复备份（精确场景 JSON + 完整节点），并保留节点 ID、名称、位置、尺寸与连线。
+- 转换保留对象变换、单位（旧版米 → 工作台毫米）、材质、隐藏状态以及相机、灯光和背景；方盒/球体/圆柱/圆锥/平面薄板成为真实网格，不伪造参数化特征历史。无法表示的场景（非有限数值、零/负或超范围缩放、无效颜色/相机/灯光、重复对象 ID）在写入前拒绝，原节点与只读预览保持不变。
+- 已知视觉差异：光照强度按工作台比例归一化（精确原值保留在备份中）；阴影改为平面地面投影近似。逐步操作、差异核对与恢复说明见[统一 3D 与设计流程迁移](FLOE_UNIFIED_DESIGN_MIGRATION.md)。
+- 既有原生 `.floecad` 节点和画布设计子文档无需迁移：新增字段对旧数据解码为缺省，旧 `canvas.design*` 画布工具保持兼容。
+- 设计流程新增“创作起始 / 当前文件 / 聊天附件”入口，与画布共用同一套服务；不新建主工作区、隐藏画布或平行副本存储。采纳确认、修订冲突与晚到结果保留见[设计流程](FLOE_DESIGN_WORKFLOW.zh-CN.md)与[设计流程工具契约](DESIGN_WORKFLOW_TOOLS.zh-CN.md)。
+- 服务商配置无需迁移；本机保存与 iCloud 同步失败已分开提示，可重试同步而不必重新输入密钥。
+
 
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 

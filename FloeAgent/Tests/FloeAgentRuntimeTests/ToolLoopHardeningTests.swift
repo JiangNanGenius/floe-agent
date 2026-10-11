@@ -54,6 +54,78 @@ private final class LoopingAdapter: ProviderAdapter, @unchecked Sendable {
     ) async throws -> [ModelProfile] { [] }
 }
 
+/// One-shot async gate used to park a real tool execution while the test
+/// drives a concurrent steer, then release it.
+private actor ExecutionGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var opened = false
+
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func open() {
+        opened = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+/// Adapter that re-enables a capability just before the model's first retry,
+/// modelling a server that was absent at restart and reconnected afterwards.
+private final class RegisteringAdapter: ProviderAdapter, @unchecked Sendable {
+    let protocolKind: ModelProtocol = .openAIResponses
+    private let storage = AsyncLock<(count: Int, requests: [ProviderStreamRequest])>((0, []))
+    var requests: [ProviderStreamRequest] { storage.withLock { $0.requests } }
+    private let toolName: String
+    private let callIDPrefix: String
+    private let onFirstRequest: @Sendable () -> Void
+
+    init(
+        toolName: String,
+        callIDPrefix: String,
+        onFirstRequest: @escaping @Sendable () -> Void
+    ) {
+        self.toolName = toolName
+        self.callIDPrefix = callIDPrefix
+        self.onFirstRequest = onFirstRequest
+    }
+
+    func stream(
+        request: ProviderStreamRequest,
+        credentials: ProviderCredentials
+    ) -> AsyncThrowingStream<AgentEvent, Error> {
+        let index = storage.withLock { state -> Int in
+            state.requests.append(request)
+            let index = state.count
+            state.count += 1
+            return index
+        }
+        return AsyncThrowingStream { continuation in
+            if index == 0 {
+                onFirstRequest()
+                // Literal fixture arguments only; cannot fail.
+                let call = try! ToolCall(
+                    id: "\(callIDPrefix)-\(index)",
+                    toolName: toolName,
+                    argumentsJSON: Data("{}".utf8),
+                    scope: .local
+                )
+                continuation.yield(.toolRequest(call))
+            } else {
+                continuation.yield(.completed(.init(stopReason: .endTurn)))
+            }
+            continuation.finish()
+        }
+    }
+
+    func listModels(
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> [ModelProfile] { [] }
+}
+
 @Suite("FloeAgentRuntime.ToolLoopHardening")
 struct ToolLoopHardeningTests {
 
@@ -233,6 +305,1006 @@ struct ToolLoopHardeningTests {
         try await runtime.start(goal: "stop only an unchanged retry route")
 
         #expect(executor.executedCalls.count == calls.count)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected completed no-progress finalization")
+            return
+        }
+        #expect(completion.stopReason == .noProgress)
+    }
+
+    @Test("two alternating unchanged read routes stop without a budget limit")
+    func alternatingRoutesWithoutProgressStop() async throws {
+        let adapter = MockAdapter()
+        // A,B,A,B,A,B with constant outcomes. The per-route counter resets on
+        // every differing observation, so only the batch-level cycle detector
+        // can stop this; maxToolSteps stays high to prove it is not the cause.
+        let calls = try (1...6).map { index -> ToolCall in
+            try ToolCall(
+                id: "cycle-\(index)",
+                toolName: index.isMultiple(of: 2) ? "test.observe" : "test.echo",
+                argumentsJSON: Data("{}".utf8),
+                scope: .local
+            )
+        }
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "stop a two-route alternation")
+
+        #expect(executor.executedCalls.count == 6)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected completed no-progress finalization")
+            return
+        }
+        #expect(completion.stopReason == .noProgress)
+        // The non-terminal warning must reach the model on the request that
+        // follows the fourth settled batch, before the stop is enforced.
+        let warned = adapter.requests.contains { request in
+            request.toolResults.contains {
+                $0.output.contains("alternating between the same two non-progress tool routes")
+            }
+        }
+        #expect(warned)
+    }
+
+    @Test("a successful mutation clears an alternating no-progress cycle")
+    func mutationClearsAlternatingCycle() async throws {
+        let adapter = MockAdapter()
+        // A,B,A,B then a real mutation, then A,B,A,B again. Without the
+        // progress reset the trailing six batches would trip the stop; the
+        // mutation must restart the cycle so the run completes normally.
+        let tools = [
+            "test.echo", "test.observe", "test.echo", "test.observe",
+            "test.write",
+            "test.echo", "test.observe", "test.echo", "test.observe"
+        ]
+        let calls = try tools.enumerated().map { index, tool in
+            try ToolCall(
+                id: "reset-\(index)",
+                toolName: tool,
+                argumentsJSON: Data("{}".utf8),
+                scope: .local
+            )
+        }
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        executor.descriptors["test.write"] = ToolCatalog.Descriptor(
+            name: "test.write",
+            riskLabels: [],
+            isSideEffecting: true
+        )
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: ModelApprovalPolicy(backend: RecordingApprovalBackend()),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "reset the cycle on real progress")
+
+        #expect(executor.executedCalls.count == tools.count)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected ordinary completion after mutation reset")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
+    }
+
+    @Test("a repeated multi-call batch stops after the unchanged-replay limit")
+    func repeatedMultiCallBatchesStop() async throws {
+        let adapter = MockAdapter()
+        // Two calls per provider turn, repeated unchanged. Each route appears
+        // once per batch, so the per-route counter never accumulates; the
+        // batch-level detector owns this dead-end route set.
+        let batches = try (0..<3).map { round -> [AgentEvent] in
+            try [
+                .toolRequest(ToolCall(
+                    id: "pair-\(round)-a",
+                    toolName: "test.echo",
+                    argumentsJSON: Data("{}".utf8),
+                    scope: .local
+                )),
+                .toolRequest(ToolCall(
+                    id: "pair-\(round)-b",
+                    toolName: "test.observe",
+                    argumentsJSON: Data("{}".utf8),
+                    scope: .local
+                ))
+            ]
+        }
+        adapter.script = batches + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "stop a repeated multi-call batch")
+
+        #expect(executor.executedCalls.count == 6)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected completed no-progress finalization")
+            return
+        }
+        #expect(completion.stopReason == .noProgress)
+    }
+
+    @Test("a result from a capability removed mid-execution is discarded")
+    func removedCapabilityResultIsDiscarded() async throws {
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(
+            descriptor: ToolCatalog.Descriptor(name: "test.morph", riskLabels: [], isSideEffecting: false)
+        ) { _, _ in
+            // The capability unloads itself while its call is in flight.
+            registry.unregister { $0 == "test.morph" }
+            return .init(summary: "morphed ok", fullOutputSHA256: "digest")
+        })
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(try ToolCall(
+                id: "morph-1",
+                toolName: "test.morph",
+                argumentsJSON: Data("{}".utf8),
+                scope: .local
+            ))],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let sink = MockSink()
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id)
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: CatalogToolExecutor(runners: registry),
+            sink: sink
+        )
+
+        try await runtime.start(goal: "unload the capability mid-call")
+
+        let results = sink.events.compactMap { event -> ToolResult? in
+            if case .toolResult(let result) = event { return result }
+            return nil
+        }
+        #expect(results.count == 1)
+        #expect(results.first?.status == .cancelled)
+        #expect(results.first?.outputSummary.contains("stale result was discarded") == true)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected ordinary completion after discarding the stale result")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
+    }
+
+    @Test("a result from a capability replaced mid-execution is not authoritative")
+    func replacedCapabilityResultIsDenied() async throws {
+        let registry = ToolRunnerRegistry()
+        let replacement = ToolCatalog.Descriptor(
+            name: "test.morph",
+            toolDescription: "Replacement authority for the same name",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        registry.register(AnyAgentTool(
+            descriptor: ToolCatalog.Descriptor(name: "test.morph", riskLabels: [], isSideEffecting: false)
+        ) { _, _ in
+            // A same-name replacement with a different descriptor identity
+            // lands while the original call is still executing.
+            registry.register(AnyAgentTool(descriptor: replacement) { _, _ in
+                .init(summary: "replacement ok", fullOutputSHA256: "replacement-digest")
+            })
+            return .init(summary: "old authority ok", fullOutputSHA256: "old-digest")
+        })
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(try ToolCall(
+                id: "morph-2",
+                toolName: "test.morph",
+                argumentsJSON: Data("{}".utf8),
+                scope: .local
+            ))],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let sink = MockSink()
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id)
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: CatalogToolExecutor(runners: registry),
+            sink: sink
+        )
+
+        try await runtime.start(goal: "replace the capability authority mid-call")
+
+        let results = sink.events.compactMap { event -> ToolResult? in
+            if case .toolResult(let result) = event { return result }
+            return nil
+        }
+        #expect(results.count == 1)
+        #expect(results.first?.status == .denied)
+        #expect(results.first?.outputSummary.contains("stale result was discarded") == true)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected ordinary completion after discarding the stale authority result")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
+    }
+
+    @Test("an unknown-outcome mutation is never replayed after removal, restore or retry")
+    func unknownOutcomeMutationIsNotReplayed() async throws {
+        let mutations = AsyncLock(0)
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(
+            descriptor: ToolCatalog.Descriptor(
+                name: "test.mutate",
+                riskLabels: [],
+                isSideEffecting: true
+            )
+        ) { _, _ in
+            mutations.withLock { $0 += 1 }
+            // The capability disappears while its own mutation is executing,
+            // so the real-world outcome cannot be confirmed from this process.
+            registry.unregister { $0 == "test.mutate" }
+            return .init(summary: "mutated", fullOutputSHA256: "mutated-digest")
+        })
+        let adapter = MockAdapter()
+        let first = try ToolCall(
+            id: "mutate-1", toolName: "test.mutate",
+            argumentsJSON: Data("{}".utf8), scope: .local
+        )
+        let second = try ToolCall(
+            id: "mutate-2", toolName: "test.mutate",
+            argumentsJSON: Data("{}".utf8), scope: .local
+        )
+        adapter.script = [
+            [.toolRequest(first)],
+            [.toolRequest(second)],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let checkpoints = MockCheckpointStore()
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: ModelApprovalPolicy(backend: RecordingApprovalBackend()),
+            executor: CatalogToolExecutor(runners: registry),
+            checkpointStore: checkpoints
+        )
+
+        try await runtime.start(goal: "mutate once, never blindly repeat")
+
+        #expect(mutations.withLock { $0 } == 1)
+        // The unknown-outcome receipt is durable in the execution ledger.
+        let settled = try #require(checkpoints.saved.last)
+        #expect(settled.executionLedgerEntries?.contains {
+            $0.toolName == "test.mutate"
+                && $0.resultFingerprint.hasPrefix("unknown-outcome:")
+        } == true)
+        // The same-run re-emission was suppressed before the executor.
+        #expect(adapter.requests.contains { request in
+            request.toolResults.contains { $0.output.contains("was not executed again") }
+        })
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected ordinary completion after the suppression")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
+
+        // Restore the checkpoint in a fresh runtime with the capability
+        // available again. A retry of the same route must still not execute,
+        // because the earlier real-world outcome remains unknown.
+        let restoredRegistry = ToolRunnerRegistry()
+        restoredRegistry.register(AnyAgentTool(
+            descriptor: ToolCatalog.Descriptor(
+                name: "test.mutate",
+                riskLabels: [],
+                isSideEffecting: true
+            )
+        ) { _, _ in
+            mutations.withLock { $0 += 1 }
+            return .init(summary: "mutated again", fullOutputSHA256: "mutated-again-digest")
+        })
+        let restoreAdapter = MockAdapter()
+        let third = try ToolCall(
+            id: "mutate-3", toolName: "test.mutate",
+            argumentsJSON: Data("{}".utf8), scope: .local
+        )
+        restoreAdapter.script = [
+            [.toolRequest(third)],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let restored = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: restoreAdapter,
+            policy: ModelApprovalPolicy(backend: RecordingApprovalBackend()),
+            executor: CatalogToolExecutor(runners: restoredRegistry)
+        )
+
+        try await restored.resume(from: settled)
+
+        #expect(mutations.withLock { $0 } == 1)
+        #expect(restoreAdapter.requests.contains { request in
+            request.toolResults.contains { $0.output.contains("was not executed again") }
+        })
+    }
+
+    @Test("a legacy dispatched orphan without frozen effect fails conservative at restart")
+    func legacyDispatchedOrphanFailsConservative() async throws {
+        let executions = AsyncLock(0)
+        let registry = ToolRunnerRegistry()
+        let registerTool: @Sendable () -> Void = {
+            registry.register(AnyAgentTool(
+                descriptor: ToolCatalog.Descriptor(
+                    name: "test.mutate",
+                    riskLabels: [],
+                    isSideEffecting: true
+                )
+            ) { _, _ in
+                executions.withLock { $0 += 1 }
+                return .init(summary: "retried", fullOutputSHA256: "retried")
+            })
+        }
+        let adapter = RegisteringAdapter(
+            toolName: "test.mutate",
+            callIDPrefix: "legacy-retry",
+            onFirstRequest: registerTool
+        )
+        let call = try ToolCall(
+            id: "legacy-orphan",
+            toolName: "test.mutate",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "recover the legacy dispatched call")),
+            messages: [ConversationMessage(role: "user", content: "recover after restart")],
+            pendingToolCalls: [call],
+            pendingToolResults: [],
+            toolLifecycleEntries: [AgentToolLifecycleEntry(
+                callID: call.id,
+                toolName: call.toolName,
+                phase: .dispatched
+            )]
+        )
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: ModelApprovalPolicy(backend: RecordingApprovalBackend()),
+            executor: CatalogToolExecutor(runners: registry)
+        )
+
+        try await runtime.resume(from: checkpoint)
+
+        // The capability was absent at repair time and no frozen effect kind
+        // exists, so the dispatched orphan must not be classified as a read.
+        #expect(adapter.requests.first?.toolResults.first?.output.contains("outcome is unknown") == true)
+        // The capability is re-enabled before the retry; the receipt suppresses
+        // it, so the mutation body never runs in this process.
+        #expect(executions.withLock { $0 } == 0)
+        #expect(adapter.requests.contains { request in
+            request.toolResults.contains { $0.output.contains("was not executed again") }
+        })
+    }
+
+    @Test("a frozen side-effecting orphan stays unknown when the capability is absent at restart")
+    func frozenSideEffectingOrphanStaysUnknown() async throws {
+        let executions = AsyncLock(0)
+        let registry = ToolRunnerRegistry()
+        let registerTool: @Sendable () -> Void = {
+            registry.register(AnyAgentTool(
+                descriptor: ToolCatalog.Descriptor(
+                    name: "test.mutate",
+                    riskLabels: [],
+                    isSideEffecting: true
+                )
+            ) { _, _ in
+                executions.withLock { $0 += 1 }
+                return .init(summary: "retried", fullOutputSHA256: "retried")
+            })
+        }
+        let adapter = RegisteringAdapter(
+            toolName: "test.mutate",
+            callIDPrefix: "frozen-retry",
+            onFirstRequest: registerTool
+        )
+        let call = try ToolCall(
+            id: "frozen-orphan",
+            toolName: "test.mutate",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "recover the frozen dispatched call")),
+            messages: [ConversationMessage(role: "user", content: "recover after restart")],
+            pendingToolCalls: [call],
+            pendingToolResults: [],
+            toolLifecycleEntries: [AgentToolLifecycleEntry(
+                callID: call.id,
+                toolName: call.toolName,
+                isSideEffecting: true,
+                phase: .dispatched
+            )]
+        )
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: ModelApprovalPolicy(backend: RecordingApprovalBackend()),
+            executor: CatalogToolExecutor(runners: registry)
+        )
+
+        try await runtime.resume(from: checkpoint)
+
+        #expect(adapter.requests.first?.toolResults.first?.output.contains("outcome is unknown") == true)
+        #expect(executions.withLock { $0 } == 0)
+        #expect(adapter.requests.contains { request in
+            request.toolResults.contains { $0.output.contains("was not executed again") }
+        })
+    }
+
+    @Test("a recorded-never-dispatched call is known and its retry executes once")
+    func recordedNeverDispatchedRetryExecutes() async throws {
+        let executions = AsyncLock(0)
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(
+            descriptor: ToolCatalog.Descriptor(
+                name: "test.read",
+                riskLabels: [],
+                isSideEffecting: false
+            )
+        ) { _, _ in
+            executions.withLock { $0 += 1 }
+            return .init(summary: "read ok", fullOutputSHA256: "read-ok")
+        })
+        let adapter = MockAdapter()
+        let retry = try ToolCall(
+            id: "recorded-retry",
+            toolName: "test.read",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        adapter.script = [
+            [.toolRequest(retry)],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let call = try ToolCall(
+            id: "recorded-orphan",
+            toolName: "test.read",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "retry a call that never dispatched")),
+            messages: [ConversationMessage(role: "user", content: "retry after restart")],
+            pendingToolCalls: [call],
+            pendingToolResults: [],
+            toolLifecycleEntries: [AgentToolLifecycleEntry(
+                callID: call.id,
+                toolName: call.toolName,
+                phase: .recorded
+            )]
+        )
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: CatalogToolExecutor(runners: registry)
+        )
+
+        try await runtime.resume(from: checkpoint)
+
+        let repairOutput = try #require(adapter.requests.first?.toolResults.first?.output)
+        #expect(repairOutput.contains("never dispatched"))
+        #expect(!repairOutput.contains("outcome is unknown"))
+        #expect(executions.withLock { $0 } == 1)
+    }
+
+    @Test("a frozen read-only interrupted call is retried after recovery")
+    func frozenReadOnlyInterruptedRetryRefreshes() async throws {
+        let executions = AsyncLock(0)
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(
+            descriptor: ToolCatalog.Descriptor(
+                name: "test.read",
+                riskLabels: [],
+                isSideEffecting: false
+            )
+        ) { _, _ in
+            executions.withLock { $0 += 1 }
+            return .init(summary: "refreshed read", fullOutputSHA256: "refreshed")
+        })
+        let adapter = MockAdapter()
+        let retry = try ToolCall(
+            id: "readonly-retry",
+            toolName: "test.read",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        adapter.script = [
+            [.toolRequest(retry)],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let call = try ToolCall(
+            id: "readonly-orphan",
+            toolName: "test.read",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "refresh the interrupted read")),
+            messages: [ConversationMessage(role: "user", content: "refresh after restart")],
+            pendingToolCalls: [call],
+            pendingToolResults: [],
+            toolLifecycleEntries: [AgentToolLifecycleEntry(
+                callID: call.id,
+                toolName: call.toolName,
+                isSideEffecting: false,
+                phase: .dispatched
+            )]
+        )
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: CatalogToolExecutor(runners: registry)
+        )
+
+        try await runtime.resume(from: checkpoint)
+
+        let repairOutput = try #require(adapter.requests.first?.toolResults.first?.output)
+        #expect(repairOutput.contains("read-only"))
+        #expect(repairOutput.contains("may be retried"))
+        #expect(executions.withLock { $0 } == 1)
+        #expect(!adapter.requests.contains { request in
+            request.toolResults.contains { $0.output.contains("was not executed again") }
+        })
+    }
+
+    @Test("saturated unknown-outcome receipts still block side-effecting replay")
+    func saturatedUnknownReceiptsBlockMutationReplay() async throws {
+        var ledger = HarnessExecutionLedger()
+        for index in 0..<13 {
+            let call = try ToolCall(
+                id: "sat-\(index)",
+                toolName: "test.mutate\(index)",
+                argumentsJSON: Data("{\"i\":\(index)}".utf8),
+                scope: .local
+            )
+            ledger.record(
+                call: call,
+                result: ToolResult(
+                    callID: call.id,
+                    status: .failed,
+                    outputSummary: "unknown outcome \(index)",
+                    outputDigest: ""
+                ),
+                isSideEffecting: true,
+                outcomeUnknown: true
+            )
+        }
+        // The bounded ledger could not keep every unknown receipt, so the
+        // saturation guard must stand in for the dropped ones.
+        #expect(ledger.hasUnknownOutcomeOverflow)
+        let candidate = try ToolCall(
+            id: "sat-candidate",
+            toolName: "test.unrelated",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        #expect(ledger.suppressedUnknownOutcomeResult(
+            for: candidate,
+            isSideEffecting: true
+        ) != nil)
+        #expect(ledger.suppressedUnknownOutcomeResult(
+            for: candidate,
+            isSideEffecting: false
+        ) == nil)
+        // Saturation travels through the existing checkpoint record format.
+        let restored = HarnessExecutionLedger(records: ledger.checkpointRecords())
+        #expect(restored.hasUnknownOutcomeOverflow)
+        #expect(restored.suppressedUnknownOutcomeResult(
+            for: candidate,
+            isSideEffecting: true
+        ) != nil)
+    }
+
+    @Test("alternating routes with different arguments or pages remain progress")
+    func alternatingRoutesWithChangingArgumentsRemainProgress() async throws {
+        let adapter = MockAdapter()
+        // Same two tools alternate, but every call advances a cursor. These
+        // are materially different routes (pagination/document fan-out), so
+        // the cycle detector must not treat the exploration as a stall.
+        let calls = try (1...6).map { index -> ToolCall in
+            try ToolCall(
+                id: "paged-\(index)",
+                toolName: index.isMultiple(of: 2) ? "test.observe" : "test.echo",
+                argumentsJSON: Data("{\"cursor\":\"page-\(index)\"}".utf8),
+                scope: .local
+            )
+        }
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "page through two sources")
+
+        #expect(executor.executedCalls.count == 6)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected ordinary completion for paged exploration")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
+    }
+
+    @Test("alternating routes with changing observations remain progress")
+    func alternatingRoutesWithChangingObservationsRemainProgress() async throws {
+        let adapter = MockAdapter()
+        let calls = try (1...6).map { index -> ToolCall in
+            try ToolCall(
+                id: "observed-\(index)",
+                toolName: index.isMultiple(of: 2) ? "test.observe" : "test.echo",
+                argumentsJSON: Data("{}".utf8),
+                scope: .local
+            )
+        }
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        // Every observation carries genuinely new content (a revision), even
+        // though the routes alternate. The guard must not stop monitoring or
+        // diagnostics that keep seeing new information.
+        executor.results = calls.enumerated().map { index, call in
+            ToolResult(
+                callID: call.id,
+                status: .ok,
+                outputSummary: "revision \(index + 1)",
+                outputDigest: "revision-\(index + 1)"
+            )
+        }
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "monitor two changing sources")
+
+        #expect(executor.executedCalls.count == 6)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected ordinary completion for changing observations")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
+    }
+
+    @Test("an explicit wait clears an alternating no-progress cycle")
+    func explicitWaitClearsAlternatingCycle() async throws {
+        let adapter = MockAdapter()
+        let tools = [
+            "test.echo", "test.observe", "test.echo", "test.observe",
+            "wait",
+            "test.echo", "test.observe", "test.echo", "test.observe"
+        ]
+        let calls = try tools.enumerated().map { index, tool in
+            try ToolCall(
+                id: "waited-\(index)",
+                toolName: tool,
+                argumentsJSON: Data("{}".utf8),
+                scope: .local
+            )
+        }
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        executor.descriptors["wait"] = ToolCatalog.Descriptor(
+            name: "wait",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "wait, then re-check the two routes")
+
+        #expect(executor.executedCalls.count == tools.count)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected ordinary completion after an explicit wait")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
+    }
+
+    @Test("new user input clears an alternating no-progress cycle")
+    func steerClearsAlternatingCycle() async throws {
+        let adapter = MockAdapter()
+        let calls = try (1...6).map { index -> ToolCall in
+            try ToolCall(
+                id: "steered-\(index)",
+                toolName: index.isMultiple(of: 2) ? "test.observe" : "test.echo",
+                argumentsJSON: Data("{}".utf8),
+                scope: .local
+            )
+        }
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        let gate = ExecutionGate()
+        // Park the fourth executed call so the test can steer while the run
+        // is mid-tool, then release it. Without the steer reset the six
+        // alternating batches would stop; the new guidance must restart it.
+        executor.executionGate = { [executor] in
+            if executor.executedCalls.count == 3 { await gate.wait() }
+        }
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+        let runTask = Task { try await runtime.start(goal: "alternate until guided") }
+
+        var polls = 0
+        while executor.executedCalls.count < 3, polls < 400 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+            polls += 1
+        }
+        #expect(executor.executedCalls.count == 3)
+        let acceptance = await runtime.steer(
+            RuntimeSteerInput(id: UUID(), content: "Change route: the alternation is not working"),
+            expectedRunID: runtime.runID
+        )
+        #expect(acceptance == .accepted)
+        await gate.open()
+        try await runTask.value
+
+        #expect(executor.executedCalls.count == calls.count)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected ordinary completion after user guidance")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
+    }
+
+    @Test("a new route after a cycle warning completes instead of stopping")
+    func newRouteAfterCycleWarningCompletes() async throws {
+        let adapter = MockAdapter()
+        let plan: [(String, String)] = [
+            ("0", "test.echo"), ("1", "test.observe"),
+            ("2", "test.echo"), ("3", "test.observe"),
+            ("4", "test.inspect")
+        ]
+        let calls = try plan.map { index, tool in
+            try ToolCall(
+                id: "warned-\(index)",
+                toolName: tool,
+                argumentsJSON: Data("{}".utf8),
+                scope: .local
+            )
+        }
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        executor.descriptors["test.inspect"] = ToolCatalog.Descriptor(
+            name: "test.inspect",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        executor.results = [
+            ToolResult(callID: "warned-0", status: .ok, outputSummary: "echo", outputDigest: "echo-digest"),
+            ToolResult(callID: "warned-1", status: .ok, outputSummary: "observe", outputDigest: "observe-digest"),
+            ToolResult(callID: "warned-2", status: .ok, outputSummary: "echo", outputDigest: "echo-digest"),
+            ToolResult(callID: "warned-3", status: .ok, outputSummary: "observe", outputDigest: "observe-digest"),
+            ToolResult(callID: "warned-4", status: .ok, outputSummary: "new evidence", outputDigest: "new-evidence")
+        ]
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "warn on the cycle, then change route")
+
+        #expect(executor.executedCalls.count == calls.count)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected ordinary completion after a materially new route")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
+    }
+
+    @Test("multi-call batch order variance is canonicalized into one repeat cycle")
+    func multiCallBatchOrderVarianceIsCanonicalized() async throws {
+        let adapter = MockAdapter()
+        // [A,B], [B,A], [A,B] is the same dead-end route set each round.
+        let rounds: [[String]] = [
+            ["test.echo", "test.observe"],
+            ["test.observe", "test.echo"],
+            ["test.echo", "test.observe"]
+        ]
+        let script = try rounds.enumerated().map { round, tools -> [AgentEvent] in
+            try tools.enumerated().map { position, tool -> AgentEvent in
+                .toolRequest(try ToolCall(
+                    id: "order-\(round)-\(position)",
+                    toolName: tool,
+                    argumentsJSON: Data("{}".utf8),
+                    scope: .local
+                ))
+            }
+        }
+        adapter.script = script + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe",
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "repeat the same route set in any order")
+
+        #expect(executor.executedCalls.count == 6)
         guard case .completed(let completion) = await runtime.state else {
             Issue.record("expected completed no-progress finalization")
             return

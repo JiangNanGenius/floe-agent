@@ -148,6 +148,13 @@ struct ViewportScene {
     var bodies: [BodyDrawable] = []
     /// Active sketch grid; nil keeps the modeling view's ground grid.
     var gridPlane: SketchPlane?
+    /// Legacy-scene presentation imported through `importLegacyScene`:
+    /// camera (consumed by the viewport coordinator at open), background,
+    /// lighting rig and grid visibility. Nil on ordinary CAD documents.
+    var appearance: CADSceneSettings?
+    /// Grid visibility. `false` skips the ground/sketch grid pass; ordinary
+    /// CAD documents keep `true`.
+    var showsGrid = true
     /// Move gizmo, when a body is selected. `scale` is finalized by the
     /// renderer each frame for constant screen size.
     var gizmo: GizmoState?

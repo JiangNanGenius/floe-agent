@@ -23,7 +23,32 @@ struct HarnessExecutionLedger: Sendable {
         var excerpt: String
         var occurrenceCount: Int
         var isSideEffecting: Bool
+
+        /// True when this dispatch was marked by the runtime as having an
+        /// unknown real-world outcome. The flag travels inside the persisted
+        /// result fingerprint so the existing checkpoint record carries it
+        /// without a schema change; only the runtime writes this prefix.
+        var outcomeUnknown: Bool {
+            resultFingerprint.hasPrefix(HarnessExecutionLedger.unknownOutcomeFingerprintPrefix)
+        }
+
+        /// True for the saturation marker that stands in for unknown-outcome
+        /// receipts dropped only because the bounded ledger was full. It is
+        /// recognized by the reserved identity pair so it can never collide
+        /// with a real tool route.
+        var isUnknownOutcomeOverflowSentinel: Bool {
+            toolName == HarnessExecutionLedger.unknownOverflowSentinelToolName
+                && callFingerprint == HarnessExecutionLedger.unknownOverflowSentinelCallFingerprint
+        }
     }
+
+    /// Reserved prefix for the persisted fingerprint of a dispatch whose
+    /// real-world outcome is unknown (capability removed/replaced mid-flight).
+    /// Such a route must never be replayed automatically.
+    static let unknownOutcomeFingerprintPrefix = "unknown-outcome:"
+    /// Reserved identity pair for the saturation marker entry.
+    static let unknownOverflowSentinelToolName = "__floe_harness_unknown_outcome_overflow__"
+    static let unknownOverflowSentinelCallFingerprint = "saturation"
 
     private(set) var entries: [Entry] = []
     private let maximumEntries = 12
@@ -232,7 +257,13 @@ struct HarnessExecutionLedger: Sendable {
     /// remote host can change state while Floe is suspended. An unchanged failure is suppressed only
     /// after it has already been observed twice, leaving one retry for a
     /// plausibly transient failure.
-    func recoveredResult(for call: ToolCall) -> ToolResult? {
+    func recoveredResult(for call: ToolCall, isSideEffecting: Bool) -> ToolResult? {
+        // A receipt from an unknown-outcome dispatch takes precedence over
+        // every other dedup rule: it must never be replayed automatically.
+        if let suppressed = suppressedUnknownOutcomeResult(
+            for: call,
+            isSideEffecting: isSideEffecting
+        ) { return suppressed }
         let callFingerprint = Self.fingerprint(call.argumentsJSON)
         guard let entryIndex = entries.lastIndex(where: {
             $0.toolName == call.toolName && $0.callFingerprint == callFingerprint
@@ -265,13 +296,17 @@ struct HarnessExecutionLedger: Sendable {
     mutating func record(
         call: ToolCall,
         result: ToolResult,
-        isSideEffecting: Bool = false
+        isSideEffecting: Bool = false,
+        outcomeUnknown: Bool = false
     ) {
         let callFingerprint = Self.fingerprint(call.argumentsJSON)
         let resultData = result.outputDigest.isEmpty
             ? Data(result.outputSummary.utf8)
             : Data(result.outputDigest.lowercased().utf8)
-        let resultFingerprint = Self.fingerprint(resultData)
+        var resultFingerprint = Self.fingerprint(resultData)
+        if outcomeUnknown {
+            resultFingerprint = Self.unknownOutcomeFingerprintPrefix + resultFingerprint
+        }
         let excerpt = Self.boundedExcerpt(result, toolName: call.toolName)
 
         if let index = entries.firstIndex(where: {
@@ -297,8 +332,76 @@ struct HarnessExecutionLedger: Sendable {
             ))
         }
         if entries.count > maximumEntries {
-            entries.removeFirst(entries.count - maximumEntries)
+            enforceBounds()
         }
+    }
+
+    /// Keeps the ledger bounded without ever silently forgetting an
+    /// unknown-outcome safety receipt. Ordinary entries are evicted first; if
+    /// unknown receipts alone exceed the bound, the newest are kept and one
+    /// saturation sentinel is registered so side-effecting dispatches stay
+    /// suppressed until external state is inspected. Uses only the existing
+    /// ledger/checkpoint records (no new store, bounded size).
+    private mutating func enforceBounds() {
+        while entries.count > maximumEntries,
+              let index = entries.firstIndex(where: {
+                  !$0.outcomeUnknown && !$0.isUnknownOutcomeOverflowSentinel
+              }) {
+            entries.remove(at: index)
+        }
+        guard entries.count > maximumEntries else { return }
+        entries.removeAll { $0.isUnknownOutcomeOverflowSentinel }
+        if entries.count > maximumEntries - 1 {
+            entries.removeFirst(entries.count - (maximumEntries - 1))
+        }
+        entries.append(Self.unknownOutcomeOverflowSentinel())
+    }
+
+    private static func unknownOutcomeOverflowSentinel() -> Entry {
+        Entry(
+            toolName: unknownOverflowSentinelToolName,
+            callFingerprint: unknownOverflowSentinelCallFingerprint,
+            status: .failed,
+            resultFingerprint: unknownOutcomeFingerprintPrefix + "saturation",
+            excerpt: "Unknown-outcome safety receipts exceeded the bounded ledger; replay of side-effecting routes is suspended until the current external state is inspected.",
+            occurrenceCount: 1,
+            isSideEffecting: true
+        )
+    }
+
+    var hasUnknownOutcomeOverflow: Bool {
+        entries.contains { $0.isUnknownOutcomeOverflowSentinel }
+    }
+
+    /// A repeated or recovered dispatch of a route whose earlier execution
+    /// ended with an unknown real-world outcome must not be replayed. Returns
+    /// the synthesized result the runtime must substitute instead of
+    /// executing, or nil when no such receipt exists.
+    func suppressedUnknownOutcomeResult(
+        for call: ToolCall,
+        isSideEffecting: Bool
+    ) -> ToolResult? {
+        if hasUnknownOutcomeOverflow {
+            guard isSideEffecting else { return nil }
+            return ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: "Harness suppression: earlier unknown-outcome safety receipts exceeded their bounded ledger in this activation, so this side-effecting route cannot be replayed until the real external state is inspected and reported. It was not executed again.",
+                outputDigest: ""
+            )
+        }
+        let callFingerprint = Self.fingerprint(call.argumentsJSON)
+        guard entries.contains(where: {
+            $0.toolName == call.toolName
+                && $0.callFingerprint == callFingerprint
+                && $0.outcomeUnknown
+        }) else { return nil }
+        return ToolResult(
+            callID: call.id,
+            status: .failed,
+            outputSummary: "Harness suppression: an earlier dispatch of this exact route ended with an unknown real-world outcome (its capability changed or was removed while it was executing). It was not executed again. Inspect the current external state with a read-only call before deciding whether another action is needed; do not assume the earlier action did or did not happen.",
+            outputDigest: ""
+        )
     }
 
     func promptBlock() -> String? {

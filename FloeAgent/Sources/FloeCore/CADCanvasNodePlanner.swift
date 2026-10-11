@@ -31,11 +31,18 @@ public enum CADCanvasNodePlanner {
         public static let editor = "editor"
         /// Whether the node was created as an explicit variant.
         public static let variant = "nativeCADVariant"
+        /// JSON `LegacySceneMigrationMarker`: a legacy `scene3D` node that
+        /// was migrated to a native `.floecad` document on first edit. The
+        /// embedded scene stays on the node as the recoverable original.
+        public static let legacyMigration = "canvas.nativeCAD.legacyMigration"
     }
 
     public enum Refusal: Error, LocalizedError, Equatable {
         case nodeMissing
         case notCADNode
+        case notLegacySceneNode
+        case alreadyMigrated
+        case legacySceneConflict
         case missingAsset
         case missingSourceHash
         case missingSourcePath
@@ -49,6 +56,12 @@ public enum CADCanvasNodePlanner {
                 return FloeL10n.l("core.canvas_copy_fork_planner.the_original_canvas_node_no_longer")
             case .notCADNode:
                 return FloeL10n.l("core.canvas_copy_fork_planner.this_node_is_not_an_editable")
+            case .notLegacySceneNode:
+                return "This node does not contain a legacy 3D scene to migrate."
+            case .alreadyMigrated:
+                return "This scene was already migrated to a native CAD document."
+            case .legacySceneConflict:
+                return "The embedded scene changed since migration; open the native CAD document."
             case .missingAsset:
                 return FloeL10n.l("core.canvas_copy_fork_planner.this_node_has_no_local_drawing")
             case .missingSourceHash:
@@ -197,9 +210,75 @@ public enum CADCanvasNodePlanner {
             metadata: metadata)
     }
 
+    /// The single FIRST-EDIT migration patch for a legacy `scene3D` node.
+    ///
+    /// Unlike `applyPatch`, the node starts life as a `.scene3D` node with NO
+    /// CAD binding, so this is a `.update` that:
+    ///   * flips node KIND from `.scene3D` to `.file` (the live asset becomes
+    ///     the exported PNG render, exactly like a native CAD node),
+    ///   * records the canvas-owned package binding (sourcePath + sourceHash)
+    ///     and the `LegacySceneMigrationMarker`,
+    ///   * seeds the typed CAD revision history with the first render,
+    ///   * emits NO text/position/size/rotation fields: the reducer preserves
+    ///     node identity, name, position, size and every edge.
+    ///
+    /// The node's embedded `scene3D` is intentionally left in place by the
+    /// patch reducer (the reducer never clears fields it is not given) as the
+    /// recoverable original; the marker plus binding metadata route the node
+    /// to the native workbench.
+    public static func legacyMigrationPatch(
+        liveNode: CanvasNode?,
+        sourcePath: String,
+        sourceAssetHash: String,
+        renderedAsset: CanvasAssetReference,
+        marker: LegacySceneMigrationMarker,
+        extraMetadata: [String: String] = [:]
+    ) throws -> CanvasPatchOperation {
+        guard let liveNode else { throw Refusal.nodeMissing }
+        guard liveNode.kind == .scene3D, liveNode.scene3D != nil else {
+            throw Refusal.notLegacySceneNode
+        }
+        if liveNode.metadata[MetadataKeys.legacyMigration] != nil {
+            throw Refusal.alreadyMigrated
+        }
+        guard !sourcePath.isEmpty else { throw Refusal.missingSourcePath }
+        guard !sourceAssetHash.isEmpty else { throw Refusal.missingSourceHash }
+        guard let renderHash = renderedAsset.contentHash, !renderHash.isEmpty,
+              let renderPath = renderedAsset.localRelativePath, !renderPath.isEmpty else {
+            throw Refusal.emptyRender
+        }
+        var metadata = extraMetadata
+        metadata[MetadataKeys.sourcePath] = sourcePath
+        metadata[MetadataKeys.sourceHash] = sourceAssetHash
+        metadata[MetadataKeys.editor] = "native-cad"
+        metadata["cadFormat"] = "floecad"
+        metadata["migratedFrom"] = "legacy-scene-3d"
+        let markerData = try JSONEncoder().encode(marker)
+        guard let markerRaw = String(data: markerData, encoding: .utf8) else {
+            throw Refusal.emptyRender
+        }
+        metadata[MetadataKeys.legacyMigration] = markerRaw
+        let seed = CanvasDrawingRevision(
+            assetID: renderedAsset.id,
+            contentHash: renderHash,
+            relativePath: renderPath,
+            byteCount: renderedAsset.byteCount ?? 0,
+            kind: .original,
+            label: nil)
+        if let history = try? CanvasDrawingRevisionHistory.metadata([seed]) {
+            metadata[CanvasDrawingRevisionHistory.metadataKey] =
+                history[CanvasDrawingRevisionHistory.metadataKey]
+        }
+        return CanvasPatchOperation(
+            kind: .update,
+            nodeID: liveNode.id,
+            nodeKind: .file,
+            asset: renderedAsset,
+            metadata: metadata)
+    }
+
     /// Explicit "Make variant": a NEW `.file` node plus its `generatedFrom`
-    /// edge and a fresh CAD revision history as one patch (one revision).
-    /// Works from any source state (bound or not); the source node is never
+    /// edge and a fresh CAD revision history as one patch (one revision).    /// Works from any source state (bound or not); the source node is never
     /// read for binding keys and never modified.
     public static func variantPatch(
         sourceNodeID: UUID,

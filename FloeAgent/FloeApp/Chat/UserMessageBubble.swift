@@ -1,4 +1,4 @@
-// FloeApp — User message bubble.
+// FloeApp — User message bubble + shared attachment chips.
 //
 // SPDX-License-Identifier: MPL-2.0
 //
@@ -6,16 +6,75 @@
 // the assistant's left-aligned reading column. Optional attachment
 // chips summarize MessagePart file/image parts inline. Text is verbatim
 // (user input is not Markdown-rendered).
+//
+// `AttachmentChipRow` is the ONE reusable attachment surface: the user
+// bubble renders it trailing, and returned design results (assistant
+// notices carrying a real file/image part) render the same chips leading,
+// so a returned attachment is never a second, bespoke presentation path.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeModels
 
+/// One attachment chip: the display name plus the REAL part kind (an image
+/// attachment must not render as a generic file, and vice versa).
+struct AttachmentChipItem: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let kind: MessagePart.Kind
+
+    var systemImage: String {
+        switch kind {
+        case .image: return "photo"
+        case .file: return "doc"
+        default: return "paperclip"
+        }
+    }
+
+    /// Maps persisted message parts to chips in stored order. Text/reasoning
+    /// parts are not attachments.
+    static func items(in parts: [MessagePart]) -> [AttachmentChipItem] {
+        parts.compactMap { part in
+            guard part.kind == .file || part.kind == .image else { return nil }
+            let name = part.metadata["name"] ?? part.text ?? ""
+            guard !name.isEmpty else { return nil }
+            return AttachmentChipItem(
+                id: part.attachmentID?.uuidString ?? part.id.uuidString,
+                name: name,
+                kind: part.kind)
+        }
+    }
+}
+
+/// Wrapping row of attachment chips. Leading-aligned inside trailing
+/// columns and trailing-aligned in the assistant reading column.
+struct AttachmentChipRow: View {
+    let items: [AttachmentChipItem]
+    var alignment: HorizontalAlignment = .trailing
+
+    var body: some View {
+        VStack(alignment: alignment, spacing: 4) {
+            ForEach(items) { item in
+                Label(item.name, systemImage: item.systemImage)
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        FloeTheme.primary.opacity(0.10),
+                        in: Capsule()
+                    )
+                    .accessibilityIdentifier("thread.attachment.\(item.id)")
+            }
+        }
+    }
+}
+
 /// One user message: right-aligned bubble + attachment chips.
 struct UserMessageBubble: View {
     let text: String
-    /// Attachment display names (from file/image message parts).
-    var attachments: [String] = []
+    /// Real attachment parts of the message (names + file/image kind).
+    var attachments: [AttachmentChipItem] = []
 
     var body: some View {
         HStack(alignment: .top) {
@@ -25,7 +84,7 @@ struct UserMessageBubble: View {
                     credentialAwareContent
                 }
                 if !attachments.isEmpty {
-                    FlowChips(names: attachments)
+                    AttachmentChipRow(items: attachments, alignment: .trailing)
                 }
             }
         }
@@ -95,29 +154,6 @@ private struct CredentialMessagePart: Identifiable {
             result.append(.init(kind: .text, value: String(text[cursor...])))
         }
         return result.isEmpty ? [.init(kind: .text, value: text)] : result
-    }
-}
-
-/// Wrapping row of attachment chips (leading-aligned inside the
-/// trailing column). Hand-rolled flow layout: chips wrap onto new rows
-/// when they exceed the available width.
-private struct FlowChips: View {
-    let names: [String]
-
-    var body: some View {
-        VStack(alignment: .trailing, spacing: 4) {
-            ForEach(Array(names.enumerated()), id: \.offset) { _, name in
-                Label(name, systemImage: "paperclip")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        FloeTheme.primary.opacity(0.10),
-                        in: Capsule()
-                    )
-            }
-        }
     }
 }
 #endif

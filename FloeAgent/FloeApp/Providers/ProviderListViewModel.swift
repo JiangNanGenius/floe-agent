@@ -20,6 +20,12 @@ final class ProviderListViewModel: ObservableObject {
     /// Per-provider secret sync status (e.g. `.waitingForSecret`).
     @Published private(set) var secretStatus: [UUID: SyncStatus] = [:]
     @Published var errorMessage: String?
+    /// Count of remote configuration records rejected by the sync engine's
+    /// canonical gate. Non-zero means the last batch was an honest partial
+    /// failure: the local configuration was kept and the rejected remote
+    /// updates were skipped (never persisted, never acknowledged here).
+    @Published private(set) var remoteSyncRejectionCount = 0
+    @Published private(set) var isRetryingRemoteSync = false
 
     let center: ConversationCenter
     private let secretStore = KeychainSecretStore()
@@ -79,6 +85,25 @@ final class ProviderListViewModel: ObservableObject {
         defer { isLoading = false }
         await center.reload()
         await refreshSecretStatus()
+        await refreshRemoteSyncOutcome()
+    }
+
+    /// Reads the sync engine's rejected-record set (never persisted, never a
+    /// remote write) so the list can state the honest partial-failure state.
+    func refreshRemoteSyncOutcome() async {
+        remoteSyncRejectionCount = await center.environment.configurationSync
+            .rejectedRemoteRecordIDs.count
+    }
+
+    /// Retries the rejected remote batch through the existing serialized
+    /// sync path (no new store, no forced remote write). A corrected remote
+    /// payload clears the rejection; a still-invalid one keeps it visible.
+    func retryRejectedRemoteSync() async {
+        guard !isRetryingRemoteSync else { return }
+        isRetryingRemoteSync = true
+        defer { isRetryingRemoteSync = false }
+        await center.environment.settingsCenter.synchronizeConfiguration()
+        await refreshRemoteSyncOutcome()
     }
 
     /// Derives each provider's secret sync status honestly.

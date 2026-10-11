@@ -49,6 +49,12 @@ typedef struct {
     float clipEnabled;                 // 0 = section view off (default)
     float viewportWidth;               // drawable pixels — thick lines expand in
     float viewportHeight;              // screen space, so they need the size
+    vector_float4 lightParams;         // x: key intensity scale (>0 enables the
+                                       // legacy rig), y: fill intensity scale,
+                                       // z: legacy rig active (0 = CAD headlight),
+                                       // w: flat background (skip vignette)
+    vector_float4 fillLightPosition;   // xyz: fill light world position (mm),
+                                       // w: attenuation radius (mm)
 } FrameUniforms;
 
 typedef struct {

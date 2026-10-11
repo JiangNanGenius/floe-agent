@@ -456,6 +456,15 @@ public actor FloeAgentRuntime {
     /// Durable per-call boundaries distinguish a request that never started
     /// from one whose real-world outcome became unknown during interruption.
     private var toolLifecycleByCallID: [String: AgentToolLifecycleEntry] = [:]
+    /// Pre-dispatch capability authority captured when a call is approved.
+    /// Settlement re-checks the registry afterwards so a runner removed,
+    /// disabled or replaced while it was executing cannot commit a stale
+    /// result as authoritative progress.
+    private struct DispatchAuthority {
+        var isSideEffecting: Bool
+        var authorizationIdentity: String
+    }
+    private var dispatchAuthorityByCallID: [String: DispatchAuthority] = [:]
     /// True only after this runtime has loaded a persisted checkpoint. The
     /// recovery ledger is intentionally used to deduplicate calls at this
     /// boundary; a normal fresh run may legitimately observe the same path
@@ -767,6 +776,7 @@ public actor FloeAgentRuntime {
         guard case .idle = state else {
             throw FloeError.invalidConfiguration("start(goal:) requires idle state, currently \(state.name)")
         }
+        dispatchAuthorityByCallID.removeAll(keepingCapacity: true)
         // Seed deferred-schema discovery from the conversation-level store so a
         // fresh run keeps previously loaded tools instead of re-guessing from
         // the goal text or re-enumerating the catalog.
@@ -1009,6 +1019,9 @@ public actor FloeAgentRuntime {
         }
         pendingToolCalls = checkpoint.pendingToolCalls
         pendingToolResults = checkpoint.pendingToolResults
+        // The recovered activation resolves its own dispatch authority; a
+        // pre-interruption entry cannot describe a runner in this process.
+        dispatchAuthorityByCallID.removeAll(keepingCapacity: true)
         // A resumed run starts a fresh escalation lifecycle: any interruption
         // flag, gate or buffered decision from a pre-cancel wait must not
         // deny or authorize a legitimately re-asked approval.
@@ -1094,6 +1107,10 @@ public actor FloeAgentRuntime {
             }
         }
         resumedFromCheckpoint = true
+        // A resumed activation is a fresh progress epoch: cycle history from
+        // the interrupted activation must not stop the recovered route, which
+        // may legitimately continue after external state changed meanwhile.
+        loopGuard.advanceProgressEpoch()
         // A checkpoint is a committed tool-result boundary. Never carry a
         // cancelled provider stream's partial prose into the replay turn.
         streamText = ""
@@ -1121,8 +1138,27 @@ public actor FloeAgentRuntime {
         var pairedIDs = Set(pendingToolResults.map(\.callID))
         for call in pendingToolCalls where !pairedIDs.contains(call.id) {
             let lifecycle = toolLifecycleByCallID[call.id]
+            // Recover the frozen effect classification. When it is absent, only
+            // trust the current descriptor while its authorization identity
+            // still matches the one this dispatch ran under; an absent or
+            // replaced capability fails conservatively as a possible mutation.
+            let currentDescriptor = executor.descriptor(named: call.toolName)
+            let identityUnchanged = lifecycle?.authorizationIdentity == nil
+                || currentDescriptor?.authorizationIdentity == lifecycle?.authorizationIdentity
+            let isSideEffecting: Bool
+            if let frozen = lifecycle?.isSideEffecting {
+                isSideEffecting = frozen
+            } else if let currentDescriptor, identityUnchanged {
+                isSideEffecting = currentDescriptor.isSideEffecting
+            } else {
+                isSideEffecting = true
+            }
             let result: ToolResult
-            if let recovered = executionLedger.recoveredResult(for: call) {
+            var outcomeUnknown = false
+            if let recovered = executionLedger.recoveredResult(
+                for: call,
+                isSideEffecting: isSideEffecting
+            ) {
                 result = recovered
             } else if lifecycle?.phase == .recorded || lifecycle?.phase == .approved {
                 result = ToolResult(
@@ -1132,22 +1168,27 @@ public actor FloeAgentRuntime {
                     outputDigest: ""
                 )
             } else {
-                let retryGuidance = executor.descriptor(named: call.toolName)?.isSideEffecting == false
-                    ? "This tool is read-only, so it may be retried only if fresh evidence is still needed."
-                    : "Inspect current external state before deciding whether any action should be retried."
+                let retryGuidance = isSideEffecting
+                    ? "Inspect current external state before deciding whether any action should be retried; the real-world outcome is unknown."
+                    : "This tool is read-only, so it may be retried only if fresh evidence is still needed."
                 result = ToolResult(
                     callID: call.id,
                     status: .failed,
                     outputSummary: "Execution was interrupted after dispatch but before its result was committed. The real-world outcome is unknown. \(retryGuidance)",
                     outputDigest: ""
                 )
+                // A side-effecting dispatch whose result never committed is
+                // an unknown-outcome mutation: keep it query-first and never
+                // replay it automatically.
+                outcomeUnknown = isSideEffecting
             }
             pendingToolResults.append(result)
             pairedIDs.insert(call.id)
             executionLedger.record(
                 call: call,
                 result: result,
-                isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting == true
+                isSideEffecting: isSideEffecting,
+                outcomeUnknown: outcomeUnknown
             )
             setToolLifecycle(call: call, phase: .resultCommitted)
         }
@@ -2727,7 +2768,8 @@ public actor FloeAgentRuntime {
         setToolLifecycle(
             call: call,
             phase: .dispatched,
-            authorizationIdentity: descriptor.authorizationIdentity
+            authorizationIdentity: descriptor.authorizationIdentity,
+            isSideEffecting: descriptor.isSideEffecting
         )
 
         // Commit the exact provider history, approval grant and pending call
@@ -2848,7 +2890,11 @@ public actor FloeAgentRuntime {
         // receive exactly one result.
         for call in calls {
             pendingToolCalls.append(call)
-            setToolLifecycle(call: call, phase: .recorded)
+            setToolLifecycle(
+                call: call,
+                phase: .recorded,
+                isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting
+            )
             let route = ToolLoopGuard.canonicalRoute(for: call)
             if let firstCallID = firstCallIDByRoute[route] {
                 let duplicate = ToolResult(
@@ -2957,8 +3003,31 @@ public actor FloeAgentRuntime {
                 }
                 continue
             }
+            let candidateIsSideEffecting = executor.descriptor(named: call.toolName)?.isSideEffecting == true
+            if let suppressedUnknown = executionLedger.suppressedUnknownOutcomeResult(
+                for: call,
+                isSideEffecting: candidateIsSideEffecting
+            ) {
+                // An earlier dispatch of this exact route ended with an
+                // unknown real-world outcome (its capability changed while it
+                // was executing). Never replay it automatically: the model
+                // must inspect the external state first. Deliberately not
+                // added to `suppressedCallIDs`, so repeated re-emissions are
+                // still counted by the loop guard and a stubborn replay stops
+                // instead of looping.
+                await audit(
+                    toolCall: call,
+                    result: suppressedUnknown,
+                    decision: "deny:unknown-outcome-route"
+                )
+                resultsByID[call.id] = suppressedUnknown
+                continue
+            }
             if resumedFromCheckpoint,
-               let recovered = executionLedger.recoveredResult(for: call) {
+               let recovered = executionLedger.recoveredResult(
+                   for: call,
+                   isSideEffecting: candidateIsSideEffecting
+               ) {
                 // A provider can regenerate a completed call after a stream
                 // interruption. Preserve the provider pairing, but do not
                 // cross the executor/approval boundary a second time.
@@ -2976,10 +3045,20 @@ public actor FloeAgentRuntime {
             case .approved(let grant):
                 grants.append(grant)
                 approvedByID[call.id] = grant
+                // Remember the exact authority this dispatch runs under so
+                // settlement can tell a result produced by the current runner
+                // from a stale result whose capability was torn down, disabled
+                // or replaced while the call was in flight.
+                let approvedDescriptor = executor.descriptor(named: call.toolName)
+                dispatchAuthorityByCallID[call.id] = DispatchAuthority(
+                    isSideEffecting: approvedDescriptor?.isSideEffecting == true,
+                    authorizationIdentity: approvedDescriptor?.authorizationIdentity ?? ""
+                )
                 setToolLifecycle(
                     call: call,
                     phase: .approved,
-                    authorizationIdentity: grant.scope.toolAuthorizationIdentity
+                    authorizationIdentity: grant.scope.toolAuthorizationIdentity,
+                    isSideEffecting: approvedDescriptor?.isSideEffecting
                 )
             case .denied(let reason, let decision):
                 let result = ToolResult(callID: call.id, status: .denied, outputSummary: reason, outputDigest: "")
@@ -3058,6 +3137,7 @@ public actor FloeAgentRuntime {
         var orderedResults: [(call: ToolCall, result: ToolResult)] = []
         var needsUserResult: ToolResult?
         var noProgressDetected = false
+        loopGuard.beginSettleBatch()
         for call in calls {
             var result = resultsByID[call.id] ?? ToolResult(
                 callID: call.id,
@@ -3066,13 +3146,61 @@ public actor FloeAgentRuntime {
                 outputDigest: ""
             )
             result = finalizeToolResult(result, for: call)
+            // Capability lifetime check. A runner can be unregistered,
+            // disabled or replaced while its call is in flight (dynamic source
+            // teardown, MCP refresh, credential change). A late result no
+            // longer runs under the authority that authorized it, so it must
+            // not commit as authoritative progress. For a side-effecting tool
+            // the real-world outcome is then unknown, not a known
+            // non-execution: the durable ledger receipt below keeps it
+            // query-first and non-replayable.
+            var outcomeUnknown = false
+            let preDispatch = dispatchAuthorityByCallID.removeValue(forKey: call.id)
+            let settledDescriptor = executor.descriptor(named: call.toolName)
+            if let authority = preDispatch {
+                let capabilityChanged = settledDescriptor == nil
+                    || settledDescriptor?.authorizationIdentity != authority.authorizationIdentity
+                if capabilityChanged {
+                    let prior = String(result.outputSummary.prefix(240))
+                    if authority.isSideEffecting {
+                        result = ToolResult(
+                            callID: call.id,
+                            status: .failed,
+                            outputSummary: "The capability for '\(call.toolName)' was removed or replaced while this call was executing, so its reported result was discarded and the real-world outcome is unknown. Inspect current external state with a read-only call before deciding whether the action is still needed; do not assume it did or did not happen. Reported result before discard (untrusted, may be incomplete): \(prior)",
+                            outputDigest: ""
+                        )
+                        result = finalizeToolResult(result, for: call)
+                        outcomeUnknown = true
+                    } else if result.status == .ok || result.status == .needsUser {
+                        result = ToolResult(
+                            callID: call.id,
+                            status: settledDescriptor == nil ? .cancelled : .denied,
+                            outputSummary: "The capability for '\(call.toolName)' changed while this read was executing; the stale result was discarded. Retry the read only if fresh evidence is still needed.",
+                            outputDigest: ""
+                        )
+                        result = finalizeToolResult(result, for: call)
+                    }
+                    // Durable receipt for inspection: the raw execution result
+                    // remains in the allow audit entry; this record states how
+                    // the harness disposed of it. Neither grants authority.
+                    await audit(
+                        toolCall: call,
+                        result: result,
+                        decision: authority.isSideEffecting
+                            ? "disposition:capability-changed-unknown"
+                            : "disposition:capability-changed-discarded"
+                    )
+                }
+            }
+            let executedIsSideEffecting = preDispatch?.isSideEffecting
+                ?? (settledDescriptor?.isSideEffecting == true)
             if result.status == .needsUser {
                 needsUserResult = needsUserResult ?? result
             } else if !suppressedCallIDs.contains(call.id),
                       let guardrail = loopGuard.record(
                 call: call,
                 result: result,
-                isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting == true,
+                isSideEffecting: executedIsSideEffecting,
                 stopLimit: configuration.unchangedToolOutcomeLimit
             ) {
                 noProgressDetected = noProgressDetected || guardrail.shouldStop
@@ -3085,7 +3213,8 @@ public actor FloeAgentRuntime {
             executionLedger.record(
                 call: call,
                 result: result,
-                isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting == true
+                isSideEffecting: executedIsSideEffecting,
+                outcomeUnknown: outcomeUnknown
             )
             if result.status == .ok, Self.isConversationHistoryTool(call.toolName) {
                 historyLookupSucceededInRun = true
@@ -3095,6 +3224,23 @@ public actor FloeAgentRuntime {
             }
             setToolLifecycle(call: call, phase: .resultCommitted)
             orderedResults.append((call, result))
+        }
+        // Batch-level non-progress cycle check. A,B,A,B alternation against
+        // unchanged outcomes resets the per-route epoch counters each step,
+        // so it must be evaluated over the settled batch sequence. The
+        // warning rides the last ordered result so the model sees it on the
+        // next request; a persistent cycle stops with `.noProgress`.
+        if let cycleDecision = loopGuard.endSettleBatch(
+            stopLimit: configuration.unchangedToolOutcomeLimit
+        ) {
+            noProgressDetected = noProgressDetected || cycleDecision.shouldStop
+            let warning = "\n\nHarness warning: \(cycleDecision.message)"
+            if let lastIndex = orderedResults.indices.last {
+                orderedResults[lastIndex].result.outputSummary += warning
+            }
+            if let pendingIndex = pendingToolResults.indices.last {
+                pendingToolResults[pendingIndex].outputSummary += warning
+            }
         }
         // Graduate the settled batch into the run-level replay history before
         // the settlement checkpoint so a resumed run keeps its tool evidence.
@@ -3348,7 +3494,8 @@ public actor FloeAgentRuntime {
                 setToolLifecycle(
                     call: call,
                     phase: .dispatched,
-                    authorizationIdentity: grant.scope.toolAuthorizationIdentity
+                    authorizationIdentity: grant.scope.toolAuthorizationIdentity,
+                    isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting
                 )
             }
             do {
@@ -3932,7 +4079,8 @@ public actor FloeAgentRuntime {
     private func setToolLifecycle(
         call: ToolCall,
         phase: AgentToolLifecyclePhase,
-        authorizationIdentity: String? = nil
+        authorizationIdentity: String? = nil,
+        isSideEffecting: Bool? = nil
     ) {
         let prior = toolLifecycleByCallID[call.id]
         if let prior {
@@ -3970,6 +4118,11 @@ public actor FloeAgentRuntime {
             authorizationIdentity: authorizationIdentity ?? prior?.authorizationIdentity,
             executorContextFingerprint: prior?.executorContextFingerprint
                 ?? executorContextFingerprint(for: call),
+            // The first captured classification wins: a capability swapped
+            // mid-call must not retroactively reclassify an already-running
+            // dispatch, and recovery needs the frozen kind when the runner is
+            // gone at restart.
+            isSideEffecting: prior?.isSideEffecting ?? isSideEffecting,
             phase: phase,
             updatedAt: Date()
         )
@@ -4340,14 +4493,122 @@ struct ToolLoopGuard {
     /// Survives progress epochs; resets on that tool's next success.
     private var consecutiveFailuresByTool: [String: Int] = [:]
     private var lastFailureExcerptByTool: [String: String] = [:]
+    /// Batch-level non-progress cycle history. The per-route counters above
+    /// reset whenever a differing observation lands, so a sequence of two
+    /// interleaved unchanged routes (A,B,A,B) never accumulates there. This
+    /// records each settled batch's canonical route set and detects trailing
+    /// alternating or repeated runs, the equivalent of the reference
+    /// implementation's abab_action_cycle signal. Genuine progress clears it.
+    private var recentNonProgressBatches: [String] = []
+    private var activeActionCycle: String?
+    private var actionCycleWarned = false
+    private var currentBatchRoutes: Set<String> = []
+    private var currentBatchHadProgress = false
 
     static let failureBreakerThreshold = 3
 
     mutating func advanceProgressEpoch() {
+        clearEpochCounters()
+        resetActionCycle()
+    }
+
+    /// Clears only the within-epoch counters. Called when a differing
+    /// observation arrives: that is a new fact, but not progress, so the
+    /// batch-level cycle history must survive to catch A,B,A,B alternation.
+    private mutating func clearEpochCounters() {
         outcomeCountsInEpoch.removeAll(keepingCapacity: true)
         lastObservationInEpoch = nil
         nonretryableRoutesInEpoch.removeAll(keepingCapacity: true)
         blockedNonretryableRouteCounts.removeAll(keepingCapacity: true)
+    }
+
+    private mutating func resetActionCycle() {
+        recentNonProgressBatches.removeAll(keepingCapacity: true)
+        activeActionCycle = nil
+        actionCycleWarned = false
+    }
+
+    mutating func beginSettleBatch() {
+        currentBatchRoutes.removeAll(keepingCapacity: true)
+        currentBatchHadProgress = false
+    }
+
+    /// Evaluates one settled provider batch for a repeated or alternating
+    /// no-progress cycle. Single-route repeats stay with the per-route
+    /// exact-outcome counter; this closes the interleaved gap. Warning first,
+    /// stop only when the cycle persists, mirroring the existing guard.
+    mutating func endSettleBatch(stopLimit: Int = 3) -> ToolLoopGuardrailDecision? {
+        defer {
+            currentBatchRoutes.removeAll(keepingCapacity: true)
+            currentBatchHadProgress = false
+        }
+        guard !currentBatchHadProgress else {
+            resetActionCycle()
+            return nil
+        }
+        guard !currentBatchRoutes.isEmpty else { return nil }
+        let key = currentBatchRoutes.sorted().joined(separator: "\u{001F}")
+        recentNonProgressBatches.append(key)
+        if recentNonProgressBatches.count > 8 {
+            recentNonProgressBatches.removeFirst(recentNonProgressBatches.count - 8)
+        }
+        let count = recentNonProgressBatches.count
+        guard count >= 2 else { return nil }
+        let last = recentNonProgressBatches[count - 1]
+        let secondLast = recentNonProgressBatches[count - 2]
+
+        if last == secondLast {
+            // A repeated multi-call batch escapes the per-route counter when
+            // the interleaved route differs each step. Single-call batches
+            // are already covered by that counter, so skip them here.
+            guard currentBatchRoutes.count >= 2 else { return nil }
+            var run = 1
+            var index = count - 2
+            while index >= 0, recentNonProgressBatches[index] == last {
+                run += 1
+                index -= 1
+            }
+            if run >= max(2, stopLimit) {
+                return ToolLoopGuardrailDecision(
+                    shouldStop: true,
+                    message: "The same set of tool routes repeated without new evidence \(run) times. Stop this dead-end route set; preserve the evidence, report the blocker, and choose materially different arguments or a different path."
+                )
+            }
+            if run == 2, stopLimit > 2 {
+                return ToolLoopGuardrailDecision(
+                    shouldStop: false,
+                    message: "This exact set of tool routes already repeated with unchanged outcomes. Different arguments, a different route, or an honest blocker report are valid progress; an unchanged replay is not."
+                )
+            }
+            return nil
+        }
+
+        var alternating = 2
+        var index = count - 3
+        while index >= 0, recentNonProgressBatches[index] == recentNonProgressBatches[index + 2] {
+            alternating += 1
+            index -= 1
+        }
+        guard alternating >= 4 else { return nil }
+        let stopAt = max(4, stopLimit * 2)
+        if alternating >= stopAt {
+            activeActionCycle = nil
+            actionCycleWarned = false
+            return ToolLoopGuardrailDecision(
+                shouldStop: true,
+                message: "This turn kept alternating between the same two non-progress tool routes (\(alternating) settled batches) without producing new evidence. Stop this dead-end cycle: preserve what is known, report the blocker, and choose a materially different route or answer with the current evidence."
+            )
+        }
+        let episode = secondLast < last
+            ? "\(secondLast)\u{001F}\(last)"
+            : "\(last)\u{001F}\(secondLast)"
+        guard activeActionCycle != episode || !actionCycleWarned else { return nil }
+        activeActionCycle = episode
+        actionCycleWarned = true
+        return ToolLoopGuardrailDecision(
+            shouldStop: false,
+            message: "This turn is alternating between the same two non-progress tool routes (\(alternating) settled batches) without new evidence. Do not repeat the alternation: change the arguments, choose a materially different route, or stop and report the blocker."
+        )
     }
 
     mutating func blockDecision(for call: ToolCall) -> ToolLoopGuardrailDecision? {
@@ -4369,6 +4630,11 @@ struct ToolLoopGuard {
         isSideEffecting: Bool,
         stopLimit: Int = 3
     ) -> ToolLoopGuardrailDecision? {
+        // The batch-level cycle key keeps both the canonical route and the
+        // observable outcome, so genuinely changing observations break the
+        // pattern instead of being stopped as a stall.
+        let batchOutcome = "\(result.status.rawValue)|\(result.outputDigest.isEmpty ? Self.digest(Data(result.outputSummary.utf8)) : result.outputDigest.lowercased())"
+        currentBatchRoutes.insert("\(Self.canonicalRoute(for: call))|\(batchOutcome)")
         // Failure streak tracking applies to every tool and argument shape.
         if result.status == .failed {
             let streak = consecutiveFailuresByTool[call.toolName, default: 0] + 1
@@ -4418,12 +4684,13 @@ struct ToolLoopGuard {
         let isExplicitWait = call.toolName == "wait" || call.toolName.hasSuffix(".wait")
         if result.status == .ok,
            (isSideEffecting || isExplicitWait) {
+            currentBatchHadProgress = true
             advanceProgressEpoch()
             return nil
         }
         let exact = "\(route)|\(outcome)"
         if let previous = lastObservationInEpoch, previous != exact {
-            advanceProgressEpoch()
+            clearEpochCounters()
         }
         lastObservationInEpoch = exact
 

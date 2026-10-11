@@ -52,12 +52,15 @@ enum DesignWorkflowActions {
     }
 
     /// Optional user-grant gate for run callers. The panel passes nil.
-    /// Validation runs only for a genuinely NEW operation (after replay and
-    /// origin checks, before intent prepare/CAS); consumption runs only after
-    /// the CAS committed, so a failed/conflicted CAS never burns the grant.
+    /// `claim` runs only for a genuinely NEW operation, AFTER replay/origin/
+    /// payload/format pre-flight checks and BEFORE the first side effect
+    /// (content ingestion, durable intent, CAS). It atomically validates AND
+    /// burns the single-use grant through `ApprovalGrantStore.claimSingleUse`;
+    /// a mismatched/expired/revoked/already-claimed grant returns false
+    /// without side effects, and a claimed grant is never re-armed by a later
+    /// failure (a fresh concrete confirmation is required to retry).
     struct GrantGate: @unchecked Sendable {
-        let validate: @MainActor @Sendable () async -> Bool
-        let consume: @MainActor @Sendable () async -> Void
+        let claim: @MainActor @Sendable (_ proposedRevisionID: String) async -> Bool
     }
 
     private static func runID(for caller: Caller) -> UUID? {
@@ -185,13 +188,9 @@ enum DesignWorkflowActions {
             } catch {
                 return .failed(error)
             }
-            // A user grant is required for run callers and validated only for
-            // genuinely new operations.
-            if let grant, await !grant.validate() {
-                return .failed(FloeError.validationFailed(
-                    "Adoption grant is missing, expired or bound to a different candidate/revision"
-                ))
-            }
+            // A user grant is required for run callers; it is atomically
+            // claimed below, after every read-only pre-flight check passed and
+            // before the first side effect.
             guard proposed.payloadRelativePath != nil else {
                 // Adoption without retained payload bytes is NOT an adoption:
                 // fail before the CAS and keep the candidate pending.
@@ -224,6 +223,17 @@ enum DesignWorkflowActions {
                 )
             } catch {
                 return .failed(error)
+            }
+            // The confirmation is claimed exactly once, AFTER every read-only
+            // pre-flight check (replay, candidate, origin, payload, real
+            // reopen parser) and BEFORE the first side effect: content
+            // ingestion, durable intent prepare, variant staging and the CAS.
+            // A claim failure writes nothing; a failure after the claim keeps
+            // the grant burned (fresh confirmation required).
+            if let grant, await !grant.claim(proposed.id) {
+                return .failed(FloeError.validationFailed(
+                    "Adoption grant is missing, expired, revoked, already claimed or bound to a different candidate/revision/mode"
+                ))
             }
             let update: DesignCanvasContentApplicator.PreparedUpdate
             do {
@@ -376,9 +386,8 @@ enum DesignWorkflowActions {
                 if prepared.phase == .committing { try? await outbox.cancel(id: prepared.id) }
                 return .failed(error)
             }
-            // Consume the single-use grant only AFTER the transaction
-            // succeeded, so a failed CAS never burns it.
-            await grant?.consume()
+            // The grant was already atomically claimed before the transaction
+            // (see above); a failure after the claim never re-arms it.
             // Post-CAS stable-alias publish for existing editors (journaled,
             // hash-protected; the revision file stays authoritative). The
             // variant node's alias is published for ITS OWN binding.

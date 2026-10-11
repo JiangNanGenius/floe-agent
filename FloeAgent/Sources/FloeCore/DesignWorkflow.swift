@@ -364,6 +364,45 @@ public struct DesignArtifact: Codable, Sendable, Equatable, Identifiable {
     public func revision(_ id: String) -> DesignRevision? {
         revisions.first { $0.id == id }
     }
+
+    /// Unknown nested keys preserved verbatim across migrations.
+    public var unknownFields: [String: DesignJSONValue] = [:]
+
+    private enum CodingKeys: String, CodingKey {
+        case id, contentType, canvasNodeID, identity, currentRevisionID
+        case revisions, branches
+    }
+
+    static let artifactKnownFields: Set<String> = [
+        "id", "contentType", "canvasNodeID", "identity",
+        "currentRevisionID", "revisions", "branches"
+    ]
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        contentType = try c.decodeIfPresent(DesignContentType.self, forKey: .contentType) ?? .webpage
+        canvasNodeID = try c.decodeIfPresent(String.self, forKey: .canvasNodeID)
+        identity = try c.decode(DesignArtifactIdentity.self, forKey: .identity)
+        currentRevisionID = try c.decodeIfPresent(String.self, forKey: .currentRevisionID)
+        revisions = try c.decodeIfPresent([DesignRevision].self, forKey: .revisions) ?? []
+        branches = try c.decodeIfPresent([String: String].self, forKey: .branches) ?? [:]
+        unknownFields = try DesignUnknownPreservation.capture(
+            decoder: decoder, known: Self.artifactKnownFields
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(contentType, forKey: .contentType)
+        try c.encodeIfPresent(canvasNodeID, forKey: .canvasNodeID)
+        try c.encode(identity, forKey: .identity)
+        try c.encodeIfPresent(currentRevisionID, forKey: .currentRevisionID)
+        try c.encode(revisions, forKey: .revisions)
+        try c.encode(branches, forKey: .branches)
+        try DesignUnknownPreservation.write(unknownFields, to: encoder)
+    }
 }
 
 /// Anchored feedback. The anchor is bound to one artifact revision plus at most
@@ -463,6 +502,18 @@ public struct DesignCandidate: Codable, Sendable, Equatable, Identifiable {
     public var originConversationID: String?
     /// Originating environment/container identity, when any.
     public var originEnvironmentID: String?
+    /// Idempotency record: the `operationID` that created this candidate. A
+    /// repeated `propose` carrying this operationID returns THIS candidate
+    /// (and its recorded payload) when every semantic input matches, and
+    /// fails `replayMismatch` otherwise. Optional so candidates written
+    /// before the record decode unchanged; an applied operation without a
+    /// record replays fail-closed rather than guessing.
+    public var proposalOperationID: String?
+    /// Canonical SHA-256 over the proposal's exact semantic inputs
+    /// (artifact, resolved base revision, payload format, content digest,
+    /// summary, diff, feedback ids and origin). Guards replay against
+    /// changed bytes/format/artifact/base/summary/feedback/origin.
+    public var proposalFingerprint: String?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -477,7 +528,9 @@ public struct DesignCandidate: Codable, Sendable, Equatable, Identifiable {
         resolvedAt: Date? = nil,
         variantArtifactID: String? = nil,
         originConversationID: String? = nil,
-        originEnvironmentID: String? = nil
+        originEnvironmentID: String? = nil,
+        proposalOperationID: String? = nil,
+        proposalFingerprint: String? = nil
     ) {
         self.id = id
         self.artifactID = artifactID
@@ -492,6 +545,8 @@ public struct DesignCandidate: Codable, Sendable, Equatable, Identifiable {
         self.variantArtifactID = variantArtifactID
         self.originConversationID = originConversationID
         self.originEnvironmentID = originEnvironmentID
+        self.proposalOperationID = proposalOperationID
+        self.proposalFingerprint = proposalFingerprint
     }
 }
 
@@ -500,6 +555,56 @@ public enum DesignAdoptMode: String, Codable, Sendable {
     case updateOriginal
     /// Create a branch (new artifact) and keep the original untouched.
     case variant
+}
+
+/// A creative START request that exists BEFORE any material does. The user
+/// fills the requested output kind + brief/spec and the shared design state
+/// persists them; the first REAL generated result is later bound to this
+/// exact target (same envelope). This is metadata-stage capability only: it
+/// never fabricates bytes, never creates a hidden canvas and never reports
+/// the request as a webpage.
+public struct DesignCreativeRequest: Codable, Sendable, Equatable {
+    public enum State: String, Codable, Sendable {
+        /// Requirements/spec saved; no result generated yet.
+        case awaitingFirstResult
+        /// The first real result is bound to this request's target.
+        case firstResultBound
+    }
+
+    /// Explicitly requested output kind (from the approved creation flow).
+    public var requestedKind: DesignContentType
+    public var state: State
+    /// The owner-side binding recorded when the first result materialized
+    /// (creation/asset identity; opaque string).
+    public var boundResultID: String?
+    public var boundFormat: String?
+    public var boundContentSHA256: String?
+    public var originConversationID: String?
+    public var environmentID: String?
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        requestedKind: DesignContentType,
+        state: State = .awaitingFirstResult,
+        boundResultID: String? = nil,
+        boundFormat: String? = nil,
+        boundContentSHA256: String? = nil,
+        originConversationID: String? = nil,
+        environmentID: String? = nil,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.requestedKind = requestedKind
+        self.state = state
+        self.boundResultID = boundResultID
+        self.boundFormat = boundFormat
+        self.boundContentSHA256 = boundContentSHA256
+        self.originConversationID = originConversationID
+        self.environmentID = environmentID
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
 }
 
 public struct DesignProject: Codable, Sendable, Equatable, Identifiable {
@@ -528,8 +633,18 @@ public struct DesignProject: Codable, Sendable, Equatable, Identifiable {
     public var frozenRun: DesignRunFrozen?
     /// Applied idempotency keys, bounded. Replaying an operation ID is a no-op.
     public var appliedOperationIDs: [String]
+    /// Creative START request: requirements + requested output kind persisted
+    /// BEFORE the first real result exists. nil for every non-creative flow
+    /// and for creative work that already materialized.
+    public var creativeRequest: DesignCreativeRequest?
     public var createdAt: Date
     public var updatedAt: Date
+    /// Unknown top-level fields from an older/newer payload, preserved
+    /// verbatim (semantically) and re-emitted on the next write. This is
+    /// what makes forward/back compatibility DEMONSTRABLE: a key this build
+    /// does not model is never dropped by synthesized Codable. Known keys
+    /// never appear here even when absent in the source payload.
+    public var unknownFields: [String: DesignJSONValue]
 
     public init(
         nodeID: String,
@@ -551,8 +666,97 @@ public struct DesignProject: Codable, Sendable, Equatable, Identifiable {
         self.candidates = []
         self.frozenRun = nil
         self.appliedOperationIDs = []
+        self.creativeRequest = nil
         self.createdAt = Date()
         self.updatedAt = Date()
+        self.unknownFields = [:]
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case nodeID, schemaVersion, contentType, brief, spec, template
+        case artifacts, feedback, candidates, workspaceBinding, frozenRun
+        case appliedOperationIDs, creativeRequest, createdAt, updatedAt
+    }
+
+    /// Tolerant decode: every known field decodes with the same default as
+    /// the memberwise initializer, and every UNKNOWN key is captured into
+    /// `unknownFields` so the next encode emits it again. A corrupt known
+    /// value still throws (unknown preservation never masks real damage).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        nodeID = try c.decode(String.self, forKey: .nodeID)
+        let decodedSchema = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? Self.currentSchemaVersion
+        schemaVersion = decodedSchema
+        contentType = try c.decodeIfPresent(DesignContentType.self, forKey: .contentType) ?? .webpage
+        brief = try c.decodeIfPresent(DesignBrief.self, forKey: .brief)
+        spec = try c.decodeIfPresent(DesignSpec.self, forKey: .spec)
+        template = try c.decodeIfPresent(DesignTemplateManifest.self, forKey: .template)
+        artifacts = try c.decodeIfPresent([DesignArtifact].self, forKey: .artifacts) ?? []
+        feedback = try c.decodeIfPresent([DesignFeedback].self, forKey: .feedback) ?? []
+        candidates = try c.decodeIfPresent([DesignCandidate].self, forKey: .candidates) ?? []
+        workspaceBinding = try c.decodeIfPresent(DesignWorkspaceBinding.self, forKey: .workspaceBinding)
+        frozenRun = try c.decodeIfPresent(DesignRunFrozen.self, forKey: .frozenRun)
+        appliedOperationIDs = try c.decodeIfPresent([String].self, forKey: .appliedOperationIDs) ?? []
+        creativeRequest = try c.decodeIfPresent(DesignCreativeRequest.self, forKey: .creativeRequest)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+        unknownFields = try Self.captureUnknownFields(decoder: decoder)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(nodeID, forKey: .nodeID)
+        try c.encode(schemaVersion, forKey: .schemaVersion)
+        try c.encode(contentType, forKey: .contentType)
+        try c.encodeIfPresent(brief, forKey: .brief)
+        try c.encodeIfPresent(spec, forKey: .spec)
+        try c.encodeIfPresent(template, forKey: .template)
+        try c.encode(artifacts, forKey: .artifacts)
+        try c.encode(feedback, forKey: .feedback)
+        try c.encode(candidates, forKey: .candidates)
+        try c.encodeIfPresent(workspaceBinding, forKey: .workspaceBinding)
+        try c.encodeIfPresent(frozenRun, forKey: .frozenRun)
+        try c.encode(appliedOperationIDs, forKey: .appliedOperationIDs)
+        try c.encodeIfPresent(creativeRequest, forKey: .creativeRequest)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(updatedAt, forKey: .updatedAt)
+        // Unknown keys cannot use the synthesized CodingKeys (an arbitrary
+        // stringValue initializer returns nil), so re-emit them through an
+        // arbitrary-key container on the SAME encoder.
+        if !unknownFields.isEmpty {
+            var extra = encoder.container(keyedBy: ArbitraryKey.self)
+            for (name, value) in unknownFields.sorted(by: { $0.key < $1.key }) {
+                guard let key = ArbitraryKey(stringValue: name) else { continue }
+                try extra.encode(value, forKey: key)
+            }
+        }
+    }
+
+    /// Modeled top-level keys; unknown keys outside this set are preserved.
+    /// Extend this list whenever a new modeled field is added.
+    static let knownFieldNames: Set<String> = [
+        "nodeID", "schemaVersion", "contentType", "brief", "spec",
+        "template", "artifacts", "feedback", "candidates",
+        "workspaceBinding", "frozenRun", "appliedOperationIDs",
+        "creativeRequest", "createdAt", "updatedAt"
+    ]
+
+    /// Decodes every top-level key not in the modeled set and returns its
+    /// preserved JSON value.
+    static func captureUnknownFields(decoder: Decoder) throws -> [String: DesignJSONValue] {
+        let rawContainer = try decoder.container(keyedBy: ArbitraryKey.self)
+        var preserved: [String: DesignJSONValue] = [:]
+        for key in rawContainer.allKeys where !knownFieldNames.contains(key.stringValue) {
+            preserved[key.stringValue] = try rawContainer.decode(DesignJSONValue.self, forKey: key)
+        }
+        return preserved
+    }
+
+    fileprivate struct ArbitraryKey: CodingKey {
+        var stringValue: String
+        var intValue: Int?
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
     }
 
     public func artifact(_ id: String) -> DesignArtifact? {

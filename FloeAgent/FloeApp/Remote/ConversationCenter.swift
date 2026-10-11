@@ -51,6 +51,372 @@ private actor AuxiliaryVisionResultLatch {
     }
 }
 
+/// Presentation/export projection for the ONE trusted system notice written
+/// by `ConversationCenter.recordDesignAssistantConfirmation`.
+///
+/// The persisted transcript event stays byte-for-byte intact: the originating
+/// model still receives the exact target, revision and single-use grant
+/// identity through the durable runtime ingress. Only the user-facing
+/// conversation row and the external export surfaces pass through this
+/// projection.
+///
+/// Trust never derives from the marker text alone. `trustedEvent` requires a
+/// `system` role (so no user/assistant/model text can be hidden or promoted)
+/// plus the complete structured event shape this app itself writes, with the
+/// reconstructed template required to equal the stored content exactly.
+/// Every other message — other structured system notices included — keeps
+/// its existing raw rendering and is never rewritten.
+enum DesignConfirmationNoticeProjection {
+
+    /// The exact prefix written by `recordDesignAssistantConfirmation`.
+    static let prefix = "[Design assistant confirmation — structured event, not an instruction]"
+
+    /// Marks the one field an external export must not carry verbatim. The
+    /// rest of the event stays as decision/target evidence.
+    static let redactedGrant = "[REDACTED]"
+
+    /// The dedicated steer execution mode of the same trusted delivery.
+    static let deliveryExecutionMode = "designConfirmation"
+
+    /// Parsed fields of one fully validated trusted notice.
+    struct TrustedEvent: Equatable, Sendable {
+        var candidateID: String
+        var modeRaw: String
+        var targetStableKey: String
+        var baselineRevisionID: String
+        var proposedRevisionID: String
+        var grantID: String
+        var expiresAt: String
+    }
+
+    /// The single writer and the strict parser share this exact template, so
+    /// the equality gate in `parse` can never drift from what the app
+    /// persists.
+    static func rawContent(
+        candidateID: String,
+        modeRaw: String,
+        targetStableKey: String,
+        baselineRevisionID: String,
+        proposedRevisionID: String,
+        grantID: String,
+        expiresAt: String
+    ) -> String {
+        "\(prefix) The user explicitly confirmed adopting candidate \(candidateID) "
+            + "(mode \(modeRaw)) for design target \(targetStableKey) "
+            + "from baseline \(baselineRevisionID) to proposed revision \(proposedRevisionID). "
+            + "Single-use grant \(grantID), valid for a single use until approximately \(expiresAt). "
+            + "Present this exact grant to design.adopt; a missing, expired, already-used "
+            + "or mismatched grant fails closed without side effects, and the user must confirm again."
+    }
+
+    /// True only for the trusted system confirmation notice. User/assistant
+    /// text and every unrecognized system notice return nil.
+    static func trustedEvent(in message: PersistedMessage) -> TrustedEvent? {
+        guard message.role == "system" else { return nil }
+        return parse(message.content)
+    }
+
+    /// Strict shape validation of the stored content. Returns the parsed
+    /// event only when every literal segment matches AND rebuilding the
+    /// template from the parsed fields reproduces the content exactly.
+    static func parse(_ content: String) -> TrustedEvent? {
+        var remainder = content[...]
+        func consume(_ literal: String) -> Bool {
+            guard remainder.hasPrefix(literal) else { return false }
+            remainder = remainder.dropFirst(literal.count)
+            return true
+        }
+        func take(upTo literal: String) -> String? {
+            guard let range = remainder.range(of: literal) else { return nil }
+            let field = String(remainder[..<range.lowerBound])
+            remainder = remainder[range.upperBound...]
+            return field
+        }
+        func isCanonicalUUID(_ value: String) -> Bool {
+            guard value.count == 36, value == value.lowercased(),
+                  let uuid = UUID(uuidString: value) else { return false }
+            return uuid.uuidString.lowercased() == value
+        }
+        func isSingleLineField(_ value: String) -> Bool {
+            !value.isEmpty
+                && value == value.trimmingCharacters(in: .whitespacesAndNewlines)
+                && value.rangeOfCharacter(from: .newlines) == nil
+        }
+        func isStableKey(_ value: String) -> Bool {
+            value.count == 64
+                && value == value.lowercased()
+                && value.allSatisfy { $0.isHexDigit }
+        }
+        guard consume(prefix + " The user explicitly confirmed adopting candidate "),
+              let candidateID = take(upTo: " (mode "),
+              isCanonicalUUID(candidateID),
+              let modeRaw = take(upTo: ") for design target "),
+              DesignAdoptMode(rawValue: modeRaw) != nil,
+              let targetStableKey = take(upTo: " from baseline "),
+              isStableKey(targetStableKey),
+              let baselineRevisionID = take(upTo: " to proposed revision "),
+              isSingleLineField(baselineRevisionID),
+              let proposedRevisionID = take(upTo: ". Single-use grant "),
+              isSingleLineField(proposedRevisionID),
+              let grantID = take(upTo: ", valid for a single use until approximately "),
+              isCanonicalUUID(grantID),
+              let expiresAt = take(upTo: ". Present this exact grant to design.adopt; a missing, expired, already-used or mismatched grant fails closed without side effects, and the user must confirm again."),
+              isSingleLineField(expiresAt),
+              remainder.isEmpty
+        else { return nil }
+        let event = TrustedEvent(
+            candidateID: candidateID,
+            modeRaw: modeRaw,
+            targetStableKey: targetStableKey,
+            baselineRevisionID: baselineRevisionID,
+            proposedRevisionID: proposedRevisionID,
+            grantID: grantID,
+            expiresAt: expiresAt)
+        guard rawContent(
+            candidateID: event.candidateID,
+            modeRaw: event.modeRaw,
+            targetStableKey: event.targetStableKey,
+            baselineRevisionID: event.baselineRevisionID,
+            proposedRevisionID: event.proposedRevisionID,
+            grantID: event.grantID,
+            expiresAt: event.expiresAt) == content else { return nil }
+        return event
+    }
+
+    /// Concise localized conversation summary for a trusted notice. Returns
+    /// nil for every other message so callers keep the existing raw text.
+    static func userFacingSummary(for message: PersistedMessage) -> String? {
+        guard trustedEvent(in: message) != nil else { return nil }
+        return FloeL10n.l("design.owner.authorized_note")
+    }
+
+    /// Pending-input queue projection: that row carries no role, so the
+    /// dedicated delivery mode is required IN ADDITION to the exact event
+    /// shape. A message a user typed can never carry the mode.
+    static func userFacingSummary(for input: PendingUserInput) -> String? {
+        guard input.executionMode == deliveryExecutionMode,
+              parse(input.content) != nil else { return nil }
+        return FloeL10n.l("design.owner.authorized_note")
+    }
+
+    /// External-export projection: the same structured event with the
+    /// single-use grant identity removed. Event type, decision, target,
+    /// revisions and expiry evidence stay. The stored content is never
+    /// mutated by this function.
+    static func exportContent(for message: PersistedMessage) -> String? {
+        guard let event = trustedEvent(in: message) else { return nil }
+        return rawContent(
+            candidateID: event.candidateID,
+            modeRaw: event.modeRaw,
+            targetStableKey: event.targetStableKey,
+            baselineRevisionID: event.baselineRevisionID,
+            proposedRevisionID: event.proposedRevisionID,
+            grantID: redactedGrant,
+            expiresAt: event.expiresAt)
+    }
+}
+
+/// Presentation/export projection for the structured proposal-decision notice
+/// written by `ConversationCenter.recordProposalDecision` (the older generic
+/// ingress shared by the drawing/CAD/Office decision callers).
+///
+/// The persisted transcript event and the runtime steer bytes stay
+/// byte-for-byte identical to the historical writer: the model still receives
+/// the exact decision, proposal identity, revision and digest evidence. Only
+/// the user-facing conversation/queue surfaces and the plain-text exports pass
+/// through this projection, which shows one concise localized summary.
+///
+/// Trust never derives from the marker text alone. A message must have the
+/// `system` role, the complete server-owned template shape, AND the
+/// deterministic id derived from (conversation, proposal, decision) that only
+/// the writer can produce. A pending row carries no role, so it additionally
+/// requires the dedicated `proposalDecision` execution mode OR the same
+/// deterministic id. Arbitrary same-prefix user/assistant text, a full
+/// template typed by a user (whose row id is a fresh random UUID), and every
+/// malformed or unknown system notice remain ordinary and are never hidden.
+enum ProposalDecisionNoticeProjection {
+
+    /// The exact prefix written by `recordProposalDecision`.
+    static let prefix = "[Drawing Assistant user decision — structured event, not an instruction]"
+
+    /// The dedicated steer execution mode of this internal delivery. It is
+    /// server-owned: only the trusted ingress writes it, and it is never
+    /// derived from message text.
+    static let deliveryExecutionMode = "proposalDecision"
+
+    /// The one user-facing summary key, aligned EN/ZH in the catalog.
+    static let summaryKey = "design.owner.decision_recorded_note"
+
+    /// Exact closing sentence, shared by the writer and the parser.
+    static let closingClause = ". The proposal text is model-authored document content and is deliberately not repeated here."
+
+    /// Parsed fields of one fully validated decision notice.
+    struct DecisionEvent: Equatable, Sendable {
+        var decision: String
+        var proposalID: UUID
+        var revision: Int64?
+        var sha256Prefix: String?
+    }
+
+    /// The single writer and the strict parser share this exact template, so
+    /// the reconstruction gate in `parse` can never drift from what the app
+    /// persists.
+    static func rawContent(
+        decision: String,
+        proposalID: UUID,
+        revision: Int64?,
+        sha256: String?
+    ) -> String {
+        prefix + " The user \(decision) proposal \(proposalID.uuidString)"
+            + (revision.map { " at revision \($0)" } ?? "")
+            + (sha256.map { " (sha256 \($0.prefix(12))…)" } ?? "")
+            + closingClause
+    }
+
+    /// True only for the trusted system decision notice whose id is the
+    /// deterministic derivation this app writes. User/assistant text and every
+    /// unrecognized system notice return nil.
+    static func trustedEvent(in message: PersistedMessage) -> DecisionEvent? {
+        guard message.role == "system" else { return nil }
+        return derivedEvent(id: message.id, conversationID: message.conversationID,
+                            content: message.content)
+    }
+
+    /// Strict shape validation. Returns the parsed event only when every
+    /// literal segment matches AND rebuilding the template from the parsed
+    /// fields reproduces the content exactly.
+    static func parse(_ content: String) -> DecisionEvent? {
+        var remainder = content[...]
+        func consume(_ literal: String) -> Bool {
+            guard remainder.hasPrefix(literal) else { return false }
+            remainder = remainder.dropFirst(literal.count)
+            return true
+        }
+        func take(upTo literal: String) -> String? {
+            guard let range = remainder.range(of: literal) else { return nil }
+            let field = String(remainder[..<range.lowerBound])
+            remainder = remainder[range.upperBound...]
+            return field
+        }
+        func isSingleLineField(_ value: String) -> Bool {
+            !value.isEmpty
+                && value == value.trimmingCharacters(in: .whitespacesAndNewlines)
+                && value.rangeOfCharacter(from: .newlines) == nil
+        }
+        guard consume(prefix + " The user "),
+              let decision = take(upTo: " proposal "),
+              isSingleLineField(decision),
+              remainder.count >= 36
+        else { return nil }
+        // The writer always emits `UUID.uuidString` (canonical uppercase).
+        let uuidField = String(remainder.prefix(36))
+        guard let proposalID = UUID(uuidString: uuidField),
+              proposalID.uuidString == uuidField
+        else { return nil }
+        remainder = remainder.dropFirst(36)
+        var revision: Int64?
+        var sha256Prefix: String?
+        if remainder.hasPrefix(" at revision ") {
+            _ = consume(" at revision ")
+            if let shaRange = remainder.range(of: " (sha256 ") {
+                let digits = String(remainder[..<shaRange.lowerBound])
+                guard let value = Int64(digits), String(value) == digits else { return nil }
+                revision = value
+                // Leave the sha literal for the segment below to consume.
+                remainder = remainder[shaRange.lowerBound...]
+            } else {
+                guard remainder.hasSuffix(closingClause) else { return nil }
+                let digits = String(remainder.dropLast(closingClause.count))
+                guard let value = Int64(digits), String(value) == digits else { return nil }
+                revision = value
+                remainder = remainder[
+                    remainder.index(remainder.endIndex, offsetBy: -closingClause.count)...]
+            }
+        }
+        if consume(" (sha256 ") {
+            guard let sha = take(upTo: "…"),
+                  sha.count == 12,
+                  !sha.contains(where: { $0.isWhitespace }),
+                  consume(")")
+            else { return nil }
+            sha256Prefix = sha
+        }
+        guard consume(closingClause), remainder.isEmpty else { return nil }
+        let event = DecisionEvent(
+            decision: decision, proposalID: proposalID,
+            revision: revision, sha256Prefix: sha256Prefix)
+        guard rawContent(
+            decision: event.decision, proposalID: event.proposalID,
+            revision: event.revision, sha256: event.sha256Prefix) == content
+        else { return nil }
+        return event
+    }
+
+    /// The server-owned linkage `id == f(conversation, proposal, decision)`.
+    /// Only `recordProposalDecision` writes that id; a user-typed message (or
+    /// a row created by any other path) carries a random id and fails this.
+    static func isDerivedEventID(
+        _ id: UUID, conversationID: UUID, event: DecisionEvent
+    ) -> Bool {
+        id == ConversationCenter.proposalDecisionID(
+            conversationID: conversationID,
+            proposalID: event.proposalID,
+            decision: event.decision)
+    }
+
+    /// Parses the content and requires the deterministic derivation of `id`.
+    static func derivedEvent(
+        id: UUID, conversationID: UUID, content: String
+    ) -> DecisionEvent? {
+        guard let event = parse(content),
+              isDerivedEventID(id, conversationID: conversationID, event: event)
+        else { return nil }
+        return event
+    }
+
+    /// Concise localized conversation summary for a validated decision notice.
+    /// Returns nil for every other message so callers keep the existing raw
+    /// text.
+    static func userFacingSummary(for message: PersistedMessage) -> String? {
+        guard trustedEvent(in: message) != nil else { return nil }
+        return FloeL10n.l(summaryKey)
+    }
+
+    /// Pending-input queue projection: that row carries no role, so the
+    /// deterministic derivation is required in addition to the exact event
+    /// shape. A message a user typed can never match both.
+    static func userFacingSummary(for input: PendingUserInput) -> String? {
+        guard derivedEvent(
+            id: input.id, conversationID: input.conversationID,
+            content: input.content) != nil
+        else { return nil }
+        return FloeL10n.l(summaryKey)
+    }
+}
+
+/// The user-facing projection over the internal notices this app writes into
+/// a transcript: the design-assistant adoption confirmation (which carries a
+/// single-use grant) and the structured proposal decision. Each notice keeps
+/// its durable bytes; only the presentation/export surfaces consult this.
+enum InternalNoticeProjection {
+    static func userFacingSummary(for message: PersistedMessage) -> String? {
+        DesignConfirmationNoticeProjection.userFacingSummary(for: message)
+            ?? ProposalDecisionNoticeProjection.userFacingSummary(for: message)
+    }
+
+    static func userFacingSummary(for input: PendingUserInput) -> String? {
+        DesignConfirmationNoticeProjection.userFacingSummary(for: input)
+            ?? ProposalDecisionNoticeProjection.userFacingSummary(for: input)
+    }
+
+    /// External-export projection. Only the confirmation carries a credential
+    /// (the single-use grant); the decision notice exports its structured
+    /// evidence verbatim, so this returns nil for it.
+    static func exportContent(for message: PersistedMessage) -> String? {
+        DesignConfirmationNoticeProjection.exportContent(for: message)
+    }
+}
+
 extension ConversationCenter {
     /// Production card retirement predicate: removes exactly the card whose
     /// runID+callID matches, even when another run carries the same call id.
@@ -65,6 +431,63 @@ extension ConversationCenter {
             return nil
         }
         return pending.remove(at: index)
+    }
+
+    /// Whether a persisted queued row carries the exact server-owned shape of
+    /// one of this app's internal notice deliveries. This only classifies —
+    /// it never trusts text by itself: the decision notice additionally
+    /// requires its deterministic id derivation, and the confirmation
+    /// requires the dedicated execution mode (which only the trusted ingress
+    /// writes). The caller decides retention/retirement separately.
+    nonisolated static func isInternalNoticeDelivery(_ input: PendingUserInput) -> Bool {
+        if input.executionMode == DesignConfirmationNoticeProjection.deliveryExecutionMode,
+           DesignConfirmationNoticeProjection.parse(input.content) != nil {
+            return true
+        }
+        if input.executionMode == ProposalDecisionNoticeProjection.deliveryExecutionMode,
+           ProposalDecisionNoticeProjection.parse(input.content) != nil {
+            return true
+        }
+        // Historical rows predate the dedicated mode and carry the ordinary
+        // `agent` default; only the deterministic derivation can prove them.
+        guard let event = ProposalDecisionNoticeProjection.parse(input.content) else {
+            return false
+        }
+        return ProposalDecisionNoticeProjection.isDerivedEventID(
+            input.id, conversationID: input.conversationID, event: event)
+    }
+
+    /// A queued internal notice may be RETIRED (removed from the launchable
+    /// queue) only when the server-owned identity AND the durable same-id
+    /// byte-identical system mirror are both proven, so the decision stays
+    /// visible in the transcript after retirement. Anything unproven is
+    /// preserved untouched.
+    nonisolated static func isRetirableInternalNoticeRow(
+        _ input: PendingUserInput, messages: [PersistedMessage]
+    ) -> Bool {
+        guard input.status == .queued else { return false }
+        guard let mirror = messages.first(where: { $0.id == input.id }),
+              mirror.role == "system",
+              mirror.content == input.content
+        else { return false }
+        if input.executionMode == DesignConfirmationNoticeProjection.deliveryExecutionMode {
+            guard let event = DesignConfirmationNoticeProjection.parse(input.content),
+                  let mode = DesignAdoptMode(rawValue: event.modeRaw),
+                  let candidateID = UUID(uuidString: event.candidateID),
+                  let grantID = UUID(uuidString: event.grantID)
+            else { return false }
+            return input.id == ConversationCenter.designConfirmationID(
+                conversationID: input.conversationID,
+                targetStableKey: event.targetStableKey,
+                candidateID: candidateID, mode: mode, grantID: grantID)
+        }
+        guard let event = ProposalDecisionNoticeProjection.parse(input.content) else {
+            return false
+        }
+        guard input.executionMode == ProposalDecisionNoticeProjection.deliveryExecutionMode
+            || input.executionMode == "agent" else { return false }
+        return ProposalDecisionNoticeProjection.isDerivedEventID(
+            input.id, conversationID: input.conversationID, event: event)
     }
 }
 
@@ -353,7 +776,13 @@ final class ConversationCenter: ObservableObject {
             if let object = value as? [String: Any] {
                 return object.reduce(into: [String: Any]()) { result, item in
                     let key = item.key.lowercased().replacingOccurrences(of: "_", with: "").replacingOccurrences(of: "-", with: "")
-                    let secret = ["password", "passwd", "passphrase", "token", "accesstoken", "refreshtoken", "apikey", "authorization", "cookie", "setcookie", "clientsecret", "privatekey"].contains(key)
+                    // Exact known credential/authorization keys only. The
+                    // design adoption fields carry the same single-use
+                    // confirmation identity the trusted system notice hides
+                    // from exports (tool arguments and events embed them under
+                    // their normalized names); ordinary keys and free text are
+                    // never masked by this list.
+                    let secret = ["password", "passwd", "passphrase", "token", "accesstoken", "refreshtoken", "apikey", "authorization", "cookie", "setcookie", "clientsecret", "privatekey", "grantid", "confirmationgrantid"].contains(key)
                     result[item.key] = secret ? "[REDACTED]" : scrub(item.value)
                 }
             }
@@ -369,12 +798,17 @@ final class ConversationCenter: ObservableObject {
         encoder.dateEncodingStrategy = .iso8601
         try write(["type": "manifest", "format": "floe.task.jsonl", "version": 1,
             "conversationID": conversationID.uuidString, "exportedAt": iso.string(from: Date()),
-            "scope": "All persisted messages and per-run structured events through recorded watermarks. Results retain stored summaries and artifact references; older unrecorded or truncated raw output cannot be reconstructed. Secrets are redacted; referenced artifact bytes are not embedded."])
+            "scope": "All persisted messages and per-run structured events through recorded watermarks. Results retain stored summaries and artifact references; older unrecorded or truncated raw output cannot be reconstructed. Secrets are redacted; internal design confirmation grants are redacted from message text and from structured adoption authorization fields; referenced artifact bytes are not embedded."])
         let messages = try await environment.conversationStore.messages(conversationID: conversationID)
         for message in messages {
             try Task.checkCancellation()
+            // The trusted design confirmation keeps its event/target/decision
+            // evidence in the export but never the single-use grant identity;
+            // every other message — the proposal-decision notice included,
+            // which carries no credential — is exported verbatim.
+            let content = InternalNoticeProjection.exportContent(for: message) ?? message.content
             try write(["type": "message", "id": message.id.uuidString, "role": message.role,
-                "content": message.content, "createdAt": iso.string(from: message.createdAt),
+                "content": content, "createdAt": iso.string(from: message.createdAt),
                 "runID": message.runID?.uuidString ?? "",
                 "parts": try JSONSerialization.jsonObject(with: encoder.encode(message.parts))])
         }
@@ -512,6 +946,10 @@ final class ConversationCenter: ObservableObject {
     private var deletingConversationIDs: Set<UUID> = []
     private var isClearingHistory = false
     private var didReconcileInterruptedRuns = false
+    /// Conversations whose queued internal-notice rows were already reconciled
+    /// in this process. The check is proof-gated and one-time per conversation
+    /// so a repeatedly polled session never re-reads the store for it.
+    private var internalNoticeQueueReconciled: Set<UUID> = []
     /// Any run created after this center instance belongs to the current
     /// process and must never be classified as a crash-leftover, even if its
     /// deferred provider service is still assembling history or images.
@@ -770,6 +1208,11 @@ final class ConversationCenter: ObservableObject {
             }
             for try await (runID, loaded) in group { events[runID] = loaded }
         }
+        // A stopped/finished task may still carry a queued internal notice row
+        // from the historical ingress. Retire only the rows whose server-owned
+        // identity and durable transcript mirror are both proven, so the
+        // decision stays visible and can never be launched as a new run.
+        await retireOrphanedInternalNoticeRows(conversationID: conversationID)
         let snapshot = ConversationSessionSnapshot(
             revision: revision,
             conversation: conversation,
@@ -1439,39 +1882,70 @@ final class ConversationCenter: ObservableObject {
         )
     }
 
-    /// Records a user decision (adopt/reject) on an AI proposal so the
-    /// original task that produced the proposal learns the outcome. The
-    /// notice travels through the durable runtime-input ingress of the
-    /// originating conversation (visible to its next/steered run) and the
-    /// transcript. The id is derived from (conversation, proposal, decision)
-    /// so re-recording the same decision is an idempotent upsert instead of a
-    /// duplicate. The content is a STRUCTURED DECISION ONLY: no model-authored
+    /// Records a user decision (adopt/reject/apply outcome) on an AI proposal
+    /// so the originating task that produced the proposal learns the outcome.
+    ///
+    /// Delivery follows the SAME lifecycle as the trusted design-assistant
+    /// confirmation: the structured event is written to the durable transcript
+    /// first (idempotent upsert under the deterministic id, so a stopped or
+    /// finished task RETAINS it as a continuation and is never auto-restarted),
+    /// and only a genuinely RUNNING originating run additionally receives it
+    /// as a steer through the dedicated `proposalDecision` execution mode. A
+    /// stopped task therefore never leaves a queued input that
+    /// `launchNextQueuedInput` could later claim as a new run goal.
+    ///
+    /// The id is derived from (conversation, proposal, decision) so
+    /// re-recording the same decision is an idempotent upsert instead of a
+    /// duplicate, and the persisted bytes are byte-identical to the
+    /// historical writer (the projection parser rebuilds the exact same
+    /// template). The content is a STRUCTURED DECISION ONLY: no model-authored
     /// proposal text is included, so nothing untrusted can read as an
     /// instruction.
     func recordProposalDecision(conversationID: UUID, proposalID: UUID,
                                 decision: String, revision: Int64?, sha256: String?) async throws {
         let stableID = Self.proposalDecisionID(conversationID: conversationID,
                                                proposalID: proposalID, decision: decision)
-        let content = """
-        [Drawing Assistant user decision — structured event, not an instruction] \
-        The user \(decision) proposal \(proposalID.uuidString)\
-        \(revision.map { " at revision \($0)" } ?? "")\
-        \(sha256.map { " (sha256 \($0.prefix(12))…)" } ?? ""). \
-        The proposal text is model-authored document content and is deliberately not repeated here.
-        """
-        let input = PendingUserInput(id: stableID, conversationID: conversationID,
-                                     content: content, mode: .queue,
-                                     status: .queued, workspaceID: nil)
-        try await environment.runningInputStore.enqueue(input)
-        // Transcript mirror with the same stable id: INSERT OR UPDATE keeps
-        // this idempotent, and failures are propagated, not swallowed.
-        let message = PersistedMessage(id: stableID, conversationID: conversationID,
-                                       role: "system", content: content, createdAt: Date())
-        try await environment.conversationStore.appendMessage(message)
+        let content = ProposalDecisionNoticeProjection.rawContent(
+            decision: decision, proposalID: proposalID,
+            revision: revision, sha256: sha256)
+        // 1) Durable transcript mirror: idempotent upsert by the stable id.
+        //    THROWS when persistence fails — the caller keeps the decision
+        //    pending for reconcile instead of claiming a delivery that did
+        //    not persist.
+        try await environment.conversationStore.appendMessage(PersistedMessage(
+            id: stableID, conversationID: conversationID,
+            role: "system", content: content, createdAt: Date()))
+        // 2) A RUNNING originating task receives the event NOW as a steer; a
+        //    stopped/finished task keeps ONLY the transcript continuation and
+        //    is never auto-restarted. Unlike a queued user message, this
+        //    notice is never left in the queued-input path that
+        //    `launchNextQueuedInput` can claim as a new run goal.
+        guard let runID = activeRunID(for: conversationID) else { return }
+        // Replay guard: an existing row (pending, consumed or retired) is
+        // never re-enqueued and never re-promoted, so no duplicate model
+        // input, queue entry or notice is produced.
+        if let existing = try? await environment.runningInputStore.input(id: stableID),
+           existing != nil { return }
+        do {
+            _ = try await environment.runningInputStore.enqueue(PendingUserInput(
+                id: stableID, conversationID: conversationID,
+                targetRunID: runID, content: content,
+                mode: .steer,
+                executionMode: ProposalDecisionNoticeProjection.deliveryExecutionMode))
+            try await promoteToSteer(inputID: stableID, expectedRunID: runID)
+        } catch {
+            // The run ended between the lookup and the promotion. Cancel the
+            // transient row so it can never be launched as a new user turn;
+            // the durable transcript event remains the retained continuation.
+            try? await environment.runningInputStore.cancel(id: stableID)
+            throw error
+        }
     }
 
     /// Deterministic UUID (v5-style SHA-256) for a proposal decision event.
-    static func proposalDecisionID(conversationID: UUID, proposalID: UUID, decision: String) -> UUID {
+    /// `nonisolated`: the projection layer (and its regression tests) derive
+    /// the same identity off the main actor; the function is pure.
+    nonisolated static func proposalDecisionID(conversationID: UUID, proposalID: UUID, decision: String) -> UUID {
         let seed = "floe.proposal-decision|\(conversationID.uuidString)|\(proposalID.uuidString)|\(decision)"
         let digest = SHA256.hash(data: Data(seed.utf8))
         let bytes = Array(digest.prefix(16))
@@ -1482,6 +1956,135 @@ final class ConversationCenter: ObservableObject {
         return UUID(uuid: (uuid[0], uuid[1], uuid[2], uuid[3], uuid[4], uuid[5],
                            uuid[6], uuid[7], uuid[8], uuid[9], uuid[10], uuid[11],
                            uuid[12], uuid[13], uuid[14], uuid[15]))
+    }
+
+    /// Delivers a trusted-UI design-assistant adoption confirmation to the
+    /// ORIGINATING task through the SAME durable ingress proposal decisions
+    /// use: a structured event in the transcript (idempotent upsert under a
+    /// stable id) plus — ONLY while the originating task actually has a live
+    /// run — a steer carrying the event so the running model receives it.
+    ///
+    /// A finished/checkpointed task retains the transcript continuation and is
+    /// NEVER auto-restarted: unlike a queued user message, this notice is
+    /// never left in the queued-input path that `launchNextQueuedInput`
+    /// consumes. The content is a structured identity (target/candidate/base/
+    /// proposed/mode/grant/expiry), never model-authored text, so nothing
+    /// untrusted can read as an instruction. A replayed delivery with the
+    /// same grant upserts instead of duplicating.
+    func recordDesignAssistantConfirmation(
+        conversationID: UUID,
+        targetStableKey: String,
+        candidateID: UUID,
+        baselineRevisionID: String,
+        proposedRevisionID: String,
+        mode: DesignAdoptMode,
+        grantID: UUID,
+        grantExpiresAt: Date
+    ) async throws {
+        let stableID = Self.designConfirmationID(
+            conversationID: conversationID, targetStableKey: targetStableKey,
+            candidateID: candidateID, mode: mode, grantID: grantID)
+        // Byte-identical to the historical multiline literal this replaced;
+        // the parser in DesignConfirmationNoticeProjection rebuilds and
+        // compares the exact same template.
+        let content = DesignConfirmationNoticeProjection.rawContent(
+            candidateID: candidateID.uuidString.lowercased(),
+            modeRaw: mode.rawValue,
+            targetStableKey: targetStableKey,
+            baselineRevisionID: baselineRevisionID,
+            proposedRevisionID: proposedRevisionID,
+            grantID: grantID.uuidString.lowercased(),
+            expiresAt: Self.designConfirmationTimestamp(grantExpiresAt))
+        // 1) Durable transcript mirror: idempotent upsert by the stable id.
+        //    THROWS when persistence fails — the caller never claims the
+        //    assistant was notified without an actual durable write.
+        try await environment.conversationStore.appendMessage(PersistedMessage(
+            id: stableID, conversationID: conversationID,
+            role: "system", content: content, createdAt: Date()))
+        // 2) A RUNNING originating task receives the event NOW as a steer; a
+        //    finished task keeps only the transcript continuation.
+        guard let runID = activeRunID(for: conversationID) else { return }
+        if try await environment.runningInputStore.input(id: stableID) != nil { return }
+        do {
+            _ = try await environment.runningInputStore.enqueue(PendingUserInput(
+                id: stableID, conversationID: conversationID,
+                targetRunID: runID, content: content,
+                mode: .steer,
+                executionMode: DesignConfirmationNoticeProjection.deliveryExecutionMode))
+            try await promoteToSteer(inputID: stableID, expectedRunID: runID)
+        } catch {
+            // The run ended between the lookup and the promotion. Cancel the
+            // transient row so it can never be launched as a new user turn;
+            // the durable transcript event remains the retained continuation.
+            try? await environment.runningInputStore.cancel(id: stableID)
+            throw error
+        }
+    }
+
+    /// Deterministic UUID (v5-style SHA-256) for one design-assistant
+    /// confirmation event: same conversation/target/candidate/mode/grant →
+    /// same id, so a replayed delivery upserts instead of duplicating.
+    /// `nonisolated` for the same reason as `proposalDecisionID`.
+    nonisolated static func designConfirmationID(
+        conversationID: UUID, targetStableKey: String,
+        candidateID: UUID, mode: DesignAdoptMode, grantID: UUID
+    ) -> UUID {
+        let seed = "floe.design-confirmation|\(conversationID.uuidString)|\(targetStableKey)|\(candidateID.uuidString)|\(mode.rawValue)|\(grantID.uuidString)"
+        let digest = SHA256.hash(data: Data(seed.utf8))
+        let bytes = Array(digest.prefix(16))
+        var uuid = bytes
+        uuid[6] = (uuid[6] & 0x0F) | 0x50
+        uuid[8] = (uuid[8] & 0x3F) | 0x80
+        return UUID(uuid: (uuid[0], uuid[1], uuid[2], uuid[3], uuid[4], uuid[5],
+                           uuid[6], uuid[7], uuid[8], uuid[9], uuid[10], uuid[11],
+                           uuid[12], uuid[13], uuid[14], uuid[15]))
+    }
+
+    private static func designConfirmationTimestamp(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    /// The single live run for a conversation, when one exists.
+    private func activeRunID(for conversationID: UUID) -> UUID? {
+        runServices.values.first(where: { $0.conversationID == conversationID })?.runID
+    }
+
+    /// Retires queued rows that are provably internal notice deliveries whose
+    /// durable same-id system mirror already retains the decision. Only runs
+    /// for a conversation with NO live run (a genuinely running task receives
+    /// the delivery through the steer channel instead), never touches ordinary
+    /// user rows, and never removes a row whose server-owned identity or
+    /// retention proof is incomplete — those are preserved and reported.
+    private func retireOrphanedInternalNoticeRows(conversationID: UUID) async {
+        guard !internalNoticeQueueReconciled.contains(conversationID) else { return }
+        guard activeRunID(for: conversationID) == nil else { return }
+        guard let pending = try? await environment.runningInputStore.pending(
+            conversationID: conversationID) else { return }
+        let candidates = pending.filter {
+            $0.status == .queued && Self.isInternalNoticeDelivery($0)
+        }
+        guard !candidates.isEmpty else {
+            internalNoticeQueueReconciled.insert(conversationID)
+            return
+        }
+        guard let messages = try? await environment.conversationStore.messages(
+            conversationID: conversationID) else { return }
+        internalNoticeQueueReconciled.insert(conversationID)
+        for input in candidates {
+            guard Self.isRetirableInternalNoticeRow(input, messages: messages) else {
+                FloeLogger(category: .app).info(
+                    "internalNoticeQueueRowPreserved conversation=\(conversationID.uuidString) input=\(input.id.uuidString)")
+                continue
+            }
+            do {
+                try await environment.runningInputStore.cancel(id: input.id)
+                FloeLogger(category: .app).info(
+                    "internalNoticeQueueRowRetired conversation=\(conversationID.uuidString) input=\(input.id.uuidString)")
+            } catch {
+                FloeLogger(category: .app).warning(
+                    "internalNoticeQueueRowRetireFailed conversation=\(conversationID.uuidString) input=\(input.id.uuidString)")
+            }
+        }
     }
 
     /// Launches a new run and returns immediately. The task result covers
@@ -2315,31 +2918,65 @@ final class ConversationCenter: ObservableObject {
         for service in runServices.values where service.conversationID == conversationID {
             guard await service.snapshot().isTerminal else { return }
         }
-        guard let input = try? await environment.runningInputStore.claimNextQueued(
-            conversationID: conversationID
-        ) else { return }
-        guard let (provider, model) = providerAndModel(modelID: input.selectedModelID),
-              let mode = AgentExecutionMode(rawValue: input.executionMode) else {
-            try? await environment.runningInputStore.restoreQueued(id: input.id)
+        // Bounded by the number of pending rows so a preserved internal notice
+        // can never spin the loop.
+        for _ in 0..<SQLiteRunningInputStore.maximumPendingPerConversation {
+            guard let input = try? await environment.runningInputStore.claimNextQueued(
+                conversationID: conversationID
+            ) else { return }
+            // An internal notice row is never launched as a new user turn: the
+            // durable transcript event is the retained continuation. A row
+            // whose identity + retention mirror are both proven is retired;
+            // anything unproven is restored unchanged and left alone.
+            if Self.isInternalNoticeDelivery(input) {
+                if await internalNoticeRetirementProof(for: input) {
+                    try? await environment.runningInputStore.restoreQueued(id: input.id)
+                    try? await environment.runningInputStore.cancel(id: input.id)
+                    FloeLogger(category: .app).info(
+                        "internalNoticeQueueRowRetiredAtLaunch conversation=\(conversationID.uuidString) input=\(input.id.uuidString)")
+                    continue
+                }
+                try? await environment.runningInputStore.restoreQueued(id: input.id)
+                FloeLogger(category: .app).info(
+                    "internalNoticeQueueRowPreservedAtLaunch conversation=\(conversationID.uuidString) input=\(input.id.uuidString)")
+                publishSession(conversationID)
+                return
+            }
+            guard let (provider, model) = providerAndModel(modelID: input.selectedModelID),
+                  let mode = AgentExecutionMode(rawValue: input.executionMode) else {
+                try? await environment.runningInputStore.restoreQueued(id: input.id)
+                publishSession(conversationID)
+                return
+            }
+            do {
+                let started = try await startRun(
+                    goal: input.content,
+                    in: conversationID,
+                    provider: provider,
+                    model: model,
+                    workspaceID: input.workspaceID,
+                    attachments: input.attachments,
+                    executionMode: mode,
+                    startOrigin: .queuedInput
+                )
+                try await environment.runningInputStore.markConsumed(id: input.id, runID: started.runID)
+            } catch {
+                try? await environment.runningInputStore.restoreQueued(id: input.id)
+            }
             publishSession(conversationID)
             return
         }
-        do {
-            let started = try await startRun(
-                goal: input.content,
-                in: conversationID,
-                provider: provider,
-                model: model,
-                workspaceID: input.workspaceID,
-                attachments: input.attachments,
-                executionMode: mode,
-                startOrigin: .queuedInput
-            )
-            try await environment.runningInputStore.markConsumed(id: input.id, runID: started.runID)
-        } catch {
-            try? await environment.runningInputStore.restoreQueued(id: input.id)
-        }
-        publishSession(conversationID)
+    }
+
+    /// Whether a claimed internal notice row also has its durable same-id
+    /// byte-identical system mirror, so retiring the queue copy cannot hide
+    /// the decision. A failed read is never a fabricated proof.
+    private func internalNoticeRetirementProof(for input: PendingUserInput) async -> Bool {
+        guard let messages = try? await environment.conversationStore.messages(
+            conversationID: input.conversationID) else { return false }
+        var claimable = input
+        claimable.status = .queued
+        return Self.isRetirableInternalNoticeRow(claimable, messages: messages)
     }
 
     private func startPreparedService(
@@ -4294,34 +4931,92 @@ final class ConversationCenter: ObservableObject {
         return nil
     }
 
+    /// Commits the local provider bundle and then attempts the CloudKit
+    /// enqueue as a SEPARATE step. A local SQLite commit followed by a failed
+    /// sync enqueue is a SUCCESS WITH PENDING SYNC, never a failed save: the
+    /// caller shows "saved on this device, waiting for iCloud" with a retry
+    /// instead of claiming the user's edit was lost.
+    ///
+    /// Only the store transaction may throw (nothing was saved); the enqueue
+    /// outcome is returned as `syncPending`/`syncError` with a secret-free
+    /// reason. Existing callers keep `saveProviderBundle`'s strict behavior.
+    func commitProviderBundle(
+        provider: ProviderProfile,
+        models: [ModelProfile],
+        managedCapabilities: ModelCapabilities = .text
+    ) async throws -> ProviderBundleCommitResult {
+        let result = try await environment.configurationStore.saveProviderBundle(
+            provider: provider,
+            models: models,
+            managedCapabilities: managedCapabilities
+        )
+        let syncError: String?
+        do {
+            try await environment.configurationSync.saveProvider(provider)
+            for model in result.saved {
+                try await environment.configurationSync.saveModel(model)
+            }
+            // Disabled-in-place models keep their row and must propagate the
+            // disabled state, never a remote deletion (their job history link
+            // must survive across devices).
+            for disabledID in result.disabledModelIDs {
+                if let disabled = try await environment.configurationStore.model(id: disabledID) {
+                    try await environment.configurationSync.saveModel(disabled)
+                }
+            }
+            for removedID in result.deletedModelIDs {
+                try await environment.configurationSync.deleteModel(id: removedID)
+            }
+            syncError = nil
+        } catch {
+            syncError = SecretRedactor.redact(error.localizedDescription)
+        }
+        await reload()
+        return ProviderBundleCommitResult(
+            saved: result.saved,
+            syncPending: syncError != nil,
+            syncError: syncError
+        )
+    }
+
+    /// Re-queues the CURRENTLY STORED provider bundle into the existing sync
+    /// engine after a local success whose enqueue failed. Reads local truth
+    /// (no frozen request, no secret access); returns a secret-free reason on
+    /// failure, nil on success. Never writes a new store or remote payload.
+    func retryProviderSync(providerID: UUID) async -> String? {
+        do {
+            guard let provider = try await environment.configurationStore.provider(id: providerID) else {
+                throw FloeError.storageCorrupted("The provider no longer exists locally")
+            }
+            try await environment.configurationSync.saveProvider(provider)
+            for model in try await environment.configurationStore.models(providerID: providerID) {
+                try await environment.configurationSync.saveModel(model)
+            }
+            await reload()
+            return nil
+        } catch {
+            return SecretRedactor.redact(error.localizedDescription)
+        }
+    }
+
     @discardableResult
     func saveProviderBundle(
         provider: ProviderProfile,
         models: [ModelProfile],
         managedCapabilities: ModelCapabilities = .text
     ) async throws -> [ModelProfile] {
-        let result = try await environment.configurationStore.saveProviderBundle(
+        let outcome = try await commitProviderBundle(
             provider: provider,
             models: models,
             managedCapabilities: managedCapabilities
         )
-        try await environment.configurationSync.saveProvider(provider)
-        for model in result.saved {
-            try await environment.configurationSync.saveModel(model)
+        if outcome.syncPending, let syncError = outcome.syncError {
+            // Strict legacy behavior preserved for existing callers: a local
+            // commit with a failed enqueue still throws. The committed bytes
+            // are durable, so the caller can retry the sync only.
+            throw FloeError.syncUnavailable(syncError)
         }
-        // Disabled-in-place models keep their row and must propagate the
-        // disabled state, never a remote deletion (their job history link
-        // must survive across devices).
-        for disabledID in result.disabledModelIDs {
-            if let disabled = try await environment.configurationStore.model(id: disabledID) {
-                try await environment.configurationSync.saveModel(disabled)
-            }
-        }
-        for removedID in result.deletedModelIDs {
-            try await environment.configurationSync.deleteModel(id: removedID)
-        }
-        await reload()
-        return result.saved
+        return outcome.saved
     }
 
     func saveModelPreferences(_ preferences: ModelSelectionPreferences) async throws {

@@ -25,6 +25,7 @@ import FloeSecurity
 enum ProviderSavePhaseLogger {
     enum Phase: String {
         case entered
+        case preflight = "preflight"
         case setSync = "set_sync"
         case writeSecret = "write_secret"
         case buildProfile = "build_profile"
@@ -38,6 +39,23 @@ enum ProviderSavePhaseLogger {
     static func log(_ phase: Phase) {
         FloeLogger(category: .providerSave).info("provider save phase \(phase.rawValue)")
     }
+}
+
+/// Which part of the Save lifecycle failed, so the UI can distinguish "nothing
+/// was saved" (preflight rejection, zero side effects) from "local save
+/// failed" (credential/sync state may already have changed) from "saved
+/// locally, CloudKit delivery pending" (the existing sync status surface).
+enum ProviderSaveFailurePhase: Equatable {
+    /// Form validation rejected the input before ANY side effect. The
+    /// keychain, sync preference, database and pending-sync queue are
+    /// untouched; the user's input is preserved in the form.
+    case preflight
+    /// Credential write or sync-preference change ran; the local bundle
+    /// commit then failed. Local configuration is unchanged, but the
+    /// secret/sync setting may have changed.
+    case credentialOrSync
+    /// The SQLite bundle write/readback failed.
+    case localCommit
 }
 
 /// View model for adding or editing one provider.
@@ -93,6 +111,21 @@ final class ProviderEditorViewModel: ObservableObject {
     /// failures keep their own inline context (`errorMessage` / `testState`)
     /// instead of being relabeled as a save failure.
     @Published var saveErrorMessage: String?
+    /// Field-level findings from the last Save preflight. Cleared on every
+    /// Save entry. The form highlights the offending field(s) while the
+    /// rejected text stays in the field (no silent truncation, no reset).
+    @Published private(set) var fieldIssues: [ProviderConfigurationIssue] = []
+    /// Phase of the last save failure, distinguishing a zero-side-effect
+    /// preflight rejection from a failure after the credential/sync write.
+    @Published private(set) var lastFailurePhase: ProviderSaveFailurePhase?
+    /// True when the last save committed locally but CloudKit delivery did
+    /// not complete. Local success, not a failure; the UI shows it as
+    /// "saved, waiting for iCloud" rather than an error.
+    @Published private(set) var lastSaveSyncPending = false
+    /// Secret-free sync-pending detail for the last save, when available.
+    @Published private(set) var lastSaveSyncError: String?
+    /// True while a sync-only retry (no local rewrite) is in flight.
+    @Published private(set) var isRetryingSync = false
 
     let center: ConversationCenter
     /// The provider being edited, or nil when adding a new one.
@@ -235,40 +268,78 @@ final class ProviderEditorViewModel: ObservableObject {
         defaultModelID = center.modelPreferences.defaultAgentModelID
     }
 
-    // MARK: - Build profile
+    // MARK: - Build profile / frozen save request
 
-    /// Builds a ProviderProfile from the editable fields. Never embeds the
-    /// API key — only a SecretReference to its Keychain account.
-    func buildProfile() throws -> ProviderProfile {
-        guard let url = URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            throw FloeError.invalidConfiguration("Invalid base URL")
-        }
-        let hasKey = !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || existing?.secretRef != nil
-        let secretRef = hasKey ? SecretReference(
-            keychainAccount: existing?.secretRef?.keychainAccount
-                ?? "provider.\(providerID.uuidString)",
-            synchronizable: syncEnabled
-        ) : nil
-        let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let profile = ProviderProfile(
-            id: providerID,
+    /// Captures the CURRENT field values synchronously. No suspension points:
+    /// the draft is a consistent snapshot even if fields mutate immediately
+    /// afterwards. Parsed non-secret headers are included.
+    private func makeDraft() -> ProviderSaveDraft {
+        ProviderSaveDraft(
+            providerID: providerID,
             kind: selectedPreset.kind,
             wireProtocol: selectedProtocol,
-            baseURL: url,
-            displayName: trimmedName.isEmpty ? nil : trimmedName,
+            baseURLString: baseURLString,
+            displayName: displayName,
             presetID: existing?.presetID ?? catalogPresetID,
-            secretRef: secretRef,
+            existingSecretRef: existing?.secretRef,
             nonSecretHeaders: Self.parseHeaders(nonSecretHeadersText),
             isEnabled: enabled,
             allowsPlainHTTP: allowsPlainHTTP,
             toolNameCompatibility: toolNameCompatibility,
-            createdAt: existing?.createdAt ?? Date(),
-            updatedAt: Date(),
-            syncRevision: (existing?.syncRevision ?? 0)
+            syncEnabled: syncEnabled,
+            enteredAPIKey: apiKey,
+            selectedModels: selectedModels,
+            managedCapabilities: serviceRole.managedCapabilities,
+            serviceRoleIsConversation: serviceRole == .conversation,
+            defaultModelID: defaultModelID,
+            existingCreatedAt: existing?.createdAt,
+            existingSyncRevision: existing?.syncRevision ?? 0
         )
-        try profile.validate()
-        return profile
+    }
+
+    /// Freezes and validates the complete save content. The returned request
+    /// is the single source of truth for every later side effect (Keychain,
+    /// bundle commit, readback, routing). Field edits landing during the
+    /// subsequent awaits cannot alter a save that already started.
+    func makeSaveRequest() -> Result<ProviderSaveRequest, ProviderConfigurationValidationReport> {
+        makeDraft().makeRequest()
+    }
+
+    /// Complete preflight: returns all field-level issues found; an empty
+    /// array means a save may proceed to side effects. No credential, sync or
+    /// database work.
+    func preflight() -> [ProviderConfigurationIssue] {
+        if case .failure(let report) = makeSaveRequest() { return report.issues }
+        return []
+    }
+
+    /// Builds a ProviderProfile from the editable fields. Never embeds the
+    /// API key — only a SecretReference to its Keychain account. Connection
+    /// test and model discovery use this; Save uses `makeSaveRequest()` so its
+    /// committed content cannot change during awaits.
+    func buildProfile() throws -> ProviderProfile {
+        switch makeSaveRequest() {
+        case .success(let request):
+            return request.profile
+        case .failure(let report):
+            let message = report.issues
+                .map(Self.presentableMessage(for:))
+                .joined(separator: "\n")
+            throw FloeError.invalidConfiguration(message)
+        }
+    }
+
+    /// User-facing message for a validation issue. The App catalog key
+    /// (`providers.validation.*`) wins when present; otherwise the
+    /// bilingual validation-boundary string is used. The rejected input is
+    /// never interpolated into this message.
+    static func presentableMessage(for issue: ProviderConfigurationIssue) -> String {
+        let language = ProviderValidationLanguage.resolve(FloeL10n.currentLanguageCode)
+        let resolved = FloeL10n.localized(key: issue.messageKey, arguments: issue.arguments)
+        if resolved != issue.messageKey {
+            return resolved
+        }
+        return ProviderConfigurationValidation.message(for: issue, language: language)
     }
 
     // MARK: - Test connection
@@ -538,8 +609,29 @@ final class ProviderEditorViewModel: ObservableObject {
 
     // MARK: - Save
 
+    /// Adapter that forwards the runner's fixed phases to the secret-free
+    /// diagnostics logger.
+    private struct SavePhaseReporter: ProviderSavePhaseReporting {
+        func providerSaveReachedPhase(_ phase: ProviderSavePhaseEvent) {
+            switch phase {
+            case .setSync: ProviderSavePhaseLogger.log(.setSync)
+            case .writeSecret: ProviderSavePhaseLogger.log(.writeSecret)
+            case .bundleSave: ProviderSavePhaseLogger.log(.bundleSave)
+            case .readback: ProviderSavePhaseLogger.log(.readback)
+            }
+        }
+    }
+
     /// Persists the secret (Keychain), provider profile and models, and
     /// applies the iCloud Keychain sync preference.
+    ///
+    /// Ordering contract: the COMPLETE content is frozen and validated
+    /// synchronously first (`makeSaveRequest`). On failure no side effect
+    /// happens — no Keychain write, no sync-preference change, no SQLite
+    /// write, no pending sync record — and the user's input stays on screen
+    /// with field-level findings. The frozen request is the only content used
+    /// by the credential write, local bundle commit, readback and routing
+    /// update, so edits landing during awaits cannot change what gets saved.
     @discardableResult
     func save() async -> Bool {
         // Reentrancy guard: a second Save (double tap / repeated presses
@@ -549,76 +641,163 @@ final class ProviderEditorViewModel: ObservableObject {
         defer { isSaving = false }
         errorMessage = nil
         saveErrorMessage = nil
+        fieldIssues = []
+        lastFailurePhase = nil
+        lastSaveSyncPending = false
+        lastSaveSyncError = nil
         ProviderSavePhaseLogger.log(.entered)
+
+        // 1) Freeze + validate synchronously, BEFORE any suspension point or
+        // side effect. Field edits after this point cannot affect this save.
+        let request: ProviderSaveRequest
+        switch makeSaveRequest() {
+        case .success(let frozen):
+            request = frozen
+        case .failure(let report):
+            fieldIssues = report.issues
+            lastFailurePhase = .preflight
+            let message = report.issues
+                .map { Self.presentableMessage(for: $0) }
+                .joined(separator: "\n")
+            ProviderSavePhaseLogger.log(.failed)
+            errorMessage = SecretRedactor.redact(message)
+            saveErrorMessage = SecretRedactor.redact(message)
+            return false
+        }
+
+        // 2) Run the frozen request through the ordering-guaranteed runner.
+        let runner = ProviderSaveRunner(
+            secretStore: KeychainSecretGateway(store: secretStore),
+            committer: ConversationCenterProviderSaveGateway(center: center),
+            phaseReporter: SavePhaseReporter()
+        )
+        let canonical: [ModelProfile]
         do {
-            ProviderSavePhaseLogger.log(.setSync)
-            try await secretStore.setSyncEnabled(syncEnabled, for: providerID)
-            ProviderSavePhaseLogger.log(.writeSecret)
-            try await persistSecretIfNeeded()
-            ProviderSavePhaseLogger.log(.buildProfile)
-            let profile = try buildProfile()
-            ProviderSavePhaseLogger.log(.bundleSave)
-            let saved = try await center.saveProviderBundle(
-                provider: profile,
-                models: selectedModels,
-                managedCapabilities: serviceRole.managedCapabilities
-            )
-            ProviderSavePhaseLogger.log(.readback)
-            // Persisted readback BEFORE reporting success: re-read the provider
-            // and selected models from the store and fail visibly if the bytes
-            // on disk do not match what the user just entered.
-            if let reason = await center.verifyProviderPersisted(
-                provider: profile, selectedModels: selectedModels) {
-                ProviderSavePhaseLogger.log(.readbackFailed)
-                throw FloeError.invalidConfiguration(reason)
+            let result = try await runner.run(request)
+            switch result {
+            case .committed(let savedModels, let syncPending, let syncError):
+                canonical = savedModels
+                lastSaveSyncPending = syncPending
+                lastSaveSyncError = syncError
             }
-            ProviderSavePhaseLogger.log(.completed)
-            // Auxiliary-model routing is owned by AuxiliaryModelsView. Saving
-            // an image/video provider must not rewrite the conversation-model
-            // preference and create a cross-device last-writer-wins conflict.
-            if serviceRole == .conversation {
-                var preferences = center.modelPreferences
-                if let chosen = defaultModelID,
-                   enabled,
-                   let staged = selectedModels.first(where: {
-                       $0.id == chosen && $0.isEnabled && $0.isVisibleInPrimaryPicker
-                   }),
-                   let canonical = saved.first(where: {
-                       $0.remoteModelID == staged.remoteModelID
-                           && $0.isEnabled
-                           && $0.isVisibleInPrimaryPicker
-                   }) {
-                    preferences.defaultAgentModelID = canonical.id
-                } else if preferences.defaultAgentModelID == nil,
-                          let first = center.availableAgentModels.first {
-                    preferences.defaultAgentModelID = first.id
-                } else if let current = preferences.defaultAgentModelID,
-                          !center.availableAgentModels.contains(where: { $0.id == current }) {
-                    preferences.defaultAgentModelID = center.availableAgentModels.first?.id
+        } catch let error as ProviderSaveRunError {
+            switch error {
+            case .credentialOrSync:
+                lastFailurePhase = .credentialOrSync
+            case .localCommit, .readbackMismatch:
+                lastFailurePhase = .localCommit
+            case .invalidRequest(let problems):
+                // Defense-in-depth gate: the frozen request was built and
+                // validated by makeSaveRequest, so reaching this means the
+                // canonical rule changed or a caller bypassed the draft.
+                // Nothing was written; surface every field-level finding.
+                lastFailurePhase = .preflight
+                fieldIssues = problems.map {
+                    ProviderConfigurationIssue(
+                        field: .form, problem: $0,
+                        messageKey: "providers.validation.invalid"
+                    )
                 }
-                if preferences.defaultAgentModelID != nil {
-                    preferences.onboardingStatus = .completed
-                }
-                try await center.saveModelPreferences(preferences)
+            case .concurrentSaveRejected:
+                // Another save for this provider is still in flight. Nothing
+                // was written by THIS attempt; the user can retry once the
+                // in-flight save finishes.
+                lastFailurePhase = .preflight
             }
-            return true
+            ProviderSavePhaseLogger.log(.failed)
+            let message: String
+            switch error {
+            case .invalidRequest(let problems):
+                let language: ProviderValidationLanguage = FloeL10n.isChinese ? .chinese : .english
+                let details = problems.map {
+                    ProviderConfigurationValidation.message(
+                        for: ProviderConfigurationIssue(
+                            field: .form, problem: $0,
+                            messageKey: "providers.validation.invalid"
+                        ),
+                        language: language
+                    )
+                }
+                message = ([FloeL10n.l("providers.save.invalid_request")] + details)
+                    .joined(separator: "\n")
+            case .concurrentSaveRejected:
+                message = FloeL10n.l("providers.save.concurrent_rejected")
+            default:
+                message = error.localizedDescription
+            }
+            errorMessage = SecretRedactor.redact(message)
+            saveErrorMessage = SecretRedactor.redact(message)
+            return false
         } catch {
+            lastFailurePhase = .localCommit
             ProviderSavePhaseLogger.log(.failed)
             let message = SecretRedactor.redact(error.localizedDescription)
             errorMessage = message
             saveErrorMessage = message
             return false
         }
+
+        // 3) Routing preference, computed from the FROZEN request and the
+        // canonical stored models — never re-reading mutable editor fields.
+        ProviderSavePhaseLogger.log(.completed)
+        if request.serviceRoleIsConversation {
+            var preferences = center.modelPreferences
+            var appliedChosenDefault = false
+            if case .chosen(let remoteModelID) = request.defaultModelIntent,
+               request.providerEnabled,
+               let canonicalModel = canonical.first(where: {
+                   $0.remoteModelID == remoteModelID
+                       && $0.isEnabled
+                       && $0.isVisibleInPrimaryPicker
+               }) {
+                preferences.defaultAgentModelID = canonicalModel.id
+                appliedChosenDefault = true
+            }
+            if !appliedChosenDefault {
+                // Legacy fallback chain (unchanged): fill a missing default
+                // with the first available agent model, or repair one whose
+                // model disappeared.
+                if preferences.defaultAgentModelID == nil,
+                   let first = center.availableAgentModels.first {
+                    preferences.defaultAgentModelID = first.id
+                } else if let current = preferences.defaultAgentModelID,
+                          !center.availableAgentModels.contains(where: { $0.id == current }) {
+                    preferences.defaultAgentModelID = center.availableAgentModels.first?.id
+                }
+            }
+            if preferences.defaultAgentModelID != nil {
+                preferences.onboardingStatus = .completed
+            }
+            do {
+                try await center.saveModelPreferences(preferences)
+            } catch {
+                // The provider bundle itself committed and read back. A
+                // preference-save failure is surfaced honestly but must not
+                // look like the provider failed to save.
+                let message = SecretRedactor.redact(error.localizedDescription)
+                errorMessage = message
+            }
+        }
+        return true
     }
 
-    // MARK: - Secret handling
-
-    /// Writes the API key to Keychain when the user entered one. The key
-    /// never touches the database or any persisted UI state.
-    private func persistSecretIfNeeded() async throws {
-        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty, let data = key.data(using: .utf8) else { return }
-        try await secretStore.storeSecret(data, scope: .provider(providerID))
+    /// Retries ONLY the CloudKit enqueue for the provider bundle that already
+    /// committed locally. Uses the currently stored local truth (no frozen
+    /// request, no secret write, no new sync store); on success the pending
+    /// state clears, on failure the exact secret-free reason stays visible.
+    @discardableResult
+    func retrySync() async -> Bool {
+        guard !isRetryingSync else { return false }
+        isRetryingSync = true
+        defer { isRetryingSync = false }
+        if let failure = await center.retryProviderSync(providerID: providerID) {
+            lastSaveSyncPending = true
+            lastSaveSyncError = failure
+            return false
+        }
+        lastSaveSyncPending = false
+        lastSaveSyncError = nil
+        return true
     }
 
     // MARK: - Header parsing

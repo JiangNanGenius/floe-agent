@@ -1,4 +1,4 @@
-<!-- docs-updated: 2026-10-09 -->
+<!-- docs-updated: 2026-10-11 -->
 <!-- doc-anchor: section-1 -->
 # Floe Agent User Manual
 
@@ -30,6 +30,8 @@ For a first task, configure a model, create a test conversation, attach a synthe
 Open Settings → Model Providers. Add the endpoint, wire protocol, actual model ID and API credential supplied by your provider. Test the configuration, enable both provider and model, choose the default Agent model, then verify the model label on New Task.
 
 If a model is missing, check provider/model switches and “Hide from main model list.” Hiding preserves auxiliary uses; disabling prevents new selections. Provider calls may incur third-party charges. Credentials belong in Keychain, never project files, screenshots or public issues.
+
+Floe validates the form before it writes anything. An invalid field is reported in your language, no write starts and the form keeps its content. A local save and an iCloud upload are reported separately: “Saved on this device; iCloud sync is pending” means the configuration is committed locally and the upload can be retried — it is not a failed save, and you do not need to re-enter an API key. Remote records that fail validation are skipped while the local copy is kept.
 
 <!-- doc-anchor: section-5 -->
 ### Vision, generation and image editing
@@ -63,7 +65,7 @@ Authorize external folders through the system file picker; writing a path in cha
 
 Return inserts a new line; Command+Return sends where supported. Expand the composer for a long prompt; it edits the same draft. Messages during a run can correct requirements without creating another task.
 
-After background interruption, return to the original task, inspect the last tool receipt and use Resume or send “Continue.” Verify uncertain uploads, submissions or other side effects before repeating them. Returning to the foreground does not mean an old process survived.
+After background interruption, return to the original task, inspect the last tool receipt and use Resume or send “Continue.” Verify uncertain uploads, submissions or other side effects before repeating them. Returning to the foreground does not mean an old process survived. A bounded pause or an unknown side-effect outcome needs deliberate recovery: inspect or reconcile the last receipt, then resume. A read-only check alone does not automatically re-arm paused work.
 
 Scroll up to read history without following new output; return to the bottom to resume following. Long-press tasks for batch archive/delete. Archive organizes tasks; check workspace consequences before deletion.
 
@@ -199,7 +201,7 @@ During takeover, the agent may continue analysis and other authorized tools, but
 
 Open a supported DXF/DWG, mesh or PCB manufacturing file and wait for actual content. Open Full Screen Preview and inspect layers, zoom and orientation. Preserve the original and error message if rendering fails.
 
-Editable local DXF/DWG files expose Edit for selecting entities and adding lines, circles, arcs, polylines, text, dimensions and leaders, with layers, object snap, measuring, trim/extend/offset and numeric move/copy/rotate/scale/mirror. Check save/reopen on a copy first. CAD and Office drawing tools differ; format preservation and pen behavior depend on the actual engine/output. Save re-encodes and re-verifies the drawing before overwriting; 3D, blocks, xrefs, splines and proxy content stay read-only and are never flattened. Undefined units stay drawing units.
+Editable local DXF/DWG files expose Edit for selecting entities and adding lines, circles, arcs, polylines, text, dimensions and leaders, with layers, object snap, measuring, trim/extend/offset and numeric move/copy/rotate/scale/mirror. Check save/reopen on a copy first. CAD and Office drawing tools differ; format preservation and pen behavior depend on the actual engine/output. Save re-encodes and re-verifies the drawing before overwriting; 3D entities, blocks, xrefs, splines and proxy content stay read-only and are never flattened. Undefined units stay drawing units. Editing a drawing is not native 3D modeling: only Canvas 3D model nodes (§15) open the 3D workbench, and not every 3D file can be edited.
 
 Open **Drawing Assistant** to ask about the current drawing or selection, measure and inspect geometry. It can locate and highlight entities and show additions, changes and deletions in color. Review the preview and confirm to apply; changes can be undone. Save manual edits before applying a proposal.
 
@@ -216,7 +218,7 @@ Create a canvas in Creative Mode, add text/images/generation nodes, connect inpu
 
 In the media workspace, select a file, configure crop, trim, subtitles or export format, preview and export. Play the output to check duration, audio, captions and framing. Preserve originals. Image generation, image editing, video generation and local conversion are different capabilities with different providers/quotas. See [Canvas architecture](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md).
 
-Double-click a `.dwg` or `.dxf` node to open the CAD editor. Finish updates the original node; Make Variant creates a new node. Unsaved edits remain as a draft when you close the editor and can be resumed on reopening. Canvas backups include media projects, assets and CAD drafts.
+Double-click a `.dwg` or `.dxf` drawing node to open its drawing editor. Finish updates the original node; Make Variant creates a new node. Unsaved edits remain as a draft when you close the editor and can be resumed on reopening. Entering full screen re-parents the same live session — undo history and unsaved edits are preserved. Canvas backups include media projects, assets and CAD drafts.
 
 <!-- doc-anchor: section-29 -->
 ### Media workbench: projects, editing and export
@@ -233,6 +235,40 @@ never squeezed into a strip.
 - **Save and resume**: projects save automatically. Use the toolbar folder button to open saved projects with their layers, timeline and edit history. Opening the same source again lets you resume editing or start a new project.
 - **Export**: choose PNG, JPEG or HEIC for images, with size and quality options; choose H.264 or HEVC for video, with resolution and frame-rate options. Files go to `Workbench/Exports` in the workspace. Use Share / Save to Files after export.
 - **AI**: open the AI drawer, choose your assets and model, then review parameters and costs before submitting. Accept a candidate to add it as a new layer or clip; you can still undo it. Jobs and candidates remain after closing the workbench. If generation is interrupted, check its status before resubmitting a paid request.
+
+### 3D models: one unified workbench
+
+Within a canvas, Floe has one 3D creation entry: open the bottom insertion menu (**+ ▸ 3D Model (unified workbench)**). It creates a native `.floecad` node owned by the canvas and opens the same full-screen workbench used by File Preview. **3D Panorama** stays a separate viewer node for panoramic images.
+
+- **Edit**: double-click the node or use its edit action. The workbench works on the same live document session; **Done** closes it. Closing does not change the canvas node — **Apply to canvas** writes the updated model back to the original bound node (id, name, position, size and connections are kept), and **Make variant** creates a new node while the original stays unchanged. If the document is not bound to a node yet, **Add to canvas** asks you to pick the destination canvas; Floe never guesses one. If you opened the document from File Preview and more than one node references it, Floe refuses to guess and asks you to open it from the intended canvas node.
+- **New model: Cancel vs Save & Keep**: when the bottom **+ ▸ 3D Model** entry creates a model, the workbench opens with **Cancel** and **Save & Keep** until you accept it. **Cancel** removes the just-created node and its on-device document when you have not edited it — no empty node or orphan file is left behind. If you already edited the draft (or its bytes can no longer be verified), **Cancel** keeps it as a recoverable draft and says so. **Save & Keep** keeps the valid document and the node binding; it is a save/keep action, never a discard.
+- **Legacy 3D scenes**: existing 3D scene nodes keep a read-only preview and are converted only when you explicitly open one for editing. The **3D scene migration** sheet then shows the known visual differences before the workbench opens.
+- **What conversion keeps**: node id, name, position, size and connections; per-object transforms, materials and hidden state; camera, lights and background. The five legacy primitives (rounded box, sphere, cylinder, cone, thin plane slab) become real meshes in the workbench's millimetre units (legacy metres ×1000). No fake parametric feature history is invented.
+- **Recoverable original**: the exact legacy scene and the whole node are backed up on this device before conversion. Keep the app data until you have checked the converted model.
+- **Known differences**: lighting intensity is normalized to the workbench scale (exact values stay in the backup), and shadows use a planar ground projection instead of the legacy shadow map.
+- **If it cannot convert**: nothing is written. The sheet lists the exact unusable values (for example a non-finite number, a zero/negative or out-of-range scale, an invalid colour, camera or light, or duplicate object ids) and the node keeps its read-only preview.
+
+See [unified 3D and design migration](FLOE_UNIFIED_DESIGN_MIGRATION.md) for the step-by-step conversion and recovery notes. Imported DWG/DXF drawings are not native 3D models: only their 2D entities are editable.
+
+### Design workflow from four entrances
+
+The same design workflow (brief → spec → frozen input → candidate → adopt/reject/variant → verified export) is available without creating another workspace:
+
+1. **Creative start**: Canvas home → Quick Start → **Design request (brief / spec)**, then choose the content type. The request is saved before any material exists.
+2. **Current file**: open a workspace file in File Preview → **Design workflow**. Live workspace files only; cloud/network copies are read-only and have no design owner.
+3. **Chat attachment**: long-press (or right-click) a message with a file or image attachment → **Design from this attachment**. The adopted result returns as a new attachment in that same original task; the original attachment is never modified.
+4. **Canvas node**: canvas view menu (⋯) → **Design workflow** — the existing Canvas panel.
+
+What to check in the panel:
+
+- Save the brief/spec, then **Freeze current source** so later edits cannot change what a run is based on.
+- A creative request starts with one goal/audience editor and one **Save request** action (the requested output type is shown in human-readable form). The request is stored before any material exists; the brief and spec stay editable after saving, including while the first result is pending, and later edits still cannot change an already frozen run.
+- Candidates are proposals. **Compare** shows the bounded diff; **Adopt** updates the source in place where Floe may write it, or returns new content for read-only sources. **Reject** leaves the source unchanged; **Restore previous revision** appends a recovery revision instead of overwriting history.
+- Assistant adoption needs your explicit confirmation in the panel (**Authorize assistant (update original / variant)**): a single-use grant bound to that candidate and mode, delivered to the originating task only. The assistant itself cannot approve a change; a target with no originating task offers the direct adopt instead. If the app restarts before the assistant uses the confirmation, or a claimed attempt fails, confirm again — the grant is single-use and is not silently re-armed.
+- Anchored feedback resolves only against a real, verified content change — text alone does not complete it. If the source moved after freezing, use **Relocate anchor** and review the conflict; nothing is overwritten silently.
+- First-result generation is offered only for capabilities that are actually connected (for now, image generation when a model is configured). A type without a real route shows an honest, localized reason instead of a dead button; for image output with no configured model the panel points to Settings → Models. No result is promised for output kinds Floe cannot generate. If a generation outcome is unknown, Floe does not resubmit it automatically — discard the unknown attempt explicitly to start a new one. If a published result can no longer be read on this device, the request shows an explicit missing-result state and offers only an acknowledged replacement (a new provider request that may be charged) or an acknowledged discard; a bind is never claimed from the stale record. Stopping a generation before the provider call is reported as a definite cancel (nothing was generated); only a stop after dispatch is an unknown remote outcome. A result generated while the design changed is retained and can be bound to the current revision.
+
+See [design workflow](FLOE_DESIGN_WORKFLOW.md) and [design workflow tool contract](DESIGN_WORKFLOW_TOOLS.md).
 
 <!-- doc-anchor: section-20 -->
 ## 16. Voice input and transcription
@@ -271,6 +307,9 @@ Manage fonts, documents, environments and diagnostics in Settings. Imported font
 | Grey voice waveform | Permission, route, preparation | Stop/retry once, then collect diagnostics |
 | Text search misses a document | Index and format | Reindex and inspect OCR results |
 | Saved contents differ | Conflicts and recovery copies | Compare versions; preserve the only original |
+| Legacy 3D scene cannot be converted | The reasons listed in the “3D scene migration” sheet | Fix the listed value, or keep the read-only legacy preview; the original is preserved |
+| Provider saved but not synced | “Saved on this device; iCloud sync is pending” | Retry iCloud sync; do not re-enter the key |
+| 3D drawing file not editable in the workbench | Imported drawing vs native 3D model | Only Canvas 3D model nodes open the workbench; drawing 3D entities stay read-only |
 | App crashes | Build, time and reproduction | Supply matching device diagnostics |
 
 <!-- doc-anchor: section-24 -->

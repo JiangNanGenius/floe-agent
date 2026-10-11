@@ -324,11 +324,112 @@ actor CanvasToolCoordinator {
         guard current.id == patch.canvasID else {
             throw FloeError.validationFailed("The run cannot modify a different canvas")
         }
-        let (updated, result) = try CanvasCommandService.applying(patch, to: current)
-        try persistUndoSnapshot(current, token: result.undoToken)
-        try await repository.save(updated, expectedRevision: current.revision)
+        // Legacy compatibility (T2/T6 contract): a `create` op with
+        // `nodeKind: scene3D` must NOT materialize a legacy scene payload.
+        // It is routed to the unified native 3D creation (one canvas-owned
+        // `.floecad` document opened by the same workbench) and dropped from
+        // the patch. Content-style updates to an UNMIGRATED legacy scene are
+        // refused with the migration instruction instead of letting the model
+        // write a second, parallel scene state; descriptor fields (name,
+        // position, size, rotation, lock) still apply.
+        let legacyCreates = patch.operations.filter {
+            $0.kind == .create && $0.nodeKind == .scene3D
+        }
+        var sanitized = patch
+        var createdNodeIDs: [UUID] = []
+        if !legacyCreates.isEmpty {
+            sanitized.operations = patch.operations.filter {
+                !($0.kind == .create && $0.nodeKind == .scene3D)
+            }
+            for op in legacyCreates {
+                let created = try await createNativeCADNode(
+                    canvasID: patch.canvasID,
+                    documentID: patch.documentID,
+                    position: op.position ?? CanvasPoint(x: 120, y: 120))
+                createdNodeIDs.append(created)
+                // The caller's text becomes the node's display name through
+                // the SAME patch primitives (descriptor-only update).
+                if let text = op.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let live = try await project(for: runID)
+                    let rename = CanvasPatch(
+                        canvasID: patch.canvasID, documentID: patch.documentID,
+                        expectedRevision: live.revision,
+                        operations: [CanvasPatchOperation(
+                            kind: .update, nodeID: created, text: text)])
+                    let (renamed, renameResult) = try CanvasCommandService.applying(rename, to: live)
+                    try persistUndoSnapshot(live, token: renameResult.undoToken)
+                    try await repository.save(renamed, expectedRevision: live.revision)
+                }
+            }
+        }
+        try rejectParallelLegacySceneMutations(sanitized.operations, in: current)
+
+        guard !sanitized.operations.isEmpty else {
+            // Only routed creations: report the real revision the unified
+            // creation already committed; no empty patch is ever applied.
+            let published = try await project(for: runID)
+            return CanvasOperationResult(
+                canvasID: patch.canvasID,
+                documentID: patch.documentID,
+                previousRevision: current.revision,
+                revision: published.revision,
+                changedNodeIDs: createdNodeIDs,
+                changedConnectionIDs: [])
+        }
+        // Routed creations advanced the revision: re-anchor the remaining ops
+        // to the live project instead of the stale request revision.
+        let anchor = try await project(for: runID)
+        sanitized.expectedRevision = anchor.revision
+        let (updated, result) = try CanvasCommandService.applying(sanitized, to: anchor)
+        try persistUndoSnapshot(anchor, token: result.undoToken)
+        try await repository.save(updated, expectedRevision: anchor.revision)
         await notify(canvasID: current.id)
-        return result
+        guard !createdNodeIDs.isEmpty else { return result }
+        var merged = result
+        merged.changedNodeIDs = Array(Set(result.changedNodeIDs).union(createdNodeIDs))
+            .sorted { $0.uuidString < $1.uuidString }
+        return merged
+    }
+
+    /// Creates ONE native canvas-owned 3D document through the same bridge the
+    /// bottom "+ ▸ 3D Model" entry uses and returns the committed node id.
+    private func createNativeCADNode(
+        canvasID: UUID, documentID: UUID, position: CanvasPoint
+    ) async throws -> UUID {
+        let result = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: canvasID, documentID: documentID,
+            position: position, assetStore: assetStore)
+        guard let nodeID = result.nodeID else {
+            throw FloeError.validationFailed(result.message)
+        }
+        return nodeID
+    }
+
+    /// A migrated/native node's authoritative content lives in its `.floecad`
+    /// package; an unmigrated legacy scene's authoritative content lives in
+    /// the embedded `scene3D` payload (migrated on first real edit). Neither
+    /// may be mutated in parallel through the legacy descriptor patch.
+    private func rejectParallelLegacySceneMutations(
+        _ operations: [CanvasPatchOperation], in project: CanvasProject
+    ) throws {
+        let nodes = project.documents.flatMap(\.nodes)
+        for operation in operations where operation.kind == .update {
+            guard let nodeID = operation.nodeID,
+                  let node = nodes.first(where: { $0.id == nodeID }) else { continue }
+            let carriesContent = operation.asset != nil
+                || operation.generationJobID != nil
+                || operation.metadata != nil
+                || operation.removedMetadataKeys != nil
+            guard carriesContent else { continue }
+            if CADCanvasNodePlanner.isNativeCADNode(node) {
+                throw FloeError.validationFailed(
+                    "This 3D node is bound to a native CAD document; content edits are not part of canvas.applyOperations. Edit it in the unified 3D workbench (canvas.design/native CAD tools).")
+            }
+            if node.kind == .scene3D {
+                throw FloeError.validationFailed(
+                    "This is a legacy 3D scene; its embedded scene is read-only here. Open it in the workbench to migrate it on first edit, then apply changes through the native CAD commands.")
+            }
+        }
     }
 
     func searchAssets(query: String?, kinds: Set<MediaKind>, limit: Int) async throws -> [CreativeAssetRecord] {
@@ -879,6 +980,11 @@ struct CanvasInspectionPage: Encodable {
         var id: UUID; var kind: CanvasNodeKind; var text: String
         var position: CanvasPoint; var size: CanvasSize
         var groupID: UUID?; var isLocked: Bool; var assetID: UUID?
+        /// `legacyUnchanged` | `migrated` | `conflict` for legacy scenes.
+        var migrationState: String?
+        /// Actual native `.floecad` package binding recorded on the node.
+        var nativePackagePath: String?
+        var nativePackageHash: String?
     }
     struct Connection: Encodable {
         var id: UUID; var sourceNodeID: UUID; var destinationNodeID: UUID
@@ -898,7 +1004,7 @@ private struct CanvasInspectTool: AgentTool {
         var afterNodeID: UUID?; var limit: Int?
     }
     static let name = "canvas.getState"
-    static let toolDescription = "Inspect the active canvas, selected nodes and relationships before editing."
+    static let toolDescription = "Inspect the active canvas, selected nodes and relationships before editing. Each legacy 3D node reports its real migrationState (legacyUnchanged/migrated/conflict) and every native CAD node its actual .floecad package binding, so 3D nodes route to the unified workbench instead of a parallel scene."
     static let parametersJSON = #"{"type":"object","properties":{"documentID":{"type":"string","format":"uuid"},"selectedNodeIDs":{"type":"array","items":{"type":"string","format":"uuid"}},"afterNodeID":{"type":"string","format":"uuid"},"limit":{"type":"integer","minimum":1,"maximum":30}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false
@@ -933,15 +1039,21 @@ private struct CanvasInspectTool: AgentTool {
         let limit = min(args.limit ?? 8, 24)
         let visible = Array(eligible.prefix(limit))
         let visibleIDs = Set(visible.map(\.id))
+        let contextByNodeID = Dictionary(
+            uniqueKeysWithValues: (snapshot.nodeMetadata ?? []).map { ($0.nodeID, $0) })
         let page = CanvasInspectionPage(
             canvasID: snapshot.canvasID, documentID: snapshot.documentID,
             revision: snapshot.revision, viewport: snapshot.viewport,
             selectedNodeIDs: snapshot.selectedNodeIDs,
-            nodes: visible.map {
-                .init(
-                    id: $0.id, kind: $0.kind, text: String($0.text.prefix(180)),
-                    position: $0.position, size: $0.size, groupID: $0.groupID,
-                    isLocked: $0.isLocked, assetID: $0.asset?.id
+            nodes: visible.map { node in
+                let context = contextByNodeID[node.id]
+                return CanvasInspectionPage.Node(
+                    id: node.id, kind: node.kind, text: String(node.text.prefix(180)),
+                    position: node.position, size: node.size, groupID: node.groupID,
+                    isLocked: node.isLocked, assetID: node.asset?.id,
+                    migrationState: context?.migrationState,
+                    nativePackagePath: context?.nativePackagePath,
+                    nativePackageHash: context?.nativePackageHash
                 )
             },
             connections: snapshot.connections.compactMap {
@@ -966,7 +1078,7 @@ private struct CanvasInspectTool: AgentTool {
 private struct CanvasApplyPatchTool: AgentTool {
     struct Arguments: Decodable, Sendable { var patch: CanvasPatch }
     static let name = "canvas.applyOperations"
-    static let toolDescription = "Atomically create, edit, connect, group or arrange nodes on the active canvas. Pass the latest observed or returned revision. Returns the new revision plus changed nodes/connections and removed IDs for immediate reuse. Deletion is approval-gated."
+    static let toolDescription = "Atomically create, edit, connect, group or arrange nodes on the active canvas. Pass the latest observed or returned revision. Returns the new revision plus changed nodes/connections and removed IDs for immediate reuse. Deletion is approval-gated. A create operation with nodeKind scene3D is routed to the unified native 3D workbench (one canvas-owned document, same editor as CAD); the legacy embedded scene cannot be written through this tool. Legacy scene nodes migrate on first real edit in the workbench; only descriptor fields (name/position/size/rotation/lock) may be updated here."
     static let parametersJSON = #"{"type":"object","properties":{"patch":{"type":"object","properties":{"canvasID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"expectedRevision":{"type":"integer"},"operations":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"id":{"type":"string","format":"uuid"},"kind":{"type":"string","enum":["create","update","delete","connect","disconnect","group","ungroup","arrange"]},"nodeID":{"type":"string","format":"uuid"},"nodeIDs":{"type":"array","items":{"type":"string","format":"uuid"}},"nodeKind":{"type":"string","enum":["text","stickyNote","card","shape","image","video","audio","file","group","generationTask","scene3D"]},"text":{"type":"string"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"size":{"type":"object","properties":{"width":{"type":"number"},"height":{"type":"number"}},"required":["width","height"],"additionalProperties":false},"rotation":{"type":"number"},"isLocked":{"type":"boolean"},"shape":{"type":"string","enum":["rectangle","roundedRectangle","ellipse","diamond","triangle"]},"sourceNodeID":{"type":"string","format":"uuid"},"destinationNodeID":{"type":"string","format":"uuid"},"connectionID":{"type":"string","format":"uuid"},"sourcePort":{"type":"string","enum":["top","trailing","bottom","leading"]},"destinationPort":{"type":"string","enum":["top","trailing","bottom","leading"]},"label":{"type":"string"},"arrangement":{"type":"string","enum":["horizontal","vertical"]}},"required":["kind"],"additionalProperties":false}}},"required":["canvasID","documentID","expectedRevision","operations"],"additionalProperties":false}},"required":["patch"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true

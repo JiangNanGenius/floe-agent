@@ -80,7 +80,11 @@ public actor ModelConfigurationStore {
         models: [ModelProfile],
         managedCapabilities: ModelCapabilities = .text
     ) async throws -> ProviderBundleResult {
-        try provider.validate()
+        // Complete preflight BEFORE opening the write transaction so an
+        // invalid provider or model can never leave a partially mutated
+        // configuration behind. The same rules run again inside the
+        // transaction as defense in depth.
+        try ProviderConfigurationValidation.validate(provider)
         for model in models { try ConfigurationCodec.validate(model) }
         return try await database.writer { db in
             try ConfigurationCodec.write(provider, to: db)
@@ -467,21 +471,9 @@ enum ConfigurationCodec {
     }
 
     static func validate(_ model: ModelProfile) throws {
-        guard !model.remoteModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw FloeError.invalidConfiguration("Remote model identifier cannot be empty")
-        }
-        guard !model.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw FloeError.invalidConfiguration("Model display name cannot be empty")
-        }
-        guard model.limits.contextTokens > 0, model.limits.maxOutputTokens >= 0 else {
-            throw FloeError.invalidConfiguration(
-                "Model context must be positive and maximum output cannot be negative"
-            )
-        }
-        guard model.limits.maxOutputTokens == 0
-                || model.limits.maxOutputTokens <= model.limits.contextTokens else {
-            throw FloeError.invalidConfiguration("Maximum output cannot exceed model context")
-        }
+        // Canonical model rules (shared with editor preflight and CloudKit
+        // apply); throws the legacy FloeError wording on violation.
+        try ProviderConfigurationValidation.validate(model)
     }
 
     static func write(_ model: ModelProfile, to db: Database) throws -> ModelProfile {

@@ -520,6 +520,17 @@ targets:
       - path: Tests/FloeAppTests/SourceControlRootIdentityTests.swift
       - path: Tests/FloeAppTests/IDEMarkdownOutlineTests.swift
       - path: Tests/FloeAppTests/ComposerTests.swift
+      - path: Tests/FloeAppTests/ProviderSaveRegressionTests.swift
+      - path: Tests/FloeAppTests/T6IntegrationTests.swift
+      - path: Tests/FloeAppTests/T6PublicationPortTests.swift
+      - path: Tests/FloeAppTests/T6CreativeAuthorityTests.swift
+      - path: Tests/FloeAppTests/T6CreativeMaterialLinkTests.swift
+      - path: Tests/FloeAppTests/T6DurableGenerationTests.swift
+      - path: Tests/FloeAppTests/T6ConfirmationDeliveryTests.swift
+      # T5 shared design AI tools: the production-behavior suite compiles into
+      # the existing FloeAppTests bundle (no new target, same App host; T7
+      # executes it against the real App composition).
+      - path: Qualification/DesignTools
       - path: Tests/FloeAppTests/ExternalWorkspaceTemplateAccessTests.swift
       - path: Tests/FloeAppTests/WorkbenchAIReviewTests.swift
       - path: Tests/FloeAppTests/WorkbenchExportDeliveryTests.swift

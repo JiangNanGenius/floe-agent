@@ -19,12 +19,19 @@ struct AssistantMessageView: View {
     /// reparse instead of full-document parse per token).
     var isStreaming: Bool = false
     var onSaveToNotes: ((String) -> Void)? = nil
+    /// Real file/image parts carried by the assistant notice. A returned
+    /// adopted design result renders through this SAME shared chip surface
+    /// (image parts keep the image icon), never through a second path.
+    var attachments: [AttachmentChipItem] = []
 
     @EnvironmentObject private var speechService: SpeechService
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             MarkdownRendererView(source: text, isStreaming: isStreaming)
+            if !attachments.isEmpty {
+                AttachmentChipRow(items: attachments, alignment: .leading)
+            }
             if !isStreaming, !text.isEmpty {
                 HStack(spacing: 12) {
                     readAloudButton

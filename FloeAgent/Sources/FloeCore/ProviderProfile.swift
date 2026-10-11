@@ -112,49 +112,14 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
 
     /// Validates invariants enforced by the security model.
     /// - Throws: `FloeError.invalidConfiguration` on violation.
+    ///
+    /// The rule set lives in `ProviderConfigurationValidation` (shared by
+    /// editor preflight, local store and CloudKit apply). This entry point
+    /// preserves the exact legacy error strings callers and tests rely on;
+    /// callers that need field-level, bilingual reporting should use
+    /// `ProviderConfigurationValidation.issues(for:)` directly.
     public func validate() throws {
-        if let displayName {
-            let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty,
-                  trimmed.utf8.count <= 256,
-                  !trimmed.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
-            else {
-                throw FloeError.invalidConfiguration(
-                    "Provider display name must be 1...256 bytes without control characters"
-                )
-            }
-        }
-        guard baseURL.user == nil, baseURL.password == nil else {
-            throw FloeError.invalidConfiguration(
-                "Endpoint credentials belong in Keychain, not in the URL"
-            )
-        }
-        let forbiddenHeaders: Set<String> = [
-            "authorization", "proxy-authorization", "x-api-key", "api-key",
-            "x-auth-token", "x-amz-security-token", "cookie", "set-cookie"
-        ]
-        if let forbidden = nonSecretHeaders.keys.first(where: {
-            forbiddenHeaders.contains($0.lowercased())
-        }) {
-            throw FloeError.invalidConfiguration(
-                "\(forbidden) may contain a secret and cannot be stored as a non-secret header"
-            )
-        }
-        let scheme = baseURL.scheme?.lowercased() ?? ""
-        if scheme == "http" {
-            guard allowsPlainHTTP else {
-                throw FloeError.invalidConfiguration(
-                    "Plain HTTP requires explicit allowsPlainHTTP acknowledgement"
-                )
-            }
-            guard baseURL.isLocalOrPrivateNetwork else {
-                throw FloeError.invalidConfiguration(
-                    "Plain HTTP is only permitted for localhost or private-network endpoints"
-                )
-            }
-        } else if scheme != "https" {
-            throw FloeError.invalidConfiguration("Endpoint must use http or https scheme")
-        }
+        try ProviderConfigurationValidation.validate(self)
     }
 }
 

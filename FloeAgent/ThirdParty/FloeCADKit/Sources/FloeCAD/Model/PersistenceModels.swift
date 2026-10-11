@@ -64,6 +64,11 @@ final class Project {
     /// Additive optional JSON blob, independent of the body/feature records.
     var scriptsData: Data? = nil
 
+    /// Legacy-scene presentation imported from a migrated Canvas 3D scene
+    /// (`CADSceneSettings`). Additive optional JSON blob; older builds ignore
+    /// the unknown column and this build writes only when non-nil.
+    var sceneSettingsData: Data? = nil
+
     init(name: String) {
         self.name = name
         self.createdAt = Date()

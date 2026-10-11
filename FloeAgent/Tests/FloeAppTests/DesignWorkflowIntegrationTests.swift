@@ -253,17 +253,22 @@ struct DesignWorkflowIntegrationTests {
         let design = try #require(proposeJSON["design"] as? [String: Any])
         let candidates = try #require(design["candidates"] as? [[String: Any]])
         let candidateID = try #require(candidates.first?["candidateID"] as? String)
+        let proposedRevisionID = try #require(candidates.first?["proposedRevisionID"] as? String)
         // The proposed revision must carry the payload pointer (production
         // binding), otherwise adopt/export cannot see real bytes.
         let artifacts = try #require(design["artifacts"] as? [[String: Any]])
         let artifact = try #require(artifacts.first { ($0["artifactID"] as? String) == artifactID })
         let revisions = try #require(artifact["revisionCount"] as? Int)
         #expect(revisions == 2)
-        // 4. Grant-gated adoption through the shared action path.
+        // 4. Grant-gated adoption through the shared action path. The grant
+        // is bound to the exact candidate/base/proposed/mode and is claimed
+        // atomically before the first side effect.
         let grantID = await DesignAdoptionAuthorization.shared.issue(
             canvasID: harness.canvasID, nodeID: harness.nodeID,
             candidateID: candidateID,
-            baselineRevisionID: candidates.first?["baseRevisionID"] as? String ?? ""
+            baselineRevisionID: candidates.first?["baseRevisionID"] as? String ?? "",
+            proposedRevisionID: proposedRevisionID,
+            mode: .updateOriginal
         )
         output = try await run(harness, tool: "canvas.designAdopt", arguments: [
             "canvasID": harness.canvasID.uuidString,
@@ -333,7 +338,7 @@ struct DesignWorkflowIntegrationTests {
     private func seedCandidate(
         _ harness: inout Harness,
         conversationID: UUID?
-    ) async throws -> (artifactID: String, candidateID: String, baseRevisionID: String) {
+    ) async throws -> (artifactID: String, candidateID: String, baseRevisionID: String, proposedRevisionID: String) {
         _ = try await run(harness, tool: "canvas.designCreate", arguments: [
             "canvasID": harness.canvasID.uuidString,
             "nodeID": harness.nodeID.uuidString,
@@ -371,7 +376,8 @@ struct DesignWorkflowIntegrationTests {
         let candidates = try #require(design["candidates"] as? [[String: Any]])
         let candidateID = try #require(candidates.first?["candidateID"] as? String)
         let baseRevisionID = try #require(candidates.first?["baseRevisionID"] as? String)
-        return (artifactID, candidateID, baseRevisionID)
+        let proposedRevisionID = try #require(candidates.first?["proposedRevisionID"] as? String)
+        return (artifactID, candidateID, baseRevisionID, proposedRevisionID)
     }
 
     @Test func deliveryFailureLeavesDurableIntentAndReconcileDeliversExactlyOnce() async throws {
@@ -383,7 +389,8 @@ struct DesignWorkflowIntegrationTests {
         let seeded = try await seedCandidate(&harness, conversationID: conversationID)
         let grantID = await DesignAdoptionAuthorization.shared.issue(
             canvasID: harness.canvasID, nodeID: harness.nodeID,
-            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: seeded.proposedRevisionID, mode: .updateOriginal
         )
         let output = try await run(harness, tool: "canvas.designAdopt", arguments: [
             "canvasID": harness.canvasID.uuidString,
@@ -407,7 +414,8 @@ struct DesignWorkflowIntegrationTests {
         // The grant was consumed once for the committed transaction.
         let grantStillValid = await DesignAdoptionAuthorization.shared.validate(
             id: grantID, canvasID: harness.canvasID, nodeID: harness.nodeID,
-            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: seeded.proposedRevisionID, mode: .updateOriginal
         )
         #expect(grantStillValid == false)
         // The durable intent survived with the EXACT node/decision target.
@@ -460,7 +468,8 @@ struct DesignWorkflowIntegrationTests {
         let seeded = try await seedCandidate(&harness, conversationID: nil)
         let grantID = await DesignAdoptionAuthorization.shared.issue(
             canvasID: harness.canvasID, nodeID: harness.nodeID,
-            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: seeded.proposedRevisionID, mode: .updateOriginal
         )
         do {
             _ = try await run(harness, tool: "canvas.designAdopt", arguments: [
@@ -493,7 +502,8 @@ struct DesignWorkflowIntegrationTests {
         #expect(candidates.first?["status"] as? String == "pending")
         let grantValid = await DesignAdoptionAuthorization.shared.validate(
             id: grantID, canvasID: harness.canvasID, nodeID: harness.nodeID,
-            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: seeded.proposedRevisionID, mode: .updateOriginal
         )
         #expect(grantValid)
     }
@@ -650,6 +660,258 @@ struct DesignWorkflowIntegrationTests {
             let expected = FloeL10n.l("design.error.current_node_none", "cad")
             #expect(error.localizedDescription.contains(expected))
         }
+    }
+
+    // MARK: - Atomic Canvas grant claim (T7B bounded correction)
+    //
+    // The legacy Canvas gate used to validate BEFORE content preparation and
+    // consume AFTER the CAS: a revocation/expiry/second claim landing inside
+    // that window could still write. The gate now claims the single-use grant
+    // atomically through `ApprovalGrantStore.claimSingleUse` after all
+    // read-only pre-flight checks and before the first side effect; the exact
+    // candidate/base/proposed-revision/mode binding is part of the claim.
+
+    @Test func canvasGrantMismatchRefusesWithoutWritingOrBurning() async throws {
+        var harness = try await makeHarness()
+        let seeded = try await seedCandidate(&harness, conversationID: UUID())
+        let otherRevision = UUID().uuidString.lowercased()
+        let grantID = await DesignAdoptionAuthorization.shared.issue(
+            canvasID: harness.canvasID, nodeID: harness.nodeID,
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: otherRevision, mode: .updateOriginal)
+        // Wrong proposed revision → refused; the grant is NOT burned and the
+        // node content / candidate stay untouched.
+        do {
+            _ = try await run(harness, tool: "canvas.designAdopt", arguments: [
+                "canvasID": harness.canvasID.uuidString,
+                "nodeID": harness.nodeID.uuidString,
+                "expectedRevision": harness.revision,
+                "operationID": "op-adopt-wrong-proposed",
+                "candidateID": seeded.candidateID,
+                "mode": "updateOriginal",
+                "baselineRevisionID": seeded.baseRevisionID,
+                "grantID": grantID
+            ], context: context(conversationID: UUID()))
+            Issue.record("expected proposed-revision mismatch refusal")
+        } catch {}
+        #expect(await DesignAdoptionAuthorization.shared.validate(
+            id: grantID, canvasID: harness.canvasID, nodeID: harness.nodeID,
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: otherRevision, mode: .updateOriginal))
+        var project = try await harness.repository.project(canvasID: harness.canvasID)
+        #expect(project.documents.first?.nodes.first?.asset == nil)
+        #expect(project.revision == harness.revision)
+
+        // Correct binding but wrong mode (variant) → also refused, unburned.
+        do {
+            _ = try await run(harness, tool: "canvas.designAdopt", arguments: [
+                "canvasID": harness.canvasID.uuidString,
+                "nodeID": harness.nodeID.uuidString,
+                "expectedRevision": harness.revision,
+                "operationID": "op-adopt-wrong-mode",
+                "candidateID": seeded.candidateID,
+                "mode": "variant",
+                "baselineRevisionID": seeded.baseRevisionID,
+                "grantID": grantID
+            ], context: context(conversationID: UUID()))
+            Issue.record("expected mode mismatch refusal")
+        } catch {}
+        #expect(await DesignAdoptionAuthorization.shared.validate(
+            id: grantID, canvasID: harness.canvasID, nodeID: harness.nodeID,
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: otherRevision, mode: .updateOriginal))
+        project = try await harness.repository.project(canvasID: harness.canvasID)
+        #expect(project.documents.first?.nodes.first?.asset == nil)
+        #expect(project.documents.first?.nodes.count == 1)
+    }
+
+    @Test func canvasGrantExpiryRefusesWithZeroWrites() async throws {
+        var harness = try await makeHarness()
+        let seeded = try await seedCandidate(&harness, conversationID: UUID())
+        let grantID = await DesignAdoptionAuthorization.shared.issue(
+            canvasID: harness.canvasID, nodeID: harness.nodeID,
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: seeded.proposedRevisionID, mode: .updateOriginal,
+            ttl: -1)
+        do {
+            _ = try await run(harness, tool: "canvas.designAdopt", arguments: [
+                "canvasID": harness.canvasID.uuidString,
+                "nodeID": harness.nodeID.uuidString,
+                "expectedRevision": harness.revision,
+                "operationID": "op-adopt-expired",
+                "candidateID": seeded.candidateID,
+                "mode": "updateOriginal",
+                "baselineRevisionID": seeded.baseRevisionID,
+                "grantID": grantID
+            ], context: context(conversationID: UUID()))
+            Issue.record("expected expired-grant refusal")
+        } catch {}
+        let project = try await harness.repository.project(canvasID: harness.canvasID)
+        #expect(project.documents.first?.nodes.first?.asset == nil)
+        #expect(project.revision == harness.revision)
+    }
+
+    @Test func canvasGrantIsClaimedOnceAndFailureAfterClaimNeverRearms() async throws {
+        var harness = try await makeHarness()
+        let seeded = try await seedCandidate(&harness, conversationID: UUID())
+        // Failure AFTER the claim: the grant is consumed at the exact
+        // request pre-flight, then the CAS fails on a stale revision. The
+        // write is zero and the grant is burned (a retry needs a fresh
+        // confirmation, never a re-armed old one).
+        let grantID = await DesignAdoptionAuthorization.shared.issue(
+            canvasID: harness.canvasID, nodeID: harness.nodeID,
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: seeded.proposedRevisionID, mode: .updateOriginal)
+        do {
+            _ = try await run(harness, tool: "canvas.designAdopt", arguments: [
+                "canvasID": harness.canvasID.uuidString,
+                "nodeID": harness.nodeID.uuidString,
+                "expectedRevision": harness.revision + 5,
+                "operationID": "op-adopt-stale-revision",
+                "candidateID": seeded.candidateID,
+                "mode": "updateOriginal",
+                "baselineRevisionID": seeded.baseRevisionID,
+                "grantID": grantID
+            ], context: context(conversationID: UUID()))
+            Issue.record("expected stale-revision CAS failure")
+        } catch {}
+        #expect(await DesignAdoptionAuthorization.shared.validate(
+            id: grantID, canvasID: harness.canvasID, nodeID: harness.nodeID,
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: seeded.proposedRevisionID, mode: .updateOriginal) == false)
+        var project = try await harness.repository.project(canvasID: harness.canvasID)
+        #expect(project.documents.first?.nodes.first?.asset == nil)
+        #expect(project.revision == harness.revision)
+
+        // The same burned grant on a correct retry is refused (no bypass).
+        do {
+            _ = try await run(harness, tool: "canvas.designAdopt", arguments: [
+                "canvasID": harness.canvasID.uuidString,
+                "nodeID": harness.nodeID.uuidString,
+                "expectedRevision": harness.revision,
+                "operationID": "op-adopt-burned-retry",
+                "candidateID": seeded.candidateID,
+                "mode": "updateOriginal",
+                "baselineRevisionID": seeded.baseRevisionID,
+                "grantID": grantID
+            ], context: context(conversationID: UUID()))
+            Issue.record("expected burned-grant refusal")
+        } catch {}
+        project = try await harness.repository.project(canvasID: harness.canvasID)
+        #expect(project.documents.first?.nodes.first?.asset == nil)
+
+        // A FRESH confirmation succeeds and is burned exactly once.
+        let fresh = await DesignAdoptionAuthorization.shared.issue(
+            canvasID: harness.canvasID, nodeID: harness.nodeID,
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: seeded.proposedRevisionID, mode: .updateOriginal)
+        _ = try await run(harness, tool: "canvas.designAdopt", arguments: [
+            "canvasID": harness.canvasID.uuidString,
+            "nodeID": harness.nodeID.uuidString,
+            "expectedRevision": harness.revision,
+            "operationID": "op-adopt-fresh",
+            "candidateID": seeded.candidateID,
+            "mode": "updateOriginal",
+            "baselineRevisionID": seeded.baseRevisionID,
+            "grantID": fresh
+        ], context: context(conversationID: UUID()))
+        harness.revision += 1
+        project = try await harness.repository.project(canvasID: harness.canvasID)
+        #expect(project.documents.first?.nodes.first?.asset != nil)
+        #expect(await DesignAdoptionAuthorization.shared.validate(
+            id: fresh, canvasID: harness.canvasID, nodeID: harness.nodeID,
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: seeded.proposedRevisionID, mode: .updateOriginal) == false)
+    }
+
+    @Test func canvasGrantReplayReturnsRecordedResultWithoutClaimingFreshGrant() async throws {
+        var harness = try await makeHarness()
+        let seeded = try await seedCandidate(&harness, conversationID: UUID())
+        let grantID = await DesignAdoptionAuthorization.shared.issue(
+            canvasID: harness.canvasID, nodeID: harness.nodeID,
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: seeded.proposedRevisionID, mode: .updateOriginal)
+        _ = try await run(harness, tool: "canvas.designAdopt", arguments: [
+            "canvasID": harness.canvasID.uuidString,
+            "nodeID": harness.nodeID.uuidString,
+            "expectedRevision": harness.revision,
+            "operationID": "op-adopt-replay",
+            "candidateID": seeded.candidateID,
+            "mode": "updateOriginal",
+            "baselineRevisionID": seeded.baseRevisionID,
+            "grantID": grantID
+        ], context: context(conversationID: UUID()))
+        harness.revision += 1
+        // Replay of the recorded operation happens BEFORE any claim: a fresh
+        // confirmation survives untouched (the old one is already burned).
+        let fresh = await DesignAdoptionAuthorization.shared.issue(
+            canvasID: harness.canvasID, nodeID: harness.nodeID,
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: seeded.proposedRevisionID, mode: .updateOriginal)
+        _ = try await run(harness, tool: "canvas.designAdopt", arguments: [
+            "canvasID": harness.canvasID.uuidString,
+            "nodeID": harness.nodeID.uuidString,
+            "expectedRevision": harness.revision - 1,
+            "operationID": "op-adopt-replay",
+            "candidateID": seeded.candidateID,
+            "mode": "updateOriginal",
+            "baselineRevisionID": seeded.baseRevisionID,
+            "grantID": fresh
+        ], context: context(conversationID: UUID()))
+        #expect(await DesignAdoptionAuthorization.shared.validate(
+            id: fresh, canvasID: harness.canvasID, nodeID: harness.nodeID,
+            candidateID: seeded.candidateID, baselineRevisionID: seeded.baseRevisionID,
+            proposedRevisionID: seeded.proposedRevisionID, mode: .updateOriginal))
+    }
+
+    @Test func designAdoptionAuthorizationClaimIsAtomicAndRevocationBlocks() async throws {
+        // A dedicated actor instance: the shared one is used by other parallel
+        // tests, so revokeAll() must not touch their grants.
+        let authorization = DesignAdoptionAuthorization()
+        let canvasID = UUID()
+        let nodeID = UUID()
+        let candidateID = UUID().uuidString.lowercased()
+        let baseline = UUID().uuidString.lowercased()
+        let proposed = UUID().uuidString.lowercased()
+        // Exactly ONE of two concurrent exact claims wins; the other is
+        // refused without burning anything new (transactionally burned once).
+        let grantID = await authorization.issue(
+            canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
+            baselineRevisionID: baseline, proposedRevisionID: proposed,
+            mode: .updateOriginal)
+        async let first = authorization.claim(
+            id: grantID, canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
+            baselineRevisionID: baseline, proposedRevisionID: proposed, mode: .updateOriginal)
+        async let second = authorization.claim(
+            id: grantID, canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
+            baselineRevisionID: baseline, proposedRevisionID: proposed, mode: .updateOriginal)
+        let firstOutcome = await first
+        let secondOutcome = await second
+        #expect([firstOutcome, secondOutcome].filter { $0 }.count == 1)
+
+        // A revoked grant is never claimable (even with the exact binding).
+        let revoked = await authorization.issue(
+            canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
+            baselineRevisionID: baseline, proposedRevisionID: proposed,
+            mode: .updateOriginal)
+        await authorization.revokeAll()
+        #expect(await authorization.claim(
+            id: revoked, canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
+            baselineRevisionID: baseline, proposedRevisionID: proposed,
+            mode: .updateOriginal) == false)
+        // A mismatched claim against a live grant does not consume it.
+        let live = await authorization.issue(
+            canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
+            baselineRevisionID: baseline, proposedRevisionID: proposed,
+            mode: .updateOriginal)
+        #expect(await authorization.claim(
+            id: live, canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
+            baselineRevisionID: baseline, proposedRevisionID: proposed,
+            mode: .variant) == false)
+        #expect(await authorization.claim(
+            id: live, canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
+            baselineRevisionID: baseline, proposedRevisionID: proposed,
+            mode: .updateOriginal))
     }
 
     private func makeCadNodeHarness() async throws -> Harness {

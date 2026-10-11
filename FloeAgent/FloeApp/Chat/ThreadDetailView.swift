@@ -459,8 +459,20 @@ struct ThreadDetailView: View {
         case .userMessage(let message):
             MessageBubble(message: message)
 
-        case .assistantMessage(let text, _):
-            AssistantMessageView(text: text, isStreaming: false, onSaveToNotes: onSaveToNotes)
+        case .assistantMessage(let text, let idSuffix):
+            // A task-level assistant message may carry REAL returned
+            // attachments (e.g. the adopted design result returned by the
+            // publication port). Render them through the same shared chip
+            // surface; assistantText events resolve to no message and render
+            // exactly as before.
+            let persisted = UUID(uuidString: idSuffix).flatMap { messageID in
+                viewModel.messages.first { $0.id == messageID && $0.role == "assistant" }
+            }
+            AssistantMessageView(
+                text: text,
+                isStreaming: false,
+                onSaveToNotes: onSaveToNotes,
+                attachments: persisted.map { AttachmentChipItem.items(in: $0.parts) } ?? [])
 
         case .event(let event):
             ThreadEventView(
@@ -525,7 +537,10 @@ struct ThreadDetailView: View {
             let role = message.role == "user" ? FloeL10n.l("hosts.user") : FloeL10n.l("chat.thread_detail_view.assistant")
             lines.append("## \(role)")
             lines.append("")
-            lines.append(message.content)
+            // The trusted design confirmation exports as the same concise
+            // localized summary the conversation shows, never the internal
+            // target/grant payload. Every other message stays verbatim.
+            lines.append(InternalNoticeProjection.userFacingSummary(for: message) ?? message.content)
             lines.append("")
         }
         return lines.joined(separator: "\n")
@@ -537,7 +552,11 @@ struct ThreadDetailView: View {
         guard !messages.isEmpty else { return nil }
         let title = viewModel.taskTitle.isEmpty ? FloeL10n.l("tab.chat") : viewModel.taskTitle
         let body = messages
-            .map { "\($0.role == "user" ? FloeL10n.l("hosts.user") : FloeL10n.l("chat.thread_detail_view.assistant")): \($0.content)" }
+            .map { message -> String in
+                let role = message.role == "user" ? FloeL10n.l("hosts.user") : FloeL10n.l("chat.thread_detail_view.assistant")
+                let content = InternalNoticeProjection.userFacingSummary(for: message) ?? message.content
+                return "\(role): \(content)"
+            }
             .joined(separator: "\n\n")
         return "\(title)\n\n\(body)"
     }
@@ -996,8 +1015,7 @@ private struct PendingInputQueueView: View {
             ForEach(inputs) { input in
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(input.executionMode == "browserHandoff"
-                            ? IDELanguageRunText.t("浏览器控制权已交还", "Browser control returned") : input.content)
+                        Text(displayText(for: input))
                             .font(.subheadline)
                             .lineLimit(2)
                         Text(input.executionMode == "browserHandoff" && input.status == .queued
@@ -1044,6 +1062,19 @@ private struct PendingInputQueueView: View {
 
     private var queuedInputs: [PendingUserInput] {
         inputs.filter { $0.status == .queued }
+    }
+
+    /// A trusted internal notice steer (design-assistant confirmation or
+    /// structured proposal decision) shows the concise localized summary
+    /// instead of the raw grant/target/identity payload. Every other input is
+    /// untouched.
+    private func displayText(for input: PendingUserInput) -> String {
+        if let summary = InternalNoticeProjection.userFacingSummary(for: input) {
+            return summary
+        }
+        return input.executionMode == "browserHandoff"
+            ? IDELanguageRunText.t("浏览器控制权已交还", "Browser control returned")
+            : input.content
     }
 
     private func statusTitle(_ status: PendingUserInputStatus) -> String {
@@ -1193,19 +1224,48 @@ private struct MissingFinalMessageRow: View {
 /// Markdown in the left-aligned reading column.
 private struct MessageBubble: View {
     let message: PersistedMessage
+    @EnvironmentObject private var environment: AppEnvironment
+    /// T6 design entrance: the FIRST attachment of this message as a typed
+    /// chat-attachment target (original task + exact attachment identity).
+    @State private var designTarget: DesignTarget?
 
-    private var attachmentNames: [String] {
-        message.parts
-            .filter { $0.kind == .file || $0.kind == .image }
-            .map { $0.metadata["name"] ?? $0.text ?? "" }
-            .filter { !$0.isEmpty }
+    private var attachmentItems: [AttachmentChipItem] {
+        AttachmentChipItem.items(in: message.parts)
+    }
+
+    private var attachmentDesignTarget: DesignTarget? {
+        for part in message.parts {
+            guard part.kind == .file || part.kind == .image,
+                  let attachmentID = part.attachmentID else { continue }
+            return DesignOwnerTargets.chatAttachment(
+                conversationID: message.conversationID,
+                messageID: message.id,
+                attachmentID: attachmentID)
+        }
+        return nil
     }
 
     var body: some View {
-        if message.role == "user" {
-            UserMessageBubble(text: message.content, attachments: attachmentNames)
-        } else {
-            AssistantMessageView(text: message.content, isStreaming: false)
+        Group {
+            if message.role == "user" {
+                UserMessageBubble(text: message.content, attachments: attachmentItems)
+            } else {
+                AssistantMessageView(
+                    text: message.content, isStreaming: false,
+                    attachments: attachmentItems)
+            }
+        }
+        .contextMenu {
+            if let target = attachmentDesignTarget {
+                Button {
+                    designTarget = target
+                } label: {
+                    Label("design.owner.from_attachment", systemImage: "square.on.square.dashed")
+                }
+            }
+        }
+        .sheet(item: $designTarget) { target in
+            DesignOwnerWorkflowSheet(target: target, environment: environment)
         }
     }
 }

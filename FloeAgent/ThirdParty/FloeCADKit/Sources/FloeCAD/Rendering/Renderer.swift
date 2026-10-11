@@ -243,7 +243,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         // 4. Active sketch grid, or ground in modeling (blended, depth read only)
-        if drawGrid {
+        // A migrated legacy scene with its grid switched off skips this pass.
+        if drawGrid && scene.showsGrid {
             encoder.setRenderPipelineState(pipelines.grid)
             encoder.setDepthStencilState(pipelines.depthReadOnly)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -439,16 +440,37 @@ final class Renderer: NSObject, MTKViewDelegate {
         height: Int = 480
     ) -> Data? {
         guard width > 0, height > 0 else { return nil }
-        // A private fitted camera: frames the snapshot bounds isometrically
-        // without mutating `self.camera` or invoking `viewportSizeChanged`.
+        // A migrated legacy scene keeps its authored camera, so the canvas
+        // node preview frames the same view the legacy director showed. A
+        // private fitted camera frames anything else isometrically without
+        // mutating `self.camera` or invoking `viewportSizeChanged`.
         var snapshotCamera = TurntableCamera()
-        if let bounds = snapshot.worldBounds {
+        if let saved = snapshot.appearance?.camera {
+            snapshotCamera = Self.turntableCamera(from: saved)
+        } else if let bounds = snapshot.worldBounds {
             snapshotCamera.fit(boundsMin: bounds.min, boundsMax: bounds.max,
                                aspect: Float(width) / Float(height))
         }
         return renderPNG(scene: snapshot, camera: snapshotCamera,
                          width: width, height: height,
-                         transparentBackground: false, showGrid: true)
+                         transparentBackground: false,
+                         showGrid: snapshot.showsGrid)
+    }
+
+    /// A saved scene camera as the viewport's turntable camera. The stored
+    /// azimuth/elevation are radians and the FOV is degrees; the scene import
+    /// already converted legacy yaw/pitch and metres.
+    static func turntableCamera(from camera: CADSceneSettings.Camera) -> TurntableCamera {
+        var result = TurntableCamera()
+        result.target = SIMD3<Float>(
+            Float(camera.targetX), Float(camera.targetY), Float(camera.targetZ))
+        result.distance = Float(max(camera.distance, 0.05))
+        result.azimuth = Float(camera.azimuthRadians)
+        result.elevation = Float(camera.elevationRadians)
+        result.projection = camera.isOrthographic
+            ? .orthographic
+            : .perspective(fovY: Float(camera.fovYDegrees) * .pi / 180)
+        return result
     }
 
     /// Offscreen render of the current scene (no gizmo), returned as PNG data.
@@ -703,6 +725,39 @@ final class Renderer: NSObject, MTKViewDelegate {
         frame.backgroundTop = SIMD4(0.94, 0.95, 0.97, 1)
         frame.backgroundBottom = SIMD4(0.82, 0.84, 0.88, 1)
         frame.accentColor = SIMD4(0.0, 0.52, 1.0, 1) // Shapr3D selection blue
+        // Migrated legacy scene: the authored background colour and light rig
+        // replace the CAD gradient and camera headlight. Ordinary documents
+        // carry no appearance and render exactly as before.
+        if let appearance = scene.appearance {
+            if let background = appearance.background {
+                frame.backgroundTop = SIMD4(
+                    Float(background.topRed), Float(background.topGreen),
+                    Float(background.topBlue), 1)
+                frame.backgroundBottom = SIMD4(
+                    Float(background.bottomRed), Float(background.bottomGreen),
+                    Float(background.bottomBlue), 1)
+                frame.lightParams.w = 1 // flat legacy background
+            }
+            if let lighting = appearance.lighting {
+                let key = SIMD3<Double>(
+                    lighting.keyDirectionX, lighting.keyDirectionY, lighting.keyDirectionZ)
+                let keyLength = simd_length(key)
+                if keyLength > 1e-6 {
+                    // The shader negates this: L = normalize(-dir). Legacy key
+                    // light sits at (3.5, 5, 4) looking at the origin.
+                    frame.keyLightDirection = SIMD4(
+                        SIMD3<Float>(-key / keyLength), 0)
+                }
+                frame.lightParams = SIMD4(
+                    Float(lighting.keyIntensityScale),
+                    Float(lighting.fillIntensityScale),
+                    1, // legacy rig active
+                    frame.lightParams.w)
+                frame.fillLightPosition = SIMD4(
+                    Float(lighting.fillPositionX), Float(lighting.fillPositionY),
+                    Float(lighting.fillPositionZ), 12_000) // attenuation radius
+            }
+        }
         // The grid follows the zoom (bug report abb6ea37): at a fixed 1 mm
         // pitch and 120 mm fade radius it vanished as soon as the view pulled
         // back to metre scale. The pitch steps by decades so the view always

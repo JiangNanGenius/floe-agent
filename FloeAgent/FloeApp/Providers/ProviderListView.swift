@@ -143,6 +143,27 @@ struct ProviderListView: View {
 
     private var providerList: some View {
         List {
+            if viewModel.remoteSyncRejectionCount > 0 {
+                Section {
+                    Label("providers.sync.rejected_remote", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(FloeTheme.pending)
+                        .accessibilityIdentifier("providers.sync.rejectedRemote")
+                    Button {
+                        Task { await viewModel.retryRejectedRemoteSync() }
+                    } label: {
+                        if viewModel.isRetryingRemoteSync {
+                            ProgressView()
+                        } else {
+                            Text("settings.sync.now")
+                        }
+                    }
+                    .disabled(viewModel.isRetryingRemoteSync)
+                    .frame(minHeight: FloeTheme.minimumTarget)
+                    .accessibilityIdentifier("providers.sync.retryRejectedRemote")
+                } footer: {
+                    Text("providers.sync.rejected_remote.footer")
+                }
+            }
             Section("providers.provider_list_view.chat_model_provider") {
                 ForEach(viewModel.providers) { provider in
                     providerButton(

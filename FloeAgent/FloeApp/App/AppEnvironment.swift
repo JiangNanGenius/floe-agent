@@ -242,6 +242,62 @@ final class AppEnvironment: ObservableObject {
         center.bind(environment: self)
         return center
     }()
+    /// Central design composition (constructed ONCE).
+    ///
+    /// Canvas keeps its ONE authority: this service is the trusted-UI
+    /// `DesignCanvasService` the panel and `DesignWorkflowActions` use; a run
+    /// binding is still enforced when a caller passes a runID. The generic
+    /// owner workflow below FAILS CLOSED for every `.canvasNode` operation
+    /// (T3 C14), so there is never a second mutable authority for a node.
+    lazy var designCanvasService: DesignCanvasService = {
+        let database = self.database
+        return DesignCanvasService(
+            repository: FileCanvasDocumentRepository(),
+            authorize: { runID, canvasID in
+                // Trusted in-app UI carries no run; an agent run must be
+                // bound to the exact canvas through the durable context.
+                guard let runID else { return true }
+                let store = CanvasRunContextStore(database: database)
+                guard let context = try? await store.context(runID: runID) else { return false }
+                return context.canvasID == canvasID
+            })
+    }()
+    /// Production idempotent result publication (existing FilesCenter
+    /// staging/ConversationStore attachments and CreativeAssetStore).
+    lazy var designResultPublicationPort: AppDesignResultPublicationPort = {
+        AppDesignResultPublicationPort(environment: self)
+    }()
+    /// The typed target service + generic owner workflow shared by the UI
+    /// entrances and (once T5 wires them) the agent tools. The factory uses
+    /// the SAME envelope/payload stores for both the workflow and the
+    /// creative port; no parallel state.
+    lazy var designComposition: (targets: DesignTargetService, workflow: DesignOwnerWorkflow) = {
+        let made = DesignOwnerWorkflowFactory.make(
+            environment: self,
+            canvasService: designCanvasService,
+            adapters: designAdapterCenter,
+            decisionSink: { [weak self] conversationID, proposalID, decision, revision, sha256 in
+                guard let self else {
+                    throw FloeError.internalError("App environment unavailable for design decision delivery")
+                }
+                try await self.conversationCenter.recordProposalDecision(
+                    conversationID: conversationID,
+                    proposalID: proposalID,
+                    decision: "design-candidate-\(decision)",
+                    revision: revision,
+                    sha256: sha256)
+            },
+            publicationPort: designResultPublicationPort)
+        return (targets: made.service, workflow: made.workflow)
+    }()
+    var designTargetService: DesignTargetService { designComposition.targets }
+    var designOwnerWorkflow: DesignOwnerWorkflow { designComposition.workflow }
+    /// The ONE concrete adoption-confirmation service shared by the trusted
+    /// UI (mints the assistant grant for an exact target/candidate/base/
+    /// proposed-revision/mode) and the registered `design.adopt` tool
+    /// (validates + atomically consumes it). Same instance → same
+    /// `ApprovalGrantStore`; no second confirmation store.
+    var designOwnerAdoptionGrants: DesignOwnerAuthorization { .shared }
     var creativeAssetStore: CreativeAssetStore { _creativeAssetStore }
     var workbenchCenter: WorkbenchCenter { _workbenchCenter }
     var cadDocumentCenter: CadDocumentCenter { _cadDocumentCenter }
@@ -841,7 +897,21 @@ final class AppEnvironment: ObservableObject {
                     sha256: sha256
                 )
             },
-            decisionOutbox: DesignDecisionOutbox.shared
+            decisionOutbox: DesignDecisionOutbox.shared,
+            // EXACTLY the same composition instances the trusted-UI panel
+            // drives: typed targets, the one owner workflow, the one typed
+            // canvas service, and the one user-confirmation service. No
+            // duplicate store or permissive fallback authorizer is created
+            // inside registration.
+            targets: designTargetService,
+            ownerWorkflow: designOwnerWorkflow,
+            ownerAdoptionGrants: designOwnerAdoptionGrants,
+            canvasService: designCanvasService,
+            runTask: { [runStore = self.runStore] runID in
+                // Trusted run→task(conversation) provenance comes from the
+                // durable run store, never from model JSON.
+                (try? await runStore.run(id: runID))?.conversationID
+            }
         )
         // Launch recovery for design decisions whose delivery crashed between
         // the Canvas CAS commit and the durable notice (the intent was
@@ -897,6 +967,32 @@ final class AppEnvironment: ObservableObject {
                     )
                 }
             )
+        }
+        // Non-canvas design decisions settle through the generic owner
+        // workflow's idempotent reconcile (retained candidate + verified
+        // result publication included). Canvas intents are handled by the
+        // closure above; the owner path fails closed for them (T3 C14) and
+        // is skipped. A missing publication route keeps the durable record
+        // pending instead of claiming a completed return.
+        Task { [self] in
+            let outbox = DesignDecisionOutbox.shared
+            let pending = await outbox.pendingIntents()
+            for intent in pending
+            where intent.target != nil && intent.phase == .committing {
+                do {
+                    _ = try await designOwnerWorkflow.reconcilePendingAdoption(
+                        intent,
+                        verifyReopen: DesignOwnerWorkflowFactory.verifier(adapters: designAdapterCenter))
+                } catch let error as DesignOwnerWorkflowError {
+                    if case .canvasRequiresCanvasAuthority = error { continue }
+                    // Token-only: never log user content or paths.
+                    FloeLogger(category: .app).warning(
+                        "design target reconcile retained intent \(intent.id)")
+                } catch {
+                    FloeLogger(category: .app).warning(
+                        "design target reconcile retained intent \(intent.id)")
+                }
+            }
         }
         // Provider-backed semantic visual inspection plus generation through
         // the independently configured auxiliary models. These must be in

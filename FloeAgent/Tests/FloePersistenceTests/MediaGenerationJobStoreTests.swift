@@ -829,4 +829,48 @@ struct MediaGenerationJobStoreTests {
         #expect(try await store.asset(id: canonical.id)?.localRelativePath
             == committedSlot.candidateRelativePath)
     }
+
+    /// The two owner-authorization lookups added for the design creative
+    /// path: a job is recoverable by its EXACT submitting-operation identity
+    /// (including a terminal one, so a finished generation is bound instead
+    /// of resubmitted), and a committed asset is findable by its local asset
+    /// id (so a claim of ownership can be checked against a real job→asset
+    /// link).
+    @Test func operationIdentityAndLocalAssetLookupsFindTheRealJob() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = MediaGenerationJobStore(database: database)
+        let task = UUID()
+        let run = UUID()
+        let assetID = UUID()
+        let job = MediaGenerationJob(
+            providerID: UUID(), modelID: UUID(), mediaKind: .image,
+            credentialReference: nil, canvasID: nil, documentID: nil,
+            sourceNodeIDs: [], resultNodeID: UUID(),
+            requestJSON: Data("{\"prompt\":\"lookup\"}".utf8),
+            localAssetID: assetID)
+        _ = try await store.createJob(
+            job, owner: .conversation(task), originRunID: run,
+            idempotencyKey: "design-creative-image|target|123")
+
+        // The operation identity finds the job regardless of state.
+        let byKey = try #require(try await store.ownedJob(
+            idempotencyKey: "design-creative-image|target|123"))
+        #expect(byKey.job.id == job.id)
+        #expect(byKey.originRunID == run)
+        #expect(byKey.owner == .conversation(task))
+
+        // After it becomes terminal (ready with a real asset), the same
+        // lookup still finds it — an active-only dedupe would have missed it.
+        _ = try await store.transition(id: job.id, to: .ready)
+        let terminal = try #require(try await store.ownedJob(
+            idempotencyKey: "design-creative-image|target|123"))
+        #expect(terminal.job.state == .ready)
+        #expect(terminal.job.localAssetID == assetID)
+
+        // The local asset id resolves to the producing job.
+        let byAsset = try await store.jobs(localAssetID: assetID)
+        #expect(byAsset.map(\.job.id) == [job.id])
+        #expect(try await store.jobs(localAssetID: UUID()).isEmpty)
+    }
 }

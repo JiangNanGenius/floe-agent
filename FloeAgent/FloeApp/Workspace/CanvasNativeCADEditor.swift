@@ -17,13 +17,24 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeCAD
+import FloeCore
 import FloePersistence
 
-/// Which canvas CAD node is open in the full-screen workbench.
+/// Which canvas CAD node is open in the full-screen workbench. The canvas id
+/// is part of the FROZEN owner captured into the action set at creation, so a
+/// second workbench for the same package (another node) never steals or
+/// unregisters this presentation's target.
 struct CanvasNativeCADPresentation: Identifiable {
     let id: UUID          // node id
+    let canvasID: UUID
     let documentID: UUID
     let sourceKey: String // canvas-cad:<canvas>/<package>
+    /// True ONLY for the presentation opened by the creation route, before
+    /// the user accepts the new model: the workbench then offers an explicit
+    /// Cancel (an untouched draft leaves no node/package behind) next to an
+    /// explicit Save & Keep. Opening an existing node is never cancellable
+    /// this way.
+    var newlyCreated: Bool = false
 }
 
 struct CanvasNativeCADEditor: View {
@@ -33,6 +44,36 @@ struct CanvasNativeCADEditor: View {
 
     @State private var document: FloeCADDocument?
     @State private var loadError: String?
+    @State private var cancelBusy = false
+    @State private var discardMessage: String?
+
+    /// The exact node this presentation owns, frozen for every action.
+    private var frozenOwner: CADCanvasActionBridge.CADCanvasNodeOwner {
+        CADCanvasActionBridge.CADCanvasNodeOwner(
+            canvasID: presentation.canvasID,
+            documentID: presentation.documentID,
+            nodeID: presentation.id)
+    }
+
+    /// Cancel of a JUST-CREATED model: an untouched document is removed
+    /// together with its node and package; an edited/unverifiable document is
+    /// kept as the recoverable draft and the outcome says so.
+    private func cancelNewCreation() {
+        guard !cancelBusy else { return }
+        cancelBusy = true
+        let owner = presentation
+        Task { @MainActor in
+            let outcome = await CADCanvasActionBridge.discardNewCADDocument(
+                canvasID: owner.canvasID, documentID: owner.documentID,
+                nodeID: owner.id, assetStore: assetStore)
+            cancelBusy = false
+            if outcome.kind == .success {
+                onClose()
+            } else {
+                discardMessage = outcome.message
+            }
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -50,10 +91,12 @@ struct CanvasNativeCADEditor: View {
                 } else if let document {
                     FloeCADWorkbenchView(
                         document: document,
-                        canvasActions: CADCanvasActionBridge.actions(assetStore: assetStore))
+                        canvasActions: CADCanvasActionBridge.actions(
+                            assetStore: assetStore, owner: frozenOwner))
                         .modifier(FloeCADHostChrome(
                             document: document,
-                            canvasActions: CADCanvasActionBridge.actions(assetStore: assetStore)))
+                            canvasActions: CADCanvasActionBridge.actions(
+                                assetStore: assetStore, owner: frozenOwner)))
                 } else {
                     ProgressView()
                 }
@@ -62,10 +105,49 @@ struct CanvasNativeCADEditor: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(FloeCADStrings.text("engineering.done", "Done")) { onClose() }
-                        .accessibilityIdentifier("canvas.nativeCAD.done")
+                    if presentation.newlyCreated {
+                        // Cancel creation: never leaves an empty node/package
+                        // for an untouched model; an edited draft is kept.
+                        Button(role: .destructive) {
+                            cancelNewCreation()
+                        } label: {
+                            Text(FloeL10n.l("action.cancel"))
+                        }
+                        .accessibilityIdentifier("canvas.nativeCAD.cancelCreation")
+                        .disabled(document == nil || cancelBusy)
+                    } else {
+                        Button(FloeCADStrings.text("engineering.done", "Done")) { onClose() }
+                            .accessibilityIdentifier("canvas.nativeCAD.done")
+                    }
+                }
+                if presentation.newlyCreated {
+                    ToolbarItem(placement: .confirmationAction) {
+                        // Explicit save/keep (never labelled as cancel): the
+                        // valid on-device document stays and the node keeps
+                        // its binding.
+                        Button(FloeL10n.l("canvas.nativeCAD.keep")) { onClose() }
+                            .accessibilityIdentifier("canvas.nativeCAD.keep")
+                    }
                 }
             }
+        }
+        .alert(
+            FloeL10n.l("canvas.nativeCAD.keptDraftTitle"),
+            isPresented: Binding(
+                get: { discardMessage != nil },
+                set: { presented in
+                    if !presented {
+                        discardMessage = nil
+                        onClose()
+                    }
+                })
+        ) {
+            Button(FloeL10n.l("action.done")) {
+                discardMessage = nil
+                onClose()
+            }
+        } message: {
+            Text(discardMessage ?? "")
         }
         .task {
             guard document == nil, loadError == nil else { return }

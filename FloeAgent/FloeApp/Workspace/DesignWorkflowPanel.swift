@@ -20,6 +20,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import FloeCore
+import FloePersistence
+import FloeProviders
 import FloeTools
 
 @MainActor
@@ -275,11 +277,19 @@ final class DesignWorkflowPanelModel: ObservableObject {
 
     func authorizeAssistantAdoption(candidateID: String) async {
         guard let nodeID,
-              let candidate = design?.candidate(candidateID) else { return }
+              let candidate = design?.candidate(candidateID),
+              let artifact = design?.artifact(candidate.artifactID),
+              let proposed = artifact.revision(candidate.proposedRevisionID) else { return }
+        // Mint the exact binding the assistant's `canvas.designAdopt` will
+        // claim: the same candidate/base AND the actual proposed revision and
+        // mode shown here (the panel offers the original-node update only).
+        // A missing/mismatched claim fails closed with no side effects.
         _ = await DesignAdoptionAuthorization.shared.issue(
             canvasID: canvasID, nodeID: nodeID,
             candidateID: candidateID,
-            baselineRevisionID: candidate.baseRevisionID
+            baselineRevisionID: candidate.baseRevisionID,
+            proposedRevisionID: proposed.id,
+            mode: .updateOriginal
         )
         authorizedCandidateID = candidateID
     }
@@ -710,10 +720,13 @@ struct DesignWorkflowPanel: View {
                                 Text(FloeL10n.l("design.panel.type.\(type.rawValue)")).tag(type)
                             }
                         }
-                        TextField("design.panel.goal", text: $newGoal, axis: .vertical).lineLimit(1...3)
-                            .onChange(of: newGoal) { _, _ in fieldsDirty = true }
-                        TextField("design.panel.audience", text: $newAudience)
-                            .onChange(of: newAudience) { _, _ in fieldsDirty = true }
+                        DesignBriefFields(
+                            goal: $newGoal, audience: $newAudience,
+                            goalLabel: "design.panel.goal",
+                            audienceLabel: "design.panel.audience",
+                            goalIdentifier: "design.panel.create.goal",
+                            audienceIdentifier: "design.panel.create.audience",
+                            onEdit: { fieldsDirty = true })
                         Button("design.panel.create") {
                             fieldsDirty = false
                             Task {
@@ -729,10 +742,13 @@ struct DesignWorkflowPanel: View {
 
                 if let design = model.design {
                     DisclosureGroup("design.panel.brief") {
-                        TextField("design.panel.goal", text: $briefGoal, axis: .vertical)
-                            .onChange(of: briefGoal) { _, _ in fieldsDirty = true }
-                        TextField("design.panel.audience", text: $briefAudience)
-                            .onChange(of: briefAudience) { _, _ in fieldsDirty = true }
+                        DesignBriefFields(
+                            goal: $briefGoal, audience: $briefAudience,
+                            goalLabel: "design.panel.goal",
+                            audienceLabel: "design.panel.audience",
+                            goalIdentifier: "design.panel.brief.goal",
+                            audienceIdentifier: "design.panel.brief.audience",
+                            onEdit: { fieldsDirty = true })
                         Button("design.panel.save_brief") {
                             fieldsDirty = false
                             Task {
@@ -746,18 +762,30 @@ struct DesignWorkflowPanel: View {
                     }
 
                     DisclosureGroup("design.panel.spec") {
-                        TextField("design.panel.palette", text: $paletteText, axis: .vertical)
-                            .onChange(of: paletteText) { _, _ in fieldsDirty = true }
-                        TextField("design.panel.typography", text: $typographyText, axis: .vertical)
-                            .onChange(of: typographyText) { _, _ in fieldsDirty = true }
-                        TextField("design.panel.layout", text: $layoutText, axis: .vertical)
-                            .onChange(of: layoutText) { _, _ in fieldsDirty = true }
-                        TextField("design.panel.spacing", text: $spacingText, axis: .vertical)
-                            .onChange(of: spacingText) { _, _ in fieldsDirty = true }
-                        TextField("design.panel.voice", text: $voiceText, axis: .vertical)
-                            .onChange(of: voiceText) { _, _ in fieldsDirty = true }
-                        TextField("design.panel.prohibitions", text: $prohibitionsText, axis: .vertical)
-                            .onChange(of: prohibitionsText) { _, _ in fieldsDirty = true }
+                        DesignSpecField(
+                            label: "design.panel.palette", text: $paletteText,
+                            identifier: "design.panel.spec.palette",
+                            onEdit: { fieldsDirty = true })
+                        DesignSpecField(
+                            label: "design.panel.typography", text: $typographyText,
+                            identifier: "design.panel.spec.typography",
+                            onEdit: { fieldsDirty = true })
+                        DesignSpecField(
+                            label: "design.panel.layout", text: $layoutText,
+                            identifier: "design.panel.spec.layout",
+                            onEdit: { fieldsDirty = true })
+                        DesignSpecField(
+                            label: "design.panel.spacing", text: $spacingText,
+                            identifier: "design.panel.spec.spacing",
+                            onEdit: { fieldsDirty = true })
+                        DesignSpecField(
+                            label: "design.panel.voice", text: $voiceText,
+                            identifier: "design.panel.spec.voice",
+                            onEdit: { fieldsDirty = true })
+                        DesignSpecField(
+                            label: "design.panel.prohibitions", text: $prohibitionsText,
+                            identifier: "design.panel.spec.prohibitions",
+                            onEdit: { fieldsDirty = true })
                         Button("design.panel.save_spec") {
                             fieldsDirty = false
                             Task { await model.updateSpec(specFromFields(design)) }
@@ -827,7 +855,7 @@ struct DesignWorkflowPanel: View {
                                 Text(FloeL10n.l("design.panel.revision_count", artifact.revisions.count))
                                     .font(.caption).foregroundStyle(.secondary)
                                 if let current = artifact.currentRevision {
-                                    Text("\(FloeL10n.l("design.panel.current_revision")): #\(current.number) · \(current.origin.rawValue)")
+                                    Text("\(FloeL10n.l("design.panel.current_revision")): #\(current.number) · \(DesignOwnerLabels.revisionOrigin(current.origin))")
                                         .font(.caption2).foregroundStyle(.tertiary)
                                 }
                                 HStack {
@@ -916,18 +944,20 @@ struct DesignWorkflowPanel: View {
                             }
                         }
                         ForEach(design.feedback) { item in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.comment)
-                                Text("\(item.anchor.kind) · \(item.status.rawValue)")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                if item.status == .staleAnchor,
-                                   let artifact = design.artifact(item.artifactID) {
-                                    Button("design.panel.relocate_anchor") {
-                                        Task { await model.relocateFeedback(feedbackID: item.id, artifactID: artifact.id) }
-                                    }
-                                    .buttonStyle(.bordered)
-                                }
-                            }
+                            DesignFeedbackRow(
+                                comment: item.comment,
+                                statusText: "\(item.anchor.kind) · \(item.status.rawValue)",
+                                statusColor: .secondary,
+                                busy: false,
+                                showsRelocate: item.status == .staleAnchor
+                                    && design.artifact(item.artifactID) != nil,
+                                showsResolve: false,
+                                relocateTitle: "design.panel.relocate_anchor",
+                                onRelocate: {
+                                    guard let artifact = design.artifact(item.artifactID) else { return }
+                                    Task { await model.relocateFeedback(feedbackID: item.id, artifactID: artifact.id) }
+                                },
+                                onResolve: {})
                         }
                     }
 
@@ -1005,9 +1035,10 @@ struct DesignWorkflowPanel: View {
     @ViewBuilder
     private func candidateSection(_ candidate: DesignCandidate) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(candidate.summary)
-            Text(candidate.status.rawValue)
-                .font(.caption2).foregroundStyle(.secondary)
+            DesignCandidateSummaryRow(
+                summary: candidate.summary,
+                statusText: candidate.status.rawValue,
+                statusColor: .secondary)
             if candidate.status == .pending {
                 Button("design.panel.show_previews") {
                     Task { await model.loadCandidatePreview(candidate.id) }
@@ -1024,16 +1055,16 @@ struct DesignWorkflowPanel: View {
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
-                HStack {
-                    Button("design.panel.adopt") {
-                        Task { await model.adopt(candidateID: candidate.id, mode: .updateOriginal) }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Button("design.panel.reject") {
-                        Task { await model.reject(candidateID: candidate.id) }
-                    }
-                    .buttonStyle(.bordered)
-                }
+                DesignCandidateActionButtons(
+                    busy: false,
+                    adoptTitle: "design.panel.adopt",
+                    showsVariant: false,
+                    rejectTitle: "design.panel.reject",
+                    adoptIdentifier: "design.panel.adopt.\(candidate.id)",
+                    rejectIdentifier: "design.panel.reject.\(candidate.id)",
+                    onAdopt: { Task { await model.adopt(candidateID: candidate.id, mode: .updateOriginal) } },
+                    onVariant: {},
+                    onReject: { Task { await model.reject(candidateID: candidate.id) } })
                 Button("design.panel.authorize_assistant") {
                     Task { await model.authorizeAssistantAdoption(candidateID: candidate.id) }
                 }
@@ -1116,6 +1147,175 @@ struct DesignWorkflowPanel: View {
     }
 }
 
+// MARK: - Shared design leaf controls (Canvas + owner panels)
+//
+// These are the ONE leaf implementations of the brief inputs, candidate
+// decision row and feedback entry. Both the Canvas-bound panel and the
+// generic owner sheet compose them, so the two surfaces can never drift.
+// Neither component owns state or authority: every mutation stays with the
+// panel whose workflow (Canvas project CAS vs owner envelope) owns it.
+
+/// Brief leaf: goal + audience inputs with panel-specific labels and
+/// accessibility identifiers. The save command stays with the owning panel.
+struct DesignBriefFields: View {
+    @Binding var goal: String
+    @Binding var audience: String
+    let goalLabel: LocalizedStringKey
+    let audienceLabel: LocalizedStringKey
+    let goalIdentifier: String
+    let audienceIdentifier: String
+    var onEdit: () -> Void = {}
+
+    var body: some View {
+        TextField(goalLabel, text: $goal, axis: .vertical)
+            .lineLimit(1...3)
+            .onChange(of: goal) { _, _ in onEdit() }
+            .accessibilityIdentifier(goalIdentifier)
+        TextField(audienceLabel, text: $audience)
+            .onChange(of: audience) { _, _ in onEdit() }
+            .accessibilityIdentifier(audienceIdentifier)
+    }
+}
+
+/// Spec leaf: one labelled spec input (Canvas' structured fields and the
+/// owner's raw-markdown spec both render through this control). The owning
+/// panel decides how the value is stored — Canvas writes the structured
+/// project authority, the owner stores raw markdown on its envelope.
+struct DesignSpecField: View {
+    let label: LocalizedStringKey
+    @Binding var text: String
+    var lineLimit: ClosedRange<Int>? = nil
+    var identifier: String? = nil
+    var onEdit: () -> Void = {}
+
+    var body: some View {
+        Group {
+            if let lineLimit {
+                TextField(label, text: $text, axis: .vertical)
+                    .lineLimit(lineLimit)
+            } else {
+                TextField(label, text: $text, axis: .vertical)
+            }
+        }
+        .onChange(of: text) { _, _ in onEdit() }
+        .accessibilityIdentifier(identifier ?? "")
+    }
+}
+
+/// Candidate leaf: one-line summary + pending status + the bounded diff with
+/// its honest truncation note. Mutations render through
+/// `DesignCandidateActionButtons` below the content.
+struct DesignCandidateSummaryRow: View {
+    let summary: String
+    let statusText: String
+    let statusColor: Color
+    var diffLines: [String]? = nil
+    var diffTruncated = false
+    var diffNote: String? = nil
+    var emptySummaryKey: String = "design.owner.candidate"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label {
+                    Text(summary.isEmpty ? FloeL10n.l(emptySummaryKey) : summary)
+                } icon: {
+                    Image(systemName: "sparkles")
+                }
+                Spacer()
+                Text(statusText)
+                    .font(.caption2)
+                    .foregroundStyle(statusColor)
+            }
+            if let diffLines {
+                ForEach(Array(diffLines.prefix(40).enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(
+                            line.hasPrefix("+") ? Color.green
+                                : line.hasPrefix("-") ? Color.red
+                                : Color.secondary)
+                }
+                if diffTruncated {
+                    Text(diffNote ?? FloeL10n.l("design.owner.diff_truncated"))
+                        .font(.caption2)
+                        .foregroundStyle(FloeTheme.pending)
+                }
+            }
+        }
+    }
+}
+
+/// Candidate leaf: the shared adopt / variant / reject decision row. The
+/// panel supplies mode availability and identifiers; it never re-implements
+/// the decision buttons.
+struct DesignCandidateActionButtons: View {
+    let busy: Bool
+    let adoptTitle: LocalizedStringKey
+    let showsVariant: Bool
+    var rejectTitle: LocalizedStringKey = "design.owner.reject"
+    var adoptIdentifier: String? = nil
+    var variantIdentifier: String? = nil
+    var rejectIdentifier: String? = nil
+    let onAdopt: () -> Void
+    let onVariant: () -> Void
+    let onReject: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Button(adoptTitle, action: onAdopt)
+                    .disabled(busy)
+                    .accessibilityIdentifier(adoptIdentifier ?? "")
+                Button(rejectTitle, role: .destructive, action: onReject)
+                    .disabled(busy)
+                    .accessibilityIdentifier(rejectIdentifier ?? "")
+            }
+            .buttonStyle(.borderless)
+            if showsVariant {
+                Button("design.owner.adopt_variant", action: onVariant)
+                    .disabled(busy)
+                    .accessibilityIdentifier(variantIdentifier ?? "")
+            }
+        }
+    }
+}
+
+/// Feedback leaf: comment + status + the exact relocate/resolve commands.
+struct DesignFeedbackRow: View {
+    let comment: String
+    let statusText: String
+    let statusColor: Color
+    let busy: Bool
+    let showsRelocate: Bool
+    let showsResolve: Bool
+    var relocateTitle: LocalizedStringKey = "design.owner.feedback_relocate"
+    var resolveTitle: LocalizedStringKey = "design.owner.feedback_resolve"
+    let onRelocate: () -> Void
+    let onResolve: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(comment)
+                Spacer()
+                Text(statusText)
+                    .font(.caption2)
+                    .foregroundStyle(statusColor)
+            }
+            if showsRelocate {
+                Button(relocateTitle, action: onRelocate)
+                    .disabled(busy)
+            }
+            if showsResolve {
+                Button(resolveTitle, action: onResolve)
+                    .disabled(busy)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
 private struct DesignMDExportItem: Identifiable {
     let id = UUID()
     let url: URL
@@ -1126,6 +1326,1966 @@ private struct DesignMDExportItem: Identifiable {
         guard (try? data.write(to: url, options: .atomic)) != nil else { return nil }
         self.url = url
         self.lease = nil
+    }
+}
+// MARK: - Generic owner workflow (file / chat attachment / creative)
+
+/// Stable target constructors shared by every T6 design entrance. IDs are the
+/// LIVE owner identities (workspace/file/attachment/creative request), never
+/// invented Canvas UUIDs.
+enum DesignOwnerTargets {
+    static func file(workspaceID: UUID, relativePath: String) -> DesignTarget {
+        DesignTarget(
+            kind: .fileDocument,
+            ownerID: workspaceID.uuidString,
+            documentID: "",
+            sourceID: relativePath)
+    }
+
+    static func chatAttachment(
+        conversationID: UUID, messageID: UUID, attachmentID: UUID
+    ) -> DesignTarget {
+        DesignTarget(
+            kind: .chatAttachment,
+            ownerID: conversationID.uuidString,
+            documentID: messageID.uuidString,
+            sourceID: attachmentID.uuidString,
+            originConversationID: conversationID.uuidString)
+    }
+
+    /// A creative START request. The request identity is the source; the
+    /// owner is the stable creative-library surface. The requested output
+    /// kind is part of the frozen identity and is never guessed later.
+    static func creative(requestID: UUID, kind: DesignContentType) -> DesignTarget {
+        DesignTarget(
+            kind: .creativeDocument,
+            ownerID: "creative-library",
+            documentID: "",
+            sourceID: requestID.uuidString,
+            requestedOutputKind: kind)
+    }
+}
+
+/// UI recency bookkeeping for creative START requests (the durable request
+/// itself lives in the SAME owner design envelope). Presentation only: no
+/// design state, no project store, no arbitrary paths.
+enum DesignCreativeRequestStore {
+    private static let key = "floe.design.creativeRequests"
+
+    static func load() -> [DesignTarget] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let targets = try? JSONDecoder().decode([DesignTarget].self, from: data) else {
+            return []
+        }
+        return targets.filter { $0.kind == .creativeDocument && $0.requestedOutputKind != nil }
+    }
+
+    static func remember(_ target: DesignTarget) {
+        var targets = load().filter { $0.stableKey != target.stableKey }
+        targets.insert(target, at: 0)
+        if targets.count > 12 { targets = Array(targets.prefix(12)) }
+        if let data = try? JSONEncoder().encode(targets) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+}
+
+/// Trusted-UI confirmation for one assistant adoption: which candidate, which
+/// mode, the single-use grant id the AI tool must present, and when that grant
+/// expires. The id is only delivered through the existing runtime decision
+/// channel; it is never shown as ordinary UI copy.
+struct AssistantAdoptionAuthorization: Equatable {
+    let candidateID: String
+    let mode: DesignAdoptMode
+    let grantID: String
+    let expiresAt: Date
+}
+
+/// Frozen first-generation operation shown to the user BEFORE any provider
+/// call: the actual configured model, the resolved parameters, an honest
+/// fee advisory, and the exact operation identity the submission will use.
+/// An image amount is shown ONLY from verified image-specific pricing
+/// provenance (none exists today); ordinary token pricing never becomes a
+/// per-image claim.
+struct GenerationConfirmationRequest: Equatable {
+    let prompt: String
+    let goal: String
+    let frozenOwnerRevision: Int64
+    let idempotencyKey: String
+    let providerID: UUID
+    let modelID: UUID
+    let modelTitle: String
+    let parametersSummary: String
+    /// A verified image-specific amount, when real image billing provenance
+    /// exists. nil today: the model profile carries only TEXT token pricing,
+    /// which is NOT a per-image price, so no amount is ever advertised.
+    let costSummary: String?
+}
+
+/// One shared panel model for the three non-Canvas design owners. It drives
+/// the SAME `DesignOwnerWorkflow` the agent tools use; Canvas never enters
+/// this path (T3 C14 fails it closed).
+@MainActor
+final class DesignOwnerWorkflowModel: ObservableObject {
+    @Published private(set) var envelope: DesignOwnerEnvelope?
+    @Published private(set) var resolvedSource: DesignResolvedSource?
+    @Published private(set) var sourceUnavailableReason: String?
+    @Published private(set) var errorMessage: String?
+    @Published private(set) var statusNote: String?
+    @Published private(set) var busy = false
+    @Published private(set) var comparison: DesignOwnerWorkflow.Comparison?
+    /// Creative START only: real library assets that can become the FIRST
+    /// materialized result of the request (existing service, no hidden
+    /// content). Generation through the existing media tools remains the other
+    /// supported first-result path.
+    @Published private(set) var bindableCreativeAssets: [CreativeAssetRecord] = []
+    /// Creative START: whether a REAL first-result generation route is
+    /// connected for the requested output kind, with the honest reason when
+    /// it is not. Derived from the same capability registry the agent tools
+    /// and Canvas use.
+    @Published private(set) var generationAvailable = false
+    @Published private(set) var generationUnavailableReason: String?
+    @Published private(set) var generating = false
+    /// Creative generation bookkeeping from the DURABLE media job (never
+    /// transient UI state):
+    /// - `generationUnknownOutcome`: an earlier submission of this exact
+    ///   frozen request exists whose remote outcome is unknown. It is never
+    ///   resubmitted automatically; the user may explicitly discard it.
+    /// - `generationResultAwaitingBind`: a ready job already produced a real
+    ///   asset; the next Generate binds THAT result (no second paid call).
+    @Published private(set) var generationUnknownOutcome = false
+    @Published private(set) var generationResultAwaitingBind = false
+    /// The durable job records a published result whose asset row/file no
+    /// longer resolves on this device. The user must explicitly replace it
+    /// (one acknowledged new generation) or discard the dangling record;
+    /// nothing is sent automatically and the stale result id is never reused.
+    @Published private(set) var generationResultMissing = false
+    /// The dangling job identity behind `generationResultMissing`.
+    @Published private(set) var generationMissingJobID: UUID?
+    /// The user acknowledged a MISSING-result replacement: the next confirmed
+    /// generation is the one explicit new attempt.
+    private var generationReplacementPending = false
+    /// The frozen operation shown for explicit user acceptance BEFORE the
+    /// first provider call (model/parameters/possible cost). nil when no
+    /// confirmation is pending.
+    @Published private(set) var generationConfirmation: GenerationConfirmationRequest?
+    /// True while the duplicate-charge warning for an acknowledged discard is
+    /// being shown; nothing is discarded until the user confirms.
+    @Published private(set) var generationDiscardWarning = false
+    /// True while the acknowledged-discard warning for a MISSING result is
+    /// being shown; nothing changes until the user confirms.
+    @Published private(set) var generationMissingDiscardWarning = false
+    /// Trusted-UI confirmation minted for the assistant's `design.adopt`
+    /// tool: the SAME `DesignOwnerAuthorization` instance the tools consume,
+    /// bound to this exact target/candidate/base/proposed-revision/mode. Only
+    /// set AFTER the confirmation event was durably delivered to the frozen
+    /// originating task.
+    @Published private(set) var authorizedAssistantAdoption: AssistantAdoptionAuthorization?
+
+    let target: DesignTarget
+    private let environment: AppEnvironment
+    private var operationCounter = 0
+    /// The in-flight UI generation task, so the explicit Cancel action can
+    /// stop waiting (a definite local cancellation).
+    private var generationTask: Task<Void, Never>?
+
+    init(target: DesignTarget, environment: AppEnvironment) {
+        self.target = target
+        self.environment = environment
+    }
+
+    var project: DesignProject? { envelope?.project }
+    var currentArtifact: DesignArtifact? { project?.artifacts.first }
+    var pendingCandidates: [DesignCandidate] {
+        (project?.candidates ?? []).filter { $0.status == .pending }
+    }
+    var openFeedback: [DesignFeedback] {
+        (project?.feedback ?? []).filter { $0.status == .open || $0.status == .staleAnchor }
+    }
+    var isImmutableOwner: Bool {
+        target.kind == .chatAttachment || target.kind == .creativeDocument
+    }
+    var isCreativeAwaitingFirstResult: Bool {
+        project?.creativeRequest?.state == .awaitingFirstResult
+    }
+    /// A creative target whose request has not been saved yet. In this stage
+    /// the creative request editor owns goal/audience and the standalone
+    /// brief editor must not render a second editor over the same fields.
+    var isCreativeRequestUncreated: Bool {
+        target.kind == .creativeDocument && project?.creativeRequest == nil
+    }
+
+    /// The FROZEN originating task a confirmation may notify: the target's own
+    /// frozen origin, or the durable creative request's recorded origin. nil
+    /// means no honest notify target exists — the panel then offers only the
+    /// direct manual adopt, never a button that pretends to notify anyone.
+    var confirmationOriginConversationID: UUID? {
+        if let raw = target.originConversationID,
+           let value = UUID(uuidString: raw) { return value }
+        if let raw = project?.creativeRequest?.originConversationID,
+           let value = UUID(uuidString: raw) { return value }
+        return nil
+    }
+    var canAuthorizeAssistant: Bool { confirmationOriginConversationID != nil }
+
+    private func operationID(_ suffix: String) -> String {
+        operationCounter += 1
+        return "ui-\(suffix)-\(UUID().uuidString.lowercased())"
+    }
+
+    func reload() async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            envelope = try await environment.designOwnerWorkflow.state(target)
+            errorMessage = nil
+        } catch let error as DesignOwnerWorkflowError {
+            if case .canvasRequiresCanvasAuthority = error {
+                envelope = nil
+                errorMessage = FloeL10n.l("design.owner.canvas_authority")
+            } else {
+                errorMessage = Self.friendly(error)
+            }
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+        // Source bytes are resolved READ-ONLY for display (name/format/
+        // editability). A missing source is an honest unavailable reason, not
+        // a fabricated name.
+        do {
+            resolvedSource = try await environment.designTargetService.resolve(target)
+            sourceUnavailableReason = nil
+        } catch {
+            resolvedSource = nil
+            sourceUnavailableReason = Self.friendly(error)
+        }
+        if target.kind == .creativeDocument {
+            refreshGenerationAvailability()
+            await refreshGenerationJobState()
+            await loadBindableCreativeAssets()
+        }
+    }
+
+    /// Reads the DURABLE media job for this exact frozen creative request.
+    /// A ready job whose asset still resolves only needs to be bound; a job
+    /// whose recorded result row/file no longer resolves is an explicit
+    /// missing-result state; an unresolved submission is reported as unknown.
+    /// Nothing is ever resent from here.
+    private func refreshGenerationJobState() async {
+        // While THIS session is actively waiting on the provider, the job is
+        // in flight (not an unknown crash remnant): leave the live state be.
+        guard !generating else { return }
+        generationResultAwaitingBind = false
+        generationUnknownOutcome = false
+        generationResultMissing = false
+        generationMissingJobID = nil
+        guard isCreativeAwaitingFirstResult,
+              let request = project?.creativeRequest else { return }
+        let key = Self.generationIdempotencyKey(target: target, request: request)
+        guard let outcome = try? await environment.mediaGenerationService
+            .recoverDesignCreativeImage(idempotencyKey: key) else { return }
+        if outcome.asset != nil {
+            generationResultAwaitingBind = true
+        } else if outcome.resultMissing {
+            generationResultMissing = true
+            generationMissingJobID = outcome.job.id
+        } else if !outcome.job.state.isTerminal {
+            generationUnknownOutcome = outcome.job.providerTaskID == nil
+        }
+    }
+
+    // MARK: - Creative first real result (import + bind)
+
+    /// Real capability for the requested output kind: only an operation the
+    /// adapter registry actually connects is offered; otherwise the honest
+    /// reason is shown and no button pretends to generate.
+    func refreshGenerationAvailability() {
+        guard target.kind == .creativeDocument,
+              let kind = target.requestedOutputKind else {
+            generationAvailable = false
+            generationUnavailableReason = nil
+            return
+        }
+        let capability = environment.designAdapterCenter.capabilityRegistry()
+            .capability(for: kind)
+        generationAvailable = capability.available.contains(.generate)
+        generationUnavailableReason = generationAvailable
+            ? nil
+            : DesignOwnerLabels.generationUnavailableReason(
+                capability.unavailableReasons[.generate])
+    }
+
+    /// Loads real, local creative-library assets whose verified format matches
+    /// the requested output kind. These are candidates for `bindFirstResult`
+    /// (the generation path uses the existing media tools and the same bind).
+    func loadBindableCreativeAssets() async {
+        guard target.kind == .creativeDocument,
+              let kind = target.requestedOutputKind else {
+            bindableCreativeAssets = []
+            return
+        }
+        let assets = (try? await environment.creativeAssetStore.allAssets()) ?? []
+        bindableCreativeAssets = assets.filter { asset in
+            guard let relative = asset.localRelativePath, !relative.isEmpty,
+                  asset.byteCount <= Int64(AppWorkspaceFilePort.maxSourceBytes) else {
+                return false
+            }
+            let format = (relative as NSString).pathExtension.lowercased()
+            return DesignContentType.from(format: format) == kind
+        }
+    }
+
+    /// Binds an EXISTING library asset as the first real result of the
+    /// creative request. Bytes are read through the SAME bounded reader as
+    /// the generation bind (real on-disk size cap BEFORE any read,
+    /// symlink-resolved containment and digest verification); the same
+    /// workflow call is used by both paths.
+    func bindFirstExistingResult(_ asset: CreativeAssetRecord) async {
+        guard !busy, isCreativeAwaitingFirstResult else { return }
+        busy = true
+        defer { busy = false }
+        let frozenRevision = envelope?.revision ?? 0
+        do {
+            let resolved = try await AppCreativeDocumentPort.resolveVerifiedAssetBytes(
+                assetStore: environment.creativeAssetStore,
+                artifactRoot: { try FloeArtifactStore.root() },
+                creationID: asset.id.uuidString)
+            let outcome = try await environment.designOwnerWorkflow.bindFirstResult(
+                target: target,
+                operationID: operationID("bind-first-result"),
+                expectedOwnerRevision: frozenRevision,
+                bytes: resolved.data,
+                format: resolved.format,
+                displayName: asset.displayName,
+                boundResultID: asset.id.uuidString)
+            envelope = outcome.envelope
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.creative_bound")
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    /// REAL first-result generation through the EXISTING durable media
+    /// generation service (job store + provider call + creative asset store):
+    ///
+    /// - everything is frozen BEFORE the first await (prompt/spec, owner
+    ///   revision, model route, operation identity);
+    /// - the durable job row is written before the provider call, so a crash
+    ///   leaves an honest record and reopening finds the SAME original job;
+    /// - the provider output is persisted as a REAL verified creative asset
+    ///   and the job becomes ready, then the SAME `bindFirstResult` binds the
+    ///   actual asset UUID (never a synthetic id);
+    /// - an unresolved earlier submission is never resent automatically; a
+    ///   ready result is bound without a second paid call; a manual edit that
+    ///   landed during generation conflicts honestly with the result retained.
+    /// UI entry for the FIRST generation call: freezes the exact operation
+    /// (prompt/spec, owner revision, model route, parameters, operation
+    /// identity) and publishes the confirmation the user must accept BEFORE
+    /// any provider dispatch. No job row and no provider call happen here.
+    func requestGenerationConfirmation() {
+        guard !busy, !generating, isCreativeAwaitingFirstResult,
+              let kind = target.requestedOutputKind else { return }
+        refreshGenerationAvailability()
+        guard generationAvailable else {
+            errorMessage = generationUnavailableReason
+                ?? FloeL10n.l("design.owner.generate_unavailable")
+            return
+        }
+        // This lane connects still-image generation only; every other kind
+        // reports its real capability instead of faking a result.
+        guard kind == .image else {
+            errorMessage = FloeL10n.l("design.owner.generate_unavailable")
+            return
+        }
+        guard let request = project?.creativeRequest else {
+            errorMessage = FloeL10n.l("design.owner.generate_needs_brief")
+            return
+        }
+        let goal = project?.brief?.goal.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !goal.isEmpty else {
+            errorMessage = FloeL10n.l("design.owner.generate_needs_brief")
+            return
+        }
+        let frozenRevision = envelope?.revision ?? 0
+        let prompt = Self.generationPrompt(
+            goal: goal, audience: project?.brief?.audience,
+            spec: project?.spec, kind: kind)
+        let selection = ImageGenerationSelection()
+        do {
+            let route = try environment.conversationCenter.resolveAgentImageRoute(
+                operation: .generate, modelID: nil, selection: selection,
+                count: 1, referenceCount: 0)
+            let effective = ImageGenerationPresetResolver.applyingDefaults(
+                selection, provider: route.0, model: route.1, operation: .generate)
+            generationConfirmation = GenerationConfirmationRequest(
+                prompt: prompt,
+                goal: goal,
+                frozenOwnerRevision: frozenRevision,
+                idempotencyKey: Self.generationIdempotencyKey(
+                    target: target, request: request),
+                providerID: route.0.id,
+                modelID: route.1.id,
+                modelTitle: Self.modelTitle(route.1),
+                parametersSummary: Self.parametersSummary(effective),
+                costSummary: Self.costSummary(for: route.1))
+            errorMessage = nil
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    func dismissGenerationConfirmation() {
+        generationConfirmation = nil
+    }
+
+    /// Programmatic confirm (tests/automation). The UI uses
+    /// `startConfirmedGeneration` so the wait stays cancellable.
+    func confirmGeneration() async {
+        guard let confirmation = generationConfirmation else { return }
+        generationConfirmation = nil
+        await performGeneration(confirmation)
+    }
+
+    /// UI confirm: runs the confirmed operation as one cancellable task.
+    func startConfirmedGeneration() {
+        guard generationTask == nil, !generating,
+              let confirmation = generationConfirmation else { return }
+        generationConfirmation = nil
+        generationTask = Task { [weak self] in
+            guard let self else { return }
+            await self.performGeneration(confirmation)
+            self.generationTask = nil
+        }
+    }
+
+    /// REAL first-result generation through the EXISTING durable media
+    /// generation service (job store + provider call + creative asset store):
+    ///
+    /// - everything was frozen BEFORE the confirmation (prompt/spec, owner
+    ///   revision, model route, operation identity);
+    /// - the durable job row is written before the provider call, so a crash
+    ///   leaves an honest record and reopening finds the SAME original job;
+    /// - the provider output is persisted as a REAL verified creative asset
+    ///   and the job becomes ready, then the SAME `bindFirstResult` binds the
+    ///   actual asset UUID against the ORIGINAL submission revision (stored
+    ///   on the job row), never the current envelope revision;
+    /// - an unresolved earlier submission is never resent automatically; a
+    ///   ready result binds without a second paid call; a manual edit that
+    ///   landed during generation conflicts with the result retained for
+    ///   explicit resolution.
+    private func performGeneration(_ confirmation: GenerationConfirmationRequest) async {
+        guard isCreativeAwaitingFirstResult,
+              let request = project?.creativeRequest else { return }
+        let idempotencyKey = Self.generationIdempotencyKey(target: target, request: request)
+        generating = true
+        defer { generating = false }
+        // User-acknowledged REPLACEMENT of a missing published result: one
+        // new durable submission under the SAME request identity through the
+        // existing service; the stale ready row/id is never reused and this
+        // never runs automatically.
+        if generationReplacementPending, let missingJobID = generationMissingJobID {
+            generationReplacementPending = false
+            do {
+                let outcome = try await environment.mediaGenerationService
+                    .replaceMissingDesignCreativeResult(jobID: missingJobID)
+                if let asset = outcome.asset {
+                    generationResultMissing = false
+                    generationMissingJobID = nil
+                    generationUnknownOutcome = false
+                    try await bindGeneratedAsset(
+                        assetID: asset.id,
+                        operationID: Self.generationOperationID(jobID: outcome.job.id),
+                        frozenRevision: confirmation.frozenOwnerRevision)
+                } else {
+                    generationUnknownOutcome = outcome.awaitingUnknownOutcome
+                    errorMessage = outcome.awaitingUnknownOutcome
+                        ? FloeL10n.l("design.owner.generate_unknown")
+                        : FloeL10n.l("design.owner.generate_in_progress")
+                    statusNote = nil
+                }
+            } catch {
+                if Task.isCancelled {
+                    await refreshCancellationState(idempotencyKey: idempotencyKey)
+                    return
+                }
+                errorMessage = Self.friendly(error)
+            }
+            return
+        }
+        do {
+            // Recovery: a durable record for this EXACT frozen request already
+            // exists. The service reconciles it WITHOUT any provider call — a
+            // ready result, or a published result whose `.ready` transition
+            // failed (repaired on read through the SAME store row), is bound
+            // at its ORIGINAL submission revision from the durable payload;
+            // a recorded result whose row/file no longer resolves is the
+            // explicit missing-result state; anything else non-terminal is
+            // unknown/in-flight and is never resent.
+            if let existing = try? await environment.mediaGenerationService
+                .recoverDesignCreativeImage(idempotencyKey: idempotencyKey) {
+                if existing.resultMissing {
+                    generationResultMissing = true
+                    generationMissingJobID = existing.job.id
+                    generationResultAwaitingBind = false
+                    generationUnknownOutcome = false
+                    errorMessage = FloeL10n.l("design.owner.generate_result_missing")
+                    statusNote = nil
+                    return
+                }
+                switch existing.job.state {
+                case .ready:
+                    guard let assetID = existing.job.localAssetID else {
+                        throw FloeError.storageCorrupted(
+                            "the durable generation job is ready without a committed asset")
+                    }
+                    guard let originalRevision = Self.generationOriginalRevision(
+                        from: existing.job.requestJSON) else {
+                        // Without the original revision a bind could silently
+                        // adopt over an edit: refuse and keep the result.
+                        generationResultAwaitingBind = true
+                        errorMessage = FloeL10n.l(
+                            "design.owner.generate_original_revision_unknown")
+                        return
+                    }
+                    generationUnknownOutcome = false
+                    try await bindGeneratedAsset(
+                        assetID: assetID,
+                        operationID: Self.generationOperationID(jobID: existing.job.id),
+                        frozenRevision: originalRevision)
+                    return
+                case .preparing, .submitted, .running, .completed, .downloading:
+                    generationUnknownOutcome = existing.job.providerTaskID == nil
+                    generationResultAwaitingBind = false
+                    errorMessage = generationUnknownOutcome
+                        ? FloeL10n.l("design.owner.generate_unknown")
+                        : FloeL10n.l("design.owner.generate_in_progress")
+                    statusNote = nil
+                    return
+                case .failed, .cancelled, .expired:
+                    // A definite local terminal state: the explicit confirmed
+                    // click may start a NEW durable attempt.
+                    break
+                }
+            }
+            let originTask = confirmationOriginConversationID
+            let submission = DesignCreativeImageSubmission(
+                targetStableKey: target.stableKey,
+                ownerID: target.ownerID,
+                requestID: target.sourceID,
+                environmentID: target.environmentID,
+                originConversationID: originTask,
+                originRunID: nil,
+                owner: Self.mediaJobOwner(
+                    originConversationID: originTask,
+                    targetStableKey: target.stableKey),
+                providerID: confirmation.providerID,
+                modelID: confirmation.modelID,
+                prompt: confirmation.prompt,
+                selection: ImageGenerationSelection(),
+                displayNameStem: Self.generatedNameStem(goal: confirmation.goal),
+                idempotencyKey: idempotencyKey,
+                frozenOwnerRevision: confirmation.frozenOwnerRevision)
+            let outcome = try await environment.mediaGenerationService
+                .submitDesignCreativeImage(submission)
+            if let asset = outcome.asset {
+                generationUnknownOutcome = false
+                generationResultMissing = false
+                generationMissingJobID = nil
+                try await bindGeneratedAsset(
+                    assetID: asset.id,
+                    operationID: Self.generationOperationID(jobID: outcome.job.id),
+                    frozenRevision: confirmation.frozenOwnerRevision)
+            } else if outcome.resultMissing {
+                generationResultMissing = true
+                generationMissingJobID = outcome.job.id
+                generationResultAwaitingBind = false
+                generationUnknownOutcome = false
+                errorMessage = FloeL10n.l("design.owner.generate_result_missing")
+                statusNote = nil
+            } else {
+                generationUnknownOutcome = outcome.awaitingUnknownOutcome
+                generationResultAwaitingBind = false
+                errorMessage = outcome.awaitingUnknownOutcome
+                    ? FloeL10n.l("design.owner.generate_unknown")
+                    : FloeL10n.l("design.owner.generate_in_progress")
+                statusNote = nil
+            }
+        } catch let workflowError as DesignOwnerWorkflowError {
+            if case .ownerConflict = workflowError {
+                // The result IS retained (ready job + real asset). The owner
+                // moved during generation: never overwrite, never pay twice.
+                // The retained result can be bound to the current revision
+                // only through the explicit user action below.
+                generationResultAwaitingBind = true
+                errorMessage = FloeL10n.l("design.owner.generate_conflict")
+                return
+            }
+            errorMessage = Self.friendly(workflowError)
+        } catch {
+            if Task.isCancelled {
+                // Stop-waiting: report the ACTUAL durable job. A cancellation
+                // observed before dispatch is durably `.cancelled` (definite,
+                // nothing was sent); only a post-dispatch stop is an unknown
+                // remote outcome. No refund or price is ever claimed.
+                await refreshCancellationState(idempotencyKey: idempotencyKey)
+                return
+            }
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    /// After a stop-waiting cancellation, read the durable job and set the
+    /// truthful distinct state: `.cancelled` = definite pre-dispatch cancel;
+    /// any other non-terminal state = unknown remote outcome (never resent).
+    private func refreshCancellationState(idempotencyKey: String) async {
+        generationUnknownOutcome = false
+        generationResultMissing = false
+        generationResultAwaitingBind = false
+        generationMissingJobID = nil
+        let outcome = try? await environment.mediaGenerationService
+            .recoverDesignCreativeImage(idempotencyKey: idempotencyKey)
+        guard let outcome else {
+            // No durable row exists: the cancel was observed before any
+            // submission reached the provider.
+            statusNote = FloeL10n.l("design.owner.generate_canceled_confirmed")
+            return
+        }
+        if outcome.asset != nil {
+            generationResultAwaitingBind = true
+            statusNote = FloeL10n.l("design.owner.generate_ready_to_bind")
+        } else if outcome.resultMissing {
+            generationResultMissing = true
+            generationMissingJobID = outcome.job.id
+            errorMessage = FloeL10n.l("design.owner.generate_result_missing")
+            statusNote = nil
+        } else if outcome.job.state == .cancelled {
+            statusNote = FloeL10n.l("design.owner.generate_canceled_confirmed")
+        } else if !outcome.job.state.isTerminal {
+            generationUnknownOutcome = true
+            statusNote = FloeL10n.l("design.owner.generate_stopped_unknown")
+        }
+    }
+
+    /// Explicit user action for a MISSING published result: opens the SAME
+    /// confirmation dialog (actual model/parameters/fee advisory) and, once
+    /// accepted, performs ONE acknowledged replacement through the existing
+    /// durable job/request service. Never automatic; the stale result id is
+    /// not reused.
+    func requestReplaceMissingResult() {
+        guard generationResultMissing, !busy, !generating else { return }
+        generationReplacementPending = true
+        requestGenerationConfirmation()
+        if generationConfirmation == nil {
+            generationReplacementPending = false
+        }
+    }
+
+    /// First step of the acknowledged discard for a MISSING result: show the
+    /// honest warning. Nothing changes until the user confirms.
+    func requestDiscardMissingResult() {
+        guard generationResultMissing else { return }
+        generationMissingDiscardWarning = true
+    }
+
+    func dismissMissingDiscardWarning() {
+        generationMissingDiscardWarning = false
+    }
+
+    /// Confirmed discard of a verified-missing result: closes the dangling
+    /// local record with the honest reason; canonical bytes/drafts are
+    /// untouched and nothing is resent. A later explicit generation creates a
+    /// new durable attempt.
+    func confirmDiscardMissingGeneration() async {
+        generationMissingDiscardWarning = false
+        guard generationResultMissing, let jobID = generationMissingJobID else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            try await environment.mediaGenerationService
+                .discardMissingDesignCreativeResult(jobID: jobID)
+            generationResultMissing = false
+            generationMissingJobID = nil
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.generate_missing_discarded")
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    /// Explicit resolution of a retained result whose original revision
+    /// moved: bind the ready asset to the CURRENT revision after the user
+    /// accepted the conflict (never automatic).
+    func bindRetainedResultToCurrentRevision() async {
+        guard !busy, !generating, generationResultAwaitingBind,
+              let request = project?.creativeRequest else { return }
+        let currentRevision = envelope?.revision ?? 0
+        let key = Self.generationIdempotencyKey(target: target, request: request)
+        busy = true
+        defer { busy = false }
+        do {
+            let store = MediaGenerationJobStore(database: environment.database)
+            guard let existing = try? await store.ownedJob(idempotencyKey: key),
+                  existing.job.state == .ready,
+                  let assetID = existing.job.localAssetID else {
+                throw FloeError.validationFailed(
+                    FloeL10n.l("design.owner.generate_ready_result_missing"))
+            }
+            try await bindGeneratedAsset(
+                assetID: assetID,
+                operationID: Self.generationOperationID(jobID: existing.job.id),
+                frozenRevision: currentRevision)
+        } catch let workflowError as DesignOwnerWorkflowError {
+            if case .ownerConflict = workflowError {
+                generationResultAwaitingBind = true
+                errorMessage = FloeL10n.l("design.owner.generate_conflict")
+                return
+            }
+            errorMessage = Self.friendly(workflowError)
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    /// The current model is displayed BEFORE the first call.
+    static func modelTitle(_ model: ModelProfile) -> String {
+        let name = model.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? model.remoteModelID : "\(name) (\(model.remoteModelID))"
+    }
+
+    /// Human-readable resolved parameters, or the honest provider-defaults
+    /// note when the user made no explicit selection.
+    static func parametersSummary(_ selection: ImageGenerationSelection) -> String {
+        var parts: [String] = []
+        if let value = selection.aspectRatio { parts.append("aspectRatio=\(value)") }
+        if let value = selection.resolution { parts.append("resolution=\(value)") }
+        if let value = selection.quality { parts.append("quality=\(value)") }
+        if let value = selection.nativeSizeOverride { parts.append("size=\(value)") }
+        return parts.isEmpty
+            ? FloeL10n.l("design.owner.generation_confirm_defaults")
+            : parts.joined(separator: ", ")
+    }
+
+    /// Image confirmation NEVER advertises an amount from the model profile's
+    /// ordinary text token pricing (`inputPerMillion`/`outputPerMillion`):
+    /// that metadata is not verified per-image billing and has no image unit,
+    /// so presenting it would fabricate a price. No image-specific pricing
+    /// provenance exists today; this returns nil and the dialog states only
+    /// that the configured provider may charge. A real verified image price
+    /// would be surfaced here once such provenance/unit exists.
+    static func costSummary(for model: ModelProfile) -> String? {
+        nil
+    }
+
+    /// The ORIGINAL owner revision recorded at submission time on the durable
+    /// job payload. nil means the record is unreadable: the caller must not
+    /// bind (a current revision would silently adopt over edits).
+    static func generationOriginalRevision(from payload: Data) -> Int64? {
+        (try? JSONDecoder().decode(
+            DesignCreativeImageRequestPayload.self, from: payload))?
+            .frozenOwnerRevision
+    }
+
+    /// Binds one verified, already-committed creative asset as the creative
+    /// request's first result through the SAME `bindFirstResult` the agent
+    /// tool uses. The asset bytes are re-read with the shared bounded reader
+    /// and digest-verified against the store record.
+    private func bindGeneratedAsset(
+        assetID: UUID, operationID: String, frozenRevision: Int64
+    ) async throws {
+        let resolved = try await AppCreativeDocumentPort.resolveVerifiedAssetBytes(
+            assetStore: environment.creativeAssetStore,
+            artifactRoot: { try FloeArtifactStore.root() },
+            creationID: assetID.uuidString)
+        let outcome = try await environment.designOwnerWorkflow.bindFirstResult(
+            target: target,
+            operationID: operationID,
+            expectedOwnerRevision: frozenRevision,
+            bytes: resolved.data,
+            format: resolved.format,
+            displayName: resolved.displayName,
+            boundResultID: assetID.uuidString)
+        envelope = outcome.envelope
+        generationResultAwaitingBind = false
+        generationUnknownOutcome = false
+        generationResultMissing = false
+        generationMissingJobID = nil
+        errorMessage = nil
+        statusNote = FloeL10n.l("design.owner.creative_generated")
+    }
+
+    func cancelGeneration() {
+        generationTask?.cancel()
+        generationTask = nil
+    }
+
+    /// First step of the ACKNOWLEDGED discard: show the duplicate-charge
+    /// warning. No job state changes until the user confirms.
+    func requestDiscardUnknownGeneration() {
+        guard generationUnknownOutcome else { return }
+        generationDiscardWarning = true
+    }
+
+    func dismissDiscardWarning() {
+        generationDiscardWarning = false
+    }
+
+    /// Confirmed discard: closes the LOCAL unresolved record with an honest
+    /// reason (the provider may still have generated/charged). This is the
+    /// only way an unknown submission is ever abandoned — never automatic.
+    func confirmDiscardUnknownGeneration() async {
+        generationDiscardWarning = false
+        guard generationUnknownOutcome,
+              let request = project?.creativeRequest else { return }
+        let key = Self.generationIdempotencyKey(target: target, request: request)
+        do {
+            let store = MediaGenerationJobStore(database: environment.database)
+            guard let existing = try? await store.ownedJob(idempotencyKey: key) else {
+                generationUnknownOutcome = false
+                return
+            }
+            if !existing.job.state.isTerminal {
+                try await environment.mediaGenerationService
+                    .discardUnknownDesignCreativeImage(jobID: existing.job.id)
+            }
+            generationUnknownOutcome = false
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.generate_unknown_discarded")
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    /// Frozen operation identity for one submitting request: reconstructible
+    /// from durable state only (target identity + request creation time), so
+    /// closing/reopening finds the SAME original job.
+    static func generationIdempotencyKey(
+        target: DesignTarget, request: DesignCreativeRequest
+    ) -> String {
+        // The creative request is persisted inside the owner envelope with
+        // ISO-8601 SECOND precision. The key must therefore be computed at
+        // whole-second granularity: a millisecond timestamp would differ
+        // after a reload, lose the durable job link, and make a reopen
+        // dispatch a second paid generation. Both the submitting and the
+        // reloading side use this same function.
+        let seconds = Int64(request.createdAt.timeIntervalSince1970)
+        return "design-creative-image|\(target.stableKey)|\(seconds)"
+    }
+
+    /// Deterministic bind operation id per durable job: recovery binds the
+    /// same job exactly once, and a replay returns the recorded revision.
+    static func generationOperationID(jobID: UUID) -> String {
+        "ui-creative-generate-\(jobID.uuidString.lowercased())"
+    }
+
+    /// The durable job owner: the originating task when one exists, otherwise
+    /// a deterministic design-request identity derived from the frozen target
+    /// stable key (no parallel store, no random owner per launch).
+    static func mediaJobOwner(
+        originConversationID: UUID?, targetStableKey: String
+    ) -> MediaJobOwner {
+        if let task = originConversationID { return .conversation(task) }
+        return .document(deterministicJobOwnerID(targetStableKey: targetStableKey))
+    }
+
+    static func deterministicJobOwnerID(targetStableKey: String) -> UUID {
+        var hex = targetStableKey.lowercased()
+        hex = String(hex.prefix(32))
+        if hex.count < 32 { hex += String(repeating: "0", count: 32 - hex.count) }
+        let formatted = "\(hex.prefix(8))-\(hex.dropFirst(8).prefix(4))"
+            + "-\(hex.dropFirst(12).prefix(4))-\(hex.dropFirst(16).prefix(4))"
+            + "-\(hex.dropFirst(20).prefix(12))"
+        return UUID(uuidString: formatted) ?? UUID()
+    }
+
+    static func generatedNameStem(goal: String) -> String {
+        let stem = goal.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+            .prefix(4)
+            .joined(separator: "-")
+        return String(stem.prefix(32))
+    }
+
+    static func generationPrompt(
+        goal: String, audience: String?, spec: DesignSpec?, kind: DesignContentType
+    ) -> String {
+        var lines: [String] = [goal]
+        if let audience, !audience.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("Audience: \(audience)")
+        }
+        if let raw = spec?.rawMarkdown, !raw.isEmpty {
+            lines.append("Design spec:\n\(raw)")
+        }
+        if let palette = spec?.palette, !palette.isEmpty {
+            lines.append("Palette: \(palette.joined(separator: ", "))")
+        }
+        if let typography = spec?.typography, !typography.isEmpty {
+            lines.append("Typography: \(typography)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    func saveBrief(goal: String, audience: String) async {
+        guard !busy else { return }
+        let trimmedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedGoal.isEmpty else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            envelope = try await environment.designOwnerWorkflow.updateBrief(
+                target: target,
+                operationID: operationID("brief"),
+                expectedOwnerRevision: envelope?.revision,
+                brief: DesignBrief(
+                    goal: trimmedGoal,
+                    audience: audience.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? nil : audience))
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.brief_saved")
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    func saveSpec(rawMarkdown: String) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            var spec = project?.spec ?? DesignSpec()
+            let trimmed = rawMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+            spec.rawMarkdown = trimmed.isEmpty ? nil : rawMarkdown
+            envelope = try await environment.designOwnerWorkflow.updateSpec(
+                target: target,
+                operationID: operationID("spec"),
+                expectedOwnerRevision: envelope?.revision,
+                spec: spec)
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.spec_saved")
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    func beginCreativeRequest(goal: String, audience: String) async {
+        guard !busy, target.kind == .creativeDocument else { return }
+        let trimmedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedGoal.isEmpty else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let outcome = try await environment.designOwnerWorkflow.beginCreativeRequest(
+                target: target,
+                operationID: operationID("creative-start"),
+                expectedOwnerRevision: envelope?.revision,
+                brief: DesignBrief(
+                    goal: trimmedGoal,
+                    audience: audience.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? nil : audience))
+            envelope = outcome.envelope
+            DesignCreativeRequestStore.remember(target)
+            await loadBindableCreativeAssets()
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.creative_request_saved")
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    func freezeInput() async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let outcome = try await environment.designOwnerWorkflow.freezeInput(
+                target: target,
+                operationID: operationID("freeze"),
+                expectedOwnerRevision: envelope?.revision,
+                artifactID: currentArtifact?.id,
+                displayName: resolvedSource?.displayName)
+            envelope = outcome.envelope
+            resolvedSource = outcome.source
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.frozen")
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    /// Trusted-UI concrete confirmation for the assistant's `design.adopt`:
+    ///
+    /// 1. an exact single-use grant is minted through the SAME
+    ///    `DesignOwnerAuthorization` instance the registered tool consumes;
+    /// 2. a structured confirmation event (target/candidate/base/proposed/
+    ///    mode/grant/expiry) is durably DELIVERED to the FROZEN originating
+    ///    task through the existing ConversationCenter ingress;
+    /// 3. only after that durable write does the UI claim the assistant was
+    ///    notified. A failed delivery surfaces an error and never arms the
+    ///    transient note; clicking again retries.
+    ///
+    /// A repeated click for the SAME candidate/mode while the minted grant is
+    /// still live reuses that grant and re-delivers the SAME event id
+    /// (idempotent upsert): the confirmation is neither lost nor duplicated.
+    /// The grant store is process-local, so after an app restart the model
+    /// must obtain a fresh confirmation — the recorded event stays historical.
+    func authorizeAssistantAdoption(_ candidateID: String, mode: DesignAdoptMode) async {
+        guard !busy, let candidate = project?.candidate(candidateID) else { return }
+        guard let origin = confirmationOriginConversationID else {
+            errorMessage = FloeL10n.l("design.owner.authorize_no_origin")
+            return
+        }
+        busy = true
+        defer { busy = false }
+        let baselineRevisionID = candidate.baseRevisionID
+        let proposedRevisionID = candidate.proposedRevisionID
+        // Reuse an exact, still-live confirmation instead of minting a second
+        // grant for the same frozen operation.
+        if let existing = authorizedAssistantAdoption,
+           existing.candidateID == candidateID,
+           existing.mode == mode,
+           existing.expiresAt > Date(),
+           await environment.designOwnerAdoptionGrants.validateOwnerAdoption(
+                grantID: existing.grantID,
+                targetStableKey: target.stableKey,
+                candidateID: candidateID,
+                baselineRevisionID: baselineRevisionID,
+                proposedRevisionID: proposedRevisionID,
+                mode: mode,
+                scope: .aiTool) {
+            do {
+                guard let grantUUID = UUID(uuidString: existing.grantID) else {
+                    throw FloeError.validationFailed(
+                        "the confirmation service returned an invalid grant identity")
+                }
+                try await deliverAssistantConfirmation(
+                    origin: origin,
+                    candidateID: candidateID,
+                    baselineRevisionID: baselineRevisionID,
+                    proposedRevisionID: proposedRevisionID,
+                    mode: mode,
+                    grantID: grantUUID,
+                    expiresAt: existing.expiresAt)
+                errorMessage = nil
+                statusNote = FloeL10n.l("design.owner.authorized_note")
+            } catch {
+                errorMessage = Self.friendly(error)
+            }
+            return
+        }
+        let ttl: TimeInterval = 300
+        let expiresAt = Date().addingTimeInterval(ttl)
+        let grantID = await environment.designOwnerAdoptionGrants.issueOwnerAdoption(
+            targetStableKey: target.stableKey,
+            candidateID: candidateID,
+            baselineRevisionID: baselineRevisionID,
+            proposedRevisionID: proposedRevisionID,
+            mode: mode,
+            scope: .aiTool,
+            ttl: ttl)
+        do {
+            guard let grantUUID = UUID(uuidString: grantID) else {
+                throw FloeError.validationFailed(
+                    "the confirmation service returned an invalid grant identity")
+            }
+            try await deliverAssistantConfirmation(
+                origin: origin,
+                candidateID: candidateID,
+                baselineRevisionID: baselineRevisionID,
+                proposedRevisionID: proposedRevisionID,
+                mode: mode,
+                grantID: grantUUID,
+                expiresAt: expiresAt)
+            authorizedAssistantAdoption = AssistantAdoptionAuthorization(
+                candidateID: candidateID, mode: mode,
+                grantID: grantID, expiresAt: expiresAt)
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.authorized_note")
+        } catch {
+            // The grant was minted but the task was NOT notified: never arm
+            // the transient "assistant authorized" state. The un-delivered
+            // grant expires unused (nobody holds its id) and the user can
+            // retry, which mints a fresh single-use confirmation.
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    /// The ONE durable-delivery call: a structured confirmation event to the
+    /// frozen originating task. THROWS when persistence fails so the caller
+    /// cannot claim the assistant was notified.
+    private func deliverAssistantConfirmation(
+        origin: UUID,
+        candidateID: String,
+        baselineRevisionID: String,
+        proposedRevisionID: String,
+        mode: DesignAdoptMode,
+        grantID: UUID,
+        expiresAt: Date
+    ) async throws {
+        guard let candidateUUID = UUID(uuidString: candidateID) else {
+            throw FloeError.validationFailed(
+                "candidate id is not a deliverable identity")
+        }
+        try await environment.conversationCenter.recordDesignAssistantConfirmation(
+            conversationID: origin,
+            targetStableKey: target.stableKey,
+            candidateID: candidateUUID,
+            baselineRevisionID: baselineRevisionID,
+            proposedRevisionID: proposedRevisionID,
+            mode: mode,
+            grantID: grantID,
+            grantExpiresAt: expiresAt)
+    }
+
+    func compare(_ candidateID: String) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            comparison = try await environment.designOwnerWorkflow.compare(
+                target: target, candidateID: candidateID)
+            errorMessage = nil
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    func adopt(_ candidateID: String, mode: DesignAdoptMode) async {
+        guard !busy, let revision = envelope?.revision else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let result = try await environment.designOwnerWorkflow.adopt(
+                target: target,
+                operationID: operationID("adopt"),
+                expectedOwnerRevision: revision,
+                candidateID: candidateID,
+                mode: mode,
+                runID: nil,
+                verifyReopen: DesignOwnerWorkflowFactory.verifier(
+                    adapters: environment.designAdapterCenter))
+            envelope = result.envelope
+            errorMessage = nil
+            statusNote = Self.adoptionNote(result)
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    func reject(_ candidateID: String) async {
+        guard !busy, let revision = envelope?.revision else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let result = try await environment.designOwnerWorkflow.reject(
+                target: target,
+                operationID: operationID("reject"),
+                expectedOwnerRevision: revision,
+                candidateID: candidateID)
+            envelope = result.envelope
+            errorMessage = nil
+            statusNote = Self.adoptionNote(result)
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    func addFeedback(_ comment: String) async {
+        let trimmed = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !busy, !trimmed.isEmpty, let artifact = currentArtifact else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let outcome = try await environment.designOwnerWorkflow.addFeedback(
+                target: target,
+                operationID: operationID("feedback"),
+                expectedOwnerRevision: envelope?.revision,
+                artifactID: artifact.id,
+                revisionID: artifact.currentRevisionID,
+                anchor: .region(x: 0, y: 0, width: 1, height: 1),
+                comment: trimmed,
+                author: .user)
+            envelope = outcome.envelope
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.feedback_saved")
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    func resolveFeedback(_ feedbackID: String) async {
+        guard !busy, let artifact = currentArtifact,
+              let current = artifact.currentRevisionID else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            envelope = try await environment.designOwnerWorkflow.resolveFeedback(
+                target: target,
+                operationID: operationID("resolve-feedback"),
+                expectedOwnerRevision: envelope?.revision,
+                feedbackID: feedbackID,
+                resolvedByRevisionID: current)
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.feedback_resolved")
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    func relocateAnchor(_ feedbackID: String) async {
+        guard !busy, let artifact = currentArtifact else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            envelope = try await environment.designOwnerWorkflow.relocateAnchor(
+                target: target,
+                operationID: operationID("relocate-feedback"),
+                expectedOwnerRevision: envelope?.revision,
+                feedbackID: feedbackID,
+                anchor: .region(x: 0, y: 0, width: 1, height: 1),
+                toRevisionID: artifact.currentRevisionID)
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.feedback_relocated")
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    /// Verified export: retained bytes + digest re-check + the owner's REAL
+    /// reopen parser. Returns nil (with an honest error) when verification
+    /// cannot run.
+    func exportVerified() async -> (data: Data, format: String)? {
+        guard !busy, let artifact = currentArtifact,
+              let revisionID = artifact.currentRevisionID else { return nil }
+        busy = true
+        defer { busy = false }
+        do {
+            let data = try await environment.designOwnerWorkflow.exportVerified(
+                target: target,
+                artifactID: artifact.id,
+                revisionID: revisionID,
+                verifyReopen: DesignOwnerWorkflowFactory.verifier(
+                    adapters: environment.designAdapterCenter))
+            let format = artifact.revision(revisionID)?.payloadFormat ?? "bin"
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.export_verified")
+            return (data, format)
+        } catch {
+            errorMessage = Self.friendly(error)
+            return nil
+        }
+    }
+
+    private static func adoptionNote(_ result: DesignOwnerWorkflow.DecisionResult) -> String {
+        if result.replayed {
+            return FloeL10n.l("design.owner.decision_replayed")
+        }
+        switch result.publication {
+        case .published(let receipt):
+            return FloeL10n.l("design.owner.published", receipt.destination)
+        case .pending(let reason):
+            return FloeL10n.l("design.owner.publication_pending", reason)
+        case .notRequired(let reason):
+            if result.delivery.isDelivered {
+                return FloeL10n.l("design.owner.adopted_delivered")
+            }
+            return FloeL10n.l("design.owner.adopted_delivery_pending", reason)
+        }
+    }
+
+    /// User-facing error mapping: never surface raw UUIDs/paths or service
+    /// internals in the normal flow; the stable reason token remains in logs.
+    static func friendly(_ error: Error) -> String {
+        if let targetError = error as? DesignTargetError {
+            switch targetError {
+            case .unsupportedKind: return FloeL10n.l("design.owner.error.unsupported")
+            case .notAuthorized: return FloeL10n.l("design.owner.error.not_authorized")
+            case .notFound: return FloeL10n.l("design.owner.error.not_found")
+            case .invalidReference: return FloeL10n.l("design.owner.error.invalid_reference")
+            case .unverifiable: return FloeL10n.l("design.owner.error.unverifiable")
+            case .unavailable(let reason): return reason
+            case .moved: return FloeL10n.l("design.owner.error.moved")
+            case .pendingFirstResult: return FloeL10n.l("design.owner.error.pending_first_result")
+            case .firstResultAlreadyBound: return FloeL10n.l("design.owner.error.first_result_bound")
+            }
+        }
+        if let workflowError = error as? DesignOwnerWorkflowError {
+            switch workflowError {
+            case .ownerConflict:
+                return FloeL10n.l("design.owner.error.conflict")
+            case .replayMismatch:
+                return FloeL10n.l("design.owner.error.replayed_different")
+            case .missingPayload:
+                return FloeL10n.l("design.owner.error.missing_payload")
+            case .notInPlaceOwner:
+                return FloeL10n.l("design.owner.error.not_in_place")
+            case .deletedSource:
+                return FloeL10n.l("design.owner.error.not_found")
+            case .adoptionPendingRecovery:
+                return FloeL10n.l("design.owner.error.pending_recovery")
+            case .canvasRequiresCanvasAuthority:
+                return FloeL10n.l("design.owner.canvas_authority")
+            case .resultPublicationUnavailable:
+                return FloeL10n.l("design.owner.error.publication_unavailable")
+            }
+        }
+        return FloeL10n.l("design.owner.error.generic")
+    }
+}
+
+/// Exact verified bytes handed to the system file exporter.
+private struct DesignOwnerExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.data] }
+    var data: Data
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.data = data
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+private struct DesignOwnerExportItem: Identifiable {
+    let id = UUID()
+    let document: DesignOwnerExportDocument
+    let filename: String
+}
+
+/// Human, localized labels for the persisted routing enums shown in the
+/// design panels. Raw enum values are durable identifiers for storage and
+/// routing, never ordinary UI copy; an unknown future case falls back to its
+/// token instead of rendering a dotted catalog key.
+private enum DesignOwnerLabels {
+    static func ownerKind(_ kind: DesignTargetKind) -> String {
+        localizedOrToken("design.owner.kind.\(kind.rawValue)", token: kind.rawValue)
+    }
+
+    static func outputType(_ kind: DesignContentType) -> String {
+        localizedOrToken("design.panel.type.\(kind.rawValue)", token: kind.rawValue)
+    }
+
+    static func revisionOrigin(_ origin: DesignRevisionOrigin) -> String {
+        localizedOrToken(
+            "design.owner.revision_origin.\(origin.rawValue)", token: origin.rawValue)
+    }
+
+    /// The capability registry reports English build-routing reasons. Normal
+    /// panel copy is localized and actionable, and the raw service string is
+    /// never shown as an ordinary description. Every known category maps to a
+    /// localized note; an unknown reason keeps the honest generic
+    /// "not connected" statement, so a failure is still surfaced and never
+    /// converted into an available route.
+    static func generationUnavailableReason(_ raw: String?) -> String {
+        guard let raw, !raw.isEmpty else {
+            return FloeL10n.l("design.owner.generate_unavailable_not_connected")
+        }
+        if raw.hasPrefix("Image generation needs a configured image model") {
+            return FloeL10n.l("design.owner.generate_unavailable_model")
+        }
+        return FloeL10n.l("design.owner.generate_unavailable_not_connected")
+    }
+
+    private static func localizedOrToken(_ key: String, token: String) -> String {
+        let value = FloeL10n.l(key)
+        return value == key ? token : value
+    }
+}
+
+/// The shared collapsible owner panel: one surface for the approval stages of
+/// a file document, chat attachment or creative request. Canvas nodes use the
+/// existing `DesignWorkflowPanel` (the canvas authority path).
+struct DesignOwnerWorkflowSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var model: DesignOwnerWorkflowModel
+
+    @State private var briefGoal = ""
+    @State private var briefAudience = ""
+    @State private var specText = ""
+    @State private var feedbackDraft = ""
+    @State private var exportItem: DesignOwnerExportItem?
+    @State private var loadedRevision: Int64?
+
+    init(target: DesignTarget, environment: AppEnvironment) {
+        _model = StateObject(wrappedValue: DesignOwnerWorkflowModel(
+            target: target, environment: environment))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let error = model.errorMessage {
+                    Section {
+                        HStack(alignment: .top) {
+                            Text(error).foregroundStyle(FloeTheme.destructive)
+                            Spacer()
+                        }
+                        .accessibilityIdentifier("design.owner.error")
+                    }
+                }
+                if let note = model.statusNote {
+                    Section {
+                        Label(note, systemImage: "checkmark.circle")
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("design.owner.statusNote")
+                    }
+                }
+                sourceSection
+                if model.target.kind == .creativeDocument {
+                    // Stages: request (one goal/audience editor + Save
+                    // request) → spec → first result → revisions/candidates/
+                    // feedback. Before the request exists the request editor
+                    // owns goal/audience, so the standalone brief editor is
+                    // suppressed; after the request is saved (also while the
+                    // first result is pending) brief and spec stay editable.
+                    // Freezing is owned by the first-result bind while the
+                    // request is still awaiting its result.
+                    creativeRequestSection
+                    if !model.isCreativeRequestUncreated {
+                        briefSection
+                    }
+                    specSection
+                    if !model.isCreativeAwaitingFirstResult {
+                        frozenSection
+                    }
+                } else {
+                    briefSection
+                    specSection
+                    frozenSection
+                }
+                artifactsSection
+                candidatesSection
+                feedbackSection
+            }
+            .navigationTitle("design.owner.title")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("common.close") { dismiss() }
+                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        Task { await model.reload() }
+                    } label: {
+                        if model.busy { ProgressView() } else { Text("design.owner.reload") }
+                    }
+                    .disabled(model.busy)
+                    .accessibilityIdentifier("design.owner.reload")
+                }
+            }
+            .task {
+                await model.reload()
+                loadFieldsIfNeeded(force: loadedRevision == nil)
+            }
+            .onChange(of: model.envelope?.revision) { _, _ in
+                loadFieldsIfNeeded(force: false)
+            }
+        }
+        .fileExporter(
+            isPresented: Binding(
+                get: { exportItem != nil },
+                set: { presented in if !presented { exportItem = nil } }
+            ),
+            document: exportItem?.document,
+            contentType: .data,
+            defaultFilename: exportItem?.filename ?? "design-export"
+        ) { _ in exportItem = nil }
+        // The user must accept the ACTUAL configured model, inputs,
+        // parameters and (only when published) possible cost BEFORE the
+        // first provider call.
+        .confirmationDialog(
+            "design.owner.generation_confirm_title",
+            isPresented: Binding(
+                get: { model.generationConfirmation != nil },
+                set: { presented in
+                    if !presented { model.dismissGenerationConfirmation() }
+                }),
+            titleVisibility: .visible
+        ) {
+            Button("design.owner.generation_confirm_button") {
+                model.startConfirmedGeneration()
+            }
+            .accessibilityIdentifier("design.owner.generationConfirm")
+            Button("action.cancel", role: .cancel) {
+                model.dismissGenerationConfirmation()
+            }
+        } message: {
+            if let confirmation = model.generationConfirmation {
+                Text(Self.confirmationDetails(confirmation))
+            }
+        }
+        // Acknowledged discard: the remote outcome is unknown and a new
+        // attempt may be charged twice. No state changes until confirmed.
+        .confirmationDialog(
+            "design.owner.discard_unknown_title",
+            isPresented: Binding(
+                get: { model.generationDiscardWarning },
+                set: { presented in
+                    if !presented { model.dismissDiscardWarning() }
+                }),
+            titleVisibility: .visible
+        ) {
+            Button("design.owner.discard_unknown_confirm", role: .destructive) {
+                Task { await model.confirmDiscardUnknownGeneration() }
+            }
+            .accessibilityIdentifier("design.owner.discardUnknownConfirm")
+            Button("action.cancel", role: .cancel) {
+                model.dismissDiscardWarning()
+            }
+        } message: {
+            Text("design.owner.discard_unknown_warning")
+        }
+        // Acknowledged discard of a verified-MISSING result: closes the
+        // dangling local record; a later explicit generation is a new attempt.
+        .confirmationDialog(
+            "design.owner.discard_missing_title",
+            isPresented: Binding(
+                get: { model.generationMissingDiscardWarning },
+                set: { presented in
+                    if !presented { model.dismissMissingDiscardWarning() }
+                }),
+            titleVisibility: .visible
+        ) {
+            Button("design.owner.discard_missing_confirm", role: .destructive) {
+                Task { await model.confirmDiscardMissingGeneration() }
+            }
+            .accessibilityIdentifier("design.owner.discardMissingConfirm")
+            Button("action.cancel", role: .cancel) {
+                model.dismissMissingDiscardWarning()
+            }
+        } message: {
+            Text("design.owner.discard_missing_warning")
+        }
+    }
+
+    /// Frozen details shown for acceptance before the first call: actual
+    /// model, upload/input scope, resolved parameters, and an honest fee
+    /// advisory. No per-image amount is shown unless verified image-specific
+    /// pricing provenance exists (it does not today); token pricing is never
+    /// presented as an image price.
+    private static func confirmationDetails(
+        _ confirmation: GenerationConfirmationRequest
+    ) -> String {
+        var lines = [
+            FloeL10n.l("design.owner.generation_confirm_model", confirmation.modelTitle),
+            FloeL10n.l("design.owner.generation_confirm_inputs"),
+            FloeL10n.l(
+                "design.owner.generation_confirm_parameters",
+                confirmation.parametersSummary)
+        ]
+        if let cost = confirmation.costSummary {
+            lines.append(FloeL10n.l("design.owner.generation_confirm_cost", cost))
+        }
+        lines.append(FloeL10n.l("design.owner.generation_confirm_fees"))
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: Sections
+
+    private var sourceSection: some View {
+        Section("design.owner.source") {
+            if let source = model.resolvedSource {
+                LabeledContent("design.owner.source_name", value: source.displayName)
+                LabeledContent("design.owner.source_format", value: source.format)
+                Label {
+                    Text(source.allowsInPlaceUpdate
+                         ? "design.owner.source_in_place"
+                         : "design.owner.source_read_only")
+                } icon: {
+                    Image(systemName: source.allowsInPlaceUpdate ? "square.and.pencil" : "lock")
+                }
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+            } else if let reason = model.sourceUnavailableReason {
+                Text(reason).foregroundStyle(.secondary)
+            } else {
+                ProgressView()
+            }
+            LabeledContent(
+                "design.owner.owner_kind",
+                value: DesignOwnerLabels.ownerKind(model.target.kind))
+                .font(FloeTheme.Typography.metadata)
+        }
+    }
+
+    @ViewBuilder
+    private var creativeRequestSection: some View {
+        if let request = model.project?.creativeRequest {
+            switch request.state {
+            case .awaitingFirstResult:
+                Section {
+                    Label("design.owner.creative_awaiting", systemImage: "hourglass")
+                    Text(FloeL10n.l(
+                        "design.owner.creative_awaiting.detail",
+                        DesignOwnerLabels.outputType(request.requestedKind)))
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                    // REAL generation route: offered only when the requested
+                    // output kind really has a connected generation
+                    // capability. Otherwise the honest reason is shown and no
+                    // button pretends to generate.
+                    if model.generationAvailable {
+                        if model.generationResultMissing {
+                            // The recorded result no longer resolves on this
+                            // device: explicit recovery only — replace with an
+                            // acknowledged new generation, or discard the
+                            // dangling record. Never automatic, never a bind
+                            // from the stale id.
+                            Text("design.owner.generate_result_missing")
+                                .font(FloeTheme.Typography.metadata)
+                                .foregroundStyle(FloeTheme.pending)
+                                .accessibilityIdentifier("design.owner.generateResultMissing")
+                            HStack(spacing: 10) {
+                                Button("design.owner.replace_missing_result") {
+                                    model.requestReplaceMissingResult()
+                                }
+                                .disabled(model.busy || model.generating)
+                                .accessibilityIdentifier("design.owner.replaceMissingResult")
+                                Button("design.owner.discard_missing_result", role: .destructive) {
+                                    model.requestDiscardMissingResult()
+                                }
+                                .disabled(model.busy || model.generating)
+                                .accessibilityIdentifier("design.owner.discardMissingResult")
+                            }
+                        } else if model.generationUnknownOutcome {
+                            // An earlier submission's remote outcome is
+                            // unknown: never resubmitted automatically.
+                            Text("design.owner.generate_unknown")
+                                .font(FloeTheme.Typography.metadata)
+                                .foregroundStyle(FloeTheme.pending)
+                                .accessibilityIdentifier("design.owner.generateUnknown")
+                            Button("design.owner.generate_discard_unknown", role: .destructive) {
+                                model.requestDiscardUnknownGeneration()
+                            }
+                            .disabled(model.busy)
+                            .accessibilityIdentifier("design.owner.discardUnknownGeneration")
+                        } else {
+                            // The confirmation dialog shows the actual model,
+                            // parameters and (when published) cost BEFORE any
+                            // provider call.
+                            Button("design.owner.generate_first_result") {
+                                model.requestGenerationConfirmation()
+                            }
+                            .disabled(model.busy || model.generating)
+                            .accessibilityIdentifier("design.owner.generateFirstResult")
+                            if model.generating {
+                                HStack(spacing: 8) {
+                                    ProgressView()
+                                    Text("design.owner.generating")
+                                        .font(FloeTheme.Typography.metadata)
+                                        .foregroundStyle(.secondary)
+                                    Button("design.owner.cancel_generation") {
+                                        model.cancelGeneration()
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .accessibilityIdentifier("design.owner.cancelGeneration")
+                                }
+                                .accessibilityIdentifier("design.owner.generating")
+                            }
+                        }
+                        if model.generationResultAwaitingBind {
+                            Text("design.owner.generate_ready_to_bind")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("design.owner.generateReadyToBind")
+                            // Explicit resolution: bind the retained result to
+                            // the CURRENT revision after the user accepted a
+                            // conflict. Never automatic.
+                            Button("design.owner.bind_retained_current") {
+                                Task { await model.bindRetainedResultToCurrentRevision() }
+                            }
+                            .disabled(model.busy || model.generating)
+                            .accessibilityIdentifier("design.owner.bindRetainedToCurrent")
+                        }
+                    } else if let reason = model.generationUnavailableReason {
+                        // The reason is already a localized, standalone
+                        // explanation of the real capability limit (for image
+                        // output, how to configure a model). The raw service
+                        // string never reaches ordinary copy.
+                        Text(reason)
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("design.owner.generateUnavailable")
+                    }
+                    // REAL import path: an existing verified library asset of
+                    // the requested kind. The generation path uses the SAME
+                    // bindFirstResult.
+                    if model.bindableCreativeAssets.isEmpty {
+                        Text("design.owner.creative_bind_empty")
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("design.owner.creative_bind_hint")
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
+                        ForEach(model.bindableCreativeAssets) { asset in
+                            Button {
+                                Task { await model.bindFirstExistingResult(asset) }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(asset.displayName)
+                                    if let relative = asset.localRelativePath {
+                                        Text(relative)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .disabled(model.busy)
+                            .accessibilityIdentifier("design.owner.bindFirstResult.\(asset.id.uuidString)")
+                        }
+                    }
+                } header: {
+                    Text("design.owner.creative_request")
+                }
+            case .firstResultBound:
+                Section("design.owner.creative_request") {
+                    Label("design.owner.creative_bound", systemImage: "checkmark.seal")
+                    if let hash = request.boundContentSHA256 {
+                        LabeledContent("design.owner.content_hash", value: String(hash.prefix(12)))
+                            .font(FloeTheme.Typography.metadata)
+                    }
+                }
+            }
+        } else {
+            Section {
+                if let kind = model.target.requestedOutputKind {
+                    LabeledContent(
+                        "design.owner.requested_output_type",
+                        value: DesignOwnerLabels.outputType(kind))
+                        .font(FloeTheme.Typography.metadata)
+                }
+                DesignBriefFields(
+                    goal: $briefGoal, audience: $briefAudience,
+                    goalLabel: "design.owner.brief_goal",
+                    audienceLabel: "design.owner.brief_audience",
+                    goalIdentifier: "design.owner.creativeGoal",
+                    audienceIdentifier: "design.owner.creativeAudience")
+                Button("design.owner.creative_start") {
+                    Task { await model.beginCreativeRequest(goal: briefGoal, audience: briefAudience) }
+                }
+                .disabled(model.busy || briefGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("design.owner.creativeStart")
+            } header: {
+                Text("design.owner.creative_request")
+            } footer: {
+                Text("design.owner.creative_footer")
+            }
+        }
+    }
+
+    private var briefSection: some View {
+        Section("design.owner.brief") {
+            DesignBriefFields(
+                goal: $briefGoal, audience: $briefAudience,
+                goalLabel: "design.owner.brief_goal",
+                audienceLabel: "design.owner.brief_audience",
+                goalIdentifier: "design.owner.briefGoal",
+                audienceIdentifier: "design.owner.briefAudience")
+            Button("design.owner.save_brief") {
+                Task { await model.saveBrief(goal: briefGoal, audience: briefAudience) }
+            }
+            .disabled(model.busy || briefGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .accessibilityIdentifier("design.owner.saveBrief")
+        }
+    }
+
+    private var specSection: some View {
+        Section {
+            DesignSpecField(
+                label: "design.owner.spec", text: $specText,
+                lineLimit: 2...8,
+                identifier: "design.owner.spec")
+            Button("design.owner.save_spec") {
+                Task { await model.saveSpec(rawMarkdown: specText) }
+            }
+            .disabled(model.busy)
+            .accessibilityIdentifier("design.owner.saveSpec")
+        } header: {
+            Text("design.owner.spec_header")
+        } footer: {
+            Text("design.owner.spec_footer")
+        }
+    }
+
+    @ViewBuilder
+    private var frozenSection: some View {
+        Section("design.owner.frozen") {
+            if let frozen = model.project?.frozenRun {
+                LabeledContent("design.owner.frozen_input",
+                               value: frozen.inputRevisionID.map { String($0.prefix(12)) } ?? "—")
+                    .font(FloeTheme.Typography.metadata)
+                LabeledContent("design.owner.frozen_spec",
+                               value: frozen.specSHA256.map { String($0.prefix(12)) } ?? "—")
+                    .font(FloeTheme.Typography.metadata)
+                LabeledContent("design.owner.frozen_target",
+                               value: frozen.targetRevisionID.map { String($0.prefix(12)) } ?? "—")
+                    .font(FloeTheme.Typography.metadata)
+                Text("design.owner.frozen_note")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("design.owner.not_frozen")
+                    .foregroundStyle(.secondary)
+                Button("design.owner.freeze") {
+                    Task { await model.freezeInput() }
+                }
+                .disabled(model.busy || model.resolvedSource == nil)
+                .accessibilityIdentifier("design.owner.freeze")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var artifactsSection: some View {
+        if let artifact = model.currentArtifact {
+            Section("design.owner.revisions") {
+                LabeledContent("design.owner.current_revision",
+                               value: artifact.currentRevisionID.map { String($0.prefix(12)) } ?? "—")
+                    .font(FloeTheme.Typography.metadata)
+                ForEach(artifact.revisions.suffix(5)) { revision in
+                    HStack {
+                        Text("#\(revision.number) · \(DesignOwnerLabels.revisionOrigin(revision.origin))")
+                            .font(FloeTheme.Typography.metadata)
+                        Spacer()
+                        Text(String(revision.contentSHA256.prefix(10)))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Button("design.owner.export_verified") {
+                    Task {
+                        guard let result = await model.exportVerified() else { return }
+                        exportItem = DesignOwnerExportItem(
+                            document: DesignOwnerExportDocument(data: result.data),
+                            filename: "design-\(DesignOwnerLabels.ownerKind(model.target.kind)).\(result.format)")
+                    }
+                }
+                .disabled(model.busy || artifact.currentRevisionID == nil)
+                .accessibilityIdentifier("design.owner.export")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var candidatesSection: some View {
+        if !model.pendingCandidates.isEmpty {
+            Section("design.owner.candidates") {
+                ForEach(model.pendingCandidates) { candidate in
+                    VStack(alignment: .leading, spacing: 6) {
+                        let comparison = model.comparison?.candidateID == candidate.id
+                            ? model.comparison : nil
+                        DesignCandidateSummaryRow(
+                            summary: candidate.summary,
+                            statusText: FloeL10n.l("design.owner.pending"),
+                            statusColor: FloeTheme.pending,
+                            diffLines: comparison.map(\.diff) ?? candidate.diff,
+                            diffTruncated: comparison?.diffTruncated ?? false,
+                            diffNote: comparison?.diffNote)
+                        if let comparison, !comparison.changed {
+                            Text("design.owner.no_change").font(.caption).foregroundStyle(.secondary)
+                        }
+                        HStack(spacing: 10) {
+                            Button("design.owner.compare") {
+                                Task { await model.compare(candidate.id) }
+                            }
+                            .disabled(model.busy)
+                            .accessibilityIdentifier("design.owner.compare.\(candidate.id)")
+                        }
+                        DesignCandidateActionButtons(
+                            busy: model.busy,
+                            adoptTitle: model.isImmutableOwner
+                                ? "design.owner.adopt_return"
+                                : "design.owner.adopt",
+                            showsVariant: !model.isImmutableOwner,
+                            rejectTitle: "design.owner.reject",
+                            adoptIdentifier: "design.owner.adopt.\(candidate.id)",
+                            variantIdentifier: "design.owner.adoptVariant.\(candidate.id)",
+                            rejectIdentifier: "design.owner.reject.\(candidate.id)",
+                            onAdopt: { Task { await model.adopt(candidate.id, mode: .updateOriginal) } },
+                            onVariant: { Task { await model.adopt(candidate.id, mode: .variant) } },
+                            onReject: { Task { await model.reject(candidate.id) } })
+                        // Trusted-UI mint for the assistant's design.adopt:
+                        // same confirmation service the tools consume, bound
+                        // to this exact candidate/base/proposed/mode, and
+                        // DURABLY delivered to the frozen originating task.
+                        // Only offered when an honest origin exists; a target
+                        // without one shows the manual adopt only.
+                        if model.canAuthorizeAssistant {
+                            Menu {
+                                Button("design.owner.authorize_update") {
+                                    Task { await model.authorizeAssistantAdoption(candidate.id, mode: .updateOriginal) }
+                                }
+                                if !model.isImmutableOwner {
+                                    Button("design.owner.authorize_variant") {
+                                        Task { await model.authorizeAssistantAdoption(candidate.id, mode: .variant) }
+                                    }
+                                }
+                            } label: {
+                                Label("design.owner.authorize_assistant", systemImage: "checkmark.shield")
+                            }
+                            .disabled(model.busy)
+                            .accessibilityIdentifier("design.owner.authorizeAssistant.\(candidate.id)")
+                        }
+                        if model.authorizedAssistantAdoption?.candidateID == candidate.id {
+                            Text("design.owner.authorized_note")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("design.owner.authorizedNote.\(candidate.id)")
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var feedbackSection: some View {
+        Section("design.owner.feedback") {
+            ForEach(model.openFeedback) { feedback in
+                DesignFeedbackRow(
+                    comment: feedback.comment,
+                    statusText: feedback.status == .staleAnchor
+                        ? FloeL10n.l("design.owner.feedback_stale")
+                        : FloeL10n.l("design.owner.feedback_open"),
+                    statusColor: feedback.status == .staleAnchor
+                        ? FloeTheme.pending : Color.secondary,
+                    busy: model.busy,
+                    showsRelocate: feedback.status == .staleAnchor,
+                    showsResolve: feedback.status != .staleAnchor
+                        && model.currentArtifact?.currentRevisionID != nil,
+                    onRelocate: { Task { await model.relocateAnchor(feedback.id) } },
+                    onResolve: { Task { await model.resolveFeedback(feedback.id) } })
+            }
+            TextField("design.owner.feedback_comment", text: $feedbackDraft, axis: .vertical)
+                .lineLimit(1...4)
+                .accessibilityIdentifier("design.owner.feedbackComment")
+            Button("design.owner.feedback_add") {
+                Task {
+                    await model.addFeedback(feedbackDraft)
+                    feedbackDraft = ""
+                }
+            }
+            .disabled(model.busy || feedbackDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .accessibilityIdentifier("design.owner.feedbackAdd")
+        }
+    }
+
+    private func loadFieldsIfNeeded(force: Bool) {
+        guard let envelope = model.envelope else { return }
+        guard loadedRevision != envelope.revision || force else { return }
+        loadedRevision = envelope.revision
+        briefGoal = envelope.project.brief?.goal ?? briefGoal
+        briefAudience = envelope.project.brief?.audience ?? briefAudience
+        specText = envelope.project.spec?.rawMarkdown ?? specText
     }
 }
 #endif

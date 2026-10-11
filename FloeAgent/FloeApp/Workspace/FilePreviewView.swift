@@ -9,6 +9,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeCore
 import FloeImages
 import FloeWorkspace
 import FloeCAD
@@ -63,6 +64,9 @@ struct FilePreviewView: View {
     /// Sharing a cloud/network snapshot must not clear the preview copy that
     /// currently owns the visible document, so it uses its own temp store.
     @StateObject private var shareCopy = RemoteFilePreviewCopy()
+    /// T6 design entrance: the current workspace file as a typed design
+    /// target (workspace-scoped, permission re-derived by the adapter).
+    @State private var designTarget: DesignTarget?
 
     var body: some View {
         Group {
@@ -155,6 +159,9 @@ struct FilePreviewView: View {
         .navigationTitle(fileName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
+        .sheet(item: $designTarget) { target in
+            DesignOwnerWorkflowSheet(target: target, environment: environment)
+        }
         .task(id: relativePath) { await load() }
         .fullScreenCover(isPresented: $isIDEPresented, onDismiss: {
             // The IDE can be swipe-dismissed on a clean session without
@@ -639,6 +646,23 @@ struct FilePreviewView: View {
             .disabled(isPreparingShare || center.fileService == nil)
             .accessibilityLabel("file.preview.share")
             .accessibilityIdentifier("file.preview.share")
+            // T6 design entrance for a real workspace file. Only shown when
+            // the file is addressable through the live workspace authority;
+            // cloud/network stubs are read-only copies without a design owner.
+            if let workspace = center.currentWorkspace,
+               center.fileService != nil,
+               !center.isCloudWorkspacePath(relativePath),
+               !center.isNetworkWorkspacePath(relativePath) {
+                Button {
+                    designTarget = DesignOwnerTargets.file(
+                        workspaceID: workspace.id, relativePath: relativePath)
+                } label: {
+                    Label("design.owner.open", systemImage: "square.on.square.dashed")
+                }
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityLabel("design.owner.open")
+                .accessibilityIdentifier("file.preview.design")
+            }
             if allowsIDEExpansion,
                WorkspaceFileRouter.allowsCodeEditor(relativePath),
                content != nil,

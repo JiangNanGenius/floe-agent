@@ -61,6 +61,35 @@ struct ProviderEditorView: View {
                         .foregroundStyle(FloeTheme.destructive)
                 }
             }
+            if viewModel.lastSaveSyncPending {
+                Section {
+                    Label("providers.save.saved_local_sync_pending", systemImage: "icloud.slash")
+                        .foregroundStyle(FloeTheme.pending)
+                        .accessibilityIdentifier("providers.save.syncPending")
+                    if let detail = viewModel.lastSaveSyncError, !detail.isEmpty {
+                        Text(detail)
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button {
+                        Task { await viewModel.retrySync() }
+                    } label: {
+                        if viewModel.isRetryingSync {
+                            ProgressView()
+                        } else {
+                            Text("providers.save.retry_sync")
+                        }
+                    }
+                    .disabled(viewModel.isRetryingSync)
+                    .frame(minHeight: FloeTheme.minimumTarget)
+                    .accessibilityIdentifier("providers.save.retrySync")
+                    Button("providers.save.done") { dismiss() }
+                        .frame(minHeight: FloeTheme.minimumTarget)
+                        .accessibilityIdentifier("providers.save.doneAfterPending")
+                } footer: {
+                    Text("providers.save.saved_local_sync_pending.footer")
+                }
+            }
         }
         .navigationTitle(viewModel.existing == nil
             ? LocalizedStringKey("providers.add")
@@ -373,7 +402,12 @@ struct ProviderEditorView: View {
     private func save() {
         Task {
             if await viewModel.save() {
-                dismiss()
+                // A local commit whose CloudKit enqueue failed stays on this
+                // sheet with the explicit pending banner + retry instead of
+                // dismissing as an unqualified success.
+                if !viewModel.lastSaveSyncPending {
+                    dismiss()
+                }
             }
         }
     }

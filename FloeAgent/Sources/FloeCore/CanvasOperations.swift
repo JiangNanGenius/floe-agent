@@ -1,5 +1,35 @@
 import Foundation
 
+/// Derived, per-node context that is NOT a second persisted store: the
+/// migration classification and native CAD package binding are computed from
+/// the node's real typed metadata (legacy marker JSON, native source path /
+/// hash) whenever an authority snapshot is taken. Optional so snapshots
+/// serialized before this field decode unchanged.
+public struct CanvasNodeContextMetadata: Sendable, Codable, Hashable {
+    public var nodeID: UUID
+    /// `legacyUnchanged`, `migrated` or `conflict` for a legacy `scene3D`
+    /// node; nil when the node is not a legacy scene.
+    public var migrationState: String?
+    /// The actual native `.floecad` package binding recorded on the node
+    /// (`canvas.nativeCAD.sourcePath`), or a still-native package asset path.
+    public var nativePackagePath: String?
+    /// Content hash recorded for that binding (`canvas.nativeCAD.sourceHash`),
+    /// or the native package asset's own hash before the first apply.
+    public var nativePackageHash: String?
+
+    public init(
+        nodeID: UUID,
+        migrationState: String? = nil,
+        nativePackagePath: String? = nil,
+        nativePackageHash: String? = nil
+    ) {
+        self.nodeID = nodeID
+        self.migrationState = migrationState
+        self.nativePackagePath = nativePackagePath
+        self.nativePackageHash = nativePackageHash
+    }
+}
+
 public struct CanvasContextSnapshot: Sendable, Codable, Hashable {
     public var canvasID: UUID
     public var documentID: UUID
@@ -8,16 +38,21 @@ public struct CanvasContextSnapshot: Sendable, Codable, Hashable {
     public var selectedNodeIDs: [UUID]
     public var nodes: [CanvasNode]
     public var connections: [CanvasConnection]
+    /// Derived per-node migration/package context. Nil (and absent from old
+    /// serialized snapshots) when no node carries any reportable context.
+    public var nodeMetadata: [CanvasNodeContextMetadata]?
 
     public init(
         canvasID: UUID, documentID: UUID, revision: Int64,
         viewport: CanvasViewportState, selectedNodeIDs: [UUID],
-        nodes: [CanvasNode], connections: [CanvasConnection]
+        nodes: [CanvasNode], connections: [CanvasConnection],
+        nodeMetadata: [CanvasNodeContextMetadata]? = nil
     ) {
         self.canvasID = canvasID; self.documentID = documentID
         self.revision = revision; self.viewport = viewport
         self.selectedNodeIDs = selectedNodeIDs; self.nodes = nodes
         self.connections = connections
+        self.nodeMetadata = nodeMetadata
     }
 }
 
@@ -259,8 +294,48 @@ public enum CanvasCommandService {
             canvasID: project.id, documentID: id, revision: project.revision,
             viewport: project.viewports[id] ?? .init(),
             selectedNodeIDs: selectedNodeIDs,
-            nodes: document.nodes, connections: document.connections
+            nodes: document.nodes, connections: document.connections,
+            nodeMetadata: nodeContextMetadata(for: document.nodes)
         )
+    }
+
+    /// Derived migration/package context from the nodes' REAL typed metadata.
+    /// Nothing is persisted here and no second state is created: a legacy
+    /// scene is classified from its embedded scene + marker exactly like
+    /// `legacySceneMigrationState`, and a native CAD node reports its
+    /// recorded package binding.
+    public static func nodeContextMetadata(
+        for nodes: [CanvasNode]
+    ) -> [CanvasNodeContextMetadata]? {
+        var entries: [CanvasNodeContextMetadata] = []
+        for node in nodes {
+            let migrationState: String?
+            switch node.legacySceneMigrationState {
+            case .legacyUnchanged: migrationState = "legacyUnchanged"
+            case .migrated: migrationState = "migrated"
+            case .conflict: migrationState = "conflict"
+            case .notLegacyScene: migrationState = nil
+            }
+            var packagePath = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath]
+            var packageHash = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourceHash]
+            if packagePath?.isEmpty == true { packagePath = nil }
+            if packageHash?.isEmpty == true { packageHash = nil }
+            // A native node whose live asset is still the package itself (not
+            // yet applied) exposes that real binding too.
+            if packagePath == nil, CADCanvasNodePlanner.isNativeCADAsset(node.asset) {
+                packagePath = node.asset?.localRelativePath
+                packageHash = packageHash ?? node.asset?.contentHash
+            }
+            guard migrationState != nil || packagePath != nil || packageHash != nil else {
+                continue
+            }
+            entries.append(CanvasNodeContextMetadata(
+                nodeID: node.id,
+                migrationState: migrationState,
+                nativePackagePath: packagePath,
+                nativePackageHash: packageHash))
+        }
+        return entries.isEmpty ? nil : entries
     }
 
     public static func applying(

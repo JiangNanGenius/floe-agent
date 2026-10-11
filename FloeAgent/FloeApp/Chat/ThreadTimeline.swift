@@ -168,8 +168,17 @@ enum ThreadTimelineBuilder {
                 && $0.runID.map(represented.contains) != true
                 && !ConversationHistoryAssembler.isLegacyWorkspaceContextNotice($0)
         }
-        result += taskLevel.map { message in
-            message.role == "user"
+        result += taskLevel.map { message -> ThreadTimelineItem in
+            // The trusted internal notices (design-assistant confirmation and
+            // structured proposal decision) are internal structured events.
+            // Ordinary surfaces show the concise localized summary instead of
+            // the raw template; user and assistant text (even bytes carrying
+            // the same marker) and every unrecognized system notice keep their
+            // existing rendering.
+            if let summary = InternalNoticeProjection.userFacingSummary(for: message) {
+                return .assistantMessage(text: summary, idSuffix: message.id.uuidString)
+            }
+            return message.role == "user"
                 ? .userMessage(message)
                 : .assistantMessage(text: message.content, idSuffix: message.id.uuidString)
         }

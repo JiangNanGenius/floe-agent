@@ -26,6 +26,14 @@ public actor ConfigSyncEngine {
     public private(set) var status: SyncStatus = .paused
     public private(set) var lastSyncAt: Date?
     public private(set) var synchronizationEnabled = true
+    /// Record ids of remote records rejected by canonical validation during
+    /// fetch batches. A non-empty set is a REAL partial failure: valid records
+    /// in the same batch were applied, while each rejected record was neither
+    /// persisted nor acknowledged (its local copy stays authoritative and the
+    /// record is redelivered until a corrected payload passes). The set is
+    /// never persisted and never causes a remote write; a later successful
+    /// apply of the same record removes it.
+    public private(set) var rejectedRemoteRecordIDs: Set<String> = []
 
     private let configurationStore: ModelConfigurationStore?
     private let metadataStore: ConfigSyncMetadataStore?
@@ -71,6 +79,47 @@ public actor ConfigSyncEngine {
     public func markWaitingForSecret() {
         status = .waitingForSecret
     }
+
+    // MARK: - Untrusted remote payload validation
+
+    /// Decodes and validates an untrusted remote provider payload. Applies
+    /// the SAME invariants as local writes; an invalid payload is rejected
+    /// without ever reaching SQLite. Throws `FloeError.invalidConfiguration`
+    /// carrying machine-readable reason tokens only (no name/URL/headers).
+    static func validatedRemoteProvider(_ payload: Data) throws -> ProviderProfile {
+        let provider: ProviderProfile
+        do {
+            provider = try JSONDecoder.floe.decode(ProviderProfile.self, from: payload)
+        } catch {
+            throw FloeError.invalidConfiguration("remote provider malformed")
+        }
+        let issues = ProviderConfigurationValidation.issues(for: provider)
+        guard issues.isEmpty else {
+            throw FloeError.invalidConfiguration(
+                "remote provider rejected: \(issues.map(\.problem.rawValue).joined(separator: ","))"
+            )
+        }
+        return provider
+    }
+
+    /// Decodes and validates an untrusted remote model payload.
+    static func validatedRemoteModel(_ payload: Data) throws -> ModelProfile {
+        let model: ModelProfile
+        do {
+            model = try JSONDecoder.floe.decode(ModelProfile.self, from: payload)
+        } catch {
+            throw FloeError.invalidConfiguration("remote model malformed")
+        }
+        let issues = ProviderConfigurationValidation.issues(for: model)
+        guard issues.isEmpty else {
+            throw FloeError.invalidConfiguration(
+                "remote model rejected: \(issues.map(\.problem.rawValue).joined(separator: ","))"
+            )
+        }
+        return model
+    }
+
+    // MARK: - Sync control
 
     /// Pauses or resumes CloudKit traffic without discarding locally queued
     /// metadata. Changes made while paused are uploaded after re-enabling.
@@ -252,6 +301,29 @@ public actor ConfigSyncEngine {
         try await enqueueDelete(type: .credentialDescriptor, id: id.uuidString)
     }
 
+    /// Completion status for one fetch/send batch. An honest rejected-record
+    /// outcome is preserved here: the derived credential status only decides
+    /// the result when the batch contained no rejected remote record.
+    /// (Bug fixed by T6: the `.fetchedRecordZoneChanges` epilogue used to
+    /// overwrite a rejection with `.synced`.)
+    func batchCompletionStatus() async -> SyncStatus {
+        if !rejectedRemoteRecordIDs.isEmpty {
+            return .error(Self.rejectedRemoteMessage)
+        }
+        return await credentialSyncStatus()
+    }
+
+    /// User-initiated retry after a rejected partial batch. Re-runs the
+    /// EXISTING synchronization path only (no new store, no remote write, no
+    /// forced redelivery state rewrite). Returns true when no rejected record
+    /// remains; a still-invalid remote payload keeps the honest error state.
+    @discardableResult
+    public func retryRejectedRemoteRecords() async -> Bool {
+        guard !rejectedRemoteRecordIDs.isEmpty else { return true }
+        try? await synchronize()
+        return rejectedRemoteRecordIDs.isEmpty
+    }
+
     public func synchronize() async throws {
         guard synchronizationEnabled else {
             status = .paused
@@ -278,7 +350,7 @@ public actor ConfigSyncEngine {
             // Remote merges may enqueue a conflict-resolving save.
             try await syncEngine.sendChanges()
             lastSyncAt = Date()
-            status = await credentialSyncStatus()
+            status = await batchCompletionStatus()
         } catch {
             status = .error(String(describing: error))
             throw error
@@ -477,7 +549,9 @@ public actor ConfigSyncEngine {
                 }
                 try await retryDeferredRecords()
                 lastSyncAt = Date()
-                status = await credentialSyncStatus()
+                // Preserve an honest partial-failure status for the batch:
+                // a rejected record must never be masked by .synced.
+                status = await batchCompletionStatus()
 
             case .sentRecordZoneChanges(let sent):
                 for record in sent.savedRecords { try await acknowledge(record) }
@@ -507,7 +581,7 @@ public actor ConfigSyncEngine {
                     status = .error(firstFailure.localizedDescription)
                 } else {
                     lastSyncAt = Date()
-                    status = await credentialSyncStatus()
+                    status = await batchCompletionStatus()
                 }
 
             case .didFetchRecordZoneChanges(let result):
@@ -618,7 +692,10 @@ public actor ConfigSyncEngine {
         }
     }
 
-    private func applyRemote(_ record: CKRecord) async throws {
+    /// Applies one fetched remote record. Internal (not private) so the exact
+    /// batch/status pipeline is directly testable without a CloudKit account;
+    /// the production delegate calls it with the real CKRecord.
+    func applyRemote(_ record: CKRecord) async throws {
         guard let type = ConfigSyncRecordType(rawValue: record.recordType),
               let payload = record.encryptedValues["payload"] as? Data,
               let timestampsData = record.encryptedValues["fieldTimestamps"] as? Data,
@@ -639,12 +716,38 @@ public actor ConfigSyncEngine {
 
         switch type {
         case .providerProfile:
-            let provider = try JSONDecoder.floe.decode(ProviderProfile.self, from: mergedPayload)
+            let provider: ProviderProfile
+            do {
+                provider = try Self.validatedRemoteProvider(mergedPayload)
+            } catch {
+                // Untrusted/merged payload: skip this record (never persist,
+                // never acknowledge metadata). Local configuration and this
+                // device's pending saves are preserved; valid records in the
+                // same batch still apply. Logs carry tokens only, no
+                // name/endpoint/header content.
+                Self.logRejectedRemoteProvider(
+                    id: record.recordID.recordName,
+                    reason: error.localizedDescription
+                )
+                rejectedRemoteRecordIDs.insert(record.recordID.recordName)
+                status = .error(Self.rejectedRemoteMessage)
+                return
+            }
             guard provider.kind != .local else { return }
             try await configurationStore.saveProvider(provider)
             try await retryDeferredRecords()
         case .modelProfile:
-            let model = try JSONDecoder.floe.decode(ModelProfile.self, from: mergedPayload)
+            let model: ModelProfile
+            do {
+                model = try Self.validatedRemoteModel(mergedPayload)
+            } catch {
+                FloeLogger(category: .sync).warning(
+                    "rejected remote model profile \(record.recordID.recordName): \(error.localizedDescription)"
+                )
+                rejectedRemoteRecordIDs.insert(record.recordID.recordName)
+                status = .error(Self.rejectedRemoteMessage)
+                return
+            }
             guard model.providerID != ProviderProfile.onDeviceProviderID else { return }
             guard try await configurationStore.provider(id: model.providerID) != nil else {
                 try await saveDeferredRemoteRecord(
@@ -703,6 +806,9 @@ public actor ConfigSyncEngine {
             updatedAt: record.modificationDate ?? Date()
         )
         try await metadataStore.save(metadata)
+        // A previously rejected record that now applies cleanly is no longer
+        // part of the honest partial-failure state.
+        rejectedRemoteRecordIDs.remove(record.recordID.recordName)
         if retainsLocalChanges {
             syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(record.recordID)])
         }
@@ -931,6 +1037,26 @@ public actor ConfigSyncEngine {
                 return
             }
         }
+    }
+
+    /// User-facing status when an untrusted remote record failed validation.
+    /// States the actual outcome precisely: the LOCAL original was retained
+    /// and the REMOTE update was skipped — it must never read as if the
+    /// rejected remote configuration had been persisted. Bilingual at the
+    /// sync boundary; the App catalog may override via
+    /// `providers.sync.rejected_remote` (see T1 integration patch in REPORT).
+    private static var rejectedRemoteMessage: String {
+        FloeL10n.isChinese
+            ? "部分云端配置未通过校验：已保留本机原有配置，并跳过该条云端更新；被拒绝的记录不会写入本机，也不会被确认"
+            : "Some cloud configuration failed validation: the local copy on this device was kept and the remote update was skipped; the rejected record is neither saved here nor acknowledged"
+    }
+
+    /// Logs ONLY the stable record id and machine-readable reason tokens.
+    /// Never logs the provider name, endpoint or headers.
+    private static func logRejectedRemoteProvider(id: String, reason: String) {
+        FloeLogger(category: .sync).warning(
+            "rejected remote provider profile \(id): \(reason)"
+        )
     }
 
     private static func encode<T: Encodable>(_ value: T) throws -> Data {

@@ -698,9 +698,136 @@ struct ModelConfigurationStoreTests {
         #expect(staleImageInVideoRole.supportsAuxiliaryVisionSurface == false)
     }
 
-    @Test("Onboarding status persists independently from unfinished configuration")
-    func onboardingStatusPersistence() async throws {
+    @Test("Legacy provider rows with NULL display name read back as nil and re-save unchanged")
+    func legacyNullDisplayNameRoundTrip() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = ModelConfigurationStore(database: database)
+        // Simulate a pre-v15 / legacy row: valid provider written, then the
+        // display_name column set back to NULL.
+        let provider = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://api.deepseek.com")),
+            displayName: "DeepSeek",
+            presetID: nil
+        )
+        try await store.saveProvider(provider)
+        try await database.writer { db in
+            try db.execute(sql: "UPDATE providers SET display_name = NULL WHERE id = ?",
+                          arguments: [provider.id.uuidString])
+        }
+        let loaded = try #require(await store.provider(id: provider.id))
+        #expect(loaded.displayName == nil)
+        #expect(loaded.presetID == nil)
+
+        // Editing such a legacy provider with no custom name must keep NULL
+        // semantics (nil name), not fail validation or fabricate a name.
+        var reSaved = loaded
+        reSaved.updatedAt = loaded.updatedAt.addingTimeInterval(1)
+        try await store.saveProvider(reSaved)
+        let reloaded = try #require(await store.provider(id: provider.id))
+        #expect(reloaded.displayName == nil)
+        #expect(reloaded == reSaved)
+    }
+
+    @Test("A provider bundle with an invalid name performs zero mutation")
+    func invalidBundlePreflightZeroMutation() async throws {
         let store = try await makeStore()
+        let good = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIResponses,
+            baseURL: try #require(URL(string: "https://api.openai.com/v1")),
+            displayName: "Primary"
+        )
+        try await store.saveProvider(good)
+
+        var bad = good
+        bad.displayName = String(repeating: "a", count: 257)
+        let model = ModelProfile(
+            providerID: good.id, remoteModelID: "kept", displayName: "Kept",
+            limits: ModelLimits(contextTokens: 10, maxOutputTokens: 2), capabilities: [.text]
+        )
+        try await store.saveModel(model)
+
+        await #expect(throws: FloeError.self) {
+            try await store.saveProviderBundle(provider: bad, models: [model])
+        }
+        // Store truth is untouched: name preserved, model preserved.
+        let stored = try #require(await store.provider(id: good.id))
+        #expect(stored.displayName == "Primary")
+        let models = try await store.models(providerID: good.id)
+        #expect(models.map(\.remoteModelID) == ["kept"])
+    }
+
+    @Test("A provider bundle with one invalid model performs zero mutation")
+    func invalidModelBundlePreflightZeroMutation() async throws {
+        let store = try await makeStore()
+        let provider = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIResponses,
+            baseURL: try #require(URL(string: "https://api.openai.com/v1"))
+        )
+        try await store.saveProvider(provider)
+        let valid = ModelProfile(
+            providerID: provider.id, remoteModelID: "valid", displayName: "Valid",
+            limits: ModelLimits(contextTokens: 10, maxOutputTokens: 2), capabilities: [.text]
+        )
+        try await store.saveModel(valid)
+        let invalid = ModelProfile(
+            providerID: provider.id, remoteModelID: "", displayName: "Broken",
+            limits: ModelLimits(contextTokens: 10, maxOutputTokens: 2), capabilities: [.text]
+        )
+        await #expect(throws: FloeError.self) {
+            try await store.saveProviderBundle(provider: provider, models: [valid, invalid])
+        }
+        // The invalid model was never written and the valid row is intact.
+        let models = try await store.models(providerID: provider.id)
+        #expect(models.map(\.remoteModelID) == ["valid"])
+    }
+
+    @Test("Provider bundle survives a store restart with identical bytes")
+    func restartReadback() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("t1-restart-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let providerID = UUID()
+        let provider = ProviderProfile(
+            id: providerID,
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://api.deepseek.com")),
+            displayName: "公司网关",
+            secretRef: SecretReference(keychainAccount: "provider.\(providerID)", synchronizable: true)
+        )
+        let model = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "deepseek-chat",
+            displayName: "DeepSeek Chat",
+            limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192),
+            capabilities: [.text, .tools]
+        )
+        do {
+            let database = try DatabaseManager(path: url)
+            try await database.migrate()
+            let store = ModelConfigurationStore(database: database)
+            _ = try await store.saveProviderBundle(provider: provider, models: [model])
+        }
+        // Re-open the SAME file as a fresh process would.
+        let reopened = try DatabaseManager(path: url)
+        try await reopened.migrate()
+        let store = ModelConfigurationStore(database: reopened)
+        let loadedProvider = try #require(await store.provider(id: providerID))
+        let loadedModels = try await store.models(providerID: providerID)
+        #expect(loadedProvider.displayName == "公司网关")
+        #expect(loadedProvider.baseURL == provider.baseURL)
+        #expect(loadedProvider.secretRef?.keychainAccount == "provider.\(providerID)")
+        #expect(loadedModels.map(\.remoteModelID) == ["deepseek-chat"])
+        #expect(loadedModels.first?.limits.contextTokens == 128_000)
+    }
+
+    @Test("Onboarding status persists independently from unfinished configuration")
+    func onboardingStatusPersistence() async throws {        let store = try await makeStore()
         #expect(try await store.preferences().onboardingStatus == .unseen)
 
         var preferences = try await store.preferences()

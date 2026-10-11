@@ -641,7 +641,88 @@ public actor ConversationRunService {
         eventChannel.yield(.stateChanged(Self.harnessState(latestState)))
     }
 
-    private func handleConsumedSteer(_ input: RuntimeSteerInput) async {
+    /// The execution mode only the trusted-UI design-assistant confirmation
+    /// ingress (`ConversationCenter.recordDesignAssistantConfirmation`) writes
+    /// into the durable running-input store. The runtime keeps its own copy
+    /// because it must not depend on the App target; the App-side projection
+    /// (`DesignConfirmationNoticeProjection.deliveryExecutionMode`) exposes
+    /// the same value and an App regression test locks the two literals
+    /// together. The mode alone never grants trust: the persisted row and the
+    /// durable system notice must both prove the same delivery.
+    public static let designConfirmationExecutionMode = "designConfirmation"
+
+    /// The dedicated execution mode of the structured proposal-decision
+    /// delivery (`ConversationCenter.recordProposalDecision`, the shared
+    /// drawing/CAD/Office decision ingress). Like the confirmation mode it is
+    /// server-owned: only the trusted ingress writes it, never message text.
+    /// The App-side projection
+    /// (`ProposalDecisionNoticeProjection.deliveryExecutionMode`) exposes the
+    /// same value and a regression test locks the two literals together.
+    public static let proposalDecisionExecutionMode = "proposalDecision"
+
+    /// Every dedicated internal delivery mode the runtime treats as
+    /// fail-closed. A persisted row without one of these stays ordinary.
+    static let internalDeliveryExecutionModes: Set<String> = [
+        designConfirmationExecutionMode, proposalDecisionExecutionMode,
+    ]
+
+    /// Recoverable-failure text for a dedicated internal delivery whose
+    /// server-owned linkage could not be proven. It intentionally carries no
+    /// grant, candidate, proposal or target identity.
+    static let invalidInternalDeliveryMessage = "Unable to verify the trusted internal delivery against its durable rows"
+
+    /// Server-owned linkage state of one consumed steer.
+    ///
+    /// Genuine ordinary inputs — a user-typed steer, including text that
+    /// repeats the notice template — carry no dedicated mode and stay
+    /// `.ordinary` with the existing user-turn behavior. A row that DOES carry
+    /// the dedicated internal mode is never downgraded to ordinary: if any
+    /// server-owned field disagrees, the status is no longer a live delivery,
+    /// the durable notice is missing/mismatched, or the stores cannot be read,
+    /// the delivery is `.invalidInternal` and the callback preserves every
+    /// existing row instead of appending, consuming or trusting anything.
+    enum TrustedDeliveryLinkage: Equatable {
+        case ordinary
+        case pending
+        case alreadyConsumed
+        /// The dedicated internal delivery could not be verified against its
+        /// server-owned rows. Callers must leave all existing rows untouched
+        /// and surface a recoverable failure.
+        case invalidInternal
+    }
+
+    /// Boundary for one steer the runtime already copied into model context.
+    /// Internal so the regression tests can replay the exact callback twice.
+    func handleConsumedSteer(_ input: RuntimeSteerInput) async {
+        switch await trustedDeliveryLinkage(for: input) {
+        case .pending:
+            // The trusted ingress already persisted the exact system notice
+            // (same id, same bytes) for this run. Consuming the steer keeps
+            // that row and its role; only the durable consumption receipt is
+            // committed, and a failed write stays retryable instead of
+            // claiming the input was consumed.
+            guard await markRunningInputConsumedReliably(input.id) else { return }
+            eventChannel.yield(.userInputConsumed(.init(
+                inputID: input.id,
+                runID: runID
+            )))
+            return
+        case .alreadyConsumed:
+            // A repeated callback for the same trusted delivery writes
+            // nothing and re-arms nothing: the receipt already exists.
+            return
+        case .invalidInternal:
+            // A row carrying the dedicated internal mode is never rewritten
+            // as an ordinary user turn. Keep every durable row byte-for-byte
+            // (no append, no role change, no consumption) and surface a
+            // recoverable failure. Retrying the same callback after the
+            // underlying store recovers is safe because nothing happened.
+            durabilityFailure = Self.invalidInternalDeliveryMessage
+            logger.error("internalDeliveryLinkageInvalid run=\(runID.uuidString) input=\(input.id.uuidString)")
+            return
+        case .ordinary:
+            break
+        }
         // Insert the text row first, then bind attachments, then upsert typed
         // parts. This respects both FK directions in the existing store API.
         let base = PersistedMessage(
@@ -693,6 +774,97 @@ public actor ConversationRunService {
             inputID: input.id,
             runID: runID
         )))
+    }
+
+    /// Proves — from server-owned persisted rows only, never from the steer
+    /// text or its shape — how a consumed steer may be handled:
+    ///
+    /// - `.ordinary`: the persisted row carries no dedicated internal mode
+    ///   (or, with no row at all, no durable same-id system notice exists), so
+    ///   the steer is genuine user guidance and keeps the existing user-turn
+    ///   behavior;
+    /// - `.pending` / `.alreadyConsumed`: the row is a dedicated internal
+    ///   delivery (design confirmation or proposal decision) for this exact
+    ///   conversation and run, holds byte-identical content, and the trusted
+    ///   ingress already persisted the same-id `system` notice with
+    ///   byte-identical content;
+    /// - `.invalidInternal`: a row that carries a dedicated internal mode
+    ///   failed any of those proofs, or a store read prevented classification.
+    ///   Nothing may be appended or consumed in that state.
+    ///
+    /// A dedicated mode is only ever written by the trusted UI ingress, so a
+    /// user-typed message can never be classified as internal. Indeterminate
+    /// evidence is never treated as ordinary: assuming ordinary would mirror
+    /// the internal notice bytes back as a user turn.
+    func trustedDeliveryLinkage(
+        for input: RuntimeSteerInput
+    ) async -> TrustedDeliveryLinkage {
+        let row: PendingUserInput?
+        if let runningInputStore {
+            do {
+                row = try await runningInputStore.input(id: input.id)
+            } catch {
+                logger.error("steerLinkageReadFailed run=\(runID.uuidString) input=\(input.id.uuidString)")
+                return .invalidInternal
+            }
+        } else {
+            row = nil
+        }
+        guard let row else {
+            // No persisted row: a durable same-id system notice still proves
+            // an internal delivery that must never be mirrored. Without that
+            // notice (or when the transcript cannot be read) there is nothing
+            // to protect and the steer follows the ordinary path only when the
+            // transcript is readable and clearly holds no such notice.
+            switch await systemNoticeEvidence(for: input) {
+            case .match, .unreadable: return .invalidInternal
+            case .mismatch: return .ordinary
+            }
+        }
+        guard Self.internalDeliveryExecutionModes.contains(row.executionMode) else {
+            // Genuine ordinary guidance (including a steer whose text repeats
+            // a notice template) keeps its existing path.
+            return .ordinary
+        }
+        guard row.conversationID == conversationID,
+              row.content == input.content
+        else { return .invalidInternal }
+        let linkage: TrustedDeliveryLinkage
+        switch row.status {
+        case .promoting, .steerPending:
+            guard row.targetRunID == runID else { return .invalidInternal }
+            linkage = .pending
+        case .consumed:
+            guard row.targetRunID == runID, row.consumedRunID == runID else { return .invalidInternal }
+            linkage = .alreadyConsumed
+        case .queued, .cancelled:
+            return .invalidInternal
+        }
+        guard case .match = await systemNoticeEvidence(for: input) else {
+            return .invalidInternal
+        }
+        return linkage
+    }
+
+    private enum SystemNoticeEvidence {
+        case match
+        case mismatch
+        case unreadable
+    }
+
+    /// Whether the durable transcript already holds the byte-identical
+    /// `system` notice under the steer's id. A failed read is `unreadable`,
+    /// never a fabricated mismatch.
+    private func systemNoticeEvidence(for input: RuntimeSteerInput) async -> SystemNoticeEvidence {
+        do {
+            let messages = try await conversationStore.messages(conversationID: conversationID)
+            let match = messages.contains {
+                $0.id == input.id && $0.role == "system" && $0.content == input.content
+            }
+            return match ? .match : .mismatch
+        } catch {
+            return .unreadable
+        }
     }
 
     private func handleCompaction(_ record: ContextCompactionRecord) async {

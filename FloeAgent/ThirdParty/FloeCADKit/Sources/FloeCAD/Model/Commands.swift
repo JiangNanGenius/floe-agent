@@ -202,6 +202,18 @@ struct SetScriptsDataCommand: DocumentCommand {
     func revert(in document: inout DesignDocument) { document.scriptsData = before }
 }
 
+/// Same contract for the legacy-scene presentation blob (camera, lighting,
+/// background, grid, provenance). Additive package column; see
+/// `Floe/LegacySceneImport.swift`.
+struct SetSceneSettingsDataCommand: DocumentCommand {
+    let title = "Scene"
+    let before: Data?
+    let after: Data?
+
+    func apply(to document: inout DesignDocument) { document.sceneSettingsData = after }
+    func revert(in document: inout DesignDocument) { document.sceneSettingsData = before }
+}
+
 struct AddSketchEntityCommand: DocumentCommand {
     let title = "Sketch"
     let sketchID: SketchID

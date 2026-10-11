@@ -30,6 +30,24 @@ import FloePersistence
 @MainActor
 enum CADCanvasActionBridge {
 
+    /// Exact owner identity of a workbench presentation: the canvas document
+    /// and node the user explicitly opened. Apply/Variant bind to THIS node
+    /// when supplied instead of choosing the first node that references the
+    /// package (the same native file may legitimately be referenced by more
+    /// than one node).
+    struct CADCanvasNodeOwner: Sendable, Hashable {
+        let canvasID: UUID
+        let documentID: UUID
+        let nodeID: UUID
+    }
+
+    /// In-flight new-CAD creations keyed by canvas+document. Two rapid
+    /// requests (a tool duplicate or a fast double tap that slips past the
+    /// UI's disabled state) must share ONE package and ONE committed node:
+    /// without this, both callers observe the same pending package across
+    /// their awaits and each commits its own node.
+    private static var inFlightCreates: [String: Task<(nodeID: UUID?, message: String), Never>] = [:]
+
     /// A located target: the canvas project file plus the exact node id of
     /// the node whose asset references the source package.
     private struct Target {
@@ -39,15 +57,37 @@ enum CADCanvasActionBridge {
         let nodeID: UUID
     }
 
+    /// How a package resolves to canvas targets when no frozen presentation
+    /// owner was supplied (the file-preview entry).
+    private enum TargetResolution {
+        case unique(Target)
+        case none
+        /// More than one VERIFIED reference, or only unverified file-name
+        /// matches: an explicit choice / actionable refusal is required.
+        case ambiguous(verifiedCount: Int, nameMatchCount: Int)
+    }
+
     /// The host-installed actions for `FloeCADWorkbenchView`. The operation
     /// closures receive the exact resolved package URL from the workbench.
-    static func actions(assetStore: CreativeAssetStore) -> CADCanvasActions {
+    ///
+    /// `owner` is the FROZEN node this workbench presentation was opened for.
+    /// It is captured into EACH action closure at creation: there is no global
+    /// "current presentation" registry, so two workbenches for the same
+    /// package (different canvas nodes) keep independent bindings and closing
+    /// one can never unregister the other's target. A file-preview action set
+    /// passes nil and only ever writes through a single VERIFIED reference.
+    static func actions(
+        assetStore: CreativeAssetStore,
+        owner: CADCanvasNodeOwner? = nil
+    ) -> CADCanvasActions {
         CADCanvasActions(
             applyToCanvas: { document, url in
-                await applyToCanvas(document: document, url: url, assetStore: assetStore)
+                await applyToCanvas(document: document, url: url,
+                                    assetStore: assetStore, frozenOwner: owner)
             },
             makeVariant: { document, url in
-                await makeVariant(document: document, url: url, assetStore: assetStore)
+                await makeVariant(document: document, url: url,
+                                  assetStore: assetStore, frozenOwner: owner)
             },
             createTargets: {
                 Self.explicitCreateTargets()
@@ -84,28 +124,59 @@ enum CADCanvasActionBridge {
     private static func applyToCanvas(
         document: FloeCADDocument,
         url: URL,
-        assetStore: CreativeAssetStore
+        assetStore: CreativeAssetStore,
+        frozenOwner: CADCanvasNodeOwner?
     ) async -> CADCanvasActionResult {
         do {
-            // Export the real projected page first: a canvas write never
-            // happens without verified result bytes.
+            // Resolve the exact target FIRST (cheap reads): a frozen
+            // presentation owner binds that node; the no-owner entry needs
+            // one unique VERIFIED reference or it refuses before any work.
+            let owner: CADCanvasNodeOwner
+            if let frozenOwner {
+                guard try exactTarget(owner: frozenOwner, packageURL: url) != nil else {
+                    return .status(canvasLocalized(
+                        "原画布节点已被删除或不再引用该 CAD 文档；未写入。",
+                        "The original canvas node was deleted or no longer references this CAD document; nothing was written."))
+                }
+                owner = frozenOwner
+            } else {
+                switch try resolveTarget(packageURL: url) {
+                case .unique(let target):
+                    owner = CADCanvasNodeOwner(
+                        canvasID: target.canvasID,
+                        documentID: target.documentID,
+                        nodeID: target.nodeID)
+                case .none:
+                    // Actionable, not a dead end: the explicit "Add to canvas"
+                    // route in the tools panel creates the first node in a
+                    // canvas the user picks; only then do Apply/Variant apply
+                    // to it.
+                    return .status(canvasLocalized(
+                        "画布中没有引用该 CAD 文档的节点。请使用工具面板中的“添加到画布”，选择目标画布后创建第一个节点。",
+                        "No canvas node references this CAD document yet. Use \"Add to Canvas\" in the tools panel and pick a destination to create the first node."))
+                case .ambiguous:
+                    return .status(ambiguousTargetMessage())
+                }
+            }
+            // Export the real projected page: a canvas write never happens
+            // without verified result bytes.
             let exported = try await exportPNG(document: document, url: url)
-            guard let located = try locateTarget(packageURL: url),
+            // Re-validate the EXACT node/source after the export await; the
+            // commit below checks it again inside every CAS attempt.
+            guard let located = try exactTarget(owner: owner, packageURL: url),
                   let node = located.project.documents
                     .flatMap(\.nodes).first(where: { $0.id == located.nodeID }) else {
-                // Actionable, not a dead end: the explicit "Add to canvas"
-                // route in the tools panel creates the first node in a canvas
-                // the user picks; only then do Apply/Variant apply to it.
                 return .status(canvasLocalized(
-                    "画布中没有引用该 CAD 文档的节点。请使用工具面板中的“添加到画布”，选择目标画布后创建第一个节点。",
-                    "No canvas node references this CAD document yet. Use \"Add to Canvas\" in the tools panel and pick a destination to create the first node."))
+                    "原画布节点已被删除或不再引用该 CAD 文档；未写入。",
+                    "The original canvas node was deleted or no longer references this CAD document; nothing was written."))
             }
+            let sourceKey = sourcePathKey(packageURL: url)
             let reference = try await persistRender(exported, document: document,
                                                     node: node, assetStore: assetStore)
             let captured = CADCanvasNodePlanner.capturedSourceHash(for: node)
             let operation = try CADCanvasNodePlanner.applyPatch(
                 liveNode: node,
-                sourcePath: sourcePathKey(packageURL: url),
+                sourcePath: sourceKey,
                 capturedSourceAssetHash: captured,
                 renderedAsset: reference,
                 extraMetadata: [
@@ -119,7 +190,8 @@ enum CADCanvasActionBridge {
                              nodeID: node.id,
                              canvasID: located.canvasID,
                              documentID: located.documentID,
-                             assetStore: assetStore) != nil else {
+                             assetStore: assetStore,
+                             expectedSource: (node.id, sourceKey)) != nil else {
                 throw CADDocumentError(code: "canvas_write_failed",
                                        message: canvasLocalized(
                                            "画布写入失败；原节点未被修改。",
@@ -138,26 +210,52 @@ enum CADCanvasActionBridge {
     private static func makeVariant(
         document: FloeCADDocument,
         url: URL,
-        assetStore: CreativeAssetStore
+        assetStore: CreativeAssetStore,
+        frozenOwner: CADCanvasNodeOwner?
     ) async -> CADCanvasActionResult {
         do {
+            let owner: CADCanvasNodeOwner
+            if let frozenOwner {
+                guard try exactTarget(owner: frozenOwner, packageURL: url) != nil else {
+                    return .status(canvasLocalized(
+                        "原画布节点已被删除或不再引用该 CAD 文档；未写入。",
+                        "The original canvas node was deleted or no longer references this CAD document; nothing was written."))
+                }
+                owner = frozenOwner
+            } else {
+                switch try resolveTarget(packageURL: url) {
+                case .unique(let target):
+                    owner = CADCanvasNodeOwner(
+                        canvasID: target.canvasID,
+                        documentID: target.documentID,
+                        nodeID: target.nodeID)
+                case .none:
+                    // A variant branches FROM a bound node; without one the
+                    // actionable route is "Add to Canvas" first (explicit
+                    // pick), never an invented source.
+                    return .status(canvasLocalized(
+                        "没有可分支的原节点。请先用“添加到画布”选择目标画布创建第一个节点，再从此节点创建分支。",
+                        "There is no bound node to branch from. Use \"Add to Canvas\" first and pick a destination; then create the variant from that node."))
+                case .ambiguous:
+                    return .status(ambiguousTargetMessage())
+                }
+            }
             let exported = try await exportPNG(document: document, url: url)
-            guard let located = try locateTarget(packageURL: url),
+            // Re-validate the exact branch source after the export await.
+            guard let located = try exactTarget(owner: owner, packageURL: url),
                   let sourceNode = located.project.documents
                     .flatMap(\.nodes).first(where: { $0.id == located.nodeID }) else {
-                // A variant branches FROM a bound node; without one the
-                // actionable route is "Add to Canvas" first (explicit pick),
-                // never an invented source.
                 return .status(canvasLocalized(
                     "没有可分支的原节点。请先用“添加到画布”选择目标画布创建第一个节点，再从此节点创建分支。",
                     "There is no bound node to branch from. Use \"Add to Canvas\" first and pick a destination; then create the variant from that node."))
             }
+            let sourceKey = sourcePathKey(packageURL: url)
             let reference = try await persistRender(exported, document: document,
                                                     node: sourceNode, assetStore: assetStore)
             let captured = CADCanvasNodePlanner.capturedSourceHash(for: sourceNode)
             let (_, operations) = try CADCanvasNodePlanner.variantPatch(
                 sourceNodeID: sourceNode.id,
-                sourcePath: sourcePathKey(packageURL: url),
+                sourcePath: sourceKey,
                 capturedSourceAssetHash: captured,
                 renderedAsset: reference,
                 position: CanvasPoint(x: sourceNode.x + sourceNode.width + 100, y: sourceNode.y),
@@ -175,7 +273,8 @@ enum CADCanvasActionBridge {
                              nodeID: nil,
                              canvasID: located.canvasID,
                              documentID: located.documentID,
-                             assetStore: assetStore) != nil else {
+                             assetStore: assetStore,
+                             expectedSource: (sourceNode.id, sourceKey)) != nil else {
                 throw CADDocumentError(code: "canvas_write_failed",
                                        message: canvasLocalized(
                                            "画布写入失败；原节点未被修改。",
@@ -191,14 +290,40 @@ enum CADCanvasActionBridge {
 
     // MARK: Create the FIRST node (explicit destination)
 
+    /// Single-flight entry: rapid duplicate requests for the SAME canvas
+    /// document share one creation. The second caller awaits the first
+    /// result instead of opening the same pending package and committing a
+    /// second node. (The UI's disabled state handles ordinary taps; a tool
+    /// replay or a fast double-submit must not depend on view state.)
+    static func newCADDocumentInCanvas(
+        canvasID: UUID,
+        documentID: UUID,
+        position: CanvasPoint,
+        assetStore: CreativeAssetStore
+    ) async -> (nodeID: UUID?, message: String) {
+        let key = "\(canvasID.uuidString)|\(documentID.uuidString)"
+        if let inFlight = inFlightCreates[key] {
+            return await inFlight.value
+        }
+        let task = Task { @MainActor in
+            await performNewCADDocumentInCanvas(
+                canvasID: canvasID, documentID: documentID,
+                position: position, assetStore: assetStore)
+        }
+        inFlightCreates[key] = task
+        let result = await task.value
+        inFlightCreates[key] = nil
+        return result
+    }
+
     /// Canvas Add-menu "New CAD model": creates a NEW editable parametric
     /// `.floecad` package in the canvas workspace and binds it as a native
     /// CAD node through the same atomic patch primitives as the workbench
-    /// entry. This is the explicit CAD creation route next to the 3D
-    /// Director's lightweight scene compositions — the scene editor is for
-    /// arranging simple shapes, NOT parametric CAD, and the two are never
-    /// conflated.
-    static func newCADDocumentInCanvas(
+    /// entry. This is the ONLY 3D creation route: the legacy 3D Director is
+    /// retired for editing (existing `scene3D` nodes migrate on first edit
+    /// through `LegacySceneMigrationService`), and simple compositions are
+    /// ordinary native documents — there is no second editor.
+    private static func performNewCADDocumentInCanvas(
         canvasID: UUID,
         documentID: UUID,
         position: CanvasPoint,
@@ -282,8 +407,8 @@ enum CADCanvasActionBridge {
                                       " (placeholder preview; on-device viewport rendering is unavailable)")
                     : ""
                 return (operation.nodeID, canvasLocalized(
-                    "已创建 CAD 模型“\(document.name)”（参数化工作台）；如需组合简单场景请使用 3D 场景编辑器。",
-                    "Created CAD model \"\(document.name)\" (parametric workbench); use the 3D scene editor only for simple scene compositions.") + placeholderNote)
+                    "已创建 CAD 模型“\(document.name)”（统一 3D 工作台）。",
+                    "Created CAD model \"\(document.name)\" (unified 3D workbench).") + placeholderNote)
             } catch {
                 await FloeCAD3DBridge.shared.releaseDocument(at: url)
                 // Keep a durable package's pending record (rebindable); a
@@ -299,6 +424,84 @@ enum CADCanvasActionBridge {
                 CanvasCADStorage.clearPending(canvasID: canvasID, documentID: documentID)
             }
             return (nil, error.localizedDescription)
+        }
+    }
+
+    /// Cancels a JUST-CREATED native CAD document the user has not accepted
+    /// (the workbench's Cancel for a newly created model).
+    ///
+    /// - Untouched proof: the on-disk package's real stored identity must
+    ///   still equal the creation identity recorded on the node
+    ///   (`sourceHash`). Only then is the exact created node removed through
+    ///   the same revision-CAS primitives, the canvas-owned package deleted,
+    ///   and the pending record cleared — cancelling creation leaves no empty
+    ///   node and no orphan package.
+    /// - A document with user edits (or one whose bytes can no longer be
+    ///   verified against the creation identity) is NEVER discarded: the node
+    ///   and package stay as the recoverable draft and the outcome reports
+    ///   that honestly.
+    /// - Existing nodes, other references and other documents are untouched;
+    ///   the package is deleted only when no remaining node references it.
+    static func discardNewCADDocument(
+        canvasID: UUID,
+        documentID: UUID,
+        nodeID: UUID,
+        assetStore: CreativeAssetStore
+    ) async -> CADCanvasActionResult {
+        do {
+            let url = try WorkspaceCanvasRegistry.projectURL(
+                canvasID: canvasID, createDirectory: false)
+            let current = try CanvasProjectFileWriter.shared.project(canvasID: canvasID, at: url)
+            guard current.documents.contains(where: { $0.id == documentID }),
+                  let node = current.documents.flatMap(\.nodes).first(where: { $0.id == nodeID }),
+                  CADCanvasNodePlanner.isNativeCADNode(node),
+                  let sourceKey = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath],
+                  CanvasCADStorage.isCanvasOwnedKey(sourceKey),
+                  let packageURL = packageURL(forSourceKey: sourceKey) else {
+                // Already gone (or never a canvas-owned creation): nothing to
+                // delete, and nothing left behind either.
+                return .status(canvasLocalized(
+                    "该 CAD 节点已不存在；未做任何修改。",
+                    "The CAD node no longer exists; nothing was changed."))
+            }
+            // The creation recorded the exact package identity; a readable
+            // package whose identity moved means the user edited the draft.
+            let creationHash = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourceHash]
+            let identity = await FloeCADDocument.storedIdentity(at: packageURL)
+            guard let creationHash, !creationHash.isEmpty,
+                  identity?.contentSHA256 == creationHash else {
+                return .status(canvasLocalized(
+                    "文档已有修改或无法验证，已保留为可恢复草稿；未删除任何内容。",
+                    "The document has edits or can no longer be verified; it was kept as a recoverable draft. Nothing was deleted."))
+            }
+            // Release the live session (saves are no-ops for untouched bytes)
+            // before removing the package from disk.
+            await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+            let delete = CanvasPatchOperation(kind: .delete, nodeID: nodeID)
+            guard try await commit(
+                operations: [delete], nodeID: nodeID,
+                canvasID: canvasID, documentID: documentID,
+                assetStore: assetStore,
+                expectedSource: (nodeID, sourceKey)) != nil else {
+                throw CADDocumentError(code: "canvas_write_failed",
+                                       message: canvasLocalized(
+                                           "画布写入失败；未创建任何内容。",
+                                           "The canvas write failed; nothing was created."))
+            }
+            CanvasCADStorage.clearPending(canvasID: canvasID, documentID: documentID)
+            // Delete the package only when no remaining node references it.
+            let after = try CanvasProjectFileWriter.shared.project(canvasID: canvasID, at: url)
+            let stillReferenced = after.documents.flatMap(\.nodes).contains {
+                $0.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath] == sourceKey
+            }
+            if !stillReferenced {
+                try? FileManager.default.removeItem(at: packageURL)
+            }
+            return .success(canvasLocalized(
+                "已取消创建；未留下空节点或孤立文档。",
+                "Creation cancelled; no empty node or orphan document was left behind."))
+        } catch {
+            return .status(error.localizedDescription)
         }
     }
 
@@ -323,11 +526,18 @@ enum CADCanvasActionBridge {
             }
             let exported = try await exportPNG(document: document, url: url)
             // Refuse when a binding appeared between the pick and the write:
-            // the explicit create must never shadow an existing node.
-            if let existing = try locateTarget(packageURL: url) {
+            // the explicit create must never shadow an existing node. Only an
+            // exact VERIFIED match (or an unverified same-name match) counts;
+            // nothing is guessed and nothing is overwritten.
+            switch try resolveTarget(packageURL: url) {
+            case .unique(let existing):
                 return .status(canvasLocalized(
                     "画布“\(existing.project.name)”已有引用该文档的节点；请改用“更新画布”或“创建分支”。",
                     "Canvas \"\(existing.project.name)\" already has a node referencing this document; use Apply or Make variant instead."))
+            case .ambiguous:
+                return .status(ambiguousTargetMessage())
+            case .none:
+                break
             }
             let render = try await persistRender(exported, document: document,
                                                  node: nil, assetStore: assetStore)
@@ -416,7 +626,8 @@ enum CADCanvasActionBridge {
     /// Writes the render into the app-owned material library and registers it
     /// as a creative asset. A failed registration removes the partial file so
     /// the library never carries an unregistered orphan.
-    private static func persistRender(_ render: ExportedRender,
+    /// Shared with `LegacySceneMigrationService` (same atomic render persistence).
+    static func persistRender(_ render: ExportedRender,
                                       document: FloeCADDocument,
                                       node: CanvasNode?,
                                       assetStore: CreativeAssetStore) async throws -> CanvasAssetReference {
@@ -450,46 +661,98 @@ enum CADCanvasActionBridge {
 
     // MARK: Canvas location + atomic commit
 
+    /// The EXACT node a workbench presentation was opened for. It must still
+    /// exist in its frozen document AND still reference this package; a
+    /// deleted/unbound node returns nil so the action refuses instead of
+    /// choosing another node. Never falls back to the first match.
+    private static func exactTarget(
+        owner: CADCanvasNodeOwner,
+        packageURL: URL
+    ) throws -> Target? {
+        guard let project = try? WorkspaceCanvasRegistry.project(canvasID: owner.canvasID),
+              project.id == owner.canvasID,
+              let document = project.documents.first(where: { $0.id == owner.documentID }),
+              let node = document.nodes.first(where: { $0.id == owner.nodeID }) else {
+            return nil
+        }
+        let sourceKey = sourcePathKey(packageURL: packageURL).lowercased()
+        let needle = packageURL.lastPathComponent.lowercased()
+        let recorded = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath]?.lowercased()
+        let references = recorded == sourceKey
+            || (node.asset?.localRelativePath.map {
+                ($0 as NSString).lastPathComponent.lowercased() == needle
+            } ?? false)
+        guard references else { return nil }
+        return Target(
+            canvasID: project.id, project: project,
+            documentID: document.id, nodeID: node.id)
+    }
+
     /// Finds the canvas document and node that reference the source
-    /// `.floecad` package. A previously applied node matches through its
-    /// recorded `sourcePath` metadata (its live asset is the PNG render); a
-    /// first-time import matches by file name. The canvas project is read
-    /// fresh again inside the CAS loop; this locator only selects the target
-    /// identity.
-    private static func locateTarget(packageURL: URL) throws -> Target? {
+    /// `.floecad` package when NO frozen presentation owner exists (the file
+    /// preview entry). A previously applied node matches through its recorded
+    /// `sourcePath` metadata — a VERIFIED reference. A node whose asset merely
+    /// has the same file name is an unverified match and is never written to
+    /// automatically:
+    ///
+    /// - exactly one verified reference → that exact node;
+    /// - several verified references or only name matches → `.ambiguous`
+    ///   (the caller refuses with an actionable message and writes nothing);
+    /// - no match → `.none` (use the explicit "Add to Canvas" route first).
+    ///
+    /// This never returns a "first match": a foreign file preview can no
+    /// longer apply over an unrelated node.
+    private static func resolveTarget(packageURL: URL) throws -> TargetResolution {
         let needle = packageURL.lastPathComponent.lowercased()
         let sourceKey = sourcePathKey(packageURL: packageURL).lowercased()
-        var firstImport: Target?
+        var verified: [Target] = []
+        var nameOnly: [Target] = []
         for summary in WorkspaceCanvasRegistry.summaries() {
             guard let project = try? WorkspaceCanvasRegistry.project(canvasID: summary.id) else { continue }
             for document in project.documents {
                 for node in document.nodes {
                     let recorded = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath]?.lowercased()
                     if recorded == sourceKey {
-                        return Target(canvasID: project.id, project: project,
-                                      documentID: document.id, nodeID: node.id)
-                    }
-                    if firstImport == nil, let path = node.asset?.localRelativePath,
-                       (path as NSString).lastPathComponent.lowercased() == needle {
-                        firstImport = Target(canvasID: project.id, project: project,
-                                             documentID: document.id, nodeID: node.id)
+                        verified.append(Target(canvasID: project.id, project: project,
+                                               documentID: document.id, nodeID: node.id))
+                    } else if let path = node.asset?.localRelativePath,
+                              (path as NSString).lastPathComponent.lowercased() == needle {
+                        nameOnly.append(Target(canvasID: project.id, project: project,
+                                               documentID: document.id, nodeID: node.id))
                     }
                 }
             }
         }
-        return firstImport
+        if verified.count == 1 { return .unique(verified[0]) }
+        if verified.count > 1 || !nameOnly.isEmpty {
+            return .ambiguous(verifiedCount: verified.count, nameMatchCount: nameOnly.count)
+        }
+        return .none
+    }
+
+    private static func ambiguousTargetMessage() -> String {
+        canvasLocalized(
+            "画布中有多个节点（或仅有同名文件）可能引用该 CAD 文档；无法确定唯一目标。请从具体画布节点打开后再更新，未写入。",
+            "Multiple canvas nodes (or only same-name files) may reference this CAD document; the target is ambiguous. Open it from the specific canvas node to update it. Nothing was written.")
     }
 
     /// One patch applied with bounded revision-CAS retries against the exact
     /// canvas file, plus creative-asset reference reconciliation. Returns the
     /// operation result on success; nil when the write failed.
+    ///
+    /// `expectedSource` re-validates the EXACT node→package binding inside
+    /// every CAS attempt: if the node was re-bound to another CAD document
+    /// while the render was produced, the write refuses instead of stamping
+    /// the wrong package's render onto it.
     @discardableResult
-    private static func commit(
+    /// Shared with `LegacySceneMigrationService` (same revision-CAS commit).
+    static func commit(
         operations: [CanvasPatchOperation],
         nodeID: UUID?,
         canvasID: UUID,
         documentID: UUID,
-        assetStore: CreativeAssetStore
+        assetStore: CreativeAssetStore,
+        expectedSource: (nodeID: UUID, sourceKey: String)? = nil
     ) async throws -> CanvasOperationResult? {
         let url = try WorkspaceCanvasRegistry.projectURL(canvasID: canvasID, createDirectory: false)
         for attempt in 0..<4 {
@@ -504,6 +767,16 @@ enum CADCanvasActionBridge {
             if let nodeID, !current.documents.flatMap(\.nodes).contains(where: { $0.id == nodeID }) {
                 throw CADDocumentError(code: "node_missing", message: canvasLocalized(
                     "原画布节点已被删除；未写入。", "The original canvas node was deleted; nothing was written."))
+            }
+            if let expectedSource {
+                guard let node = current.documents.flatMap(\.nodes)
+                        .first(where: { $0.id == expectedSource.nodeID }),
+                      node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath]?
+                        .caseInsensitiveCompare(expectedSource.sourceKey) == .orderedSame else {
+                    throw CADDocumentError(code: "node_unbound", message: canvasLocalized(
+                        "原节点的 CAD 引用已改变；未写入。",
+                        "The original node's CAD reference changed; nothing was written."))
+                }
             }
             do {
                 let patch = CanvasPatch(
@@ -551,7 +824,7 @@ enum CADCanvasActionBridge {
     /// `canvas-cad:<canvas>/<file>` key; packages that live in a user file
     /// workspace keep the file-name based `floecad:<file>` key. Neither is an
     /// absolute path, so both survive container/workspace relocation.
-    private static func sourcePathKey(packageURL: URL) -> String {
+    static func sourcePathKey(packageURL: URL) -> String {
         let standardized = packageURL.standardizedFileURL
         if let root = try? CanvasCADStorage.containerRoot(createIfNeeded: false).standardizedFileURL,
            standardized.path.hasPrefix(root.path + "/") {

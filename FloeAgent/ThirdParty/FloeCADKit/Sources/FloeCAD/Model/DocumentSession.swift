@@ -809,6 +809,7 @@ final class DocumentSession {
         loaded.assemblyData = project.assemblyData
         loaded.drawingsData = project.drawingsData
         loaded.scriptsData = project.scriptsData
+        loaded.sceneSettingsData = project.sceneSettingsData
         document = loaded
         evalCache = EvalCache()   // a fresh memo for a freshly loaded document
         #if DEBUG
@@ -1021,6 +1022,7 @@ final class DocumentSession {
         project.assemblyData = document.assemblyData
         project.drawingsData = document.drawingsData
         project.scriptsData = document.scriptsData
+        project.sceneSettingsData = document.sceneSettingsData
 
         // Diff by ID against the persisted objects. Every deletion loop
         // excludes `unreadableRows` — rows load() couldn't decode are not in

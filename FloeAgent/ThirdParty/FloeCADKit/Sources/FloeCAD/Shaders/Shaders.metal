@@ -40,6 +40,11 @@ fragment float4 fragment_backgroundGradient(
 ) {
     float t = saturate(in.uv.y);
     float4 color = mix(frame.backgroundBottom, frame.backgroundTop, t);
+    // Flat background (migrated legacy scene): the authored colour exactly,
+    // no CAD gradient vignette.
+    if (frame.lightParams.w > 0.5) {
+        return float4(color.rgb, 1.0);
+    }
     // Subtle radial vignette so the center reads brighter, CAD-style.
     float2 centered = in.uv - float2(0.5, 0.45);
     float vignette = 1.0 - 0.18 * dot(centered, centered) * 2.2;
@@ -115,7 +120,20 @@ fragment float4 fragment_lit(
     float3 rimColor = (body.selectionState == SelectionStateSelected)
         ? frame.accentColor.rgb : float3(1.0);
 
-    float3 diffuse = albedo * (hemi * 0.45 + ndl * 0.70) * (1.0 - body.metallic * 0.55);
+    // Legacy rig (migrated scene): the authored key scale plus the fill point
+    // light. lightParams.z == 0 keeps the CAD headlight exactly as before.
+    float keyScale = frame.lightParams.z > 0.5 ? max(frame.lightParams.x, 0.0) : 1.0;
+    float3 fill = float3(0.0);
+    if (frame.lightParams.z > 0.5 && frame.lightParams.y > 0.0) {
+        float3 toFill = frame.fillLightPosition.xyz - in.worldPosition;
+        float fillDist = length(toFill);
+        float3 L2 = fillDist > 1e-3 ? toFill / fillDist : float3(0.0, 1.0, 0.0);
+        float ndl2 = saturate(dot(N, L2)) * 0.5 + 0.5;
+        float atten = saturate(1.0 - fillDist / max(frame.fillLightPosition.w, 1.0));
+        fill = albedo * ndl2 * 0.35 * frame.lightParams.y * atten;
+    }
+    float3 diffuse = (albedo * (hemi * 0.45 + ndl * 0.70 * keyScale) + fill)
+        * (1.0 - body.metallic * 0.55);
     float3 color = diffuse + spec + rim * rimColor;
     return float4(color, alpha);
 }
@@ -190,7 +208,20 @@ fragment float4 fragment_litTextured(
     float rim = pow(1.0 - saturate(dot(N, V)), 3.0) * 0.12;
     float3 rimColor = (body.selectionState == SelectionStateSelected)
         ? frame.accentColor.rgb : float3(1.0);
-    float3 diffuse = albedo * (hemi * 0.45 + ndl * 0.70) * (1.0 - body.metallic * 0.55);
+    // Legacy rig (migrated scene): the authored key scale plus the fill point
+    // light. lightParams.z == 0 keeps the CAD headlight exactly as before.
+    float keyScale = frame.lightParams.z > 0.5 ? max(frame.lightParams.x, 0.0) : 1.0;
+    float3 fill = float3(0.0);
+    if (frame.lightParams.z > 0.5 && frame.lightParams.y > 0.0) {
+        float3 toFill = frame.fillLightPosition.xyz - in.worldPosition;
+        float fillDist = length(toFill);
+        float3 L2 = fillDist > 1e-3 ? toFill / fillDist : float3(0.0, 1.0, 0.0);
+        float ndl2 = saturate(dot(N, L2)) * 0.5 + 0.5;
+        float atten = saturate(1.0 - fillDist / max(frame.fillLightPosition.w, 1.0));
+        fill = albedo * ndl2 * 0.35 * frame.lightParams.y * atten;
+    }
+    float3 diffuse = (albedo * (hemi * 0.45 + ndl * 0.70 * keyScale) + fill)
+        * (1.0 - body.metallic * 0.55);
     return float4(diffuse + spec + rim * rimColor, alpha);
 }
 

@@ -143,6 +143,9 @@ struct CADDocumentRecord: Codable, Sendable {
     var assembly: Data?
     var drawings: Data?
     var scripts: Data?
+    /// Legacy-scene presentation (`CADSceneSettings`). Additive optional key:
+    /// absent on ordinary documents; older builds ignore it.
+    var sceneSettings: Data?
 }
 
 /// Everything a commit needs, in a `Sendable` value: cheap to build on the
@@ -278,6 +281,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         project.assemblyData = document.assembly
         project.drawingsData = document.drawings
         project.scriptsData = document.scripts
+        project.sceneSettingsData = document.sceneSettings
         if manifest.thumbnailSHA256 != nil {
             project.thumbnail = try? Data(contentsOf: root.appendingPathComponent("blobs/thumbnail.img"))
         }
@@ -367,7 +371,8 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             itemFolders: project.itemFoldersData,
             assembly: project.assemblyData,
             drawings: project.drawingsData,
-            scripts: project.scriptsData
+            scripts: project.scriptsData,
+            sceneSettings: project.sceneSettingsData
         )
         var blobs: [String: Data] = [:]
 

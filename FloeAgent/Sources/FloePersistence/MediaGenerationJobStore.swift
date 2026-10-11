@@ -195,6 +195,38 @@ public actor MediaGenerationJobStore {
         try await ownedJob(id: id)?.job
     }
 
+    /// The newest job for one submitting-operation identity (any state).
+    /// Terminal jobs never match the active-dedupe lookup, so this is how a
+    /// caller recovers the EXACT durable record of a previous submission
+    /// (including a completed one) instead of resubmitting.
+    public func ownedJob(idempotencyKey: String) async throws -> OwnedMediaGenerationJob? {
+        try await database.reader { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT * FROM media_generation_jobs
+                WHERE idempotency_key = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """, arguments: [idempotencyKey]) else { return nil }
+            return try Self.decodeOwned(row, decoder: decoder)
+        }
+    }
+
+    /// Jobs whose committed local result is this exact asset. Used by owner
+    /// authorization to prove an existing asset was actually produced by a
+    /// run/task instead of trusting a claimed owner string.
+    public func jobs(localAssetID: UUID, limit: Int = 24) async throws -> [OwnedMediaGenerationJob] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM media_generation_jobs
+                WHERE local_asset_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """, arguments: [localAssetID.uuidString, max(1, min(limit, 100))]).map {
+                    try Self.decodeOwned($0, decoder: decoder)
+                }
+        }
+    }
+
     public func ownedJob(id: UUID) async throws -> OwnedMediaGenerationJob? {
         try await database.reader { db in
             guard let row = try Row.fetchOne(db, sql: "SELECT * FROM media_generation_jobs WHERE id = ?", arguments: [id.uuidString]) else { return nil }

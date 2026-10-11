@@ -3714,6 +3714,66 @@ struct MediaGenerationSubmission: Sendable {
     var deduplicated: Bool
 }
 
+/// Frozen identity of ONE design-creative first-result submission. Every
+/// field is captured BEFORE the provider call: the durable job row stores the
+/// original target owner/environment/task identity, and reopening the design
+/// workflow reconstructs the same idempotency key from the durable creative
+/// request so the SAME original job is found instead of a second paid submit.
+struct DesignCreativeImageSubmission: Sendable {
+    var targetStableKey: String
+    var ownerID: String
+    var requestID: String
+    var environmentID: String?
+    var originConversationID: UUID?
+    var originRunID: UUID?
+    var owner: MediaJobOwner
+    var providerID: UUID
+    var modelID: UUID
+    var prompt: String
+    var selection: ImageGenerationSelection
+    var displayNameStem: String
+    var idempotencyKey: String
+    /// The owner envelope revision the user confirmed at SUBMISSION time.
+    /// Persisted on the job row so a later reopen binds against the ORIGINAL
+    /// revision instead of silently capturing whatever the owner holds now.
+    var frozenOwnerRevision: Int64
+}
+
+/// Honest result of one durable design-creative image submission.
+struct DesignCreativeImageOutcome: Sendable {
+    var job: MediaGenerationJob
+    /// The REAL content-addressed library asset, present only once the output
+    /// was validated and committed. nil with `awaitingUnknownOutcome` means an
+    /// earlier submission of this exact operation exists whose remote outcome
+    /// is unknown: it must never be resubmitted automatically.
+    var asset: CreativeAssetRecord?
+    var deduplicated: Bool
+    var awaitingUnknownOutcome: Bool
+    /// True when the job records a published result (terminal `.ready` or a
+    /// recorded `localAssetID`) whose asset row/file no longer resolves. The
+    /// caller must show an explicit recovery state; no bind is ever claimed
+    /// from a stale identity and no new provider call happens automatically.
+    var resultMissing: Bool = false
+}
+
+/// The exact frozen request persisted on the durable job row (audit/readback;
+/// the same target identity is reconstructible from the owner envelope).
+struct DesignCreativeImageRequestPayload: Codable, Sendable {
+    var targetStableKey: String
+    var ownerID: String
+    var requestID: String
+    var environmentID: String?
+    var originConversationID: String?
+    var providerID: UUID
+    var modelID: UUID
+    var prompt: String
+    var selection: ImageGenerationSelection
+    /// The owner envelope revision confirmed at submission time. A reopen
+    /// binds against THIS revision; if the owner moved meanwhile the bind
+    /// conflicts and the result stays retained for explicit resolution.
+    var frozenOwnerRevision: Int64
+}
+
 @MainActor
 final class MediaGenerationService {
     private unowned let environment: AppEnvironment
@@ -3979,6 +4039,454 @@ final class MediaGenerationService {
             assets: assets, modelID: model.id, providerID: provider.id, selection: selection,
             fallbackUsed: result.metadata["fallbackUsed"] == "true"
         )
+    }
+
+    // MARK: - Design creative first result (durable job, real asset)
+
+    /// Submits ONE design-creative first-result image through the SAME durable
+    /// media job store every other provider job uses:
+    ///
+    /// 1. the job row (owner/origin run/idempotency key + the frozen request)
+    ///    is committed BEFORE the provider call, so a process death leaves an
+    ///    honest record instead of a lost submission;
+    /// 2. an identical active operation is deduplicated and never paid twice;
+    /// 3. the provider output is format/size validated and committed as a REAL
+    ///    content-addressed `CreativeAssetStore` asset BEFORE the job becomes
+    ///    `.ready`, so the caller binds an actual asset UUID;
+    /// 4. a transport failure that may have reached the provider leaves the
+    ///    job `.preparing` with no provider task id — an UNKNOWN outcome that
+    ///    is never resubmitted automatically.
+    ///
+    /// `perform` is the provider-call seam: production resolves the user's
+    /// configured image route through `ConversationCenter.performAgentImage`;
+    /// tests inject a deterministic double (no paid call).
+    func submitDesignCreativeImage(
+        _ submission: DesignCreativeImageSubmission,
+        replacingMissingResultOf missingJobID: UUID? = nil,
+        perform: (@MainActor @Sendable (
+            _ prompt: String, _ modelID: UUID,
+            _ selection: ImageGenerationSelection
+        ) async throws -> RemoteImageResult)? = nil
+    ) async throws -> DesignCreativeImageOutcome {
+        let store = MediaGenerationJobStore(database: environment.database)
+        guard let provider = try await environment.configurationStore.provider(id: submission.providerID),
+              let model = try await environment.configurationStore.model(id: submission.modelID),
+              provider.id == submission.providerID, model.id == submission.modelID,
+              provider.isEnabled, model.isEnabled else {
+            throw FloeError.invalidConfiguration(FloeL10n.l(
+                "platform.background_run_coordinator.choose_a_usable_image_generation_model"))
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let payload = try encoder.encode(DesignCreativeImageRequestPayload(
+            targetStableKey: submission.targetStableKey,
+            ownerID: submission.ownerID,
+            requestID: submission.requestID,
+            environmentID: submission.environmentID,
+            originConversationID: submission.originConversationID?.uuidString,
+            providerID: provider.id, modelID: model.id,
+            prompt: submission.prompt, selection: submission.selection,
+            frozenOwnerRevision: submission.frozenOwnerRevision))
+        // Self-idempotency: an existing job for this EXACT operation is never
+        // paid for twice. A ready result is returned, an unresolved
+        // submission is reported (unknown / in flight); only a definite local
+        // terminal failure — or an EXPLICIT user-acknowledged replacement of
+        // a result whose asset row/file no longer resolves — may pass this
+        // point.
+        if let existing = try? await store.ownedJob(
+            idempotencyKey: submission.idempotencyKey) {
+            var proceedPastStaleResult = false
+            if let missingJobID, existing.job.id == missingJobID {
+                proceedPastStaleResult = await designCreativeResultIsMissing(owned: existing)
+            }
+            if !proceedPastStaleResult,
+               existing.job.state == .ready || !existing.job.state.isTerminal {
+                return try await existingDesignCreativeOutcome(owned: existing)
+            }
+        }
+        let job = MediaGenerationJob(
+            providerID: provider.id, modelID: model.id, mediaKind: .image,
+            credentialReference: provider.secretRef,
+            canvasID: nil, documentID: nil,
+            sourceNodeIDs: [], resultNodeID: UUID(),
+            requestJSON: payload)
+        let creation = try await store.createJob(
+            job, owner: submission.owner,
+            originRunID: submission.originRunID,
+            idempotencyKey: submission.idempotencyKey)
+        if creation.deduplicated {
+            return try await existingDesignCreativeOutcome(
+                owned: creation.owned)
+        }
+        // A cancellation observed BEFORE the provider call proves nothing was
+        // dispatched yet. A cancellation observed from the call itself is NOT
+        // a provider cancellation: stop-waiting only, the remote may already
+        // have generated and charged a result.
+        if Task.isCancelled {
+            _ = try? await store.transition(id: job.id, to: .cancelled) {
+                $0.lastError = FloeL10n.l("design.owner.generate_canceled")
+                $0.nextPollAt = nil
+            }
+            throw CancellationError()
+        }
+        let result: RemoteImageResult
+        do {
+            if let perform {
+                result = try await perform(submission.prompt, model.id, submission.selection)
+            } else {
+                let routed = try await environment.conversationCenter.performAgentImage(
+                    operation: .generate, prompt: submission.prompt, sourceImages: [],
+                    modelID: model.id, selection: submission.selection, count: 1)
+                result = routed.0
+            }
+        } catch {
+            if error is CancellationError || Task.isCancelled {
+                // Stop-waiting only. The request may already have reached the
+                // provider, so the job stays UNRESOLVED (unknown) with the
+                // honest reason; it is never resubmitted automatically and a
+                // new attempt requires an explicit acknowledged discard.
+                _ = try? await store.transition(id: job.id, to: .preparing) {
+                    $0.lastError = FloeL10n.l("design.owner.generate_stopped_unknown")
+                }
+            } else if let remote = error as? RemoteImageError,
+                      case .providerRejected = remote {
+                // The provider answered with a definite rejection: no result
+                // was produced, so the job is truthfully failed.
+                _ = try? await store.transition(id: job.id, to: .failed) {
+                    $0.lastError = error.localizedDescription
+                    $0.nextPollAt = nil
+                }
+            }
+            // Any other failure (transport/timeout/invalid response) leaves
+            // the job `.preparing` with no provider task id: UNKNOWN, never
+            // resubmitted automatically.
+            throw error
+        }
+        let images = try MediaGenerationImageBatchContract.validatedImages(
+            result.images, requestedOutputCount: 1)
+        guard let data = images.first,
+              let encodedFormat = Self.designCreativeImageFormat(of: data) else {
+            throw FloeError.validationFailed(FloeL10n.l("design.owner.generate_unverifiable_format"))
+        }
+        let digest = FloeDigest.sha256Hex(data)
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true)
+        let candidateID = UUID()
+        let isPNG = encodedFormat == "png"
+        let candidateRelative = MediaGenerationAssetReusePolicy.generatedRelativePath(
+            assetID: candidateID, isPNG: isPNG)
+        let candidateURL = try MediaGenerationAssetReusePolicy.localURL(
+            relativePath: candidateRelative, applicationSupportRoot: support)
+        // Tracks whether the candidate file is already referenced by a
+        // committed canonical row (or proven removable): a later failure must
+        // never delete a published asset.
+        var publishedCanonical: CreativeAssetRecord?
+        var candidateHandled = false
+        do {
+            try FileManager.default.createDirectory(
+                at: candidateURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            try data.write(to: candidateURL, options: .atomic)
+            // The canonical row is returned as-is: identical content already
+            // in the library keeps ITS OWN id/path (no aliasing, no orphan).
+            let canonical = try await environment.creativeAssetStore.saveResolvingCanonical(
+                CreativeAssetRecord(
+                    id: candidateID, contentHash: digest, kind: .image,
+                    displayName: Self.designCreativeDisplayName(
+                        stem: submission.displayNameStem, format: encodedFormat),
+                    mimeType: Self.designCreativeMimeType(for: encodedFormat),
+                    localRelativePath: candidateRelative,
+                    byteCount: Int64(data.count),
+                    tags: [FloeL10n.l("platform.background_run_coordinator.generate_content")],
+                    referenceCount: 0))
+            publishedCanonical = canonical
+            let candidateIsCanonical = canonical.id == candidateID
+                && (canonical.localRelativePath ?? "") == candidateRelative
+            if candidateIsCanonical {
+                // The committed row OWNS this exact file: a later failure
+                // must retain it, never delete it as "unreferenced".
+                candidateHandled = true
+            } else {
+                let canonicalRelative = canonical.localRelativePath ?? candidateRelative
+                let canonicalURL = try MediaGenerationAssetReusePolicy.localURL(
+                    relativePath: canonicalRelative, applicationSupportRoot: support)
+                if !FileManager.default.fileExists(atPath: canonicalURL.path) {
+                    try FileManager.default.createDirectory(
+                        at: canonicalURL.deletingLastPathComponent(),
+                        withIntermediateDirectories: true)
+                    try data.write(to: canonicalURL, options: .atomic)
+                }
+                if canonicalURL != candidateURL,
+                   FileManager.default.fileExists(atPath: candidateURL.path) {
+                    try? FileManager.default.removeItem(at: candidateURL)
+                    candidateHandled = true
+                }
+            }
+            // Persist the published-result association BEFORE attempting the
+            // terminal `.ready` transition: if that transition fails (a
+            // concurrent close, or a store write error), the still-unresolved
+            // row names the REAL asset, so a reopen reconciles the SAME
+            // output without any new provider call.
+            _ = try? await store.transition(id: job.id, to: .preparing) {
+                $0.localAssetID = canonical.id
+                $0.assetReferences = [canonical.id]
+            }
+            let ready = try await store.transition(id: job.id, to: .ready) {
+                $0.localAssetID = canonical.id
+                $0.assetReferences = [canonical.id]
+                $0.lastError = nil
+                $0.nextPollAt = nil
+                $0.estimatedCompletionAt = Date()
+            }
+            return DesignCreativeImageOutcome(
+                job: ready, asset: canonical,
+                deduplicated: false, awaitingUnknownOutcome: false)
+        } catch {
+            // Remove ONLY a proven-unreferenced temp: the candidate is kept
+            // when a committed canonical row points at it (or when it may be
+            // the only readable copy of the published bytes).
+            if !candidateHandled,
+               FileManager.default.fileExists(atPath: candidateURL.path) {
+                let canonicalFileElsewhere: Bool
+                if let canonical = publishedCanonical,
+                   let relative = canonical.localRelativePath,
+                   let url = try? MediaGenerationAssetReusePolicy.localURL(
+                        relativePath: relative, applicationSupportRoot: support) {
+                    canonicalFileElsewhere = FileManager.default.fileExists(atPath: url.path)
+                } else {
+                    canonicalFileElsewhere = false
+                }
+                if publishedCanonical == nil || canonicalFileElsewhere {
+                    try? FileManager.default.removeItem(at: candidateURL)
+                }
+            }
+            if !(error is CancellationError) {
+                // The provider DID return output; the local publish failed.
+                // Keep the job unresolved with the real reason (never a
+                // silently failed terminal state), but persist the PUBLISHED
+                // result association (localAssetID/assetReferences) on the
+                // SAME row first: a reopen can then reconcile the exact same
+                // output to `.ready` without any new provider call, instead of
+                // losing which asset was produced. It is not resubmitted
+                // automatically, and the user may still explicitly discard it.
+                let association: CreativeAssetRecord? = publishedCanonical
+                _ = try? await store.transition(id: job.id, to: .preparing) {
+                    if let association {
+                        $0.localAssetID = association.id
+                        $0.assetReferences = [association.id]
+                    }
+                    $0.lastError = error.localizedDescription
+                }
+            }
+            throw error
+        }
+    }
+
+    /// Result for an already-existing job with the same submitting-operation
+    /// identity. A `.ready` job returns its committed asset; an UNRESOLVED
+    /// job that already recorded a published `localAssetID` (the `.ready`
+    /// transition failed after the asset row committed) is repaired to
+    /// `.ready` and returns the SAME asset — no new provider call and no
+    /// lost association. Any other non-terminal state is reported as pending
+    /// with `awaitingUnknownOutcome` when no provider task id was ever
+    /// recorded.
+    private func existingDesignCreativeOutcome(
+        owned: OwnedMediaGenerationJob
+    ) async throws -> DesignCreativeImageOutcome {
+        let job = owned.job
+        // A job that records a published result must still RESOLVE (row + the
+        // contained file). A dangling association is an explicit recoverable
+        // missing-result state — never a silent re-dispatch, never a bind
+        // from the stale identity.
+        if let assetID = job.localAssetID {
+            if let asset = try? await environment.creativeAssetStore.asset(id: assetID),
+               !designCreativeAssetFileMissing(asset) {
+                if job.state == .ready {
+                    return DesignCreativeImageOutcome(
+                        job: job, asset: asset,
+                        deduplicated: true, awaitingUnknownOutcome: false)
+                }
+                if !job.state.isTerminal {
+                    let store = MediaGenerationJobStore(database: environment.database)
+                    let repaired = try? await store.transition(id: job.id, to: .ready) {
+                        $0.localAssetID = asset.id
+                        $0.assetReferences = [asset.id]
+                        $0.lastError = nil
+                        $0.nextPollAt = nil
+                        $0.estimatedCompletionAt = Date()
+                    }
+                    return DesignCreativeImageOutcome(
+                        job: repaired ?? job, asset: asset,
+                        deduplicated: true, awaitingUnknownOutcome: false)
+                }
+                return DesignCreativeImageOutcome(
+                    job: job, asset: asset,
+                    deduplicated: true, awaitingUnknownOutcome: false)
+            }
+            return DesignCreativeImageOutcome(
+                job: job, asset: nil, deduplicated: true,
+                awaitingUnknownOutcome: false, resultMissing: true)
+        }
+        let unknown = !job.state.isTerminal && job.providerTaskID == nil
+        return DesignCreativeImageOutcome(
+            job: job, asset: nil,
+            deduplicated: true, awaitingUnknownOutcome: unknown)
+    }
+
+    /// The contained-file half of a recorded result: a row whose local file is
+    /// gone is as unusable as a deleted row.
+    private func designCreativeAssetFileMissing(_ asset: CreativeAssetRecord) -> Bool {
+        guard let relative = asset.localRelativePath, !relative.isEmpty,
+              !relative.contains(".."),
+              let root = try? FloeArtifactStore.root() else { return true }
+        return !FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(relative).path)
+    }
+
+    /// True when the job records a published result whose row/file no longer
+    /// resolves on this device. `.ready` without a readable row is missing by
+    /// definition; a genuine non-terminal in-flight submission is not.
+    private func designCreativeResultIsMissing(owned: OwnedMediaGenerationJob) async -> Bool {
+        let job = owned.job
+        guard let assetID = job.localAssetID else { return false }
+        guard let asset = try? await environment.creativeAssetStore.asset(id: assetID) else {
+            return true
+        }
+        return designCreativeAssetFileMissing(asset)
+    }
+
+    /// Explicit, user-acknowledged REPLACEMENT of a missing published result:
+    /// verifies the recorded result is really unresolvable here, then performs
+    /// ONE new durable submission under the SAME request identity. The stale
+    /// ready row/id is never reused and this never runs automatically — the
+    /// caller must have obtained the user's confirmation.
+    func replaceMissingDesignCreativeResult(
+        jobID: UUID,
+        perform: (@MainActor @Sendable (
+            _ prompt: String, _ modelID: UUID,
+            _ selection: ImageGenerationSelection
+        ) async throws -> RemoteImageResult)? = nil
+    ) async throws -> DesignCreativeImageOutcome {
+        let store = MediaGenerationJobStore(database: environment.database)
+        guard let owned = try await store.ownedJob(id: jobID) else {
+            throw MediaGenerationJobStoreError.missingJob(jobID)
+        }
+        guard await designCreativeResultIsMissing(owned: owned) else {
+            throw FloeError.validationFailed(
+                FloeL10n.l("design.owner.generate_result_not_missing"))
+        }
+        let payload = try JSONDecoder().decode(
+            DesignCreativeImageRequestPayload.self, from: owned.job.requestJSON)
+        let submission = DesignCreativeImageSubmission(
+            targetStableKey: payload.targetStableKey,
+            ownerID: payload.ownerID,
+            requestID: payload.requestID,
+            environmentID: payload.environmentID,
+            originConversationID: payload.originConversationID.flatMap { UUID(uuidString: $0) },
+            originRunID: owned.originRunID,
+            owner: owned.owner,
+            providerID: payload.providerID,
+            modelID: payload.modelID,
+            prompt: payload.prompt,
+            selection: payload.selection,
+            displayNameStem: "result",
+            idempotencyKey: owned.idempotencyKey
+                ?? "design-creative-image-replacement-\(jobID.uuidString.lowercased())",
+            frozenOwnerRevision: payload.frozenOwnerRevision)
+        return try await submitDesignCreativeImage(
+            submission, replacingMissingResultOf: jobID, perform: perform)
+    }
+
+    /// Explicitly ACKNOWLEDGED discard of a MISSING published result: only a
+    /// job whose recorded asset row/file really no longer resolves is closed,
+    /// with the honest reason. Canonical bytes and user drafts are untouched
+    /// and nothing is ever resent. The terminal record is rewritten through
+    /// the existing store save (the normal lifecycle guard intentionally
+    /// forbids terminal → terminal transitions).
+    func discardMissingDesignCreativeResult(jobID: UUID) async throws {
+        let store = MediaGenerationJobStore(database: environment.database)
+        guard let owned = try await store.ownedJob(id: jobID) else {
+            throw MediaGenerationJobStoreError.missingJob(jobID)
+        }
+        guard await designCreativeResultIsMissing(owned: owned) else {
+            throw FloeError.validationFailed(
+                FloeL10n.l("design.owner.generate_result_not_missing"))
+        }
+        var job = owned.job
+        job.state = .cancelled
+        job.lastError = FloeL10n.l("design.owner.generate_missing_discarded")
+        job.nextPollAt = nil
+        job.updatedAt = Date()
+        try await store.save(
+            job, owner: owned.owner, originRunID: owned.originRunID,
+            idempotencyKey: owned.idempotencyKey)
+    }
+
+    /// Reconciliation entry for a reopen: loads the durable submission by its
+    /// operation identity and returns its outcome WITHOUT dispatching a
+    /// provider call. A published-but-unresolved record is repaired to
+    /// `.ready` (same asset); nil when no job exists for the key.
+    func recoverDesignCreativeImage(
+        idempotencyKey: String
+    ) async throws -> DesignCreativeImageOutcome? {
+        let store = MediaGenerationJobStore(database: environment.database)
+        guard let existing = try await store.ownedJob(idempotencyKey: idempotencyKey) else {
+            return nil
+        }
+        return try await existingDesignCreativeOutcome(owned: existing)
+    }
+
+    /// Explicitly ACKNOWLEDGED discard of an unresolved design-creative job
+    /// (the user confirmed the duplicate-charge warning). This closes the
+    /// LOCAL record only: it never claims the provider cancelled or refunded
+    /// anything, and the recorded reason says so. A terminal job is refused.
+    func discardUnknownDesignCreativeImage(jobID: UUID) async throws {
+        let store = MediaGenerationJobStore(database: environment.database)
+        guard let owned = try await store.ownedJob(id: jobID) else {
+            throw MediaGenerationJobStoreError.missingJob(jobID)
+        }
+        guard !owned.job.state.isTerminal else {
+            throw RemoteVideoError.invalidRequest(FloeL10n.l(
+                "platform.background_run_coordinator.the_task_already_ended_and_cannot",
+                owned.job.state.rawValue))
+        }
+        _ = try await store.transition(id: jobID, to: .cancelled) {
+            $0.lastError = FloeL10n.l("design.owner.generate_discarded_unknown")
+            $0.nextPollAt = nil
+        }
+    }
+
+    /// Sniffs the REAL encoded image format from the return bytes (never from
+    /// the prompt or content type).
+    static func designCreativeImageFormat(of data: Data) -> String? {
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "png" }
+        if data.starts(with: [0xFF, 0xD8, 0xFF]) { return "jpg" }
+        if data.starts(with: Array("GIF8".utf8)) { return "gif" }
+        if data.count >= 12, data.starts(with: Array("RIFF".utf8)) {
+            let chunk = data.subdata(in: 8..<12)
+            if chunk == Data("WEBP".utf8) { return "webp" }
+        }
+        return nil
+    }
+
+    static func designCreativeMimeType(for format: String) -> String {
+        switch format {
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        default: return "application/octet-stream"
+        }
+    }
+
+    static func designCreativeDisplayName(stem: String, format: String) -> String {
+        let sanitized = stem
+            .components(separatedBy: CharacterSet(charactersIn: "/:\\"))
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let bounded = String(sanitized.prefix(48))
+        return "\(bounded.isEmpty ? "design" : bounded).\(format)"
     }
 
     func markGeneratedAssetsReferenced(

@@ -14,6 +14,7 @@ import UniformTypeIdentifiers
 import WebKit
 import CryptoKit
 import ImageIO
+import FloeCAD
 import FloeCore
 import FloeImages
 import FloeLocalModels
@@ -78,6 +79,9 @@ struct CreativeModeHubView: View {
     @State private var editingFolder: UUID?
     @State private var showsFolderName = false
     @State private var folderName = ""
+    /// T6 design entrance: a creative START request (brief/spec/requested
+    /// output kind) that can exist BEFORE any source material does.
+    @State private var creativeDesignTarget: DesignTarget?
 
     @State private var renamingCanvas: WorkspaceCanvasRegistry.CanvasSummary?
     @State private var renameValue = ""
@@ -137,6 +141,9 @@ struct CreativeModeHubView: View {
         }
         .sheet(isPresented: $showsMaterialLibrary) {
             NavigationStack { CanvasMaterialLibraryView() }
+        }
+        .sheet(item: $creativeDesignTarget) { target in
+            DesignOwnerWorkflowSheet(target: target, environment: environment)
         }
         .fileImporter(
             isPresented: $importsCanvasPackage,
@@ -252,6 +259,44 @@ struct CreativeModeHubView: View {
                 .buttonStyle(.plain)
                 .frame(minHeight: FloeTheme.minimumTarget)
                 .accessibilityIdentifier("canvas.home.materials")
+                // T6 design entrance: a brief/spec/requested-output-type can
+                // be saved before ANY source material exists. The request is
+                // durable in the SAME owner design envelope; no hidden Canvas
+                // and no fabricated webpage is created here.
+                Menu {
+                    ForEach(DesignContentType.allCases, id: \.self) { type in
+                        Button(FloeL10n.l("design.panel.type.\(type.rawValue)")) {
+                            let target = DesignOwnerTargets.creative(
+                                requestID: UUID(), kind: type)
+                            DesignCreativeRequestStore.remember(target)
+                            creativeDesignTarget = target
+                        }
+                        .accessibilityIdentifier("canvas.home.design.\(type.rawValue)")
+                    }
+                } label: {
+                    Label("workspace.workspace_canvas_view.design_request", systemImage: "square.on.square.dashed")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .frame(minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("canvas.home.design")
+                if let recent = DesignCreativeRequestStore.load().first,
+                   let kind = recent.requestedOutputKind {
+                    Button {
+                        creativeDesignTarget = recent
+                    } label: {
+                        Label(
+                            FloeL10n.l("workspace.workspace_canvas_view.design_request_resume",
+                                       FloeL10n.l("design.panel.type.\(kind.rawValue)")),
+                            systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .frame(minHeight: FloeTheme.minimumTarget)
+                    .accessibilityIdentifier("canvas.home.design.resume")
+                }
             } header: {
                 Text("workspace.workspace_canvas_view.quick_start")
             } footer: {
@@ -658,7 +703,9 @@ private enum CanvasNodeCreationKind: String, CaseIterable, Identifiable {
         case .svg: "SVG"
         case .html: "HTML"
         case .panorama3D: String(localized: "canvas.node.panorama_3d")
-        case .scene3D: String(localized: "canvas.node.scene_3d")
+        // The legacy scene creator is retired for editing; this entry now
+        // creates the unified native 3D document (same workbench as CAD).
+        case .scene3D: String(localized: "canvas.node.model_3d")
         }
     }
     var icon: String {
@@ -5288,6 +5335,250 @@ private struct CanvasConnectionDragDraft: Equatable {
     var targetNodeID: UUID?
 }
 
+/// User-visible outcome of a first-edit legacy 3D migration. The legacy node
+/// stays read-only and intact for every non-success case; success carries the
+/// bounded visual approximations that MUST be disclosed before the unified
+/// workbench opens. Never a blank sheet and never a partial "success".
+///
+/// Every case carries the FROZEN canvas/document identity captured before the
+/// async migration started, so a document switch during the work can never
+/// re-target the notice, steal the new document's selection or present on the
+/// wrong owner.
+enum CanvasSceneMigrationNotice: Identifiable, Equatable {
+    case migrated(Success)
+    case unsupported(canvasID: UUID, documentID: UUID, nodeID: UUID,
+                     reasons: [LegacySceneMigrationReason])
+    case conflict(canvasID: UUID, documentID: UUID, nodeID: UUID)
+    case failed(canvasID: UUID, documentID: UUID, nodeID: UUID,
+                message: String, retryable: Bool)
+
+    struct Success: Equatable {
+        let canvasID: UUID
+        let documentID: UUID
+        let nodeID: UUID
+        let sourceKey: String
+        let approximations: [CADLegacyVisualApproximation]
+    }
+
+    var id: String {
+        switch self {
+        case .migrated(let success): "migrated:\(success.nodeID.uuidString)"
+        case .unsupported(_, _, let nodeID, _): "unsupported:\(nodeID.uuidString)"
+        case .conflict(_, _, let nodeID): "conflict:\(nodeID.uuidString)"
+        case .failed(_, _, let nodeID, _, _): "failed:\(nodeID.uuidString)"
+        }
+    }
+
+    var nodeID: UUID {
+        switch self {
+        case .migrated(let success): success.nodeID
+        case .unsupported(_, _, let nodeID, _), .conflict(_, _, let nodeID),
+             .failed(_, _, let nodeID, _, _): nodeID
+        }
+    }
+
+    /// The frozen owner identity (canvas + document) of this outcome.
+    var owner: (canvasID: UUID, documentID: UUID) {
+        switch self {
+        case .migrated(let success):
+            (success.canvasID, success.documentID)
+        case .unsupported(let canvasID, let documentID, _, _),
+             .conflict(let canvasID, let documentID, _),
+             .failed(let canvasID, let documentID, _, _, _):
+            (canvasID, documentID)
+        }
+    }
+}
+
+/// Presentation-only gate for 3D entry results.
+///
+/// The canvas/package commit has ALREADY happened under the frozen owner
+/// identity; this decides only WHEN the UI may select/open a created node or
+/// show a migration notice. A document switch during the async create/migrate
+/// therefore cannot select a node that is absent from the new active document,
+/// open the wrong document, or steal the new document's selection: the exact
+/// result is parked per owner document and surfaces when that document is
+/// active again.
+@MainActor
+final class Canvas3DEntryCoordinator: ObservableObject {
+    enum Entry: Equatable {
+        case createdNode(canvasID: UUID, documentID: UUID, nodeID: UUID)
+        case migrationNotice(CanvasSceneMigrationNotice)
+
+        var documentID: UUID {
+            switch self {
+            case .createdNode(_, let documentID, _): documentID
+            case .migrationNotice(let notice): notice.owner.documentID
+            }
+        }
+
+        var canvasID: UUID {
+            switch self {
+            case .createdNode(let canvasID, _, _): canvasID
+            case .migrationNotice(let notice): notice.owner.canvasID
+            }
+        }
+    }
+
+    /// Exact results waiting for their original document to become active.
+    @Published private(set) var pendingByDocument: [UUID: Entry] = [:]
+
+    /// True when the result's frozen owner document is the active one and the
+    /// presentation may happen immediately.
+    func shouldPresentImmediately(_ entry: Entry, activeDocumentID: UUID) -> Bool {
+        entry.documentID == activeDocumentID
+    }
+
+    func park(_ entry: Entry) {
+        pendingByDocument[entry.documentID] = entry
+    }
+
+    func take(forDocument documentID: UUID) -> Entry? {
+        pendingByDocument.removeValue(forKey: documentID)
+    }
+
+    func parkedEntry(forDocument documentID: UUID) -> Entry? {
+        pendingByDocument[documentID]
+    }
+}
+
+/// Freezes the OWNING canvas document of a 3D node at action time. Never
+/// guesses: a node found in the currently selected document wins, otherwise
+/// the document that actually contains it is used, so a later document switch
+/// cannot re-target the presentation.
+enum Canvas3DDocumentLocator {
+    static func documentID(
+        of nodeID: UUID, in project: CanvasProject,
+        preferredDocumentID: UUID? = nil
+    ) -> UUID? {
+        if let preferredDocumentID,
+           let document = project.documents.first(where: { $0.id == preferredDocumentID }),
+           document.nodes.contains(where: { $0.id == nodeID }) {
+            return document.id
+        }
+        return project.documents.first(where: {
+            $0.nodes.contains(where: { $0.id == nodeID })
+        })?.id
+    }
+}
+
+/// The migration result sheet: disclosures on success (with an explicit path
+/// into the workbench), precise reasons on unsupported content, or a retryable
+/// failure. The legacy preview stays the fallback in every case.
+private struct CanvasSceneMigrationNoticeSheet: View {
+    let notice: CanvasSceneMigrationNotice
+    let onOpenWorkbench: (CanvasSceneMigrationNotice.Success) -> Void
+    let onRetry: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    switch notice {
+                    case .migrated(let success):
+                        Label("canvas.scene_migration.completed", systemImage: "checkmark.seal")
+                            .font(.headline)
+                        Text("canvas.scene_migration.completed.detail")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        if !success.approximations.isEmpty {
+                            Text("canvas.scene_migration.disclosures")
+                                .font(.subheadline.weight(.semibold))
+                            ForEach(success.approximations, id: \.rawValue) { approximation in
+                                Label(
+                                    approximationDisclosure(approximation),
+                                    systemImage: "info.circle"
+                                )
+                                .font(.callout)
+                            }
+                        }
+                    case .unsupported(_, _, _, let reasons):
+                        Label("canvas.scene_migration.unsupported", systemImage: "exclamationmark.triangle")
+                            .font(.headline)
+                        Text("canvas.scene_migration.unsupported.detail")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        ForEach(reasons) { reason in
+                            VStack(alignment: .leading, spacing: 2) {
+                                // Primary presentation is the localized reason
+                                // keyed by the stable code. The neutral
+                                // English detail is an explicit technical
+                                // disclosure, never the ordinary message.
+                                Text(localizedReason(reason))
+                                    .font(.callout)
+                                DisclosureGroup("canvas.scene_migration.technical_detail") {
+                                    Text(reason.detail)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                    case .conflict:
+                        Label("canvas.scene_migration.conflict", systemImage: "exclamationmark.triangle")
+                            .font(.headline)
+                        Text("canvas.scene_migration.conflict.detail")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    case .failed(_, _, _, let message, let retryable):
+                        Label("canvas.scene_migration.failed", systemImage: "xmark.octagon")
+                            .font(.headline)
+                        Text(message)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        if retryable {
+                            Text("canvas.scene_migration.failed.retryable")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+            }
+            .navigationTitle("canvas.scene_migration.title")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("common.close", action: onDismiss)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    switch notice {
+                    case .migrated(let success):
+                        Button("canvas.scene_migration.open_workbench") {
+                            onOpenWorkbench(success)
+                        }
+                        .accessibilityIdentifier("canvas.sceneMigration.openWorkbench")
+                    case .failed(_, _, _, _, let retryable) where retryable:
+                        Button("canvas.scene_migration.retry", action: onRetry)
+                            .accessibilityIdentifier("canvas.sceneMigration.retry")
+                    default:
+                        EmptyView()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func approximationDisclosure(_ approximation: CADLegacyVisualApproximation) -> String {
+        switch approximation {
+        case .lightingIntensityNormalized:
+            FloeL10n.l("canvas.scene_migration.approx.lighting_normalized")
+        case .planarGroundShadow:
+            FloeL10n.l("canvas.scene_migration.approx.planar_shadow")
+        }
+    }
+
+    private func localizedReason(_ reason: LegacySceneMigrationReason) -> String {
+        let localized = FloeL10n.l(reason.code)
+        return localized == reason.code ? reason.detail : localized
+    }
+}
+
 struct WorkspaceCanvasView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
@@ -5363,7 +5654,14 @@ struct WorkspaceCanvasView: View {
     @StateObject private var drawingSessions = CanvasDrawingSessionRegistry()
     @State private var importedVideoExports = Set<URL>()
     @State private var showsMediaJobs = false
-    @State private var directorPresentation: Canvas3DDirectorPresentation?
+    /// First-edit legacy 3D migration outcome. The legacy 3D Director is no
+    /// longer an editor; this drives the disclosure/reason/retry sheet while
+    /// the unified native workbench opens only on explicit success.
+    @State private var sceneMigrationNotice: CanvasSceneMigrationNotice?
+    /// Presentation gate for in-flight 3D entry results: a document switch
+    /// never re-targets a created node or a migration notice; the exact result
+    /// is parked for its frozen owner document.
+    @StateObject private var threeDEntryCoordinator = Canvas3DEntryCoordinator()
     @State private var canvasJobs: [MediaGenerationJob] = []
     @State private var marqueeStart: CGPoint?
     @State private var marqueeCurrent: CGPoint?
@@ -5586,25 +5884,45 @@ struct WorkspaceCanvasView: View {
                 onRefresh: { jobs in await refreshMediaJobs(jobs) }
             )
         }
-        .fullScreenCover(item: $directorPresentation) { presentation in
-            if let node = store.selectedDocument?.nodes.first(where: {
-                $0.id == presentation.nodeID
-            }) {
-                Canvas3DDirectorView(
-                    initialScene: node.scene3D ?? .starter(),
-                    onSave: { scene in
-                        store.updateScene3D(scene, for: presentation.nodeID)
-                        directorPresentation = nil
-                    },
-                    onCancel: { directorPresentation = nil }
-                )
-            }
+        .sheet(item: $sceneMigrationNotice) { notice in
+            CanvasSceneMigrationNoticeSheet(
+                notice: notice,
+                onOpenWorkbench: { success in
+                    sceneMigrationNotice = nil
+                    presentNativeCADEditor(
+                        nodeID: success.nodeID,
+                        documentID: success.documentID,
+                        sourceKey: success.sourceKey)
+                },
+                onRetry: {
+                    // Retry uses the FROZEN owner identity from the notice,
+                    // never the currently selected document.
+                    let owner = notice.owner
+                    let nodeID = notice.nodeID
+                    sceneMigrationNotice = nil
+                    Task {
+                        await migrateAndOpen(
+                            canvasID: owner.canvasID,
+                            documentID: owner.documentID,
+                            nodeID: nodeID)
+                    }
+                },
+                onDismiss: { sceneMigrationNotice = nil }
+            )
+        }
+        .onChange(of: store.project.selectedDocumentID) { _, newDocumentID in
+            // Continuation for a 3D entry whose owner document was not active
+            // when its async work completed. Only the ORIGINAL document may
+            // surface its exact result; the newly selected document's
+            // selection is never stolen.
+            guard let entry = threeDEntryCoordinator.take(forDocument: newDocumentID) else { return }
+            applyPending3DEntry(entry)
         }
         .fullScreenCover(item: $nativeCADPresentation) { presentation in
             CanvasNativeCADEditor(
                 presentation: presentation,
                 assetStore: environment.creativeAssetStore,
-                onClose: { nativeCADPresentation = nil })
+                onClose: { dismissNativeCADEditor() })
         }
     }
 
@@ -6233,42 +6551,12 @@ struct WorkspaceCanvasView: View {
             Label("workspace.workspace_canvas_view.media_tasks", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
         }
         .badge(canvasJobs.filter { !$0.state.isTerminal }.count)
-        Button {
-            let existing = store.selectedDocument?.nodes.first(where: {
-                selectedNodeIDs.contains($0.id) && $0.kind == .scene3D
-            })?.id
-            let nodeID = existing ?? store.addScene3D(
-                at: canvasPoint(visibleCanvasCenter)
-            )
-            selectedNodeIDs = [nodeID]
-            directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID)
-        } label: {
-            Label("workspace.workspace_canvas_view.3d_director", systemImage: "cube.transparent")
-        }
-        // Explicit parametric CAD creation, kept distinct from the 3D
-        // Director above: that editor arranges lightweight scene
-        // compositions; this entry creates a real editable `.floecad`
-        // package in the workspace and binds it as a native CAD node.
-        Button {
-            Task { @MainActor in
-                guard let canvasDocument = store.selectedDocument else { return }
-                let result = await CADCanvasActionBridge.newCADDocumentInCanvas(
-                    canvasID: store.project.id,
-                    documentID: canvasDocument.id,
-                    position: CanvasPoint(x: canvasPoint(visibleCanvasCenter).x, y: canvasPoint(visibleCanvasCenter).y),
-                    assetStore: environment.creativeAssetStore)
-                if let nodeID = result.nodeID {
-                    selectedNodeIDs = [nodeID]
-                    mode = .select
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
-                } else {
-                    store.saveError = result.message
-                }
-            }
-        } label: {
-            Label("canvas.cad.new_model", systemImage: "cube.transparent")
-        }
-        .accessibilityIdentifier("canvas.addCADCube")
+        // Both former TOP 3D creators (the legacy 3D Director and the
+        // duplicate CAD-model cube) are removed: 3D creation now lives ONLY
+        // in the existing bottom insertion menu (+ ▸ 3D Model), which creates
+        // one native document and opens the SAME unified workbench. Existing
+        // legacy scene nodes stay readable/read-only and migrate on first
+        // edit; nothing here creates a second editor or parallel node path.
         Menu {
             Toggle("workspace.workspace_canvas_view.sync_this_canvas", isOn: Binding(
                 get: { store.project.sync.isEnabled },
@@ -6608,7 +6896,11 @@ struct WorkspaceCanvasView: View {
         case .panorama3D:
             nodeID = store.addBuiltinNode(pluginID: "panorama3D", at: point)
         case .scene3D:
-            nodeID = store.addScene3D(at: point)
+            // Unified 3D creation: one native `.floecad` document in the
+            // canvas-owned store, opened in the SAME workbench every other
+            // 3D node uses. The legacy scene payload is never written here.
+            createNativeCADNode(at: point)
+            return
         }
         selectedNodeIDs = [nodeID]
         selectedStrokeIDs.removeAll()
@@ -6616,7 +6908,6 @@ struct WorkspaceCanvasView: View {
         editingNodeID = [.text, .stickyNote, .card, .markdown, .svg, .html].contains(kind)
             ? nodeID : nil
         mode = .select
-        if kind == .scene3D { directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID) }
     }
 
     private func createConnectedNode(
@@ -7037,11 +7328,10 @@ struct WorkspaceCanvasView: View {
                 licenseStatus: node.licenseStatus,
                 canGroup: contextSelection(for: node).count > 1,
                 onOpen3D: node.kind == .scene3D ? {
-                    directorPresentation = Canvas3DDirectorPresentation(nodeID: node.id)
+                    openUnified3DEditor(node)
                 } : nil,
                 onOpenCAD: CADCanvasNodePlanner.isNativeCADNode(node) ? {
-                    selectedNodeIDs = [node.id]
-                    openNativeCADEditor(node)
+                    openUnified3DEditor(node)
                 } : nil,
                 onConfigureGeneration: node.kind == .generationTask ? {
                     handleGenerationAction(for: node)
@@ -7200,7 +7490,12 @@ struct WorkspaceCanvasView: View {
                     openDrawingEditor(node)
                 } else if CADCanvasNodePlanner.isNativeCADNode(node), !node.isLocked {
                     selectedNodeIDs = [node.id]
-                    openNativeCADEditor(node)
+                    openUnified3DEditor(node)
+                } else if node.kind == .scene3D, !node.isLocked {
+                    // A legacy (or already migrated) 3D scene node: the first
+                    // edit migrates it transactionally, then the SAME unified
+                    // workbench opens. The embedded original is preserved.
+                    openUnified3DEditor(node)
                 } else if node.kind == .generationTask
                     || node.metadata["generationState"] == "failed" {
                     openGenerationConfiguration(for: node)
@@ -7927,13 +8222,14 @@ struct WorkspaceCanvasView: View {
                 if selectedNodeIDs.count == 1,
                    let nodeID = selectedNodeIDs.first,
                    let node = store.selectedDocument?.nodes.first(where: { $0.id == nodeID }),
-                   CADCanvasNodePlanner.isNativeCADNode(node),
+                   CADCanvasNodePlanner.isNativeCADNode(node) || node.kind == .scene3D,
                    !node.isLocked {
-                    // Explicit CAD editor entry on the compact surface;
-                    // rename stays a separate pencil action below.
+                    // Explicit unified 3D editor entry on the compact surface
+                    // (native CAD or legacy/migrated scene); rename stays a
+                    // separate pencil action below.
                     Button("workspace.workspace_canvas_view.open_native_cad_editor",
                            systemImage: "cube.transparent") {
-                        openNativeCADEditor(node)
+                        openUnified3DEditor(node)
                         pencilContextPoint = nil
                     }
                     .accessibilityIdentifier("canvas.pencil.openNativeCAD")
@@ -8229,15 +8525,15 @@ struct WorkspaceCanvasView: View {
                             }
                             .disabled(taskNode.generationTaskState.isRunning)
                             .accessibilityIdentifier("canvas.generation.configure")
-                        } else if CADCanvasNodePlanner.isNativeCADNode(node) {
-                            // A native CAD node's primary edit action opens
-                            // the parametric workbench through the SAME
-                            // binding double tap uses; rename stays a
+                        } else if CADCanvasNodePlanner.isNativeCADNode(node) || node.kind == .scene3D {
+                            // A 3D node's primary edit action opens the SAME
+                            // unified workbench (legacy scene nodes migrate
+                            // transactionally on first edit); rename stays a
                             // separate explicit control.
                             if !node.isLocked {
                                 Button("workspace.workspace_canvas_view.open_native_cad_editor",
                                        systemImage: "cube.transparent") {
-                                    openNativeCADEditor(node)
+                                    openUnified3DEditor(node)
                                 }
                                 .accessibilityIdentifier("canvas.toolbar.openNativeCAD")
                                 Button("workspace.workspace_canvas_view.open_native_cad_editor_rename",
@@ -8783,12 +9079,175 @@ struct WorkspaceCanvasView: View {
             id: node.id, documentID: store.project.selectedDocumentID)
     }
 
+    /// ONE 3D opener for every 3D node:
+    ///   * a native CAD node (including an already-migrated legacy scene)
+    ///     opens its bound `.floecad` package directly;
+    ///   * a legacy `.scene3D` node migrates ON FIRST EDIT — transactional,
+    ///     with the recoverable original preserved — and then opens the SAME
+    ///     workbench. Unsupported content shows precise reasons and keeps the
+    ///     read-only legacy preview; nothing is written on failure.
+    private func openUnified3DEditor(_ node: FloeCanvasNode) {
+        guard !node.isLocked else { return }
+        selectedNodeIDs = [node.id]
+        selectedStrokeIDs.removeAll()
+        selectedConnectionID = nil
+        editingNodeID = nil
+        if CADCanvasNodePlanner.isNativeCADNode(node) {
+            openNativeCADEditor(node)
+            return
+        }
+        guard node.kind == .scene3D else { return }
+        switch LegacySceneMigrationService.migrationState(of: node) {
+        case .notLegacyScene:
+            store.saveError = canvasLocalized(
+                "该节点不是可编辑的 3D 场景。",
+                "This node is not an editable 3D scene.")
+        case .migrated:
+            // Marker + binding already present: the native document is the
+            // authority; reopen it through the ordinary binding.
+            openNativeCADEditor(node)
+        case .legacyUnchanged:
+            // Freeze the owner identity BEFORE the async work: a document
+            // switch during migration must not re-target the result.
+            let canvasID = store.project.id
+            let documentID = Canvas3DDocumentLocator.documentID(
+                of: node.id, in: store.project,
+                preferredDocumentID: store.project.selectedDocumentID)
+                ?? store.project.selectedDocumentID
+            Task { await migrateAndOpen(canvasID: canvasID, documentID: documentID, nodeID: node.id) }
+        case .conflict:
+            let canvasID = store.project.id
+            let documentID = Canvas3DDocumentLocator.documentID(
+                of: node.id, in: store.project,
+                preferredDocumentID: store.project.selectedDocumentID)
+                ?? store.project.selectedDocumentID
+            sceneMigrationNotice = .conflict(
+                canvasID: canvasID, documentID: documentID, nodeID: node.id)
+        }
+    }
+
+    /// First edit of a legacy scene: migrate (if needed) and route the result
+    /// for the FROZEN owner document. Success only opens an explicit
+    /// disclosure sheet on that document; the workbench itself opens from the
+    /// sheet so the bounded visual approximations are shown BEFORE editing,
+    /// never silently. When the owner document is no longer active the exact
+    /// result is parked and surfaces when that document is active again.
+    private func migrateAndOpen(canvasID: UUID, documentID: UUID, nodeID: UUID) async {
+        let outcome = await LegacySceneMigrationService.migrateOnFirstEdit(
+            canvasID: canvasID,
+            documentID: documentID,
+            nodeID: nodeID,
+            assetStore: environment.creativeAssetStore)
+        switch outcome {
+        case .migrated(let success):
+            let notice = CanvasSceneMigrationNotice.migrated(CanvasSceneMigrationNotice.Success(
+                canvasID: success.canvasID,
+                documentID: success.documentID,
+                nodeID: success.nodeID,
+                sourceKey: success.sourceKey,
+                approximations: success.visualApproximations))
+            presentOrPark3DEntry(.migrationNotice(notice))
+        case .alreadyMigrated(let success):
+            let entry = Canvas3DEntryCoordinator.Entry.createdNode(
+                canvasID: canvasID, documentID: success.documentID, nodeID: success.nodeID)
+            if threeDEntryCoordinator.shouldPresentImmediately(
+                entry, activeDocumentID: store.project.selectedDocumentID
+            ), store.project.id == success.canvasID {
+                presentNativeCADEditor(
+                    nodeID: success.nodeID,
+                    documentID: success.documentID,
+                    sourceKey: success.sourceKey)
+            } else {
+                threeDEntryCoordinator.park(entry)
+            }
+        case .unsupported(let reasons):
+            // Nothing was written; the legacy node + preview remain intact
+            // and read-only until the user fixes the scene or keeps it as is.
+            presentOrPark3DEntry(.migrationNotice(.unsupported(
+                canvasID: canvasID, documentID: documentID, nodeID: nodeID,
+                reasons: reasons)))
+        case .conflict:
+            presentOrPark3DEntry(.migrationNotice(.conflict(
+                canvasID: canvasID, documentID: documentID, nodeID: nodeID)))
+        case .failed(let message, let retryable):
+            presentOrPark3DEntry(.migrationNotice(.failed(
+                canvasID: canvasID, documentID: documentID, nodeID: nodeID,
+                message: message, retryable: retryable)))
+        }
+    }
+
+    /// Applies a completed 3D entry result only when its frozen owner document
+    /// is still active; otherwise the exact result is parked for that owner
+    /// and the active document keeps its own selection.
+    private func presentOrPark3DEntry(_ entry: Canvas3DEntryCoordinator.Entry) {
+        guard store.project.id == entry.canvasID,
+              threeDEntryCoordinator.shouldPresentImmediately(
+                  entry, activeDocumentID: store.project.selectedDocumentID) else {
+            threeDEntryCoordinator.park(entry)
+            return
+        }
+        applyPending3DEntry(entry)
+    }
+
+    /// Presentation for an entry whose owner document is the active one.
+    /// Selections are only ever changed here (owner document active), so a
+    /// late completion cannot steal another document's selection.
+    private func applyPending3DEntry(_ entry: Canvas3DEntryCoordinator.Entry) {
+        let activeCanvasID = store.project.id
+        let activeDocumentID = store.project.selectedDocumentID
+        switch entry {
+        case .createdNode(let canvasID, let documentID, let nodeID):
+            guard canvasID == activeCanvasID, documentID == activeDocumentID,
+                  let node = store.selectedDocument?.nodes.first(where: { $0.id == nodeID }) else {
+                return
+            }
+            selectedNodeIDs = [nodeID]
+            selectedStrokeIDs.removeAll()
+            selectedConnectionID = nil
+            mode = .select
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            // A node just committed by the creation route opens with the
+            // explicit Cancel / Save & Keep choice until the user accepts it.
+            openNativeCADEditor(node, newlyCreated: true)
+        case .migrationNotice(let notice):
+            guard notice.owner.canvasID == activeCanvasID,
+                  notice.owner.documentID == activeDocumentID else { return }
+            sceneMigrationNotice = notice
+        }
+    }
+
+    /// Bottom "+ ▸ 3D Model": creates ONE native document in the canvas-owned
+    /// store and opens the unified workbench. The owner canvas/document is
+    /// frozen BEFORE the await; the node is committed only after a real render
+    /// and a failure leaves no empty node (the pending package is reused on
+    /// retry). If the active document changed mid-create, the exact result is
+    /// parked for its original document instead of selecting an absent node.
+    private func createNativeCADNode(at point: CGPoint) {
+        guard let document = store.selectedDocument else { return }
+        let canvasID = store.project.id
+        let documentID = document.id
+        Task { @MainActor in
+            let result = await CADCanvasActionBridge.newCADDocumentInCanvas(
+                canvasID: canvasID,
+                documentID: documentID,
+                position: CanvasPoint(x: point.x, y: point.y),
+                assetStore: environment.creativeAssetStore)
+            if let nodeID = result.nodeID {
+                presentOrPark3DEntry(.createdNode(
+                    canvasID: canvasID, documentID: documentID, nodeID: nodeID))
+            } else {
+                store.saveError = result.message
+            }
+        }
+    }
+
     /// Opens the native parametric CAD workbench for a canvas-owned CAD node.
     /// The node binds its editable package by an explicit
     /// `canvas-cad:<canvas>/<package>` key (resolved to the app-owned on-device
     /// container); a missing/unbound package is reported rather than opening
-    /// an empty or temporary editor.
-    private func openNativeCADEditor(_ node: FloeCanvasNode) {
+    /// an empty or temporary editor. The OWNING document id is frozen here so
+    /// a document switch cannot re-target the presentation.
+    private func openNativeCADEditor(_ node: FloeCanvasNode, newlyCreated: Bool = false) {
         guard CADCanvasNodePlanner.isNativeCADNode(node) else { return }
         guard let sourceKey = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath],
               CanvasCADStorage.isCanvasOwnedKey(sourceKey),
@@ -8799,10 +9258,32 @@ struct WorkspaceCanvasView: View {
                 "The on-device CAD document for this node is missing; delete and recreate the node.")
             return
         }
+        let ownerDocumentID = Canvas3DDocumentLocator.documentID(
+            of: node.id, in: store.project,
+            preferredDocumentID: store.project.selectedDocumentID)
+            ?? store.project.selectedDocumentID
+        presentNativeCADEditor(
+            nodeID: node.id, documentID: ownerDocumentID, sourceKey: sourceKey,
+            newlyCreated: newlyCreated)
+    }
+
+    /// Presents the workbench for an EXACT owner. The owner is frozen INTO the
+    /// presented editor's action set (no global presentation registry):
+    /// Apply/Variant bind to this node even when the same `.floecad` package
+    /// is referenced by several nodes, and closing one workbench can never
+    /// unregister another presentation's target.
+    private func presentNativeCADEditor(
+        nodeID: UUID, documentID: UUID, sourceKey: String,
+        newlyCreated: Bool = false
+    ) {
         nativeCADPresentation = CanvasNativeCADPresentation(
-            id: node.id,
-            documentID: store.project.selectedDocumentID,
-            sourceKey: sourceKey)
+            id: nodeID, canvasID: store.project.id,
+            documentID: documentID, sourceKey: sourceKey,
+            newlyCreated: newlyCreated)
+    }
+
+    private func dismissNativeCADEditor() {
+        nativeCADPresentation = nil
     }
 
     @MainActor
@@ -9967,13 +10448,14 @@ private struct CanvasNodeCard: View {
                         ? "arrow.clockwise" : "slider.horizontal.3",
                     action: onConfigureGeneration
                 )
-            } else if let onOpenCAD, CADCanvasNodePlanner.isNativeCADNode(node), !node.isLocked {
-                // A CAD node's pencil "Edit" used to inline-rename only. The
-                // first edit action opens the real parametric workbench, via
-                // the same document binding double tap uses; renaming stays a
-                // separate explicit action below.
+            } else if let open3D = (CADCanvasNodePlanner.isNativeCADNode(node) ? onOpenCAD : (node.kind == .scene3D ? onOpen3D : nil)),
+                      !node.isLocked {
+                // ONE edit action for every 3D node. A native CAD node opens
+                // its bound package; a legacy scene node migrates on first
+                // edit (recoverable original preserved) and then opens the
+                // same workbench. Renaming stays a separate explicit action.
                 Button("workspace.workspace_canvas_view.open_native_cad_editor",
-                       systemImage: "cube.transparent", action: onOpenCAD)
+                       systemImage: "cube.transparent", action: open3D)
                     .accessibilityIdentifier("canvas.context.openNativeCAD")
                 Button("workspace.workspace_canvas_view.open_native_cad_editor_rename",
                        systemImage: "pencil", action: onBeginEditing)
@@ -9988,9 +10470,6 @@ private struct CanvasNodeCard: View {
             )
             Button("workspace.workspace_canvas_view.copy", systemImage: "plus.square.on.square", action: onDuplicate)
             Button("workspace.workspace_canvas_view.connection", systemImage: "point.topleft.down.to.point.bottomright.curvepath", action: onConnect)
-            if let onOpen3D {
-                Button("workspace.workspace_canvas_view.open_3d_director", systemImage: "cube.transparent", action: onOpen3D)
-            }
             Divider()
             Button(node.isLocked ? "pdf.reader.unlock" : "workspace.workspace_canvas_view.lock", systemImage: node.isLocked ? "lock.open" : "lock", action: onToggleLock)
             Button("workspace.workspace_canvas_view.bring_to_front", systemImage: "arrow.up.to.line", action: onBringToFront)
@@ -10210,11 +10689,15 @@ private struct CanvasNodeCard: View {
                             .font(.headline)
                     }
                     if let onOpen3D {
-                        Button("workspace.workspace_canvas_view.open_director", systemImage: "arrow.up.left.and.arrow.down.right") {
+                        // The thumbnail above IS the read-only legacy
+                        // preview; this button is the first EDIT, which
+                        // migrates the scene and opens the unified workbench.
+                        Button("workspace.workspace_canvas_view.open_native_cad_editor", systemImage: "arrow.up.left.and.arrow.down.right") {
                             onOpen3D()
                         }
                         .font(.caption)
                         .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("canvas.node.open3DWorkbench")
                     }
                 }
                 .padding(10)

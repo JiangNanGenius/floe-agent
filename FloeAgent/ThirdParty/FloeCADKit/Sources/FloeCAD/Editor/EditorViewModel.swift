@@ -83,9 +83,31 @@ final class EditorViewModel {
     /// it to re-run their layout as the camera orbits/animates.
     var cameraEpoch = 0
 
+    /// Persisted legacy-scene presentation (a migrated Canvas 3D scene),
+    /// decoded from the session on attach. Drives the viewport appearance
+    /// (background, light rig, grid, shadows) and the opening camera.
+    private(set) var sceneSettings: CADSceneSettings?
+
+    /// The camera a migrated legacy scene was authored with. The viewport
+    /// coordinator applies it on open instead of the automatic fit.
+    var savedSceneCamera: TurntableCamera? {
+        sceneSettings?.camera.map(Renderer.turntableCamera(from:))
+    }
+
+    /// Re-read the persisted scene presentation after the shared session's
+    /// `sceneSettingsData` changed (facade `importLegacyScene`).
+    func reloadSceneSettings() {
+        guard let data = session.document.sceneSettingsData else {
+            sceneSettings = nil
+            return
+        }
+        sceneSettings = try? JSONDecoder().decode(CADSceneSettings.self, from: data)
+    }
+
     init(project: Project, modelContext: CADModelContext) {
         self.session = DocumentSession(project: project, modelContext: modelContext)
         loadAutoConstrainSettings()
+        reloadSceneSettings()
         // Data-safety warnings from load (newer-format store opens read-only,
         // or rows this build couldn't read) surface once as the alert.
         errorMessage = session.loadWarning
@@ -96,6 +118,7 @@ final class EditorViewModel {
     init(session: DocumentSession) {
         self.session = session
         loadAutoConstrainSettings()
+        reloadSceneSettings()
         errorMessage = session.loadWarning
     }
 
@@ -1233,7 +1256,14 @@ final class EditorViewModel {
         // Display mode + Section View (spec §16, plan §B11/§B12).
         scene.displayMode = displayMode
         scene.showHiddenEdges = showHiddenEdges
+        // A migrated legacy scene carries its own presentation; its shadow
+        // flag enables the workbench's planar ground shadows (the renderer's
+        // existing shadow pass — a bounded approximation of the legacy
+        // directional shadow). The user's own toggle still wins when already on.
+        scene.appearance = sceneSettings
+        scene.showsGrid = sceneSettings?.showsGrid ?? true
         scene.groundShadow = groundShadowEnabled
+            || (sceneSettings?.lighting?.castsShadows ?? false)
         if let section = sectionState {
             let plane = section.plane
             let n = simd_normalize(section.basePlane.normal)

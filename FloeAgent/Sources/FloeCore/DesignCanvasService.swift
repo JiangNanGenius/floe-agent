@@ -90,6 +90,10 @@ public actor DesignCanvasService {
         /// adoption can tell a built-in Markdown/HTML/SVG card from an
         /// ordinary card without another repository read.
         public let nodeMetadata: [String: String]
+        /// The bound node at snapshot time, including its text body and
+        /// asset reference. Read-only; owner adapters use it to resolve the
+        /// node's current content without a second repository read.
+        public let node: CanvasNode?
         public let design: DesignProject?
         public let operationReplayed: Bool
     }
@@ -131,6 +135,7 @@ public actor DesignCanvasService {
             canvasRevision: project.revision,
             nodeKind: node.kind,
             nodeMetadata: node.metadata,
+            node: node,
             design: design,
             operationReplayed: false
         )
@@ -183,6 +188,7 @@ public actor DesignCanvasService {
                 canvasRevision: project.revision,
                 nodeKind: node.kind,
             nodeMetadata: node.metadata,
+                node: node,
                 design: design,
                 operationReplayed: true
             )
@@ -199,6 +205,7 @@ public actor DesignCanvasService {
                 canvasID: canvasID, nodeID: nodeID, canvasDocumentID: containingDocumentID,
                 canvasRevision: project.revision, nodeKind: node.kind,
                 nodeMetadata: node.metadata,
+                node: node,
                 design: design, operationReplayed: true
             )
         }
@@ -211,13 +218,16 @@ public actor DesignCanvasService {
         project.revision = expectedRevision + 1
         project.updatedAt = Date()
         try await repository.save(project, expectedRevision: expectedRevision)
+        // Reflect whatever real node content the body committed.
+        let resultingNode = Self.node(nodeID, in: project) ?? node
         return Snapshot(
             canvasID: canvasID,
             nodeID: nodeID,
             canvasDocumentID: containingDocumentID,
             canvasRevision: project.revision,
-            nodeKind: node.kind,
-            nodeMetadata: node.metadata,
+            nodeKind: resultingNode.kind,
+            nodeMetadata: resultingNode.metadata,
+            node: resultingNode,
             design: design,
             operationReplayed: false
         )
@@ -464,6 +474,7 @@ public actor DesignCanvasService {
                 canvasRevision: project.revision,
                 nodeKind: node.kind,
             nodeMetadata: node.metadata,
+                node: node,
                 design: design,
                 operationReplayed: true
             )
@@ -493,6 +504,7 @@ public actor DesignCanvasService {
             canvasRevision: project.revision,
             nodeKind: node.kind,
             nodeMetadata: node.metadata,
+            node: node,
             design: design,
             operationReplayed: false
         )

@@ -58,6 +58,23 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
     public let mode: String?
     public let baseRevisionID: String?
     public let expectedCanvasRevision: Int64?
+    /// Typed owner for NON-CANVAS decisions (file/chat/creative targets).
+    /// Canvas decisions leave this nil and use canvasID/nodeID below. A
+    /// non-canvas decision never fabricates a canvas id or canvas revision;
+    /// its owner identity and frozen revision live here, encoded with the
+    /// same length-prefixed canonical form as `DesignTarget` so the
+    /// fingerprint is unambiguous across id/path shapes.
+    public let target: DesignTarget?
+    /// Verified digest of the candidate/result bytes this decision commits.
+    /// Persisted for TARGET decisions so a crash between an in-place source
+    /// write and the metadata CAS can be reconciled against the ACTUAL
+    /// source bytes without trusting the (possibly absent) operation record.
+    /// Additive/optional: nil on legacy canvas records and on older target
+    /// records (reconcile then falls back to the envelope's candidate).
+    public let proposedContentSHA256: String?
+    /// The frozen base token of the in-place source at decision time
+    /// (e.g. the workspace file digest gate). Additive/optional as above.
+    public let frozenBaseToken: String?
     /// Deterministic fingerprint over the complete operation identity.
     public let fingerprint: String
     public var phase: Phase
@@ -75,6 +92,9 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         mode: String? = nil,
         baseRevisionID: String? = nil,
         expectedCanvasRevision: Int64? = nil,
+        target: DesignTarget? = nil,
+        proposedContentSHA256: String? = nil,
+        frozenBaseToken: String? = nil,
         phase: Phase = .committing,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -89,7 +109,17 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         self.mode = mode
         self.baseRevisionID = baseRevisionID
         self.expectedCanvasRevision = expectedCanvasRevision
-        self.fingerprint = DesignDecisionIntent.makeFingerprint(
+        self.target = target
+        self.proposedContentSHA256 = proposedContentSHA256
+        self.frozenBaseToken = frozenBaseToken
+        self.fingerprint = target.map { target in
+            DesignDecisionIntent.makeTargetFingerprint(
+                target: target, candidateID: candidateID,
+                conversationID: conversationID, decision: decision,
+                operationID: operationID, mode: mode,
+                baseRevisionID: baseRevisionID
+            )
+        } ?? DesignDecisionIntent.makeFingerprint(
             canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
             conversationID: conversationID, decision: decision,
             operationID: operationID, mode: mode, baseRevisionID: baseRevisionID,
@@ -100,6 +130,40 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         self.updatedAt = updatedAt
     }
 
+    /// Constructs a decision intent for a typed target (file/chat/creative).
+    /// No canvas fields are fabricated: canvasID/nodeID carry empty strings
+    /// and `expectedCanvasRevision` stays nil. The fingerprint is built from
+    /// the target's length-prefixed canonical identity.
+    public static func forTarget(
+        _ target: DesignTarget,
+        candidateID: String,
+        conversationID: String,
+        decision: String,
+        operationID: String,
+        mode: String? = nil,
+        baseRevisionID: String? = nil,
+        proposedContentSHA256: String? = nil,
+        frozenBaseToken: String? = nil
+    ) -> DesignDecisionIntent {
+        DesignDecisionIntent(
+            canvasID: "",
+            nodeID: "",
+            candidateID: candidateID,
+            conversationID: conversationID,
+            decision: decision,
+            operationID: operationID,
+            mode: mode,
+            baseRevisionID: baseRevisionID,
+            expectedCanvasRevision: nil,
+            target: target,
+            proposedContentSHA256: proposedContentSHA256,
+            frozenBaseToken: frozenBaseToken
+        )
+    }
+
+    /// True for a canvas-owned decision; false for file/chat/creative.
+    public var isCanvasOwned: Bool { target == nil }
+
     /// Canonical SHA-256 over the COMPLETE operation identity. Two decisions
     /// sharing an operationID but differing in any target/mode/base field
     /// produce distinct fingerprints and can never be mistaken for a replay.
@@ -108,6 +172,12 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         conversationID: String, decision: String, operationID: String,
         mode: String?, baseRevisionID: String?, expectedCanvasRevision: Int64?
     ) -> String {
+        // Legacy canvas fingerprint formula retained byte-for-byte so
+        // persisted pending intents keep deduping across app updates. Its
+        // fields are structurally constrained (UUID strings, decision/mode
+        // enums, Int64 revision); the only free-form component is
+        // operationID, which is scoped to this exact target tuple. New
+        // typed-target decisions use the length-prefixed target fingerprint.
         let canonical = [
             "canvas", canvasID.lowercased(),
             "node", nodeID.lowercased(),
@@ -122,16 +192,49 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         return FloeDigest.sha256Hex(Data(canonical.utf8))
     }
 
+    /// Fingerprint for a typed-target decision. The target contributes its
+    /// length-prefixed canonical identity (collision-free across id/path
+    /// shapes); no canvas placeholder participates.
+    public static func makeTargetFingerprint(
+        target: DesignTarget,
+        candidateID: String,
+        conversationID: String,
+        decision: String,
+        operationID: String,
+        mode: String?,
+        baseRevisionID: String?
+    ) -> String {
+        let canonical = [
+            // Source identity (kind/owner/doc/source/environment)…
+            "target", target.sourceIdentity,
+            // …plus the originating run attribution: the same source acted
+            // upon from different tasks are distinct decision intents,
+            // while the design history itself stays per-source.
+            "origin", target.originConversationID ?? "",
+            "targetRevision", target.revision ?? "",
+            "candidate", candidateID,
+            "conversation", conversationID.lowercased(),
+            "decision", decision,
+            "operation", operationID,
+            "mode", mode ?? "",
+            "base", baseRevisionID ?? ""
+        ].joined(separator: "\u{1f}")
+        return FloeDigest.sha256Hex(Data(canonical.utf8))
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id, canvasID, nodeID, candidateID, conversationID, decision
         case operationID, mode, baseRevisionID, expectedCanvasRevision
+        case target
+        case proposedContentSHA256, frozenBaseToken
         case fingerprint, phase, createdAt, updatedAt
     }
 
     /// Older builds wrote intents without `mode/baseRevisionID/
-    /// expectedCanvasRevision/fingerprint`. Decode them unchanged and
-    /// backfill the fingerprint so reconcile keeps working (it simply cannot
-    /// enforce the newer exact-fingerprint checks for those records).
+    /// expectedCanvasRevision/fingerprint` and without the target
+    /// proposed/base identity. Decode them unchanged and backfill the
+    /// fingerprint so reconcile keeps working (it simply cannot enforce the
+    /// newer exact-fingerprint checks for those records).
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
@@ -144,11 +247,21 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         mode = try c.decodeIfPresent(String.self, forKey: .mode)
         baseRevisionID = try c.decodeIfPresent(String.self, forKey: .baseRevisionID)
         expectedCanvasRevision = try c.decodeIfPresent(Int64.self, forKey: .expectedCanvasRevision)
+        let decodedTarget = try c.decodeIfPresent(DesignTarget.self, forKey: .target)
+        target = decodedTarget
+        proposedContentSHA256 = try c.decodeIfPresent(String.self, forKey: .proposedContentSHA256)
+        frozenBaseToken = try c.decodeIfPresent(String.self, forKey: .frozenBaseToken)
         phase = try c.decode(Phase.self, forKey: .phase)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
         if let stored = try c.decodeIfPresent(String.self, forKey: .fingerprint) {
             fingerprint = stored
+        } else if let decodedTarget {
+            fingerprint = Self.makeTargetFingerprint(
+                target: decodedTarget, candidateID: candidateID,
+                conversationID: conversationID, decision: decision,
+                operationID: operationID, mode: mode, baseRevisionID: baseRevisionID
+            )
         } else {
             fingerprint = Self.makeFingerprint(
                 canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
@@ -306,6 +419,27 @@ public actor DesignDecisionOutbox {
             return (existing, false)
         }
         return (try prepare(intent), true)
+    }
+
+    /// Reopens a previously cancelled intent for a RETRIED operation. A
+    /// cancel only meant "that attempt did not commit"; when the same
+    /// operation later commits, delivery is owed again and the record must
+    /// not permanently block it.
+    public func reopen(id: String) throws {
+        try requireWritable()
+        var next = envelope()
+        guard let index = next.intents.firstIndex(where: { $0.id == id }) else {
+            throw DesignDecisionOutboxError.invalidState(id)
+        }
+        guard next.intents[index].phase == .cancelled else { return }
+        let pending = next.intents.filter { $0.phase == .committing }.count
+        guard pending < Self.pendingHardCap else {
+            throw DesignDecisionOutboxError.pendingCapReached(pending)
+        }
+        next.intents[index].phase = .committing
+        next.intents[index].updatedAt = Date()
+        try persist(next)
+        state = .loaded(Self.compacted(next))
     }
 
     /// Marks the intent delivered. A delivery failure throws and leaves the

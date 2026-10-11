@@ -46,6 +46,10 @@ nonisolated struct DesignDocument: Sendable {
     var assemblyData: Data? = nil
     var drawingsData: Data? = nil
     var scriptsData: Data? = nil
+    /// Legacy-scene presentation imported from a migrated Canvas 3D scene
+    /// (camera, lighting, background, grid, provenance). Additive optional
+    /// column, nil on ordinary CAD documents.
+    var sceneSettingsData: Data? = nil
 
     /// Monotonic revision source for mesh changes (GPU cache invalidation).
     private var revisionCounter: UInt64 = 0

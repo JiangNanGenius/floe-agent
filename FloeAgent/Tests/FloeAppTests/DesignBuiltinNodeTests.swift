@@ -121,7 +121,7 @@ struct DesignBuiltinNodeTests {
     private func propose(_ harness: inout Harness, artifactID: String,
                          operationID: String, path: String, summary: String,
                          conversationID: UUID) async throws
-        -> (candidateID: String, baseRevisionID: String) {
+        -> (candidateID: String, baseRevisionID: String, proposedRevisionID: String) {
         let output = try await run(harness, tool: "canvas.designPropose", arguments: [
             "canvasID": harness.canvasID.uuidString,
             "nodeID": harness.nodeID.uuidString,
@@ -137,16 +137,19 @@ struct DesignBuiltinNodeTests {
         let candidates = try #require(design["candidates"] as? [[String: Any]])
         return (
             try #require(candidates.first?["candidateID"] as? String),
-            try #require(candidates.first?["baseRevisionID"] as? String)
+            try #require(candidates.first?["baseRevisionID"] as? String),
+            try #require(candidates.first?["proposedRevisionID"] as? String)
         )
     }
 
     private func adopt(_ harness: inout Harness, candidateID: String,
-                       baseRevisionID: String, operationID: String,
+                       baseRevisionID: String, proposedRevisionID: String,
+                       operationID: String,
                        conversationID: UUID) async throws -> [String: Any] {
         let grantID = await DesignAdoptionAuthorization.shared.issue(
             canvasID: harness.canvasID, nodeID: harness.nodeID,
-            candidateID: candidateID, baselineRevisionID: baseRevisionID
+            candidateID: candidateID, baselineRevisionID: baseRevisionID,
+            proposedRevisionID: proposedRevisionID, mode: .updateOriginal
         )
         let output = try await run(harness, tool: "canvas.designAdopt", arguments: [
             "canvasID": harness.canvasID.uuidString,
@@ -247,6 +250,7 @@ struct DesignBuiltinNodeTests {
                                           summary: "updated markdown", conversationID: conversationID)
         let adoptedDesign = try await adopt(&harness, candidateID: candidate.candidateID,
                                             baseRevisionID: candidate.baseRevisionID,
+                                            proposedRevisionID: candidate.proposedRevisionID,
                                             operationID: "op-md-adopt", conversationID: conversationID)
         // The SAME card now renders the adopted text via the original path;
         // kind/metadata/layout are preserved.
@@ -303,6 +307,7 @@ struct DesignBuiltinNodeTests {
                                           summary: "updated html", conversationID: conversationID)
         let adoptedDesign = try await adopt(&harness, candidateID: candidate.candidateID,
                                             baseRevisionID: candidate.baseRevisionID,
+                                            proposedRevisionID: candidate.proposedRevisionID,
                                             operationID: "op-html-adopt", conversationID: conversationID)
         let node = try await currentNode(harness)
         #expect(node.text == proposedHTML)
@@ -331,6 +336,7 @@ struct DesignBuiltinNodeTests {
                                           summary: "updated svg", conversationID: conversationID)
         let adoptedDesign = try await adopt(&harness, candidateID: candidate.candidateID,
                                             baseRevisionID: candidate.baseRevisionID,
+                                            proposedRevisionID: candidate.proposedRevisionID,
                                             operationID: "op-svg-adopt", conversationID: conversationID)
         let node = try await currentNode(harness)
         #expect(node.text == proposedSVG)

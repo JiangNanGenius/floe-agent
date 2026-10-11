@@ -59,6 +59,13 @@ public struct AgentToolLifecycleEntry: Sendable, Codable, Hashable {
     public var toolName: String
     public var authorizationIdentity: String?
     public var executorContextFingerprint: String?
+    /// Frozen pre-dispatch effect classification. Optional so checkpoints
+    /// written before this field decode unchanged (additive compatible).
+    /// Recovery uses it when the capability is absent or replaced at restart;
+    /// without it, recovery only trusts the current descriptor while its
+    /// authorization identity still matches, and otherwise fails
+    /// conservatively (treats the dispatch as a possible mutation).
+    public var isSideEffecting: Bool?
     public var phase: AgentToolLifecyclePhase
     public var updatedAt: Date
 
@@ -67,6 +74,7 @@ public struct AgentToolLifecycleEntry: Sendable, Codable, Hashable {
         toolName: String,
         authorizationIdentity: String? = nil,
         executorContextFingerprint: String? = nil,
+        isSideEffecting: Bool? = nil,
         phase: AgentToolLifecyclePhase,
         updatedAt: Date = Date()
     ) {
@@ -74,6 +82,7 @@ public struct AgentToolLifecycleEntry: Sendable, Codable, Hashable {
         self.toolName = toolName
         self.authorizationIdentity = authorizationIdentity
         self.executorContextFingerprint = executorContextFingerprint
+        self.isSideEffecting = isSideEffecting
         self.phase = phase
         self.updatedAt = updatedAt
     }

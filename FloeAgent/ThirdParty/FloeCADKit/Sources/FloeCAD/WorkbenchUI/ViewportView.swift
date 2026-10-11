@@ -115,7 +115,13 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
             )
         }
 
-        if let bounds = renderer.scene.worldBounds {
+        // A migrated legacy scene opens on its authored camera, exactly as the
+        // old director framed it; a resize must not re-fit that view (no
+        // openingFit is recorded). Every other document keeps the automatic
+        // opening fit.
+        if let saved = viewModel.savedSceneCamera {
+            renderer.camera = saved
+        } else if let bounds = renderer.scene.worldBounds {
             renderer.camera.fit(boundsMin: bounds.min, boundsMax: bounds.max, aspect: fitAspect)
             // The view is usually still .zero here and the palette unmeasured,
             // so this fit knows neither; it is redone as they land.
