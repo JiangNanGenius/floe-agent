@@ -73,67 +73,52 @@ fluidity belongs to the user.
 <!-- EXTERNAL-STATE -->
 ## External (publictest1) submission
 
-The one authorized **API** submission ([38139521326](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139521326))
-was refused by Apple at the first write — `PATCH /v1/betaAppReviewDetails/6801209053`
-— with **HTTP 403 `FORBIDDEN_ERROR`**: the API credential can read the build and
-group state but cannot write the app-level beta review detail (final review
-notes). The helper is fail-closed; nothing was attached and nothing was
-submitted. A post-failure GET-only readback
-([38139655286](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139655286))
-confirmed zero partial writes (`READY_FOR_BETA_SUBMISSION`, count 0). This
-first 403 attempt and the draft-marker validator failure
-([38139250336](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139250336),
-before any Apple call) are retained as history.
-
-The submission then completed through the existing authenticated App Store
-Connect web flow: the final review notes were saved and read back at 3,588
-characters, matching the repository file exactly (the file is 3,588 bytes
-including its single trailing newline; the API helper compares the stripped
-3,587-character text, which is why its report shows an exact-string mismatch
-while the browser readback matches). Build 270 was attached to the existing
-`publictest1` group and submitted once
-(`WEB-SUBMISSION.json`, primary screenshot 36).
-
-Independent GET-only API readback
+Build 270 was submitted once to the existing `publictest1` external group through the
+normal App Store Connect web flow and is **`WAITING_FOR_BETA_REVIEW`**. The final review
+notes were saved and read back at 3,588 characters, matching the repository file (the file
+is 3,588 bytes including its single trailing newline). Independent GET-only API readback
 ([38141425415](https://github.com/JiangNanGenius/floe-agent/actions/runs/38141425415))
 confirms: `VALID`, `expired false`, `APP_STORE_ELIGIBLE`, `IN_BETA_TESTING`,
-`publictest1` `attachedToBuild true`, submission count 1 with `pending_review`,
-external state **`WAITING_FOR_BETA_REVIEW`**, `ok true`. External approval is a
-separate gate and is **not** claimed; nothing is externally installable until
-Apple approves. No public-link, group or permission change was made.
+`publictest1` `attachedToBuild true`, submission count 1 with `pending_review`, `ok true`.
+The helper's exact-string notes comparison reports false only because it compares the
+stripped 3,587-character text while Apple stores the trailing newline; the browser readback
+matches. External approval is a separate gate and is **not** claimed; nothing is externally
+installable until Apple approves. No public-link, group or permission change was made.
+
+Earlier, the authorized **API** submission
+([38139521326](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139521326)) was
+refused at its first write — the app-level beta review detail (final review notes) — with
+**HTTP 403 `FORBIDDEN_ERROR`**. It was fail-closed: nothing was attached, nothing was
+submitted, and a GET-only readback
+([38139655286](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139655286))
+confirmed zero partial writes. A still earlier inspect
+([38139250336](https://github.com/JiangNanGenius/floe-agent/actions/runs/38139250336))
+failed on the review-notes final-text validator before any Apple call. Both failures are
+retained as history; neither was a review rejection or a build problem.
 <!-- /EXTERNAL-STATE -->
 
 ## Documentation and website sync
 
 - `docs/CURRENT_STATUS.md`, the bilingual unified-design migration pages, the docs index and
-  `docs/releases/notes/RELEASE_NOTES_1.7.29_BUILD_270.md` were updated on `main` (commits
-  `13d4dfc0`, `880004f1`, `a8383379`) to state the observed facts: internal availability,
-  the API 403 external-submission block, and the precise iPad layout qualification.
-- The private website source (commits `b136881`, `90bbf53`) adds the two migration routes
-  to the public PAGES map and re-renders all ten public documents from `a8383379`/
-  `31b4a837`. Deployed images `floe-official:1.2.29-docs270`
-  (`sha256:38507a8c286b4837dea70276cbadaf4695811393c22884372f5d35c4d8e2bc15`) and, after
-  the submission readback, `floe-official:1.2.30-docs270`
-  (`sha256:16e39029ebe07718ca9d8957aff19d56b898a3f562a97ee9926afe4723b792cc`) with
-  rollbacks `floe-official:rollback-pre-docs270-20261011T124001Z` and
-  `rollback-pre-docs270r-20261011T131000Z` plus their `backups/deploy-docs270*` directories.
-- Origin and public `/healthz` both `ok`; all eleven checked files (`status.html`,
-  `unified-design-zh/en.html`, `zh/en.html`, `index.html` and five Markdown downloads)
-  matched byte-for-byte across local, origin loopback and public HTTPS
-  (`website-verify.json`, `all_match: true`); the post-submission `status.html` and
-  `CURRENT_STATUS.md` were re-verified byte-identical after the second deploy.
+  `docs/releases/notes/RELEASE_NOTES_1.7.29_BUILD_270.md` were updated on `main` to state
+  the observed facts: internal availability, the completed `publictest1` submission with the
+  retained API-403 history, and the precise iPad layout qualification.
+- The official website was updated and verified twice (before and after the submission
+  readback): origin and public `/healthz` both `ok`, and every checked public page and
+  Markdown download matched the repository sources byte-for-byte across local, origin
+  loopback and public HTTPS (`all_match: true`). Concrete deployment/rollback identifiers
+  are kept in the private operations evidence, not in public docs.
 
 ## Cleanup
 
-- Removed the task's build cache `~/Library/Caches/CodexBuild/FloeAgent/t7c-local`
-  (11,891,828 KB / ~11.34 GiB) after checking no process held it open; the internal data
-  volume gained 10,864,300 KB (~10.36 GiB) of reported free space (`df -k` before/after
-  recorded in the T8 evidence). The one-off `Local/Scratch/t8-device-build.log` was
-  removed after exporting a copy into the T8 evidence directory.
+- Removed the task's regenerable App build cache
+  (`~/Library/Caches/CodexBuild/FloeAgent/t7c-local`, 11,891,828 KB / ~11.34 GiB) after
+  checking that no process held it open; the internal data volume gained 10,864,300 KB
+  (~10.36 GiB) of reported free space (`df -k` readings before/after).
+- Removed one-off build scratch after exporting the build log into the private T8 evidence.
 - Retained: `Local/Artifacts/build270` (raw device app + normalized transport + provenance,
   matching the build269 retention shape), all T1–T8 evidence, the draft transport release,
   the immutable tag and the previous build 269 artifacts as the rollback version.
-- No simulator was booted, installed to, shut down or deleted by this task. The booted
-  iPhone 18 Pro `ED94CEF5` was started at 20:39 by an unrelated `CallRelay.xcodeproj`
-  test run (`xcodebuild` pid 94307, its own cache path) and was deliberately left
-  untouched. The retained iPad `6366F0FB` was released and shut down by the primary.
+- This task did not boot, install to, shut down or delete any simulator or device. A
+  simulator that was running for an unrelated project during this work was left untouched,
+  and the retained Floe iPad was shut down by its owner. No other task's work was changed.
