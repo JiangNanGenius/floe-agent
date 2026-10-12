@@ -12,6 +12,12 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe converts your speech into text for the message composer." } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 将你的语音转换为消息输入框中的文字。" } }
       }
+    },
+    "NSBluetoothAlwaysUsageDescription" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe uses Bluetooth only when you ask it to connect to a nearby BLE serial device." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 仅在你请求连接附近的 BLE 串口设备时使用蓝牙。" } }
+      }
     }
   },
   "version" : "1.0"

@@ -3,8 +3,8 @@
 // Single source of truth for the provider/model configuration invariants
 // enforced at every write boundary: the editor preflight, the local SQLite
 // store and CloudKit remote-apply. `ProviderProfile.validate()` delegates
-// here. Rules are intentionally unchanged (same limits and the same
-// rejected inputs); this file only adds:
+// here. The byte bound is retained; editor normalization accepts pasted names
+// and Unicode joiners without weakening endpoint/header rules. This file adds:
 //
 //   * structured, field-level issues that preserve the rejected input,
 //   * human-readable English and Simplified Chinese messages (the App layer
@@ -190,13 +190,44 @@ public enum ProviderConfigurationValidation {
 
     // MARK: - Display name
 
-    /// Applies the exact persisted rule used since 1.3.3: whitespace/newline
-    /// trimmed, non-empty, at most 256 UTF-8 bytes, no Foundation control
-    /// characters. The set of rejected inputs is unchanged.
+    /// Canonical single-line editor metadata. Preserve meaningful Unicode
+    /// joiners and variation selectors; discard copy/paste formatting only.
+    /// Never truncate: the final UTF-8 size is validated before any write.
     public static func normalizedDisplayName(_ raw: String?) -> String? {
         guard let raw else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        var result = String.UnicodeScalarView()
+        var separating = false
+        for scalar in raw.unicodeScalars {
+            if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                separating = !result.isEmpty
+            } else if isDiscardedDisplayNameFormat(scalar) {
+                continue
+            } else {
+                if separating { result.append(" "); separating = false }
+                result.append(scalar)
+            }
+        }
+        let name = String(result)
+        return name.isEmpty ? nil : name
+    }
+
+    private static func isDiscardedDisplayNameFormat(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x00AD, 0x061C, 0x180E, 0x200B, 0x200E...0x200F,
+             0x202A...0x202E, 0x2060...0x206F, 0xFEFF:
+            return true
+        default: return false
+        }
+    }
+
+    private static func isUnsupportedDisplayNameScalar(_ scalar: Unicode.Scalar) -> Bool {
+        // Foundation includes format characters in controlCharacters. ZWNJ
+        // and ZWJ are meaningful in scripts and emoji; retain them, along
+        // with emoji tag sequences and variation selectors.
+        switch scalar.value {
+        case 0x200C...0x200D, 0xE0020...0xE007F: return false
+        default: return CharacterSet.controlCharacters.contains(scalar)
+        }
     }
 
     /// Validates an *already normalized* (trimmed, non-optional) name.
@@ -206,7 +237,7 @@ public enum ProviderConfigurationValidation {
             result.append(.init(
                 field: .displayName,
                 problem: .displayNameEmpty,
-                messageKey: "providers.validation.display_name_rules",
+                messageKey: "providers.validation.display_name_empty",
                 arguments: [String(displayNameMaxUTF8Bytes)],
                 echo: name
             ))
@@ -215,16 +246,16 @@ public enum ProviderConfigurationValidation {
                 result.append(.init(
                     field: .displayName,
                     problem: .displayNameTooLong,
-                    messageKey: "providers.validation.display_name_rules",
+                    messageKey: "providers.validation.display_name_too_long",
                     arguments: [String(displayNameMaxUTF8Bytes), String(name.utf8.count)],
                     echo: name
                 ))
             }
-            if name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
+            if name.unicodeScalars.contains(where: isUnsupportedDisplayNameScalar) {
                 result.append(.init(
                     field: .displayName,
                     problem: .displayNameControlCharacter,
-                    messageKey: "providers.validation.display_name_rules",
+                    messageKey: "providers.validation.display_name_control",
                     arguments: [String(displayNameMaxUTF8Bytes)],
                     echo: name
                 ))
@@ -354,14 +385,12 @@ public enum ProviderConfigurationValidation {
         let maxBytes = issue.arguments.first ?? String(displayNameMaxUTF8Bytes)
         switch issue.problem {
         case .displayNameEmpty:
-            // Exact legacy wording (the installed alert prefixes
-            // "Invalid configuration: "); keep byte-identical.
-            return "Provider display name must be 1...256 bytes without control characters"
+            return "Enter a provider name or leave it blank to use the default."
         case .displayNameTooLong:
             let actual = issue.arguments.dropFirst().first ?? "?"
             return "Provider display name is \(actual) UTF-8 bytes; the maximum is \(maxBytes). Shorten the name without pasting it into another field."
         case .displayNameControlCharacter:
-            return "Provider display name must be 1…\(maxBytes) bytes without control characters (remove line breaks or other hidden characters)"
+            return "Provider name contains an unsupported control character. Remove it and save again."
         case .baseURLMalformed:
             return "Enter a valid endpoint URL, for example https://api.example.com/v1"
         case .baseURLEmbedsCredentials:
@@ -392,12 +421,12 @@ public enum ProviderConfigurationValidation {
         let maxBytes = issue.arguments.first ?? String(displayNameMaxUTF8Bytes)
         switch issue.problem {
         case .displayNameEmpty:
-            return "服务商名称长度需为 1…\(maxBytes) 个 UTF-8 字节，且不能包含控制字符"
+            return "请输入服务商名称，或留空使用默认名称"
         case .displayNameTooLong:
             let actual = issue.arguments.dropFirst().first ?? "?"
             return "服务商名称为 \(actual) 个 UTF-8 字节，上限为 \(maxBytes) 字节；请缩短名称，不要把名称粘贴到其他字段"
         case .displayNameControlCharacter:
-            return "服务商名称长度需为 1…\(maxBytes) 个 UTF-8 字节，且不能包含控制字符（请删除换行或其他隐藏字符）"
+            return "服务商名称包含不支持的控制字符，请删除后重新保存"
         case .baseURLMalformed:
             return "请输入有效的接口地址，例如 https://api.example.com/v1"
         case .baseURLEmbedsCredentials:

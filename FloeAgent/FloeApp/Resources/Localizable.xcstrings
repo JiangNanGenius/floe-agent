@@ -1,6 +1,55 @@
 {
   "sourceLanguage": "en",
   "strings": {
+  "providers.validation.display_name_empty": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Enter a provider name or leave it blank to use the default."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "请输入服务商名称，或留空使用默认名称"
+        }
+      }
+    }
+  },
+  "providers.validation.display_name_too_long": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Provider name is %2$@ UTF-8 bytes; the maximum is %1$@. Shorten the name and save again."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "服务商名称为 %2$@ 个 UTF-8 字节，上限为 %1$@ 字节；请缩短后重新保存"
+        }
+      }
+    }
+  },
+  "providers.validation.display_name_control": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Provider name contains an unsupported control character. Remove it and save again."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "服务商名称包含不支持的控制字符，请删除后重新保存"
+        }
+      }
+    }
+  },
+
     "action.approve": {
       "extractionState": "manual",
       "localizations": {

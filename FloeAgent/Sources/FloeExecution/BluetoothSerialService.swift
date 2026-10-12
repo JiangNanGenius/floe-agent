@@ -25,6 +25,21 @@ public struct BluetoothSerialEndpoint: Sendable, Codable, Equatable {
         self.writeCharacteristicUUID = writeCharacteristicUUID
         self.notifyCharacteristicUUID = notifyCharacteristicUUID
     }
+
+    public func validate() throws {
+        let values = [serviceUUID, writeCharacteristicUUID] + (notifyCharacteristicUUID.map { [$0] } ?? [])
+        guard values.allSatisfy(Self.isValidGATTUUID) else {
+            throw BluetoothSerialError.connectionFailed("Use a 4-digit, 8-digit or standard 128-bit GATT UUID")
+        }
+    }
+
+    private static func isValidGATTUUID(_ value: String) -> Bool {
+        if value.utf8.count == 4 || value.utf8.count == 8 {
+            return value.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
+        }
+        return value.utf8.count == 36 && UUID(uuidString: value) != nil
+    }
+
 }
 
 @MainActor
@@ -89,7 +104,8 @@ public final class CoreBluetoothSerialService: NSObject, BluetoothSerialServicin
 
     public override init() {
         super.init()
-        _ = central
+        // Do not initialize CoreBluetooth during App startup. Authorization
+        // belongs to an explicit scan/open operation, after startup completes.
     }
 
     public func scan(duration: TimeInterval = 5) async throws -> [BluetoothSerialPeripheral] {
@@ -113,6 +129,9 @@ public final class CoreBluetoothSerialService: NSObject, BluetoothSerialServicin
         endpoint: BluetoothSerialEndpoint,
         timeout: TimeInterval = 15
     ) async throws -> UUID {
+        // CBUUID(string:) raises an Objective-C exception for malformed input.
+        // Validate before authorization and before calling CoreBluetooth.
+        try endpoint.validate()
         try await waitUntilPoweredOn()
         var peripheral = central.retrievePeripherals(withIdentifiers: [endpoint.peripheralID]).first
         if peripheral == nil {
@@ -188,6 +207,13 @@ public final class CoreBluetoothSerialService: NSObject, BluetoothSerialServicin
     }
 
     private func waitUntilPoweredOn() async throws {
+        switch CBManager.authorization {
+        case .denied, .restricted:
+            throw BluetoothSerialError.unavailable("permission was not granted")
+        case .allowedAlways, .notDetermined: break
+        @unknown default:
+            throw BluetoothSerialError.unavailable("unknown authorization state")
+        }
         switch central.state {
         case .poweredOn: return
         case .unsupported: throw BluetoothSerialError.unavailable("unsupported on this device")

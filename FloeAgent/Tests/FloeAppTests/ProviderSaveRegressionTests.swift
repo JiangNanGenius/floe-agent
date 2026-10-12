@@ -29,6 +29,7 @@ import Foundation
 import Testing
 import FloeCore
 import FloeProviders
+import FloeExecution
 @testable import FloeApp
 
 @Suite("FloeApp.ProviderSaveRegression")
@@ -118,6 +119,39 @@ struct ProviderSaveRegressionTests {
         #expect(headerMessage.contains("Authorization"))
     }
 
+    @Test("Editor names with pasted formatting and emoji persist canonically")
+    func pastedNamesPersistAndReadBack() async throws {
+        let committer = RecordingCommitter()
+        let runner = ProviderSaveRunner(secretStore: RecordingSecrets(), committer: committer)
+        let frozen = try request(draft(name: "\u{FEFF}公司\n👩‍💻\u{200B} 网关"))
+        try await runner.run(frozen)
+        #expect(committer.committed.first?.profile.displayName == "公司 👩‍💻 网关")
+        #expect(committer.verified.first?.profile.displayName == "公司 👩‍💻 网关")
+    }
+
+    @Test("Malformed BLE UUIDs fail safely before Bluetooth initialization")
+    func invalidBluetoothEndpoints() async {
+        let service = CoreBluetoothSerialService()
+        for uuid in ["", "not-a-uuid", "123", "GGGG", "123456789", "12345678-1234-1234-1234-12345678901Z"] {
+            do {
+                _ = try await service.open(runID: UUID(), endpoint: .init(
+                    peripheralID: UUID(), serviceUUID: uuid, writeCharacteristicUUID: "FFE1"
+                ), timeout: 1)
+                Issue.record("Malformed endpoint must be rejected")
+            } catch let error as BluetoothSerialError {
+                guard case .connectionFailed = error else {
+                    Issue.record("Validation must precede CoreBluetooth/permission work"); continue
+                }
+            } catch { Issue.record("Unexpected endpoint error type") }
+        }
+        for uuid in ["FFE0", "1234abcd", "0000FFE0-0000-1000-8000-00805F9B34FB"] {
+            do {
+                try BluetoothSerialEndpoint(peripheralID: UUID(), serviceUUID: uuid,
+                    writeCharacteristicUUID: "FFE1", notifyCharacteristicUUID: "FFE2").validate()
+            } catch { Issue.record("Valid GATT UUID must be accepted") }
+        }
+    }
+
     // MARK: - Fakes
 
     private final class RecordingSecrets: ProviderSecretSaving, @unchecked Sendable {
@@ -202,7 +236,7 @@ struct ProviderSaveRegressionTests {
         let committer = RecordingCommitter()
         let runner = ProviderSaveRunner(secretStore: secrets, committer: committer)
 
-        guard case .failure = draft(name: "bad\nname").makeRequest() else {
+        guard case .failure = draft(name: "bad\0name").makeRequest() else {
             Issue.record("control-character name must be rejected"); return
         }
         guard case .failure = draft(name: String(repeating: "x", count: 257)).makeRequest() else {

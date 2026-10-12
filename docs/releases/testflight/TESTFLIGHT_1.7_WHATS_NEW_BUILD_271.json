@@ -1,0 +1,4 @@
+{
+  "en-US": "1.7.30 (271) emergency compatibility update\n\n• Provider names: paste names containing line breaks or invisible formatting, save, reopen and verify the resulting name. Chinese and emoji joiners are preserved.\n• Bluetooth: startup no longer initializes Bluetooth. Scan/connect explicitly; denied permissions and invalid GATT UUIDs return errors. Please verify authorization and BLE connection on your device.\n• Existing configurations and credentials are preserved.",
+  "zh-Hans": "1.7.30（271）紧急兼容性修复\n\n• 服务商名称：粘贴含换行或隐藏格式的名称，保存后重新打开确认结果；保留中文及 emoji 连接符。\n• 蓝牙：启动时不再初始化蓝牙，实际扫描或连接时才请求；拒绝授权及无效 GATT UUID 返回错误。请在真机验证授权与 BLE 连接。\n• 保留已有配置和凭据。"
+}

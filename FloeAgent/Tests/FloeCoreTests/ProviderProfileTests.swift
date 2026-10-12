@@ -188,6 +188,28 @@ struct ProviderProfileTests {
         }
     }
 
+    @Test("Pasted names normalize before freezing without losing Unicode content")
+    func pastedNameCompatibility() throws {
+        for (raw, expected) in [
+            ("\u{FEFF}OpenAI\u{200B}\nChat\tCompletions\u{202E}", "OpenAI Chat Completions"),
+            ("  公司\r\n网关  ", "公司 网关"),
+            ("👩‍💻 公司 e\u{301} 网关", "👩‍💻 公司 e\u{301} 网关"),
+            ("a\u{200C}b", "a\u{200C}b")
+        ] {
+            let request = try requireRequest(makeDraft(name: raw))
+            #expect(request.profile.displayName == expected)
+            try request.profile.validate()
+            #expect(ProviderConfigurationValidation.normalizedDisplayName(expected) == expected)
+        }
+        #expect(try requireRequest(makeDraft(name: "\u{FEFF}\u{200B}\t")).profile.displayName == nil)
+        let oversized = String(repeating: "深", count: 85) + "xx"
+        guard case .failure(let report) = makeDraft(name: "\u{200B}" + oversized).makeRequest() else {
+            Issue.record("Normalized 257-byte name must still fail"); return
+        }
+        #expect(report.primary?.problem == .displayNameTooLong)
+        #expect(report.primary?.arguments.last == "257")
+    }
+
     @Test("Validation messages are bilingual and never alter the rejected value")
     func bilingualMessages() {
         let issue = ProviderConfigurationIssue(
@@ -375,7 +397,7 @@ struct ProviderProfileTests {
         let runner = ProviderSaveRunner(secretStore: secrets, committer: committer)
         // An invalid request can never be constructed, so the runner cannot be
         // invoked. Prove the gate plus untouched gateways together.
-        guard case .failure = makeDraft(name: "bad\nname").makeRequest() else {
+        guard case .failure = makeDraft(name: "bad\0name").makeRequest() else {
             Issue.record("expected invalid draft"); return
         }
         #expect(secrets.syncChanges.isEmpty)

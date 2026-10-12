@@ -739,6 +739,11 @@ final class ProviderEditorViewModel: ObservableObject {
 
         // 3) Routing preference, computed from the FROZEN request and the
         // canonical stored models — never re-reading mutable editor fields.
+        // Reflect the committed snapshot only if the user has not edited the field
+        // during the save; never overwrite a newer draft.
+        if ProviderConfigurationValidation.normalizedDisplayName(displayName) == request.profile.displayName {
+            displayName = request.profile.displayName ?? ""
+        }
         ProviderSavePhaseLogger.log(.completed)
         if request.serviceRoleIsConversation {
             var preferences = center.modelPreferences

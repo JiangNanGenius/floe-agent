@@ -150,7 +150,7 @@ public struct ProviderSaveDraft: Sendable, Equatable {
             synchronizable: syncEnabled
         ) : nil
         // Blank/whitespace-only names persist as nil (preset/kind fallback).
-        // Oversized/control-containing names are reported, never truncated.
+        // Copy/paste formatting is normalized; oversized/unsupported names are never truncated.
         let normalizedName = ProviderConfigurationValidation.normalizedDisplayName(displayName)
         let profile = ProviderProfile(
             id: providerID,
