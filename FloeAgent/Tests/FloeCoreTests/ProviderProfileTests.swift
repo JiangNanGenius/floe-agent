@@ -210,6 +210,18 @@ struct ProviderProfileTests {
         #expect(report.primary?.arguments.last == "257")
     }
 
+    @Test("Provider names and remote model IDs preserve dashes underscores and version dots")
+    func punctuationCompatibility() throws {
+        for id in ["qwen3.5-plus", "model_v2.1", "deepseek-v4-flash", "gpt-4.1-mini", "Qwen3.5-27B_Instruct"] {
+            let model = ModelProfile(providerID: UUID(), remoteModelID: id, displayName: id,
+                limits: .init(contextTokens: 128_000, maxOutputTokens: 4096))
+            let request = try requireRequest(makeDraft(name: id, models: [model]))
+            #expect(request.profile.displayName == id)
+            #expect(request.selectedModels.first?.remoteModelID == id)
+            #expect(request.selectedModels.first?.displayName == id)
+        }
+    }
+
     @Test("Validation messages are bilingual and never alter the rejected value")
     func bilingualMessages() {
         let issue = ProviderConfigurationIssue(
