@@ -43,6 +43,11 @@ final class ProviderHotfixUITests: XCTestCase {
     private func openProviders(_ app: XCUIApplication) {
         let settings = app.buttons["sidebar.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        if !settings.isHittable {
+            let drawer = app.buttons["phone.sidebar.open"]
+            XCTAssertTrue(drawer.waitForExistence(timeout: 5))
+            drawer.tap()
+        }
         settings.tap()
         let providers = app.descendants(matching: .any).matching(identifier: "settings.section.providers").firstMatch
         XCTAssertTrue(providers.waitForExistence(timeout: 8))
