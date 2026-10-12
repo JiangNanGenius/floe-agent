@@ -3,11 +3,11 @@
 
 文档更新时间 / Document updated: 2026-10-12. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
 
-## 1.7.30（271）紧急修复：本地验收与归档完成，签名上传中 / Local qualified and archived; signing/upload pending
+## 1.7.30（271）紧急修复：内部可用，已送 publictest1 等待审核 / Internal available; external review pending
 
 - `v1.7.30` 固定源码 `bdb79bf8751ba67676e2a57e6916fd6ca8d6d151`。名称整理保留中文、emoji、横杠、下划线及小数点；蓝牙改为实际扫描/连接时初始化，并提前拒绝无效 GATT UUID。Immutable hotfix source preserves meaningful Unicode and identifier punctuation; Bluetooth starts on demand and validates GATT UUIDs before the system API.
 - 本地 Xcode 27 完整 App 编译及 Release 归档成功；43 项针对性测试、iPad/iPhone 保存与重启验收通过。真实服务商完整配置已保存，重启后使用 Keychain 凭据获得预期模型回复；数据库读回模型 ID 与 128K/4K 参数一致。[本地验收](releases/testflight/BUILD_271_LOCAL_VERIFICATION.md)。Full local build/archive, scoped tests, both UI flows and a restarted real-model request passed.
-- 本地归档、匹配符号及哈希已保留；传输包 SHA-256 `052290d8038db81184e6e05203906952fe0c1b841c3cc7a53d75689b2beb7892`，App/dSYM UUID `DC35A10D-5E43-39A8-9C2C-B90EADF425D1`。尚未确认 Apple 上传或送审。Artifact retained; Apple upload/submission not yet confirmed.
+- 本地归档、匹配符号及哈希已保留；传输包 SHA-256 `052290d8038db81184e6e05203906952fe0c1b841c3cc7a53d75689b2beb7892`，App/dSYM UUID `DC35A10D-5E43-39A8-9C2C-B90EADF425D1`。[仅签名上传38208178806](https://github.com/JiangNanGenius/floe-agent/actions/runs/38208178806)成功；Apple `VALID`、未过期、Floe QA `IN_BETA_TESTING`。随后网页送审与[独立只读核验38209568536](https://github.com/JiangNanGenius/floe-agent/actions/runs/38209568536)确认 publictest1 已关联、仅一条 `pending_review`，外部状态 `WAITING_FOR_BETA_REVIEW`，双语测试说明与审核备注一致、issues 为空。Internal installation is available; external installation awaits review.
 - 本轮不等待完整云端 CI；仅签名上传使用现有云端能力。蓝牙真机授权、外设连接与 iOS 26 实机仍待设备验证。No full cloud matrix; physical BLE and iOS 26 device acceptance remain open.
 
 ## 1.7.29（270）内部可用；已送 publictest1，等待 Apple 审核 / Internal available; submitted to publictest1, waiting for Apple review

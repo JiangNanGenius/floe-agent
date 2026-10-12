@@ -1,5 +1,14 @@
 # Floe 1.7 TestFlight delivery
 
+## Latest hotfix: 1.7.30 (271) — internal available; publictest1 review pending
+
+2026-10-12 05:48 UTC: immutable `v1.7.30` source `bdb79bf8751ba67676e2a57e6916fd6ca8d6d151` completed local Xcode 27 full App builds, 43 focused tests, iPad/iPhone save/relaunch verification and a complete real-provider/model request after restart. The retained local archive and symbols were reused by [signing/upload 38208178806](https://github.com/JiangNanGenius/floe-agent/actions/runs/38208178806), with no cloud App rebuild or full test matrix. Apple confirmed `VALID`, unexpired and Floe QA `IN_BETA_TESTING`.
+
+网页已提交到现有 publictest1；[独立只读回读38209568536](https://github.com/JiangNanGenius/floe-agent/actions/runs/38209568536)确认 `WAITING_FOR_BETA_REVIEW`、仅一条 `pending_review`、组已关联、审核备注与双语测试信息一致、issues 为空。内部可安装；外部 271 等待 Apple 审核，不能称为已公开可安装。Build 269 保持仅内部。蓝牙真机授权和外设连接仍待设备验收。
+
+[Local qualification, archive hashes and delivery evidence](BUILD_271_LOCAL_VERIFICATION.md) · [Release notes](../notes/RELEASE_NOTES_1.7.30_BUILD_271.md).
+
+
 ## Current delivery: 1.7.0 (241) — normal GitHub Release; external review pending
 
 2026-10-02：[发布任务36960844524](https://github.com/JiangNanGenius/floe-agent/actions/runs/36960844524)完成设备 App 编译、签名前云端 IPA 留存、签名上传与[GitHub 正式 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0)，`draft=false`、`prerelease=false`，也是当前 latest。不可变 `v1.7.0` 对应源码 `1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b`。[Apple 准备36965230524](https://github.com/JiangNanGenius/floe-agent/actions/runs/36965230524)读回中英文测试说明；[核验36965265558](https://github.com/JiangNanGenius/floe-agent/actions/runs/36965265558)确认 Build241（`8b268daf-57b6-4645-b3ad-be2aa6d22c1c`）`VALID`、未过期、`APP_STORE_ELIGIBLE`，仅现有私有 Floe QA 组且 `IN_BETA_TESTING`。Feather 实际条目的下载地址、源码、大小和摘要一致；随后已保存双语隐私政策与测试资料并提交公开 TestFlight 审核；当前等待 Apple 审核，不能称为公开可安装。

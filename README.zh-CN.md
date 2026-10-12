@@ -13,7 +13,7 @@
   </p>
 </div>
 
-> **1.7.30（271）紧急修复：** 服务商名称兼容与蓝牙按需初始化已完成本地验收和设备归档，正在签名上传；详见[当前状态](docs/CURRENT_STATUS.md)及[本地证据](docs/releases/testflight/BUILD_271_LOCAL_VERIFICATION.md)。
+> **1.7.30（271）紧急修复：** 服务商名称兼容与蓝牙按需初始化已完成本地验收。Apple 已确认 VALID、内部可用，已送 publictest1 并等待外部审核；详见[当前状态](docs/CURRENT_STATUS.md)及[本地证据](docs/releases/testflight/BUILD_271_LOCAL_VERIFICATION.md)。
 
 [![Release](https://img.shields.io/github/v/release/JiangNanGenius/floe-agent?include_prereleases&label=release)](https://github.com/JiangNanGenius/floe-agent/releases)
 [![iOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-0A84FF)](FloeAgent/project.yml)
