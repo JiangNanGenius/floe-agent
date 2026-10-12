@@ -5,6 +5,7 @@
 ## 当前阅读入口 / Start here
 
 - [完整中文使用手册](USER_GUIDE.zh-CN.md) / [English user manual](USER_GUIDE.md)：20 章操作步骤、排障与数据保护。
+- [271 紧急修复本地验收 / hotfix qualification](releases/testflight/BUILD_271_LOCAL_VERIFICATION.md)：名称兼容、完整配置与真实模型、蓝牙防护。
 - [版本与验证状态](CURRENT_STATUS.md)：已记录交付、当前候选和待验收边界。
 - [官网中文版](https://www.floe-agent.com/docs/zh.html) / [Website English manual](https://www.floe-agent.com/docs/en.html)：与仓库手册同源。
 - [文档更新清单](DOCUMENTATION_REFRESH_20261009.md)：本次覆盖范围；[旧版手册](history/USER_GUIDE.zh-CN.pre-20261005.md)保留旧截图和记录。

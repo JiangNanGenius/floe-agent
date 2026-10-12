@@ -13,6 +13,8 @@
   </p>
 </div>
 
+> **1.7.30 (271) hotfix:** provider-name compatibility and on-demand Bluetooth initialization have passed local qualification and device archiving. Signing/upload is in progress; see [current status](docs/CURRENT_STATUS.md) and [local evidence](docs/releases/testflight/BUILD_271_LOCAL_VERIFICATION.md).
+
 [![Release](https://img.shields.io/github/v/release/JiangNanGenius/floe-agent?include_prereleases&label=release)](https://github.com/JiangNanGenius/floe-agent/releases)
 [![iOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-0A84FF)](FloeAgent/project.yml)
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](FloeAgent/Package.swift)

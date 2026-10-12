@@ -29,6 +29,8 @@ For a first task, configure a model, create a test conversation, attach a synthe
 
 Open Settings → Model Providers. Add the endpoint, wire protocol, actual model ID and API credential supplied by your provider. Test the configuration, enable both provider and model, choose the default Agent model, then verify the model label on New Task.
 
+Provider and model names may contain hyphens, underscores and version dots, such as `qwen3.5-plus` or `model_v2.1`. Keep the actual model ID exactly as supplied. Provider display names normalize pasted line breaks and incidental invisible formatting while preserving meaningful Unicode; oversized names report their UTF-8 size.
+
 If a model is missing, check provider/model switches and “Hide from main model list.” Hiding preserves auxiliary uses; disabling prevents new selections. Provider calls may incur third-party charges. Credentials belong in Keychain, never project files, screenshots or public issues.
 
 Floe validates the form before it writes anything. An invalid field is reported in your language, no write starts and the form keeps its content. A local save and an iCloud upload are reported separately: “Saved on this device; iCloud sync is pending” means the configuration is committed locally and the upload can be retried — it is not a failed save, and you do not need to re-enter an API key. Remote records that fail validation are skipped while the local copy is kept.
@@ -180,6 +182,8 @@ Configure devices in Settings → Hosts & Remote Sessions. SSH, VNC, SSH-tunnel 
 “As a remote execution environment” controls the assistant-service setup path; a management-only host should not be forced through it. Verify host identity, directory and authentication. Telnet/plain TCP are unencrypted; use trusted networks or an existing secure tunnel.
 
 Diagnose in order: reachability, DNS, port, authentication, then command/directory permissions. Query a long command using its returned task ID instead of launching it again. Temporary connections differ from saved hosts. BLE GATT support is not arbitrary classic Bluetooth serial support.
+
+Bluetooth initializes only when you explicitly scan or connect. A GATT UUID must be 4 or 8 hexadecimal digits, or a standard 128-bit UUID; malformed input returns an error before the system Bluetooth API.
 
 <!-- doc-anchor: section-17 -->
 ## 13. Browser, web previews and login
