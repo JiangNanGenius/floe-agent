@@ -218,6 +218,13 @@ struct RISCVCPUState {
     uint32_t medeleg;
     uint32_t mideleg;
     uint32_t mcounteren;
+
+    /* FLOE-TIME-CSR: machine-provided source for the architecturally required
+     * read-only 'time'/'timeh' CSRs (0xc01/0xc81), which shadow the CLINT
+     * mtime counter. Installed by riscv_cpu_set_time_source() after
+     * riscv_cpu_init(); reads return 0 until then. */
+    uint64_t (*get_time)(void *opaque);
+    void *get_time_opaque;
     
     target_ulong stvec;
     target_ulong sscratch;

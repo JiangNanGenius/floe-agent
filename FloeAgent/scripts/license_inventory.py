@@ -12,6 +12,10 @@ generator reads, in this order:
 * the tracked LICENSE of a repository-vendored package (``ThirdParty/**``)
   that replaced a formerly resolved remote pin, bound to the declared upstream
   commit and copied into the app bundle for the full notice text;
+* the FloeCADKit package lock (``ThirdParty/FloeCADKit/Package.resolved``) for
+  the app-graph-only native CAD dependencies — every declared row is bound to
+  the exact lock revision and to the digest of the complete upstream license
+  text tracked under ``FloeApp/Resources/Licenses``;
 * repository pins for the vendored engines and runtimes (``ThirdParty/**``
   locks, font manifest, conversion inventory, office engine lock);
 * ``project.yml`` resources to prove that every notice declared here really is
@@ -27,6 +31,12 @@ Artifacts (relative to ``FloeAgent/``)::
 ``--check`` is read-only: it recomputes every artifact in memory, compares the
 committed bytes, verifies the recorded license evidence hashes, the bundle
 mapping, the localization keys and the GPL gate, and exits non-zero on drift.
+
+``FLOE_LICENSE_CHECKOUTS`` may point a read-only qualification run at an
+explicit checkout root — an empty directory reproduces the clean-clone contract
+of ``docs/FLOE_LOCAL_QUALIFICATION.md``. Unset (the default, and in CI), the
+generator reads the real ``.build/checkouts`` and a checkout whose revision does
+not match its declared pin still fails closed.
 
 Revision binding
 ----------------
@@ -69,6 +79,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -89,8 +100,16 @@ PROJECT_YML = ROOT / "project.yml"
 FONTS_MANIFEST = HERE / "fonts/manifest.json"
 CONVERSION_INVENTORY = ROOT / "ThirdParty/DocumentConversion/inventory.json"
 LIBGIT2_COPYING = ROOT / "FloeApp/Resources/Licenses/libgit2-COPYING.txt"
-CHECKOUTS = ROOT / ".build/checkouts"
 PACKAGE_RESOLVED = ROOT / "Package.resolved"
+# Resolved checkouts are shared, mutable build cache: another worktree may have
+# resolved a different revision graph in the same .build. A read-only
+# qualification run may point at an explicit checkout root instead — including
+# an empty directory, which reproduces the clean-clone contract of
+# docs/FLOE_LOCAL_QUALIFICATION.md (reuse each recorded, revision-bound evidence
+# row without reading the shared cache). Unset in normal use and in CI, so the
+# default stays the real .build/checkouts and a mismatched revision still fails
+# closed.
+CHECKOUTS = Path(os.environ.get("FLOE_LICENSE_CHECKOUTS") or (ROOT / ".build/checkouts"))
 
 REPOSITORY = "https://github.com/JiangNanGenius/floe-agent"
 INVENTORY_REPOSITORY_PATH = "FloeAgent/LICENSES-THIRD-PARTY.md"
@@ -144,6 +163,103 @@ VENDORED_PACKAGES = (
 )
 VENDORED_LICENSE_NAME = "LICENSE"
 
+# The app graph additionally resolves the native CAD kernel's dependencies
+# through the FloeCADKit package lock (``ThirdParty/FloeCADKit/Package.resolved``
+# is the single pin authority for them). Only the packages actually linked into
+# the app are declared: the FloeCAD product depends on Euclid and ShapeScript,
+# and ShapeScript on Euclid, LRUCache and SVGPath. Each reviewed row binds an
+# identity to the exact lock revision and to the digest of the complete
+# upstream license text (including its copyright line) tracked under
+# ``FloeApp/Resources/Licenses``; a moved pin, an edited copy or a different
+# checkout license fails instead of silently reusing another revision's text.
+CAD_LOCK = ROOT / "ThirdParty/FloeCADKit/Package.resolved"
+CAD_MANIFEST = ROOT / "ThirdParty/FloeCADKit/Package.swift"
+CAD_LINKED_PACKAGES = (
+    {
+        "identity": "euclid",
+        "revision": "a123b1cbbb5b7aab49a8b57e12783f7bd39f0cac",
+        "version": "0.9.6",
+        "title": "Euclid",
+        "license": "MIT",
+        "sha256": "2323c3f51cc56987ff8e8ddac1d239276072188c615cf991921163173e5eafb3",
+        "notice": "FloeApp/Resources/Licenses/Euclid-LICENSE.txt",
+    },
+    {
+        "identity": "lrucache",
+        "revision": "f0570e943ea4445d258113ba73f50cb2b7e564ac",
+        "version": "1.3.0",
+        "title": "LRUCache",
+        "license": "MIT",
+        "sha256": "cc59ff976bc639612b7f2e92c6ecfad42e93b70099c7b950acd1b3651def10ab",
+        "notice": "FloeApp/Resources/Licenses/LRUCache-LICENSE.txt",
+    },
+    {
+        "identity": "shapescript",
+        "revision": "cda3024b2f17ac06aef23aae7ddcf39c217c6237",
+        "version": "1.11.6",
+        "title": "ShapeScript",
+        "license": "MIT",
+        "sha256": "2323c3f51cc56987ff8e8ddac1d239276072188c615cf991921163173e5eafb3",
+        "notice": "FloeApp/Resources/Licenses/ShapeScript-LICENSE.txt",
+    },
+    {
+        "identity": "svgpath",
+        "revision": "892e57b71c26937863a53a7459051ef329cfd6b4",
+        "version": "1.3.1",
+        "title": "SVGPath",
+        "license": "MIT",
+        "sha256": "cc59ff976bc639612b7f2e92c6ecfad42e93b70099c7b950acd1b3651def10ab",
+        "notice": "FloeApp/Resources/Licenses/SVGPath-LICENSE.txt",
+    },
+)
+CAD_NOTE_KEY = "settings.licenses.note.cad_packages"
+# Declared by the same CAD lock but referenced only by ShapeScript's HelpBuilder
+# executable: they are not linked into the FloeCAD product or the app and are
+# deliberately not part of the shipped inventory. They are acknowledged here so
+# an unexpected new lock identity is still caught for review.
+CAD_BUILD_ONLY_PACKAGES = {
+    "swift-cmark": (
+        "resolved only for ShapeScript's HelpBuilder executable; not linked into "
+        "FloeCAD or the app"
+    ),
+    "swift-markdown": (
+        "resolved only for ShapeScript's HelpBuilder executable; not linked into "
+        "FloeCAD or the app"
+    ),
+}
+
+# FloeCADKit itself is a locally modified extraction of OpenShape3D's geometry
+# kernel; OpenShape3D is not a resolved package (FloeCADKit is the extraction),
+# so there is no lock pin to verify it against. Its provenance record is
+# ``ThirdParty/FloeCADKit/DEPENDENCIES.json``, and the complete upstream MIT
+# notice is tracked under ``ThirdParty/FloeCADKit`` with byte-identical bytes
+# bundled for the app. The reviewed row below binds that record and both copies;
+# FloeCADKit carries Floe's own modifications (PATCHES.md), so the component is
+# declared as a derived extraction, never as an unmodified upstream library.
+OPENSHAPE_COMPONENT = {
+    "identity": "openshape3d",
+    "title": "OpenShape3D (FloeCADKit extraction)",
+    "revision": "30b3c7c1784754f237466e093ab42ff085175d40",
+    "license": "MIT",
+    "sha256": "dbdeb16766c9aae5eb59d4f184e6222727a23a44698fdea275e4fd0857339a83",
+    "upstream": "https://github.com/laanlabs/OpenShape3D.git",
+    "repositoryWeb": "https://github.com/laanlabs/OpenShape3D",
+    "notice": "FloeApp/Resources/Licenses/OpenShape3D-LICENSE.txt",
+    "packageCopy": "ThirdParty/FloeCADKit/LICENSE-OpenShape3D-MIT.txt",
+    "dependencies": "ThirdParty/FloeCADKit/DEPENDENCIES.json",
+}
+OPENSHAPE_NOTE_KEY = "settings.licenses.note.openshape3d"
+
+# The bundled, app-readable record for the statically linked native OCCT
+# libraries; its facts are re-verified against ThirdParty/FloeCADKit/
+# DEPENDENCIES.json, OCCT_RELINK.md and the retained relink inputs.
+OCCT_NATIVE_NOTICE = "FloeApp/Resources/Licenses/OCCT-Native-SOURCE-OFFER.txt"
+OCCT_NATIVE_NAME = "Open CASCADE Technology (OCCT) native static libraries (FloeCADKit)"
+OCCT_NATIVE_LICENSE = (
+    "LGPL-2.1 with OCCT exception (native static libraries linked via the "
+    "FloeCADKit OCCT binaryTarget; source, relink kit and exception recorded)"
+)
+
 LICENSE_FILE_CANDIDATES = (
     "LICENSE",
     "LICENSE.md",
@@ -189,12 +305,31 @@ EXCEPTIONS = {
         "application; the GPL-2.0 text ships in the app bundle"
     ),
     "LGPL-2.1 with OCCT exception": (
-        "OCCT's LGPL-2.1 is bundled as a WebAssembly viewer with its exception "
-        "and complete texts, not linked into the app binary"
+        "the EngineeringViewers WebAssembly bundle ships OCCT/occt-import-js "
+        "with the exception and the complete texts and runs in the bundled "
+        "WebAssembly runtime, not as linked native code; the separately linked "
+        "native OCCT static libraries have their own recorded exception entry"
+    ),
+    OCCT_NATIVE_LICENSE: (
+        "OCCT 7.8.1 is linked into the app as unmodified upstream static "
+        "libraries (Vendor/OCCT.xcframework, pinned by size and SHA-256 in "
+        "ThirdParty/FloeCADKit/DEPENDENCIES.json); the LGPL-2.1 text and the "
+        "Open CASCADE exception 1.0 ship in the app bundle, and the complete "
+        "source route and the retained rebuild/relink kit are recorded in "
+        "ThirdParty/FloeCADKit/OCCT_RELINK.md and relink/SOURCE_OFFER.md. "
+        "This is an engineering record, not a legal certification."
     ),
     "Debian package licenses; kernel GPL-2.0; bbl BSD-3-Clause; static glibc LGPL-2.1": (
         "the Linux guest is a separately distributed downloadable image; its "
         "source and license texts are recorded in the pinned image manifest"
+    ),
+    "GPL-2.0 (Linux kernel; bundled separate data blob, not linked into the app binary; corresponding source, config and license text recorded)": (
+        "the bundled Linux guest kernel Image is a separate data resource that "
+        "runs inside the TinyEMU virtual machine; it is not linked into the app "
+        "or the engine binary, its complete GPL-2.0 text ships in the app as "
+        "Licenses/LinuxBootPair-LICENSES.txt, and its unmodified upstream "
+        "corresponding source, exact build config and build recipe are recorded "
+        "in ThirdParty/TinyEMU/guest-image/BOOT-PAIR-LICENSES.md"
     ),
 }
 
@@ -253,9 +388,47 @@ NOTES = (
     ),
     (
         "occt",
-        "Open CASCADE Technology and occt-import-js are LGPL-2.1 with the "
-        "OCCT exception; their complete texts and the exception ship in the "
-        "app bundle.",
+        "Open CASCADE Technology and occt-import-js are bundled for the "
+        "engineering viewer as WebAssembly modules under LGPL-2.1 with the OCCT "
+        "exception; their complete texts and the exception ship in the app "
+        "bundle. The separately linked native OCCT 7.8.1 static libraries are "
+        "declared as their own component with a recorded relink and source "
+        "offer.",
+    ),
+    (
+        "occt_native",
+        "The native CAD engine links Open CASCADE Technology 7.8.1 as unmodified "
+        "upstream static libraries for iOS device and simulator, pinned by tag "
+        "V7_8_1 (commit bd2a789f15235755ce4d1a3b07379a2e062fdc2e), size and "
+        "SHA-256 in ThirdParty/FloeCADKit/DEPENDENCIES.json. OCCT is licensed "
+        "under LGPL-2.1 with the Open CASCADE exception 1.0; the complete texts "
+        "and the exception ship in this app (EngineeringViewers/license.occt.txt, "
+        "EngineeringViewers/OCCT_LGPL_EXCEPTION.txt). The record of where the "
+        "exact corresponding source and the retained build inputs are available "
+        "for rebuilding or relinking is bundled as "
+        "Licenses/OCCT-Native-SOURCE-OFFER.txt. Floe has not independently "
+        "rebuilt OCCT and claims no byte-identical local reproduction; these are "
+        "engineering records, not a legal certification.",
+    ),
+    (
+        "cad_packages",
+        "The Floe CAD kernel links four Swift packages that only the app "
+        "dependency graph resolves, pinned by "
+        "ThirdParty/FloeCADKit/Package.resolved: Euclid and ShapeScript (the "
+        "FloeCAD product depends on both) plus ShapeScript's Euclid, LRUCache "
+        "and SVGPath dependencies. Their complete MIT license texts, including "
+        "the copyright lines, ship in this app under Licenses/.",
+    ),
+    (
+        "openshape3d",
+        "FloeCADKit, the app's native CAD kernel package, is Floe's locally "
+        "modified extraction of OpenShape3D's geometry kernel, feature graph, "
+        "editor state machine and Metal viewport (upstream commit "
+        "30b3c7c1784754f237466e093ab42ff085175d40, MIT; the modification record "
+        "is ThirdParty/FloeCADKit/PATCHES.md, provenance in UPSTREAM.md). It is "
+        "a derived, modified copy, not an unmodified upstream library. "
+        "OpenShape3D's complete MIT license text, including the copyright line, "
+        "ships in this app as Licenses/OpenShape3D-LICENSE.txt.",
     ),
     (
         "guest_image",
@@ -263,6 +436,17 @@ NOTES = (
         "from Debian 13 riscv64 packages plus a pinned kernel, bbl and static "
         "glibc. Its source and license texts are recorded in the pinned image "
         "manifest; they are not linked into the app binary.",
+    ),
+    (
+        "linux_boot_pair",
+        "The app bundles the verified Linux 6.18.56 kernel Image and OpenSBI "
+        "1.9 fw_jump firmware as separate data resources that run inside the "
+        "TinyEMU virtual machine; they are not linked into the app or engine "
+        "binary. The kernel is unmodified upstream Linux (GPL-2.0 with the "
+        "Linux syscall note) and the firmware is OpenSBI (BSD-2-Clause). Their "
+        "complete license texts, the exact build configuration and the "
+        "corresponding-source references ship in the app as "
+        "Licenses/LinuxBootPair-LICENSES.txt.",
     ),
     (
         "office",
@@ -306,6 +490,26 @@ STATIC_COMPONENTS = (
         "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260920.1",
         "engines",
         "settings.licenses.note.guest_image",
+    ),
+    # The modern boot pair ships inside the app as separate data resources
+    # (LinuxBootPair-LICENSES.txt; pin: ThirdParty/TinyEMU/guest-image/
+    # boot-pair-v2.manifest.json). The legacy guest image above keeps its own
+    # original kernel/bbl pair as rollback and its download manifest.
+    (
+        "Linux guest boot kernel (bundled 6.18.56 Image)",
+        "6.18.56 (build #7)",
+        "GPL-2.0 (Linux kernel; bundled separate data blob, not linked into the app binary; corresponding source, config and license text recorded)",
+        "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.56.tar.xz",
+        "engines",
+        "settings.licenses.note.linux_boot_pair",
+    ),
+    (
+        "Linux guest boot firmware (bundled OpenSBI v1.9 fw_jump)",
+        "v1.9",
+        "BSD-2-Clause",
+        "https://github.com/riscv-software-src/opensbi/releases/tag/v1.9",
+        "engines",
+        "settings.licenses.note.linux_boot_pair",
     ),
     (
         "VideoEditorKit",
@@ -719,6 +923,17 @@ STATIC_COMPONENTS = (
         "engineering",
         None,
     ),
+    # The native OCCT static libraries are linked into FloeCAD (via the
+    # OCCTShim/OCCT binaryTarget); the EngineeringViewers entries below remain
+    # the separately bundled WebAssembly viewer and occt-import-js build.
+    (
+        OCCT_NATIVE_NAME,
+        "7.8.1",
+        OCCT_NATIVE_LICENSE,
+        "https://github.com/Open-Cascade-SAS/OCCT/tree/bd2a789f15235755ce4d1a3b07379a2e062fdc2e",
+        "engineering",
+        "settings.licenses.note.occt_native",
+    ),
     (
         "Open CASCADE Technology (OCCT)",
         "pinned by EngineeringViewers",
@@ -776,6 +991,18 @@ DOCUMENTS = (
         "libgit2",
         None,
         "GPL-2.0 with linking exception",
+        "full_text",
+        True,
+        "engines",
+    ),
+    (
+        "linux-boot-pair",
+        "FloeApp/Resources/Licenses/LinuxBootPair-LICENSES.txt",
+        "Licenses/LinuxBootPair-LICENSES.txt",
+        "settings.licenses.document.linux_boot_pair.title",
+        "Linux guest boot pair (kernel + firmware)",
+        None,
+        "GPL-2.0 (kernel), BSD-2-Clause (OpenSBI)",
         "full_text",
         True,
         "engines",
@@ -850,6 +1077,18 @@ DOCUMENTS = (
         None,
         "notices",
         False,
+        "engineering",
+    ),
+    (
+        "occt-native",
+        OCCT_NATIVE_NOTICE,
+        "Licenses/OCCT-Native-SOURCE-OFFER.txt",
+        "settings.licenses.document.occt_native.title",
+        "OCCT 7.8.1 native static libraries (source offer)",
+        None,
+        "LGPL-2.1 with OCCT exception",
+        "full_text",
+        True,
         "engineering",
     ),
     (
@@ -1193,7 +1432,12 @@ def resolve_pins(
         license_name = evidence_path = digest = None
         origin = None
         if not conflict:
-            if state == "ok":  # verified at the declared revision
+            # An app-only package may also exist as an Xcode SourcePackages
+            # checkout (WhisperKit). The tracked notice is the reviewable,
+            # shipped spelling that --check compares against, so a
+            # same-revision build-cache checkout must not rewrite the
+            # recorded evidence path to ".build/checkouts/...".
+            if identity not in APP_ONLY_NOTICES and state == "ok":
                 license_name, evidence_path, digest = detect_pin_license(identity, checkouts)
                 if license_name is not None:
                     origin = "checkout"
@@ -1214,7 +1458,10 @@ def resolve_pins(
                         f"recorded for revision {revision}",
                         file=sys.stderr,
                     )
-                elif state == "ok":
+                elif state == "ok" and not conflict:
+                    # The checkout is at the declared revision but carries no
+                    # classifiable license file; a mismatching checkout was
+                    # already reported above and is not "verified".
                     problems.append(
                         f"{identity}: no classifiable license file in the verified checkout "
                         f"at {revision}; reusing the recorded digest, review the checkout"
@@ -1371,6 +1618,396 @@ def resolve_vendored_packages(
     return result
 
 
+def resolve_cad_packages(
+    problems: list[str], checkouts: Path | None = None, root: Path | None = None
+) -> dict:
+    """Declare the linked FloeCAD Swift packages from the CAD package lock.
+
+    ``ThirdParty/FloeCADKit/Package.resolved`` is the single pin authority. Only
+    the packages actually linked into FloeCAD/the app are declared; every
+    reviewed row must still match the lock identity, revision and license text,
+    and the complete upstream license is a reviewed tracked copy that is
+    re-read on every run. When a checkout of the same revision is present, its
+    license file is verified against that copy — a copy that no longer matches
+    the pinned revision fails instead of being recorded silently. The evidence
+    path stays the tracked copy, so a build-cache checkout can never rewrite
+    the shipped spelling.
+    """
+    if checkouts is None:
+        checkouts = CHECKOUTS
+    if root is None:
+        root = ROOT
+    result: dict = {
+        "components": [],
+        "documents": [],
+        "evidence": [],
+        "stats": {"checkout": 0, "copy": 0},
+    }
+    lock_path = root / "ThirdParty/FloeCADKit/Package.resolved"
+    manifest_path = root / "ThirdParty/FloeCADKit/Package.swift"
+    if not lock_path.is_file():
+        problems.append(
+            "the FloeCADKit package lock is missing: ThirdParty/FloeCADKit/Package.resolved; "
+            "restore it before generating (the CAD dependencies cannot be declared)"
+        )
+        return result
+    try:
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        pins = resolved_pins(lock)
+    except (ValueError, json.JSONDecodeError) as error:
+        problems.append(
+            "the FloeCADKit package lock cannot be read: "
+            f"ThirdParty/FloeCADKit/Package.resolved: {error}"
+        )
+        return result
+    if manifest_path.is_file() and lock.get("originHash"):
+        manifest_digest = sha256_file(manifest_path)
+        if manifest_digest != lock["originHash"]:
+            problems.append(
+                "the FloeCADKit package lock is stale relative to "
+                "ThirdParty/FloeCADKit/Package.swift (originHash "
+                f"{lock['originHash'][:12]} != manifest {manifest_digest[:12]}); resolve the "
+                "package, then regenerate this inventory"
+            )
+    by_identity = {pin["identity"]: pin for pin in pins}
+    reviewed = {spec["identity"] for spec in CAD_LINKED_PACKAGES}
+    for identity in sorted(set(by_identity) - reviewed - set(CAD_BUILD_ONLY_PACKAGES)):
+        problems.append(
+            f"{identity}: the FloeCADKit package lock declares an unreviewed identity; decide "
+            "whether it is linked into the app and declare it (or record it as build-only) "
+            "before regenerating"
+        )
+    for spec in CAD_LINKED_PACKAGES:
+        identity = spec["identity"]
+        pin = by_identity.get(identity)
+        if pin is None:
+            problems.append(
+                f"{identity}: no longer declared by ThirdParty/FloeCADKit/Package.resolved; "
+                "restore the pin or update the reviewed CAD table before regenerating"
+            )
+            continue
+        revision = pin["state"].get("revision")
+        source = pin["location"]
+        if revision != spec["revision"]:
+            problems.append(
+                f"{identity}: the FloeCADKit pin moved to {revision or 'no revision'} / {source} "
+                f"(reviewed {spec['revision']}); review the new revision's license text, update "
+                "the reviewed CAD row and the tracked copy, then regenerate"
+            )
+            continue
+        notice_path = root / spec["notice"]
+        if not notice_path.is_file():
+            problems.append(
+                f"{identity}: the reviewed license copy is missing: {spec['notice']}; "
+                "restore the complete upstream license text before regenerating"
+            )
+            continue
+        license_name = classify_license(notice_path.read_text(encoding="utf-8", errors="replace"))
+        digest = sha256_file(notice_path)
+        if digest != spec["sha256"]:
+            problems.append(
+                f"{identity}: the reviewed license copy {spec['notice']} changed "
+                f"({spec['sha256'][:12]} -> {digest[:12]}); review it against the pinned "
+                "revision before regenerating"
+            )
+        if license_name != spec["license"]:
+            problems.append(
+                f"{identity}: the reviewed license copy {spec['notice']} reads as "
+                f"{license_name or 'UNKNOWN'}, expected {spec['license']}"
+            )
+        state, actual = read_checkout_revision(identity, checkouts)
+        verified_checkout = False
+        if state == "unknown":
+            problems.append(
+                f"{identity}: a CAD checkout exists but its revision could not be read "
+                f"({actual}); refusing to accept an unverified revision"
+            )
+        elif state == "ok" and actual != revision:
+            problems.append(
+                f"{identity}: checkout HEAD {actual} does not match the declared CAD pin "
+                f"revision {revision}; refusing to read its license (resolve the dependency; "
+                "the generator never resets a checkout)"
+            )
+        elif state == "ok":
+            checkout_license = detect_pin_license(identity, checkouts)
+            if checkout_license[2] is None:
+                problems.append(
+                    f"{identity}: the verified checkout at {revision} has no classifiable "
+                    "license file; review the checkout before regenerating"
+                )
+            elif checkout_license[2] != digest:
+                problems.append(
+                    f"{identity}: the reviewed copy {spec['notice']} does not match the license "
+                    f"file in the verified checkout at {revision} "
+                    f"({digest[:12]} != {checkout_license[2][:12]}); refresh the copy from the "
+                    "pinned revision"
+                )
+            else:
+                verified_checkout = True
+        result["stats"]["checkout" if verified_checkout else "copy"] += 1
+        result["components"].append(
+            {
+                "name": identity,
+                "version": spec["version"],
+                "license": license_name or spec["license"],
+                "source": source,
+                "section": "swift",
+                "noteKey": CAD_NOTE_KEY,
+                "evidence": spec["notice"],
+            }
+        )
+        result["documents"].append(
+            {
+                "id": identity,
+                "repositoryPath": spec["notice"],
+                "bundlePath": "Licenses/" + spec["notice"].rsplit("/", 1)[-1],
+                "titleKey": f"settings.licenses.document.{identity}.title",
+                "titleFallback": spec["title"],
+                "titleArgument": None,
+                "license": license_name or spec["license"],
+                "kindKey": KINDS["full_text"],
+                "required": True,
+                "section": "swift",
+                "noteKey": None,
+            }
+        )
+        result["evidence"].append(
+            {
+                "identity": identity,
+                "license": license_name or spec["license"],
+                "evidence": spec["notice"],
+                "sha256": digest,
+                "revision": revision,
+                "source": source,
+            }
+        )
+    return result
+
+
+def resolve_openshape_attribution(problems: list[str], root: Path | None = None) -> dict:
+    """Declare FloeCADKit's OpenShape3D-derived MIT code.
+
+    OpenShape3D is not a resolved Swift package — ``ThirdParty/FloeCADKit`` is
+    the modified extraction — so the reviewed row is bound to the recorded
+    source in ``ThirdParty/FloeCADKit/DEPENDENCIES.json`` instead of a lock pin.
+    The complete upstream MIT notice is tracked under ``ThirdParty/FloeCADKit``
+    and byte-identical bytes ship in the app as ``OPENSHAPE_COMPONENT['notice']``;
+    both copies are re-read on every run, and a moved recorded commit or source,
+    an edited copy, a different license text or a bundled copy that no longer
+    matches the linked package's copy fails instead of being recorded silently.
+    """
+    if root is None:
+        root = ROOT
+    spec = OPENSHAPE_COMPONENT
+    result: dict = {"components": [], "documents": [], "evidence": []}
+    dependencies_path = root / spec["dependencies"]
+    if not dependencies_path.is_file():
+        problems.append(
+            "the OpenShape3D source record is missing: "
+            f"{spec['dependencies']}; restore it before regenerating"
+        )
+        return result
+    try:
+        dependencies = json.loads(dependencies_path.read_text(encoding="utf-8"))
+        source = dependencies["sources"][spec["identity"]]
+    except (ValueError, KeyError, TypeError) as error:
+        problems.append(
+            "the OpenShape3D source record cannot be read: "
+            f"{spec['dependencies']}: {error}"
+        )
+        return result
+    for label, recorded, reviewed in (
+        ("commit", source.get("commit"), spec["revision"]),
+        ("repositoryClone", source.get("repositoryClone"), spec["upstream"]),
+        ("repositoryWeb", source.get("repositoryWeb"), spec["repositoryWeb"]),
+    ):
+        if recorded != reviewed:
+            problems.append(
+                f"openshape3d: the recorded source {label} moved to {recorded!r} "
+                f"(reviewed {reviewed!r}); review the new source and its license "
+                "text, update the reviewed row and the tracked copies, then "
+                "regenerate"
+            )
+    package_copy = root / spec["packageCopy"]
+    if not package_copy.is_file():
+        problems.append(
+            "openshape3d: the tracked upstream MIT notice is missing: "
+            f"{spec['packageCopy']}; restore the linked package's license copy "
+            "before regenerating"
+        )
+        return result
+    license_name = classify_license(package_copy.read_text(encoding="utf-8", errors="replace"))
+    package_digest = sha256_file(package_copy)
+    if package_digest != spec["sha256"]:
+        problems.append(
+            f"openshape3d: the tracked MIT notice {spec['packageCopy']} changed "
+            f"({spec['sha256'][:12]} -> {package_digest[:12]}); review it "
+            "against the recorded upstream commit before regenerating"
+        )
+    if license_name != spec["license"]:
+        problems.append(
+            f"openshape3d: the tracked MIT notice {spec['packageCopy']} reads as "
+            f"{license_name or 'UNKNOWN'}, expected {spec['license']}"
+        )
+    notice_path = root / spec["notice"]
+    if not notice_path.is_file():
+        problems.append(
+            f"openshape3d: the bundled MIT notice is missing: {spec['notice']}; "
+            f"copy the complete upstream text from {spec['packageCopy']} before "
+            "regenerating"
+        )
+        return result
+    digest = sha256_file(notice_path)
+    if digest != package_digest:
+        problems.append(
+            f"openshape3d: the bundled notice {spec['notice']} no longer matches "
+            f"the linked package's copy {spec['packageCopy']}; refresh it from the "
+            "recorded upstream commit"
+        )
+    result["components"].append(
+        {
+            "name": spec["identity"],
+            "version": spec["revision"],
+            "license": license_name or spec["license"],
+            "source": f"{spec['repositoryWeb']}/tree/{spec['revision']}",
+            "section": "swift",
+            "noteKey": OPENSHAPE_NOTE_KEY,
+            "evidence": spec["notice"],
+        }
+    )
+    result["documents"].append(
+        {
+            "id": spec["identity"],
+            "repositoryPath": spec["notice"],
+            "bundlePath": "Licenses/" + spec["notice"].rsplit("/", 1)[-1],
+            "titleKey": f"settings.licenses.document.{spec['identity']}.title",
+            "titleFallback": spec["title"],
+            "titleArgument": None,
+            "license": license_name or spec["license"],
+            "kindKey": KINDS["full_text"],
+            "required": True,
+            "section": "swift",
+            "noteKey": None,
+        }
+    )
+    result["evidence"].append(
+        {
+            "identity": spec["identity"],
+            "license": license_name or spec["license"],
+            "evidence": spec["notice"],
+            "sha256": digest,
+            "revision": spec["revision"],
+            "source": spec["upstream"],
+        }
+    )
+    return result
+
+
+def occt_native_problems(problems: list[str], root: Path | None = None) -> None:
+    """Verify the bundled native-OCCT record against the pinned artifacts.
+
+    The notice that ships in the app must carry the exact OCCT commit, tag,
+    source route, slice SHA-256 values and retained build-input hashes read from
+    ``ThirdParty/FloeCADKit/DEPENDENCIES.json``; the retained relink files and
+    the package license/exception texts must still match that pin, including the
+    byte-identical app-bundled copies. Facts are re-read here, never guessed
+    from the notice text.
+    """
+    if root is None:
+        root = ROOT
+    package = root / "ThirdParty/FloeCADKit"
+    dependencies_path = package / "DEPENDENCIES.json"
+    notice_path = root / OCCT_NATIVE_NOTICE
+    if not dependencies_path.is_file():
+        problems.append(
+            "the OCCT artifact pins are missing: ThirdParty/FloeCADKit/DEPENDENCIES.json; "
+            "restore the pinned slice/relink record before regenerating"
+        )
+        return
+    try:
+        dependencies = json.loads(dependencies_path.read_text(encoding="utf-8"))
+        relink = dependencies["relink"]
+        occt = relink["occt"]
+    except (ValueError, KeyError, TypeError) as error:
+        problems.append(
+            "the OCCT artifact pins cannot be read: "
+            f"ThirdParty/FloeCADKit/DEPENDENCIES.json: {error}"
+        )
+        return
+    facts = [
+        ("OCCT commit", occt.get("commit")),
+        ("OCCT tag", occt.get("tag")),
+        ("OCCT source archive", occt.get("sourceArchive")),
+        ("relink record", "ThirdParty/FloeCADKit/OCCT_RELINK.md"),
+        ("relink procedure", "relink/README.md"),
+        ("source offer", "relink/SOURCE_OFFER.md"),
+    ]
+    for relative in ("OCCT_RELINK.md", "relink/README.md", "relink/SOURCE_OFFER.md"):
+        if not (package / relative).is_file():
+            problems.append(f"the OCCT relink record is missing: ThirdParty/FloeCADKit/{relative}")
+    if not notice_path.is_file():
+        problems.append(
+            f"the bundled OCCT source offer is missing: {OCCT_NATIVE_NOTICE}; "
+            "restore the complete record before regenerating"
+        )
+    else:
+        notice = notice_path.read_text(encoding="utf-8")
+        for artifact in dependencies.get("artifacts", ()):
+            facts.append((f"slice {artifact.get('name')} SHA-256", artifact.get("sha256")))
+        for label, value in facts:
+            if not value:
+                problems.append(
+                    f"the OCCT pin record is incomplete ({label}): "
+                    "ThirdParty/FloeCADKit/DEPENDENCIES.json"
+                )
+            elif value not in notice:
+                problems.append(
+                    f"the bundled OCCT source offer does not record the pinned {label} "
+                    f"({value[:16]}...); update {OCCT_NATIVE_NOTICE}"
+                )
+    for key, hash_field in (("buildProgram", "sha256"), ("toolchain", "fileSha256")):
+        entry = relink.get(key) or {}
+        relative = entry.get("retainedCopy")
+        expected = entry.get(hash_field)
+        if not relative or not expected:
+            problems.append(
+                f"the OCCT pin record is incomplete (relink.{key}.{hash_field}/retainedCopy): "
+                "ThirdParty/FloeCADKit/DEPENDENCIES.json"
+            )
+            continue
+        retained = package / relative
+        if not retained.is_file():
+            problems.append(f"the retained OCCT relink input is missing: ThirdParty/FloeCADKit/{relative}")
+        elif sha256_file(retained) != expected:
+            problems.append(
+                f"the retained OCCT relink input changed: ThirdParty/FloeCADKit/{relative} "
+                f"({sha256_file(retained)[:12]} != {expected[:12]})"
+            )
+        if notice_path.is_file() and expected not in notice_path.read_text(encoding="utf-8"):
+            problems.append(
+                f"the bundled OCCT source offer does not record the pinned {key} SHA-256 "
+                f"({expected[:16]}...); update {OCCT_NATIVE_NOTICE}"
+            )
+    for relative, bundled in (
+        ("license.occt.txt", "FloeApp/Resources/EngineeringViewers/license.occt.txt"),
+        (
+            "OCCT_LGPL_EXCEPTION.txt",
+            "FloeApp/Resources/EngineeringViewers/OCCT_LGPL_EXCEPTION.txt",
+        ),
+    ):
+        package_copy = package / relative
+        bundled_copy = root / bundled
+        if not package_copy.is_file():
+            problems.append(f"the OCCT license text is missing: ThirdParty/FloeCADKit/{relative}")
+        elif not bundled_copy.is_file():
+            problems.append(f"the bundled OCCT license text is missing: {bundled}")
+        elif sha256_file(package_copy) != sha256_file(bundled_copy):
+            problems.append(
+                f"the bundled OCCT license text {bundled} no longer matches the linked "
+                f"library's copy ThirdParty/FloeCADKit/{relative}"
+            )
+
+
 PIN_NOTES = {
     "libgit2": "settings.licenses.note.libgit2",
 }
@@ -1386,6 +2023,8 @@ DOCUMENT_NOTES = {
 STATIC_EVIDENCE = {
     "TinyEMU / FloeTinyEMU engine": "ThirdParty/TinyEMU/LICENSE-INVENTORY.md (per-file inventory of the pinned tarball)",
     "TinyEMU slirp (compiled subset)": "ThirdParty/TinyEMU/LICENSE-INVENTORY.md and the restored slirp COPYRIGHT text",
+    "Linux guest boot kernel (bundled 6.18.56 Image)": "ThirdParty/TinyEMU/guest-image/BOOT-PAIR-LICENSES.md and config_linux_riscv64_6.18.56; full GPL-2.0 text in FloeApp/Resources/Licenses/LinuxBootPair-LICENSES.txt",
+    "Linux guest boot firmware (bundled OpenSBI v1.9 fw_jump)": "ThirdParty/TinyEMU/guest-image/BOOT-PAIR-LICENSES.md; OpenSBI COPYING.BSD text in FloeApp/Resources/Licenses/LinuxBootPair-LICENSES.txt",
     "VideoEditorKit": "ThirdParty/VideoEditorKit/FLOE_PROVENANCE.md pinned commit",
     "FloeShellEngine (BSD shell core)": "ThirdParty/FloeShellEngine sources and ThirdParty/DashIOS/COPYING",
     "ios_system command bus and BSD commands": "ThirdParty/FloeShellEngine manifest",
@@ -1414,6 +2053,10 @@ STATIC_EVIDENCE = {
     "@simonwep/pickr": "FloeApp/Resources/EngineeringViewers/THIRD_PARTY_NOTICES.txt",
     "dxf-viewer": "FloeApp/Resources/EngineeringViewers/THIRD_PARTY_NOTICES.txt",
     "gerber-to-svg": "FloeApp/Resources/EngineeringViewers/gerber-to-svg.min.js.LICENSE.txt",
+    OCCT_NATIVE_NAME: (
+        "ThirdParty/FloeCADKit/DEPENDENCIES.json (pinned slices), OCCT_RELINK.md and "
+        "relink/SOURCE_OFFER.md; bundled record " + OCCT_NATIVE_NOTICE
+    ),
     "Open CASCADE Technology (OCCT)": "FloeApp/Resources/EngineeringViewers/license.occt.txt",
     "occt-import-js": "FloeApp/Resources/EngineeringViewers/license.occt-import-js.txt",
     "ZLImageEditor": "FloeApp/Resources/ZLImageEditor-LICENSE.txt",
@@ -1426,6 +2069,7 @@ def build_components(
     font_families: list[dict],
     npm_packages: list[dict],
     vendored_components: list[dict] | None = None,
+    cad_components: list[dict] | None = None,
 ):
     components = []
     for row in pin_rows:
@@ -1444,6 +2088,9 @@ def build_components(
     # A vendored package took over a formerly resolved pin; it keeps the Swift
     # package section so the dependency stays in its original inventory place.
     components.extend(vendored_components or [])
+    # The linked FloeCAD packages come from the FloeCADKit lock instead of the
+    # host lock; they stay Swift package rows under the same section.
+    components.extend(cad_components or [])
     for name, version, license_name, source, section, note_key in STATIC_COMPONENTS:
         components.append(
             {
@@ -1773,8 +2420,20 @@ def license_gate(components) -> tuple[list[str], list[str]]:
     return violations, notices
 
 
-def validate(pins, manifest, evidence_document, libgit2_bytes, problems, warnings, vendored=None):
+def validate(
+    pins,
+    manifest,
+    evidence_document,
+    libgit2_bytes,
+    problems,
+    warnings,
+    vendored=None,
+    cad=None,
+    openshape=None,
+):
     vendored = vendored or {}
+    cad = cad or {}
+    openshape = openshape or {}
     rules = bundle_rules(PROJECT_YML.read_text())
     for document in manifest["documents"]:
         expected = bundle_path_for(rules, "FloeAgent/" + document["repositoryPath"])
@@ -1831,6 +2490,37 @@ def validate(pins, manifest, evidence_document, libgit2_bytes, problems, warning
                     f"{row['evidence']} at {row['revision']} "
                     f"({field}: {recorded_row.get(field)!r} != {row[field]!r})"
                 )
+    # The linked FloeCAD packages are declared from the FloeCADKit lock instead
+    # of a host pin; their evidence rows bind the tracked reviewed license copy
+    # to the exact lock revision and source the same way.
+    for row in cad.get("evidence", ()):
+        identity = row["identity"]
+        recorded_row = evidence_by_identity.get(identity)
+        if recorded_row is None:
+            problems.append(f"missing license evidence row: {identity} (FloeCADKit package)")
+            continue
+        for field in ("license", "evidence", "sha256", "revision", "source"):
+            if recorded_row.get(field) != row[field]:
+                problems.append(
+                    f"{identity}: FloeCADKit evidence is not bound to "
+                    f"{row['evidence']} at {row['revision']} "
+                    f"({field}: {recorded_row.get(field)!r} != {row[field]!r})"
+                )
+    # FloeCADKit's OpenShape3D-derived code is bound to its recorded source
+    # record and the tracked/bundled MIT copies instead of a lock pin.
+    for row in openshape.get("evidence", ()):
+        identity = row["identity"]
+        recorded_row = evidence_by_identity.get(identity)
+        if recorded_row is None:
+            problems.append(f"missing license evidence row: {identity} (OpenShape3D attribution)")
+            continue
+        for field in ("license", "evidence", "sha256", "revision", "source"):
+            if recorded_row.get(field) != row[field]:
+                problems.append(
+                    f"{identity}: OpenShape3D evidence is not bound to "
+                    f"{row['evidence']} at {row['revision']} "
+                    f"({field}: {recorded_row.get(field)!r} != {row[field]!r})"
+                )
     libgit2_record = next(
         (row for row in evidence_document["licenses"] if row["identity"] == "libgit2"), None
     )
@@ -1854,10 +2544,24 @@ def build():
     warnings: list[str] = []
     pin_rows, evidence_rows, stats = resolve_pins(pins, recorded, problems)
     vendored = resolve_vendored_packages(pins, problems)
+    cad = resolve_cad_packages(problems)
+    openshape = resolve_openshape_attribution(problems)
+    occt_native_problems(problems)
     font_families = json.loads(FONTS_MANIFEST.read_text())["families"]
     npm_packages = json.loads(CONVERSION_INVENTORY.read_text())["packages"]
-    components = build_components(pin_rows, font_families, npm_packages, vendored["components"])
-    documents = build_documents(font_families) + vendored["documents"]
+    components = build_components(
+        pin_rows,
+        font_families,
+        npm_packages,
+        vendored["components"],
+        cad["components"] + openshape["components"],
+    )
+    documents = (
+        build_documents(font_families)
+        + vendored["documents"]
+        + cad["documents"]
+        + openshape["documents"]
+    )
     manifest = build_manifest(components, documents, vendored["notes"])
     evidence_document = {
         "schemaVersion": 2,
@@ -1869,13 +2573,26 @@ def build():
             "checkout may only reuse a row whose revision and source still match, "
             "and --check never checks out or resets a dependency."
         ),
-        "licenses": sorted(evidence_rows + vendored["evidence"], key=lambda row: row["identity"]),
+        "licenses": sorted(
+            evidence_rows + vendored["evidence"] + cad["evidence"] + openshape["evidence"],
+            key=lambda row: row["identity"],
+        ),
     }
     libgit2_bytes = None
     source = ROOT / LIBGIT2_EVIDENCE
     if source.is_file():
         libgit2_bytes = source.read_bytes()
-    validate(pins, manifest, evidence_document, libgit2_bytes, problems, warnings, vendored)
+    validate(
+        pins,
+        manifest,
+        evidence_document,
+        libgit2_bytes,
+        problems,
+        warnings,
+        vendored,
+        cad,
+        openshape,
+    )
     return {
         "manifest": manifest,
         "evidence": evidence_document,
@@ -1885,6 +2602,8 @@ def build():
         "evidence_text": render_json(evidence_document),
         "libgit2_bytes": libgit2_bytes,
         "vendored_copies": vendored["copies"],
+        "cad_stats": cad["stats"],
+        "openshape_components": len(openshape["components"]),
         "problems": problems,
         "warnings": warnings,
     }
@@ -2005,6 +2724,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     if vendored_copies:
         binding += f", {len(vendored_copies)} vendored package notices"
+    cad_stats = result.get("cad_stats")
+    if cad_stats:
+        binding += (
+            f", {cad_stats['checkout']} verified FloeCAD checkouts, "
+            f"{cad_stats['copy']} reviewed FloeCAD copies"
+        )
+    if result.get("openshape_components"):
+        binding += f", {result['openshape_components']} bundled OpenShape3D notice"
     if args.check:
         print(
             "license_inventory --check OK: "

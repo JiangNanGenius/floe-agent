@@ -7,6 +7,10 @@ import FloeModels
 
 public protocol RunningInputStore: Sendable {
     func enqueue(_ input: PendingUserInput) async throws -> PendingUserInput
+    /// Idempotent by-id write used by temporary-chat promotion: inserts the
+    /// row with its exact identity/position/status, or updates every mutable
+    /// column when it already exists. Never mints a new id or position.
+    func upsert(_ input: PendingUserInput) async throws
     func pending(conversationID: UUID) async throws -> [PendingUserInput]
     func input(id: UUID) async throws -> PendingUserInput?
     func updateContent(id: UUID, content: String) async throws
@@ -47,6 +51,12 @@ public actor SQLiteRunningInputStore: RunningInputStore {
             value.updatedAt = Date()
             try Self.insert(value, db: db)
             return value
+        }
+    }
+
+    public func upsert(_ input: PendingUserInput) async throws {
+        try await database.writer { db in
+            try Self.insert(input, db: db, orReplace: true)
         }
     }
 
@@ -190,15 +200,40 @@ public actor SQLiteRunningInputStore: RunningInputStore {
         }
     }
 
-    private static func insert(_ value: PendingUserInput, db: Database) throws {
+    private static func insert(_ value: PendingUserInput, db: Database, orReplace: Bool = false) throws {
         let attachments = try String(decoding: JSONEncoder().encode(value.attachments), as: UTF8.self)
-        try db.execute(sql: """
-            INSERT INTO pending_user_inputs (
-                id, conversation_id, target_run_id, content, mode, status, position,
-                attachments_json, selected_model_id, workspace_id, execution_mode,
-                consumed_run_id, created_at, updated_at, consumed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, arguments: [
+        let columns = """
+            id, conversation_id, target_run_id, content, mode, status, position,
+            attachments_json, selected_model_id, workspace_id, execution_mode,
+            consumed_run_id, created_at, updated_at, consumed_at
+            """
+        let sql: String = if orReplace {
+            """
+            INSERT INTO pending_user_inputs (\(columns))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                conversation_id = excluded.conversation_id,
+                target_run_id = excluded.target_run_id,
+                content = excluded.content,
+                mode = excluded.mode,
+                status = excluded.status,
+                position = excluded.position,
+                attachments_json = excluded.attachments_json,
+                selected_model_id = excluded.selected_model_id,
+                workspace_id = excluded.workspace_id,
+                execution_mode = excluded.execution_mode,
+                consumed_run_id = excluded.consumed_run_id,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                consumed_at = excluded.consumed_at
+            """
+        } else {
+            """
+            INSERT INTO pending_user_inputs (\(columns))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+        }
+        try db.execute(sql: sql, arguments: [
                 value.id.uuidString, value.conversationID.uuidString, value.targetRunID?.uuidString,
                 value.content, value.mode.rawValue, value.status.rawValue, value.position,
                 attachments, value.selectedModelID?.uuidString, value.workspaceID?.uuidString,

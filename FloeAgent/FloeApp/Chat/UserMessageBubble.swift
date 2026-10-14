@@ -88,7 +88,9 @@ struct UserMessageBubble: View {
                 }
             }
         }
-        .accessibilityElement(children: .combine)
+        // Keep the role as a group label without replacing the actual message
+        // and safe credential-card labels in the accessibility tree.
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(String(localized: "thread.role.user"))
     }
 

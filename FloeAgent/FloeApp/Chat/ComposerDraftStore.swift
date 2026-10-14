@@ -93,6 +93,12 @@ final class ComposerDraftStore: ObservableObject {
     @Published private(set) var lastWriteState: WriteState = .idle
 
     private var entries: [UUID: Entry]
+    /// Temporary-chat drafts live in a RAM-only bucket: `submitSnapshot`
+    /// serializes `entries` alone, so lifecycle flushes can never persist an
+    /// ephemeral draft, regardless of when the exclusion flag changes.
+    private var ephemeralEntries: [UUID: Entry] = [:]
+    /// Conversation ids whose drafts must stay in `ephemeralEntries`.
+    private var temporaryExcludedIDs: Set<UUID> = []
     /// A load failure stays visible until one healthy snapshot is written, so
     /// the notice cannot disappear on the first flush before anything new was
     /// actually persisted.
@@ -180,15 +186,63 @@ final class ComposerDraftStore: ObservableObject {
     // MARK: - Reads
 
     func entry(for conversationID: UUID) -> Entry? {
-        entries[conversationID]
+        bucket(for: conversationID)[conversationID]
     }
 
     func text(for conversationID: UUID) -> String {
-        entries[conversationID]?.text ?? ""
+        bucket(for: conversationID)[conversationID]?.text ?? ""
     }
 
     func attachments(for conversationID: UUID) -> [AttachmentRef] {
-        entries[conversationID]?.attachments ?? []
+        bucket(for: conversationID)[conversationID]?.attachments ?? []
+    }
+
+    private func bucket(for conversationID: UUID) -> [UUID: Entry] {
+        temporaryExcludedIDs.contains(conversationID) ? ephemeralEntries : entries
+    }
+
+    private func setEntry(_ entry: Entry?, for conversationID: UUID) {
+        if temporaryExcludedIDs.contains(conversationID) {
+            ephemeralEntries[conversationID] = entry
+        } else {
+            entries[conversationID] = entry
+        }
+    }
+
+    /// Installed by ConversationCenter when a conversation enters or leaves
+    /// temporary mode. Excluded ids never touch the serialized bucket; the
+    /// RAM copy is dropped on unexclude so no ephemeral text can flush late.
+    func setTemporaryDraftExcluded(_ conversationID: UUID, _ excluded: Bool) {
+        if excluded {
+            temporaryExcludedIDs.insert(conversationID)
+        } else {
+            temporaryExcludedIDs.remove(conversationID)
+            ephemeralEntries.removeValue(forKey: conversationID)
+        }
+    }
+
+    /// Moves the RAM-only ephemeral draft into the durable bucket, keeping
+    /// the text and staged attachments and preserving revision monotonicity
+    /// (the entry continues above both the old ephemeral revision and the
+    /// durable floor, so an async A→B→A merge can never resurrect a stale
+    /// generation). Called by ConversationCenter ONLY on a successful
+    /// Keep-as-saved promotion; End keeps dropping.
+    @discardableResult
+    func moveEphemeralEntryToDurable(for conversationID: UUID) -> Entry? {
+        guard temporaryExcludedIDs.contains(conversationID),
+              let ephemeral = ephemeralEntries[conversationID] else { return nil }
+        var migrated = ephemeral
+        migrated.revision = max(
+            ephemeral.revision,
+            entries[conversationID]?.revision ?? 0,
+            revisionFloor[conversationID] ?? 0
+        ) + 1
+        migrated.updatedAt = Date()
+        temporaryExcludedIDs.remove(conversationID)
+        ephemeralEntries.removeValue(forKey: conversationID)
+        entries[conversationID] = migrated
+        markDirty()
+        return migrated
     }
 
     /// Captures the identity of a conversation's text right now; pass the
@@ -215,7 +269,10 @@ final class ComposerDraftStore: ObservableObject {
         selection: NSRange? = nil,
         expectedRevision: Int? = nil
     ) -> Int? {
-        let current = entries[conversationID]
+        // Read the ROUTED bucket: for temporary ids the ephemeral entry holds
+        // the current revision, so the guard below actually matches and the
+        // fallback unguarded save stops running on every temp keystroke.
+        let current = bucket(for: conversationID)[conversationID]
         if let expectedRevision, current?.revision != expectedRevision {
             return nil
         }
@@ -239,7 +296,7 @@ final class ComposerDraftStore: ObservableObject {
             entry.selectionLocation = selection.location
             entry.selectionLength = selection.length
         }
-        entries[conversationID] = entry
+        setEntry(entry, for: conversationID)
         markDirty()
         return next
     }
@@ -247,11 +304,11 @@ final class ComposerDraftStore: ObservableObject {
     /// Selection-only updates never bump the revision: caret moves are not
     /// draft edits and must not invalidate in-flight merge revisions.
     func updateSelection(_ selection: NSRange?, conversationID: UUID) {
-        guard var entry = entries[conversationID] else { return }
+        guard var entry = bucket(for: conversationID)[conversationID] else { return }
         entry.selectionLocation = selection?.location
         entry.selectionLength = selection?.length
         entry.updatedAt = Date()
-        entries[conversationID] = entry
+        setEntry(entry, for: conversationID)
         markDirty()
     }
 
@@ -261,7 +318,13 @@ final class ComposerDraftStore: ObservableObject {
     /// text generation advances too: text saved after a clear is a new draft,
     /// never the one a pre-clear send token captured.
     func clear(conversationID: UUID) {
-        guard let removed = entries.removeValue(forKey: conversationID) else { return }
+        // Always drop both buckets: exclusion state must never resurrect a
+        // stale durable draft for a converted temporary id.
+        var removed = entries.removeValue(forKey: conversationID)
+        if let ephemeral = ephemeralEntries.removeValue(forKey: conversationID) {
+            removed = removed ?? ephemeral
+        }
+        guard let removed else { return }
         revisionFloor[conversationID] = max(
             revisionFloor[conversationID] ?? 0, removed.revision
         )
@@ -287,7 +350,7 @@ final class ComposerDraftStore: ObservableObject {
         sentAttachments: [AttachmentRef] = [],
         sendToken: SendCommitToken? = nil
     ) -> Bool {
-        guard let current = entries[conversationID] else { return false }
+        guard let current = bucket(for: conversationID)[conversationID] else { return false }
         let sentIDs = Set(sentAttachments.map(\.id))
         let remaining = current.attachments.filter { !sentIDs.contains($0.id) }
         let identityMatches = sendToken.map {
@@ -305,7 +368,7 @@ final class ComposerDraftStore: ObservableObject {
         entry.attachments = remaining
         entry.revision = max(current.revision, revisionFloor[conversationID] ?? 0) + 1
         entry.updatedAt = Date()
-        entries[conversationID] = entry
+        setEntry(entry, for: conversationID)
         markDirty()
         return true
     }

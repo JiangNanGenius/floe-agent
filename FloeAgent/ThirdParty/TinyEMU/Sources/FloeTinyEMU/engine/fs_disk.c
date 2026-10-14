@@ -389,7 +389,17 @@ static int fs_open(FSDevice *fs, FSQID *qid, FSFile *f, uint32_t flags,
         return -P9_ENOTSUP;
     stat_to_qid(qid, &st);
 
-    if (flags & P9_O_DIRECTORY) {
+    /* FLOE-DIR-DETECT: Linux >= 6.18 net/9p masks Tlopen mode with
+     * P9L_MODE_MASK (0x1fff) before sending, so the O_DIRECTORY bit
+     * (0x10000) never arrives; directories reached the file branch, were
+     * opened is_dir=FALSE, and fs_readdir then answered -P9_EPROTO
+     * (guest-visible "ls: reading directory ... Protocol error") while
+     * reads/writes/exec of known files worked. Decide the open kind from
+     * the fid's real file type instead; the explicit O_DIRECTORY flag is
+     * still honored as the "must be a directory" refusal. */
+    if ((flags & P9_O_DIRECTORY) && !S_ISDIR(st.st_mode))
+        return -P9_ENOTDIR;
+    if (S_ISDIR(st.st_mode)) {
         DIR *dirp;
         int dfd = fs_fid_dirfd(f);
         if (dfd < 0)

@@ -157,6 +157,78 @@ struct BackgroundRunCoordinatorTests {
         ))
     }
 
+    @Test("A temporary run never touches the shared work registry or the notification outbox across its whole lifecycle")
+    func temporaryRunLifecycleWritesNoHistory() async throws {
+        let defaultsKey = TaskNotificationOutboxStore.defaultsKey
+        let priorOutboxData = UserDefaults.standard.data(forKey: defaultsKey)
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+        defer {
+            if let priorOutboxData {
+                UserDefaults.standard.set(priorOutboxData, forKey: defaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: defaultsKey)
+            }
+        }
+        let environment = AppEnvironment.preview()
+        let coordinator = BackgroundRunCoordinator(environment: environment)
+        let runID = UUID()
+        let conversationID = UUID()
+        let sentinel = "TEMP-SENTINEL-\(UUID().uuidString.prefix(8))"
+
+        coordinator.didStart(
+            conversationID: conversationID,
+            runID: runID,
+            title: sentinel,
+            origin: .explicitUserAction,
+            publishesContent: false
+        )
+        coordinator.didUpdateProgress(runID: runID, stage: "stage-\(sentinel)", progress: 42)
+        coordinator.didSuspend(runID: runID, message: "suspend-\(sentinel)")
+        coordinator.didRequireApproval(conversationID: conversationID, runID: runID, toolName: "web.fetch")
+        coordinator.didFinish(runID: runID, succeeded: true, message: "done-\(sentinel)")
+        // The finish path removes the work record asynchronously; give it a
+        // beat before asserting emptiness.
+        try await Task.sleep(for: .milliseconds(150))
+
+        let registrySnapshot = await BackgroundWorkRegistry.shared.snapshot(id: runID)
+        #expect(registrySnapshot == nil)
+        let persisted = TaskNotificationOutboxStore.load()
+        #expect(persisted.pending.allSatisfy { event in
+            !event.title.contains(sentinel) && !event.body.contains(sentinel)
+        })
+        // The suspension text never reaches the diagnostics buffer either:
+        // temporary content stays out of every durable surface.
+        let logged = FloeLogger.buffer.recentEntries.filter { $0.message.contains(sentinel) }
+        #expect(logged.isEmpty)
+    }
+
+    @Test("An ordinary run publishes its work record through the same lifecycle")
+    func ordinaryRunLifecyclePublishesHistory() async throws {
+        let environment = AppEnvironment.preview()
+        let coordinator = BackgroundRunCoordinator(environment: environment)
+        let runID = UUID()
+        let conversationID = UUID()
+
+        coordinator.didStart(
+            conversationID: conversationID,
+            runID: runID,
+            title: "Ordinary task",
+            origin: .explicitUserAction,
+            publishesContent: true
+        )
+        coordinator.didUpdateProgress(runID: runID, stage: "working", progress: 30)
+        try await Task.sleep(for: .milliseconds(150))
+
+        let registrySnapshot = await BackgroundWorkRegistry.shared.snapshot(id: runID)
+        #expect(registrySnapshot != nil)
+        #expect(registrySnapshot?.state == .running)
+        coordinator.didFinish(runID: runID, succeeded: true, message: nil)
+        try await Task.sleep(for: .milliseconds(150))
+        // Content-publishing runs keep an honest terminal record.
+        let finishedSnapshot = await BackgroundWorkRegistry.shared.snapshot(id: runID)
+        #expect(finishedSnapshot?.state == .completed)
+    }
+
     @Test("The completion dwell caption reports the real outcome and duration")
     func completionDwellCaption() {
         let start = Date(timeIntervalSince1970: 1_700_000_000)

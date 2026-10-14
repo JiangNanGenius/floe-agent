@@ -402,6 +402,12 @@ public actor RuntimeV2ImageStore {
             .appendingPathComponent("expanded-\(imageID)-\(UUID().uuidString)", isDirectory: true)
         let hadPrevious = fileManager.fileExists(atPath: expanded.path)
         if hadPrevious {
+            // Required: a throw here aborts the rebuild before the old view is
+            // moved aside or replaced, and the staging tree is removed by the
+            // defer above.
+            try carryBootAssetSelection(from: expanded, into: staging)
+        }
+        if hadPrevious {
             try? fileManager.createDirectory(at: layout.quarantineDirectory, withIntermediateDirectories: true)
             try fileManager.moveItem(at: expanded, to: previous)
         }
@@ -464,6 +470,9 @@ public actor RuntimeV2ImageStore {
         try await materializeExpanded(manifest: manifest, into: staging)
         try fileManager.createDirectory(at: layout.expandedImagesDirectory, withIntermediateDirectories: true)
         if fileManager.fileExists(atPath: expanded.path) {
+            // Required: a throw here aborts before `removeItem`, so the old
+            // expanded view (and the selection inside it) is retained.
+            try carryBootAssetSelection(from: expanded, into: staging)
             try fileManager.removeItem(at: expanded)
         }
         guard rename(staging.path, expanded.path) == 0 else {
@@ -547,6 +556,69 @@ public actor RuntimeV2ImageStore {
             if size != ref.bytes { return false }
         }
         return true
+    }
+
+    /// Carries the boot-asset selection files the updater keeps in the image
+    /// directory — the sidecar plus the immutable storage directory it names —
+    /// into a freshly materialized expanded tree. The expanded view is
+    /// rebuildable bytes; the selection is user state, not a cache: dropping
+    /// it would silently revert the boot to the manifest default pair (and an
+    /// explicit rollback would read as "no record"). Bytes are copied
+    /// verbatim and the boot-path reader re-verifies every hash, so a damaged
+    /// carry fails closed to the verified manifest pair rather than booting
+    /// unverified bytes.
+    ///
+    /// Preservation is a required part of the rebuild transaction, not best
+    /// effort: whenever the source carries a sidecar, the sidecar must reach
+    /// the new tree, and a failure throws BEFORE the caller swaps (and, for
+    /// `ensureExpanded`, removes) the old expanded tree, so the previous
+    /// selection and the old bytes stay exactly as they were. Only a source
+    /// with no sidecar at all is a no-op:
+    ///
+    ///  - a record whose payload directory is gone (an explicit rollback, or
+    ///    an adopted record whose bytes were lost) still carries the sidecar —
+    ///    the revised boot then fails closed to the manifest pair, while the
+    ///    rollback marker keeps blocking automatic adoption;
+    ///  - a malformed sidecar (unreadable/undecodable) and a failed payload or
+    ///    sidecar copy throw instead of quietly reverting the user's choice;
+    ///  - an escaping `storageDirectory` copies the record without the
+    ///    payload: the path is never followed out of the tree, and the
+    ///    boot-path reader's hash re-verification fails closed on the missing
+    ///    bytes.
+    private func carryBootAssetSelection(from source: URL, into destination: URL) throws {
+        guard let sidecar = try LinuxGuestBootAssetUpdateService.loadSidecar(imageDirectory: source) else {
+            return
+        }
+        let relative = sidecar.storageDirectory
+        if !relative.isEmpty, !relative.hasPrefix("/"),
+           !relative.split(separator: "/").contains("..") {
+            let storage = source.appendingPathComponent(relative, isDirectory: true)
+            if fileManager.fileExists(atPath: storage.path) {
+                let storageDestination = destination.appendingPathComponent(relative, isDirectory: true)
+                do {
+                    // `copyItem` does not create missing parents, and a freshly
+                    // materialized view has no `boot-assets.d` yet: create the
+                    // payload's parent first so the copy is a real copy.
+                    try fileManager.createDirectory(
+                        at: storageDestination.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    try fileManager.copyItem(at: storage, to: storageDestination)
+                } catch {
+                    throw LinuxGuestBootAssetUpdateError.ioFailure(path: relative)
+                }
+            }
+        }
+        // The sidecar is the single commit point of the selection: it lands
+        // last, and its absence aborts the rebuild with the old tree intact.
+        do {
+            try fileManager.copyItem(
+                at: LinuxGuestBootAssetUpdateService.sidecarURL(imageDirectory: source),
+                to: destination.appendingPathComponent("boot-assets.json")
+            )
+        } catch {
+            throw LinuxGuestBootAssetUpdateError.ioFailure(path: "boot-assets.json")
+        }
     }
 
     // MARK: legacy migration

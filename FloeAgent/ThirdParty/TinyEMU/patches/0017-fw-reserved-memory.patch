@@ -1,0 +1,36 @@
+--- a/riscv_machine.c
++++ b/riscv_machine.c
+@@ -750,6 +750,33 @@
+     
+     fdt_end_node(s); /* memory */
+ 
++    /* FLOE-FW-RESERVE: the SBI firmware (OpenSBI FW_JUMP) is loaded at
++     * RAM_BASE and the kernel is copied at kernel_start (RAM_BASE +
++     * align_up(fw_size, 2 MB)); the whole [RAM_BASE, kernel_start) window
++     * is the firmware's RX/RW image, heap and per-hart scratch/stack.
++     * Without a reservation the /memory node hands those pages to the
++     * buddy allocator, guest writes (anon zero-fill, buffers) corrupt the
++     * M-mode trap handler, and the next trap storms on an illegal
++     * instruction fetch (observed pc=0x800003c8 mcause=2 mtval=0/garbage
++     * at word@0x800003c8). Reserve exactly that window, 2 MiB aligned and
++     * derived from the boot contract, so the kernel never allocates it.
++     * Matches the FDT contract other SBI platforms (e.g. QEMU virt) use.
++     */
++    if (kernel_start > RAM_BASE_ADDR) {
++        fdt_begin_node(s, "reserved-memory");
++        fdt_prop_u32(s, "#address-cells", 2);
++        fdt_prop_u32(s, "#size-cells", 2);
++        fdt_prop(s, "ranges", NULL, 0);
++        fdt_begin_node_num(s, "opensbi", RAM_BASE_ADDR);
++        tab[0] = (uint64_t)RAM_BASE_ADDR >> 32;
++        tab[1] = RAM_BASE_ADDR;
++        tab[2] = (kernel_start - RAM_BASE_ADDR) >> 32;
++        tab[3] = kernel_start - RAM_BASE_ADDR;
++        fdt_prop_tab_u32(s, "reg", tab, 4);
++        fdt_end_node(s); /* opensbi */
++        fdt_end_node(s); /* reserved-memory */
++    }
++
+     fdt_begin_node(s, "htif");
+     fdt_prop_str(s, "compatible", "ucb,htif0");
+     /* FLOE-HTIF-REG: expose the tohost/fromhost MMIO window in the FDT so

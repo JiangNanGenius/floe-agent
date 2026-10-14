@@ -1,0 +1,23 @@
+--- a/riscv_machine.c
++++ b/riscv_machine.c
+@@ -161,7 +161,19 @@
+         s->htif_tohost = 0;
+         s->htif_fromhost = ((uint64_t)device << 56) | ((uint64_t)cmd << 48);
+     } else if (device == 1 && cmd == 0) {
+-        /* request keyboard interrupt */
++        /* FLOE-HTIF-GETC: HTIF_CONSOLE_CMD_GETC. Upstream left this as a
++         * stub that only cleared tohost, so no SBI firmware (OpenSBI)
++         * console input ever reached the guest: the pre-upgrade kernel used
++         * the virtio-console device for hvc0 input instead, which is why
++         * the gap was invisible. Implement the spec handshake: on a GETC
++         * request deliver one pending host input byte through fromhost
++         * (dev=1, cmd=0, low byte = char); read_data is non-blocking and
++         * returns 0 when the host buffer is empty. */
++        uint8_t buf[1];
++        if (s->common.console->read_data(s->common.console->opaque, buf, 1) == 1) {
++            s->htif_fromhost = ((uint64_t)1 << 56) | ((uint64_t)0 << 48) |
++                buf[0];
++        }
+         s->htif_tohost = 0;
+     } else {
+         printf("HTIF: unsupported tohost=0x%016" PRIx64 "\n", s->htif_tohost);

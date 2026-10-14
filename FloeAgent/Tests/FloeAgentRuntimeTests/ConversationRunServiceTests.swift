@@ -1515,6 +1515,9 @@ private actor FailpointInputStore: RunningInputStore {
     func enqueue(_ input: PendingUserInput) async throws -> PendingUserInput {
         try await upstream.enqueue(input)
     }
+    func upsert(_ input: PendingUserInput) async throws {
+        try await upstream.upsert(input)
+    }
     func pending(conversationID: UUID) async throws -> [PendingUserInput] {
         try await upstream.pending(conversationID: conversationID)
     }

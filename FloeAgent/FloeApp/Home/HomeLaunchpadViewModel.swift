@@ -151,6 +151,50 @@ final class HomeLaunchpadViewModel: ObservableObject {
             && !isSending
     }
 
+    /// Starting a casual chat and sending a normal task share one creation
+    /// gate. Opening the temporary composer never starts a model request.
+    var canStartTemporaryChat: Bool {
+        !isSending && center.temporarySession == nil
+    }
+
+    @discardableResult
+    func startTemporaryChat() async -> UUID? {
+        guard canStartTemporaryChat else { return nil }
+        let carriedText = draft
+        let commit = ComposerSendCommit(
+            draft: carriedText,
+            attachments: [],
+            editorGeneration: draftGeneration,
+            conversationID: draftStorageID
+        )
+        isSending = true
+        isConsumingDraft = true
+        defer {
+            isSending = false
+            isConsumingDraft = false
+        }
+        do {
+            let id = try await center.startTemporarySession(
+                initialDraft: carriedText,
+                preferredModelID: selectedModelID
+            )
+            // Move only the text actually carried into the RAM-only chat:
+            // leaving a second durable copy defeats the temporary choice.
+            // The existing generation-aware commit keeps all attachments
+            // and any newer ordinary edits, including an A → B → A edit.
+            draft = commit.draftAfterSuccess(
+                currentDraft: draft,
+                currentGeneration: draftGeneration
+            )
+            commit.commitStore()
+            actionError = nil
+            return id
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
     // MARK: - Loading
 
     /// Loads the overview data. Cheap and quiet: no empty-card stacks —

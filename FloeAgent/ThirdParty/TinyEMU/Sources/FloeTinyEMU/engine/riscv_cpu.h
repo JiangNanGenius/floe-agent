@@ -107,6 +107,10 @@ typedef struct {
     /* FLOE-SMP */
     void (*riscv_cpu_set_mhartid)(RISCVCPUState *s, uint64_t hartid);
     void (*riscv_cpu_smp_attach)(RISCVCPUState *s, RISCVSMPCpuArray *smp);
+    /* FLOE-TIME-CSR: install the source for the read-only time/timeh CSRs */
+    void (*riscv_cpu_set_time_source)(RISCVCPUState *s,
+                                      uint64_t (*fn)(void *opaque),
+                                      void *opaque);
 } RISCVCPUClass;
 
 typedef struct {
@@ -159,6 +163,13 @@ static inline uint32_t riscv_cpu_get_misa(RISCVCPUState *s)
 {
     const RISCVCPUClass *c = ((RISCVCPUCommonState *)s)->class_ptr;
     return c->riscv_cpu_get_misa(s);
+}
+static inline void riscv_cpu_set_time_source(RISCVCPUState *s,
+                                             uint64_t (*fn)(void *opaque),
+                                             void *opaque)
+{
+    const RISCVCPUClass *c = ((RISCVCPUCommonState *)s)->class_ptr;
+    c->riscv_cpu_set_time_source(s, fn, opaque);
 }
 static inline void riscv_cpu_flush_tlb_write_range_ram(RISCVCPUState *s,
                                                        uint8_t *ram_ptr, size_t ram_size)

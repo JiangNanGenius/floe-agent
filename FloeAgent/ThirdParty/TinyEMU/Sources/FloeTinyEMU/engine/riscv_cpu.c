@@ -1496,7 +1496,12 @@ static void glue(riscv_cpu_flush_tlb_write_range_ram,
                       MSTATUS_MPRV | MSTATUS_SUM | MSTATUS_MXR)
 
 /* cycle and insn counters */
-#define COUNTEREN_MASK ((1 << 0) | (1 << 2))
+/* FLOE-TIME-CSR: bit 1 (TM) belongs in the mask too; without it TinyEMU
+ * silently stripped the time-counter enable from every mcounteren/scounteren
+ * write, so the spec-required time CSR (0xc01) always trapped in
+ * S/U mode and Debian userland clock_gettime(CLOCK_MONOTONIC) could not use
+ * rdtime either. */
+#define COUNTEREN_MASK ((1 << 0) | (1 << 1) | (1 << 2))
 
 /* return the complete mstatus with the SD bit */
 static target_ulong get_mstatus(RISCVCPUState *s, target_ulong mask)
@@ -1579,6 +1584,32 @@ static int csr_read(RISCVCPUState *s, target_ulong *pval, uint32_t csr,
         val = s->fflags | (s->frm << 5);
         break;
 #endif
+    case 0xc01: /* time (shadow of the CLINT mtime counter) */
+        if (s->priv < PRV_M) {
+            uint32_t counteren;
+            if (s->priv < PRV_S)
+                counteren = s->scounteren;
+            else
+                counteren = s->mcounteren;
+            if (((counteren >> (csr & 0x1f)) & 1) == 0)
+                goto invalid_csr;
+        }
+        val = s->get_time ? s->get_time(s->get_time_opaque) : 0;
+        break;
+    case 0xc81: /* timeh */
+        if (s->cur_xlen != 32)
+            goto invalid_csr;
+        if (s->priv < PRV_M) {
+            uint32_t counteren;
+            if (s->priv < PRV_S)
+                counteren = s->scounteren;
+            else
+                counteren = s->mcounteren;
+            if (((counteren >> (csr & 0x1f)) & 1) == 0)
+                goto invalid_csr;
+        }
+        val = (s->get_time ? s->get_time(s->get_time_opaque) : 0) >> 32;
+        break;
     case 0xc00: /* ucycle */
     case 0xc02: /* uinstret */
         {
@@ -1688,6 +1719,17 @@ static int csr_read(RISCVCPUState *s, target_ulong *pval, uint32_t csr,
         if (s->cur_xlen != 32)
             goto invalid_csr;
         val = s->insn_counter >> 32;
+        break;
+    /* FLOE-MID-CSR: the RISC-V privileged spec makes mvendorid (0xf11),
+     * marchid (0xf12) and mimpid (0xf13) mandatory read-only M-mode CSRs;
+     * they return 0 when not implemented. Upstream TinyEMU 2019-12-21 left
+     * them unimplemented, so a CSR read raised an illegal-instruction trap
+     * that killed OpenSBI hart init (csrr mvendorid at M-mode). Provide the
+     * spec-mandated zero values. */
+    case 0xf11: /* mvendorid */
+    case 0xf12: /* marchid */
+    case 0xf13: /* mimpid */
+        val = 0;
         break;
     case 0xf14:
         val = s->mhartid;
@@ -2116,6 +2158,14 @@ static uint64_t glue(riscv_cpu_get_cycles, MAX_XLEN)(RISCVCPUState *s)
     return __atomic_load_n(&s->insn_counter, __ATOMIC_RELAXED);
 }
 
+static void glue(riscv_cpu_set_time_source, MAX_XLEN)(RISCVCPUState *s,
+                                                      uint64_t (*fn)(void *opaque),
+                                                      void *opaque)
+{
+    s->get_time = fn;
+    s->get_time_opaque = opaque;
+}
+
 static void glue(riscv_cpu_set_mip, MAX_XLEN)(RISCVCPUState *s, uint32_t mask)
 {
     __atomic_fetch_or(&s->mip, mask, __ATOMIC_SEQ_CST);
@@ -2232,6 +2282,7 @@ const RISCVCPUClass glue(riscv_cpu_class, MAX_XLEN) = {
     glue(riscv_cpu_flush_tlb_write_range_ram, MAX_XLEN),
     glue(riscv_cpu_set_mhartid, MAX_XLEN),
     glue(riscv_cpu_smp_attach, MAX_XLEN),
+    glue(riscv_cpu_set_time_source, MAX_XLEN),
 };
 
 #if CONFIG_RISCV_MAX_XLEN == MAX_XLEN

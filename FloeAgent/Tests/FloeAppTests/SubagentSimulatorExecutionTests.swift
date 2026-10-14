@@ -179,6 +179,29 @@ struct SubagentSimulatorExecutionTests {
                 parentRunID: runID, rootTaskID: conversationID, delegateCallID: "delegate-shell"
             )
 
+            // Verify the kernel selected by the real App's default boot-asset
+            // adoption path, before accepting child execution as new-kernel proof.
+            let unameCall = try ToolCall(
+                id: "child-kernel-version",
+                toolName: "exec.shell",
+                argumentsJSON: Data(#"{"command":"uname -r"}"#.utf8),
+                scope: .local
+            ).withIDContext(runID: runID)
+            let unameResult = await runtime.dispatchChildTool(
+                unameCall, identity: firstChild, childContext: childContext
+            )
+            // Prerequisite, not just an expectation: a guest that did not boot
+            // the qualified kernel must stop this run here (cleanup still runs)
+            // instead of driving the rest of the flow against an unqualified
+            // environment. The 6.18.56 requirement itself is never weakened.
+            try #require(unameResult.status == .ok, "guest uname failed: \(unameResult.outputSummary)")
+            try #require(unameResult.outputSummary.contains("6.18.56"),
+                    "App did not boot the qualified kernel: \(unameResult.outputSummary)")
+            // Qualification evidence: the raw guest kernel string this run
+            // actually booted (the prerequisites above already require it to
+            // be the qualified kernel).
+            print("FLOE_REALVM_UNAME=\(unameResult.outputSummary)")
+
             // 1. exec.shell: the GUEST writes the file and computes the hash.
             let payload = "hello from the guest child"
             let expectedHash = FloeDigest.sha256Hex(Data(payload.utf8))

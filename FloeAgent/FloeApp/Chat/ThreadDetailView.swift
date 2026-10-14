@@ -79,6 +79,10 @@ struct ThreadDetailView: View {
     var body: some View {
         GeometryReader { proxy in
             VStack(spacing: 0) {
+                if viewModel.isTemporary {
+                    temporaryBanner
+                    Divider()
+                }
                 if let checklist = viewModel.taskChecklist {
                     checklistStatus(checklist)
                 }
@@ -575,6 +579,9 @@ struct ThreadDetailView: View {
 
     @ToolbarContentBuilder
     private var stateToolbar: some ToolbarContent {
+        if !embedded {
+            temporaryToolbarItems
+        }
         ToolbarItem(placement: .topBarTrailing) {
             usageToolbarHost
         }
@@ -599,6 +606,7 @@ struct ThreadDetailView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
+                if !viewModel.isTemporary {
                 Button(refreshingMediaJobs ? "chat.thread_detail_view.refreshing_media_tasks" : "chat.thread_detail_view.refresh_media_task_status", systemImage: "arrow.clockwise") {
                     refreshingMediaJobs = true
                     Task {
@@ -630,21 +638,34 @@ struct ThreadDetailView: View {
                     }
                 }
                 Divider()
-                inspectorButton("chat.thread_detail_view.changes", icon: "arrow.triangle.2.circlepath", content: .changes)
-                inspectorButton("tab.files", icon: "folder", content: .workspaceFiles)
-                inspectorButton("browser.title", icon: "safari", content: .browser)
-                inspectorButton("chat.thread_detail_view.terminal_host", icon: "terminal", content: .terminal)
+                }
+                if !viewModel.isTemporary {
+                    // Task inspectors bind workspace/browser/terminal/change
+                    // resources; a casual temporary chat owns none of those
+                    // and must not surface bindings it never made. The run
+                    // progress readout and inspector chrome stay available.
+                    inspectorButton("chat.thread_detail_view.changes", icon: "arrow.triangle.2.circlepath", content: .changes)
+                    inspectorButton("tab.files", icon: "folder", content: .workspaceFiles)
+                    inspectorButton("browser.title", icon: "safari", content: .browser)
+                    inspectorButton("chat.thread_detail_view.terminal_host", icon: "terminal", content: .terminal)
+                    inspectorButton("chat.thread_detail_view.subagents", icon: "person.2", content: .childAgents)
+                }
                 inspectorButton("chat.thread_detail_view.progress", icon: "chart.bar", content: .progress)
-                inspectorButton("chat.thread_detail_view.subagents", icon: "person.2", content: .childAgents)
                 if router.inspectorVisible {
                     Divider()
                     Button("chat.thread_detail_view.hide_inspector", systemImage: "sidebar.right") { router.hideInspector() }
                 }
             } label: {
-                Label("inspector.files", systemImage: "sidebar.right")
+                if viewModel.isTemporary {
+                    Label("chat.thread_detail_view.progress", systemImage: "chart.bar")
+                } else {
+                    Label("inspector.files", systemImage: "sidebar.right")
+                }
             }
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-            .accessibilityLabel("inspector.files")
+            .accessibilityLabel(viewModel.isTemporary
+                ? Text("chat.thread_detail_view.progress") : Text("inspector.files"))
+            .accessibilityIdentifier("thread.inspector.menu")
         }
         ToolbarItem(placement: .topBarTrailing) {
             BackgroundPiPToolbarButton(
@@ -682,6 +703,111 @@ struct ThreadDetailView: View {
                     .accessibilityIdentifier("thread.run_state.\(state)")
             }
         }
+    }
+
+    // MARK: - Temporary chat (top-header entry + keep)
+
+    /// Compact top-header entry for the ephemeral chat mode. Toggling an
+    /// empty conversation converts it in place; a populated one starts a
+    /// separate fresh temporary chat. The active state is tinted and shows
+    /// the "Temporary chat" label; the familiar chat bubble keeps the normal
+    /// toolbar compact (iPad first, 44pt target on iPhone).
+    @ToolbarContentBuilder
+    private var temporaryToolbarItems: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                Task {
+                    if let target = await viewModel.toggleTemporaryChat() {
+                        router.openConversation(target.id)
+                    }
+                }
+            } label: {
+                // The label style is a concrete generic in SwiftUI, so the
+                // active/inactive variants are two branches instead of a
+                // ternary between `TitleAndIconLabelStyle` and
+                // `IconOnlyLabelStyle`.
+                if viewModel.isTemporary {
+                    Label("chat.temporary.toggle", systemImage: "bubble.left")
+                        .foregroundStyle(FloeTheme.primary)
+                        .symbolVariant(.fill)
+                        .labelStyle(.titleAndIcon)
+                } else {
+                    Label("chat.temporary.toggle", systemImage: "bubble.left")
+                        .foregroundStyle(Color.secondary)
+                        .symbolVariant(.none)
+                        .labelStyle(.iconOnly)
+                }
+            }
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityLabel("chat.temporary.toggle")
+            .accessibilityIdentifier("chat.temporary.toggle")
+            .accessibilityHint("chat.temporary.toggle.hint")
+            .help(String(localized: "chat.temporary.toggle.hint"))
+        }
+        if viewModel.isTemporary {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await viewModel.keepTemporaryChat() }
+                } label: {
+                    switch viewModel.temporaryKeepState {
+                    case .saving:
+                        ProgressView().controlSize(.small)
+                    case .partialRetry:
+                        Label("chat.temporary.keepPartialRetry", systemImage: "tray.and.arrow.down")
+                            .foregroundStyle(.orange)
+                    case .failed:
+                        Label("chat.temporary.keepFailedRetry", systemImage: "tray.and.arrow.down")
+                            .foregroundStyle(.red)
+                    case .idle:
+                        Label("chat.temporary.keep", systemImage: "tray.and.arrow.down")
+                    }
+                }
+                .disabled(viewModel.temporaryKeepState == .saving)
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityLabel("chat.temporary.keep")
+                .accessibilityIdentifier("chat.temporary.keep")
+                .help(String(localized: "chat.temporary.keep.hint"))
+            }
+        }
+    }
+
+    /// Badge + concise hint + explicit End for the active temporary chat.
+    private var temporaryBanner: some View {
+        HStack(spacing: 8) {
+            Label("chat.temporary.badge", systemImage: "bubble.left.fill")
+                .font(FloeTheme.Typography.metadata.weight(.semibold))
+                .foregroundStyle(FloeTheme.primary)
+                .accessibilityIdentifier("chat.temporary.badge")
+            Text("chat.temporary.banner")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .accessibilityIdentifier("chat.temporary.hint")
+            Spacer(minLength: 0)
+            if !viewModel.messages.isEmpty {
+                Button(role: .destructive) {
+                    Task {
+                        guard let target = await viewModel.endTemporaryChat() else { return }
+                        switch target {
+                        case .openConversation(let id):
+                            router.openConversation(id)
+                        case .openNewTask:
+                            router.startNewTask()
+                        }
+                    }
+                } label: {
+                    Label("chat.temporary.end", systemImage: "xmark.circle")
+                        .font(FloeTheme.Typography.metadata)
+                }
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("chat.temporary.end")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(FloeTheme.primary.opacity(0.07))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.temporary.banner")
     }
 
     /// The context-usage ring and its popover host.
@@ -759,6 +885,7 @@ struct ThreadDetailView: View {
         content: AppRouter.InspectorContent
     ) -> some View {
         Button(title, systemImage: icon) { router.showInspector(content) }
+            .accessibilityIdentifier("thread.inspector.open.\(content.rawValue)")
     }
 
     // MARK: - Error banner (honest failure surface)
@@ -855,7 +982,7 @@ struct ThreadDetailView: View {
                     selectedProjectID: $viewModel.selectedProjectID,
                     executionTarget: $viewModel.executionTarget,
                     agentMode: Binding(
-                        get: { viewModel.agentMode },
+                        get: { viewModel.effectiveAgentMode },
                         set: { viewModel.selectAgentMode($0) }
                     ),
                     attachments: $viewModel.attachments,
@@ -873,7 +1000,10 @@ struct ThreadDetailView: View {
                     contextID: viewModel.conversationID,
                     isDraftConsumedBySend: viewModel.isConsumingDraft,
                     embedded: embedded,
-                    documentAssistant: documentAssistant
+                    documentAssistant: documentAssistant,
+                    temporary: viewModel.isTemporary,
+                    draftPersistenceEnabled: viewModel.shouldPersistDraftEdits,
+                    onDraftEdited: { viewModel.noteDraftEditedByUser() }
                 )
             }
         }

@@ -1,75 +1,125 @@
 {
-  "engine": {
-    "name": "TinyEMU",
-    "version": "2019-12-21",
-    "upstream_url": "https://bellard.org/tinyemu/tinyemu-2019-12-21.tar.gz",
-    "sha256": "be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555",
-    "size_bytes": 250826,
-    "first_fetched_utc": "2026-09-20",
-    "license_summary": "MIT core; slirp/ 2-clause BSD; sha256.c public domain (LibTomCrypt); aes.c public domain (Rijndael reference). No GPL/LGPL content. See LICENSE-INVENTORY.md.",
-    "patches": [
-      {
-        "file": "patches/0001-htif-poweroff-callback.patch",
-        "purpose": "Convert guest-poweroff exit(0) in riscv_machine.c into an observable poweroff_requested flag (library must not terminate the host process). MIT-compatible modification.",
-        "applies_to": "riscv_machine.c of the pinned tarball"
-      },
-      {
-        "file": "patches/0002-embeddable-error-propagation.patch",
-        "purpose": "Recoverable create failures: iomem.c guest-RAM allocation returns NULL instead of exit(1); riscv_machine.c copy_bios returns 0/-1, checks kernel/initrd bounds before memcpy (upstream copied first) and releases the partial machine. Must be applied after 0001 to the same riscv_machine.c copy.",
-        "applies_to": "riscv_machine.c (after 0001) and iomem.c"
-      },
-      {
-        "file": "patches/0005-fence-hints.patch",
-        "purpose": "Treat the FENCE family as the no-op ordering hint it is: accept FENCE.TSO (0x8330000f) and reserved fm encodings, and ignore the unused imm/rs1/rd fields of fence.i (Zifencei). Upstream trapped FENCE.TSO as illegal, which made Debian 13 libapt-pkg die with SIGILL (apt http/https methods).",
-        "applies_to": "riscv_cpu_template.h of the pinned tarball"
-      },
-      {
-        "file": "patches/0006-slirp-per-instance-state.patch",
-        "purpose": "Per-VM slirp state: move the wall-clock cache (curtime), timer flags (time_fasttimo/last_slowtimo/do_slowtimo), DNS cache (dns_addr/dns_addr_time/dns_addr_stat) and the select() scratch fd_set pointers into struct Slirp; make get_dns_addr() take its Slirp explicitly (no thread-local current-instance). No slirp state is shared between instances any more; slirp_init_once() (the only remaining process-wide state, the constant loopback_addr) now uses pthread_once (InterlockedCompareExchange on Windows). Enables two independent networked VMs on two host threads.",
-        "applies_to": "slirp/slirp.h, slirp/slirp.c, slirp/socket.c, slirp/udp.c, slirp/ip_icmp.c, slirp/tcp_subr.c, slirp/main.h, slirp/libslirp.h of the pinned tarball"
-      },
-      {
-        "file": "patches/0007-9p-export-root-containment.patch",
-        "purpose": "Enforce 9p export-root containment structurally instead of by path-string validation: the share pins its root on root_fd (O_RDONLY|O_DIRECTORY|O_NOFOLLOW) and every fid is either a contained directory fd or a contained directory fd plus one single component; walk/open/create/mkdir/symlink/mknod/link/rename/unlink/readlink/setattr use fstatat/openat/... *at() calls with AT_SYMLINK_NOFOLLOW/O_NOFOLLOW, so '..', '/', absolute paths, guest-created symlinks and in-share renames can never resolve outside the export. FIFOs, sockets and device nodes are returned as metadata but never opened or truncated (EOPNOTSUPP), so a blocking host FIFO cannot freeze a run_slice thread. Path strings remain for diagnostics/readdir only.",
-        "applies_to": "fs_disk.c of the pinned tarball, after 0003"
-      },
-      {
-        "file": "patches/0008-recoverable-guest-fault-paths.patch",
-        "purpose": "Make the guest-reachable fatal paths in virtio.c recoverable per instance: unknown virtio-blk request types complete with VIRTIO_BLK_S_UNSUPP instead of the virtio_block_req_end() abort(), the guest-controlled descriptor sizes in the block/net/console paths are range-checked before use, unchecked mallocs return an error instead of writing through NULL, allocate failures in the 9p walk/read/write/readdir handlers answer a 9p error, and replies with an empty payload (Tclunk/TRflush/Tfsync) are still sent (a missing reply would hang the guest). Remaining upstream abort()s are internal invariants (fixed result-buffer sizes, device-registered access widths) and are documented in PHASE2_adapter.md.",
-        "applies_to": "virtio.c of the pinned tarball"
-      }
-    ],
-    "trimmed_out": [
-      "sdl.c (SDL display; CONFIG_SDL off)",
-      "x86_cpu.c/x86_machine.c/ide.c/ps2.c/vmmouse.c/pckbd.c/vga.c (x86 emulator; CONFIG_X86EMU off)",
-      "riscv_cpu.c as RV128 (CONFIG_INT128 off; RV64+RV32 only)",
-      "fs_net.c/fs_wget.c/fs_utils.c/block_net.c (HTTP network filesystem; CONFIG_FS_NET off) -> drops libcurl+OpenSSL",
-      "aes.c/sha256.c (only referenced by the HTTP filesystem path)",
-      "KVM: not present on the RISC-V path upstream (x86-only)"
-    ],
-    "patches_note": "The integrated app vendor tree applies the full 0001-0008 set (0003/0004 are tracked there as part of the same series). The vendor script must: apply 0001 then 0002 to the same riscv_machine.c copy, 0003 then 0007 to the same fs_disk.c copy, 0005 to riscv_cpu_template.h, then 0004/0006/0008, and rebuild VENDORED-SHA256SUMS (--check re-applies patches). 0005 changes riscv_cpu_template.h, so the tree that compiles riscv_cpu.c must include the patched header; the qualification Makefile copies riscv_cpu.c + the header into $(BUILD) so the quoted include resolves to the patched copy. 0006 also edits slirp headers, so the qualification build compiles the patched slirp copies from $(BUILD)/slirp (not the pristine tree).",
-    "license_files": {
-      "MIT-LICENSE.txt": "a75690160a50d8085bcd25acf34faa5b1c484e15ffd0bd662e5f4d7a289da080",
-      "licenses/SLIRP-COPYRIGHT.txt": "6aa542ccb77b884dbb8e8c4620f3471111e5648fe341147befcf933ea30d764f",
-      "note": "MIT text verbatim from the pinned tarball; the slirp COPYRIGHT is restored verbatim from the QEMU v3.1.0 archive because the tarball omits it. See licenses/README.md."
-    }
-  },
-  "smoke_demo_image": {
-    "name": "TinyEMU RISC-V demo disk (buildroot, qualification smoke only - NOT the target userland)",
-    "upstream_url": "https://bellard.org/tinyemu/diskimage-linux-riscv-2018-09-23.tar.gz",
-    "sha256": "808ecc1b32efdd76103172129b77b46002a616dff2270664207c291e4fde9e14",
-    "size_bytes": 7969810,
-    "contains": [
-      "bbl64.bin (BIOS)",
-      "kernel-riscv64.bin (Linux 4.15)",
-      "root-riscv64.bin (4MB ext2 buildroot rootfs)"
-    ],
-    "license_note": "Demo guest contains GPL-licensed software (Linux kernel, busybox). It is qualification tooling, never shipped in the app. Exact boot loader/kernel revisions, patches and kernel config are recorded in docs/FLOE_LINUX_GUEST_IMAGE_MANIFEST.md; see also LICENSE-INVENTORY.md."
-  },
-  "target_userland": {
-    "name": "Debian 13 (trixie) riscv64 nocloud cloud image (daily)",
-    "upstream_url_pattern": "https://cdimage.debian.org/cdimage/cloud/trixie/daily/latest/debian-13-nocloud-riscv64-daily.qcow2",
-    "pinning": "daily image - resolved + SHA512 recorded by the qualification workflow at run time (see .github/workflows/tinyemu-linux-qualification.yml); not bit-pinned here because Debian rotates daily builds",
-    "license_note": "Guest packages are a mix of licenses including GPL. They are installed inside the emulated guest and are governed by their own licenses + source-availability obligations; the host app ships none of them. See docs/FLOE_LINUX_GUEST_IMAGE_MANIFEST.md for the remaining distribution gaps (no package->source manifest yet, daily image not digest-pinned)."
+ "engine": {
+  "name": "TinyEMU",
+  "version": "2019-12-21",
+  "upstream_url": "https://bellard.org/tinyemu/tinyemu-2019-12-21.tar.gz",
+  "sha256": "be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555",
+  "size_bytes": 250826,
+  "first_fetched_utc": "2026-09-20",
+  "license_summary": "MIT core; slirp/ 2-clause BSD; sha256.c public domain (LibTomCrypt); aes.c public domain (Rijndael reference). No GPL/LGPL content. See LICENSE-INVENTORY.md.",
+  "patches": [
+   {
+    "file": "patches/0001-htif-poweroff-callback.patch",
+    "purpose": "Convert guest-poweroff exit(0) in riscv_machine.c into an observable poweroff_requested flag (library must not terminate the host process). MIT-compatible modification.",
+    "applies_to": "riscv_machine.c of the pinned tarball"
+   },
+   {
+    "file": "patches/0002-embeddable-error-propagation.patch",
+    "purpose": "Recoverable create failures: iomem.c guest-RAM allocation returns NULL instead of exit(1); riscv_machine.c copy_bios returns 0/-1, checks kernel/initrd bounds before memcpy (upstream copied first) and releases the partial machine. Must be applied after 0001 to the same riscv_machine.c copy.",
+    "applies_to": "riscv_machine.c (after 0001) and iomem.c"
+   },
+   {
+    "file": "patches/0005-fence-hints.patch",
+    "purpose": "Treat the FENCE family as the no-op ordering hint it is: accept FENCE.TSO (0x8330000f) and reserved fm encodings, and ignore the unused imm/rs1/rd fields of fence.i (Zifencei). Upstream trapped FENCE.TSO as illegal, which made Debian 13 libapt-pkg die with SIGILL (apt http/https methods).",
+    "applies_to": "riscv_cpu_template.h of the pinned tarball"
+   },
+   {
+    "file": "patches/0006-slirp-per-instance-state.patch",
+    "purpose": "Per-VM slirp state: move the wall-clock cache (curtime), timer flags (time_fasttimo/last_slowtimo/do_slowtimo), DNS cache (dns_addr/dns_addr_time/dns_addr_stat) and the select() scratch fd_set pointers into struct Slirp; make get_dns_addr() take its Slirp explicitly (no thread-local current-instance). No slirp state is shared between instances any more; slirp_init_once() (the only remaining process-wide state, the constant loopback_addr) now uses pthread_once (InterlockedCompareExchange on Windows). Enables two independent networked VMs on two host threads.",
+    "applies_to": "slirp/slirp.h, slirp/slirp.c, slirp/socket.c, slirp/udp.c, slirp/ip_icmp.c, slirp/tcp_subr.c, slirp/main.h, slirp/libslirp.h of the pinned tarball"
+   },
+   {
+    "file": "patches/0007-9p-export-root-containment.patch",
+    "purpose": "Enforce 9p export-root containment structurally instead of by path-string validation: the share pins its root on root_fd (O_RDONLY|O_DIRECTORY|O_NOFOLLOW) and every fid is either a contained directory fd or a contained directory fd plus one single component; walk/open/create/mkdir/symlink/mknod/link/rename/unlink/readlink/setattr use fstatat/openat/... *at() calls with AT_SYMLINK_NOFOLLOW/O_NOFOLLOW, so '..', '/', absolute paths, guest-created symlinks and in-share renames can never resolve outside the export. FIFOs, sockets and device nodes are returned as metadata but never opened or truncated (EOPNOTSUPP), so a blocking host FIFO cannot freeze a run_slice thread. Path strings remain for diagnostics/readdir only.",
+    "applies_to": "fs_disk.c of the pinned tarball, after 0003"
+   },
+   {
+    "file": "patches/0008-recoverable-guest-fault-paths.patch",
+    "purpose": "Make the guest-reachable fatal paths in virtio.c recoverable per instance: unknown virtio-blk request types complete with VIRTIO_BLK_S_UNSUPP instead of the virtio_block_req_end() abort(), the guest-controlled descriptor sizes in the block/net/console paths are range-checked before use, unchecked mallocs return an error instead of writing through NULL, allocate failures in the 9p walk/read/write/readdir handlers answer a 9p error, and replies with an empty payload (Tclunk/TRflush/Tfsync) are still sent (a missing reply would hang the guest). Remaining upstream abort()s are internal invariants (fixed result-buffer sizes, device-registered access widths) and are documented in PHASE2_adapter.md.",
+    "applies_to": "virtio.c of the pinned tarball"
+   },
+   {
+    "file": "patches/0010-smp-dual-hart.patch",
+    "purpose": "True multi-hart (SMP) support: per-hart host threads, coherent shared RAM, LR/SC atomics, IPI via CLINT, FENCE handling, and recoverable guest-fault paths across harts. Applied after 0009.",
+    "applies_to": "riscv_machine.c, riscv_cpu.c, riscv_cpu_template.h, iomem.c, machine.h, riscv_cpu.h, riscv_cpu_priv.h"
+   },
+   {
+    "file": "patches/0011-slirp-no-sigpipe.patch",
+    "purpose": "Suppress SIGPIPE from slirp guest socket writes so a guest TCP reset cannot kill the host process.",
+    "applies_to": "slirp sources of the pinned tarball"
+   },
+   {
+    "file": "patches/0012-htif-fdt-reg.patch",
+    "purpose": "Modern-kernel firmware console: add a `reg` property to the FDT htif node describing the tohost/fromhost MMIO window (HTIF_BASE_ADDR 0x40008000, fromhost at +8, tohost at +0) so SBI firmware with an HTIF serial driver (OpenSBI fdt_serial_htif) can drive the same console chardev the 2018 riscv-pk reached through linker-script symbols. Required to boot Linux 5.9+ (legacy SBI v0.1 removed) under OpenSBI.",
+    "applies_to": "riscv_machine.c of the pinned tarball"
+   },
+   {
+    "file": "patches/0013-mid-csrs.patch",
+    "purpose": "Implement the spec-mandatory read-only M-mode CSRs mvendorid (0xf11), marchid (0xf12) and mimpid (0xf13), returning 0 when not implemented. Upstream left them unimplemented, so a CSR read raised an illegal-instruction trap that killed OpenSBI hart init (csrr mvendorid).",
+    "applies_to": "riscv_cpu.c of the pinned tarball"
+   },
+   {
+    "file": "patches/0014-canonical-isa-string.patch",
+    "purpose": "Emit the riscv,isa FDT string in canonical single-letter order (rv64imafdc) and skip the MISA privilege bits s/u (supervisor/user are not ISA extensions and are not valid extension names). The old alphabetical emission produced 'rv64acdfimsu', which the modern Linux CPU probe rejects in its fallback path (strncasecmp against the required 'rv64ima' prefix in arch/riscv/kernel/cpu.c), dropping the boot CPU and BUGing setup_smp().",
+    "applies_to": "riscv_machine.c of the pinned tarball"
+   },
+   {
+    "file": "patches/0015-time-csr.patch",
+    "purpose": "Implement the architecturally required read-only time/timeh CSRs (0xc01/0xc81), shadowing the CLINT mtime counter via a machine-provided get_time hook, and fix COUNTEREN_MASK to include the TM bit (bit 1) so OpenSBI's mcounteren/scounteren writes are not stripped. Without this the modern kernel panics in extract_entropy (rdtime) and Debian userland clock_gettime(CLOCK_MONOTONIC) cannot use rdtime.",
+    "applies_to": "riscv_cpu.c, riscv_cpu.h, riscv_cpu_priv.h, riscv_machine.c of the pinned tarball"
+   },
+   {
+    "file": "patches/0016-htif-console-getc.patch",
+    "purpose": "Implement HTIF_CONSOLE_CMD_GETC (cmd 0): on a GETC request deliver one pending host input byte through fromhost (dev=1, cmd=0, low byte = char). Upstream left this a stub that only cleared tohost, so no SBI firmware console input ever reached the guest (the pre-upgrade kernel used the virtio-console device for hvc0 input instead).",
+    "applies_to": "riscv_machine.c of the pinned tarball"
+   },
+   {
+    "file": "patches/0017-fw-reserved-memory.patch",
+    "purpose": "Emit a /reserved-memory/opensbi@80000000 node covering [RAM_BASE, kernel_start) (the 2 MiB-aligned FW_JUMP window: firmware RX/RW image, heap and per-hart scratch/stack) so the kernel buddy allocator never hands OpenSBI pages to guests. Without it, guest writes corrupted the M-mode trap handler (observed word@0x800003c8 34021273 -> 0/ASCII) and the next trap stormed illegal-instruction fetches (pc=0x800003c8 mcause=2). Matches the reserved-memory FDT contract other SBI platforms (e.g. QEMU virt) use; the 4.15 bbl pair ignores the node. MIT-compatible modification.",
+    "applies_to": "riscv_machine.c of the pinned tarball (after 0012/0014/0016)"
+   },
+   {
+    "file": "patches/0018-virtio-queue-num-max.patch",
+    "purpose": "Advertise MAX_QUEUE_NUM=256 (QEMU's default) instead of the historical 16 for the virtio queue size maximum. Linux >= 6.12 virtio_net with CONFIG_MAX_SKB_FRAGS=17 stops the TX queue below MAX_SKB_FRAGS+2 = 19 free descriptors and only resumes at >= 19 (NAPI TX), so a 16-entry ring can never restart once stopped: exactly one frame transmits, then NETDEV TX watchdog timeouts forever. Older guests (the 4.15 image) used a lower wake threshold, which is why only the modern kernel stalls. Rings live in guest memory; the host keeps no per-entry arrays. Confirmed by the bounded discriminator virtio_net.napi_tx=0 restoring ping on the unpatched engine.",
+    "applies_to": "virtio.c of the pinned tarball"
+   },
+   {
+    "file": "patches/0019-fs-open-dir-detect.patch",
+    "purpose": "Detect the open kind in fs_open from the fid's real file type (S_ISDIR) instead of relying on the guest's O_DIRECTORY flag bit: Linux >= 6.18 net/9p masks Tlopen mode with P9L_MODE_MASK (0x1fff) before sending, so O_DIRECTORY (0x10000) never arrives and directories were opened as regular files, making fs_readdir answer -P9_EPROTO (guest-visible 'ls: reading directory ... Protocol error') while reads/writes/exec on known paths worked. The explicit O_DIRECTORY flag is still honored as an ENOTDIR refusal; FIFO/device nodes remain EOPNOTSUPP per patch 0007.",
+    "applies_to": "fs_disk.c of the pinned tarball (after 0003 + 0007)"
+   }
+  ],
+  "trimmed_out": [
+   "sdl.c (SDL display; CONFIG_SDL off)",
+   "x86_cpu.c/x86_machine.c/ide.c/ps2.c/vmmouse.c/pckbd.c/vga.c (x86 emulator; CONFIG_X86EMU off)",
+   "riscv_cpu.c as RV128 (CONFIG_INT128 off; RV64+RV32 only)",
+   "fs_net.c/fs_wget.c/fs_utils.c/block_net.c (HTTP network filesystem; CONFIG_FS_NET off) -> drops libcurl+OpenSSL",
+   "aes.c/sha256.c (only referenced by the HTTP filesystem path)",
+   "KVM: not present on the RISC-V path upstream (x86-only)"
+  ],
+  "patches_note": "The integrated app vendor tree applies the full 0001-0008 set (0003/0004 are tracked there as part of the same series). The vendor script must: apply 0001 then 0002 to the same riscv_machine.c copy, 0003 then 0007 to the same fs_disk.c copy, 0005 to riscv_cpu_template.h, then 0004/0006/0008, and rebuild VENDORED-SHA256SUMS (--check re-applies patches). 0005 changes riscv_cpu_template.h, so the tree that compiles riscv_cpu.c must include the patched header; the qualification Makefile copies riscv_cpu.c + the header into $(BUILD) so the quoted include resolves to the patched copy. 0006 also edits slirp headers, so the qualification build compiles the patched slirp copies from $(BUILD)/slirp (not the pristine tree).",
+  "license_files": {
+   "MIT-LICENSE.txt": "a75690160a50d8085bcd25acf34faa5b1c484e15ffd0bd662e5f4d7a289da080",
+   "licenses/SLIRP-COPYRIGHT.txt": "6aa542ccb77b884dbb8e8c4620f3471111e5648fe341147befcf933ea30d764f",
+   "note": "MIT text verbatim from the pinned tarball; the slirp COPYRIGHT is restored verbatim from the QEMU v3.1.0 archive because the tarball omits it. See licenses/README.md."
   }
+ },
+ "smoke_demo_image": {
+  "name": "TinyEMU RISC-V demo disk (buildroot, qualification smoke only - NOT the target userland)",
+  "upstream_url": "https://bellard.org/tinyemu/diskimage-linux-riscv-2018-09-23.tar.gz",
+  "sha256": "808ecc1b32efdd76103172129b77b46002a616dff2270664207c291e4fde9e14",
+  "size_bytes": 7969810,
+  "contains": [
+   "bbl64.bin (BIOS)",
+   "kernel-riscv64.bin (Linux 4.15)",
+   "root-riscv64.bin (4MB ext2 buildroot rootfs)"
+  ],
+  "license_note": "Demo guest contains GPL-licensed software (Linux kernel, busybox). It is qualification tooling, never shipped in the app. Exact boot loader/kernel revisions, patches and kernel config are recorded in docs/FLOE_LINUX_GUEST_IMAGE_MANIFEST.md; see also LICENSE-INVENTORY.md."
+ },
+ "target_userland": {
+  "name": "Debian 13 (trixie) riscv64 nocloud cloud image (daily)",
+  "upstream_url_pattern": "https://cdimage.debian.org/cdimage/cloud/trixie/daily/latest/debian-13-nocloud-riscv64-daily.qcow2",
+  "pinning": "daily image - resolved + SHA512 recorded by the qualification workflow at run time (see .github/workflows/tinyemu-linux-qualification.yml); not bit-pinned here because Debian rotates daily builds",
+  "license_note": "Guest packages are a mix of licenses including GPL. They are installed inside the emulated guest and are governed by their own licenses + source-availability obligations; the host app ships none of them. See docs/FLOE_LINUX_GUEST_IMAGE_MANIFEST.md for the remaining distribution gaps (no package->source manifest yet, daily image not digest-pinned)."
+ }
 }

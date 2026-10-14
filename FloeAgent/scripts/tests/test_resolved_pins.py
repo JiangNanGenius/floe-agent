@@ -29,9 +29,20 @@ class ResolvedPinsTests(unittest.TestCase):
         # swift package resolve intentionally removes the Xcode-only Whisper
         # pin from the working host lock. Expected distribution fixtures must
         # come from the immutable source, just like the production checker.
-        self.current = json.loads(subprocess.check_output(
+        document = json.loads(subprocess.check_output(
             ["git", "show", "HEAD:FloeAgent/Package.resolved"],
             cwd=Path(__file__).resolve().parents[2], text=True))
+        # The tracked host lock is serialized by SwiftPM in either the v1
+        # (object.pins/repositoryURL) or the v2/v3 (pins/location) schema.
+        # Normalize to the v2/v3 shape the tests below exercise.
+        if document.get("version") in (2, 3):
+            pins = document["pins"]
+        else:
+            pins = [
+                {"identity": p["identity"], "location": p["location"], "state": p["state"]}
+                for p in resolved_pins(document)
+            ]
+        self.current = {"version": 3, "pins": pins}
 
     def test_legacy_schema_preserves_every_committed_dependency(self):
         legacy = {"version": 1, "object": {"pins": [

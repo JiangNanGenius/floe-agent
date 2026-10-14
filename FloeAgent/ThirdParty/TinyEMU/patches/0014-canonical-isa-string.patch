@@ -1,0 +1,35 @@
+--- a/riscv_machine.c
++++ b/riscv_machine.c
+@@ -623,9 +623,29 @@
+     misa = riscv_cpu_get_misa(m->cpu_state);
+     q = isa_string;
+     q += snprintf(isa_string, sizeof(isa_string), "rv%d", max_xlen);
+-    for(i = 0; i < 26; i++) {
+-        if (misa & (1 << i))
+-            *q++ = 'a' + i;
++    /* FLOE-ISA-CANON: emit extension letters in the canonical single-letter
++     * order (i,m,a,f,d,c) expected by the unified RISC-V ISA naming spec,
++     * and skip the MISA privilege bits 's'/'u' (supervisor/user are not ISA
++     * extensions and are not valid extension names). The old alphabetical
++     * emission produced "rv64acdfimsu", which the modern Linux CPU probe
++     * rejects: its fallback path strncasecmp()s the string against the
++     * required "rv64ima" prefix (arch/riscv/kernel/cpu.c), so the boot CPU
++     * was dropped with "does not support rv64ima" and setup_smp() BUGed.
++     * The pre-upstream 4.15 guest parsed the string leniently, which is why
++     * the old kernel booted with the non-canonical form. */
++    {
++        static const struct { char letter; uint32_t bit; } canon_map[] = {
++            { 'i', 1u << 8 },  /* I */
++            { 'm', 1u << 12 }, /* M */
++            { 'a', 1u << 0 },  /* A */
++            { 'f', 1u << 5 },  /* F */
++            { 'd', 1u << 3 },  /* D */
++            { 'c', 1u << 2 },  /* C */
++        };
++        for(i = 0; i < (int)(sizeof(canon_map) / sizeof(canon_map[0])); i++) {
++            if (misa & canon_map[i].bit)
++                *q++ = canon_map[i].letter;
++        }
+     }
+     *q = '\0';
+     fdt_prop_str(s, "riscv,isa", isa_string);

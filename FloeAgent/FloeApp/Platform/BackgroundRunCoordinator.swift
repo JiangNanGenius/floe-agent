@@ -172,6 +172,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let allowsContinuedProcessing: Bool
         let retainsSurfaceOnFailure: Bool
         let sendsTerminalNotification: Bool
+        /// False for temporary (ephemeral) chat runs: the shared run-work
+        /// history (BackgroundWorkRegistry) and its outbox entries must
+        /// never carry temporary content — not at start, not on progress
+        /// updates, suspension, approval, error or finish. In-memory
+        /// activity/PiP tracking is unaffected.
+        let publishesContent: Bool
         var stage: String = FloeL10n.l("platform.background_run_coordinator.running")
         var progress: Int64 = 5
         var stageStartedAt = Date()
@@ -653,7 +659,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         conversationID: UUID,
         runID: UUID,
         title: String,
-        origin: ContinuedProcessingStartOrigin
+        origin: ContinuedProcessingStartOrigin,
+        /// False for temporary (ephemeral) chat runs: no content-bearing work
+        /// record, no terminal notification/outbox entry and no continued-task
+        /// registration; in-memory activity/PiP tracking still runs.
+        publishesContent: Bool = true
     ) {
         // Session publication and launch recovery can report the same durable
         // run more than once. Re-preparing PiP for that duplicate stopped the
@@ -665,10 +675,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             return
         }
         // Ask for notification permission in direct response to starting the
-        // first task, never during a cold app launch. This keeps onboarding,
-        // App Intents discovery and settings inspection free of an unrelated
-        // system prompt.
+        // first CONTENT-PUBLISHING task, never during a cold app launch and
+        // never from a temporary (ephemeral) run — no notification
+        // infrastructure engages for a conversation whose content must stay
+        // out of history, work records and the outbox.
         if activeRuns.isEmpty,
+           publishesContent,
            origin.allowsContinuedSubmission,
            hasAggregateForegroundScene {
             Task { [weak self] in
@@ -692,33 +704,38 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             conversationID: conversationID,
             title: title,
             continuedProcessingOrigin: origin,
-            allowsContinuedProcessing: true,
+            allowsContinuedProcessing: publishesContent,
             retainsSurfaceOnFailure: true,
-            sendsTerminalNotification: true
+            sendsTerminalNotification: publishesContent,
+            publishesContent: publishesContent
         )
         activeRuns[runID] = run
-        _ = continuedEligibility.registerRun(runID, origin: origin)
-        publishRunWork(
-            runID: runID,
-            title: title,
-            conversationID: conversationID,
-            startedAt: run.startedAt,
-            state: .running,
-            progressText: FloeL10n.l("platform.background_run_coordinator.running")
-        )
+        if publishesContent {
+            _ = continuedEligibility.registerRun(runID, origin: origin)
+            publishRunWork(
+                runID: runID,
+                title: title,
+                conversationID: conversationID,
+                startedAt: run.startedAt,
+                state: .running,
+                progressText: FloeL10n.l("platform.background_run_coordinator.running")
+            )
+        }
         FloeLogger(category: .app).info(
-            "backgroundRunStarted run=\(runID.uuidString) conversation=\(conversationID.uuidString) origin=\(origin.rawValue) preference=\(environment.settingsCenter.backgroundExecution.rawValue) activeRuns=\(activeRuns.count)"
+            "backgroundRunStarted run=\(runID.uuidString) conversation=\(conversationID.uuidString) origin=\(origin.rawValue) preference=\(environment.settingsCenter.backgroundExecution.rawValue) activeRuns=\(activeRuns.count) contentSurfaces=\(publishesContent)"
         )
-        requestContinuedProcessingIfEligible(
-            origin: origin,
-            workload: "conversationRun",
-            title: title
-        )
-        applyBackgroundExecutionPreference(
-            runID: runID,
-            conversationID: conversationID,
-            runTitle: title
-        )
+        if publishesContent {
+            requestContinuedProcessingIfEligible(
+                origin: origin,
+                workload: "conversationRun",
+                title: title
+            )
+            applyBackgroundExecutionPreference(
+                runID: runID,
+                conversationID: conversationID,
+                runTitle: title
+            )
+        }
     }
 
     /// A user-started Canvas image request is also a long provider workload.
@@ -743,6 +760,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             allowsContinuedProcessing: false,
             retainsSurfaceOnFailure: false,
             sendsTerminalNotification: false,
+            // Media generation is ordinary, durable product work: its
+            // progress and terminal state belong in the shared work history
+            // (Canvas/media task status). Only the system notification is
+            // suppressed for media; the record itself is content-published.
+            publishesContent: true,
             stage: FloeL10n.l("platform.background_run_coordinator.generating_media"),
             progress: 10
         )
@@ -858,15 +880,19 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: active.presentation())
         }
-        publishRunWork(
-            runID: runID,
-            title: active.title,
-            conversationID: active.conversationID,
-            startedAt: active.startedAt,
-            state: .running,
-            progress: Double(active.progress) / 100,
-            progressText: stage
-        )
+        // Temporary runs never enter the shared work history — not on
+        // progress updates either.
+        if active.publishesContent {
+            publishRunWork(
+                runID: runID,
+                title: active.title,
+                conversationID: active.conversationID,
+                startedAt: active.startedAt,
+                state: .running,
+                progress: Double(active.progress) / 100,
+                progressText: stage
+            )
+        }
     }
 
     /// Keeps a durable, user-resumable run visible without turning the
@@ -886,19 +912,24 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(title: active.title, progress: message)
         }
+        // Temporary runs never enter the shared work history — suspension
+        // included; their suspension text is also content and stays out of
+        // the diagnostics buffer.
         FloeLogger(category: .app).info(
-            "backgroundRunSuspended run=\(runID.uuidString) message=\(message) activeRuns=\(activeRuns.count)"
+            "backgroundRunSuspended run=\(runID.uuidString) message=\(active.publishesContent ? message : "redacted") activeRuns=\(activeRuns.count)"
         )
-        publishRunWork(
-            runID: runID,
-            title: active.title,
-            conversationID: active.conversationID,
-            startedAt: active.startedAt,
-            state: .suspended,
-            interruption: .checkpointed,
-            progress: Double(active.progress) / 100,
-            progressText: message
-        )
+        if active.publishesContent {
+            publishRunWork(
+                runID: runID,
+                title: active.title,
+                conversationID: active.conversationID,
+                startedAt: active.startedAt,
+                state: .suspended,
+                interruption: .checkpointed,
+                progress: Double(active.progress) / 100,
+                progressText: message
+            )
+        }
     }
 
     /// The three terminal outcomes a provider run can reach. Cancellation is
@@ -964,14 +995,23 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
             finishContinuedTasks(success: succeeded)
         }
-        finishRunWork(
-            runID: runID,
-            title: finished.title,
-            conversationID: conversationID,
-            startedAt: finished.startedAt,
-            outcome: outcome,
-            message: message
-        )
+        // The content flag decides the work record's fate: content-publishing
+        // runs (ordinary conversations, media generation) keep an honest
+        // terminal record; temporary runs never registered one and the
+        // removal is a fail-closed no-op for any residue.
+        if finished.publishesContent {
+            finishRunWork(
+                runID: runID,
+                title: finished.title,
+                conversationID: conversationID,
+                startedAt: finished.startedAt,
+                outcome: outcome,
+                message: message
+            )
+        } else {
+            // Temporary runs never registered a work record; nothing to finish.
+            Task { await BackgroundWorkRegistry.shared.remove(id: runID) }
+        }
         // The completion policy decides the surface's terminal behavior. A
         // newer run bumps the generation, so a delayed teardown scheduled
         // here can only close the surface it was scheduled for.
@@ -1222,7 +1262,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     continuedProcessingOrigin: .automaticTool,
                     allowsContinuedProcessing: false,
                     retainsSurfaceOnFailure: true,
-                    sendsTerminalNotification: false
+                    sendsTerminalNotification: false,
+                    publishesContent: false
                 ),
                 message: message
             )
@@ -2629,6 +2670,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     func didRequireApproval(conversationID: UUID, runID: UUID, toolName: String) {
+        // Temporary (ephemeral) runs never publish approval notifications:
+        // the durable outbox and any system task must not carry their
+        // content. The in-app approval UI still surfaces the request.
+        guard activeRuns[runID]?.publishesContent != false else { return }
         guard notifiedApprovalRuns.insert(runID).inserted else { return }
         if #available(iOS 26.0, *),
            activeRuns[runID]?.continuedProcessingOrigin.allowsContinuedSubmission == true {

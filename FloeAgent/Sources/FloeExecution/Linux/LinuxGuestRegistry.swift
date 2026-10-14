@@ -320,6 +320,14 @@ public actor TinyEMULinuxGuestRegistry {
     /// used by focused registry tests.
     private var runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
     private var sessions: [String: Session] = [:]
+    /// Boot-asset lifecycle latch: start leases vs adoption/rollback
+    /// exclusive passes (LinuxGuestBootAssetGate). Shared with the update
+    /// service so both sides serialize against the same gate.
+    private let bootAssetGate: LinuxGuestBootAssetGate
+    /// Immutable construction-time auto-adoption callback (see
+    /// `BootAssetAutoAdoptionHook`). Read-only after init, so there is no
+    /// post-publication reconfiguration window.
+    private let bootAssetAutoAdoption: BootAssetAutoAdoptionHook?
     private var lastErrors: [String: String] = [:]
     private var lastImpacts: [String: String] = [:]
     /// Per-environment failure of the in-guest ext4 resize after the host
@@ -407,7 +415,9 @@ public actor TinyEMULinuxGuestRegistry {
         factory: any LinuxGuestSessionCreating = TinyEMUGuestSessionFactory(),
         targetDiskCapacityBytes: Int64 = LinuxGuestDiskLayout.targetLogicalCapacityBytes,
         runtimeV2: (any LinuxGuestRuntimeV2Integrating)? = nil,
-        releasePolicy: GuestReleaseShapePolicy = .production
+        releasePolicy: GuestReleaseShapePolicy = .production,
+        bootAssetGate: LinuxGuestBootAssetGate = .default,
+        bootAssetAutoAdoption: BootAssetAutoAdoptionHook? = nil
     ) {
         self.environments = environments
         self.images = images
@@ -416,7 +426,57 @@ public actor TinyEMULinuxGuestRegistry {
         self.targetDiskCapacityBytes = targetDiskCapacityBytes
         self.runtimeV2 = runtimeV2
         self.releasePolicy = releasePolicy
+        self.bootAssetGate = bootAssetGate
+        self.bootAssetAutoAdoption = bootAssetAutoAdoption
     }
+
+    /// Environments with a registered session (running, starting, stopping
+    /// or quarantined). This — not any UI list — is the authoritative set
+    /// that can race a boot-asset commit: an environment's first start
+    /// registers its session before boot-path resolution, so anything that
+    /// could observe a half-committed state appears here.
+    public var registeredEnvironmentIDs: [String] {
+        sessions.keys.sorted()
+    }
+
+    /// Conservative LinuxGuestStoppedReconciliation translated from this
+    /// registry's own facts, for boot-asset gating when the app-wide
+    /// lifecycle manager is not in scope of the call site. isRunning true
+    /// always reports not-quiet; a merely registered (stopped) session is
+    /// quiet. The lifecycle manager's epoch-gated snapshot remains the
+    /// authoritative probe where it is available.
+    public func bootAssetReconciliation(
+        environmentID: String
+    ) async -> LinuxGuestStoppedReconciliation {
+        let hasSession = sessions[environmentID] != nil
+        let running = hasSession ? await (sessions[environmentID]?.handle.isRunning() ?? false) : false
+        return LinuxGuestStoppedReconciliation(
+            phase: running ? .running : .stopped,
+            savedConfig: nil,
+            launchGeneration: sessions[environmentID]?.generation,
+            quarantined: quarantinedEnvironments.contains(environmentID),
+            instanceRegistered: hasSession,
+            engineRunning: running,
+            operationActive: startingEnvironments.contains(environmentID),
+            probeConsistent: true
+        )
+    }
+
+    /// Best-effort auto-adoption callback, injected IMMUTABLY at
+    /// construction and invoked at the top of every guest start that names
+    /// an image, BEFORE this start's boot-asset lease is taken: when the
+    /// image's environments are all quietly stopped, a pending verified
+    /// boot-pair update is adopted so THIS start boots it. Any refusal (a
+    /// running sibling, an older/equal bundle, an explicit rollback record)
+    /// silently defers to a later start; a running guest is never stopped to
+    /// force an upgrade.
+    ///
+    /// The callback receives the registry as an argument instead of
+    /// capturing it, so the registry → hook → service wiring can never form
+    /// a retain cycle and the property is a `let` (no unsynchronized
+    /// reconfiguration after publication).
+    public typealias BootAssetAutoAdoptionHook =
+        @Sendable (_ registry: TinyEMULinuxGuestRegistry, _ imageID: String) async -> Void
 
     /// Barrier for a two-phase reconnect. While held the registry already
     /// runs the NEW resolver and every guest-booting entry is refused
@@ -912,6 +972,50 @@ public actor TinyEMULinuxGuestRegistry {
     /// resolved descriptor (it never comes from a loose request string) and is
     /// admitted strictly under the release gate; nil keeps the worker default.
     public func start(
+        environmentID: String,
+        taskID: String?,
+        explicitShape: GuestResourceRequest?
+    ) async throws -> Bool {
+        let imageID = await environments.linuxGuestEnvironment(id: environmentID)?.imageID
+        return try await bootAssetStart(imageID: imageID, environmentID: environmentID) {
+            try await self.startGated(
+                environmentID: environmentID,
+                taskID: taskID,
+                explicitShape: explicitShape
+            )
+        }
+    }
+
+    /// The one boot-asset entry every REAL start path funnels through (the
+    /// ordinary start and the hard-restart transaction's replacement start):
+    /// best-effort boot-pair auto-adoption BEFORE any lease exists (its
+    /// exclusive pass serializes against OTHER starts' leases and its quiet
+    /// gate sees this environment as not-yet-running), then the start lease
+    /// held from before boot-path resolution until the session is registered,
+    /// so an adoption/rollback commit can never interleave with this start
+    /// (see LinuxGuestBootAssetGate). Descriptor-less environments take no
+    /// lease and run no adoption step: they cannot boot this image and never
+    /// race its commits.
+    private func bootAssetStart<T: Sendable>(
+        imageID: String?,
+        environmentID: String,
+        operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        guard let imageID, !imageID.isEmpty else {
+            return try await operation()
+        }
+        if let hook = bootAssetAutoAdoption {
+            await hook(self, imageID)
+        }
+        return try await bootAssetGate.withStartLease(
+            imageID: imageID,
+            environmentID: environmentID
+        ) {
+            try await operation()
+        }
+    }
+
+    private func startGated(
         environmentID: String,
         taskID: String?,
         explicitShape: GuestResourceRequest?
@@ -1528,16 +1632,27 @@ public actor TinyEMULinuxGuestRegistry {
     /// resolve to absolute files inside the verified expanded image
     /// directory; the disk is this run's working disk (temporary
     /// runtime/vm/<runtimeID>/disk.img), never the shared immutable base.
-    private static func v2BootImage(
+    /// Internal (not private) so focused tests can exercise the same
+    /// verified boot-pair resolution the legacy preparer uses.
+    static func v2BootImage(
         image: LinuxGuestImage,
         imageDirectory: URL,
         workingDisk: URL
     ) throws -> LinuxGuestImage {
         var runtime = image
+        // Installed-newer precedence: a verified adopted boot-asset sidecar
+        // (see LinuxGuestBootAssetUpdateService) overrides the manifest
+        // default pair here too, so Runtime v2 starts boot the same pair
+        // as the legacy preparer path. The working-disk and runner-upgrade
+        // boundaries below are untouched.
+        let bootPaths = LinuxGuestBootAssetUpdateService.resolvedBootPaths(
+            manifest: image,
+            imageDirectory: imageDirectory
+        )
         runtime.biosPath = try LinuxGuestRuntimeImagePreparer.resolveArtifact(
-            path: image.biosPath, role: "bios", imageDirectory: imageDirectory
+            path: bootPaths.biosPath, role: "bios", imageDirectory: imageDirectory
         ).path
-        if let kernelPath = image.kernelPath {
+        if let kernelPath = bootPaths.kernelPath {
             runtime.kernelPath = try LinuxGuestRuntimeImagePreparer.resolveArtifact(
                 path: kernelPath, role: "kernel", imageDirectory: imageDirectory
             ).path
@@ -2549,6 +2664,14 @@ public actor TinyEMULinuxGuestRegistry {
     /// Starts the replacement instance under the transaction's ownership,
     /// carrying the explicit typed shape. Refuses when the transaction no
     /// longer owns the environment.
+    ///
+    /// This is a REAL boot path: the replacement takes the same boot-pair
+    /// auto-adoption step and the same start lease as an ordinary start, so a
+    /// pending verified pair is adopted on restart and a commit can never
+    /// interleave with the replacement's boot-path resolution. The lifecycle
+    /// transaction token only replaces the shape-change refusal in the start
+    /// body; the boot-asset gate is a separate latch, so there is no double
+    /// lock and no self-deadlock.
     public func startForLifecycleTransaction(
         environmentID: String,
         token: UInt64,
@@ -2558,12 +2681,15 @@ public actor TinyEMULinuxGuestRegistry {
         guard lifecycleTransactions[environmentID] == token else {
             throw LinuxGuestError.guestBusy(environmentID: environmentID)
         }
-        return try await start(
-            environmentID: environmentID,
-            taskID: taskID,
-            explicitShape: shape,
-            transactionToken: token
-        )
+        let imageID = await environments.linuxGuestEnvironment(id: environmentID)?.imageID
+        return try await bootAssetStart(imageID: imageID, environmentID: environmentID) {
+            try await self.start(
+                environmentID: environmentID,
+                taskID: taskID,
+                explicitShape: shape,
+                transactionToken: token
+            )
+        }
     }
 
     /// Destructive teardown of an environment whose lifecycle lock the CALLER

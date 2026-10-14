@@ -40,6 +40,22 @@ public struct WebFetchTool: AgentTool {
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         guard let url = URL(string: args.url) else { throw FloeError.validationFailed("invalid URL") }
+        // Per-run boundary (temporary chat is public-web-only): refuse the
+        // LAN opt-in and every non-public target here even when ordinary
+        // policy would allow them. The public transport revalidates every
+        // redirect through the same policy, so DNS/redirect rebinding cannot
+        // widen the boundary mid-request. Ordinary authorized LAN fetches
+        // (publicWebOnly=false) keep the diagnostic path unchanged.
+        if context.publicWebOnly {
+            guard args.localNetwork != true else {
+                throw FloeError.validationFailed("Temporary chats can only fetch public web targets")
+            }
+            try PublicNetworkTargetPolicy.validate(url)
+        } else if args.localNetwork == true {
+            try DiagnosticNetworkTargetPolicy.validate(url)
+        } else {
+            try PublicNetworkTargetPolicy.validate(url)
+        }
         let traceID = UUID().uuidString
         let startedAt = Date()
         let maxCharacters = max(1_000, min(args.maxCharacters ?? 80_000, 200_000))

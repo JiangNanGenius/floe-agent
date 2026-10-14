@@ -4,7 +4,7 @@
 # adaptive SwiftUI, NOT in project.yml branches.
 #
 # Regenerate with: scripts/gen_project.sh (xcodegen must be installed).
-# The generated .xcodeproj is git-ignored.
+# Commit the matching generated project.pbxproj after regeneration.
 
 name: FloeAgent
 settings:
@@ -83,6 +83,11 @@ targets:
         type: folder
         buildPhase: resources
       - path: FloeApp/Resources/EngineeringViewers
+        type: folder
+        buildPhase: resources
+      # Generated from the pinned guest-image manifest by stage-boot-pair.sh.
+      # Verified firmware/kernel bytes are distribution resources, never Git blobs.
+      - path: ThirdParty/TinyEMU/guest-image/bundled-boot-pair
         type: folder
         buildPhase: resources
       # Resources/IDE is intentionally NOT packaged: the CodeBlitz/Monaco web
@@ -253,6 +258,10 @@ targets:
         product: FloeShellEngine
       - target: FloeScreenShare
         embed: true
+    preBuildScripts:
+      - name: Verify bundled Linux boot pair
+        script: bash "$SRCROOT/ThirdParty/TinyEMU/guest-image/stage-boot-pair.sh" --check
+        basedOnDependencyAnalysis: false
     postBuildScripts:
       - name: Embed verified native Office host
         script: /usr/bin/python3 -B "${SRCROOT}/scripts/embed_office_host.py"
@@ -283,8 +292,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.30"
-        CURRENT_PROJECT_VERSION: "271"
+        MARKETING_VERSION: "1.7.31"
+        CURRENT_PROJECT_VERSION: "272"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -359,8 +368,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.30"
-        CURRENT_PROJECT_VERSION: "271"
+        MARKETING_VERSION: "1.7.31"
+        CURRENT_PROJECT_VERSION: "272"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -404,8 +413,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.30"
-        CURRENT_PROJECT_VERSION: "271"
+        MARKETING_VERSION: "1.7.31"
+        CURRENT_PROJECT_VERSION: "272"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -444,8 +453,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.30"
-        CURRENT_PROJECT_VERSION: "271"
+        MARKETING_VERSION: "1.7.31"
+        CURRENT_PROJECT_VERSION: "272"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -504,6 +513,7 @@ targets:
       Release: Vendor/Office/native-host.xcconfig
     sources:
       - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
+      - path: Tests/FloeAppTests/TemporaryConversationTests.swift
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
       - path: Tests/FloeAppTests/DesignWorkflowIntegrationTests.swift
       - path: Tests/FloeAppTests/DesignFreezeLaunchTests.swift

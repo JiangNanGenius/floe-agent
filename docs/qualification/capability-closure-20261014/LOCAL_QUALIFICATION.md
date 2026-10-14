@@ -38,15 +38,22 @@ the Git freeze, the device archive and TestFlight remain with the serialized rel
 - **Background-job progress contract** (`ToolContext.taskProgress`) and App-level prepared-operation
   adapters for authorized Office/media apply jobs, wired through `registerBackgroundJobTools(adapters:)`.
 
+## 2026-10-15 integration addendum
+
+- Full current App build-for-testing passed with the verified Linux boot-pair resource. A read-only pre-build check rejects missing or mismatched firmware/kernel/manifest bytes.
+- Temporary-chat App suite: **36/36 passed (2.947 s)**, including atomic ordinary-history ownership and rollback/retry when workspace persistence fails.
+- Temporary iPad UI: **seven behaviours passed** across the relevant attempts (New Chat, Home toggle, populated-chat separation/leave, End, Keep, rotation and background return). Compact iPhone 17 Pro: **3/3 passed (40.323 s)** without forced iPad traits. Background checks activate the existing live process and compare a unique unsent RAM draft; they do not relaunch the fixture. See [temporary-chat evidence](../20261015-temporary-chat.md).
+- Notification App suites: **33/33 passed (3.659 s)**. **Actual system warm and killed-App cold taps both passed (2/2)**, verifying the destination title and exactly one intake/route/completion dispatch/delivery per tap. This supersedes the initial host-blocked state below; the original physical Build 271 exception remains unreproduced.
+- Linux boot-asset module closure: **32/32** upgrade tests, **97/97** lifecycle/registry/concurrency tests and **54/54** additional registry tests passed. The new upgrade case verifies that adoption writes to the same Runtime v2 expanded-image directory used at boot.
+- The actual Simulator App guest/child-tool suite subsequently passed **2/2 (273.012 s)** with the pinned dependency graph: guest `uname` reported **6.18.56**, Shell and Python produced files with matching hashes, sibling children ran, nested delegation was refused and browser takeover was respected. The first run booted 4.15 despite an adoption log; later runs exposed an early HELLO probe lost before the guest console was ready. Both original failures are retained. The fix shares the real boot directory and retries the protocol probe within its original bounded deadline, without weakening the protocol gate. Cancellation and selection-preservation edge tests are recorded separately before release freeze.
+- A repeat of the affected temporary-chat and notification App suites on that pinned graph passed **69/69 (7.43 s)**. All five previously divergent App dependency checkouts now match the original root pins; no dependency upgrade was accepted as a substitute.
+- Final Linux lifecycle edges have module/object evidence: **13 new tests passed**, covering cancellation before/after a silent HELLO waiter registers, normal chunked responses, stale replies, and transactional boot-selection preservation across real re-materialization APIs. Two focused regression batches passed **211/211** and **54/54**. A bounded pre-fix mutation reproduced the orphan-waiter failure; restoring the fix passed. A malformed or uncopiable selection now aborts before replacing the old tree, and an explicit rollback marker survives even when its payload is missing. These tests ran on the macOS module host; the final App compilation is a separate step.
+- The final temporary-chat closure supersedes its earlier 36-test run: **49/49 App tests**, **184/184 persistence tests**, **7/7 iPad UI** and **4/4 compact iPhone UI** passed. It preserves message-empty ordinary chats that already own resources and fences late toggle completions after navigation. The same App test build compiles the final Linux cancellation/selection fixes. See the [updated temporary-chat record](../20261015-temporary-chat.md) for exact scopes and limitations.
+- Bundled dependency notices were checked against the actual pinned App graph: **234 components / 36 notices / 38 Swift rows**, with **92/92 generator tests**. The inventory distinguishes the native OCCT library from its WebAssembly viewer and includes the four linked CAD Swift packages plus the exact OpenShape3D-derived FloeCADKit notice. Provenance records do not constitute a legal certification.
+
 ## Honest limitations
 
-- The new Linux kernel boot asset is owned by the parallel Linux lane and had not reached a
-  verified, source-stable handoff when this evidence was recorded. The real-guest App smoke was
-  therefore **not executed in this round** (the opt-in test was gated/skipped by design): no guest
-  acceptance is claimed here, old-image or new-kernel. Once the Linux handoff lands, the exact-source
-  App smoke must run on the verified new boot asset and will replace this pending entry only when it
-  truly runs. Native VideoToolbox frame processing is verified on macOS hosts and is unsupported in
-  the Simulator by Apple's headers; physical-iPad acceptance remains pending.
+- The real-guest App smoke was **not executed in the initial 2026-10-14 attempt** because the kernel handoff was not ready. The actual new-kernel App run in the 2026-10-15 addendum supersedes that pending state; it does not replace physical-iPad acceptance. Native VideoToolbox frame processing is verified on macOS hosts and is unsupported in the Simulator by Apple's headers; physical-iPad acceptance remains pending.
 - The legacy manual Office UI slideshow check is **resolved**: the frame-by-frame 41 s screen
   recording plus the XCUITest action log proved the old helper mistook the slideshow chrome appearing
   for a page turn (the canvas tap advances; a horizontal swipe advances but *ends* the show on the
@@ -55,16 +62,7 @@ the Git freeze, the device archive and TestFlight remain with the serialized rel
   (`floe-sim-qual-<runid>` title + receipt) and trash only the exact document id recorded by their own
   previous receipt — never a name-based match. No simulator erase or destructive reset was performed
   and reused-simulator user data was preserved.
-- **Actual OS notification tap smoke: prepared and compiled, not executed.** The DEBUG fixture hook
-  (`--ui-test-notification-fixture`), the two UI tests (`NotificationTapUITests.testA…` warm,
-  `testB…` cold) and the host trace summarizer are in the tree and compile into the App/UI-test
-  targets. Execution was blocked by a host-wide CoreSimulator failure that began after the Office UI
-  run: **every** app launch (`simctl launch`, including system apps) hangs, test sessions stall before
-  the runner launches, and `xcodebuild` reports `Mach error -308`/`Invalid device state`. Device
-  reboots, a CoreSimulator service restart and device-level kickstarts did not restore it; the
-  concurrent simulator workflow was failing with the same service errors. No OS-level tap result is
-  claimed; exact commands and the handoff state are in
-  `Local/Private/capability-closure-20261014/integration/REMAINING-T5-CONTINUATION.md`.
+- The initial OS-notification smoke was blocked by a shared CoreSimulator host failure before a test runner could launch. The original service/launch failures are retained. Following authorized host recovery, the actual warm/cold tests were executed successfully as recorded in the 2026-10-15 addendum; no app-container erase or historical-result substitution was used.
 - The Office App suites additionally print the pinned engine's process-exit abort
   (`std::__1::system_error: mutex lock failed`) from `COOLWSDServer`/`SocketPoll` static destruction
   after all tests have passed; it is host teardown at XCTest exit, not a document/verification

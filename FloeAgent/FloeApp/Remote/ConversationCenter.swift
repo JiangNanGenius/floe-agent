@@ -703,7 +703,113 @@ final class ConversationCenter: ObservableObject {
 
     private var compactingConversations: Set<UUID> = []
 
+    // MARK: - Temporary chat session
+
+    /// One ephemeral conversation lives entirely in RAM (see
+    /// `FloePersistence/EphemeralStores.swift`). Every durable write route in
+    /// this center dispatches through `conversationStore(for:)` /
+    /// `runStore(for:)` / `runningInputStore(for:)`, so while a session is
+    /// active its content never reaches SQLite, files, drafts, checkpoints,
+    /// notifications or sync. Promotion snapshots the buffered rows into the
+    /// durable stores with a serialized gateway; discard cancels owned runs
+    /// and drops the buffers.
+    struct TemporaryChatSession {
+        enum PromotionState: Equatable {
+            case idle
+            case inFlight(UUID)
+            case completed
+        }
+
+        enum ToggleOutcome: Equatable {
+            /// The temporary session is now active for this conversation id.
+            case temporaryActive(UUID)
+            /// An empty temporary session was toggled off and the ordinary
+            /// blank conversation was restored at the same identity.
+            case restoredOrdinary(UUID)
+            /// The session has ephemeral content; only explicit End or Keep
+            /// is allowed, so the toggle did nothing.
+            case requiresExplicitAction(UUID)
+        }
+
+        var conversation: ConversationRecord
+        let conversationStore: EphemeralConversationStore
+        let runStore: EphemeralRunStore
+        let runningInputStore: EphemeralRunningInputStore
+        let launchStore: EphemeralRunLaunchStore
+        /// Saved conversation the session was opened from, when separate.
+        var sourceConversationID: UUID?
+        /// Empty ordinary row converted in place (identity preserved).
+        var convertedEmptyOrdinaryID: UUID?
+        /// Launchpad-selected model to preserve across the ephemeral thread
+        /// (provider resolves from the model); nil follows the global default.
+        var preferredModelID: UUID?
+        var promotion: PromotionState = .idle
+        /// Fresh identity for every new session, even when a conversation id is
+        /// reused (End restores the ordinary row, a later toggle re-hosts a new
+        /// ephemeral session at the same id). Async Keep/End completions bind
+        /// every mutation to it, so a stale operation can never clear, restore
+        /// or navigate a replacement session.
+        let incarnation: UUID
+    }
+
+    @Published private(set) var temporarySession: TemporaryChatSession?
+
+    /// In-flight toggle-on eligibility attempts, keyed by conversation. The
+    /// verification transaction suspends on the database; while it does, a
+    /// second tap, an explicit End or an actual navigation leave must be
+    /// able to cancel the stale attempt instead of letting it publish a
+    /// session after the user left or overwrite a replacement.
+    private var pendingToggleAttempts: [UUID: UUID] = [:]
+    /// Attempt identities cancelled while their eligibility transaction was
+    /// suspended. The attempt's own continuation consumes its entry exactly
+    /// once and restores what an already-committed removal deleted.
+    private var cancelledToggleAttempts: Set<UUID> = []
+
+    /// Deterministic seam for the suspended eligibility window: runs after a
+    /// verified-empty removal committed and immediately before the post-await
+    /// draft re-check. Never set in production; used to stage the exact race
+    /// (a leave cancelling the attempt, or a staged attachment arriving)
+    /// without an unbounded sleep.
+    struct ToggleTestHooks: Sendable {
+        var afterEligibilityVerify: (@Sendable () async -> Void)?
+    }
+    var toggleTestHooks = ToggleTestHooks()
+
+    /// Cancels an in-flight toggle-on attempt bound to this conversation.
+    /// The root calls this on an actual content leave and `endTemporaryChat`
+    /// calls it for an explicit End, so a slow eligibility transaction can
+    /// never publish a temporary session after the user left. The attempt's
+    /// continuation observes the cancellation, undoes its verified-empty
+    /// removal and reports a no-op outcome; the ordinary record survives.
+    func cancelPendingTemporaryToggle(for conversationID: UUID) {
+        guard let attemptID = pendingToggleAttempts[conversationID] else { return }
+        cancelledToggleAttempts.insert(attemptID)
+    }
+
+    /// Undoes a verified-empty removal a cancelled/stale attempt can no
+    /// longer use. The removed row was only ever a blank ordinary
+    /// conversation (checked in the same transaction), so restoring that
+    /// exact identity preserves the ordinary record. Throws when the
+    /// restoration itself fails: the caller must surface that truth instead
+    /// of publishing a temporary session (or clearing the ordinary draft)
+    /// over a missing ordinary row.
+    private func restoreBlankOrdinaryConversation(id: UUID) async throws {
+        let now = Date()
+        try await environment.conversationStore.saveConversation(ConversationRecord(
+            id: id,
+            title: "",
+            createdAt: now,
+            updatedAt: now
+        ))
+        await refreshConversationInList(id)
+    }
+
     func requestManualCompaction(conversationID: UUID, modelID: UUID?) async throws -> String {
+        // Temporary conversations never compact: there is no durable history
+        // to repair and compaction records would persist content.
+        guard !isTemporaryConversation(conversationID) else {
+            throw FloeError.validationFailed("Temporary conversations are not compacted")
+        }
         guard !compactingConversations.contains(conversationID),
               launchCount == 0,
               !activeRuns.values.contains(where: { $0.conversationID == conversationID }) else {
@@ -749,6 +855,11 @@ final class ConversationCenter: ObservableObject {
     /// caller must release it on sheet completion (or process death releases
     /// it implicitly).
     func exportStructuredConversation(conversationID: UUID) async throws -> (url: URL, lease: ScratchLeaseToken) {
+        // Temporary conversations have no export surface: the transcript only
+        // exists in RAM and must not be written to a shareable file.
+        if isTemporaryConversation(conversationID) {
+            throw FloeError.validationFailed("Temporary conversations cannot be exported")
+        }
         // Owned scratch with a live cleanup lease: the export can take a while
         // and must never be reclaimed mid-write. On success the lease is
         // handed to the caller; on failure it is released here.
@@ -943,6 +1054,50 @@ final class ConversationCenter: ObservableObject {
     private var launchCount = 0
     private var launchWaiters: [CheckedContinuation<Void, Never>] = []
     private var launchFence = LaunchEpochFence()
+
+    /// Run IDs launched with a frozen temporary identity. Unlike the live
+    /// session check, this survives End/Keep: a late completion, failure or
+    /// callback for a destroyed temporary run is dropped through the
+    /// temporary gates (no title generation, no personalization cadence, no
+    /// redacted-content logging) instead of touching durable ordinary state.
+    /// Entries are removed only by the run's own terminal cleanup, never by
+    /// the session destroy.
+    private var temporaryRunIDs: Set<UUID> = []
+
+    /// Frozen origin/store authority for a temporary run. Captured when the
+    /// run is registered and retained through terminal cleanup, so a late
+    /// failure after End can never re-route through the global "current
+    /// temporary session" (nil) and write an ordinary fallback: a destroyed
+    /// session's closed stores fail closed instead.
+    private struct TemporaryRunOrigin {
+        let conversationID: UUID
+        let incarnation: UUID
+        let conversationStore: EphemeralConversationStore
+        let runStore: EphemeralRunStore
+        let runningInputStore: EphemeralRunningInputStore
+    }
+    private var temporaryRunOrigins: [UUID: TemporaryRunOrigin] = [:]
+
+    /// Deterministic test seams for the launch pipeline. Each hook fires at
+    /// one suspension point so tests can interleave End/Keep with a send
+    /// without sleeps. Never set in production.
+    struct LaunchTestHooks: Sendable {
+        /// After `beginLaunch()`, before the (temporary-gated) secret
+        /// capture — the widest pre-deferred race window.
+        var beforeCapture: (@Sendable () async -> Void)?
+        /// First statement of the deferred task body, before any store read
+        /// or service construction — a run that IS registered and owned but
+        /// has not reached the provider yet.
+        var deferredTaskBody: (@Sendable () async -> Void)?
+    }
+    var launchTestHooks = LaunchTestHooks()
+
+    /// Deterministic test seam for the provider adapter of a run. App-host
+    /// tests use it to drive a real run with a scripted adapter (for example
+    /// a provider that emits a tool call carrying a synthetic canary) without
+    /// any network request, credential or paid model. Never set in
+    /// production.
+    var providerAdapterTestOverride: (@Sendable (ProviderProfile, UUID?) -> any ProviderAdapter)?
     private var deletingConversationIDs: Set<UUID> = []
     private var isClearingHistory = false
     private var didReconcileInterruptedRuns = false
@@ -991,6 +1146,9 @@ final class ConversationCenter: ObservableObject {
     /// have no run identity (skills, memory flows, standalone probes) keep the
     /// conservative explicit-confirmation path.
     func providerAdapter(for provider: ProviderProfile, ownerRunID: UUID? = nil) -> any ProviderAdapter {
+        if let override = providerAdapterTestOverride {
+            return override(provider, ownerRunID)
+        }
         if provider.kind == .local {
             return LocalProviderAdapter(
                 runtime: environment.localModelRuntime,
@@ -1178,14 +1336,17 @@ final class ConversationCenter: ObservableObject {
         // Capture before the first suspension. A newer event must never label
         // an older set of database reads with its revision.
         let revision = sessionRevisions[conversationID, default: 0]
-        guard let conversation = try await environment.conversationStore.conversation(id: conversationID) else {
+        let isTemporary = isTemporaryConversation(conversationID)
+        let conversationStore = self.conversationStore(for: conversationID)
+        let runStore = self.runStore(for: conversationID)
+        guard let conversation = try await conversationStore.conversation(id: conversationID) else {
             throw FloeError.notFound("conversation \(conversationID.uuidString)")
         }
-        let messagePage = try await environment.conversationStore.messagePage(
+        let messagePage = try await conversationStore.messagePage(
             conversationID: conversationID, before: nil, limit: 20
         )
         let messages = messagePage.messages
-        let runs = try await environment.runStore.recentRuns(
+        let runs = try await runStore.recentRuns(
             conversationID: conversationID, limit: 160
         )
         let taskPolicy = try await SQLiteWorkspaceStore(database: environment.database)
@@ -1203,7 +1364,7 @@ final class ConversationCenter: ObservableObject {
         var events: [UUID: [RunEventRecord]] = [:]
         try await withThrowingTaskGroup(of: (UUID, [RunEventRecord]).self) { group in
             for runID in visibleRunIDs.intersection(mutableRunIDs) {
-                group.addTask { [runStore = environment.runStore] in
+                group.addTask { [runStore] in
                     // A resumed scene needs the actual latest tail, even when
                     // thousands of events arrived after its cached watermark.
                     // Older and disjoint pages remain the view model's job.
@@ -1217,6 +1378,11 @@ final class ConversationCenter: ObservableObject {
         // identity and durable transcript mirror are both proven, so the
         // decision stays visible and can never be launched as a new run.
         await retireOrphanedInternalNoticeRows(conversationID: conversationID)
+        // Temporary conversations own no plan/checklist/goal records; the
+        // intelligence store must never see their content.
+        let latestPlan = isTemporary ? nil : try await environment.intelligenceStore.latestPlan(conversationID: conversationID)
+        let taskChecklist = isTemporary ? nil : try await TaskChecklistStore(database: environment.database).latest(conversationID: conversationID)
+        let activeGoal = isTemporary ? nil : try await environment.intelligenceStore.goals(conversationID: conversationID).first
         let snapshot = ConversationSessionSnapshot(
             revision: revision,
             conversation: conversation,
@@ -1226,11 +1392,11 @@ final class ConversationCenter: ObservableObject {
             runs: runs,
             eventsByRun: events,
             pendingApprovals: pendingApprovals.filter { $0.conversationID == conversationID },
-            latestPlan: try await environment.intelligenceStore.latestPlan(conversationID: conversationID),
-            taskChecklist: try await TaskChecklistStore(database: environment.database).latest(conversationID: conversationID),
-            activeGoal: try await environment.intelligenceStore.goals(conversationID: conversationID).first,
+            latestPlan: latestPlan,
+            taskChecklist: taskChecklist,
+            activeGoal: activeGoal,
             taskPolicy: taskPolicy,
-            pendingInputs: try await environment.runningInputStore.pending(conversationID: conversationID)
+            pendingInputs: try await runningInputStore(for: conversationID).pending(conversationID: conversationID)
         )
         if revision >= (sessionSnapshotCache[conversationID]?.revision ?? -1) {
             sessionSnapshotCache[conversationID] = snapshot
@@ -1303,6 +1469,8 @@ final class ConversationCenter: ObservableObject {
     /// Single-record list refresh: swap the re-read conversation into the
     /// sorted list (or insert when new). Cheap counterpart to full reload().
     private func refreshConversationInList(_ conversationID: UUID) async {
+        // Temporary conversations never enter the saved list projection.
+        guard !isTemporaryConversation(conversationID) else { return }
         guard let fresh = try? await environment.conversationStore.conversation(id: conversationID) else { return }
         guard fresh.purpose == .ordinary else {
             conversations.removeAll { $0.id == conversationID }
@@ -1404,6 +1572,777 @@ final class ConversationCenter: ObservableObject {
         return record
     }
 
+    // MARK: - Temporary chat (store routing + lifecycle)
+
+    func isTemporaryConversation(_ conversationID: UUID) -> Bool {
+        temporarySession?.conversation.id == conversationID
+    }
+
+    /// Every conversation-store read/write dispatches here so a temporary
+    /// session stays RAM-only without a parallel runtime.
+    func conversationStore(for conversationID: UUID) -> any ConversationStore {
+        if let session = temporarySession, session.conversation.id == conversationID {
+            return session.conversationStore
+        }
+        return environment.conversationStore
+    }
+
+    func runStore(for conversationID: UUID) -> any RunStore {
+        if let session = temporarySession, session.conversation.id == conversationID {
+            return session.runStore
+        }
+        return environment.runStore
+    }
+
+    func runningInputStore(for conversationID: UUID) -> any RunningInputStore {
+        if let session = temporarySession, session.conversation.id == conversationID {
+            return session.runningInputStore
+        }
+        return environment.runningInputStore
+    }
+
+    /// Resolves the store owning a pending input row. At most one temporary
+    /// session exists, so probing it first keeps the lookup O(1) and exact.
+    private func runningInputStore(containingInput id: UUID) async -> any RunningInputStore {
+        if let session = temporarySession,
+           let value = try? await session.runningInputStore.input(id: id),
+           value.conversationID == session.conversation.id {
+            return session.runningInputStore
+        }
+        return environment.runningInputStore
+    }
+
+    /// Turns temporary mode on/off for the given conversation. Only a
+    /// VERIFIED-EMPTY conversation (no messages, attachments, runs, queued
+    /// inputs, workspace ownership or saved settings — checked atomically by
+    /// the store) converts in place; the empty durable row is removed and
+    /// the same identity is hosted in RAM. Any conversation that owns a
+    /// durable resource — including an empty-message ordinary chat with a
+    /// workspace, files, a staged attachment draft or a pending run — spawns
+    /// a separate fresh temporary session instead, and that ordinary row,
+    /// its identity and every owned resource are never modified.
+    @discardableResult
+    func toggleTemporaryChat(for conversationID: UUID) async throws -> TemporaryChatSession.ToggleOutcome {
+        if var session = temporarySession, session.conversation.id == conversationID {
+            // Toggle OFF is only silent while nothing ephemeral exists yet.
+            let messageCount = try await session.conversationStore
+                .messages(conversationID: conversationID).count
+            guard messageCount == 0 else {
+                return .requiresExplicitAction(conversationID)
+            }
+            let convertedID = session.convertedEmptyOrdinaryID
+            let sourceID = session.sourceConversationID
+            await discardTemporarySession()
+            if let convertedID {
+                // Restore the ordinary blank conversation at the same id.
+                let now = Date()
+                let restored = ConversationRecord(
+                    id: convertedID,
+                    title: "",
+                    createdAt: now,
+                    updatedAt: now
+                )
+                try await environment.conversationStore.saveConversation(restored)
+                await refreshConversationInList(convertedID)
+                return .restoredOrdinary(convertedID)
+            }
+            return .restoredOrdinary(sourceID ?? conversationID)
+        }
+
+        // Toggle ON. Refuse inside another temporary session.
+        if temporarySession != nil {
+            throw FloeError.validationFailed("End the current temporary chat first")
+        }
+        // One attempt per conversation. The eligibility transaction suspends
+        // on the database, so a second tap during that window is a no-op
+        // instead of a second session (the deliberate toggle-off path above
+        // already handles a tap once a session is published).
+        guard pendingToggleAttempts[conversationID] == nil else {
+            return .requiresExplicitAction(conversationID)
+        }
+        let attemptID = UUID()
+        pendingToggleAttempts[conversationID] = attemptID
+        defer {
+            if pendingToggleAttempts[conversationID] == attemptID {
+                pendingToggleAttempts[conversationID] = nil
+            }
+            cancelledToggleAttempts.remove(attemptID)
+        }
+        // Fail closed: the in-place conversion REMOVES the durable row, so it
+        // is allowed ONLY when the conversation verifiably owns no durable
+        // resource at all. The store performs the resource verification and
+        // the removal inside ONE writer transaction (no read/delete TOCTOU):
+        // any workspace ownership (with real user files), attachment, run,
+        // queued input, durable job or saved setting refuses the removal and
+        // routes to the separate-session path below, leaving the ordinary
+        // row, its id and every owned resource untouched. A durable composer
+        // draft carrying staged attachments is itself a resource and is
+        // checked here on the main actor before the store call.
+        let durableDraftHasAttachments = !ComposerDraftStore.shared
+            .attachments(for: conversationID).isEmpty
+        var removedEmptyRow = false
+        if !durableDraftHasAttachments {
+            removedEmptyRow = try await environment.conversationStore
+                .deleteConversationIfVerifiedEmpty(id: conversationID)
+        }
+        // ---- Common post-await barrier: BOTH outcomes, every publish ----
+        // The eligibility transaction suspends on the database regardless of
+        // its result (true OR false), and any restoration below suspends
+        // again. While it settles, an actual content leave/End may cancel
+        // this attempt, or a replacement session may be installed for
+        // another conversation. Neither may be overwritten by a late publish
+        // from this attempt, and a committed removal must be undone so the
+        // ordinary record survives.
+        await toggleTestHooks.afterEligibilityVerify?()
+        if cancelledToggleAttempts.contains(attemptID) || temporarySession != nil {
+            if removedEmptyRow {
+                try await restoreBlankOrdinaryConversation(id: conversationID)
+                removedEmptyRow = false
+            }
+            return .requiresExplicitAction(conversationID)
+        }
+        var convertedInPlace = removedEmptyRow
+        if convertedInPlace, !ComposerDraftStore.shared.attachments(for: conversationID).isEmpty {
+            // A staged attachment landed in the durable draft while the
+            // removal committed: undo it and take the separate-session path
+            // so the staged file and its draft are never cleared.
+            try await restoreBlankOrdinaryConversation(id: conversationID)
+            removedEmptyRow = false
+            convertedInPlace = false
+            // The restoration awaited: re-check the barrier before any
+            // publish below.
+            if cancelledToggleAttempts.contains(attemptID) || temporarySession != nil {
+                return .requiresExplicitAction(conversationID)
+            }
+        }
+        if convertedInPlace {
+            // Convert the verified-empty ordinary row in place: the durable
+            // row was removed by the same transaction that proved it owned
+            // nothing; host the same id in RAM. Any persisted text-only
+            // draft for the empty row is dropped too — the view model keeps
+            // the visible text in RAM through the toggle.
+            conversations.removeAll { $0.id == conversationID }
+            ComposerDraftStore.shared.clear(conversationID: conversationID)
+            promotionContext = nil
+            lastPromotedConversationID = nil
+            keepOperationID = nil
+            var session = makeTemporarySession(
+                id: conversationID,
+                title: "",
+                convertedEmptyOrdinaryID: conversationID
+            )
+            session.promotion = .idle
+            temporarySession = session
+            ComposerDraftStore.shared.setTemporaryDraftExcluded(conversationID, true)
+            publishSession(conversationID)
+            return .temporaryActive(conversationID)
+        }
+        // Populated or resource-owning conversation: a separate fresh
+        // temporary chat. The saved history, workspace/files, staged
+        // attachments and settings are untouched and the saved conversation
+        // stays selected when the session ends.
+        promotionContext = nil
+        lastPromotedConversationID = nil
+        keepOperationID = nil
+        var session = makeTemporarySession(
+            id: UUID(),
+            title: "",
+            sourceConversationID: conversationID
+        )
+        session.promotion = .idle
+        temporarySession = session
+        ComposerDraftStore.shared.setTemporaryDraftExcluded(session.conversation.id, true)
+        publishSession(session.conversation.id)
+        return .temporaryActive(session.conversation.id)
+    }
+
+    private func makeTemporarySession(
+        id: UUID,
+        title: String,
+        sourceConversationID: UUID? = nil,
+        convertedEmptyOrdinaryID: UUID? = nil
+    ) -> TemporaryChatSession {
+        let record = ConversationRecord(
+            id: id,
+            title: title,
+            createdAt: Date(),
+            updatedAt: Date(),
+            purpose: .temporary
+        )
+        let conversationStore = EphemeralConversationStore(record: record)
+        let runStore = EphemeralRunStore(hostedConversationID: id)
+        let runningInputStore = EphemeralRunningInputStore(hostedConversationID: id)
+        return TemporaryChatSession(
+            conversation: record,
+            conversationStore: conversationStore,
+            runStore: runStore,
+            runningInputStore: runningInputStore,
+            launchStore: EphemeralRunLaunchStore(
+                hostedConversationID: id,
+                conversationStore: conversationStore,
+                runStore: runStore
+            ),
+            sourceConversationID: sourceConversationID,
+            convertedEmptyOrdinaryID: convertedEmptyOrdinaryID,
+            incarnation: UUID()
+        )
+    }
+
+    /// Starts a memory-only temporary session directly — no durable blank
+    /// placeholder is created (and therefore none needs deleting). The
+    /// hosted conversation exists only in RAM from the first byte; an
+    /// optional launchpad draft is carried VERBATIM into the RAM-only
+    /// ephemeral composer bucket (text only: temporary chat never accepts
+    /// attachments, and the caller's unsent ordinary attachments/draft stay
+    /// untouched under the launchpad identity). Returns the hosted
+    /// conversation id for navigation; throws when a session is active.
+    @discardableResult
+    func startTemporarySession(
+        id: UUID = UUID(),
+        initialDraft: String = "",
+        preferredModelID: UUID? = nil
+    ) async throws -> UUID {
+        if temporarySession != nil {
+            throw FloeError.validationFailed("End the current temporary chat first")
+        }
+        // A new session never inherits a previous attempt's frozen context or
+        // promoted identity.
+        promotionContext = nil
+        lastPromotedConversationID = nil
+        keepOperationID = nil
+        var session = makeTemporarySession(id: id, title: "")
+        session.preferredModelID = preferredModelID
+        session.promotion = .idle
+        temporarySession = session
+        // Exclusion BEFORE the draft write so the text lands in the
+        // ephemeral bucket and can never flush to disk. The draft is carried
+        // VERBATIM — whitespace is trimmed only for the emptiness check.
+        ComposerDraftStore.shared.setTemporaryDraftExcluded(id, true)
+        if !initialDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ComposerDraftStore.shared.save(text: initialDraft, conversationID: id)
+        }
+        publishSession(id)
+        return id
+    }
+
+    /// Discards the session (RAM only) without touching durable stores.
+    private func discardTemporarySession() async {
+        guard let session = temporarySession else { return }
+        let id = session.conversation.id
+        temporarySession = nil
+        lastPromotedConversationID = nil
+        promotionContext = nil
+        keepOperation = nil
+        keepOperationID = nil
+        await session.conversationStore.close()
+        await session.runStore.close()
+        await session.runningInputStore.close()
+        // The RAM draft never enters the durable bucket; make sure no stale
+        // durable entry survives either.
+        ComposerDraftStore.shared.setTemporaryDraftExcluded(id, false)
+        ComposerDraftStore.shared.clear(conversationID: id)
+        objectWillChange.send()
+    }
+
+    /// Where the UI should land after the session ends.
+    enum TemporarySessionEndTarget: Sendable, Equatable {
+        /// Reopen this ordinary conversation (the converted blank row or
+        /// the saved chat the separate session was opened from).
+        case conversation(UUID)
+        /// No durable conversation remains (launchpad-direct session):
+        /// return to the fresh-task surface.
+        case newTask
+        /// The caller's expected session identity is no longer active
+        /// (a late callback from an old view): do nothing and navigate
+        /// nowhere.
+        case unavailable
+    }
+
+    /// Explicitly ends the temporary chat. An actual leave — switching to
+    /// another conversation, New Task, or any other route — destroys the
+    /// session IMMEDIATELY, even mid-generation and EVEN WHILE A KEEP IS
+    /// BLOCKED: the first section below runs SYNCHRONOUSLY before any await
+    /// — identity check, session detach, scoped launch-fence invalidation,
+    /// owned-run bookkeeping removal and RAM-draft removal all land before
+    /// this function suspends, so a slow Keep writer can never leave a live
+    /// resumable temporary surface behind. The owned run services and owner
+    /// tasks are snapshotted BEFORE detach, so the explicit
+    /// `ConversationRunService.cancel()` (not only task cancellation) is
+    /// dispatched to the exact services that belonged to this session.
+    /// The RAM buffers then close immediately — late appends fail closed
+    /// instead of waiting for a blocked Keep — and the in-flight Keep is
+    /// allowed to settle separately without delaying the destroy and without
+    /// being relaunched: only genuinely committed durable rows survive as
+    /// ordinary truth. Background/foreground is not a leave and never
+    /// reaches here.
+    @discardableResult
+    func endTemporaryChat(
+        expectedConversationID: UUID? = nil,
+        expectedIncarnation: UUID? = nil
+    ) async -> TemporarySessionEndTarget {
+        // ---- Synchronous detach: NO awaits above this line. ----
+        // An explicit End also cancels an in-flight toggle-on attempt for the
+        // SAME conversation: the eligibility transaction may still be
+        // suspended, and it must never publish a session after this leave.
+        if let expectedConversationID {
+            cancelPendingTemporaryToggle(for: expectedConversationID)
+        }
+        guard let session = temporarySession else {
+            // No active session. A scoped callback from an old view/route must
+            // never navigate: only an unscoped programmatic End falls back to
+            // the fresh-task surface.
+            return expectedConversationID == nil ? .newTask : .unavailable
+        }
+        if let expectedConversationID, expectedConversationID != session.conversation.id {
+            // A late callback from an old view must not destroy a new
+            // session: drop it without acting and without navigating.
+            return .unavailable
+        }
+        if let expectedIncarnation, expectedIncarnation != session.incarnation {
+            // Same conversation id, different session epoch (End restored the
+            // ordinary row and a fresh temporary session was hosted at the
+            // same UUID): the old epoch's callback must not destroy the new
+            // generation.
+            return .unavailable
+        }
+        let id = session.conversation.id
+        let convertedID = session.convertedEmptyOrdinaryID
+        let sourceID = session.sourceConversationID
+        let settleKeep = keepOperation
+        // The global Keep operation reference is cleared NOW, not from the old
+        // operation's `defer` later: a stale completion must neither keep the
+        // keep-slot occupied nor clear a replacement operation's marker.
+        keepOperation = nil
+        keepOperationID = nil
+        // Observable tombstone: from this exact line the temporary surface
+        // no longer exists — no routing, no new sends, no resumable state.
+        temporarySession = nil
+        lastPromotedConversationID = nil
+        promotionContext = nil
+        launchFence.invalidate(scope: id)
+        let ownedRunIDs = activeRuns.values
+            .filter { $0.conversationID == id }
+            .map(\.id)
+        // Snapshot the exact owners BEFORE detaching the bookkeeping: the
+        // explicit service cancellation must reach the service object that
+        // was registered for this session, not a dictionary lookup that the
+        // detach just emptied.
+        let ownedServices = ownedRunIDs.compactMap { runServices[$0] }
+        let ownedTasks = ownedRunIDs.compactMap { runTasks[$0] }
+        for runID in ownedRunIDs {
+            activeRuns[runID] = nil
+            runServices[runID] = nil
+            snapshotTasks[runID]?.cancel()
+            snapshotTasks[runID] = nil
+        }
+        // The frozen temporary run identities stay registered until their own
+        // terminal cleanup: a late failure/completion of a destroyed run must
+        // keep its redacted temporary classification instead of falling back
+        // to "ordinary" once the session is gone.
+        // The RAM draft is unavailable IMMEDIATELY — before any await.
+        ComposerDraftStore.shared.setTemporaryDraftExcluded(id, false)
+        ComposerDraftStore.shared.clear(conversationID: id)
+        objectWillChange.send()
+
+        // ---- Close the RAM buffers immediately. ----
+        // Late appends from a still-unwinding run hit the tombstone and fail
+        // closed; they must not wait for (or be dropped into) a blocked Keep.
+        await session.conversationStore.close()
+        await session.runStore.close()
+        await session.runningInputStore.close()
+
+        // ---- Cancellation dispatch: still before any keep settlement. ----
+        // The explicit service cancel is what closes the run service's own
+        // unstructured runtime work; task cancellation alone does not.
+        for service in ownedServices {
+            await service.cancel()
+        }
+        for task in ownedTasks {
+            task.cancel()
+        }
+        for runID in ownedRunIDs {
+            runTasks[runID] = nil
+        }
+
+        // ---- Durable commit settlement, separately and without relaunch. --
+        // The session is already destroyed, so nothing here can reactivate
+        // the temporary surface or navigate. A committed promotion stays an
+        // ordinary saved chat; a blocked/failed one preserves nothing that
+        // was not explicitly committed.
+        if let settleKeep {
+            _ = try? await settleKeep.value
+        }
+
+        // ---- Route the caller to where the session started from. ----
+        if let convertedID {
+            // Never overwrite a row that a committed Keep already wrote: the
+            // promoted conversation's real title/metadata are ordinary truth.
+            // The blank placeholder is created only when it is truly absent.
+            if (try? await environment.conversationStore.conversation(id: convertedID)) == nil {
+                let now = Date()
+                try? await environment.conversationStore.saveConversation(ConversationRecord(
+                    id: convertedID,
+                    title: "",
+                    createdAt: now,
+                    updatedAt: now
+                ))
+            }
+            await refreshConversationInList(convertedID)
+            publishSession(convertedID)
+            return .conversation(convertedID)
+        }
+        if let sourceID {
+            publishSession(sourceID)
+            return .conversation(sourceID)
+        }
+        publishSession(id)
+        return .newTask
+    }
+
+    /// Current promotion progress for the UI (saving / failed / done).
+    var temporaryPromotionState: TemporaryChatSession.PromotionState {
+        temporarySession?.promotion ?? .idle
+    }
+
+    /// Atomically promotes the temporary conversation into a saved ordinary
+    /// conversation. Idempotent: repeat calls while one promotion is in
+    /// flight return without restarting; after success they return the saved
+    /// record. A failure compensates every durable row and leaves the RAM
+    /// session fully recoverable.
+    /// Durable snapshot writer for promotion. Production uses
+    /// `defaultPromotionSnapshotWriter`; tests inject a failing writer to
+    /// prove rollback + RAM recovery. The queued/steer running inputs frozen
+    /// at the watermark ride the SAME writer so they commit inside the one
+    /// GRDB transaction (a Keep can never report success while pending
+    /// messages exist only in RAM).
+    typealias PromotionSnapshotWriter = @Sendable (
+        _ saved: ConversationRecord,
+        _ conversationSnapshot: EphemeralConversationStore.Snapshot,
+        _ runSnapshot: EphemeralRunStore.Snapshot,
+        _ inputSnapshot: [PendingUserInput]
+    ) async throws -> Void
+
+    private func defaultPromotionSnapshotWriter() -> PromotionSnapshotWriter {
+        // One real GRDB transaction commits the whole frozen snapshot; any
+        // failure rolls back to zero durable rows (no compensating delete).
+        let promoter = ConversationPromoter(database: environment.database)
+        return { saved, conversationSnapshot, runSnapshot, inputSnapshot in
+            var events: [RunEventRecord] = []
+            for run in runSnapshot.runs {
+                events.append(contentsOf: runSnapshot.events[run.id, default: []])
+            }
+            try await promoter.promote(ConversationPromoter.Snapshot(
+                conversation: saved,
+                messages: conversationSnapshot.messages,
+                attachments: conversationSnapshot.attachments,
+                runs: runSnapshot.runs,
+                events: events,
+                usage: runSnapshot.runs.flatMap { runSnapshot.usage[$0.id, default: []] },
+                errors: runSnapshot.runs.flatMap { runSnapshot.errors[$0.id, default: []] },
+                inputs: inputSnapshot
+            ))
+        }
+    }
+
+    /// Distinct failure for a promotion whose durable transaction COMMITTED
+    /// but whose post-watermark tail forwarding failed. The core save is
+    /// already ordinary truth; retrying the save resumes from the failed
+    /// gateway step (no duplicate insert, no resend). The UI must say
+    /// "saved, finishing the remainder" — never a false "nothing saved".
+    enum TemporaryKeepError: Error, Sendable, CustomStringConvertible {
+        case tailPending(message: String)
+
+        var description: String {
+            switch self {
+            case .tailPending(let message): message
+            }
+        }
+    }
+
+    /// Frozen inputs of an in-flight promotion attempt, kept so a retry
+    /// after a post-commit failure resumes from the committed step instead
+    /// of re-entering `beginPromotion` against an already-forwarded store.
+    private struct PromotionAttemptContext {
+        let sessionID: UUID
+        /// Session incarnation the attempt belongs to: a replacement session
+        /// that reuses the conversation id can never adopt this context.
+        let incarnation: UUID
+        let idempotencyKey: UUID
+        var saved: ConversationRecord
+        var conversationSnapshot: EphemeralConversationStore.Snapshot
+        var runSnapshot: EphemeralRunStore.Snapshot
+        var inputSnapshot: [PendingUserInput]
+    }
+    private var promotionContext: PromotionAttemptContext?
+
+    /// Deterministic promotion test seam: called with the 1-based gateway
+    /// step number before that step's `completePromotion`. Throwing fails the
+    /// step (real durable rows already committed by the writer stay), which
+    /// is how the post-commit retry path is exercised without touching
+    /// production stores. Never set in production.
+    struct PromotionTestHooks: Sendable {
+        var beforeGatewayStep: (@Sendable (Int) async throws -> Void)?
+    }
+    var promotionTestHooks = PromotionTestHooks()
+
+    /// The single in-flight Keep operation, if any. Ending the session
+    /// detaches it so an explicit leave settles commit truth without letting
+    /// a stale completion clear a replacement operation's marker.
+    private var keepOperation: Task<ConversationRecord, Error>?
+    /// Identity of the in-flight Keep, so the operation's own `defer` only
+    /// clears its own marker (never a newer operation's).
+    private var keepOperationID: UUID?
+
+    /// Last successfully promoted conversation, so a programmatic repeat
+    /// Keep after success returns the durable record (idempotent retry).
+    /// Cleared when the session is discarded (End) or a new session starts.
+    /// The UI reads it to bind Keep completion to the operation's own
+    /// identity (a leave + replacement must not be touched by a stale
+    /// callback).
+    private(set) var lastPromotedConversationID: UUID?
+
+    /// True while the exact session incarnation that started the operation is
+    /// still the active temporary session. Every Keep success/catch mutation
+    /// checks it before touching session state, drafts or navigation.
+    private func isActiveTemporarySession(id: UUID, incarnation: UUID) -> Bool {
+        guard let current = temporarySession else { return false }
+        return current.conversation.id == id && current.incarnation == incarnation
+    }
+
+    /// Performs one promotion attempt. The writer and the gateway steps are
+    /// idempotent/resumable: a retry after a post-commit tail failure never
+    /// double-inserts and never re-runs `beginPromotion` against an
+    /// already-forwarded store.
+    private func performKeep(
+        idempotencyKey: UUID,
+        snapshotWriter: PromotionSnapshotWriter?
+    ) async throws -> ConversationRecord {
+        guard var session = temporarySession else {
+            throw FloeError.validationFailed("No temporary chat is active")
+        }
+        switch session.promotion {
+        case .completed:
+            // Idempotent repeat: the durable row is the source of truth.
+            guard let saved = try await environment.conversationStore
+                .conversation(id: session.conversation.id) else {
+                throw FloeError.notFound("Promoted conversation disappeared")
+            }
+            return saved
+        case .inFlight:
+            // Unreachable while `keepOperation` guards the entry, but never
+            // start a second writer.
+            throw FloeError.validationFailed("A save is already in progress")
+        case .idle:
+            break
+        }
+
+        let conversationID = session.conversation.id
+        let incarnation = session.incarnation
+        session.promotion = .inFlight(idempotencyKey)
+        temporarySession = session
+
+        // Snapshot under the gateway; appends keep buffering in RAM.
+        // `beginPromotion` returns the FROZEN watermark snapshot — the
+        // exact promoter input. On a RESUME (a previous attempt committed
+        // the durable transaction but failed a later step) the frozen
+        // snapshots stay pinned in `promotionContext` so the retry neither
+        // double-commits nor re-races stream appends.
+        let context: PromotionAttemptContext
+        if let existing = promotionContext,
+           existing.sessionID == conversationID,
+           existing.incarnation == incarnation {
+            context = existing
+        } else {
+            let conversationSnapshot = try await session.conversationStore.beginPromotion()
+            let runSnapshot = try await session.runStore.beginPromotion()
+            let inputSnapshot = try await session.runningInputStore.beginPromotion()
+            var saved = conversationSnapshot.conversation
+            saved.purpose = .ordinary
+            if saved.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                saved.title = Self.temporaryPromotedTitle(
+                    messages: conversationSnapshot.messages)
+            }
+            let fresh = PromotionAttemptContext(
+                sessionID: conversationID,
+                incarnation: incarnation,
+                idempotencyKey: idempotencyKey,
+                saved: saved,
+                conversationSnapshot: conversationSnapshot,
+                runSnapshot: runSnapshot,
+                inputSnapshot: inputSnapshot
+            )
+            promotionContext = fresh
+            context = fresh
+        }
+
+        do {
+            // Persist through ONE real GRDB transaction (the default writer is
+            // ConversationPromoter): the whole frozen snapshot commits or the
+            // transaction rolls back to zero durable rows — no compensating
+            // delete, no partial history/index. The writer is idempotent
+            // (ON CONFLICT upserts), so a resume re-commits committed rows
+            // as semantic no-ops.
+            try await (snapshotWriter ?? defaultPromotionSnapshotWriter())(
+                context.saved, context.conversationSnapshot, context.runSnapshot,
+                context.inputSnapshot)
+            // Flip the gateways: buffered rows forward in order, and every
+            // later runtime append lands directly in the durable stores.
+            // Each step resumes independently — a store whose gateway
+            // already forwarded is skipped; one still promoting forwards
+            // only its post-watermark tail (the run store tracks tail
+            // progress so a mid-tail failure never duplicates events).
+            let gatewayHook = promotionTestHooks.beforeGatewayStep
+            if !(await session.conversationStore.isForwarded) {
+                try await gatewayHook?(1)
+                try await session.conversationStore.completePromotion(
+                    durable: environment.conversationStore)
+            }
+            if !(await session.runStore.isForwarded) {
+                try await gatewayHook?(2)
+                try await session.runStore.completePromotion(durable: environment.runStore)
+            }
+            if !(await session.runningInputStore.isForwarded) {
+                try await gatewayHook?(3)
+                try await session.runningInputStore.completePromotion(
+                    durable: environment.runningInputStore)
+            }
+
+            // Identity guard: if the session was destroyed or replaced while
+            // the save settled (End during a blocked Keep, then a new session
+            // B), the committed rows stay ordinary truth but this completion
+            // must not clear, restore, re-navigate or migrate drafts for a
+            // session it no longer owns.
+            guard isActiveTemporarySession(id: conversationID, incarnation: incarnation) else {
+                return context.saved
+            }
+            promotionContext = nil
+            temporarySession = nil
+            lastPromotedConversationID = conversationID
+            // Migrate the un-sent RAM composer draft into the durable bucket
+            // (Keep adopts current records); End still drops it.
+            ComposerDraftStore.shared.moveEphemeralEntryToDurable(for: conversationID)
+            await environment.workspaceCenter.reload()
+            await refreshConversationInList(conversationID)
+            publishSession(conversationID)
+            return context.saved
+        } catch {
+            // Pre-commit failure: nothing durable was written through the
+            // gateway — abort to `.idle` with RAM fully intact.
+            // Post-commit failure: the committed rows stay ordinary truth;
+            // the gateway states and the frozen context stay pinned so the
+            // NEXT Keep resumes from the failed step (no double insert, no
+            // re-begin). The session is retryable in BOTH cases — the
+            // post-commit branch must restore the tryable `.idle` state too,
+            // before surfacing tailPending, or the retry would be rejected
+            // as "already in progress" forever.
+            let conversationForwarded = await session.conversationStore.isForwarded
+            let runForwarded = await session.runStore.isForwarded
+            let stillOwner = isActiveTemporarySession(id: conversationID, incarnation: incarnation)
+            if !conversationForwarded && !runForwarded {
+                await session.conversationStore.abortPromotion()
+                await session.runStore.abortPromotion()
+                await session.runningInputStore.abortPromotion()
+                if stillOwner { promotionContext = nil }
+            } else {
+                // Post-commit failure: restore the retryable state for the
+                // SAME identity only, keeping the pinned frozen context so
+                // the retry resumes the failed gateway step exactly once.
+                if stillOwner {
+                    var recovered = session
+                    recovered.promotion = .idle
+                    temporarySession = recovered
+                }
+                throw TemporaryKeepError.tailPending(message: error.localizedDescription)
+            }
+            if stillOwner {
+                var recovered = session
+                recovered.promotion = .idle
+                temporarySession = recovered
+            }
+            throw error
+        }
+    }
+
+    @discardableResult
+    func keepTemporaryChat(
+        expectedConversationID: UUID? = nil,
+        expectedIncarnation: UUID? = nil,
+        idempotencyKey: UUID = UUID(),
+        snapshotWriter: PromotionSnapshotWriter? = nil
+    ) async throws -> ConversationRecord {
+        if let keepOperation {
+            // A promotion is already running; never start a second writer.
+            throw FloeError.validationFailed("A save is already in progress")
+        }
+        if let session = temporarySession {
+            if let expectedConversationID,
+               session.conversation.id != expectedConversationID {
+                // A late callback from an old view must not act on a new session.
+                throw FloeError.validationFailed("Temporary chat identity mismatch")
+            }
+            if let expectedIncarnation, session.incarnation != expectedIncarnation {
+                // Same conversation id, different session epoch: a stale Keep
+                // can never promote the new generation.
+                throw FloeError.validationFailed("Temporary chat identity mismatch")
+            }
+        } else if expectedConversationID != nil,
+                  expectedConversationID != lastPromotedConversationID {
+            // No active session: a stale expectation can never adopt a
+            // different promoted conversation.
+            throw FloeError.validationFailed("Temporary chat identity mismatch")
+        }
+        if temporarySession == nil {
+            // Repeat Keep after a successful promotion: surface the durable
+            // record (idempotent retry contract). A stale expectation from an
+            // old view can never adopt a different promoted conversation.
+            if let expectedConversationID,
+               expectedConversationID != lastPromotedConversationID {
+                throw FloeError.validationFailed("Temporary chat identity mismatch")
+            }
+            if let lastPromotedConversationID,
+               let saved = try await environment.conversationStore
+                .conversation(id: lastPromotedConversationID) {
+                return saved
+            }
+            throw FloeError.validationFailed("No temporary chat is active")
+        }
+        let operationID = UUID()
+        let operation = Task<ConversationRecord, Error> { [weak self] in
+            guard let self else {
+                throw FloeError.internalError("Conversation center was released")
+            }
+            return try await self.performKeep(
+                idempotencyKey: idempotencyKey,
+                snapshotWriter: snapshotWriter)
+        }
+        keepOperation = operation
+        keepOperationID = operationID
+        // Only this operation's own completion clears its marker: an End that
+        // detached it (and a replacement Keep that set a new marker) must not
+        // be unregistered by the stale operation's teardown.
+        defer {
+            if keepOperationID == operationID {
+                keepOperation = nil
+                keepOperationID = nil
+            }
+        }
+        return try await operation.value
+    }
+
+    /// Promotion title: local, instant, content-derived from the first user
+    /// message; the ordinary automatic-title flow may replace it later.
+    private static func temporaryPromotedTitle(messages: [PersistedMessage]) -> String {
+        guard let first = messages.first(where: { $0.role == "user" }) else {
+            return ""
+        }
+        let source = first.content
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else { return "" }
+        let title = String(source.prefix(40))
+        return title.count < source.count ? title + "…" : title
+    }
+
     // MARK: - Run lifecycle
 
     /// Builds (but does not start) a run service bound to the given
@@ -1453,15 +2392,36 @@ final class ConversationCenter: ObservableObject {
         runSurface: AgentRunSurface = .ordinary,
         workspaceID: UUID? = nil,
         memoryQuery: String = "",
+        /// Launch-frozen temporary authority. When nil the identity is
+        /// derived from the live session (resume/foreground paths that
+        /// rebuild a service for the CURRENT state); the launch pipeline
+        /// passes the value captured BEFORE its first await so an End/Keep
+        /// racing the pipeline can never switch a started run between the
+        /// temporary and ordinary configurations.
+        temporaryAuthority: Bool? = nil,
         conversationHistory: [ConversationMessage] = [],
         currentUserImages: [ConversationImagePart] = [],
         currentUserAttachments: [AttachmentRef] = []
     ) async -> ConversationRunService {
-        let conversationHistory = (try? await environment.intelligenceStore.applyingCompactions(conversationHistory, conversationID: conversationID)) ?? conversationHistory
+        // Temporary conversations run through the SAME runtime with RAM-only
+        // stores, no workspace lease, no personalization/memory recall, and a
+        // strict web-only tool ceiling — never a parallel runtime.
+        let isTemporary = temporaryAuthority ?? isTemporaryConversation(conversationID)
+        let conversationStore = self.conversationStore(for: conversationID)
+        let runStore = self.runStore(for: conversationID)
+        let runningInputStore = self.runningInputStore(for: conversationID)
+        let conversationHistory = isTemporary
+            ? conversationHistory
+            : (try? await environment.intelligenceStore.applyingCompactions(conversationHistory, conversationID: conversationID)) ?? conversationHistory
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
+        // A temporary conversation never owns a durable workspace: skip the
+        // lease, the ownership lookup and every workspace-side effect.
+        let effectiveWorkspaceID: UUID? = isTemporary ? nil : workspaceID
         let canonicalWorkspaceID: UUID?
-        if let workspaceID {
-            canonicalWorkspaceID = workspaceID
+        if let effectiveWorkspaceID {
+            canonicalWorkspaceID = effectiveWorkspaceID
+        } else if isTemporary {
+            canonicalWorkspaceID = nil
         } else {
             canonicalWorkspaceID = try? await workspaceStore.workspaceID(conversationID: conversationID)
         }
@@ -1473,7 +2433,7 @@ final class ConversationCenter: ObservableObject {
         } else {
             nil
         }
-        let conversationRecord = try? await environment.conversationStore.conversation(id: conversationID)
+        let conversationRecord = try? await conversationStore.conversation(id: conversationID)
         let isNotesAssistant = conversationRecord?.purpose == .notes
         // Notes assistant runs get their own confined scratch workspace, not a
         // project workspace lease: staged inputs and generated outputs live
@@ -1545,7 +2505,10 @@ final class ConversationCenter: ObservableObject {
         /// created on first use for this run, so resume keeps the same content
         /// version and never substitutes a newer app bundle.
         let contentOverlay: AgentPromptOverlay
-        if runSurface == .canvas {
+        if runSurface == .canvas || isTemporary {
+            // Temporary chat: no skill activation, no cross-conversation
+            // memory/personalization recall, no plan/goal records and no
+            // content overlay — generic installed instructions only.
             skills = .none
             personalization = RuntimePersonalizationContext()
             activePlan = nil
@@ -1660,6 +2623,19 @@ final class ConversationCenter: ObservableObject {
         ) {
             allowedToolNames = (allowedToolNames ?? routeTools).intersection(routeTools)
         }
+        if isTemporary {
+            // Last intersection: the temporary ceiling can only narrow. The
+            // runtime enforces the result at tools.list, main dispatch and
+            // child dispatch, so wrappers/aliases/batch/jobs/delegation
+            // cannot widen it.
+            var temporaryCeiling = TemporaryChatToolPolicy.allowedToolNames(
+                from: Set(availableDescriptors.map(\.name)))
+            if !WebSearchSettingsCenter.toolIsAvailable(WebSearchTool.name) {
+                temporaryCeiling.remove(WebSearchTool.name)
+            }
+            allowedToolNames = (allowedToolNames
+                ?? Set(availableDescriptors.map(\.name))).intersection(temporaryCeiling)
+        }
         let credentials = resolveCredentials(for: provider)
         let forceInitialCompaction = consumeManualCompaction(conversationID: conversationID)
         // Canvas Drawing Assistant binding: when this conversation is the
@@ -1698,15 +2674,22 @@ final class ConversationCenter: ObservableObject {
             forceInitialCompaction: forceInitialCompaction,
             maxProviderRetries: runSurface == .canvas ? 1 : 5,
             unchangedToolOutcomeLimit: runSurface == .canvas ? 2 : 3,
-            planChecklistProvider: { [database = environment.database] in
-                try? await TaskChecklistStore(database: database).latest(conversationID: conversationID)
-            },
+            planChecklistProvider: Self.planChecklistProvider(
+                isTemporary: isTemporary,
+                database: environment.database,
+                conversationID: conversationID
+            ),
             unknownOutcomeReconciler: runLinuxEnvironmentID.map { id in
                 LinuxUnknownOutcomeReconcilerBridge(
                     reconciler: LinuxUnknownOutcomeReconciler(
                         environmentID: id,
                         lifecycle: environment.linuxGuestLifecycle))
-            }
+            },
+            // Temporary conversations bypass any shared on-disk URLCache for
+            // provider traffic (the request itself is unaffected), and their
+            // web retrieval is public-only (no LAN/diagnostic opt-in).
+            ephemeralTransport: isTemporary,
+            publicWebOnly: isTemporary
         )
         await environment.subagentRunnerRegistry.register(
             SubagentRunner(
@@ -1719,11 +2702,46 @@ final class ConversationCenter: ObservableObject {
             for: runID
         )
         let notesContext: String?
-        do {
-            notesContext = try await NotesRepository.shared.runtimeContext(conversationID: conversationID)
-        } catch {
-            FloeLogger(category: .persistence).warning("notesContextUnavailable conversation=\(conversationID)")
-            notesContext = "Selected Notes context could not be loaded. Do not guess document contents or permissions; report the unavailable context if the request depends on it."
+        if isTemporary {
+            // A temporary chat is never bound to a Notes document.
+            notesContext = nil
+        } else {
+            do {
+                notesContext = try await NotesRepository.shared.runtimeContext(conversationID: conversationID)
+            } catch {
+                FloeLogger(category: .persistence).warning("notesContextUnavailable conversation=\(conversationID)")
+                notesContext = "Selected Notes context could not be loaded. Do not guess document contents or permissions; report the unavailable context if the request depends on it."
+            }
+        }
+        // Temporary runs get NO credential-argument normalizer. For ordinary
+        // runs the normalizer converts raw model-provided credential
+        // arguments into durable handles before approval, audit or
+        // checkpointing can observe them; for a temporary run that path would
+        // both capture the raw value into the durable credential vault
+        // (Keychain + CredentialRecord) and run BEFORE the web-only ceiling
+        // decision, violating the RAM-only retention contract. Passing nil
+        // leaves the arguments untouched in RAM through the ceiling and any
+        // public web tool execution; nothing temporary is ever persisted to
+        // the vault. The ordinary closure keeps the existing behavior.
+        let credentialVault = environment.credentialVault
+        let credentialOwner: CredentialOwner = if canonicalWorkspace?.kind == .project,
+                                                  let canonicalWorkspaceID {
+            .workspace(canonicalWorkspaceID)
+        } else {
+            .conversation(conversationID)
+        }
+        let credentialArgumentNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)?
+        if isTemporary {
+            credentialArgumentNormalizer = nil
+        } else {
+            credentialArgumentNormalizer = { call in
+                try await Self.normalizeCredentialArguments(
+                    in: call,
+                    runID: runID,
+                    vault: credentialVault,
+                    owner: credentialOwner
+                )
+            }
         }
         return ConversationRunService(
             configuration: configuration,
@@ -1736,27 +2754,18 @@ final class ConversationCenter: ObservableObject {
             executor: catalogExecutor,
             credentials: credentials,
             gate: environment.catastrophicGate,
-            checkpointStore: environment.checkpointStore,
+            // Temporary runs never write recovery checkpoints (payload holds
+            // the full transcript + wire snapshot).
+            checkpointStore: isTemporary ? nil : environment.checkpointStore,
             contextEngine: makeContextEngine(provider: provider, model: model),
-            toolCallNormalizer: { [credentialVault = environment.credentialVault] call in
-                let owner: CredentialOwner = if canonicalWorkspace?.kind == .project,
-                                                let canonicalWorkspaceID {
-                    .workspace(canonicalWorkspaceID)
-                } else {
-                    .conversation(conversationID)
-                }
-                return try await Self.normalizeCredentialArguments(
-                    in: call,
-                    runID: runID,
-                    vault: credentialVault,
-                    owner: owner
-                )
-            },
-            intelligenceStore: environment.intelligenceStore,
-            discoveryStore: SQLiteConversationDiscoveryStore(database: environment.database),
-            conversationStore: environment.conversationStore,
-            runStore: environment.runStore,
-            runningInputStore: environment.runningInputStore,
+            toolCallNormalizer: credentialArgumentNormalizer,
+            // Temporary runs get no intelligence store (plan/goal/compaction/
+            // memory writes simply do not happen) and no discovery row.
+            intelligenceStore: isTemporary ? nil : environment.intelligenceStore,
+            discoveryStore: isTemporary ? nil : SQLiteConversationDiscoveryStore(database: environment.database),
+            conversationStore: conversationStore,
+            runStore: runStore,
+            runningInputStore: runningInputStore,
             runID: runID,
             conversationHistory: conversationHistory,
             currentUserImages: currentUserImages,
@@ -1767,7 +2776,8 @@ final class ConversationCenter: ObservableObject {
                 skillInstructions: [
                     skills.instructions,
                     notesContext,
-                    runSurface == .ordinary ? AppleCapabilityPreferences.skillInstructions() : nil
+                    runSurface == .ordinary || isTemporary
+                        ? AppleCapabilityPreferences.skillInstructions() : nil
                 ]
                     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { !$0.isEmpty }
@@ -1789,11 +2799,35 @@ final class ConversationCenter: ObservableObject {
                     ? WorkspaceContextBriefing.projectInstructions(rootURL: taskRootLease?.url)
                     : nil
             ),
-            personalizationProvider: { [store = environment.personalizationStore] in
-                try await store.liveSnapshot(workspaceID: canonicalWorkspaceID)
-            },
+            personalizationProvider: Self.livePersonalizationProvider(
+                isTemporary: isTemporary,
+                store: environment.personalizationStore,
+                workspaceID: canonicalWorkspaceID
+            ),
             resourceAccessCleanup: taskRootLease?.release
         )
+    }
+
+    private nonisolated static func planChecklistProvider(
+        isTemporary: Bool,
+        database: DatabaseManager,
+        conversationID: UUID
+    ) -> (@Sendable () async -> TaskChecklist?)? {
+        guard !isTemporary else { return nil }
+        return { [database] in
+            try? await TaskChecklistStore(database: database).latest(conversationID: conversationID)
+        }
+    }
+
+    private nonisolated static func livePersonalizationProvider(
+        isTemporary: Bool,
+        store: SQLitePersonalizationStore,
+        workspaceID: UUID?
+    ) -> (@Sendable () async throws -> LivePersonalizationSnapshot)? {
+        guard !isTemporary else { return nil }
+        return { [store] in
+            try await store.liveSnapshot(workspaceID: workspaceID)
+        }
     }
 
     /// Constructs the effective three-choice policy saved for this task.
@@ -2095,7 +3129,8 @@ final class ConversationCenter: ObservableObject {
     private func retireOrphanedInternalNoticeRows(conversationID: UUID) async {
         guard !internalNoticeQueueReconciled.contains(conversationID) else { return }
         guard activeRunID(for: conversationID) == nil else { return }
-        guard let pending = try? await environment.runningInputStore.pending(
+        let inputStore = self.runningInputStore(for: conversationID)
+        guard let pending = try? await inputStore.pending(
             conversationID: conversationID) else { return }
         let candidates = pending.filter {
             $0.status == .queued && Self.isInternalNoticeDelivery($0)
@@ -2104,7 +3139,7 @@ final class ConversationCenter: ObservableObject {
             internalNoticeQueueReconciled.insert(conversationID)
             return
         }
-        guard let messages = try? await environment.conversationStore.messages(
+        guard let messages = try? await self.conversationStore(for: conversationID).messages(
             conversationID: conversationID) else { return }
         internalNoticeQueueReconciled.insert(conversationID)
         for input in candidates {
@@ -2114,7 +3149,7 @@ final class ConversationCenter: ObservableObject {
                 continue
             }
             do {
-                try await environment.runningInputStore.cancel(id: input.id)
+                try await inputStore.cancel(id: input.id)
                 FloeLogger(category: .app).info(
                     "internalNoticeQueueRowRetired conversation=\(conversationID.uuidString) input=\(input.id.uuidString)")
             } catch {
@@ -2151,17 +3186,44 @@ final class ConversationCenter: ObservableObject {
         guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
             throw FloeError.validationFailed("Conversation is being deleted")
         }
+        // FREEZE the temporary identity BEFORE the first await: the whole
+        // pre-deferred launch span (secret capture, launch prepare, personal-
+        // ization, design refresh) can interleave with End/Keep, and the
+        // deferred task must never re-derive "ordinary" from the live
+        // session afterwards. Store authority rides the session, which
+        // forwards after Keep and closes at End.
+        let launchIsTemporary = isTemporaryConversation(conversationID)
+        // Temporary chat is text-only at the ACTUAL launch boundary, not
+        // only in the UI: refuse any staged attachment before import, store
+        // or provider effects, without deleting the user's staged files.
+        if launchIsTemporary, !attachments.isEmpty {
+            throw FloeError.validationFailed("Temporary chat only accepts text")
+        }
         let launchToken = launchFence.issue(scope: conversationID)
 
         beginLaunch()
         defer { finishLaunch() }
+        await launchTestHooks.beforeCapture?()
         // Capture before any durable message/checkpoint is written. The user
         // still sees a secure card, while provider context and recovery state
-        // receive only a reusable credential reference.
-        try await captureIngressSecrets(
-            ingress.captures,
-            owner: workspaceID.map(CredentialOwner.workspace) ?? .conversation(conversationID)
-        )
+        // receive only a reusable credential reference. TEMPORARY conversations
+        // never persist ingress secrets: the scanner already replaced them
+        // with unresolved ⟨credential:…⟩ placeholders in the sanitized goal
+        // (the web-only ceiling has no credential tools to resolve them), so
+        // the raw bytes never reach the provider, Keychain or the
+        // credential DB — the retention contract is bounded RAM only.
+        if !launchIsTemporary {
+            try await captureIngressSecrets(
+                ingress.captures,
+                owner: workspaceID.map(CredentialOwner.workspace) ?? .conversation(conversationID)
+            )
+        }
+        // A launch whose conversation was deleted/ended while this send was
+        // suspended before the launch store must fail closed instead of
+        // re-routing into the durable launch path.
+        guard launchFence.isValid(launchToken) else {
+            throw FloeError.validationFailed("Conversation ended during launch")
+        }
         let runID = UUID()
         let prepared = try await prepareRunLaunch(RunLaunchRequest(
             conversationID: conversationID,
@@ -2195,7 +3257,7 @@ final class ConversationCenter: ObservableObject {
                     )
                 )
             } catch {
-                try? await environment.runStore.updateRunState(
+                try? await self.runStore(for: conversationID).updateRunState(
                     id: prepared.run.id,
                     state: "failed",
                     endedAt: Date()
@@ -2204,10 +3266,27 @@ final class ConversationCenter: ObservableObject {
             }
         }
         if runSurface == .ordinary {
-            await recordPersonalizationActivity(userMessages: 1, workspaceID: workspaceID)
+            // The temporary guard inside recordPersonalizationActivity keys
+            // off the conversation id: without it every ephemeral send would
+            // advance the durable personalization cadence.
+            await recordPersonalizationActivity(
+                userMessages: 1,
+                workspaceID: workspaceID,
+                conversationID: conversationID
+            )
         }
         guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
             throw FloeError.validationFailed("Conversation was deleted during launch")
+        }
+        // Re-validate the fence after the personalization/design awaits: an
+        // End/Delete that interleaved must not let the launch continue into
+        // the deferred service with a re-derived identity.
+        guard launchFence.isValid(launchToken) else {
+            try? await self.runStore(for: conversationID).updateRunState(
+                id: runID,
+                state: "failed",
+                endedAt: Date())
+            throw FloeError.validationFailed("Conversation ended during launch")
         }
         // Continuation of bound design work: re-establish the original-write
         // freeze BEFORE the deferred run can reach the provider or any tool
@@ -2218,7 +3297,7 @@ final class ConversationCenter: ObservableObject {
             try await establishDesignProtectionIfRequired(conversationID: conversationID)
         } catch {
             // Fail closed without leaving a durable "preparing" run behind.
-            try? await environment.runStore.updateRunState(
+            try? await self.runStore(for: conversationID).updateRunState(
                 id: prepared.run.id,
                 state: "failed",
                 endedAt: Date())
@@ -2232,6 +3311,7 @@ final class ConversationCenter: ObservableObject {
         return startDeferredTaskService(
             prepared: prepared,
             launchToken: launchToken,
+            isTemporaryAtLaunch: launchIsTemporary,
             goal: trimmed,
             provider: provider,
             model: model,
@@ -2360,6 +3440,8 @@ final class ConversationCenter: ObservableObject {
         let run = startDeferredTaskService(
             prepared: prepared,
             launchToken: launchToken,
+            // startTask always creates a durable conversation: never temporary.
+            isTemporaryAtLaunch: false,
             goal: trimmed,
             provider: provider,
             model: model,
@@ -2434,7 +3516,15 @@ final class ConversationCenter: ObservableObject {
             "runLaunchPrepareStarted run=\(request.runID.uuidString) conversation=\(request.conversationID?.uuidString ?? "new") provider=\(request.providerID?.uuidString ?? "none") model=\(request.modelID?.uuidString ?? "none") workspace=\(request.workspaceID?.uuidString ?? "private") attachments=\(request.attachments.count)"
         )
         do {
-            let prepared = try await environment.runLaunchStore.prepare(request)
+            // Temporary conversations prepare in RAM only; provider/model
+            // configuration stays with the durable store.
+            let prepared: PreparedRun
+            if let id = request.conversationID, let session = temporarySession,
+               session.conversation.id == id {
+                prepared = try await session.launchStore.prepare(request)
+            } else {
+                prepared = try await environment.runLaunchStore.prepare(request)
+            }
             logger.info(
                 "runLaunchPrepareSucceeded run=\(request.runID.uuidString) conversation=\(prepared.conversation.id.uuidString) workspace=\(prepared.workspace.id.uuidString)"
             )
@@ -2959,7 +4049,13 @@ final class ConversationCenter: ObservableObject {
         guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Input must not be empty")
         }
-        let input = try await environment.runningInputStore.enqueue(PendingUserInput(
+        // Text-only at the actual temporary queue boundary too: refuse
+        // attachments before any store effect (the staged files themselves
+        // stay untouched in the composer/draft).
+        if isTemporaryConversation(conversationID), !attachments.isEmpty {
+            throw FloeError.validationFailed("Temporary chat only accepts text")
+        }
+        let input = try await runningInputStore(for: conversationID).enqueue(PendingUserInput(
             conversationID: conversationID,
             targetRunID: expectedRunID,
             content: trimmed,
@@ -2976,20 +4072,22 @@ final class ConversationCenter: ObservableObject {
     }
 
     func editPendingInput(id: UUID, content: String) async throws {
-        let value = try await environment.runningInputStore.input(id: id)
+        let store = await runningInputStore(containingInput: id)
+        let value = try await store.input(id: id)
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Input must not be empty")
         }
         if let value { try await withdrawPendingGuidance(value) }
-        try await environment.runningInputStore.updateContent(id: id, content: trimmed)
+        try await store.updateContent(id: id, content: trimmed)
         if let value { publishSession(value.conversationID) }
     }
 
     func removePendingInput(id: UUID) async throws {
-        let value = try await environment.runningInputStore.input(id: id)
+        let store = await runningInputStore(containingInput: id)
+        let value = try await store.input(id: id)
         if let value { try await withdrawPendingGuidance(value) }
-        try await environment.runningInputStore.cancel(id: id)
+        try await store.cancel(id: id)
         if let value { publishSession(value.conversationID) }
     }
 
@@ -3001,12 +4099,15 @@ final class ConversationCenter: ObservableObject {
             }
         }
         // Preserve withdrawn content as an ordinary queued message first.
-        // If the subsequent edit/delete fails, the original remains recoverable.
-        try await environment.runningInputStore.restoreQueued(id: input.id)
+        // If the subsequent edit/delete fails, the original remains
+        // recoverable. Route through the store that ACTUALLY owns the row —
+        // for a temporary session that is the ephemeral store (a durable
+        // restoreQueued would update 0 rows and strand the steerPending row).
+        try await runningInputStore(containingInput: input.id).restoreQueued(id: input.id)
     }
 
     func reorderPendingInputs(conversationID: UUID, orderedIDs: [UUID]) async throws {
-        try await environment.runningInputStore.reorder(
+        try await runningInputStore(for: conversationID).reorder(
             conversationID: conversationID,
             orderedIDs: orderedIDs
         )
@@ -3024,14 +4125,15 @@ final class ConversationCenter: ObservableObject {
     /// row is removed from queue semantics only after this exact runtime
     /// confirms acceptance; rejection restores it to queued.
     func promoteToSteer(inputID: UUID, expectedRunID: UUID) async throws {
-        guard let input = try await environment.runningInputStore.beginSteerPromotion(
+        let store = await runningInputStore(containingInput: inputID)
+        guard let input = try await store.beginSteerPromotion(
             id: inputID,
             expectedRunID: expectedRunID
         ) else {
             throw FloeError.validationFailed("The queued message changed before it could be guided")
         }
         guard let service = runServices[expectedRunID], service.conversationID == input.conversationID else {
-            try? await environment.runningInputStore.restoreQueued(id: inputID)
+            try? await store.restoreQueued(id: inputID)
             FloeLogger(category: .app).info(
                 "steerTargetEndedQueued conversation=\(input.conversationID.uuidString) expectedRun=\(expectedRunID.uuidString) input=\(input.id.uuidString)"
             )
@@ -3054,9 +4156,9 @@ final class ConversationCenter: ObservableObject {
         case .accepted, .alreadyAccepted:
             // Conditional update is a no-op if the runtime consumed the input
             // and its callback won the race first.
-            try await environment.runningInputStore.markSteerAccepted(id: input.id, runID: expectedRunID)
+            try await store.markSteerAccepted(id: input.id, runID: expectedRunID)
         case .rejected(let reason):
-            try? await environment.runningInputStore.restoreQueued(id: input.id)
+            try? await store.restoreQueued(id: input.id)
             throw FloeError.validationFailed(reason)
         }
         publishSession(input.conversationID)
@@ -3066,10 +4168,11 @@ final class ConversationCenter: ObservableObject {
         for service in runServices.values where service.conversationID == conversationID {
             guard await service.snapshot().isTerminal else { return }
         }
+        let inputStore = runningInputStore(for: conversationID)
         // Bounded by the number of pending rows so a preserved internal notice
         // can never spin the loop.
         for _ in 0..<SQLiteRunningInputStore.maximumPendingPerConversation {
-            guard let input = try? await environment.runningInputStore.claimNextQueued(
+            guard let input = try? await inputStore.claimNextQueued(
                 conversationID: conversationID
             ) else { return }
             // An internal notice row is never launched as a new user turn: the
@@ -3078,13 +4181,13 @@ final class ConversationCenter: ObservableObject {
             // anything unproven is restored unchanged and left alone.
             if Self.isInternalNoticeDelivery(input) {
                 if await internalNoticeRetirementProof(for: input) {
-                    try? await environment.runningInputStore.restoreQueued(id: input.id)
-                    try? await environment.runningInputStore.cancel(id: input.id)
+                    try? await inputStore.restoreQueued(id: input.id)
+                    try? await inputStore.cancel(id: input.id)
                     FloeLogger(category: .app).info(
                         "internalNoticeQueueRowRetiredAtLaunch conversation=\(conversationID.uuidString) input=\(input.id.uuidString)")
                     continue
                 }
-                try? await environment.runningInputStore.restoreQueued(id: input.id)
+                try? await inputStore.restoreQueued(id: input.id)
                 FloeLogger(category: .app).info(
                     "internalNoticeQueueRowPreservedAtLaunch conversation=\(conversationID.uuidString) input=\(input.id.uuidString)")
                 publishSession(conversationID)
@@ -3092,7 +4195,7 @@ final class ConversationCenter: ObservableObject {
             }
             guard let (provider, model) = providerAndModel(modelID: input.selectedModelID),
                   let mode = AgentExecutionMode(rawValue: input.executionMode) else {
-                try? await environment.runningInputStore.restoreQueued(id: input.id)
+                try? await inputStore.restoreQueued(id: input.id)
                 publishSession(conversationID)
                 return
             }
@@ -3107,9 +4210,9 @@ final class ConversationCenter: ObservableObject {
                     executionMode: mode,
                     startOrigin: .queuedInput
                 )
-                try await environment.runningInputStore.markConsumed(id: input.id, runID: started.runID)
+                try await inputStore.markConsumed(id: input.id, runID: started.runID)
             } catch {
-                try? await environment.runningInputStore.restoreQueued(id: input.id)
+                try? await inputStore.restoreQueued(id: input.id)
             }
             publishSession(conversationID)
             return
@@ -3120,7 +4223,7 @@ final class ConversationCenter: ObservableObject {
     /// byte-identical system mirror, so retiring the queue copy cannot hide
     /// the decision. A failed read is never a fabricated proof.
     private func internalNoticeRetirementProof(for input: PendingUserInput) async -> Bool {
-        guard let messages = try? await environment.conversationStore.messages(
+        guard let messages = try? await self.conversationStore(for: input.conversationID).messages(
             conversationID: input.conversationID) else { return false }
         var claimable = input
         claimable.status = .queued
@@ -3147,7 +4250,8 @@ final class ConversationCenter: ObservableObject {
             conversationID: service.conversationID,
             goal: goal,
             conversationMode: service.conversationMode.rawValue,
-            startOrigin: startOrigin
+            startOrigin: startOrigin,
+            isTemporary: isTemporaryConversation(service.conversationID)
         )
         track(service)
         let result = Task<Result<Void, Error>, Never> { [weak self, service] in
@@ -3271,6 +4375,7 @@ final class ConversationCenter: ObservableObject {
     private func startDeferredTaskService(
         prepared: PreparedRun,
         launchToken: LaunchEpochFence.Token,
+        isTemporaryAtLaunch: Bool,
         goal: String,
         provider: ProviderProfile,
         model: ModelProfile,
@@ -3281,17 +4386,47 @@ final class ConversationCenter: ObservableObject {
     ) -> StartedConversationRun {
         let runID = prepared.run.id
         let conversationID = prepared.conversation.id
+        // Tombstone at the registration boundary: if the session was
+        // destroyed (or the conversation deleted) while this launch was
+        // suspended in the pre-deferred pipeline, the scoped fence is
+        // already invalid. Registering now would leak a preparing run and a
+        // content-bearing BRC record for a dead identity — fail the launch
+        // closed instead, through the routed store (a no-op for a session
+        // that is already discarded).
+        guard launchFence.isValid(launchToken) else {
+            let error = FloeError.validationFailed(
+                "Conversation ended during launch"
+            )
+            let result = Task<Result<Void, Error>, Never> { [weak self] in
+                guard let self else { return .failure(error) }
+                await self.finishDeferredLaunchFailure(
+                    runID: runID,
+                    conversationID: conversationID,
+                    error: error
+                )
+                return .failure(error)
+            }
+            runTasks[runID] = result
+            return StartedConversationRun(runID: runID, result: result)
+        }
         registerPreparingRun(
             runID: runID,
             conversationID: conversationID,
             goal: goal,
             conversationMode: prepared.run.conversationMode,
-            startOrigin: startOrigin
+            startOrigin: startOrigin,
+            isTemporary: isTemporaryAtLaunch
         )
         let result = Task<Result<Void, Error>, Never> { [weak self] in
             guard let self else {
                 return .failure(FloeError.internalError("Conversation center was released"))
             }
+            await self.launchTestHooks.deferredTaskBody?()
+            // The launch identity was frozen when startRun accepted the
+            // launch; NEVER re-derive it from the live session here (an
+            // End/Keep that raced the pipeline must not switch this run to
+            // the ordinary ceiling or re-enable durable effects).
+            let isTemporary = isTemporaryAtLaunch
             guard !Task.isCancelled,
                   self.launchFence.isValid(launchToken),
                   !self.isClearingHistory,
@@ -3307,12 +4442,13 @@ final class ConversationCenter: ObservableObject {
                 return .failure(error)
             }
             let assembled = (try? await ConversationHistoryAssembler(
-                store: self.environment.conversationStore
+                store: self.conversationStore(for: conversationID)
             ).build(conversationID: conversationID)) ?? []
             // Settled tool evidence is durable in the run event thread but not
             // part of `assembled`; recover a bounded projection so a new run
-            // does not forget completed tool work.
-            let recoveredToolEvidence = await self.recoveredToolEvidence(
+            // does not forget completed tool work. Temporary runs start fresh
+            // and their evidence stays in the session store.
+            let recoveredToolEvidence = isTemporary ? [] : await self.recoveredToolEvidence(
                 conversationID: conversationID,
                 excludingRunID: runID,
                 runSurface: runSurface,
@@ -3428,8 +4564,13 @@ final class ConversationCenter: ObservableObject {
                 runSurface: runSurface,
                 workspaceID: prepared.workspace.id,
                 memoryQuery: goal,
+                // Launch-frozen authority: a Keep that raced the pipeline
+                // keeps this run's restricted temporary privacy/context
+                // while the adopted stores forward; subsequent NEW ordinary
+                // turns derive their own fresh identity.
+                temporaryAuthority: isTemporary,
                 conversationHistory: recoveredToolEvidence
-                    + self.designBindingContext(conversationID: conversationID)
+                    + (isTemporary ? [] : self.designBindingContext(conversationID: conversationID))
                     + assembled.filter { $0.id != prepared.userMessage.id }
                     + visual.context,
                 currentUserImages: visual.images,
@@ -3464,17 +4605,23 @@ final class ConversationCenter: ObservableObject {
         activeRuns[runID] = nil
         runServices[runID] = nil
         runTasks[runID] = nil
-        try? await environment.runStore.updateRunState(
+        // Route through the run's own frozen authority: a destroyed session's
+        // closed ephemeral store fails closed, and a kept session's forwarded
+        // store mirrors to the durable row. Never the global current-session
+        // lookup, which would reroute a destroyed temporary run to durable.
+        let runStore = runStoreForTerminalRun(runID: runID, conversationID: conversationID)
+        try? await runStore.updateRunState(
             id: runID,
             state: "failed",
             endedAt: Date()
         )
-        try? await environment.runStore.recordError(RunErrorRecord(
+        try? await runStore.recordError(RunErrorRecord(
             runID: runID,
             kind: "launch",
             message: error.localizedDescription,
             recoverable: true
         ))
+        clearFrozenTemporaryRun(runID: runID)
         publishSession(conversationID)
         environment.backgroundRunCoordinator.didFinish(
             runID: runID,
@@ -3484,12 +4631,41 @@ final class ConversationCenter: ObservableObject {
         await environment.subagentRunnerRegistry.remove(runID: runID)
     }
 
+    /// The run store the terminal failure/cleanup paths must use: the frozen
+    /// per-run origin when the run was launched as temporary (even after End
+    /// destroyed the session and its stores closed), never a global
+    /// "current temporary session" reroute. Internal so App-host tests can
+    /// prove a destroyed temporary run cannot fall back to durable storage.
+    func runStoreForTerminalRun(runID: UUID, conversationID: UUID) -> any RunStore {
+        if let origin = temporaryRunOrigins[runID] {
+            return origin.runStore
+        }
+        return runStore(for: conversationID)
+    }
+
+    /// True while the run's own frozen identity — not the live session —
+    /// still classifies it as temporary. Survives End/Keep through terminal
+    /// cleanup so late failures keep the redacted temporary contract.
+    func hasFrozenTemporaryRunAuthority(runID: UUID, conversationID: UUID) -> Bool {
+        temporaryRunOrigins[runID] != nil
+            || temporaryRunIDs.contains(runID)
+            || isTemporaryConversation(conversationID)
+    }
+
+    /// Drops the frozen identity/markers in the run's OWN terminal cleanup
+    /// (never from the session destroy path).
+    private func clearFrozenTemporaryRun(runID: UUID) {
+        temporaryRunIDs.remove(runID)
+        temporaryRunOrigins[runID] = nil
+    }
+
     private func registerPreparingRun(
         runID: UUID,
         conversationID: UUID,
         goal: String,
         conversationMode: String?,
-        startOrigin: ContinuedProcessingStartOrigin
+        startOrigin: ContinuedProcessingStartOrigin,
+        isTemporary: Bool
     ) {
         activeRuns[runID] = RunRecord(
             id: runID,
@@ -3499,12 +4675,31 @@ final class ConversationCenter: ObservableObject {
             startedAt: Date(),
             conversationMode: conversationMode
         )
+        if isTemporary {
+            temporaryRunIDs.insert(runID)
+            // Freeze the store authority for this run while its session
+            // still exists. A later End destroys the session, but this run's
+            // failure handling keeps writing (and failing closed) through
+            // these exact stores instead of the durable environment stores.
+            if let session = temporarySession, session.conversation.id == conversationID {
+                temporaryRunOrigins[runID] = TemporaryRunOrigin(
+                    conversationID: conversationID,
+                    incarnation: session.incarnation,
+                    conversationStore: session.conversationStore,
+                    runStore: session.runStore,
+                    runningInputStore: session.runningInputStore
+                )
+            }
+        }
         publishSession(conversationID)
         environment.backgroundRunCoordinator.didStart(
             conversationID: conversationID,
             runID: runID,
             title: conversations.first(where: { $0.id == conversationID })?.title ?? goal,
-            origin: startOrigin
+            origin: startOrigin,
+            // Temporary runs never publish content-bearing work records,
+            // terminal notifications or continued-task registration.
+            publishesContent: !isTemporary
         )
     }
 
@@ -3535,7 +4730,16 @@ final class ConversationCenter: ObservableObject {
                     "Run ended in \(snapshot.stateName)"
                 ))
             }
-            if terminalState == "completed", case .success = outcome, let automaticTitle {
+            // The run's OWN frozen identity decides — not the live session:
+            // an End/Keep that raced this completion must not send a late
+            // temporary success through title generation, the durable
+            // personalization cadence or the dream pipeline.
+            let isTemporaryRun = hasFrozenTemporaryRunAuthority(
+                runID: runID,
+                conversationID: service.conversationID
+            )
+            if terminalState == "completed", case .success = outcome, let automaticTitle,
+               !isTemporaryRun {
                 await generateAndApplyTitle(
                     conversationID: automaticTitle.conversationID,
                     goal: goal,
@@ -3544,13 +4748,15 @@ final class ConversationCenter: ObservableObject {
                 )
             }
             if terminalState == "completed", case .success = outcome,
-               runSurface == .ordinary {
+               runSurface == .ordinary, !isTemporaryRun {
                 await recordPersonalizationActivity(
                     completedRuns: 1,
                     conversationID: service.conversationID
                 )
             }
-            if terminalState == "completed", case .success = outcome, let goalContinuation {
+            if terminalState == "completed", case .success = outcome, let goalContinuation,
+               !isTemporaryRun {
+                // A temporary run never owns a durable goal continuation.
                 await evaluateAndContinueGoal(
                     completedRunID: runID,
                     conversationID: goalContinuation.conversationID,
@@ -3564,6 +4770,7 @@ final class ConversationCenter: ObservableObject {
             terminalState = "failed"
             outcome = .failure(error)
         }
+        clearFrozenTemporaryRun(runID: runID)
         switch (terminalState, outcome) {
         case ("checkpointed", _):
             environment.backgroundRunCoordinator.didSuspend(
@@ -3617,9 +4824,23 @@ final class ConversationCenter: ObservableObject {
         guard !snapshot.isTerminal else { return }
         let nsError = error as NSError
         let message = String(error.localizedDescription.prefix(500))
-        FloeLogger(category: .runtime).error(
-            "runServiceFailed run=\(service.runID.uuidString) conversation=\(service.conversationID.uuidString) stage=\(stage) runtimeState=\(snapshot.stateName) domain=\(nsError.domain) code=\(nsError.code) message=\(message)"
+        // Temporary failure text stays out of the app log exactly like the
+        // BRC suspension redaction: ids and codes only, never content. The
+        // run's own FROZEN identity decides — not the live session — so even
+        // a failure landing after End/Keep stays redacted.
+        let isTemporary = hasFrozenTemporaryRunAuthority(
+            runID: service.runID,
+            conversationID: service.conversationID
         )
+        if isTemporary {
+            FloeLogger(category: .runtime).error(
+                "runServiceFailed run=\(service.runID.uuidString) conversation=\(service.conversationID.uuidString) stage=\(stage) runtimeState=\(snapshot.stateName) domain=\(nsError.domain) code=\(nsError.code) message=redacted(temporary)"
+            )
+        } else {
+            FloeLogger(category: .runtime).error(
+                "runServiceFailed run=\(service.runID.uuidString) conversation=\(service.conversationID.uuidString) stage=\(stage) runtimeState=\(snapshot.stateName) domain=\(nsError.domain) code=\(nsError.code) message=\(message)"
+            )
+        }
         // A persistence-side failure event does not flow through the live
         // service channel, so `track` cannot always release this ownership.
         // Clear it explicitly or the UI will believe a failed run is still
@@ -3627,22 +4848,33 @@ final class ConversationCenter: ObservableObject {
         runServices[service.runID] = nil
         snapshotTasks[service.runID]?.cancel()
         snapshotTasks[service.runID] = nil
-        try? await environment.runStore.updateRunState(
+        // Route through the run's ACTUAL frozen owner: for a temporary run
+        // the durable row does not exist (or the run lives in the session
+        // store while active), so writing environment.runStore directly
+        // would silently drop the record against the run FK — and after an
+        // End it would reroute a destroyed temporary run to ordinary state.
+        // A destroyed session's store is closed, so the write fails closed.
+        let runStore = runStoreForTerminalRun(
+            runID: service.runID,
+            conversationID: service.conversationID
+        )
+        try? await runStore.updateRunState(
             id: service.runID,
             state: "failed",
             endedAt: Date()
         )
-        try? await environment.runStore.recordError(RunErrorRecord(
+        try? await runStore.recordError(RunErrorRecord(
             runID: service.runID,
             kind: stage,
             message: message,
             recoverable: !(error is CancellationError)
         ))
-        _ = try? await environment.runStore.appendEvent(
+        _ = try? await runStore.appendEvent(
             runID: service.runID,
             kind: .status,
             payloadJSON: #"{"state":"failed"}"#
         )
+        clearFrozenTemporaryRun(runID: service.runID)
         activeRuns[service.runID] = nil
         publishSession(service.conversationID)
     }
@@ -3656,6 +4888,9 @@ final class ConversationCenter: ObservableObject {
         workspaceID: UUID? = nil,
         conversationID: UUID? = nil
     ) async {
+        // Temporary conversations never feed personalization cadence or the
+        // post-run memory dream: no cross-conversation memory extraction.
+        if let conversationID, isTemporaryConversation(conversationID) { return }
         try? await environment.personalizationService.recordActivity(
             completedRuns: completedRuns,
             userMessages: userMessages,
@@ -3961,7 +5196,10 @@ final class ConversationCenter: ObservableObject {
         provider: ProviderProfile,
         model: ModelProfile
     ) async {
-        guard let conversation = try? await environment.conversationStore
+        // Promotion derives the title locally; no provider call or durable
+        // write may run for a temporary conversation here.
+        guard !isTemporaryConversation(conversationID),
+              let conversation = try? await environment.conversationStore
             .conversation(id: conversationID),
               conversation.titleOrigin == .autoPending else { return }
         let (provider, model) = generalAuxiliaryProviderAndModel() ?? (provider, model)
@@ -4302,7 +5540,16 @@ final class ConversationCenter: ObservableObject {
         runID: UUID,
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationRun {
-        guard let record = try await environment.runStore.run(id: runID) else {
+        // The run lives in the session store while its conversation is
+        // temporary; consult both, session first.
+        var record: RunRecord?
+        if let session = temporarySession {
+            record = try? await session.runStore.run(id: runID)
+        }
+        if record == nil {
+            record = try? await environment.runStore.run(id: runID)
+        }
+        guard let record else {
             throw FloeError.notFound("run \(runID.uuidString)")
         }
         let resolvedPair: (ProviderProfile, ModelProfile)
@@ -4338,6 +5585,9 @@ final class ConversationCenter: ObservableObject {
         model: ModelProfile,
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationRun {
+        let isTemporary = isTemporaryConversation(record.conversationID)
+        let routedRunStore = self.runStore(for: record.conversationID)
+        let routedConversationStore = self.conversationStore(for: record.conversationID)
         guard !compactingConversations.contains(record.conversationID) else {
             throw FloeError.validationFailed(FloeL10n.l("remote.conversation_center.the_context_is_compacting_continue_the"))
         }
@@ -4353,7 +5603,9 @@ final class ConversationCenter: ObservableObject {
         let checkpoint: AgentCheckpoint?
         let checkpointWasUnreadable: Bool
         do {
-            let loaded = try await environment.checkpointStore.load(runID: record.id)
+            // Temporary runs never write checkpoint files; the load simply
+            // misses and the durable-conversation fallback below serves.
+            let loaded = isTemporary ? nil : try await environment.checkpointStore.load(runID: record.id)
             if let loaded,
                (loaded.runID != record.id || loaded.conversationID != record.conversationID) {
                 FloeLogger(category: .runtime).warning(
@@ -4382,13 +5634,13 @@ final class ConversationCenter: ObservableObject {
             )
         } catch {
             let message = error.localizedDescription
-            try? await environment.runStore.recordError(RunErrorRecord(
+            try? await routedRunStore.recordError(RunErrorRecord(
                 runID: record.id,
                 kind: "recoveryMode",
                 message: message,
                 recoverable: true
             ))
-            try? await environment.runStore.updateRunState(
+            try? await routedRunStore.updateRunState(
                 id: record.id,
                 state: "failed",
                 endedAt: Date()
@@ -4397,7 +5649,7 @@ final class ConversationCenter: ObservableObject {
             throw FloeError.validationFailed(message)
         }
         let assembled = try await ConversationHistoryAssembler(
-            store: environment.conversationStore
+            store: routedConversationStore
         ).build(conversationID: record.conversationID)
         let current = assembled.last(where: { $0.role == "user" })
         let history = current.map { item in assembled.filter { $0.id != item.id } } ?? assembled
@@ -4427,7 +5679,7 @@ final class ConversationCenter: ObservableObject {
             primaryModel: model,
             preferPrimaryVision: false
         )
-        let historicalConversation = try? await environment.conversationStore
+        let historicalConversation = try? await routedConversationStore
             .conversation(id: record.conversationID)
         let runSurface: AgentRunSurface = CanvasAgentIdentity.isCanvasConversation(
             historicalConversation
@@ -4444,8 +5696,8 @@ final class ConversationCenter: ObservableObject {
             conversationHistory: history + resumedVisual.context,
             currentUserImages: resumedVisual.images
         )
-        try await environment.runStore.updateRunState(id: record.id, state: "preparing", endedAt: nil)
-        _ = try? await environment.runStore.appendEvent(
+        try await routedRunStore.updateRunState(id: record.id, state: "preparing", endedAt: nil)
+        _ = try? await routedRunStore.appendEvent(
             runID: record.id,
             kind: .status,
             payloadJSON: #"{"state":"preparing","resumed":true}"#
@@ -4456,7 +5708,8 @@ final class ConversationCenter: ObservableObject {
             conversationID: record.conversationID,
             goal: record.goal,
             conversationMode: restoredConversationMode.rawValue,
-            startOrigin: startOrigin
+            startOrigin: startOrigin,
+            isTemporary: isTemporaryConversation(record.conversationID)
         )
         track(service)
         publishSession(record.conversationID)
@@ -5363,11 +6616,18 @@ final class ConversationCenter: ObservableObject {
             var toolNamesByCallID: [String: String] = [:]
             if let self {
                 let snapshot = await service.snapshot()
-                self.apply(snapshot)
-                await self.refreshChecklistSurface(runID: runID, conversationID: snapshot.conversationID)
-                self.publishSession(snapshot.conversationID)
+                // End/the explicit destroy cancels this tracking task
+                // synchronously, but the snapshot await above can already be
+                // in flight. A late snapshot must not re-materialize live
+                // ownership for a run the center already removed: re-check
+                // the cancellation before registering anything.
+                if !Task.isCancelled {
+                    self.apply(snapshot)
+                    await self.refreshChecklistSurface(runID: runID, conversationID: snapshot.conversationID)
+                    self.publishSession(snapshot.conversationID)
+                }
             }
-            for await event in stream {
+            trackLoop: for await event in stream {
                 guard !Task.isCancelled, let self else { break }
                 switch event {
                 case .toolLifecycle(let lifecycle):
@@ -5383,6 +6643,7 @@ final class ConversationCenter: ObservableObject {
                         self.environment.backgroundRunCoordinator.didUpdateTool(runID: runID, name: toolName, outcome: .finished(failed: result.status == .failed))
                     }
                     let snapshot = await service.snapshot()
+                    guard !Task.isCancelled else { break trackLoop }
                     self.apply(snapshot)
                     if checklistChanged {
                         await self.refreshChecklistSurface(runID: runID, conversationID: snapshot.conversationID)
@@ -5396,6 +6657,7 @@ final class ConversationCenter: ObservableObject {
                      .contextCompacted, .planChanged, .goalChanged,
                      .childRunChanged, .userInputConsumed, .terminal:
                     let snapshot = await service.snapshot()
+                    guard !Task.isCancelled else { break trackLoop }
                     self.apply(snapshot)
                     self.sweepResolvedApprovals(service: service, snapshot: snapshot)
                     self.publishSession(snapshot.conversationID)

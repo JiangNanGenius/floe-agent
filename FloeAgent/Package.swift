@@ -79,6 +79,18 @@ let package = Package(
             url: "https://github.com/huggingface/swift-transformers.git",
             exact: "1.3.0"
         ),
+        // The Xcode app graph resolves its own lock file
+        // (FloeAgent.xcodeproj/project.xcworkspace/.../Package.resolved,
+        // git-ignored), so in-range transitives drift above the committed
+        // host lock and the license inventory then refuses the actual
+        // checkouts. These exact pins equal the committed revisions in
+        // FloeAgent/Package.resolved (no upgrade): with FloeAgentPackages
+        // included by path in the app graph, they constrain both graphs.
+        .package(url: "https://github.com/apple/swift-asn1.git", exact: "1.7.1"),
+        .package(url: "https://github.com/apple/swift-collections.git", exact: "1.6.0"),
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", exact: "0.9.0"),
+        .package(url: "https://github.com/huggingface/swift-jinja.git", exact: "2.4.2"),
+        .package(url: "https://github.com/apple/swift-log.git", exact: "1.15.0"),
         // Native, App Store-compatible Git implementation for iOS. SwiftGitX
         // wraps the bundled libgit2 source package; Floe owns authentication
         // callbacks so GitHub credentials remain in Keychain and memory.

@@ -158,6 +158,11 @@ public struct ProviderStreamRequest: Sendable {
     /// Transient liveness only. Partial arguments are never dispatched,
     /// persisted as a tool call, or exposed as model text.
     public var onToolArgumentsProgress: (@Sendable () async -> Void)?
+    /// True for temporary (ephemeral) conversations: the transport must not
+    /// leave request/response content in any shared on-disk cache. The
+    /// request still reaches the provider normally — this is a local cache
+    /// directive, not a provider zero-retention promise.
+    public var ephemeralTransport: Bool
 
     public init(
         provider: ProviderProfile,
@@ -171,7 +176,8 @@ public struct ProviderStreamRequest: Sendable {
         toolSchemas: [ToolSchemaDescriptor] = [],
         allToolNames: [String] = [],
         reasoningPolicy: ProviderReasoningPolicy = .modelDefault,
-        onToolArgumentsProgress: (@Sendable () async -> Void)? = nil
+        onToolArgumentsProgress: (@Sendable () async -> Void)? = nil,
+        ephemeralTransport: Bool = false
     ) {
         self.provider = provider
         self.model = model
@@ -185,6 +191,7 @@ public struct ProviderStreamRequest: Sendable {
         self.allToolNames = allToolNames
         self.reasoningPolicy = reasoningPolicy
         self.onToolArgumentsProgress = onToolArgumentsProgress
+        self.ephemeralTransport = ephemeralTransport
     }
 
     public var effectiveMessages: [ProviderMessage] {
@@ -336,10 +343,48 @@ struct SSEByteFramer: Sendable {
     }
 }
 
+/// Scoped per-request transport for provider traffic.
+///
+/// Ordinary requests keep using the caller's session (default
+/// `URLSession.shared`): the global on-disk cache/cookie state is never
+/// mutated or wiped by a temporary chat. Temporary (ephemeral) conversation
+/// requests travel on ONE dedicated in-process session whose configuration
+/// is `.ephemeral` with every storage slot nilled out — no shared URLCache,
+/// no cookie jar, no credential storage — so no request/response content can
+/// land in a shared on-disk cache. The request itself reaches the provider
+/// unchanged; this is purely a local retention directive, not a provider
+/// zero-retention promise.
+enum ProviderTransport {
+    static let ephemeralSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        return URLSession(configuration: configuration)
+    }()
+
+    /// The session a request must travel on: the dedicated ephemeral session
+    /// for temporary conversations, the shared ordinary session otherwise.
+    static func session(ephemeral: Bool) -> URLSession {
+        ephemeral ? ephemeralSession : .shared
+    }
+}
+
 /// Feeds an HTTP byte stream through `SSEParser` and emits decoded SSE
 /// events. Cancellation of the consuming task cancels the URLSession task.
 struct SSEBytePump: Sendable {
     let urlRequest: URLRequest
+    /// Transport the request travels on. Temporary conversations pass the
+    /// scoped ephemeral session; ordinary traffic keeps `.shared` so the
+    /// global cache is never disturbed.
+    let session: URLSession
+
+    init(urlRequest: URLRequest, session: URLSession = .shared) {
+        self.urlRequest = urlRequest
+        self.session = session
+    }
 
     func events() -> AsyncThrowingStream<SSEEvent, Error> {
         AsyncThrowingStream { continuation in
@@ -351,7 +396,7 @@ struct SSEBytePump: Sendable {
                     // Linux is a build/test target, not an app runtime, so use a
                     // bounded-lifetime buffered fallback to keep wire parsing and
                     // contract tests portable. Apple platforms remain truly streaming.
-                    let (data, response) = try await URLSession.shared.data(for: urlRequest)
+                    let (data, response) = try await session.data(for: urlRequest)
                     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                         let body = String(decoding: data.prefix(4096), as: UTF8.self)
                         continuation.yield(SSEEvent(
@@ -370,7 +415,7 @@ struct SSEBytePump: Sendable {
                     }
                     continuation.finish()
                     #else
-                    let (bytes, response) = try await URLSession.shared.bytes(for: urlRequest)
+                    let (bytes, response) = try await session.bytes(for: urlRequest)
                     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                         var body = ""
                         for try await byte in bytes {
@@ -454,14 +499,17 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
                     logger.info(
                         "providerRequestStarted protocol=responses provider=\(request.provider.id.uuidString) host=\(host) model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) tools=\(request.toolSchemas.count) bodyBytes=\(body.count)"
                     )
-                    let pump = SSEBytePump(urlRequest: urlRequest)
+                    let pump = SSEBytePump(
+                        urlRequest: urlRequest,
+                        session: ProviderTransport.session(ephemeral: request.ephemeralTransport)
+                    )
                     let decoder = JSONDecoder()
                     for try await sseEvent in pump.events() {
                         if let errorEvent = httpErrorEvent(from: sseEvent) {
                             if case .error(let error) = errorEvent {
                                 let status = error.httpStatus.map(String.init) ?? "none"
                                 logger.warning(
-                                    "providerRequestRejected protocol=responses provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) message=\(String(error.providerMessage.prefix(500)))"
+                                    "providerRequestRejected protocol=responses provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) message=\(request.ephemeralTransport ? "redacted" : String(error.providerMessage.prefix(500)))"
                                 )
                             }
                             continuation.yield(errorEvent)
@@ -511,6 +559,9 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
     ) throws -> URLRequest {
         let url = request.provider.baseURL.appendingPathComponent("responses")
         var urlRequest = URLRequest(url: url)
+        if request.ephemeralTransport {
+            urlRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        }
         urlRequest.timeoutInterval = 180
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -665,7 +716,10 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     logger.info(
                         "providerRequestStarted protocol=chat provider=\(request.provider.id.uuidString) host=\(host) model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) tools=\(request.toolSchemas.count) bodyBytes=\(body.count)"
                     )
-                    let pump = SSEBytePump(urlRequest: urlRequest)
+                    let pump = SSEBytePump(
+                        urlRequest: urlRequest,
+                        session: ProviderTransport.session(ephemeral: request.ephemeralTransport)
+                    )
                     let decoder = JSONDecoder()
                     var aggregator = ToolCallAggregator()
                     var deferredCompletion: AgentEvent.CompletionInfo?
@@ -674,7 +728,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                             if case .error(let error) = errorEvent {
                                 let status = error.httpStatus.map(String.init) ?? "none"
                                 logger.warning(
-                                    "providerRequestRejected protocol=chat provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) message=\(String(error.providerMessage.prefix(500)))"
+                                    "providerRequestRejected protocol=chat provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) message=\(request.ephemeralTransport ? "redacted" : String(error.providerMessage.prefix(500)))"
                                 )
                             }
                             continuation.yield(errorEvent)
@@ -750,6 +804,9 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
     ) throws -> URLRequest {
         let url = request.provider.baseURL.appendingPathComponent("chat/completions")
         var urlRequest = URLRequest(url: url)
+        if request.ephemeralTransport {
+            urlRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        }
         urlRequest.timeoutInterval = 180
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -916,7 +973,10 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
                 do {
                     var urlRequest = try buildURLRequest(request: request, credentials: credentials)
                     urlRequest.httpBody = try ProviderWireEncoder.encode(buildBody(from: request))
-                    let pump = SSEBytePump(urlRequest: urlRequest)
+                    let pump = SSEBytePump(
+                        urlRequest: urlRequest,
+                        session: ProviderTransport.session(ephemeral: request.ephemeralTransport)
+                    )
                     let decoder = JSONDecoder()
                     var aggregator = WireTranslator.AnthropicAggregator()
                     for try await sseEvent in pump.events() {
@@ -967,6 +1027,9 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
     ) throws -> URLRequest {
         let url = request.provider.baseURL.appendingPathComponent("v1/messages")
         var urlRequest = URLRequest(url: url)
+        if request.ephemeralTransport {
+            urlRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        }
         urlRequest.timeoutInterval = 180
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")

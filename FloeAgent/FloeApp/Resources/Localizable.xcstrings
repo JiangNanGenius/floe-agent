@@ -5590,6 +5590,159 @@
         }
       }
     },
+    "chat.temporary.badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Temporary chat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "临时会话"
+          }
+        }
+      }
+    },
+    "chat.temporary.banner": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Excluded from history; ending it or switching away discards it immediately, even mid-reply. The provider still processes content under its own policy."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不保存到历史；结束或切换到其他会话会立即丢弃（即使正在回复中）；模型提供方仍按其政策处理内容。"
+          }
+        }
+      }
+    },
+    "chat.temporary.end": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "End"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结束"
+          }
+        }
+      }
+    },
+    "chat.temporary.keep": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep as saved"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留为正式会话"
+          }
+        }
+      }
+    },
+    "chat.temporary.keep.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep as a saved chat: saves this conversation to history and continues without resending."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留为正式会话：将本次会话保存到历史记录并继续，无需重新发送。"
+          }
+        }
+      }
+    },
+    "chat.temporary.keepFailedRetry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't save. Tap to retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存失败，请重试。"
+          }
+        }
+      }
+    },
+    "chat.temporary.keepPartialRetry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved — tap to finish syncing the remaining stream."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存，点按以同步剩余内容。"
+          }
+        }
+      }
+    },
+    "chat.temporary.toggle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Temporary chat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "临时会话"
+          }
+        }
+      }
+    },
+    "chat.temporary.toggle.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start a temporary chat. Chats opened this way are kept out of history and cleared when they end; the model provider still processes content under its own policy."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始临时会话：此类会话不保留在历史记录中，结束或切换后清除；模型提供方仍按其政策处理内容。"
+          }
+        }
+      }
+    },
     "chat.thread_composer_view.add_to_message_queue": {
       "extractionState": "manual",
       "localizations": {
@@ -47721,6 +47874,23 @@
         }
       }
     },
+    "settings.licenses.document.euclid.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Euclid"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Euclid"
+          }
+        }
+      }
+    },
     "settings.licenses.document.font": {
       "extractionState": "manual",
       "localizations": {
@@ -47819,6 +47989,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "libgit2"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.linux_boot_pair.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux guest boot pair (kernel + firmware)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux 客体启动文件对（内核 + 固件）"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.lrucache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LRUCache"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LRUCache"
           }
         }
       }
@@ -47925,6 +48129,23 @@
         }
       }
     },
+    "settings.licenses.document.occt_native.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OCCT 7.8.1 native static libraries (source offer)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OCCT 7.8.1 原生静态库（源码提供）"
+          }
+        }
+      }
+    },
     "settings.licenses.document.oniguruma.title": {
       "extractionState": "manual",
       "localizations": {
@@ -47938,6 +48159,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "vscode-oniguruma"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.openshape3d.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenShape3D (FloeCADKit extraction)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenShape3D（FloeCADKit 提取版）"
           }
         }
       }
@@ -47972,6 +48210,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "RoyalVNCKit"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.shapescript.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ShapeScript"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ShapeScript"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.svgpath.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SVGPath"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SVGPath"
           }
         }
       }
@@ -48248,6 +48520,23 @@
         }
       }
     },
+    "settings.licenses.note.cad_packages": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Floe CAD kernel links four Swift packages that only the app dependency graph resolves, pinned by ThirdParty/FloeCADKit/Package.resolved: Euclid and ShapeScript (the FloeCAD product depends on both) plus ShapeScript's Euclid, LRUCache and SVGPath dependencies. Their complete MIT license texts, including the copyright lines, ship in this app under Licenses/."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe CAD 内核链接了四个仅由 App 依赖图解析的 Swift 软件包，由 ThirdParty/FloeCADKit/Package.resolved 固定：Euclid 与 ShapeScript（FloeCAD 产品依赖二者），以及 ShapeScript 依赖的 Euclid、LRUCache 与 SVGPath。它们完整的 MIT 许可文本（含版权行）随本 App 打包于 Licenses/ 下。"
+          }
+        }
+      }
+    },
     "settings.licenses.note.guest_image": {
       "extractionState": "manual",
       "localizations": {
@@ -48282,6 +48571,23 @@
         }
       }
     },
+    "settings.licenses.note.linux_boot_pair": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The app bundles the verified Linux 6.18.56 kernel Image and OpenSBI 1.9 fw_jump firmware as separate data resources that run inside the TinyEMU virtual machine; they are not linked into the app or engine binary. The kernel is unmodified upstream Linux (GPL-2.0 with the Linux syscall note) and the firmware is OpenSBI (BSD-2-Clause). Their complete license texts, the exact build configuration and the corresponding-source references ship in the app as Licenses/LinuxBootPair-LICENSES.txt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 将经过校验的 Linux 6.18.56 内核 Image 与 OpenSBI 1.9 fw_jump 固件作为独立数据资源打包，它们在 TinyEMU 虚拟机内运行，不链接进 App 或引擎二进制。内核为未经修改的上游 Linux（GPL-2.0，附 Linux 系统调用例外说明），固件为 OpenSBI（BSD-2-Clause）。其完整许可文本、精确构建配置与对应源码引用随 App 打包于 Licenses/LinuxBootPair-LICENSES.txt。"
+          }
+        }
+      }
+    },
     "settings.licenses.note.mlx_vendor": {
       "extractionState": "manual",
       "localizations": {
@@ -48305,13 +48611,30 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Open CASCADE Technology and occt-import-js are LGPL-2.1 with the OCCT exception; their complete texts and the exception ship in the app bundle."
+            "value": "Open CASCADE Technology and occt-import-js are bundled for the engineering viewer as WebAssembly modules under LGPL-2.1 with the OCCT exception; their complete texts and the exception ship in the app bundle. The separately linked native OCCT 7.8.1 static libraries are declared as their own component with a recorded relink and source offer."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Open CASCADE Technology 与 occt-import-js 采用 LGPL-2.1 及 OCCT 例外；完整文本与例外条款随 App 打包。"
+            "value": "Open CASCADE Technology 与 occt-import-js 以 WebAssembly 模块形式为工程查看器打包，采用 LGPL-2.1 及 OCCT 例外；完整文本与例外条款随 App 打包。单独链接的原生 OCCT 7.8.1 静态库作为独立构件声明，并附有重新链接与源码提供记录。"
+          }
+        }
+      }
+    },
+    "settings.licenses.note.occt_native": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The native CAD engine links Open CASCADE Technology 7.8.1 as unmodified upstream static libraries for iOS device and simulator, pinned by tag V7_8_1 (commit bd2a789f15235755ce4d1a3b07379a2e062fdc2e), size and SHA-256 in ThirdParty/FloeCADKit/DEPENDENCIES.json. OCCT is licensed under LGPL-2.1 with the Open CASCADE exception 1.0; the complete texts and the exception ship in this app (EngineeringViewers/license.occt.txt, EngineeringViewers/OCCT_LGPL_EXCEPTION.txt). The record of where the exact corresponding source and the retained build inputs are available for rebuilding or relinking is bundled as Licenses/OCCT-Native-SOURCE-OFFER.txt. Floe has not independently rebuilt OCCT and claims no byte-identical local reproduction; these are engineering records, not a legal certification."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原生 CAD 引擎以未修改的上游静态库形式链接 Open CASCADE Technology 7.8.1（iOS 设备与模拟器切片），由标签 V7_8_1（提交 bd2a789f15235755ce4d1a3b07379a2e062fdc2e）、大小与 SHA-256 固定于 ThirdParty/FloeCADKit/DEPENDENCIES.json。OCCT 采用 LGPL-2.1 及 Open CASCADE 例外 1.0；完整文本与例外条款随本 App 打包（EngineeringViewers/license.occt.txt、EngineeringViewers/OCCT_LGPL_EXCEPTION.txt）。精确对应源码与保留的构建输入（用于重新构建或重新链接）的位置记录随 App 打包为 Licenses/OCCT-Native-SOURCE-OFFER.txt。Floe 未独立重建 OCCT，也不声称本地构建可逐字节复现；以上为工程记录，不构成法律认证。"
           }
         }
       }
@@ -48329,6 +48652,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "原生 Office 引擎为固定提交的 Collabora Online（基于 LibreOffice），采用 MPL-2.0。合格引擎包中保留了上游第三方许可文件；完整的引擎声明清单仍是独立的 Office 资格门禁。"
+          }
+        }
+      }
+    },
+    "settings.licenses.note.openshape3d": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FloeCADKit, the app's native CAD kernel package, is Floe's locally modified extraction of OpenShape3D's geometry kernel, feature graph, editor state machine and Metal viewport (upstream commit 30b3c7c1784754f237466e093ab42ff085175d40, MIT; the modification record is ThirdParty/FloeCADKit/PATCHES.md, provenance in UPSTREAM.md). It is a derived, modified copy, not an unmodified upstream library. OpenShape3D's complete MIT license text, including the copyright line, ships in this app as Licenses/OpenShape3D-LICENSE.txt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FloeCADKit（本 App 的原生 CAD 内核包）是 Floe 基于 OpenShape3D 几何内核、特征图、编辑器状态机与 Metal 视图的本地修改提取版（上游提交 30b3c7c1784754f237466e093ab42ff085175d40，MIT；修改记录见 ThirdParty/FloeCADKit/PATCHES.md，来源记录见 UPSTREAM.md）。它是派生的修改版本，并非未修改的上游库。OpenShape3D 的完整 MIT 许可文本（含版权行）随本 App 打包于 Licenses/OpenShape3D-LICENSE.txt。"
           }
         }
       }

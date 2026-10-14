@@ -36,6 +36,14 @@
       "source": "https://github.com/royalapplications/CryptoSwift.git"
     },
     {
+      "identity": "euclid",
+      "license": "MIT",
+      "evidence": "FloeApp/Resources/Licenses/Euclid-LICENSE.txt",
+      "sha256": "2323c3f51cc56987ff8e8ddac1d239276072188c615cf991921163173e5eafb3",
+      "revision": "a123b1cbbb5b7aab49a8b57e12783f7bd39f0cac",
+      "source": "https://github.com/nicklockwood/Euclid.git"
+    },
+    {
       "identity": "eventsource",
       "license": "MIT",
       "evidence": ".build/checkouts/eventsource/LICENSE.md",
@@ -68,6 +76,14 @@
       "source": "https://github.com/ibrahimcetin/libgit2.git"
     },
     {
+      "identity": "lrucache",
+      "license": "MIT",
+      "evidence": "FloeApp/Resources/Licenses/LRUCache-LICENSE.txt",
+      "sha256": "cc59ff976bc639612b7f2e92c6ecfad42e93b70099c7b950acd1b3651def10ab",
+      "revision": "f0570e943ea4445d258113ba73f50cb2b7e564ac",
+      "source": "https://github.com/nicklockwood/LRUCache.git"
+    },
+    {
       "identity": "mlx-swift",
       "license": "MIT",
       "evidence": ".build/checkouts/mlx-swift/LICENSE",
@@ -84,12 +100,36 @@
       "source": "https://github.com/ml-explore/mlx-swift-lm.git"
     },
     {
+      "identity": "openshape3d",
+      "license": "MIT",
+      "evidence": "FloeApp/Resources/Licenses/OpenShape3D-LICENSE.txt",
+      "sha256": "dbdeb16766c9aae5eb59d4f184e6222727a23a44698fdea275e4fd0857339a83",
+      "revision": "30b3c7c1784754f237466e093ab42ff085175d40",
+      "source": "https://github.com/laanlabs/OpenShape3D.git"
+    },
+    {
+      "identity": "shapescript",
+      "license": "MIT",
+      "evidence": "FloeApp/Resources/Licenses/ShapeScript-LICENSE.txt",
+      "sha256": "2323c3f51cc56987ff8e8ddac1d239276072188c615cf991921163173e5eafb3",
+      "revision": "cda3024b2f17ac06aef23aae7ddcf39c217c6237",
+      "source": "https://github.com/nicklockwood/ShapeScript.git"
+    },
+    {
       "identity": "smbclient",
       "license": "MIT",
       "evidence": ".build/checkouts/smbclient/LICENSE",
       "sha256": "92b9785672f66ae9c75550d328a00ff06ee6728f7d1b8874355b5dbeaf23c753",
       "revision": "78ecf6cb8055c4f6d9e6af6022091e06c927004e",
       "source": "https://github.com/kishikawakatsumi/SMBClient.git"
+    },
+    {
+      "identity": "svgpath",
+      "license": "MIT",
+      "evidence": "FloeApp/Resources/Licenses/SVGPath-LICENSE.txt",
+      "sha256": "cc59ff976bc639612b7f2e92c6ecfad42e93b70099c7b950acd1b3651def10ab",
+      "revision": "892e57b71c26937863a53a7459051ef329cfd6b4",
+      "source": "https://github.com/nicklockwood/SVGPath.git"
     },
     {
       "identity": "swcompression",

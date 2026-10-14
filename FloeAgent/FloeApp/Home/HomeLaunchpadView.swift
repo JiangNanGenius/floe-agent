@@ -98,6 +98,23 @@ struct HomeLaunchpadView: View {
             viewModel.reconcileModelSelection()
         }
         .refreshable { await viewModel.load() }
+        .toolbar {
+            if !designStart {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: startTemporaryChatEntry) {
+                        Label("chat.temporary.toggle", systemImage: "bubble.left")
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(Color.secondary)
+                    }
+                    .disabled(!viewModel.canStartTemporaryChat)
+                    .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                    .accessibilityLabel("chat.temporary.toggle")
+                    .accessibilityIdentifier("home.temporary.toggle")
+                    .accessibilityHint("chat.temporary.toggle.hint")
+                    .help(String(localized: "chat.temporary.toggle.hint"))
+                }
+            }
+        }
         .sheet(isPresented: $showsDraftPermissions) {
             DraftTaskPermissionsSheet(
                 policy: $viewModel.draftPolicy,
@@ -230,6 +247,16 @@ struct HomeLaunchpadView: View {
     }
 
     // MARK: - Actions
+
+    /// New Task remains ordinary by default. Temporary chat is an explicit
+    /// header action on the already-open launchpad, with no extra chooser.
+    private func startTemporaryChatEntry() {
+        Task {
+            if let conversationID = await viewModel.startTemporaryChat() {
+                router.openConversation(conversationID)
+            }
+        }
+    }
 
     /// Sends the draft and opens the new thread on Home's own stack.
     private func sendTask() {

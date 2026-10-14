@@ -1,0 +1,64 @@
+OCCT 7.8.1 native static libraries - source and relink record
+=============================================================
+
+FloeCADKit (and the Floe app that embeds it) links Open CASCADE Technology
+(OCCT) version 7.8.1 as static libraries for iOS device and simulator. OCCT is
+distributed under the GNU Lesser General Public License v2.1 with the Open
+CASCADE exception 1.0; the complete license text and the exception ship with
+this app (EngineeringViewers/license.occt.txt and
+EngineeringViewers/OCCT_LGPL_EXCEPTION.txt are byte-identical to the copies in
+ThirdParty/FloeCADKit).
+
+This page is an engineering record of where the complete corresponding source
+is available and which build inputs are retained to rebuild or relink the
+linked library. It is not a legal certification and does not replace the
+license texts themselves.
+
+Complete source for the exact linked version
+--------------------------------------------
+OCCT 7.8.1 is unmodified upstream source; Floe modifies no OCCT source file.
+  Project:  https://github.com/Open-Cascade-SAS/OCCT
+  Tag:      V7_8_1 (lightweight tag)
+  Commit:   bd2a789f15235755ce4d1a3b07379a2e062fdc2e
+  Archive:  https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V7_8_1.tar.gz
+The source is public and requires no registration, request or contact.
+
+Linked slices, pinned by byte size and SHA-256
+----------------------------------------------
+  Device (ios-arm64)
+    ThirdParty/FloeCADKit/Vendor/OCCT.xcframework/ios-arm64/libOCCT-OS64.a
+    149,038,832 bytes
+    SHA-256 b4abdbf22f704cfad0be3e67a686f727cc9bb0429d09dbef2153728b81850b50
+  Simulator (ios-arm64-simulator)
+    ThirdParty/FloeCADKit/Vendor/OCCT.xcframework/ios-arm64-simulator/libOCCT-SIMULATORARM64.a
+    147,189,584 bytes
+    SHA-256 a46899cb51e03fcf57c159bfca2b99e2931b2fdfbd457fd2e1074c19c2b4b087
+
+The pins live in ThirdParty/FloeCADKit/DEPENDENCIES.json and are re-obtainable
+by content hash with ThirdParty/FloeCADKit/bootstrap.py.
+
+Retained build inputs for rebuilding or relinking
+-------------------------------------------------
+  Build program: ThirdParty/FloeCADKit/relink/build_occt_ios.sh
+    5,831 bytes
+    SHA-256 6d46c488bec5c37d7ba543ce7a08b86caf66e92dd79216da1d9ea90b2f471289
+    (taken verbatim from OpenShape3D commit
+    30b3c7c1784754f237466e093ab42ff085175d40)
+  Cross toolchain: ThirdParty/FloeCADKit/relink/ios.toolchain.cmake
+    58,209 bytes
+    SHA-256 8d17b77feb69999ebcf9aa4ce3e07babc3d39f9daa23151b1a4f05b825021f2e
+    (leetal/ios-cmake 4.6.1, commit
+    b36d5bce6f9a2d11d9f144bd5882ba31cfdca420, BSD-3-Clause)
+  Procedure: ThirdParty/FloeCADKit/OCCT_RELINK.md and relink/README.md
+    describe the step-by-step replacement of the pinned slices with a locally
+    built framework; relink/SOURCE_OFFER.md records the source-availability
+    facts.
+
+Status and limits
+-----------------
+- This build links the reviewed upstream-built slices. Floe has not
+  independently rebuilt OCCT and claims no byte-identical reproduction of a
+  local build.
+- The record above is the actual state of this source tree; it is an
+  engineering fact sheet, not a legal opinion or certification. The release
+  owner performs the final license review before distribution.

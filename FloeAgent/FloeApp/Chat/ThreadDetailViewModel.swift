@@ -162,10 +162,6 @@ final class ThreadDetailViewModel: ObservableObject {
     private var isAcceptingPlan = false
     /// Attachments staged in the composer.
     @Published var attachments: [AttachmentRef] = []
-    /// Real workspace list from WorkspaceCenter.
-    var availableProjects: [ComposerProject] {
-        center.environment.workspaceCenter.projectWorkspaces.map(ComposerProject.init(record:))
-    }
     /// Whether a run is currently non-terminal (drives Stop vs Send).
     @Published private(set) var isRunning = false
     /// Honest error surface for the last failed action.
@@ -183,6 +179,37 @@ final class ThreadDetailViewModel: ObservableObject {
 
     let conversationID: UUID
     let center: ConversationCenter
+
+    // MARK: - Temporary chat
+
+    /// Whether this conversation is the active ephemeral session. All store
+    /// reads above already route through the center's session-aware helpers.
+    var isTemporary: Bool {
+        center.isTemporaryConversation(conversationID)
+    }
+
+    /// Keep-as-saved progress for the toolbar control.
+    @Published private(set) var temporaryKeepState: TemporaryKeepState = .idle
+    enum TemporaryKeepState: Equatable {
+        case idle
+        case saving
+        /// The durable save committed but the stream tail is still
+        /// forwarding: retry completes the remainder (never a false
+        /// "nothing saved").
+        case partialRetry
+        case failed(String)
+    }
+
+    /// True while a temporary toggle-off handed an unedited ephemeral draft
+    /// back to the ordinary composer: the visible text stays, but it must not
+    /// reach the durable draft store until the user edits it again.
+    private(set) var temporaryDraftHandoffPending = false
+
+    /// Available projects disappear in temporary mode (no workspace binding).
+    var availableProjects: [ComposerProject] {
+        guard !isTemporary else { return [] }
+        return center.environment.workspaceCenter.projectWorkspaces.map(ComposerProject.init(record:))
+    }
 
     /// Grapheme-ordered display coordinator for the live assistant tail.
     /// The network snapshot is the target; the view renders only
@@ -437,7 +464,7 @@ final class ThreadDetailViewModel: ObservableObject {
         actionError = nil
         var stage = "conversationRead"
         do {
-            guard let conversation = try await center.environment.conversationStore
+            guard let conversation = try await center.conversationStore(for: conversationID)
                 .conversation(id: conversationID) else {
                 isConversationMissing = true
                 runs = []
@@ -453,15 +480,20 @@ final class ThreadDetailViewModel: ObservableObject {
             guard generation == loadGeneration else { return }
             isConversationMissing = false
             taskTitle = conversation.title
-            center.environment.browserCenter.bind(to: conversationID)
+            if !isTemporary {
+                // A temporary chat never binds the shared browser surface or
+                // records an owner run: the browser GUI and its session
+                // handoffs are outside the ephemeral tool ceiling.
+                center.environment.browserCenter.bind(to: conversationID)
+            }
             selectedProjectID = center.environment.workspaceCenter.projectWorkspaceID(for: conversationID)
             stage = "runList"
-            runs = try await center.environment.runStore.recentRuns(conversationID: conversationID, limit: 30)
+            runs = try await center.runStore(for: conversationID).recentRuns(conversationID: conversationID, limit: 30)
             if let latest = runs.first {
                 center.environment.browserCenter.recordOwnerRun(conversationID: conversationID, runID: latest.id)
             }
             stage = "messageList"
-            let page = try await center.environment.conversationStore.messagePage(
+            let page = try await center.conversationStore(for: conversationID).messagePage(
                 conversationID: conversationID, before: nil, limit: 20
             )
             try Task.checkCancellation()
@@ -474,7 +506,10 @@ final class ThreadDetailViewModel: ObservableObject {
             try Task.checkCancellation()
             guard generation == loadGeneration else { return }
             if !didRestoreConversationModel {
-                let previousModelID = runs.first?.modelID
+                // A temporary session opened from the launchpad preserves the
+                // launchpad's model selection until its first run exists.
+                let preserved = isTemporary ? center.temporarySession?.preferredModelID : nil
+                let previousModelID = runs.first?.modelID ?? preserved
                 selectedModelID = center.providerAndModel(modelID: previousModelID) != nil
                     ? previousModelID
                     : center.modelPreferences.defaultAgentModelID
@@ -487,18 +522,24 @@ final class ThreadDetailViewModel: ObservableObject {
             stage = "visibleRunDetails"
             try await hydrateVisibleRunDetails()
             stage = "planLoad"
-            taskChecklist = try await TaskChecklistStore(database: center.environment.database).latest(conversationID: conversationID)
-            latestPlan = try await center.environment.intelligenceStore
-                .latestPlan(conversationID: conversationID)
+            if isTemporary {
+                // Temporary conversations own no checklist/plan/goal records.
+                taskChecklist = nil
+                latestPlan = nil
+            } else {
+                taskChecklist = try await TaskChecklistStore(database: center.environment.database).latest(conversationID: conversationID)
+                latestPlan = try await center.environment.intelligenceStore
+                    .latestPlan(conversationID: conversationID)
+            }
             // Restore Plan mode while an unfinished plan is still awaiting
             // review, so leaving and reopening a task never silently drops
             // the mode it was running in.
             reconcilePlanComposerMode()
             stage = "goalLoad"
-            activeGoal = try await center.environment.intelligenceStore
+            activeGoal = isTemporary ? nil : try await center.environment.intelligenceStore
                 .goals(conversationID: conversationID).first
             stage = "pendingInputLoad"
-            pendingInputs = try await center.environment.runningInputStore
+            pendingInputs = try await center.runningInputStore(for: conversationID)
                 .pending(conversationID: conversationID)
             // Preserve an explicit router/run selection. `runs` is newest
             // first, but unconditionally selecting its first item on every
@@ -535,10 +576,10 @@ final class ThreadDetailViewModel: ObservableObject {
             events = []
             return
         }
-        async let selectedEvents = center.environment.runStore.recentEvents(
+        async let selectedEvents = center.runStore(for: conversationID).recentEvents(
             runID: runID, limit: 51
         )
-        async let selectedUsage = center.environment.runStore.usage(runID: runID)
+        async let selectedUsage = center.runStore(for: conversationID).usage(runID: runID)
         let (loadedEvents, loadedUsage) = try await (selectedEvents, selectedUsage)
         mergeEventPage(loadedEvents, runID: runID)
         events = eventsByRun[runID, default: []]
@@ -555,7 +596,7 @@ final class ThreadDetailViewModel: ObservableObject {
         if let selectedRunID { visibleRunIDs.insert(selectedRunID) }
         let known = Set(runs.map(\.id))
         for id in visibleRunIDs.subtracting(known) {
-            if let header = try await center.environment.runStore.run(id: id), header.conversationID == conversationID {
+            if let header = try await center.runStore(for: conversationID).run(id: id), header.conversationID == conversationID {
                 mergeRunHeaders([header])
             }
         }
@@ -583,10 +624,11 @@ final class ThreadDetailViewModel: ObservableObject {
         do {
             let before = eventCoverage[runID]?.earlierCursor
             let page: [RunEventRecord]
+            let runStore = center.runStore(for: conversationID)
             if let before {
-                page = try await center.environment.runStore.earlierEvents(runID: runID, beforeSequence: before, limit: 51)
+                page = try await runStore.earlierEvents(runID: runID, beforeSequence: before, limit: 51)
             } else {
-                page = try await center.environment.runStore.recentEvents(runID: runID, limit: 51)
+                page = try await runStore.recentEvents(runID: runID, limit: 51)
             }
             mergeEventPage(page, runID: runID, before: before)
             let selected = eventsByRun[runID, default: []]
@@ -599,7 +641,7 @@ final class ThreadDetailViewModel: ObservableObject {
         loadingEarlierMessages = true
         defer { loadingEarlierMessages = false }
         do {
-            let page = try await center.environment.conversationStore.messagePage(
+            let page = try await center.conversationStore(for: conversationID).messagePage(
                 conversationID: conversationID, before: earlierMessageCursor, limit: 30
             )
             mergeMessagePage(page, before: earlierMessageCursor)
@@ -746,10 +788,26 @@ final class ThreadDetailViewModel: ObservableObject {
     ) async {
         let goal = (goalOverride ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         reconcilePlanComposerMode()
-        let executionMode = agentMode
+        // Temporary conversations always send plain chat turns.
+        let executionMode = effectiveAgentMode
         guard !isConversationMissing, !goal.isEmpty,
               let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return }
         let stagedAttachments = attachments
+        // Temporary chat is text-only: the launch carries no attachments
+        // while the staged files stay in the composer (and the ordinary
+        // draft) untouched — the center also refuses a nonempty temporary
+        // attachment request before any store/provider effect.
+        let launchAttachments = isTemporary ? [] : stagedAttachments
+        // Send-origin identity, captured BEFORE the first await: a send that
+        // belongs to a temporary session is bound to that exact session
+        // incarnation. A late success/failure (the session was Ended, or a
+        // replacement session reuses the same conversation id) must never
+        // restore, save, clear or persist this send's draft into another
+        // generation's bucket. Ordinary sends are never gated.
+        let sendOrigin = SendOrigin(
+            conversationID: conversationID,
+            temporaryIncarnation: isTemporary ? center.temporarySession?.incarnation : nil
+        )
         // The complete original draft is kept so a failure — including a
         // context-budget rejection — restores every character, never a
         // trimmed or truncated version.
@@ -768,7 +826,9 @@ final class ThreadDetailViewModel: ObservableObject {
             guard consumesComposerDraft else { return nil }
             return ComposerSendCommit(
                 draft: originalDraft,
-                attachments: stagedAttachments,
+                // What the launch actually carried: empty while temporary, so
+                // a successful text-only send never consumes staged files.
+                attachments: launchAttachments,
                 editorGeneration: draftGeneration,
                 conversationID: conversationID
             )
@@ -786,12 +846,12 @@ final class ThreadDetailViewModel: ObservableObject {
                     selectedModelID: selectedModelID,
                     workspaceID: selectedProjectID,
                     executionMode: executionMode,
-                    attachments: stagedAttachments
+                    attachments: launchAttachments
                 )
-                if let commit {
+                if let commit, sendOriginAllowsDraftMutation(sendOrigin) {
                     consumeSentDraft(commit)
                 }
-                pendingInputs = try await center.environment.runningInputStore
+                pendingInputs = try await center.runningInputStore(for: conversationID)
                     .pending(conversationID: conversationID)
             } catch {
                 actionError = presentableError(error, stage: "submitRunningInput")
@@ -809,7 +869,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 provider: provider,
                 model: model,
                 workspaceID: selectedProjectID,
-                attachments: stagedAttachments,
+                attachments: launchAttachments,
                 executionMode: executionMode,
                 runSurface: runSurface,
                 canvasContext: canvasContext,
@@ -818,7 +878,7 @@ final class ThreadDetailViewModel: ObservableObject {
             // The atomic launch returns a durable run identity immediately.
             // Subscribe before awaiting the provider loop so the UI no longer
             // waits for the first token or races a very fast completion.
-            mergeRunHeaders(try await center.environment.runStore.recentRuns(conversationID: conversationID, limit: 30))
+            mergeRunHeaders(try await center.runStore(for: conversationID).recentRuns(conversationID: conversationID, limit: 30))
             selectedRunID = started.runID
             try await loadSelectedRunDetails()
             startLiveUpdates()
@@ -828,12 +888,12 @@ final class ThreadDetailViewModel: ObservableObject {
             case .failure(let error):
                 throw error
             }
-            if let commit {
+            if let commit, sendOriginAllowsDraftMutation(sendOrigin) {
                 consumeSentDraft(commit)
             }
             await load()
         } catch {
-            if let commit {
+            if let commit, sendOriginAllowsDraftMutation(sendOrigin) {
                 // Attachments staged for the failed send come back first,
                 // then the full original text, and only then is the pair
                 // persisted — a relaunch restores prompt and files together.
@@ -868,6 +928,184 @@ final class ThreadDetailViewModel: ObservableObject {
     func selectAgentMode(_ mode: AgentExecutionMode) {
         explicitModePlanRevision = latestPlan.flatMap(Self.activePlanRevision)
         agentMode = mode
+    }
+
+    // MARK: - Temporary chat actions
+
+    /// The temporary-session identity a send started from. A send that
+    /// belongs to no temporary session (ordinary conversation) is never
+    /// gated: ordinary failure recovery is unchanged.
+    private struct SendOrigin {
+        let conversationID: UUID
+        let temporaryIncarnation: UUID?
+    }
+
+    /// True while a late send callback may still mutate this conversation's
+    /// drafts. A temporary send may do so only while its exact session
+    /// incarnation is still active — or after that same identity was
+    /// successfully promoted, when the conversation is a normal saved chat
+    /// and ordinary recovery applies. A destroyed session (End) or a
+    /// same-id replacement generation must never restore, save or clear
+    /// another generation's draft.
+    private func sendOriginAllowsDraftMutation(_ origin: SendOrigin) -> Bool {
+        guard let incarnation = origin.temporaryIncarnation else { return true }
+        if let session = center.temporarySession,
+           session.conversation.id == origin.conversationID {
+            return session.incarnation == incarnation
+        }
+        return center.lastPromotedConversationID == origin.conversationID
+    }
+
+    /// Where the UI should navigate after a toggle, if anywhere.
+    enum TemporaryNavigation: Equatable {
+        case openConversation(UUID)
+        case openNewTask
+        var id: UUID {
+            switch self {
+            case .openConversation(let id): id
+            case .openNewTask: UUID()
+            }
+        }
+    }
+
+    /// Toggles temporary mode for this conversation. Empty conversations
+    /// convert in place; populated ones spawn a separate session. Returns the
+    /// navigation target when the visible conversation changes.
+    @discardableResult
+    func toggleTemporaryChat() async -> TemporaryNavigation? {
+        do {
+            let outcome = try await center.toggleTemporaryChat(for: conversationID)
+            switch outcome {
+            case .temporaryActive(let id):
+                if id != conversationID {
+                    // Separate session: the caller swaps the visible thread.
+                    return .openConversation(id)
+                }
+                // In-place conversion: the same view switches to ephemeral.
+                temporaryDraftHandoffPending = false
+                return nil
+            case .restoredOrdinary(let id):
+                if id != conversationID {
+                    return .openConversation(id)
+                }
+                // Hand the RAM draft back without persisting it yet.
+                temporaryDraftHandoffPending = !draft.isEmpty
+                return nil
+            case .requiresExplicitAction:
+                // Messages exist: only End / Keep as saved may leave.
+                return nil
+            }
+        } catch {
+            actionError = presentableError(error, stage: "toggleTemporaryChat")
+            return nil
+        }
+    }
+
+    /// Ends the temporary chat: cancels owned runs and discards RAM content.
+    /// A launchpad-direct session leaves no durable conversation, so the
+    /// caller returns to the fresh-task surface. The action binds to THIS
+    /// view's conversation identity: a late callback from an old view can
+    /// never destroy a replacement session.
+    @discardableResult
+    func endTemporaryChat() async -> TemporaryNavigation? {
+        guard isTemporary,
+              let session = center.temporarySession,
+              session.conversation.id == conversationID else {
+            return nil
+        }
+        // Bind the destroy to the exact session epoch this view is showing:
+        // a replacement session that reuses the same conversation id must
+        // never be destroyed by this view's late callback.
+        let boundID = conversationID
+        let boundIncarnation = session.incarnation
+        let target = await center.endTemporaryChat(
+            expectedConversationID: boundID,
+            expectedIncarnation: boundIncarnation
+        )
+        switch target {
+        case .conversation(let id):
+            temporaryKeepState = .idle
+            temporaryDraftHandoffPending = false
+            return .openConversation(id)
+        case .newTask:
+            temporaryKeepState = .idle
+            temporaryDraftHandoffPending = false
+            return .openNewTask
+        case .unavailable:
+            // The identity this view ended is no longer the active session
+            // (a replacement already exists): a stale callback must not
+            // mutate this view's Keep surface or navigate anywhere.
+            return nil
+        }
+    }
+
+    /// Keeps the temporary conversation as an ordinary saved chat. Atomic
+    /// and idempotent; a failure leaves the RAM session fully recoverable.
+    /// Binds to this view's conversation identity so a stale callback from
+    /// an old view cannot promote a replacement session; every completion
+    /// mutation is additionally gated on the center confirming THIS identity
+    /// as the operation's outcome (a leave + replacement in the meantime
+    /// must not be reflected here as success/retry).
+    func keepTemporaryChat() async {
+        guard temporaryKeepState != .saving else { return }
+        guard isTemporary,
+              let session = center.temporarySession,
+              session.conversation.id == conversationID else {
+            return
+        }
+        let boundID = conversationID
+        // Epoch binding: a stale Keep from this view can never promote a
+        // replacement generation that reuses the same conversation id.
+        let boundIncarnation = session.incarnation
+        temporaryKeepState = .saving
+        actionError = nil
+        do {
+            _ = try await center.keepTemporaryChat(
+                expectedConversationID: boundID,
+                expectedIncarnation: boundIncarnation
+            )
+            // The save settled for this exact identity only if the center
+            // recorded it as the promoted conversation. A session destroyed
+            // while this save was in flight (leave + replacement) returns
+            // committed truth without owning this view; do not flip state,
+            // migrate drafts or reload on its behalf.
+            guard center.lastPromotedConversationID == boundID else { return }
+            temporaryKeepState = .idle
+            temporaryDraftHandoffPending = false
+            // Reload from the now-durable stores; identity is unchanged.
+            await load()
+        } catch ConversationCenter.TemporaryKeepError.tailPending {
+            // Committed save, tail still syncing: the honest UI state — but
+            // only while this identity is still the live temporary session.
+            guard center.isTemporaryConversation(boundID) else { return }
+            temporaryKeepState = .partialRetry
+        } catch {
+            guard center.isTemporaryConversation(boundID) else { return }
+            let message = error.localizedDescription
+            temporaryKeepState = .failed(message)
+            actionError = presentableError(error, stage: "keepTemporaryChat")
+        }
+    }
+
+    /// The composer may only send plain chat turns while temporary: plan and
+    /// goal modes need durable records this mode never writes.
+    var effectiveAgentMode: AgentExecutionMode {
+        isTemporary ? .chat : agentMode
+    }
+
+    /// Draft-store write gate for the composer: after a temporary toggle-off,
+    /// text typed during the ephemeral phase must not flush until the user
+    /// edits it again (a real change re-arms ordinary persistence).
+    var shouldPersistDraftEdits: Bool {
+        !temporaryDraftHandoffPending
+    }
+
+    /// Called by the composer on every real draft change; the first edit
+    /// after a handoff re-arms ordinary draft persistence.
+    func noteDraftEditedByUser() {
+        if temporaryDraftHandoffPending {
+            temporaryDraftHandoffPending = false
+        }
     }
 
     /// Explicit user reconciliation for this conversation's durable media jobs
@@ -941,14 +1179,14 @@ final class ThreadDetailViewModel: ObservableObject {
     func editPendingInput(_ input: PendingUserInput, content: String) async {
         do {
             try await center.editPendingInput(id: input.id, content: content)
-            pendingInputs = try await center.environment.runningInputStore.pending(conversationID: conversationID)
+            pendingInputs = try await center.runningInputStore(for: conversationID).pending(conversationID: conversationID)
         } catch { actionError = error.localizedDescription }
     }
 
     func removePendingInput(_ input: PendingUserInput) async {
         do {
             try await center.removePendingInput(id: input.id)
-            pendingInputs = try await center.environment.runningInputStore.pending(conversationID: conversationID)
+            pendingInputs = try await center.runningInputStore(for: conversationID).pending(conversationID: conversationID)
         } catch { actionError = error.localizedDescription }
     }
 
@@ -963,7 +1201,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 conversationID: conversationID,
                 orderedIDs: queued.map(\.id)
             )
-            pendingInputs = try await center.environment.runningInputStore.pending(conversationID: conversationID)
+            pendingInputs = try await center.runningInputStore(for: conversationID).pending(conversationID: conversationID)
         } catch { actionError = error.localizedDescription }
     }
 
@@ -971,7 +1209,7 @@ final class ThreadDetailViewModel: ObservableObject {
         guard let runID = selectedRun?.id, isRunning else { return }
         do {
             try await center.promoteToSteer(inputID: input.id, expectedRunID: runID)
-            pendingInputs = try await center.environment.runningInputStore.pending(conversationID: conversationID)
+            pendingInputs = try await center.runningInputStore(for: conversationID).pending(conversationID: conversationID)
         } catch { actionError = error.localizedDescription }
     }
 
@@ -984,7 +1222,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 runID: runID,
                 startOrigin: .explicitUserAction
             )
-            mergeRunHeaders(try await center.environment.runStore.recentRuns(conversationID: conversationID, limit: 30))
+            mergeRunHeaders(try await center.runStore(for: conversationID).recentRuns(conversationID: conversationID, limit: 30))
             selectedRunID = started.runID
             try await loadSelectedRunDetails()
             startLiveUpdates()
@@ -1386,12 +1624,12 @@ final class ThreadDetailViewModel: ObservableObject {
         // drain. A finished run must never strand the UI in a non-terminal
         // "thinking" state merely because historical runs were not prefetched.
         guard !Task.isCancelled else { return }
-        if let page = try? await center.environment.conversationStore.messagePage(
+        if let page = try? await center.conversationStore(for: conversationID).messagePage(
             conversationID: conversationID, before: nil, limit: 20
         ) {
             mergeMessagePage(page)
         }
-        if let latestRuns = try? await center.environment.runStore
+        if let latestRuns = try? await center.runStore(for: conversationID)
             .recentRuns(conversationID: conversationID, limit: 30) {
             mergeRunHeaders(latestRuns)
         }

@@ -840,11 +840,26 @@ struct MediaGenerationJobStoreTests {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
         let store = MediaGenerationJobStore(database: database)
+        // The V42 schema FKs media_generation_jobs.provider_id/model_id to
+        // the providers/models tables: seed real configuration rows (the
+        // same setup every other job test uses) instead of random UUIDs.
+        let configuration = ModelConfigurationStore(database: database)
+        let provider = ProviderProfile(
+            kind: .googleGemini, wireProtocol: .openAIResponses,
+            baseURL: URL(string: "https://generativelanguage.googleapis.com/v1beta")!
+        )
+        let model = ModelProfile(
+            providerID: provider.id, remoteModelID: "veo-3.1-generate-preview",
+            displayName: "Veo 3.1", limits: .init(contextTokens: 1, maxOutputTokens: 0),
+            capabilities: [.videoGeneration], isHiddenFromPrimaryPicker: true
+        )
+        try await configuration.saveProvider(provider)
+        try await configuration.saveModel(model)
         let task = UUID()
         let run = UUID()
         let assetID = UUID()
         let job = MediaGenerationJob(
-            providerID: UUID(), modelID: UUID(), mediaKind: .image,
+            providerID: provider.id, modelID: model.id, mediaKind: .image,
             credentialReference: nil, canvasID: nil, documentID: nil,
             sourceNodeIDs: [], resultNodeID: UUID(),
             requestJSON: Data("{\"prompt\":\"lookup\"}".utf8),

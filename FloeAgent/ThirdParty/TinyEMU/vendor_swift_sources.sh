@@ -18,15 +18,20 @@
 #  - engine/ is byte-identical to the pristine tarball EXCEPT the files
 #    carrying documented patches, applied in this order: riscv_machine.c
 #    (patches/0001 poweroff callback, then patches/0002 recoverable OOM +
-#    copy_bios bounds), iomem.c (patches/0002), fs_disk.c (patches/0003
-#    Apple stat timestamps, then patches/0007 fd-based export-root
-#    containment), slirp/bootp.c (patches/0004, an upstream typo that only
-#    compiles with DEBUG undefined), riscv_cpu_template.h (patches/0005
-#    FENCE compatibility), slirp/{slirp,socket,udp,ip_icmp,tcp_subr}.c and
-#    slirp/{slirp,main,libslirp}.h (patches/0006 per-instance slirp state)
-#    and virtio.c (patches/0008 recoverable guest-fault paths); patch 0009
-#    fixes unlinkat flag/directory semantics and replaces the bogus 524
-#    xattrwalk response (fs.h, virtio.c, fs_disk.c). --check
+#    copy_bios bounds, patches/0012 htif FDT reg, patches/0014 canonical
+#    ISA string, patches/0016 htif console GETC and patches/0017 the
+#    OpenSBI reserved-memory window), iomem.c (patches/0002), fs_disk.c
+#    (patches/0003 Apple stat timestamps, then patches/0007 fd-based
+#    export-root containment), slirp/bootp.c (patches/0004, an upstream
+#    typo that only compiles with DEBUG undefined),
+#    riscv_cpu_template.h (patches/0005 FENCE compatibility),
+#    riscv_cpu.c/riscv_cpu.h/riscv_cpu_priv.h (patches/0013 mandatory ID
+#    CSRs and patches/0015 time CSR source), slirp/{slirp,socket,udp,
+#    ip_icmp,tcp_subr}.c and slirp/{slirp,main,libslirp}.h (patches/0006
+#    per-instance slirp state) and virtio.c (patches/0008 recoverable
+#    guest-fault paths); patch 0009 fixes unlinkat flag/directory
+#    semantics and replaces the bogus 524 xattrwalk response (fs.h,
+#    virtio.c, fs_disk.c). --check
 #    rebuilds the pristine tree + patches + rename and diffs, so a
 #    hand-edited vendored file fails the check.
 #  - adapter/floe_vm.{c,h} are symlinked from ../../adapter (single source).
@@ -81,7 +86,15 @@ PATCHES="0001-htif-poweroff-callback.patch \
 0008-recoverable-guest-fault-paths.patch \
 0009-9p-unlinkat-xattr-semantics.patch \
 0010-smp-dual-hart.patch \
-0011-slirp-no-sigpipe.patch"
+0011-slirp-no-sigpipe.patch \
+0012-htif-fdt-reg.patch \
+0013-mid-csrs.patch \
+0014-canonical-isa-string.patch \
+0015-time-csr.patch \
+0016-htif-console-getc.patch \
+0017-fw-reserved-memory.patch \
+0018-virtio-queue-num-max.patch \
+0019-fs-open-dir-detect.patch"
 
 # slirp declares its own BSD structs (ipovly/tcpcb/sbuf/udphdr/arphdr/icmp)
 # whose tags collide with Darwin SDK umbrella-module headers when compiled

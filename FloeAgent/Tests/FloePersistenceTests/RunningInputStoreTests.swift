@@ -112,4 +112,33 @@ struct RunningInputStoreTests {
         let edited = try #require(try await store.input(id: input.id))
         #expect(edited.content.contains(secret))
     }
+
+    @Test("upsert inserts by exact identity and updates every mutable column on repeat")
+    func upsertIsIdempotentByID() async throws {
+        let (store, conversationID, runID) = try await makeStore()
+        let id = UUID()
+        var input = PendingUserInput(
+            id: id, conversationID: conversationID, targetRunID: runID,
+            content: "upserted", mode: .queue, status: .queued, position: 7
+        )
+        try await store.upsert(input)
+        let inserted = try #require(try await store.input(id: id))
+        #expect(inserted.content == "upserted")
+        #expect(inserted.position == 7)
+        #expect(inserted.status == .queued)
+
+        // Repeat with changed state: same id, updated columns, never a
+        // second row and never a reminted position (promotion retry relies
+        // on this for exactly-once tail forwarding).
+        input.status = .steerPending
+        input.mode = .steer
+        input.content = "upserted-edited"
+        try await store.upsert(input)
+        let updated = try #require(try await store.input(id: id))
+        #expect(updated.status == .steerPending)
+        #expect(updated.mode == .steer)
+        #expect(updated.content == "upserted-edited")
+        #expect(updated.position == 7)
+        #expect(try await store.pending(conversationID: conversationID).count == 1)
+    }
 }

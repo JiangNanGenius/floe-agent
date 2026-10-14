@@ -7,8 +7,11 @@ import FloeCore
 import FloeModels
 
 /// Durable product ownership; document assistants never enter ordinary chat projections.
+/// `.temporary` marks an ephemeral (RAM-only) conversation: it must never be written
+/// to SQLite — ordinary projections filter `purpose = 'ordinary'` and promotion
+/// rewrites the record as `.ordinary` before saving. See `TemporaryChatSession`.
 public enum ConversationPurpose: String, Sendable, Hashable {
-    case ordinary, notes
+    case ordinary, notes, temporary
 }
 
 /// A conversation row with its plain-text projection. Structured multimodal
@@ -115,6 +118,19 @@ public protocol ConversationStore: Sendable {
     @discardableResult
     func setAutomaticTitle(id: UUID, title: String) async throws -> Bool
     func deleteConversation(id: UUID) async throws
+    /// Atomically removes the conversation row ONLY when no durable resource
+    /// references it. The verification and the DELETE run inside ONE writer
+    /// transaction, so a resource can never be written between a successful
+    /// "empty" read and the removal.
+    ///
+    /// The temporary-chat in-place conversion uses this: a blank ordinary
+    /// chat that already owns a workspace (with real user files),
+    /// attachments, runs, queued inputs, durable jobs or saved settings must
+    /// NEVER lose that ownership to a mode toggle. A conversation that
+    /// exists but owns anything, and one that does not exist, both return
+    /// `false` — only a verified-empty row is removed (`true`).
+    @discardableResult
+    func deleteConversationIfVerifiedEmpty(id: UUID) async throws -> Bool
     func setArchived(id: UUID, archived: Bool) async throws
 
     func appendMessage(_ message: PersistedMessage) async throws
@@ -257,6 +273,89 @@ public actor SQLiteConversationStore: ConversationStore {
     public func deleteConversation(id: UUID) async throws {
         try await database.writer { db in
             try db.execute(sql: "DELETE FROM conversations WHERE id = ?", arguments: [id.uuidString])
+        }
+    }
+
+    /// One transaction: verify the target row is a plain blank ordinary
+    /// conversation that owns no durable resource, then remove it. Every
+    /// conversation-scoped table that can hold user-visible state is probed,
+    /// including tables that reference the conversation WITHOUT a foreign
+    /// key (`checkpoints`) and owner-based rows (`media_generation_jobs`).
+    /// The per-conversation `task_policies` row is written by a real run
+    /// launch or an explicit policy change, so its presence is itself a
+    /// saved setting and refuses the removal.
+    ///
+    /// The conversation's OWN metadata is part of the contract: a Notes
+    /// assistant (`purpose = 'notes'`), a manually named chat, an automatic
+    /// title, or an archived task must never be deleted and restored as a
+    /// blank ordinary row. Only `purpose = 'ordinary'` + empty title +
+    /// `title_origin = 'autoPending'` + not archived (and no child resource)
+    /// is eligible.
+    ///
+    /// A hit, ineligible metadata or a missing row returns `false`: the
+    /// caller must treat the conversation as owning durable state (or as
+    /// absent) and must not remove anything. The row removal below can
+    /// therefore never fire the `queue_private_task_cleanup` trigger for an
+    /// owned private workspace.
+    public func deleteConversationIfVerifiedEmpty(id: UUID) async throws -> Bool {
+        try await database.writer { db in
+            let conversationID = id.uuidString
+            // The target row must exist and be a blank ordinary conversation.
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT title, title_origin, purpose, archived_at
+                    FROM conversations WHERE id = ?
+                    """,
+                arguments: [conversationID]
+            ) else { return false }
+            let title = row["title"] as String? ?? ""
+            let titleOrigin = row["title_origin"] as String? ?? "autoPending"
+            let purpose = row["purpose"] as String? ?? "ordinary"
+            let archivedAt = row["archived_at"] as String?
+            guard purpose == "ordinary",
+                  title.isEmpty,
+                  titleOrigin == "autoPending",
+                  archivedAt == nil
+            else { return false }
+            // (table, predicate) — every conversation-scoped durable table.
+            let probes: [(table: String, predicate: String)] = [
+                ("messages", "conversation_id = ?"),
+                ("attachments", "conversation_id = ?"),
+                ("runs", "conversation_id = ?"),
+                ("checkpoints", "conversation_id = ?"),
+                ("pending_user_inputs", "conversation_id = ?"),
+                ("workspace_conversations", "conversation_id = ?"),
+                ("conversation_workspace_ownership", "conversation_id = ?"),
+                ("task_policies", "conversation_id = ?"),
+                ("plan_drafts", "conversation_id = ?"),
+                ("conversation_goals", "conversation_id = ?"),
+                ("task_checklist_revisions", "conversation_id = ?"),
+                ("memory_entries", "conversation_id = ?"),
+                ("memory_candidates", "conversation_id = ?"),
+                ("canvas_run_contexts", "conversation_id = ?"),
+                ("credential_records", "conversation_id = ?"),
+                ("background_jobs", "conversation_id = ?"),
+                ("conversation_discovery", "conversation_id = ?"),
+                ("media_generation_jobs", "owner_kind = 'conversation' AND owner_id = ?"),
+            ]
+            for probe in probes {
+                let exists = try Int.fetchOne(
+                    db,
+                    sql: """
+                        SELECT EXISTS(
+                            SELECT 1 FROM \(probe.table) WHERE \(probe.predicate)
+                        )
+                        """,
+                    arguments: [conversationID]
+                ) ?? 0
+                if exists != 0 { return false }
+            }
+            try db.execute(
+                sql: "DELETE FROM conversations WHERE id = ?",
+                arguments: [conversationID]
+            )
+            return db.changesCount > 0
         }
     }
 

@@ -55,6 +55,23 @@ Notes:
   present. A checkout whose revision does not match the committed pin fails
   closed on purpose. In a fresh clone (no `.build`) it reuses the recorded,
   revision-bound evidence and passes without resolving or downloading.
+- The same check declares the app-graph-only native CAD packages from
+  `ThirdParty/FloeCADKit/Package.resolved` (the single pin authority:
+  Euclid, ShapeScript, LRUCache, SVGPath) and re-verifies the bundled
+  native-OCCT source/relink record against
+  `ThirdParty/FloeCADKit/DEPENDENCIES.json`. A moved lock revision, an edited
+  reviewed copy under `FloeApp/Resources/Licenses`, a stale lock/manifest pair
+  or a checkout whose HEAD differs from the declared revision fails closed.
+  ShapeScript's HelpBuilder-only dependencies (swift-markdown, swift-cmark)
+  are resolved but not linked and are deliberately not declared as shipped
+  components.
+- `FLOE_LICENSE_CHECKOUTS=<dir>` points a read-only qualification run at an
+  explicit checkout root (for example another build's
+  `SourcePackages/checkouts`); an empty directory reproduces the clean-clone
+  contract. The default (unset) stays the real `.build/checkouts`, and the
+  summary line separates verified checkouts (`N verified checkouts`, `N
+  verified FloeCAD checkouts`) from reused evidence, so an empty override is
+  never App-graph proof.
 - Use the installed Xcode via `DEVELOPER_DIR` per command instead of changing
   the global `xcode-select`; check free space on the actual output volume.
 

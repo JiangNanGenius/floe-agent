@@ -76,6 +76,12 @@ struct FloeAgentApp: App {
         let router = AppRouter()
         _environment = StateObject(wrappedValue: environment)
         _router = StateObject(wrappedValue: router)
+        // A notification tap can be delivered while UIKit connects the first
+        // scene, before RootView's bootstrap task runs. Install the existing
+        // notification delegate now; its readiness gate defers navigation
+        // until persistence and the foreground route subscribers are ready.
+        // Leaving this coordinator lazy drops cold-launch response actions.
+        _ = environment.backgroundRunCoordinator
         router.registerBackgroundTasksAtAppLaunch()
         // Creative routing / canvas handoff navigation seam: foreground-only
         // delivery through the real router (late or replayed routes never
@@ -144,7 +150,18 @@ struct FloeAgentApp: App {
                 .environmentObject(environment.voiceInput)
                 .environmentObject(environment.speechService)
                 .environmentObject(environment.designEntryState)
-                .task { await environment.bootstrap() }
+                .task {
+                    await environment.bootstrap()
+                    #if DEBUG
+                    // Temporary-chat GUI acceptance: optionally preset a
+                    // separate session with synthetic in-RAM messages and
+                    // navigate to it (DEBUG/simulator/launch-arg gated).
+                    await TemporaryChatUITestFixture.presetSessionIfRequested(
+                        router: router,
+                        center: environment.conversationCenter
+                    )
+                    #endif
+                }
         }
         .commands {
             FloeAgentCommands(router: router)
@@ -419,7 +436,22 @@ struct RootView: View {
             await presentOnboardingIfNeeded()
         }
         .onReceive(environment.conversationCenter.$conversations) { conversations in
-            router.reconcileConversations(Set(conversations.map(\.id)))
+            // The durable list is SQLite-only by design; the ACTIVE temporary
+            // session is additionally available, so a reload during a
+            // temporary thread cannot classify its selected id as deleted
+            // and bounce to New Task. The temporary id is never added to the
+            // saved history list itself.
+            var available = Set(conversations.map(\.id))
+            if let session = environment.conversationCenter.temporarySession {
+                available.insert(session.conversation.id)
+            }
+            router.reconcileConversations(available)
+        }
+        .onChange(of: router.inspectorRoute) { _, _ in
+            reconcileTemporaryInspectorRoute()
+        }
+        .onChange(of: environment.conversationCenter.temporarySession?.incarnation) { _, _ in
+            reconcileTemporaryInspectorRoute()
         }
         .onChange(of: environment.browserCenter.presentationRequest) { _, request in
             guard let request, request.conversationID == router.selectedConversationID else { return }
@@ -707,7 +739,7 @@ struct RootView: View {
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("phone.sidebar.drawer")
 
-                if let route = router.inspectorRoute {
+                if let route = presentableInspectorRoute {
                     Color.black.opacity(0.18)
                         .ignoresSafeArea()
                         .onTapGesture { router.hideInspector() }
@@ -794,7 +826,7 @@ struct RootView: View {
             HStack(spacing: 0) {
                 contentColumn
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if let inspectorRoute = router.inspectorRoute {
+                if let inspectorRoute = presentableInspectorRoute {
                     Divider()
                     NavigationStack {
                         // The inspector must be re-created per conversation:
@@ -929,9 +961,68 @@ struct RootView: View {
             await environment.workspaceCenter.reload()
             await environment.conversationCenter.reload()
         }
-        .onChange(of: router.sidebarSelection) { _, selection in
-            applySidebarSelection(selection)
+        .onChange(of: router.sidebarSelection) { oldValue, newValue in
+            applySidebarSelection(newValue)
             preferredCompactColumn = .detail
+            discardTemporarySessionOnContentLeave(old: oldValue, new: newValue)
+        }
+    }
+
+    /// Leaving the visible conversation surface — another chat, New Task, a
+    /// workspace, overview, or a primary/more destination — explicitly ends
+    /// an active temporary chat exactly once: the session is discarded and
+    /// its owned run cancelled, EVEN mid-generation or mid-Keep. An
+    /// in-flight Keep is settled atomically first: a committed promotion is
+    /// ordinary truth and survives with normal history/lifecycle; no
+    /// resumable temporary state remains after the leave. Rotation,
+    /// fullscreen editing and content-view rebuilds never change the
+    /// sidebar selection, so they cannot discard; background/foreground
+    /// transitions are NOT navigation leaves and never destroy the session.
+    /// An inspector inherited from an ordinary thread can be retargeted by
+    /// AppRouter when the selected conversation changes. Temporary chats have
+    /// no workspace/browser/terminal/child bindings: never mount such a pane
+    /// for that identity, even for a frame before the route is reconciled.
+    /// An inspector still owned by another ordinary task keeps its own scope.
+    private var presentableInspectorRoute: AppRouter.InspectorRoute? {
+        guard let route = router.inspectorRoute else { return nil }
+        if environment.conversationCenter.isTemporaryConversation(route.conversationID),
+           route.content != .progress {
+            return nil
+        }
+        return route
+    }
+
+    private func reconcileTemporaryInspectorRoute() {
+        if router.inspectorRoute != nil, presentableInspectorRoute == nil {
+            router.hideInspector()
+        }
+    }
+
+    private func discardTemporarySessionOnContentLeave(
+        old oldSelection: SidebarSelection?,
+        new newSelection: SidebarSelection?
+    ) {
+        guard oldSelection != newSelection,
+              case .workbench(.conversation(let visibleID)) = oldSelection
+        else { return }
+        // A toggle-on attempt whose eligibility transaction is still
+        // suspended must not publish a temporary session after the user left
+        // this conversation: cancel it first (the attempt's own continuation
+        // restores anything a committed removal deleted). This runs for
+        // every leave, with or without an already-published session.
+        environment.conversationCenter.cancelPendingTemporaryToggle(for: visibleID)
+        guard let session = environment.conversationCenter.temporarySession,
+              session.conversation.id == visibleID
+        else { return }
+        // The expected identity is captured HERE (synchronously, with the
+        // guard) and bound into the destroy: a late task from an old view
+        // can never act on a replacement session — not even one that reuses
+        // the same conversation UUID (the incarnation distinguishes epochs).
+        let incarnation = session.incarnation
+        Task {
+            await environment.conversationCenter.endTemporaryChat(
+                expectedConversationID: visibleID,
+                expectedIncarnation: incarnation)
         }
     }
 

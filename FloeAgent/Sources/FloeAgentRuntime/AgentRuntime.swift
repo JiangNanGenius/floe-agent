@@ -398,6 +398,14 @@ public actor FloeAgentRuntime {
         /// durable unknown-outcome receipt; nil keeps the strict suppress-
         /// until-inspected behavior for every route.
         public var unknownOutcomeReconciler: (any UnknownOutcomeReconciler)?
+        /// True for temporary (ephemeral) conversations: provider transport
+        /// must bypass any shared on-disk URLCache (requests still reach the
+        /// provider normally; this is a local cache directive).
+        public var ephemeralTransport: Bool
+        /// True for temporary (ephemeral) conversations: outbound web
+        /// retrieval (web.fetch/web.search) is public-only; tools with a
+        /// LAN/diagnostic opt-in must refuse it for these runs.
+        public var publicWebOnly: Bool
 
         public init(
             conversationID: UUID = UUID(),
@@ -426,7 +434,9 @@ public actor FloeAgentRuntime {
             providerRetryBaseDelay: TimeInterval = 1,
             providerRetryMaxDelay: TimeInterval = 30,
             providerRetryJitterRatio: Double = 0.2,
-            unknownOutcomeReconciler: (any UnknownOutcomeReconciler)? = nil
+            unknownOutcomeReconciler: (any UnknownOutcomeReconciler)? = nil,
+            ephemeralTransport: Bool = false,
+            publicWebOnly: Bool = false
         ) {
             self.conversationID = conversationID
             self.provider = provider
@@ -458,6 +468,8 @@ public actor FloeAgentRuntime {
             self.providerRetryMaxDelay = max(self.providerRetryBaseDelay, providerRetryMaxDelay)
             self.providerRetryJitterRatio = min(1, max(0, providerRetryJitterRatio))
             self.unknownOutcomeReconciler = unknownOutcomeReconciler
+            self.ephemeralTransport = ephemeralTransport
+            self.publicWebOnly = publicWebOnly
         }
     }
 
@@ -1852,7 +1864,8 @@ public actor FloeAgentRuntime {
             // schema was trimmed from this request. The discovery tools are
             // always callable, so they belong to that ceiling too.
             allToolNames: discoverableDescriptors.map(\.name)
-                + [ToolDiscovery.name, ToolDiscovery.listName]
+                + [ToolDiscovery.name, ToolDiscovery.listName],
+            ephemeralTransport: configuration.ephemeralTransport
         )
         // A retry must replay the exact safe dispatch boundary. In particular,
         // do not rebuild a compacted prompt or regenerate a tool request after
@@ -2991,6 +3004,7 @@ public actor FloeAgentRuntime {
             scope: call.scope,
             activeSkillIDs: configuration.activeSkillIDs,
             allowedToolNames: configuration.allowedToolNames,
+            publicWebOnly: configuration.publicWebOnly,
             workspaceRootURL: configuration.workspaceRootURL,
             canvasStagedDocument: configuration.canvasStagedDocument,
             allowedWorkspacePaths: configuration.allowedWorkspacePaths,
@@ -3922,6 +3936,7 @@ public actor FloeAgentRuntime {
                 scope: call.scope,
                 activeSkillIDs: configuration.activeSkillIDs,
                 allowedToolNames: configuration.allowedToolNames,
+                publicWebOnly: configuration.publicWebOnly,
                 workspaceRootURL: configuration.workspaceRootURL,
                 canvasStagedDocument: configuration.canvasStagedDocument,
                 allowedWorkspacePaths: configuration.allowedWorkspacePaths,

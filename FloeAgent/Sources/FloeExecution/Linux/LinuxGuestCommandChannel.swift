@@ -714,6 +714,15 @@ enum LinuxGuestFraming {
 /// faster than the console drains, so the stream keeps the newest bytes
 /// within its bound and drops the oldest — a token parser that stops
 /// consuming can never block the router, and with it every other token.
+///
+/// Two reads exist: `next()` is the plain wait every long-lived token
+/// consumer uses, and `nextCancellable()` is the cancellation-aware read the
+/// bounded HELLO probe uses. A cancelled reader must never leave a suspended
+/// continuation behind (its task group could then never exit against a
+/// silent guest), so the cancellation wake is recorded on the stream and
+/// honored even when it arrives BEFORE registration. It never finishes the
+/// stream, so a reader that loses the race to a deadline (or to a sibling
+/// chunk) cannot close the token for later chunks.
 actor LinuxGuestTokenStream {
     private var chunks: [Data] = []
     private var buffered = 0
@@ -721,6 +730,12 @@ actor LinuxGuestTokenStream {
     private var waiter: CheckedContinuation<Data?, Never>?
     private var finished = false
     private var failure: (any Error & Sendable)?
+    /// A cancellation-aware reader was cancelled. Recorded because the
+    /// cancellation can land BEFORE the reader registers its continuation:
+    /// without the record, that reader would install a waiter nothing ever
+    /// resumes (lost wake) and hang its task group. Only `cancelWait` sets
+    /// it; `wake()`, `finish()` and `fail()` never do.
+    private var waitCancelled = false
 
     init(maxBufferedBytes: Int = 4 * 1024 * 1024) {
         self.maxBufferedBytes = maxBufferedBytes
@@ -741,25 +756,69 @@ actor LinuxGuestTokenStream {
     }
 
     func next() async -> Data? {
-        if !chunks.isEmpty {
-            let chunk = chunks.removeFirst()
-            buffered -= chunk.count
-            return chunk
-        }
+        if let chunk = dequeue() { return chunk }
         if finished { return nil }
         return await withCheckedContinuation { continuation in
-            if finished || !chunks.isEmpty {
-                if chunks.isEmpty {
-                    continuation.resume(returning: nil)
-                } else {
-                    let chunk = chunks.removeFirst()
-                    buffered -= chunk.count
-                    continuation.resume(returning: chunk)
-                }
-            } else {
-                waiter = continuation
-            }
+            install(continuation, cancellationAware: false)
         }
+    }
+
+    /// Cancellation-aware read used by the bounded probe wait. Data and
+    /// closing semantics are identical to `next()`; the addition is that a
+    /// cancelled reader always finishes (returns nil) instead of suspending
+    /// on a non-cancellable continuation. The wake stays token-local and
+    /// recorded, so a cancellation that lands before registration is not
+    /// lost, and it never finishes or fails the stream: a chunk that arrives
+    /// later (or the ordinary deadline wake) is unaffected.
+    func nextCancellable() async -> Data? {
+        if let chunk = dequeue() { return chunk }
+        if finished { return nil }
+        if waitCancelled { return nil }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                install(continuation, cancellationAware: true)
+            }
+        } onCancel: {
+            Task { await self.cancelWait() }
+        }
+    }
+
+    /// Cancels one cancellation-aware read: record the cancellation so a
+    /// reader that has not registered yet still observes it, and wake a
+    /// suspended waiter. Never finishes the stream and never consumes
+    /// buffered bytes. Repeating the call is harmless.
+    func cancelWait() {
+        waitCancelled = true
+        waiter?.resume(returning: nil)
+        waiter = nil
+    }
+
+    /// Single registration point shared by `next()` and `nextCancellable()`.
+    /// Buffered bytes win over a close (unchanged behavior), then a recorded
+    /// cancellation completes a cancellation-aware reader immediately — this
+    /// check runs inside the same isolated step that would install the
+    /// waiter, so the wake cannot be lost between the two.
+    private func install(_ continuation: CheckedContinuation<Data?, Never>, cancellationAware: Bool) {
+        if finished || !chunks.isEmpty {
+            if let chunk = dequeue() {
+                continuation.resume(returning: chunk)
+            } else {
+                continuation.resume(returning: nil)
+            }
+            return
+        }
+        if cancellationAware, waitCancelled {
+            continuation.resume(returning: nil)
+            return
+        }
+        waiter = continuation
+    }
+
+    private func dequeue() -> Data? {
+        guard !chunks.isEmpty else { return nil }
+        let chunk = chunks.removeFirst()
+        buffered -= chunk.count
+        return chunk
     }
 
     func finish() {
@@ -770,7 +829,8 @@ actor LinuxGuestTokenStream {
 
     /// Wakes a waiting reader with nil WITHOUT finishing the stream: a probe
     /// deadline uses this so the caller can still distinguish "the runner
-    /// stayed silent" (stream open) from "the console closed".
+    /// stayed silent" (stream open) from "the console closed". Unlike
+    /// `cancelWait` it records nothing: a later reader still waits normally.
     func wake() {
         waiter?.resume(returning: nil)
         waiter = nil
@@ -1239,6 +1299,12 @@ public actor LinuxGuestCommandChannel {
     /// protocol; the owner should reset the guest instead of reusing it.
     public var isPoisoned: Bool { poisoned }
 
+    /// Number of live per-token streams. Diagnostic/test seam only: a
+    /// cancelled probe (or any failed exchange) must unregister its attempt
+    /// token, so token cleanup is directly observable. Production logic never
+    /// reads this.
+    var liveTokenCount: Int { tokenStreams.count }
+
     /// Bounded stop-recovery window after a targeted interrupt: the guest
     /// must answer END (process group reaped) or FAILED (unreaped) inside
     /// this window. Silence is a quarantine — the channel poisons and the
@@ -1290,6 +1356,25 @@ public actor LinuxGuestCommandChannel {
         negotiated = true
     }
 
+    /// One HELLO attempt's outcome. `unanswered` keeps whatever the attempt's
+    /// parser saw (a CAPS line without a closing END), exactly like the
+    /// previous single-send probe.
+    private enum HelloAttemptOutcome {
+        case answered(exit: Int32, capabilities: String?, protocolVersion: Int?)
+        case unanswered(capabilities: String?, protocolVersion: Int?)
+    }
+
+    /// How long one HELLO attempt waits before the probe re-sends it. A guest
+    /// console may not carry an input frame written before its tty is open
+    /// (observed on the OpenSBI/6.18 guest pair: the frame reaches the VM but
+    /// the booted runner — demonstrably alive, it brings the network up —
+    /// never sees it). One early HELLO would therefore time out against a
+    /// healthy runner. Retrying inside the caller's bounded deadline makes
+    /// the probe independent of that boot window; the first complete answer
+    /// still wins and a late duplicate for an earlier attempt has no
+    /// registered token, so it is dropped by the router.
+    static let helloRetryInterval: TimeInterval = 5
+
     /// Raw capability probe: sends FLOE-HELLO and returns the CAPS payload
     /// the runner answered (nil when the runner predates HELLO — a legacy
     /// runner never answers, so the probe times out). When
@@ -1302,61 +1387,54 @@ public actor LinuxGuestCommandChannel {
         guard !closed else {
             throw LinuxGuestError.consoleUnavailable("the guest channel is closed")
         }
-        let token = "hello-" + UUID().uuidString
-        let tokenStream = LinuxGuestTokenStream()
-        registerToken(token, stream: tokenStream)
-        defer { unregisterToken(token) }
         try await ensureRouter()
         // The optional bridge advertisement is part of the same handshake:
         // the guest records the actions the host will serve and only then
         // accepts `floe-host archive …` commands. No handler installed means
         // no argument, and the guest fails the command closed.
         let helloArguments = advertisedHostRequestArgument.map { [$0] } ?? []
-        try await send([LinuxGuestFraming.controlLine("HELLO", token: token, arguments: helloArguments)])
-
-        var parser = LinuxGuestFraming.ControlParser(token: token)
         // Monotonic deadline: a wall-clock jump must never extend or cut the
-        // bounded probe.
+        // bounded probe. Every attempt draws its own token so a late answer
+        // can never be spliced into a later attempt's parse.
         let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
+        var lastSeenCapabilities: String?
         while true {
+            // A cancelled caller must not open another attempt: fail with the
+            // cancellation before the HELLO write (no token is registered for
+            // this iteration yet, so nothing leaks).
+            if Task.isCancelled { throw CancellationError() }
             let remaining = ContinuousClock.now.duration(to: deadline)
             if remaining <= .zero { break }
-            // A silent legacy runner (no HELLO support) must not hang the
-            // probe: the read races the remaining time and the sleep side
-            // wakes the token stream's waiter, so the await is bounded even
-            // when the guest never answers.
-            guard let chunk = await boundedNext(tokenStream, timeout: remaining) else {
-                if await tokenStream.isFinished() {
-                    throw LinuxGuestError.consoleUnavailable(
-                        "guest console closed before the runner answered capability negotiation"
-                    )
-                }
-                break
+            let window = min(remaining, .seconds(Self.helloRetryInterval))
+            let token = "hello-" + UUID().uuidString
+            let tokenStream = LinuxGuestTokenStream()
+            registerToken(token, stream: tokenStream)
+            let outcome: HelloAttemptOutcome
+            do {
+                outcome = try await helloAttempt(
+                    token: token, stream: tokenStream, arguments: helloArguments, window: window
+                )
+            } catch {
+                unregisterToken(token)
+                throw error
             }
-            switch parser.feed(chunk) {
-            case .needMore:
+            unregisterToken(token)
+            switch outcome {
+            case .unanswered(let capabilities, _):
+                lastSeenCapabilities = capabilities ?? lastSeenCapabilities
                 continue
-            case .finished(let exit):
-                guard exit == 0 else {
+            case .answered(let exit, let capabilities, let protocolVersion):
+                guard exit == 0, let capabilities else {
                     if requireCurrentProtocol {
                         throw LinuxGuestError.runnerUpgradeRequired(
                             required: "protocol \(LinuxGuestFraming.requiredProtocol)",
-                            found: parser.capabilities
-                        )
-                    }
-                    return nil
-                }
-                guard let capabilities = parser.capabilities else {
-                    if requireCurrentProtocol {
-                        throw LinuxGuestError.runnerUpgradeRequired(
-                            required: "protocol \(LinuxGuestFraming.requiredProtocol)",
-                            found: nil
+                            found: capabilities
                         )
                     }
                     return nil
                 }
                 if requireCurrentProtocol,
-                   (parser.protocolVersion ?? 0) < LinuxGuestFraming.requiredProtocol {
+                   (protocolVersion ?? 0) < LinuxGuestFraming.requiredProtocol {
                     throw LinuxGuestError.runnerUpgradeRequired(
                         required: "protocol \(LinuxGuestFraming.requiredProtocol)",
                         found: capabilities
@@ -1368,26 +1446,81 @@ public actor LinuxGuestCommandChannel {
         if requireCurrentProtocol {
             throw LinuxGuestError.runnerUpgradeRequired(
                 required: "protocol \(LinuxGuestFraming.requiredProtocol)",
-                found: parser.capabilities
+                found: lastSeenCapabilities
             )
         }
-        return nil
+        return lastSeenCapabilities
+    }
+
+    /// One bounded HELLO attempt. A silent guest must not hang the probe: the
+    /// read races the attempt window and the sleep side wakes the token
+    /// stream's waiter, so the await is bounded even when the guest never
+    /// answers.
+    private func helloAttempt(
+        token: String,
+        stream: LinuxGuestTokenStream,
+        arguments: [String],
+        window: Duration
+    ) async throws -> HelloAttemptOutcome {
+        try await send([LinuxGuestFraming.controlLine("HELLO", token: token, arguments: arguments)])
+        var parser = LinuxGuestFraming.ControlParser(token: token)
+        let deadline = ContinuousClock.now.advanced(by: window)
+        while true {
+            // A cancelled caller must leave the attempt now, not parse another
+            // chunk: the probe is over and every later step would only prolong
+            // the cleanup.
+            if Task.isCancelled { throw CancellationError() }
+            let remaining = ContinuousClock.now.duration(to: deadline)
+            if remaining <= .zero { break }
+            guard let chunk = await boundedNext(stream, timeout: remaining) else {
+                // The bounded wait can end for three reasons: the caller was
+                // cancelled (fail the probe now — the token-local wake already
+                // finished the read), the console closed, or the window
+                // expired (silent runner, still open).
+                if Task.isCancelled { throw CancellationError() }
+                if await stream.isFinished() {
+                    throw LinuxGuestError.consoleUnavailable(
+                        "guest console closed before the runner answered capability negotiation"
+                    )
+                }
+                break
+            }
+            switch parser.feed(chunk) {
+            case .needMore:
+                continue
+            case .finished(let exit):
+                return .answered(
+                    exit: exit, capabilities: parser.capabilities,
+                    protocolVersion: parser.protocolVersion
+                )
+            }
+        }
+        return .unanswered(capabilities: parser.capabilities, protocolVersion: parser.protocolVersion)
     }
 
     /// Waits for one console chunk but never longer than `timeout`; the
     /// losing sleep wakes the token stream (a token-local finish that the
     /// caller's unregister makes invisible to the router) so the child task
     /// can never keep the task group alive past the deadline.
+    ///
+    /// The read side is the stream's cancellation-aware read: when the
+    /// CALLER is cancelled, the sleep child returns at once and the group's
+    /// own cancellation (plus the recorded token-local wake) completes the
+    /// reader too — including when the cancellation landed before the reader
+    /// registered — so neither a silent guest nor a lost wake can strand the
+    /// group. Cancelling the losing sleep after a read won never finishes or
+    /// fails the stream, so the next chunk is still readable.
     private func boundedNext(_ stream: LinuxGuestTokenStream, timeout: Duration) async -> Data? {
         guard timeout > .zero else { return nil }
         return await withTaskGroup(of: Data?.self) { group in
-            group.addTask { await stream.next() }
+            group.addTask { await stream.nextCancellable() }
             group.addTask {
                 do {
                     try await Task.sleep(for: timeout)
                 } catch {
-                    // Cancelled because the read won: leave the token stream
-                    // open for the next chunk.
+                    // Cancelled because the read won (or because the caller
+                    // was cancelled): leave the token stream open — the
+                    // cancellation-aware reader wakes itself.
                     return nil
                 }
                 // Only the real deadline wakes the waiter; the stream stays

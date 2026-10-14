@@ -2,7 +2,9 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -188,10 +190,20 @@ class LicenseInventoryTests(unittest.TestCase):
         committed = json.loads(subprocess.check_output(
             ["git", "show", "HEAD:FloeAgent/Package.resolved"], cwd=REPO, text=True
         ))
-        swift_system = next(pin for pin in committed["pins"] if pin["identity"] == "swift-system")
-        canonical_source = swift_system["location"]
+        # The tracked host lock is serialized by SwiftPM in either the v1
+        # (object.pins/repositoryURL) or v2/v3 (pins/location) schema; the
+        # committed spelling must win in both.
+        if committed.get("version") in (2, 3):
+            pins, url_key = committed["pins"], "location"
+        else:
+            pins, url_key = committed["object"]["pins"], "repositoryURL"
+        swift_system = next(
+            pin for pin in pins
+            if (pin.get(url_key) or "").rstrip("/").endswith("swift-system.git")
+        )
+        canonical_source = swift_system[url_key]
         self.assertTrue(canonical_source.endswith(".git"))
-        swift_system["location"] = canonical_source.removesuffix(".git")
+        swift_system[url_key] = canonical_source.removesuffix(".git")
         with tempfile.TemporaryDirectory() as folder:
             resolved = Path(folder) / "Package.resolved"
             resolved.write_text(json.dumps(committed), encoding="utf-8")
@@ -206,8 +218,13 @@ class LicenseInventoryTests(unittest.TestCase):
             row["identity"]: row
             for row in li.resolve_vendored_packages(resolved, [])["evidence"]
         }
+        cad = {row["identity"]: row for row in li.resolve_cad_packages([])["evidence"]}
+        openshape = {
+            row["identity"]: row
+            for row in li.resolve_openshape_attribution([])["evidence"]
+        }
         evidence = li.load_evidence()
-        self.assertEqual(set(evidence), set(pins) | set(vendored))
+        self.assertEqual(set(evidence), set(pins) | set(vendored) | set(cad) | set(openshape))
         self.assertEqual(self.result["evidence"]["schemaVersion"], 2)
         for identity, pin in pins.items():
             self.assertEqual(evidence[identity]["revision"], pin["revision"], identity)
@@ -219,6 +236,26 @@ class LicenseInventoryTests(unittest.TestCase):
             copied = ROOT / evidence[identity]["evidence"]
             self.assertTrue(copied.is_file(), evidence[identity]["evidence"])
             self.assertEqual(li.sha256_file(copied), evidence[identity]["sha256"], identity)
+        for identity, row in cad.items():
+            self.assertEqual(evidence[identity]["revision"], row["revision"], identity)
+            self.assertEqual(evidence[identity]["source"], row["source"], identity)
+            self.assertEqual(evidence[identity]["evidence"], row["evidence"], identity)
+            copied = ROOT / evidence[identity]["evidence"]
+            self.assertTrue(copied.is_file(), evidence[identity]["evidence"])
+            self.assertEqual(li.sha256_file(copied), evidence[identity]["sha256"], identity)
+        for identity, row in openshape.items():
+            self.assertEqual(evidence[identity]["revision"], row["revision"], identity)
+            self.assertEqual(evidence[identity]["source"], row["source"], identity)
+            self.assertEqual(evidence[identity]["evidence"], row["evidence"], identity)
+            copied = ROOT / evidence[identity]["evidence"]
+            self.assertTrue(copied.is_file(), evidence[identity]["evidence"])
+            self.assertEqual(li.sha256_file(copied), evidence[identity]["sha256"], identity)
+
+    def test_generation_is_reproducible_byte_for_byte(self):
+        second = li.build()
+        self.assertEqual(second["manifest_text"], self.result["manifest_text"])
+        self.assertEqual(second["evidence_text"], self.result["evidence_text"])
+        self.assertEqual(second["markdown"], self.result["markdown"])
 
     def test_vendored_lock_switch_is_declared_consistently(self):
         resolved = li.load_pins()
@@ -370,6 +407,39 @@ class EvidenceRevisionBindingTests(unittest.TestCase):
             evidence[0]["sha256"], li.sha256_file(self.checkouts / "alpha" / "LICENSE")
         )
 
+    def test_wrong_checkout_is_not_reported_as_a_verified_license_read(self):
+        make_checkout(self.checkouts, "alpha")
+        declared = "b" * 40
+        recorded = {"alpha": self.record(revision=declared)}
+        problems, _, _, _ = self.resolve([self.pin(revision=declared)], recorded)
+        self.assertTrue(any("does not match the declared pin" in p for p in problems))
+        self.assertFalse(any("no classifiable license file" in p for p in problems), problems)
+
+    def test_verified_checkout_without_a_license_file_is_flagged(self):
+        checkout = self.checkouts / "alpha"
+        checkout.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True, capture_output=True)
+        (checkout / "README").write_text("no license file here\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(checkout), "add", "README"], check=True, capture_output=True)
+        subprocess.run(
+            [
+                "git", "-C", str(checkout),
+                "-c", "user.name=Floe Test",
+                "-c", "user.email=floe@example.invalid",
+                "commit", "-q", "-m", "readme",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        actual = subprocess.check_output(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+        ).strip()
+        recorded = {"alpha": self.record(revision=actual)}
+        problems, _, evidence, _ = self.resolve([self.pin(revision=actual)], recorded)
+        self.assertTrue(any("no classifiable license file" in p for p in problems), problems)
+        self.assertEqual(evidence[0]["license"], "MIT")
+        self.assertEqual(evidence[0]["sha256"], recorded["alpha"]["sha256"])
+
     def test_checkout_with_unreadable_revision_is_rejected(self):
         (self.checkouts / "alpha").mkdir()
         problems, _, evidence, _ = self.resolve([self.pin()], {})
@@ -417,6 +487,26 @@ class EvidenceRevisionBindingTests(unittest.TestCase):
             problems, _, _, _ = self.resolve([self.pin()], recorded)
         self.assertEqual(len(problems), 1)
         self.assertIn("upstream license changed", problems[0])
+
+    def test_app_only_notice_wins_over_an_identical_checkout(self):
+        """A same-revision Xcode checkout must not rewrite the tracked
+        app-only evidence path to a build-cache string."""
+        actual = make_checkout(self.checkouts, "alpha")
+        notice = self.tmp / "notice" / "LICENSE.txt"
+        notice.parent.mkdir(parents=True)
+        notice.write_text(MIT_TEXT, encoding="utf-8")
+        digest = li.sha256_file(notice)
+        recorded = {
+            "alpha": self.record(
+                evidence="notice/LICENSE.txt", sha256=digest, revision=actual
+            )
+        }
+        with mock.patch.dict(li.APP_ONLY_NOTICES, {"alpha": "notice/LICENSE.txt"}, clear=True):
+            problems, _, evidence, stats = self.resolve([self.pin(revision=actual)], recorded)
+        self.assertEqual(problems, [])
+        self.assertEqual(evidence[0]["evidence"], "notice/LICENSE.txt")
+        self.assertEqual(evidence[0]["sha256"], digest)
+        self.assertEqual(stats["notice"], 1)
 
     def test_reused_repository_evidence_must_still_match_its_digest(self):
         notice = self.tmp / "notice" / "LICENSE.txt"
@@ -575,6 +665,810 @@ class VendoredPackageTests(unittest.TestCase):
         title = catalog[document["titleKey"]]["localizations"]
         self.assertEqual(title["en"]["stringUnit"]["value"], document["titleFallback"])
         self.assertTrue(title["zh-Hans"]["stringUnit"]["value"].strip())
+
+
+class BundledBootPairTests(unittest.TestCase):
+    """The bundled Linux boot pair must be declared truthfully and bound to pins.
+
+    The app ships the verified Linux 6.18.56 Image + OpenSBI 1.9 fw_jump as
+    separate data resources, while the Debian rootfs stays a separately
+    downloaded image with its own legacy kernel/bbl pair. These tests bind the
+    rendered metadata to the canonical pair manifest and the tracked config so
+    a new pair cannot silently keep stale hashes, sources or license text.
+    """
+
+    NOTE_KEY = "settings.licenses.note.linux_boot_pair"
+    KERNEL_NAME = "Linux guest boot kernel (bundled 6.18.56 Image)"
+    FIRMWARE_NAME = "Linux guest boot firmware (bundled OpenSBI v1.9 fw_jump)"
+    LEGACY_NAME = (
+        "Floe Linux guest component (Debian 13 riscv64 userland, kernel, bbl, static glibc)"
+    )
+    DOCUMENT_ID = "linux-boot-pair"
+    NOTICE = ROOT / "FloeApp/Resources/Licenses/LinuxBootPair-LICENSES.txt"
+    RECORD = ROOT / "ThirdParty/TinyEMU/guest-image/BOOT-PAIR-LICENSES.md"
+    PAIR_MANIFEST = ROOT / "ThirdParty/TinyEMU/guest-image/boot-pair-v2.manifest.json"
+    CONFIG = ROOT / "ThirdParty/TinyEMU/guest-image/config_linux_riscv64_6.18.56"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.result = li.build()
+        cls.manifest = cls.result["manifest"]
+        cls.pair = json.loads(cls.PAIR_MANIFEST.read_text())["pair"]
+
+    def component(self, name: str) -> dict:
+        return next(c for c in self.manifest["components"] if c["name"] == name)
+
+    def test_bundled_pair_is_separate_from_the_downloaded_guest_image(self):
+        kernel = self.component(self.KERNEL_NAME)
+        firmware = self.component(self.FIRMWARE_NAME)
+        for component in (kernel, firmware):
+            self.assertEqual(component["section"], "engines")
+            self.assertEqual(component["noteKey"], self.NOTE_KEY)
+        self.assertIn("GPL-2.0", kernel["license"])
+        self.assertIn("not linked into the app binary", kernel["license"])
+        self.assertIn(self.pair["version"], kernel["version"])
+        self.assertIn("linux-6.18.56.tar.xz", kernel["source"])
+        self.assertEqual(firmware["license"], "BSD-2-Clause")
+        self.assertIn("opensbi", firmware["source"])
+        # The legacy row keeps describing the separately downloaded image and
+        # its own note; it is not renamed away.
+        legacy = self.component(self.LEGACY_NAME)
+        self.assertIn("floe-linux-guest", legacy["source"])
+        self.assertEqual(legacy["noteKey"], "settings.licenses.note.guest_image")
+
+    def test_bundled_pair_notice_binds_the_pinned_pair_manifest(self):
+        notice = self.NOTICE.read_text(encoding="utf-8")
+        self.assertIn(self.pair["kernelSHA256"], notice)
+        self.assertIn(self.pair["firmwareSHA256"], notice)
+        self.assertIn(f'{self.pair["kernelBytes"]:,}', notice)
+        self.assertIn(f'{self.pair["firmwareBytes"]:,}', notice)
+        self.assertIn(li.sha256_file(self.CONFIG), notice)
+        self.assertIn("GNU GENERAL PUBLIC LICENSE", notice)
+        self.assertIn("Western Digital", notice)
+
+    def test_tracked_record_binds_manifest_notice_and_config_bytes(self):
+        record = self.RECORD.read_text(encoding="utf-8")
+        self.assertIn(self.pair["kernelSHA256"], record)
+        self.assertIn(self.pair["firmwareSHA256"], record)
+        self.assertIn(self.pair["version"], record)
+        self.assertIn(li.sha256_file(self.CONFIG), record)
+        self.assertIn(li.sha256_file(self.NOTICE), record)
+        self.assertIn("boot-pair-v2.manifest.json", record)
+
+    def test_boot_pair_document_is_required_and_bundled(self):
+        document = next(d for d in self.manifest["documents"] if d["id"] == self.DOCUMENT_ID)
+        self.assertTrue(document["required"])
+        self.assertEqual(document["bundlePath"], "Licenses/LinuxBootPair-LICENSES.txt")
+        self.assertEqual(document["section"], "engines")
+        self.assertEqual(document["noteKey"], None)
+        self.assertTrue(self.NOTICE.is_file())
+        rules = li.bundle_rules(li.PROJECT_YML.read_text())
+        self.assertEqual(
+            li.bundle_path_for(rules, "FloeAgent/" + document["repositoryPath"]),
+            document["bundlePath"],
+        )
+
+    def test_boot_pair_note_and_title_are_bilingual_and_aligned(self):
+        catalog = json.loads(li.XSTRINGS.read_text(encoding="utf-8"))["strings"]
+        note = next(n for n in self.manifest["notes"] if n["id"] == "linux_boot_pair")
+        self.assertEqual(note["textKey"], self.NOTE_KEY)
+        self.assertEqual(
+            catalog[self.NOTE_KEY]["localizations"]["en"]["stringUnit"]["value"],
+            note["fallback"],
+        )
+        for key in (self.NOTE_KEY, "settings.licenses.document.linux_boot_pair.title"):
+            for locale in ("en", "zh-Hans"):
+                value = catalog[key]["localizations"][locale]["stringUnit"]["value"]
+                self.assertTrue(value.strip(), f"{key}:{locale}")
+        title = next(d for d in self.manifest["documents"] if d["id"] == self.DOCUMENT_ID)
+        self.assertEqual(
+            catalog[title["titleKey"]]["localizations"]["en"]["stringUnit"]["value"],
+            title["titleFallback"],
+        )
+
+    def test_kernel_exception_is_exact_and_the_gate_is_not_loosened(self):
+        kernel_license = self.component(self.KERNEL_NAME)["license"]
+        self.assertIn(kernel_license, li.EXCEPTIONS)
+        explanation = li.EXCEPTIONS[kernel_license]
+        self.assertIn("not linked", explanation)
+        self.assertIn("corresponding source", explanation)
+        violations, notices = li.license_gate([{"name": "kernel", "license": kernel_license}])
+        self.assertEqual(violations, [])
+        self.assertEqual(len(notices), 1)
+        for near_miss in ("GPL-2.0", "GPL-2.0 (Linux kernel)", kernel_license + "."):
+            violations, _ = li.license_gate([{"name": "kernel", "license": near_miss}])
+            self.assertEqual(len(violations), 1, near_miss)
+
+    def test_checkout_override_defaults_to_the_real_build_cache(self):
+        script = (
+            "import sys; sys.path.insert(0, 'scripts'); "
+            "import license_inventory as li; print(li.CHECKOUTS)"
+        )
+        env = {key: value for key, value in os.environ.items()
+               if key != "FLOE_LICENSE_CHECKOUTS"}
+        completed = subprocess.run(
+            [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, env=env
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.strip(), str(ROOT / ".build/checkouts"))
+        env["FLOE_LICENSE_CHECKOUTS"] = "/nonexistent/read-only-checkouts"
+        completed = subprocess.run(
+            [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, env=env
+        )
+        self.assertEqual(completed.stdout.strip(), "/nonexistent/read-only-checkouts")
+
+
+class CadPackageTests(unittest.TestCase):
+    """The linked FloeCAD Swift packages must be declared from the CAD lock.
+
+    ThirdParty/FloeCADKit/Package.resolved is the single pin authority; the
+    reviewed rows bind each identity to the exact lock revision and to the
+    digest of the complete upstream license text tracked under
+    FloeApp/Resources/Licenses.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.result = li.build()
+        cls.manifest = cls.result["manifest"]
+        cls.lock = json.loads((ROOT / "ThirdParty/FloeCADKit/Package.resolved").read_text())
+        cls.pins = {pin["identity"]: pin for pin in li.resolved_pins(cls.lock)}
+
+    def component(self, identity: str) -> dict:
+        return next(c for c in self.manifest["components"] if c["name"] == identity)
+
+    def test_four_linked_cad_packages_are_declared_with_bundled_copies(self):
+        for spec in li.CAD_LINKED_PACKAGES:
+            component = self.component(spec["identity"])
+            pin = self.pins[spec["identity"]]
+            self.assertEqual(component["license"], spec["license"])
+            self.assertEqual(component["version"], spec["version"])
+            self.assertEqual(component["source"], pin["location"])
+            self.assertEqual(component["section"], "swift")
+            self.assertEqual(component["noteKey"], li.CAD_NOTE_KEY)
+            self.assertEqual(component["evidence"], spec["notice"])
+            copy = ROOT / spec["notice"]
+            self.assertTrue(copy.is_file(), spec["notice"])
+            self.assertEqual(li.sha256_file(copy), spec["sha256"], spec["notice"])
+            document = next(d for d in self.manifest["documents"] if d["id"] == spec["identity"])
+            self.assertTrue(document["required"])
+            self.assertEqual(document["section"], "swift")
+            self.assertEqual(
+                document["bundlePath"],
+                "Licenses/" + spec["notice"].rsplit("/", 1)[-1],
+            )
+            rules = li.bundle_rules(li.PROJECT_YML.read_text())
+            self.assertEqual(
+                li.bundle_path_for(rules, "FloeAgent/" + document["repositoryPath"]),
+                document["bundlePath"],
+            )
+
+    def test_evidence_binds_each_reviewed_copy_to_the_lock_revision(self):
+        evidence = {row["identity"]: row for row in self.result["evidence"]["licenses"]}
+        for spec in li.CAD_LINKED_PACKAGES:
+            row = evidence[spec["identity"]]
+            pin = self.pins[spec["identity"]]
+            self.assertEqual(row["license"], spec["license"])
+            self.assertEqual(row["evidence"], spec["notice"])
+            self.assertEqual(row["sha256"], spec["sha256"])
+            self.assertEqual(row["revision"], spec["revision"])
+            self.assertEqual(row["revision"], pin["state"]["revision"])
+            self.assertEqual(row["source"], pin["location"])
+
+    def test_build_only_cad_dependencies_are_not_claimed_as_shipped(self):
+        names = {c["name"] for c in self.manifest["components"]}
+        for identity in li.CAD_BUILD_ONLY_PACKAGES:
+            self.assertNotIn(identity, names)
+            self.assertIn(identity, self.pins)
+        self.assertEqual(
+            set(self.pins),
+            {spec["identity"] for spec in li.CAD_LINKED_PACKAGES}
+            | set(li.CAD_BUILD_ONLY_PACKAGES),
+        )
+
+    def test_cad_lock_stays_bound_to_the_floecadkit_manifest(self):
+        manifest = (ROOT / "ThirdParty/FloeCADKit/Package.swift").read_bytes()
+        self.assertEqual(self.lock["originHash"], hashlib.sha256(manifest).hexdigest())
+
+    def test_available_pinned_checkouts_match_the_reviewed_copies(self):
+        verified = 0
+        for spec in li.CAD_LINKED_PACKAGES:
+            state, revision = li.read_checkout_revision(spec["identity"], li.CHECKOUTS)
+            if state != "ok" or revision != spec["revision"]:
+                continue
+            license_name, _path, digest = li.detect_pin_license(spec["identity"], li.CHECKOUTS)
+            self.assertEqual(digest, spec["sha256"], spec["identity"])
+            self.assertEqual(license_name, spec["license"], spec["identity"])
+            verified += 1
+        # No assertion on the count: a clean clone has no checkouts. A checkout
+        # that is present but does not match the declared pin is already a
+        # generator problem, not a skipped case.
+
+
+class CadLockVerificationTests(unittest.TestCase):
+    """resolve_cad_packages must fail closed on lock/copy/checkout drift."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.checkouts = self.root / "checkouts"
+        self.checkouts.mkdir()
+        self.package = self.root / "ThirdParty/FloeCADKit"
+        self.package.mkdir(parents=True)
+        (self.root / "FloeApp/Resources/Licenses").mkdir(parents=True)
+
+    def make_spec(self, identity="euclid", title="Euclid", text=MIT_TEXT):
+        notice = f"FloeApp/Resources/Licenses/{title}-LICENSE.txt"
+        path = self.root / notice
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return {
+            "identity": identity,
+            "revision": "a" * 40,
+            "version": "1.0.0",
+            "title": title,
+            "license": "MIT",
+            "sha256": li.sha256_file(path),
+            "notice": notice,
+        }
+
+    def write_lock(self, specs, revisions=None, extra_pins=()):
+        manifest = self.package / "Package.swift"
+        manifest.write_bytes(b"// fixture FloeCADKit manifest\n")
+        revisions = revisions or {}
+        pins = []
+        for spec in specs:
+            revision = revisions.get(spec["identity"], spec["revision"])
+            if revision is None:
+                continue
+            pins.append(
+                {
+                    "identity": spec["identity"],
+                    "kind": "remoteSourceControl",
+                    "location": f"https://example.com/{spec['identity']}.git",
+                    "state": {"revision": revision, "version": spec["version"]},
+                }
+            )
+        pins.extend(extra_pins)
+        lock = {
+            "originHash": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            "pins": pins,
+            "version": 3,
+        }
+        (self.package / "Package.resolved").write_text(json.dumps(lock), encoding="utf-8")
+        return lock
+
+    def resolve(self, specs, revisions=None, extra_pins=()):
+        self.write_lock(specs, revisions, extra_pins)
+        problems = []
+        with mock.patch.object(li, "CAD_LINKED_PACKAGES", tuple(specs)):
+            result = li.resolve_cad_packages(problems, checkouts=self.checkouts, root=self.root)
+        return problems, result
+
+    def test_reviewed_row_is_declared_from_the_lock(self):
+        spec = self.make_spec()
+        problems, result = self.resolve([spec])
+        self.assertEqual(problems, [])
+        self.assertEqual([c["name"] for c in result["components"]], ["euclid"])
+        self.assertEqual(result["components"][0]["noteKey"], li.CAD_NOTE_KEY)
+        self.assertEqual(result["evidence"][0]["revision"], "a" * 40)
+        self.assertEqual(result["evidence"][0]["evidence"], spec["notice"])
+        self.assertEqual(result["documents"][0]["id"], "euclid")
+
+    def test_moved_lock_revision_fails_closed(self):
+        spec = self.make_spec()
+        problems, result = self.resolve([spec], revisions={"euclid": "b" * 40})
+        self.assertTrue(any("pin moved" in problem for problem in problems), problems)
+        self.assertEqual(result["components"], [])
+        self.assertEqual(result["documents"], [])
+        self.assertEqual(result["evidence"], [])
+
+    def test_missing_lock_pin_fails_closed(self):
+        spec = self.make_spec()
+        other = self.make_spec(identity="lrucache", title="LRUCache")
+        problems, result = self.resolve([spec, other], revisions={"euclid": None})
+        self.assertTrue(any("no longer declared" in problem for problem in problems), problems)
+        self.assertEqual([c["name"] for c in result["components"]], ["lrucache"])
+
+    def test_stale_lock_relative_to_the_manifest_fails_closed(self):
+        spec = self.make_spec()
+        self.write_lock([spec])
+        (self.package / "Package.swift").write_bytes(b"// changed manifest\n")
+        problems = []
+        with mock.patch.object(li, "CAD_LINKED_PACKAGES", (spec,)):
+            li.resolve_cad_packages(problems, checkouts=self.checkouts, root=self.root)
+        self.assertTrue(any("stale" in problem for problem in problems), problems)
+
+    def test_unreviewed_lock_identity_fails_closed(self):
+        spec = self.make_spec()
+        extra = {
+            "identity": "newdep",
+            "kind": "remoteSourceControl",
+            "location": "https://example.com/newdep.git",
+            "state": {"revision": "c" * 40, "version": "2.0.0"},
+        }
+        problems, _ = self.resolve([spec], extra_pins=[extra])
+        self.assertTrue(any("unreviewed identity" in problem for problem in problems), problems)
+
+    def test_missing_reviewed_copy_fails_closed(self):
+        spec = self.make_spec()
+        (self.root / spec["notice"]).unlink()
+        problems, result = self.resolve([spec])
+        self.assertTrue(any("reviewed license copy is missing" in p for p in problems), problems)
+        self.assertEqual(result["components"], [])
+
+    def test_edited_reviewed_copy_is_flagged_and_recorded(self):
+        spec = self.make_spec()
+        notice = self.root / spec["notice"]
+        notice.write_text(MIT_TEXT + "\nmodified\n", encoding="utf-8")
+        problems, result = self.resolve([spec])
+        self.assertTrue(any("changed" in problem for problem in problems), problems)
+        self.assertEqual(result["evidence"][0]["sha256"], li.sha256_file(notice))
+
+    def test_wrong_checkout_revision_rejects_and_never_reads_the_license(self):
+        spec = self.make_spec()
+        make_checkout(self.checkouts, "euclid", "Apache License\nVersion 2.0\n")
+        problems, result = self.resolve([spec])
+        self.assertTrue(
+            any("does not match the declared CAD pin" in p for p in problems), problems
+        )
+        self.assertEqual(result["evidence"][0]["sha256"], spec["sha256"])
+
+    def test_same_revision_checkout_verifies_without_moving_the_evidence_path(self):
+        notice_path = self.root / "FloeApp/Resources/Licenses/Euclid-LICENSE.txt"
+        notice_path.parent.mkdir(parents=True, exist_ok=True)
+        notice_path.write_text(MIT_TEXT, encoding="utf-8")
+        actual = make_checkout(self.checkouts, "euclid", MIT_TEXT)
+        spec = {
+            "identity": "euclid",
+            "revision": actual,
+            "version": "1.0.0",
+            "title": "Euclid",
+            "license": "MIT",
+            "sha256": li.sha256_file(notice_path),
+            "notice": "FloeApp/Resources/Licenses/Euclid-LICENSE.txt",
+        }
+        problems, result = self.resolve([spec])
+        self.assertEqual(problems, [])
+        self.assertEqual(result["evidence"][0]["evidence"], spec["notice"])
+        self.assertEqual(result["evidence"][0]["revision"], actual)
+
+    def test_checkout_license_mismatch_is_flagged(self):
+        notice_path = self.root / "FloeApp/Resources/Licenses/Euclid-LICENSE.txt"
+        notice_path.parent.mkdir(parents=True, exist_ok=True)
+        notice_path.write_text(MIT_TEXT, encoding="utf-8")
+        actual = make_checkout(self.checkouts, "euclid", "Apache License\nVersion 2.0\n")
+        spec = {
+            "identity": "euclid",
+            "revision": actual,
+            "version": "1.0.0",
+            "title": "Euclid",
+            "license": "MIT",
+            "sha256": li.sha256_file(notice_path),
+            "notice": "FloeApp/Resources/Licenses/Euclid-LICENSE.txt",
+        }
+        problems, _ = self.resolve([spec])
+        self.assertTrue(
+            any("does not match the license file in the verified checkout" in p for p in problems),
+            problems,
+        )
+
+    def test_unexpected_reviewed_license_text_is_flagged(self):
+        spec = self.make_spec(text="Apache License\nVersion 2.0\n")
+        problems, result = self.resolve([spec])
+        self.assertTrue(any("reads as Apache-2.0" in p for p in problems), problems)
+        self.assertEqual(result["components"][0]["license"], "Apache-2.0")
+
+
+class NativeOCCTTests(unittest.TestCase):
+    """Native OCCT (linked) and WASM OCCT (viewer) must be distinct declarations."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.result = li.build()
+        cls.manifest = cls.result["manifest"]
+        cls.dependencies = json.loads(
+            (ROOT / "ThirdParty/FloeCADKit/DEPENDENCIES.json").read_text()
+        )
+
+    def component(self, name: str) -> dict:
+        return next(c for c in self.manifest["components"] if c["name"] == name)
+
+    def test_native_occt_is_declared_separately_from_the_wasm_viewer(self):
+        native = self.component(li.OCCT_NATIVE_NAME)
+        self.assertEqual(native["section"], "engineering")
+        self.assertEqual(native["version"], "7.8.1")
+        self.assertEqual(native["license"], li.OCCT_NATIVE_LICENSE)
+        self.assertEqual(native["noteKey"], "settings.licenses.note.occt_native")
+        self.assertIn(
+            self.dependencies["relink"]["occt"]["commit"], native["source"], native["source"]
+        )
+        wasm = self.component("Open CASCADE Technology (OCCT)")
+        self.assertEqual(wasm["version"], "pinned by EngineeringViewers")
+        self.assertEqual(wasm["license"], "LGPL-2.1 with OCCT exception")
+        self.assertEqual(wasm["noteKey"], "settings.licenses.note.occt")
+        self.assertNotEqual(native["license"], wasm["license"])
+        self.assertNotEqual(native["name"], wasm["name"])
+
+    def test_native_exception_is_exact_and_near_misses_are_rejected(self):
+        self.assertIn(li.OCCT_NATIVE_LICENSE, li.EXCEPTIONS)
+        violations, notices = li.license_gate(
+            [{"name": "occt-native", "license": li.OCCT_NATIVE_LICENSE}]
+        )
+        self.assertEqual(violations, [])
+        self.assertEqual(len(notices), 1)
+        # The WebAssembly rows keep their own exact exception string.
+        violations, _ = li.license_gate(
+            [{"name": "occt-wasm", "license": "LGPL-2.1 with OCCT exception"}]
+        )
+        self.assertEqual(violations, [])
+        for near_miss in (
+            "LGPL-2.1",
+            "LGPL-2.1-only with OCCT exception",
+            li.OCCT_NATIVE_LICENSE + ".",
+            "LGPL-2.1 with OCCT exception (native static libraries)",
+            "LGPL-2.1 with OCCT exception (native static libraries linked via FloeCADKit "
+            "OCCT binaryTarget)",
+        ):
+            violations, _ = li.license_gate([{"name": "x", "license": near_miss}])
+            self.assertEqual(len(violations), 1, near_miss)
+
+    def test_bundled_source_offer_records_the_pinned_facts(self):
+        notice = (ROOT / li.OCCT_NATIVE_NOTICE).read_text(encoding="utf-8")
+        occt = self.dependencies["relink"]["occt"]
+        self.assertIn(occt["commit"], notice)
+        self.assertIn(occt["tag"], notice)
+        self.assertIn(occt["sourceArchive"], notice)
+        self.assertIn("ThirdParty/FloeCADKit/OCCT_RELINK.md", notice)
+        self.assertIn("relink/SOURCE_OFFER.md", notice)
+        for artifact in self.dependencies["artifacts"]:
+            self.assertIn(artifact["sha256"], notice, artifact["name"])
+        for key, field in (("buildProgram", "sha256"), ("toolchain", "fileSha256")):
+            self.assertIn(self.dependencies["relink"][key][field], notice, key)
+        document = next(d for d in self.manifest["documents"] if d["id"] == "occt-native")
+        self.assertTrue(document["required"])
+        self.assertEqual(document["bundlePath"], "Licenses/OCCT-Native-SOURCE-OFFER.txt")
+        self.assertEqual(document["section"], "engineering")
+        rules = li.bundle_rules(li.PROJECT_YML.read_text())
+        self.assertEqual(
+            li.bundle_path_for(rules, "FloeAgent/" + document["repositoryPath"]),
+            document["bundlePath"],
+        )
+
+    def test_retained_relink_inputs_still_match_the_pinned_hashes(self):
+        for key, field in (("buildProgram", "sha256"), ("toolchain", "fileSha256")):
+            entry = self.dependencies["relink"][key]
+            retained = ROOT / "ThirdParty/FloeCADKit" / entry["retainedCopy"]
+            self.assertTrue(retained.is_file(), entry["retainedCopy"])
+            self.assertEqual(li.sha256_file(retained), entry[field], entry["retainedCopy"])
+        for relative in ("OCCT_RELINK.md", "relink/README.md", "relink/SOURCE_OFFER.md"):
+            self.assertTrue((ROOT / "ThirdParty/FloeCADKit" / relative).is_file(), relative)
+
+    def test_native_license_texts_are_the_linked_package_copies(self):
+        for relative, bundled in (
+            ("license.occt.txt", "FloeApp/Resources/EngineeringViewers/license.occt.txt"),
+            (
+                "OCCT_LGPL_EXCEPTION.txt",
+                "FloeApp/Resources/EngineeringViewers/OCCT_LGPL_EXCEPTION.txt",
+            ),
+        ):
+            package_copy = ROOT / "ThirdParty/FloeCADKit" / relative
+            bundled_copy = ROOT / bundled
+            self.assertTrue(package_copy.is_file(), relative)
+            self.assertTrue(bundled_copy.is_file(), bundled)
+            self.assertEqual(li.sha256_file(package_copy), li.sha256_file(bundled_copy), relative)
+
+    def test_linked_slice_bytes_match_the_pins_when_present(self):
+        if os.environ.get("FLOECAD_LOCAL_RELINK"):
+            self.skipTest("deliberate local relink: official slice bytes are expected to differ")
+        verified = 0
+        for artifact in self.dependencies["artifacts"]:
+            path = ROOT / "ThirdParty/FloeCADKit" / artifact["installPath"]
+            if not path.is_file():
+                continue
+            self.assertEqual(path.stat().st_size, artifact["size"], artifact["name"])
+            self.assertEqual(li.sha256_file(path), artifact["sha256"], artifact["name"])
+            verified += 1
+        # Slices are Git-ignored: a clean clone has none and verifies none.
+
+    def test_occt_notes_and_titles_are_bilingual_and_aligned(self):
+        catalog = json.loads(li.XSTRINGS.read_text(encoding="utf-8"))["strings"]
+        for note_id in ("occt", "occt_native", "cad_packages"):
+            note = next(n for n in self.manifest["notes"] if n["id"] == note_id)
+            en = catalog[note["textKey"]]["localizations"]["en"]["stringUnit"]["value"]
+            self.assertEqual(en, note["fallback"], note_id)
+            self.assertTrue(
+                catalog[note["textKey"]]["localizations"]["zh-Hans"]["stringUnit"]["value"].strip(),
+                note_id,
+            )
+        for title_key, fallback in (
+            ("settings.licenses.document.occt_native.title", "OCCT 7.8.1 native static libraries (source offer)"),
+            ("settings.licenses.document.euclid.title", "Euclid"),
+            ("settings.licenses.document.lrucache.title", "LRUCache"),
+            ("settings.licenses.document.shapescript.title", "ShapeScript"),
+            ("settings.licenses.document.svgpath.title", "SVGPath"),
+        ):
+            entry = catalog[title_key]["localizations"]
+            self.assertEqual(entry["en"]["stringUnit"]["value"], fallback, title_key)
+            self.assertTrue(entry["zh-Hans"]["stringUnit"]["value"].strip(), title_key)
+
+
+class OCCTNativeRecordTests(unittest.TestCase):
+    """The bundled OCCT record must fail closed when a pinned fact changes."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        package = self.root / "ThirdParty/FloeCADKit"
+        (package / "relink").mkdir(parents=True)
+        for relative in (
+            "DEPENDENCIES.json",
+            "OCCT_RELINK.md",
+            "license.occt.txt",
+            "OCCT_LGPL_EXCEPTION.txt",
+            "relink/build_occt_ios.sh",
+            "relink/ios.toolchain.cmake",
+            "relink/README.md",
+            "relink/SOURCE_OFFER.md",
+        ):
+            shutil.copy(ROOT / "ThirdParty/FloeCADKit" / relative, package / relative)
+        (self.root / "FloeApp/Resources/Licenses").mkdir(parents=True)
+        (self.root / "FloeApp/Resources/EngineeringViewers").mkdir(parents=True)
+        shutil.copy(ROOT / li.OCCT_NATIVE_NOTICE, self.root / li.OCCT_NATIVE_NOTICE)
+        for relative in ("license.occt.txt", "OCCT_LGPL_EXCEPTION.txt"):
+            shutil.copy(
+                ROOT / "FloeApp/Resources/EngineeringViewers" / relative,
+                self.root / "FloeApp/Resources/EngineeringViewers" / relative,
+            )
+        self.notice = self.root / li.OCCT_NATIVE_NOTICE
+        self.dependencies = json.loads(
+            (self.root / "ThirdParty/FloeCADKit/DEPENDENCIES.json").read_text()
+        )
+
+    def problems(self):
+        problems = []
+        li.occt_native_problems(problems, root=self.root)
+        return problems
+
+    def test_complete_record_has_no_problems(self):
+        self.assertEqual(self.problems(), [])
+
+    def test_missing_slice_pin_in_the_notice_is_flagged(self):
+        digest = self.dependencies["artifacts"][0]["sha256"]
+        self.notice.write_text(
+            self.notice.read_text(encoding="utf-8").replace(digest, "0" * 64),
+            encoding="utf-8",
+        )
+        problems = self.problems()
+        self.assertTrue(any("does not record the pinned slice" in p for p in problems), problems)
+
+    def test_changed_retained_relink_input_is_flagged(self):
+        script = self.root / "ThirdParty/FloeCADKit/relink/build_occt_ios.sh"
+        script.write_bytes(script.read_bytes() + b"\n# modified\n")
+        problems = self.problems()
+        self.assertTrue(any("retained OCCT relink input changed" in p for p in problems), problems)
+
+    def test_missing_bundled_record_is_flagged(self):
+        self.notice.unlink()
+        problems = self.problems()
+        self.assertTrue(any("source offer is missing" in p for p in problems), problems)
+
+    def test_changed_bundled_license_text_is_flagged(self):
+        bundled = self.root / "FloeApp/Resources/EngineeringViewers/OCCT_LGPL_EXCEPTION.txt"
+        bundled.write_bytes(bundled.read_bytes() + b"\nmodified\n")
+        problems = self.problems()
+        self.assertTrue(
+            any("no longer matches the linked library's copy" in p for p in problems), problems
+        )
+
+    def test_missing_artifact_pins_are_flagged(self):
+        (self.root / "ThirdParty/FloeCADKit/DEPENDENCIES.json").unlink()
+        problems = self.problems()
+        self.assertTrue(any("artifact pins are missing" in p for p in problems), problems)
+
+    def test_notice_must_name_the_relink_records(self):
+        self.notice.write_text(
+            self.notice.read_text(encoding="utf-8").replace("OCCT_RELINK.md", "OTHER.md"),
+            encoding="utf-8",
+        )
+        problems = self.problems()
+        self.assertTrue(
+            any("does not record the pinned relink record" in p for p in problems), problems
+        )
+
+
+class OpenShapeAttributionTests(unittest.TestCase):
+    """FloeCADKit's OpenShape3D-derived MIT code must be declared and bound.
+
+    OpenShape3D is not a resolved package (FloeCADKit is the modified
+    extraction), so the reviewed row binds ThirdParty/FloeCADKit/DEPENDENCIES.json
+    plus the tracked and bundled MIT copies instead of a lock pin, and the
+    component must stay truthful about the local modifications.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.result = li.build()
+        cls.manifest = cls.result["manifest"]
+        cls.dependencies = json.loads(
+            (ROOT / "ThirdParty/FloeCADKit/DEPENDENCIES.json").read_text()
+        )
+
+    def test_derived_component_document_and_evidence_are_declared(self):
+        spec = li.OPENSHAPE_COMPONENT
+        record = self.dependencies["sources"][spec["identity"]]
+        component = next(
+            c for c in self.manifest["components"] if c["name"] == spec["identity"]
+        )
+        self.assertEqual(component["license"], "MIT")
+        self.assertEqual(component["section"], "swift")
+        self.assertEqual(component["noteKey"], li.OPENSHAPE_NOTE_KEY)
+        self.assertEqual(component["version"], record["commit"])
+        self.assertIn(record["commit"], component["source"])
+        self.assertEqual(component["evidence"], spec["notice"])
+        document = next(
+            d for d in self.manifest["documents"] if d["id"] == spec["identity"]
+        )
+        self.assertTrue(document["required"])
+        self.assertEqual(document["section"], "swift")
+        self.assertEqual(document["bundlePath"], "Licenses/OpenShape3D-LICENSE.txt")
+        self.assertEqual(document["titleFallback"], spec["title"])
+        rules = li.bundle_rules(li.PROJECT_YML.read_text())
+        self.assertEqual(
+            li.bundle_path_for(rules, "FloeAgent/" + document["repositoryPath"]),
+            document["bundlePath"],
+        )
+        row = next(
+            r
+            for r in self.result["evidence"]["licenses"]
+            if r["identity"] == spec["identity"]
+        )
+        self.assertEqual(row["license"], "MIT")
+        self.assertEqual(row["revision"], record["commit"])
+        self.assertEqual(row["source"], record["repositoryClone"])
+        self.assertEqual(row["evidence"], spec["notice"])
+        self.assertEqual(li.sha256_file(ROOT / row["evidence"]), row["sha256"])
+
+    def test_bundled_notice_is_the_linked_packages_exact_mit_copy(self):
+        spec = li.OPENSHAPE_COMPONENT
+        package_copy = ROOT / spec["packageCopy"]
+        bundled_copy = ROOT / spec["notice"]
+        self.assertTrue(package_copy.is_file(), spec["packageCopy"])
+        self.assertTrue(bundled_copy.is_file(), spec["notice"])
+        self.assertEqual(package_copy.read_bytes(), bundled_copy.read_bytes())
+        self.assertEqual(li.sha256_file(bundled_copy), spec["sha256"])
+        text = bundled_copy.read_text(encoding="utf-8")
+        self.assertIn("MIT License", text)
+        self.assertIn("Copyright (c) 2026 Laan Labs and the openshape3d contributors", text)
+        self.assertEqual(li.classify_license(text), "MIT")
+
+    def test_note_declares_a_modified_derived_copy_not_an_unmodified_library(self):
+        note = next(n for n in self.manifest["notes"] if n["id"] == "openshape3d")
+        text = note["fallback"]
+        self.assertIn("locally modified extraction", text)
+        self.assertIn("not an unmodified upstream library", text)
+        self.assertIn(li.OPENSHAPE_COMPONENT["revision"], text)
+        self.assertIn("PATCHES.md", text)
+
+    def test_openshape_note_and_title_are_bilingual_and_aligned(self):
+        catalog = json.loads(li.XSTRINGS.read_text(encoding="utf-8"))["strings"]
+        note = next(n for n in self.manifest["notes"] if n["id"] == "openshape3d")
+        entry = catalog[note["textKey"]]["localizations"]
+        self.assertEqual(entry["en"]["stringUnit"]["value"], note["fallback"])
+        self.assertTrue(entry["zh-Hans"]["stringUnit"]["value"].strip())
+        title_key = "settings.licenses.document.openshape3d.title"
+        title = catalog[title_key]["localizations"]
+        self.assertEqual(title["en"]["stringUnit"]["value"], li.OPENSHAPE_COMPONENT["title"])
+        self.assertTrue(title["zh-Hans"]["stringUnit"]["value"].strip())
+
+
+class OpenShapeRecordTests(unittest.TestCase):
+    """resolve_openshape_attribution must fail closed on source/copy drift."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        package = self.root / "ThirdParty/FloeCADKit"
+        package.mkdir(parents=True)
+        shutil.copy(
+            ROOT / li.OPENSHAPE_COMPONENT["dependencies"], package / "DEPENDENCIES.json"
+        )
+        shutil.copy(
+            ROOT / li.OPENSHAPE_COMPONENT["packageCopy"],
+            package / "LICENSE-OpenShape3D-MIT.txt",
+        )
+        (self.root / "FloeApp/Resources/Licenses").mkdir(parents=True)
+        shutil.copy(
+            ROOT / li.OPENSHAPE_COMPONENT["notice"],
+            self.root / li.OPENSHAPE_COMPONENT["notice"],
+        )
+        self.dependencies_path = package / "DEPENDENCIES.json"
+        self.package_copy = package / "LICENSE-OpenShape3D-MIT.txt"
+        self.bundled_copy = self.root / li.OPENSHAPE_COMPONENT["notice"]
+
+    def resolve(self):
+        problems = []
+        result = li.resolve_openshape_attribution(problems, root=self.root)
+        return problems, result
+
+    def rewrite_source(self, mutate):
+        dependencies = json.loads(self.dependencies_path.read_text(encoding="utf-8"))
+        mutate(dependencies["sources"]["openshape3d"])
+        self.dependencies_path.write_text(json.dumps(dependencies), encoding="utf-8")
+
+    def test_complete_record_declares_the_component_without_problems(self):
+        problems, result = self.resolve()
+        self.assertEqual(problems, [])
+        self.assertEqual([c["name"] for c in result["components"]], ["openshape3d"])
+        self.assertEqual([d["id"] for d in result["documents"]], ["openshape3d"])
+        self.assertEqual([r["identity"] for r in result["evidence"]], ["openshape3d"])
+
+    def test_missing_source_record_is_flagged(self):
+        self.dependencies_path.unlink()
+        problems, result = self.resolve()
+        self.assertEqual(result["components"], [])
+        self.assertTrue(any("source record is missing" in p for p in problems), problems)
+
+    def test_unreadable_source_record_is_flagged(self):
+        self.dependencies_path.write_text("{ not json", encoding="utf-8")
+        problems, _ = self.resolve()
+        self.assertTrue(any("cannot be read" in p for p in problems), problems)
+
+    def test_moved_commit_is_flagged(self):
+        self.rewrite_source(lambda source: source.update(commit="0" * 40))
+        problems, _ = self.resolve()
+        self.assertTrue(
+            any("recorded source commit moved" in p for p in problems), problems
+        )
+
+    def test_moved_repository_is_flagged(self):
+        self.rewrite_source(
+            lambda source: source.update(repositoryClone="https://example.com/other.git")
+        )
+        problems, _ = self.resolve()
+        self.assertTrue(
+            any("recorded source repositoryClone moved" in p for p in problems), problems
+        )
+
+    def test_missing_linked_package_copy_is_flagged(self):
+        self.package_copy.unlink()
+        problems, result = self.resolve()
+        self.assertEqual(result["components"], [])
+        self.assertTrue(
+            any("tracked upstream MIT notice is missing" in p for p in problems), problems
+        )
+
+    def test_edited_linked_package_copy_is_flagged(self):
+        self.package_copy.write_bytes(self.package_copy.read_bytes() + b"\nmodified\n")
+        problems, _ = self.resolve()
+        self.assertTrue(
+            any("tracked MIT notice" in p and "changed" in p for p in problems), problems
+        )
+
+    def test_missing_bundled_copy_is_flagged(self):
+        self.bundled_copy.unlink()
+        problems, result = self.resolve()
+        self.assertEqual(result["components"], [])
+        self.assertTrue(
+            any("bundled MIT notice is missing" in p for p in problems), problems
+        )
+
+    def test_bundled_copy_that_differs_from_the_linked_copy_is_flagged(self):
+        self.bundled_copy.write_bytes(b"different MIT text\n")
+        problems, _ = self.resolve()
+        self.assertTrue(
+            any("no longer matches the linked package's copy" in p for p in problems),
+            problems,
+        )
+
+    def test_non_mit_text_is_flagged(self):
+        self.package_copy.write_text("Apache License\nVersion 2.0\n", encoding="utf-8")
+        self.bundled_copy.write_text("Apache License\nVersion 2.0\n", encoding="utf-8")
+        problems, _ = self.resolve()
+        self.assertTrue(any("expected MIT" in p for p in problems), problems)
 
 
 if __name__ == "__main__":

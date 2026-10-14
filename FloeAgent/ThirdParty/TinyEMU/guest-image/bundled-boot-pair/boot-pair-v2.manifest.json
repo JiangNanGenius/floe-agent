@@ -1,0 +1,24 @@
+{
+ "schema": 1,
+ "pair": {
+  "label": "linux-6.18.56-opensbi-1.9",
+  "version": "6.18.56",
+  "firmwareFileName": "opensbi_fw_jump.bin",
+  "kernelFileName": "kernel-6.18.56-riscv64.bin",
+  "firmwareSHA256": "7120e57cb8e97e40af5f3a9602c757e281f444d3c0c8673f2923a4530ec0d336",
+  "kernelSHA256": "6bb99c015997491bb381148f4a28ed7daa17cb95e26329a8b6715af0bc0db1ca",
+  "firmwareBytes": 277840,
+  "kernelBytes": 25267712
+ },
+ "sourceReferences": [
+  "kernel: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.56.tar.xz (tarball sha256 4633bbda2ab95eaf2a7af4041236451d6759c72e6946265531af4b3aacefbf89, verified against kernel.org sha256sums.asc)",
+  "firmware: OpenSBI v1.9 https://github.com/riscv-software-src/opensbi (release 2026-07-01, PLATFORM=generic FW_JUMP=y FW_JUMP_ADDR=0x80200000)",
+  "engine patches 0012-0019 (canonical: reserved-memory, virtio-queue-num-max, fs-open-dir-detect): FloeAgent/ThirdParty/TinyEMU/patches",
+  "build record: docs/FLOE_LINUX_KERNEL_UPGRADE.md"
+ ],
+ "licenses": [
+  "GPL-2.0 (Linux kernel; corresponding config in docs/FLOE_LINUX_KERNEL_UPGRADE.md and the guest-image config files)",
+  "BSD-2-Clause (OpenSBI)",
+  "MIT + BSD-2-Clause slirp (TinyEMU engine)"
+ ]
+}

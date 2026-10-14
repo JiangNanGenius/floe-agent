@@ -204,3 +204,21 @@ The actual C execution endpoint, build and image injection scripts live in
 chunked input/output, exit status, cancellation, PTY and owned background
 services. See [the frame contract](FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md).
 These are native process checks, not proof of a qualified riscv64 guest image.
+
+## 引导资产更新与回滚策略（2026-10-15 收口 / Boot-asset update policy closure）
+
+生效行为（`LinuxGuestBootAssetUpdateService`、`LinuxGuestBootAssetGate` 与
+`TinyEMULinuxGuestRegistry`；App 装配见 `FloeApp/Execution/LinuxGuestBackend.swift`）：
+
+- **自动采用 vs 显式重放**：每个真实启动路径（普通启动与硬重启事务的替代启动）在取得启动租约前执行一次自动采用
+  （`origin: .automatic`），仅当该镜像的全部环境都已静默停止且捆绑对严格更新时才提交。显式回滚后自动采用不再重新
+  打开它——回滚保持到用户显式重放（`origin: .explicitReapply`）；任何来源都不能用更旧版本覆盖更新的已装/回滚记录。
+- **跨服务并发**：版本/状态前置条件在门的独占段内、提交点之前用最新 sidecar 重新校验，因此两个服务实例排队时较旧者
+  不能降级较新者；内容寻址存储目录同时包含 firmware 与 kernel 的哈希。
+- **故障原子性**：提交失败只清理本次新建且不再被引用的存储；已存在并被旧记录引用的校验通过字节保持原样；复用既有
+  存储前必须两个文件都通过大小/SHA-256 校验，无法证明时拒绝而不是猜测。
+- **装配**：自动采用回调是注册表构造参数（不可变）并接收注册表作为参数；updater 通过既有的
+  `FloePlatformServices` 缝合在调用时解析，quiet 探针弱引用注册表——无保留环、无 `nonisolated(unsafe)` 可变装配。
+- 打包脚本 `ThirdParty/TinyEMU/guest-image/stage-boot-pair.sh`：暂存必须显式给出 `source_dir` 或
+  `FLOE_BOOT_PAIR_SRC`（无隐式默认路径，缺失即清晰报错）；`--check` 严格只读，比对已暂存资源与受跟踪清单，
+  给出源目录时同时校验源字节，绝不写盘或下载。

@@ -320,8 +320,23 @@ iOS controls background execution. Background mode/PiP do not guarantee unlimite
 
 Manage fonts, documents, environments and diagnostics in Settings. Imported fonts do not guarantee identical Office layout. Export important files/recovery copies before upgrades and preserve environments/models still in use. Log-level changes affect future collection, not missing past events. Redact private text, addresses, tokens and attachments before sharing diagnostics.
 
+<!-- doc-anchor: section-19 -->
+## 19. Temporary chat (RAM-only)
+
+The compact "Temporary chat" toggle in the chat top header (and on the New Task launchpad) starts a casual, memory-only conversation for throwaway questions. New Chat never asks you to choose ordinary-vs-temporary; the ordinary chat stays the default.
+
+- Toggle on an EMPTY conversation converts it in place. Toggling off before the first message restores the ordinary blank chat and hands the typed text back — the draft is never saved while temporary.
+- Toggle on a conversation WITH messages starts a SEPARATE fresh temporary chat. Your saved history is never modified or cleared.
+- While temporary: the composer is text-only (no attachments or voice), and the only tools available are public web search and page fetch. The conversation is excluded from history, search, drafts, memory, workspace, exports and notifications.
+- After any ephemeral message, the toggle no longer silently leaves: use End (discard everything and cancel the run) or "Keep as saved" (promote this chat atomically into an ordinary saved conversation — no resend, no new model request; queued follow-ups and your unsent draft are carried over). Repeating Keep while one save runs does nothing; a failed save leaves the temporary chat fully recoverable, and retrying the save never duplicates anything.
+- Rotation, fullscreen editing and rebuilding the view do not discard anything; backgrounding the app or locking the screen is not a leave — when you come back, the same temporary chat is still the first screen with its memory state intact. Switching to another chat, New Task, a workspace or any other destination discards the temporary content immediately, even while a reply is still generating: the run is cancelled, the memory buffers are destroyed and nothing temporary can be resumed or restored later. If "Keep as saved" already completed, the saved ordinary chat is a normal conversation and is not affected by the leave; a save that is still running settles first, so no confirmed save is ever lost.
+
+Temporary content exists only in the live app process. Backgrounding preserves it; force-quitting the app or system termination does not restore it on the next launch.
+
+Honest limits: the chat content is kept out of Floe's own history, drafts, search index and notifications, and temporary provider/web traffic bypasses the app's shared on-disk caches. The model provider still processes every message under its own retention policy — temporary chat is not a zero-retention promise.
+
 <!-- doc-anchor: section-23 -->
-## 19. Troubleshooting
+## 20. Troubleshooting
 
 | Symptom | Check first | Next step |
 | --- | --- | --- |
@@ -340,7 +355,7 @@ Manage fonts, documents, environments and diagnostics in Settings. Imported font
 | App crashes | Build, time and reproduction | Supply matching device diagnostics |
 
 <!-- doc-anchor: section-24 -->
-## 20. Useful feedback
+## 21. Useful feedback
 
 Include device, OS, App version/build, entry point, minimal steps, expected/actual behavior and redacted screenshots or a synthetic sample. For crashes, include diagnostics from the matching time. For save issues, state whether save completed, whether the file was reopened and whether the original changed.
 

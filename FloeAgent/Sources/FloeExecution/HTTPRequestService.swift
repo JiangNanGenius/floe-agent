@@ -52,7 +52,9 @@ public enum HTTPRequestError: Error, Sendable, LocalizedError {
 /// revalidated and cross-origin credentials are stripped. The policy is immutable
 /// so initial-request validation cannot diverge from its redirect delegate.
 public struct HTTPRequestService: Sendable {
-    private let session: URLSession
+    /// Internal for privacy-audit tests: the transport configuration must
+    /// stay ephemeral (no shared on-disk cache/cookie/credential state).
+    let session: URLSession
     /// Whether private/local network targets are allowed. When true, the
     /// agent can reach LAN devices (smart home, HA, local servers). Requests
     /// to private IPs trigger iOS's local-network permission prompt on first

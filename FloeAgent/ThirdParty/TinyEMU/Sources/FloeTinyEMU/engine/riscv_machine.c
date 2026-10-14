@@ -104,6 +104,15 @@ static uint64_t rtc_get_real_time(RISCVMachine *s)
         (ts.tv_nsec / (1000000000 / RTC_FREQ));
 }
 
+static uint64_t rtc_get_time(RISCVMachine *m);
+
+/* FLOE-TIME-CSR: source for the CPU's read-only time/timeh CSRs so they
+ * shadow the same CLINT mtime counter the guest sees at 0x4000bff8. */
+static uint64_t riscv_machine_get_time(void *opaque)
+{
+    return rtc_get_time((RISCVMachine *)opaque);
+}
+
 static uint64_t rtc_get_time(RISCVMachine *m)
 {
     uint64_t val;
@@ -161,7 +170,19 @@ static void htif_handle_cmd(RISCVMachine *s)
         s->htif_tohost = 0;
         s->htif_fromhost = ((uint64_t)device << 56) | ((uint64_t)cmd << 48);
     } else if (device == 1 && cmd == 0) {
-        /* request keyboard interrupt */
+        /* FLOE-HTIF-GETC: HTIF_CONSOLE_CMD_GETC. Upstream left this as a
+         * stub that only cleared tohost, so no SBI firmware (OpenSBI)
+         * console input ever reached the guest: the pre-upgrade kernel used
+         * the virtio-console device for hvc0 input instead, which is why
+         * the gap was invisible. Implement the spec handshake: on a GETC
+         * request deliver one pending host input byte through fromhost
+         * (dev=1, cmd=0, low byte = char); read_data is non-blocking and
+         * returns 0 when the host buffer is empty. */
+        uint8_t buf[1];
+        if (s->common.console->read_data(s->common.console->opaque, buf, 1) == 1) {
+            s->htif_fromhost = ((uint64_t)1 << 56) | ((uint64_t)0 << 48) |
+                buf[0];
+        }
         s->htif_tohost = 0;
     } else {
         printf("HTIF: unsupported tohost=0x%016" PRIx64 "\n", s->htif_tohost);
@@ -668,9 +689,29 @@ static int riscv_build_fdt(RISCVMachine *m, uint8_t *dst,
     misa = riscv_cpu_get_misa(m->cpu_state);
     q = isa_string;
     q += snprintf(isa_string, sizeof(isa_string), "rv%d", max_xlen);
-    for(i = 0; i < 26; i++) {
-        if (misa & (1 << i))
-            *q++ = 'a' + i;
+    /* FLOE-ISA-CANON: emit extension letters in the canonical single-letter
+     * order (i,m,a,f,d,c) expected by the unified RISC-V ISA naming spec,
+     * and skip the MISA privilege bits 's'/'u' (supervisor/user are not ISA
+     * extensions and are not valid extension names). The old alphabetical
+     * emission produced "rv64acdfimsu", which the modern Linux CPU probe
+     * rejects: its fallback path strncasecmp()s the string against the
+     * required "rv64ima" prefix (arch/riscv/kernel/cpu.c), so the boot CPU
+     * was dropped with "does not support rv64ima" and setup_smp() BUGed.
+     * The pre-upstream 4.15 guest parsed the string leniently, which is why
+     * the old kernel booted with the non-canonical form. */
+    {
+        static const struct { char letter; uint32_t bit; } canon_map[] = {
+            { 'i', 1u << 8 },  /* I */
+            { 'm', 1u << 12 }, /* M */
+            { 'a', 1u << 0 },  /* A */
+            { 'f', 1u << 5 },  /* F */
+            { 'd', 1u << 3 },  /* D */
+            { 'c', 1u << 2 },  /* C */
+        };
+        for(i = 0; i < (int)(sizeof(canon_map) / sizeof(canon_map[0])); i++) {
+            if (misa & canon_map[i].bit)
+                *q++ = canon_map[i].letter;
+        }
     }
     *q = '\0';
 
@@ -709,8 +750,48 @@ static int riscv_build_fdt(RISCVMachine *m, uint8_t *dst,
     
     fdt_end_node(s); /* memory */
 
+    /* FLOE-FW-RESERVE: the SBI firmware (OpenSBI FW_JUMP) is loaded at
+     * RAM_BASE and the kernel is copied at kernel_start (RAM_BASE +
+     * align_up(fw_size, 2 MB)); the whole [RAM_BASE, kernel_start) window
+     * is the firmware's RX/RW image, heap and per-hart scratch/stack.
+     * Without a reservation the /memory node hands those pages to the
+     * buddy allocator, guest writes (anon zero-fill, buffers) corrupt the
+     * M-mode trap handler, and the next trap storms on an illegal
+     * instruction fetch (observed pc=0x800003c8 mcause=2 mtval=0/garbage
+     * at word@0x800003c8). Reserve exactly that window, 2 MiB aligned and
+     * derived from the boot contract, so the kernel never allocates it.
+     * Matches the FDT contract other SBI platforms (e.g. QEMU virt) use.
+     */
+    if (kernel_start > RAM_BASE_ADDR) {
+        fdt_begin_node(s, "reserved-memory");
+        fdt_prop_u32(s, "#address-cells", 2);
+        fdt_prop_u32(s, "#size-cells", 2);
+        fdt_prop(s, "ranges", NULL, 0);
+        fdt_begin_node_num(s, "opensbi", RAM_BASE_ADDR);
+        tab[0] = (uint64_t)RAM_BASE_ADDR >> 32;
+        tab[1] = RAM_BASE_ADDR;
+        tab[2] = (kernel_start - RAM_BASE_ADDR) >> 32;
+        tab[3] = kernel_start - RAM_BASE_ADDR;
+        fdt_prop_tab_u32(s, "reg", tab, 4);
+        fdt_end_node(s); /* opensbi */
+        fdt_end_node(s); /* reserved-memory */
+    }
+
     fdt_begin_node(s, "htif");
     fdt_prop_str(s, "compatible", "ucb,htif0");
+    /* FLOE-HTIF-REG: expose the tohost/fromhost MMIO window in the FDT so
+     * SBI firmware with an HTIF serial driver (OpenSBI fdt_serial_htif)
+     * can drive the same console chardev the 2018 riscv-pk reached through
+     * linker-script symbols. reg tuple order matches OpenSBI's
+     * fdt_serial_htif assignment: reg[0] = fromhost (base+8, console
+     * input), reg[1] = tohost (base, console output). */
+    {
+        uint32_t htif_reg[8] = {
+            0x0, HTIF_BASE_ADDR + 8, 0x0, 8, /* fromhost */
+            0x0, HTIF_BASE_ADDR,     0x0, 8  /* tohost */
+        };
+        fdt_prop_tab_u32(s, "reg", htif_reg, 8);
+    }
     fdt_end_node(s); /* htif */
 
     fdt_begin_node(s, "soc");
@@ -968,6 +1049,7 @@ static VirtMachine *riscv_machine_init(const VirtMachineParams *p)
         }
         riscv_cpu_set_mhartid(s->cpus[i], i);
         riscv_cpu_smp_attach(s->cpus[i], &s->smp);
+        riscv_cpu_set_time_source(s->cpus[i], riscv_machine_get_time, s);
         s->smp.cpus[i] = s->cpus[i];
     }
     s->cpu_state = s->cpus[0];

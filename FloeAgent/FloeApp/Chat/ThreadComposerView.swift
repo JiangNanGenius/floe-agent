@@ -186,6 +186,15 @@ struct ThreadComposerView: View {
     var notesDraftID: UUID? = nil
     var embedded: Bool = false
     var documentAssistant: Bool = false
+    /// Temporary (ephemeral) conversation: text-only composer — attachment,
+    /// voice, plan/goal modes, workspace binding and permission chips are
+    /// hidden; the service enforces the same ceiling anyway.
+    var temporary: Bool = false
+    /// False after a temporary toggle-off handed an ephemeral draft back:
+    /// edits stay in the binding (and in RAM) until the user re-arms
+    /// persistence by editing (signalled through `onDraftEdited`).
+    var draftPersistenceEnabled: Bool = true
+    var onDraftEdited: () -> Void = {}
 
     @State private var isPickerPresented = false
     @State private var isNotesPickerPresented = false
@@ -260,7 +269,10 @@ struct ThreadComposerView: View {
             if let voiceNotice = voiceNotice {
                 voiceBanner(voiceNotice)
             }
-            if !attachments.isEmpty {
+            if !attachments.isEmpty, !temporary {
+                // Temporary chat is text-only: staged ordinary attachments
+                // stay in the draft (nothing is deleted) but no chip renders
+                // and the launch carries none.
                 attachmentChips
             }
             inputRow
@@ -373,6 +385,13 @@ struct ThreadComposerView: View {
             if isDraftConsumedBySend, newValue.isEmpty {
                 return
             }
+            // Temporary handoff: the first real edit after toggling off
+            // re-arms ordinary persistence; the handed-off text itself is
+            // never written to the durable draft store.
+            guard draftPersistenceEnabled else {
+                onDraftEdited()
+                return
+            }
             if let revision = draftStore.save(
                 text: newValue,
                 attachments: attachments,
@@ -392,6 +411,7 @@ struct ThreadComposerView: View {
             }
         }
         .onChange(of: attachments) { _, newValue in
+            guard draftPersistenceEnabled else { return }
             if let revision = draftStore.save(
                 text: draft,
                 attachments: newValue,
@@ -422,8 +442,9 @@ struct ThreadComposerView: View {
             // The task's immutable owner may be an external project or an
             // app-owned private workspace. Bind either one here so the file
             // inspector cannot remain empty while agent tools use the same
-            // private root in the background.
-            if let contextID {
+            // private root in the background. Temporary conversations own no
+            // workspace and must not create or bind one.
+            if let contextID, !temporary {
                 do {
                     try await environment.workspaceCenter.openTaskWorkspace(
                         conversationID: contextID
@@ -642,7 +663,12 @@ struct ThreadComposerView: View {
                 }
         }
 
-        var actions: [SlashAction] = [
+        var actions: [SlashAction] = temporary ? [
+            SlashAction(
+                id: "chat", title: FloeL10n.l("chat.thread_composer_view.chat_mode"), subtitle: FloeL10n.l("chat.thread_composer_view.no_tool_calls"),
+                systemImage: "text.bubble", kind: .mode(.chat)
+            )
+        ] : [
             SlashAction(
                 id: "skills", title: FloeL10n.l("chat.thread_composer_view.manage_skills"), subtitle: FloeL10n.l("chat.thread_composer_view.open_installed_skills_and_permissions"),
                 systemImage: "puzzlepiece.extension", kind: .openSkills
@@ -664,7 +690,7 @@ struct ThreadComposerView: View {
                 systemImage: "target", kind: .mode(.goal)
             )
         ]
-        if onManualCompact != nil {
+        if onManualCompact != nil, !temporary {
             actions.insert(SlashAction(
                 id: "compact", title: FloeL10n.l("chat.thread_composer_view.compact_context"), subtitle: FloeL10n.l("chat.thread_composer_view.compact_this_conversation_s_history_before"),
                 systemImage: "arrow.down.right.and.arrow.up.left", kind: .compact
@@ -734,7 +760,8 @@ struct ThreadComposerView: View {
 
     private var standardInputRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            Menu {
+            if !temporary {
+                Menu {
                 Button {
                     // Present PhotosPicker from the stable composer view. A
                     // PhotosPicker nested directly inside Menu can lose its
@@ -785,6 +812,7 @@ struct ThreadComposerView: View {
             .buttonStyle(.plain)
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("composer.attach")
+            }
 
             // Multiline field: Return inserts a newline on both keyboards;
             // hardware Cmd+Return sends, and never while an input method
@@ -846,6 +874,7 @@ struct ThreadComposerView: View {
                 .accessibilityIdentifier("composer.expand")
             }
 
+            if !temporary {
             Button {
                 // Preserve whatever the user already typed; dictation appends
                 // after this prefix and never replaces it.
@@ -867,6 +896,7 @@ struct ThreadComposerView: View {
             .accessibilityValue(voiceAccessibilityValue)
             .accessibilityHint("voice.hint")
             .accessibilityIdentifier("composer.voice")
+            }
 
             if isRunning {
                 Button(role: .destructive) {
@@ -985,11 +1015,11 @@ struct ThreadComposerView: View {
             HStack(spacing: 10) {
                 modelPicker
                 reasoningPicker
-                if !embedded {
+                if !embedded, !temporary {
                     projectPicker
                     targetPicker
                 }
-                if !documentAssistant { modePicker }
+                if !documentAssistant, !temporary { modePicker }
                 if !documentAssistant, isRunning, let runningInputMode {
                     Menu {
                         Button {
@@ -1013,7 +1043,7 @@ struct ThreadComposerView: View {
                     }
                     .accessibilityLabel("chat.thread_composer_view.send_method_while_running")
                 }
-                if !documentAssistant {
+                if !documentAssistant, !temporary {
                     Button { onPermissions() } label: {
                         composerChip(title: approvalModeTitle, systemImage: "lock.shield")
                     }

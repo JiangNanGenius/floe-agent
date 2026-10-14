@@ -296,64 +296,76 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
         title: String
     ) async throws -> WorkspaceRecord {
         try await database.writer { db in
-            guard try Bool.fetchOne(
-                db,
-                sql: "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?)",
-                arguments: [conversationID.uuidString]
-            ) == true else {
-                throw FloeError.notFound("conversation \(conversationID.uuidString)")
-            }
-            if let row = try Row.fetchOne(
-                db,
-                sql: """
-                    SELECT w.* FROM workspaces w
-                    JOIN conversation_workspace_ownership o ON o.workspace_id = w.id
-                    WHERE o.conversation_id = ?
-                    """,
-                arguments: [conversationID.uuidString]
-            ) {
-                return try Self.workspace(from: row)
-            }
-
-            let now = Date()
-            let workspace = WorkspaceRecord(
-                name: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "Chat" : String(title.prefix(80)),
-                rootBookmark: Data(),
-                kind: .privateTask,
-                internalRelativePath: "PrivateTasks/\(conversationID.uuidString)",
-                createdAt: now,
-                updatedAt: now
-            )
-            try db.execute(
-                sql: """
-                    INSERT INTO workspaces (
-                        id, name, root_bookmark, last_opened_at,
-                        active_target_kind, active_target_host_id,
-                        inspector_state_json, instructions_rel_path,
-                        created_at, updated_at, kind, internal_relative_path
-                    ) VALUES (?, ?, ?, NULL, 'local', NULL, '{}', NULL, ?, ?, 'privateTask', ?)
-                    """,
-                arguments: [
-                    workspace.id.uuidString, workspace.name, workspace.rootBookmark,
-                    PersistenceCodec.encode(now), PersistenceCodec.encode(now),
-                    workspace.internalRelativePath
-                ]
-            )
-            try db.execute(
-                sql: """
-                    INSERT INTO conversation_workspace_ownership
-                        (conversation_id, workspace_id, assigned_at)
-                    VALUES (?, ?, ?)
-                    """,
-                arguments: [
-                    conversationID.uuidString,
-                    workspace.id.uuidString,
-                    PersistenceCodec.encode(now)
-                ]
-            )
-            return workspace
+            try Self.ensureWorkspace(conversationID: conversationID, title: title, db: db)
         }
+    }
+
+    /// The same canonical ownership operation inside an existing transaction.
+    /// Explicit temporary-chat promotion uses this only after its ordinary
+    /// conversation row is written, so saving history and its sidebar identity
+    /// is atomic; a temporary session never creates a workspace.
+    static func ensureWorkspace(
+        conversationID: UUID,
+        title: String,
+        db: Database
+    ) throws -> WorkspaceRecord {
+        guard try Bool.fetchOne(
+            db,
+            sql: "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?)",
+            arguments: [conversationID.uuidString]
+        ) == true else {
+            throw FloeError.notFound("conversation \(conversationID.uuidString)")
+        }
+        if let row = try Row.fetchOne(
+            db,
+            sql: """
+                SELECT w.* FROM workspaces w
+                JOIN conversation_workspace_ownership o ON o.workspace_id = w.id
+                WHERE o.conversation_id = ?
+                """,
+            arguments: [conversationID.uuidString]
+        ) {
+            return try Self.workspace(from: row)
+        }
+
+        let now = Date()
+        let workspace = WorkspaceRecord(
+            name: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Chat" : String(title.prefix(80)),
+            rootBookmark: Data(),
+            kind: .privateTask,
+            internalRelativePath: "PrivateTasks/\(conversationID.uuidString)",
+            createdAt: now,
+            updatedAt: now
+        )
+        try db.execute(
+            sql: """
+                INSERT INTO workspaces (
+                    id, name, root_bookmark, last_opened_at,
+                    active_target_kind, active_target_host_id,
+                    inspector_state_json, instructions_rel_path,
+                    created_at, updated_at, kind, internal_relative_path
+                ) VALUES (?, ?, ?, NULL, 'local', NULL, '{}', NULL, ?, ?, 'privateTask', ?)
+                """,
+            arguments: [
+                workspace.id.uuidString, workspace.name, workspace.rootBookmark,
+                PersistenceCodec.encode(now), PersistenceCodec.encode(now),
+                workspace.internalRelativePath
+            ]
+        )
+        try db.execute(
+            sql: """
+                INSERT INTO conversation_workspace_ownership
+                    (conversation_id, workspace_id, assigned_at)
+                VALUES (?, ?, ?)
+                """,
+            arguments: [
+                conversationID.uuidString,
+                workspace.id.uuidString,
+                PersistenceCodec.encode(now)
+            ]
+        )
+        return workspace
     }
 
     public func assignConversation(workspaceID: UUID, conversationID: UUID) async throws {

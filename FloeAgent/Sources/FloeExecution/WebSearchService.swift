@@ -3,7 +3,9 @@ import Foundation
 import FloeCore
 
 public actor WebSearchService {
-    private let session: URLSession
+    /// Internal for privacy-audit tests: the transport configuration must
+    /// stay ephemeral (no shared on-disk cache/cookie/credential state).
+    let session: URLSession
     private let configurations: WebSearchConfigurationResolver
     private let validateDestination: @Sendable (URL, Bool) throws -> Void
 

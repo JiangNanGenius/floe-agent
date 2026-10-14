@@ -1712,6 +1712,13 @@ final class AppEnvironment: ObservableObject {
                ProcessInfo.processInfo.arguments.contains(NotificationQualificationFixture.launchArgument) {
                 await NotificationQualificationFixture.seedIfRequested(environment: self)
             }
+            // Temporary-chat GUI acceptance: ONE synthetic saved conversation
+            // (fixed identity, two synthetic messages) for the real toggle /
+            // End / Keep paths without any model request.
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains(TemporaryChatUITestFixture.launchArgument) {
+                await TemporaryChatUITestFixture.seedIfRequested(environment: self)
+            }
             #endif
             #if !targetEnvironment(simulator)
             do {

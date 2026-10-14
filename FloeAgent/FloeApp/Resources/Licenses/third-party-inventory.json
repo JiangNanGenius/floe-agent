@@ -94,6 +94,19 @@
       "noteKey": null
     },
     {
+      "id": "linux-boot-pair",
+      "repositoryPath": "FloeApp/Resources/Licenses/LinuxBootPair-LICENSES.txt",
+      "bundlePath": "Licenses/LinuxBootPair-LICENSES.txt",
+      "titleKey": "settings.licenses.document.linux_boot_pair.title",
+      "titleFallback": "Linux guest boot pair (kernel + firmware)",
+      "titleArgument": null,
+      "license": "GPL-2.0 (kernel), BSD-2-Clause (OpenSBI)",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
       "id": "pdfium",
       "repositoryPath": "FloeApp/Resources/PDFiumLicenses/LICENSE",
       "bundlePath": "PDFiumLicenses/LICENSE",
@@ -168,6 +181,19 @@
       "license": null,
       "kindKey": "settings.licenses.kind.notices",
       "required": false,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
+      "id": "occt-native",
+      "repositoryPath": "FloeApp/Resources/Licenses/OCCT-Native-SOURCE-OFFER.txt",
+      "bundlePath": "Licenses/OCCT-Native-SOURCE-OFFER.txt",
+      "titleKey": "settings.licenses.document.occt_native.title",
+      "titleFallback": "OCCT 7.8.1 native static libraries (source offer)",
+      "titleArgument": null,
+      "license": "LGPL-2.1 with OCCT exception",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
       "section": "engineering",
       "noteKey": null
     },
@@ -434,6 +460,71 @@
       "required": true,
       "section": "swift",
       "noteKey": "settings.licenses.note.mlx_vendor"
+    },
+    {
+      "id": "euclid",
+      "repositoryPath": "FloeApp/Resources/Licenses/Euclid-LICENSE.txt",
+      "bundlePath": "Licenses/Euclid-LICENSE.txt",
+      "titleKey": "settings.licenses.document.euclid.title",
+      "titleFallback": "Euclid",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "swift",
+      "noteKey": null
+    },
+    {
+      "id": "lrucache",
+      "repositoryPath": "FloeApp/Resources/Licenses/LRUCache-LICENSE.txt",
+      "bundlePath": "Licenses/LRUCache-LICENSE.txt",
+      "titleKey": "settings.licenses.document.lrucache.title",
+      "titleFallback": "LRUCache",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "swift",
+      "noteKey": null
+    },
+    {
+      "id": "shapescript",
+      "repositoryPath": "FloeApp/Resources/Licenses/ShapeScript-LICENSE.txt",
+      "bundlePath": "Licenses/ShapeScript-LICENSE.txt",
+      "titleKey": "settings.licenses.document.shapescript.title",
+      "titleFallback": "ShapeScript",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "swift",
+      "noteKey": null
+    },
+    {
+      "id": "svgpath",
+      "repositoryPath": "FloeApp/Resources/Licenses/SVGPath-LICENSE.txt",
+      "bundlePath": "Licenses/SVGPath-LICENSE.txt",
+      "titleKey": "settings.licenses.document.svgpath.title",
+      "titleFallback": "SVGPath",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "swift",
+      "noteKey": null
+    },
+    {
+      "id": "openshape3d",
+      "repositoryPath": "FloeApp/Resources/Licenses/OpenShape3D-LICENSE.txt",
+      "bundlePath": "Licenses/OpenShape3D-LICENSE.txt",
+      "titleKey": "settings.licenses.document.openshape3d.title",
+      "titleFallback": "OpenShape3D (FloeCADKit extraction)",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "swift",
+      "noteKey": null
     }
   ],
   "components": [
@@ -735,6 +826,51 @@
       "evidence": "ThirdParty/MLXSwiftLM/LICENSE"
     },
     {
+      "name": "euclid",
+      "version": "0.9.6",
+      "license": "MIT",
+      "source": "https://github.com/nicklockwood/Euclid.git",
+      "section": "swift",
+      "noteKey": "settings.licenses.note.cad_packages",
+      "evidence": "FloeApp/Resources/Licenses/Euclid-LICENSE.txt"
+    },
+    {
+      "name": "lrucache",
+      "version": "1.3.0",
+      "license": "MIT",
+      "source": "https://github.com/nicklockwood/LRUCache.git",
+      "section": "swift",
+      "noteKey": "settings.licenses.note.cad_packages",
+      "evidence": "FloeApp/Resources/Licenses/LRUCache-LICENSE.txt"
+    },
+    {
+      "name": "shapescript",
+      "version": "1.11.6",
+      "license": "MIT",
+      "source": "https://github.com/nicklockwood/ShapeScript.git",
+      "section": "swift",
+      "noteKey": "settings.licenses.note.cad_packages",
+      "evidence": "FloeApp/Resources/Licenses/ShapeScript-LICENSE.txt"
+    },
+    {
+      "name": "svgpath",
+      "version": "1.3.1",
+      "license": "MIT",
+      "source": "https://github.com/nicklockwood/SVGPath.git",
+      "section": "swift",
+      "noteKey": "settings.licenses.note.cad_packages",
+      "evidence": "FloeApp/Resources/Licenses/SVGPath-LICENSE.txt"
+    },
+    {
+      "name": "openshape3d",
+      "version": "30b3c7c1784754f237466e093ab42ff085175d40",
+      "license": "MIT",
+      "source": "https://github.com/laanlabs/OpenShape3D/tree/30b3c7c1784754f237466e093ab42ff085175d40",
+      "section": "swift",
+      "noteKey": "settings.licenses.note.openshape3d",
+      "evidence": "FloeApp/Resources/Licenses/OpenShape3D-LICENSE.txt"
+    },
+    {
       "name": "TinyEMU / FloeTinyEMU engine",
       "version": "2019-12-21 + Floe patches",
       "license": "MIT",
@@ -760,6 +896,24 @@
       "section": "engines",
       "noteKey": "settings.licenses.note.guest_image",
       "evidence": null
+    },
+    {
+      "name": "Linux guest boot kernel (bundled 6.18.56 Image)",
+      "version": "6.18.56 (build #7)",
+      "license": "GPL-2.0 (Linux kernel; bundled separate data blob, not linked into the app binary; corresponding source, config and license text recorded)",
+      "source": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.56.tar.xz",
+      "section": "engines",
+      "noteKey": "settings.licenses.note.linux_boot_pair",
+      "evidence": "ThirdParty/TinyEMU/guest-image/BOOT-PAIR-LICENSES.md and config_linux_riscv64_6.18.56; full GPL-2.0 text in FloeApp/Resources/Licenses/LinuxBootPair-LICENSES.txt"
+    },
+    {
+      "name": "Linux guest boot firmware (bundled OpenSBI v1.9 fw_jump)",
+      "version": "v1.9",
+      "license": "BSD-2-Clause",
+      "source": "https://github.com/riscv-software-src/opensbi/releases/tag/v1.9",
+      "section": "engines",
+      "noteKey": "settings.licenses.note.linux_boot_pair",
+      "evidence": "ThirdParty/TinyEMU/guest-image/BOOT-PAIR-LICENSES.md; OpenSBI COPYING.BSD text in FloeApp/Resources/Licenses/LinuxBootPair-LICENSES.txt"
     },
     {
       "name": "VideoEditorKit",
@@ -1219,6 +1373,15 @@
       "section": "engineering",
       "noteKey": null,
       "evidence": "FloeApp/Resources/EngineeringViewers/gerber-to-svg.min.js.LICENSE.txt"
+    },
+    {
+      "name": "Open CASCADE Technology (OCCT) native static libraries (FloeCADKit)",
+      "version": "7.8.1",
+      "license": "LGPL-2.1 with OCCT exception (native static libraries linked via the FloeCADKit OCCT binaryTarget; source, relink kit and exception recorded)",
+      "source": "https://github.com/Open-Cascade-SAS/OCCT/tree/bd2a789f15235755ce4d1a3b07379a2e062fdc2e",
+      "section": "engineering",
+      "noteKey": "settings.licenses.note.occt_native",
+      "evidence": "ThirdParty/FloeCADKit/DEPENDENCIES.json (pinned slices), OCCT_RELINK.md and relink/SOURCE_OFFER.md; bundled record FloeApp/Resources/Licenses/OCCT-Native-SOURCE-OFFER.txt"
     },
     {
       "name": "Open CASCADE Technology (OCCT)",
@@ -2481,12 +2644,32 @@
     {
       "id": "occt",
       "textKey": "settings.licenses.note.occt",
-      "fallback": "Open CASCADE Technology and occt-import-js are LGPL-2.1 with the OCCT exception; their complete texts and the exception ship in the app bundle."
+      "fallback": "Open CASCADE Technology and occt-import-js are bundled for the engineering viewer as WebAssembly modules under LGPL-2.1 with the OCCT exception; their complete texts and the exception ship in the app bundle. The separately linked native OCCT 7.8.1 static libraries are declared as their own component with a recorded relink and source offer."
+    },
+    {
+      "id": "occt_native",
+      "textKey": "settings.licenses.note.occt_native",
+      "fallback": "The native CAD engine links Open CASCADE Technology 7.8.1 as unmodified upstream static libraries for iOS device and simulator, pinned by tag V7_8_1 (commit bd2a789f15235755ce4d1a3b07379a2e062fdc2e), size and SHA-256 in ThirdParty/FloeCADKit/DEPENDENCIES.json. OCCT is licensed under LGPL-2.1 with the Open CASCADE exception 1.0; the complete texts and the exception ship in this app (EngineeringViewers/license.occt.txt, EngineeringViewers/OCCT_LGPL_EXCEPTION.txt). The record of where the exact corresponding source and the retained build inputs are available for rebuilding or relinking is bundled as Licenses/OCCT-Native-SOURCE-OFFER.txt. Floe has not independently rebuilt OCCT and claims no byte-identical local reproduction; these are engineering records, not a legal certification."
+    },
+    {
+      "id": "cad_packages",
+      "textKey": "settings.licenses.note.cad_packages",
+      "fallback": "The Floe CAD kernel links four Swift packages that only the app dependency graph resolves, pinned by ThirdParty/FloeCADKit/Package.resolved: Euclid and ShapeScript (the FloeCAD product depends on both) plus ShapeScript's Euclid, LRUCache and SVGPath dependencies. Their complete MIT license texts, including the copyright lines, ship in this app under Licenses/."
+    },
+    {
+      "id": "openshape3d",
+      "textKey": "settings.licenses.note.openshape3d",
+      "fallback": "FloeCADKit, the app's native CAD kernel package, is Floe's locally modified extraction of OpenShape3D's geometry kernel, feature graph, editor state machine and Metal viewport (upstream commit 30b3c7c1784754f237466e093ab42ff085175d40, MIT; the modification record is ThirdParty/FloeCADKit/PATCHES.md, provenance in UPSTREAM.md). It is a derived, modified copy, not an unmodified upstream library. OpenShape3D's complete MIT license text, including the copyright line, ships in this app as Licenses/OpenShape3D-LICENSE.txt."
     },
     {
       "id": "guest_image",
       "textKey": "settings.licenses.note.guest_image",
       "fallback": "The Linux guest is a separately distributed downloadable image built from Debian 13 riscv64 packages plus a pinned kernel, bbl and static glibc. Its source and license texts are recorded in the pinned image manifest; they are not linked into the app binary."
+    },
+    {
+      "id": "linux_boot_pair",
+      "textKey": "settings.licenses.note.linux_boot_pair",
+      "fallback": "The app bundles the verified Linux 6.18.56 kernel Image and OpenSBI 1.9 fw_jump firmware as separate data resources that run inside the TinyEMU virtual machine; they are not linked into the app or engine binary. The kernel is unmodified upstream Linux (GPL-2.0 with the Linux syscall note) and the firmware is OpenSBI (BSD-2-Clause). Their complete license texts, the exact build configuration and the corresponding-source references ship in the app as Licenses/LinuxBootPair-LICENSES.txt."
     },
     {
       "id": "office",
@@ -2505,8 +2688,8 @@
     }
   ],
   "counts": {
-    "components": 226,
-    "documents": 29,
-    "pins": 33
+    "components": 234,
+    "documents": 36,
+    "pins": 38
   }
 }

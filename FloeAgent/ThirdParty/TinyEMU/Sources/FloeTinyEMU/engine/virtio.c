@@ -93,7 +93,18 @@
 
 #define MAX_QUEUE 8
 #define MAX_CONFIG_SPACE_SIZE 256
-#define MAX_QUEUE_NUM 16
+/* FLOE-QUEUE-NUM-MAX: advertise a 256-entry virtqueue ring (QEMU's
+ * default) instead of the historical 16. Linux >= 6.12 virtio_net's
+ * NAPI TX stop/wake logic suspends the TX queue whenever fewer than
+ * MAX_SKB_FRAGS + 2 (19 with CONFIG_MAX_SKB_FRAGS=17 on 4K pages)
+ * descriptors are free and only resumes at >= 19; a 16-entry ring can
+ * therefore never restart once stopped, stalling all guest networking
+ * after the very first frame (observed: exactly one 90-byte MLD packet
+ * TXed, then NETDEV TX watchdog timeouts forever). Older guests (the
+ * 4.15 image) never hit this because their wake threshold was lower.
+ * Rings live entirely in guest memory; the host keeps no per-entry
+ * arrays, so raising the advertised maximum costs host nothing. */
+#define MAX_QUEUE_NUM 256
 
 typedef struct {
     uint32_t ready; /* 0 or 1 */

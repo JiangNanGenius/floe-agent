@@ -51,6 +51,12 @@ public struct ToolContext: Sendable {
     public var activeSkillIDs: Set<String>
     /// Executor-side capability ceiling derived before the provider request.
     public var allowedToolNames: Set<String>?
+    /// True for temporary (ephemeral) chat runs: outbound web retrieval is
+    /// public-only. Tools that can opt into LAN/diagnostic targets
+    /// (web.fetch localNetwork) must refuse that opt-in and every private
+    /// target here, regardless of ordinary policy. Set by the runtime from
+    /// the run configuration; never model-minted.
+    public var publicWebOnly: Bool
     /// Root assigned to this task. Workspace tools must prefer this over any
     /// UI-global workspace so concurrent tasks cannot leak into one another.
     public var workspaceRootURL: URL?
@@ -95,6 +101,7 @@ public struct ToolContext: Sendable {
         scope: ToolScope = .local,
         activeSkillIDs: Set<String> = [],
         allowedToolNames: Set<String>? = nil,
+        publicWebOnly: Bool = false,
         workspaceRootURL: URL? = nil,
         canvasStagedDocument: CanvasStagedDocumentAccess? = nil,
         allowedWorkspacePaths: [String] = [],
@@ -118,6 +125,7 @@ public struct ToolContext: Sendable {
         self.scope = scope
         self.activeSkillIDs = activeSkillIDs
         self.allowedToolNames = allowedToolNames
+        self.publicWebOnly = publicWebOnly
         self.workspaceRootURL = workspaceRootURL
         self.canvasStagedDocument = canvasStagedDocument
         self.allowedWorkspacePaths = allowedWorkspacePaths

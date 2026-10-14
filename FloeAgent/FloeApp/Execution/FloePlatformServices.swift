@@ -67,6 +67,11 @@ final class FloePlatformServices: @unchecked Sendable {
     /// guest is running. Injected by the Linux backend assembly; nil leaves the
     /// explicit-shape match check failing closed instead of guessing.
     private var linuxRunningGuestVCPUProbe: (@Sendable (String) async -> Int?)?
+    /// Verified boot-pair update service owned by the Linux backend
+    /// assembly (Bundle-staged `bundled-boot-pair` resource). Exposed here
+    /// so settings/tools can drive explicit adopt/rollback without the
+    /// assembly returning extra values.
+    private var linuxBootAssetUpdater: LinuxGuestBootAssetUpdateService?
     /// Official software-template distribution/registration service (C5).
     /// Nil until the Linux backend assembly injects it; the Templates UI then
     /// reports the dependency honestly instead of offering a download.
@@ -296,6 +301,15 @@ final class FloePlatformServices: @unchecked Sendable {
     /// running. Never a guess: a missing probe answers nil.
     func setLinuxRunningGuestVCPUProbe(_ probe: (@Sendable (String) async -> Int?)?) {
         lock.withLock { linuxRunningGuestVCPUProbe = probe }
+    }
+
+    func setLinuxBootAssetUpdater(_ updater: LinuxGuestBootAssetUpdateService?) {
+        lock.withLock { linuxBootAssetUpdater = updater }
+    }
+
+    /// The shared boot-pair updater for explicit adopt/rollback UI/tools.
+    func linuxBootAssetUpdaterService() -> LinuxGuestBootAssetUpdateService? {
+        lock.withLock { linuxBootAssetUpdater }
     }
 
     /// Real image state for the environment UI: manifest present, digest

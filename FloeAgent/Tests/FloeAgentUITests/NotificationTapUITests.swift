@@ -35,7 +35,13 @@ final class NotificationTapUITests: XCTestCase {
 
     /// The first real `requestAuthorization` prompt. Answered through its own
     /// system UI; when the permission is already decided there is no prompt.
-    private func answerNotificationPromptIfPresent(_ springboard: XCUIApplication) {
+    /// Returns `true` as soon as the fixture banner is already visible: once
+    /// authorization is granted the banner auto-dismisses after a few seconds
+    /// (`SBBannerRevocationReasonBannerDestinationDismissTimer`), so the real
+    /// tap has to happen while the system still presents it.
+    @discardableResult
+    private func answerNotificationPromptIfPresent(_ springboard: XCUIApplication) -> Bool {
+        let banner = bannerTitle(springboard)
         let deadline = Date().addingTimeInterval(12)
         while Date() < deadline {
             let alert = springboard.alerts.firstMatch
@@ -44,16 +50,29 @@ final class NotificationTapUITests: XCTestCase {
                     let button = alert.buttons[label]
                     if button.exists && button.isHittable {
                         button.tap()
-                        return
+                        return false
                     }
                 }
             }
+            if banner.exists { return true }
             Thread.sleep(forTimeInterval: 0.25)
         }
+        return false
     }
 
     private func bannerTitle(_ springboard: XCUIApplication) -> XCUIElement {
         springboard.staticTexts[fixtureTitle].firstMatch
+    }
+
+    /// True once the app becomes the foreground app again (system cold launch).
+    @discardableResult
+    private func waitForForeground(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if app.state == .runningForeground { return true }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        return false
     }
 
     @discardableResult
@@ -64,10 +83,12 @@ final class NotificationTapUITests: XCTestCase {
                 Thread.sleep(forTimeInterval: 0.25)
                 continue
             }
+            // The routed task owns the detail surface: its navigation bar is
+            // the only element titled after the synthetic task that cannot be
+            // the chat-list row (sidebar) or the home composer — the loose
+            // title+composer test also matched the untouched home screen.
             let navBar = app.navigationBars[fixtureTitle]
             if navBar.exists { return true }
-            let title = app.staticTexts[fixtureTitle].firstMatch
-            if title.exists && app.textViews["composer.input"].exists { return true }
             Thread.sleep(forTimeInterval: 0.5)
         }
         return false
@@ -90,10 +111,10 @@ final class NotificationTapUITests: XCTestCase {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let app = launchFixtureApp()
         defer { app.terminate() }
-        answerNotificationPromptIfPresent(springboard)
+        let bannerAlreadyVisible = answerNotificationPromptIfPresent(springboard)
 
         let title = bannerTitle(springboard)
-        XCTAssertTrue(title.waitForExistence(timeout: 45),
+        XCTAssertTrue(bannerAlreadyVisible || title.waitForExistence(timeout: 45),
                       "the system did not deliver the synthetic terminal banner")
         attachEvidence("notification-01-banner-delivered")
         title.tap()
@@ -114,10 +135,10 @@ final class NotificationTapUITests: XCTestCase {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let app = launchFixtureApp()
         defer { app.terminate() }
-        answerNotificationPromptIfPresent(springboard)
+        let bannerAlreadyVisible = answerNotificationPromptIfPresent(springboard)
 
         let title = bannerTitle(springboard)
-        XCTAssertTrue(title.waitForExistence(timeout: 45),
+        XCTAssertTrue(bannerAlreadyVisible || title.waitForExistence(timeout: 45),
                       "the system did not deliver the synthetic terminal banner")
         app.terminate()
         Thread.sleep(forTimeInterval: 0.8)
@@ -128,7 +149,10 @@ final class NotificationTapUITests: XCTestCase {
             title.tap()
         } else {
             // Fell back to Notification Center: pull it down from the top edge
-            // and tap the delivered notification there.
+            // and tap the delivered notification there. A collapsed group
+            // expands on the first tap, so keep tapping the real notification
+            // until the system cold-launches the app — the route is never
+            // simulated.
             let top = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.01))
             let below = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
             top.press(forDuration: 0.1, thenDragTo: below)
@@ -136,7 +160,16 @@ final class NotificationTapUITests: XCTestCase {
             XCTAssertTrue(centerTitle.waitForExistence(timeout: 10),
                           "the delivered notification is not reachable in Notification Center")
             attachEvidence("notification-03-notification-center")
-            centerTitle.tap()
+            var coldLaunched = false
+            var attempt = 0
+            while !coldLaunched, attempt < 3 {
+                if attempt > 0 {
+                    attachEvidence("notification-03\(attempt)-notification-center-retap")
+                }
+                centerTitle.tap()
+                coldLaunched = waitForForeground(app, timeout: 8)
+                attempt += 1
+            }
         }
         XCTAssertTrue(waitForRoutedTask(app, timeout: 60),
                       "a cold system notification tap did not route to the intended synthetic task")

@@ -303,13 +303,21 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
     ) throws -> LinuxGuestImage {
         try Task.checkCancellation()
         var runtime = image
+        // Installed-newer precedence: a verified adopted boot-asset sidecar
+        // (see LinuxGuestBootAssetUpdateService) overrides the manifest
+        // default pair without rewriting the trusted manifest itself. An
+        // unverifiable/absent sidecar falls through to the manifest pair.
+        let bootPaths = LinuxGuestBootAssetUpdateService.resolvedBootPaths(
+            manifest: image,
+            imageDirectory: imageDirectory
+        )
         runtime.biosPath = try Self.resolveArtifact(
-            path: image.biosPath,
+            path: bootPaths.biosPath,
             role: "bios",
             imageDirectory: imageDirectory,
             fileManager: fileManager
         ).path
-        if let kernelPath = image.kernelPath {
+        if let kernelPath = bootPaths.kernelPath {
             runtime.kernelPath = try Self.resolveArtifact(
                 path: kernelPath,
                 role: "kernel",
