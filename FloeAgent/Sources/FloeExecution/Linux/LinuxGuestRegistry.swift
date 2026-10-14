@@ -1503,6 +1503,14 @@ public actor TinyEMULinuxGuestRegistry {
         }
         sessions[environmentID] = session
         sessionRegistered = true
+        // Staged command tracing now that the session identity exists:
+        // environment, launch generation and lease only — never command
+        // bodies.
+        await session.channel.setTraceContext(.init(
+            environmentID: environmentID,
+            launchGeneration: session.generation,
+            lease: admission?.runtimeID
+        ))
         // The registered session now owns the boot's durable share access.
         shareAccessLease = nil
         lastErrors[environmentID] = nil
@@ -2118,6 +2126,12 @@ public actor TinyEMULinuxGuestRegistry {
         // retained channel (never used if there was none) only exists so a
         // later teardown can close the transport again.
         let retainedChannel = channel ?? LinuxGuestCommandChannel(transport: handle.transport, limits: limits)
+        let retainedGeneration = nextSessionGeneration()
+        await retainedChannel.setTraceContext(.init(
+            environmentID: environmentID,
+            launchGeneration: retainedGeneration,
+            lease: runtimeID
+        ))
         sessions[environmentID] = Session(
             descriptor: descriptor,
             image: image,
@@ -2128,7 +2142,7 @@ public actor TinyEMULinuxGuestRegistry {
             forwards: [],
             runtimeID: runtimeID,
             shareAccessLease: shareAccessLease,
-            generation: nextSessionGeneration()
+            generation: retainedGeneration
         )
         // The quarantined survivor may still touch its 9P shares; it owns the
         // lease until a later confirmed stop releases it.

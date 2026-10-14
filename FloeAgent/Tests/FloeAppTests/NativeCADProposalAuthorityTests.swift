@@ -320,5 +320,249 @@ final class NativeCADProposalAuthorityTests: XCTestCase {
         let statusAObject = try XCTUnwrap((try? JSONSerialization.jsonObject(with: Data(statusA.utf8))) as? [String: Any])
         XCTAssertEqual(statusAObject["count"] as? Int, 1)
     }
+
+    // MARK: - R2 import proposal authority
+
+    /// A tool-side import drafts a proposal that changes NOTHING until the
+    /// user confirms; apply requires the SAME owner/target and a real UI
+    /// grant, and re-verifies the exact source bytes. The direct/unconfirmed
+    /// import path is gone.
+    func testImportRequiresProposalAndUIGrant() async throws {
+        let center = CadDocumentCenter()
+        let docA = rootA.appendingPathComponent("part.floecad")
+        _ = try await FloeCADDocument.create(at: docA, name: "PartA")
+        let owner = UUID()
+        let accessA = access(owner: owner)
+
+        // A real STEP solid produced by the kernel's own export from a source
+        // package (the production OCCT writer), so the import is REAL kernel
+        // geometry, not a mock.
+        let sourceDoc = rootA.appendingPathComponent("other.floecad")
+        _ = try await FloeCADDocument.create(at: sourceDoc, name: "Source")
+        let sourceDocument = try await FloeCAD3DBridge.shared.openDocument(at: sourceDoc)
+        let sketch = sourceDocument.executeJSON(Data(#"{"op":"sketch.create","args":{"name":"Base"}}"#.utf8))
+        let sketchID = ((try? JSONSerialization.jsonObject(with: sketch.payload)) as? [String: Any])?["sketchID"] as? String ?? ""
+        XCTAssertTrue(sourceDocument.executeJSON(Data("""
+        {"op":"sketch.addEntities","args":{"sketchID":"\(sketchID)",
+         "entities":[{"kind":"rect","min":[0,0],"max":[30,20]}]}}
+        """.utf8)).isOK)
+        let extrude = sourceDocument.executeJSON(Data("""
+        {"op":"feature.extrude","args":{"sketchID":"\(sketchID)","seedPoint":[15,10],"distance":6}}
+        """.utf8))
+        XCTAssertTrue(extrude.isOK, extrude.message ?? "")
+        _ = await sourceDocument.save()
+        var stepData: Data?
+        if case .success(let result) = sourceDocument.nativeExportData(format: "step", pageID: nil) {
+            stepData = result.data
+        }
+        let stepBytes = try XCTUnwrap(stepData)
+        await FloeCAD3DBridge.shared.releaseDocument(at: sourceDoc)
+        let stepFile = rootA.appendingPathComponent("bracket.step")
+        try stepBytes.write(to: stepFile)
+        let targetBefore = try await FloeCAD3DBridge.shared.openDocument(at: docA)
+        XCTAssertEqual(targetBefore.summary().bodyCount, 0)
+
+        // 1. Draft the import through the shared authority: it returns a
+        //    pending proposal and MUST NOT mutate the package yet.
+        let importRequest: [String: Any] = [
+            "kind": "import",
+            "payload": ["path": "bracket.step", "format": "step"],
+        ]
+        let importReply = try await center.threeDAction(
+            documentID: "part.floecad",
+            requestJSON: String(data: try JSONSerialization.data(withJSONObject: importRequest), encoding: .utf8)!,
+            access: accessA)
+        let importObject = try XCTUnwrap((try? JSONSerialization.jsonObject(with: Data(importReply.utf8))) as? [String: Any])
+        XCTAssertEqual(importObject["ok"] as? Bool, true)
+        let proposal = try XCTUnwrap(importObject["proposal"] as? [String: Any])
+        let proposalID = try XCTUnwrap(UUID(uuidString: try XCTUnwrap(proposal["id"] as? String)))
+        let importInfo = try XCTUnwrap(importObject["import"] as? [String: Any])
+        XCTAssertEqual(importInfo["format"] as? String, "step")
+        XCTAssertNotNil(importInfo["source_sha256"] as? String)
+        // Nothing changed yet: the live document still has no body.
+        XCTAssertEqual(targetBefore.summary().bodyCount, 0,
+                       "import draft must never write before a confirmed apply")
+
+        // 2. Apply without a grant is refused before any mutation.
+        await assertThrows("apply without a grant") {
+            _ = try await self.apply(center, documentID: "part.floecad", proposal: proposalID,
+                                     grant: "forged-grant", access: accessA, requestID: "req-import-forged")
+        }
+        XCTAssertEqual(targetBefore.summary().bodyCount, 0)
+
+        // 3. Apply from a foreign owner is refused.
+        let forgedOwner = access(owner: UUID(), environment: "env-2", kind: "workspace")
+        await assertThrows("cross-owner import apply") {
+            _ = try await self.apply(center, documentID: "part.floecad", proposal: proposalID,
+                                     grant: "any", access: forgedOwner, requestID: "req-import-x")
+        }
+
+        // 4. A real UI grant applies ONCE: the imported body appears, the
+        //    revision advances by exactly one, and the receipt replays for
+        //    the same request id.
+        let grant = try await center.issueNativeCADGrant(proposalID: proposalID)
+        XCTAssertFalse(grant.isEmpty)
+        let applied = try await apply(center, documentID: "part.floecad", proposal: proposalID,
+                                      grant: grant, access: accessA, requestID: "req-import-1")
+        XCTAssertEqual(applied["ok"] as? Bool, true)
+        let receipt = try XCTUnwrap(applied["receipt"] as? [String: Any])
+        let appliedRevision = try XCTUnwrap(receipt["revision"] as? Int)
+
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: docA)
+        XCTAssertEqual(live.summary().bodyCount, 1, "the imported solid must be committed")
+        XCTAssertEqual(live.revision, appliedRevision)
+
+        let replay = try await apply(center, documentID: "part.floecad", proposal: proposalID,
+                                     grant: grant, access: accessA, requestID: "req-import-1")
+        XCTAssertEqual(replay["replay"] as? Bool, true)
+
+        // The source file was never modified by the import.
+        let afterBytes = try Data(contentsOf: stepFile)
+        XCTAssertEqual(afterBytes, stepBytes, "the import source must be unchanged")
+        // The committed package reopens with the imported body.
+        await FloeCAD3DBridge.shared.releaseDocument(at: docA)
+        let reopened = try await FloeCAD3DBridge.shared.openDocument(at: docA)
+        XCTAssertEqual(reopened.summary().bodyCount, 1)
+        await FloeCAD3DBridge.shared.releaseDocument(at: docA)
+    }
+
+    /// Import targets that are missing / not-a-package / a non-native
+    /// extension are refused with the documented distinct classes; an
+    /// unsupported source extension and an out-of-workspace source are
+    /// refused before any mutation.
+    func testImportRejectsInvalidTargetsAndSources() async throws {
+        let center = CadDocumentCenter()
+        let owner = UUID()
+        let accessA = access(owner: owner)
+        let stepFile = rootA.appendingPathComponent("a.step")
+        try "ISO-10303-21;\n".write(to: stepFile, atomically: true, encoding: .utf8)
+
+        func importRequest(document: String, source: String = "a.step",
+                           format: String? = "step") -> String {
+            var payload: [String: Any] = ["path": source]
+            if let format { payload["format"] = format }
+            return String(data: try! JSONSerialization.data(withJSONObject:
+                ["kind": "import", "payload": payload]), encoding: .utf8)!
+        }
+
+        // Nonexistent package → notFound.
+        await assertThrows("import into a missing package") {
+            _ = try await center.threeDAction(documentID: "missing.floecad",
+                                              requestJSON: importRequest(document: "missing.floecad"),
+                                              access: accessA)
+        }
+        // A folder that is not a package → validation failure, not notFound.
+        let folder = rootA.appendingPathComponent("not-a-package.floecad")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        await assertThrows("import into a non-package folder") {
+            _ = try await center.threeDAction(documentID: "not-a-package.floecad",
+                                              requestJSON: importRequest(document: "not-a-package.floecad"),
+                                              access: accessA)
+        }
+        // A DWG/DXF cannot be an import target (2D stays on its own surface).
+        let dwg = rootA.appendingPathComponent("a.dwg")
+        try Data().write(to: dwg)
+        await assertThrows("import into a DWG target") {
+            _ = try await center.threeDAction(documentID: "a.dwg",
+                                              requestJSON: importRequest(document: "a.dwg"),
+                                              access: accessA)
+        }
+        // Unsupported source extension on a real package → validation failure.
+        let target = rootA.appendingPathComponent("part.floecad")
+        _ = try await FloeCADDocument.create(at: target, name: "PartA")
+        let txt = rootA.appendingPathComponent("notes.txt")
+        try "hi".write(to: txt, atomically: true, encoding: .utf8)
+        await assertThrows("unsupported source extension") {
+            _ = try await center.threeDAction(documentID: "part.floecad",
+                                              requestJSON: importRequest(document: "part.floecad",
+                                                                         source: "notes.txt", format: "txt"),
+                                              access: accessA)
+        }
+        // A source outside the workspace root → validation failure.
+        let outside = base.appendingPathComponent("outside.step")
+        try "ISO-10303-21;\n".write(to: outside, atomically: true, encoding: .utf8)
+        await assertThrows("out-of-workspace import source") {
+            _ = try await center.threeDAction(documentID: "part.floecad",
+                                              requestJSON: importRequest(document: "part.floecad",
+                                                                         source: outside.path),
+                                              access: accessA)
+        }
+        // Nothing was mutated by any refusal.
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: target)
+        XCTAssertEqual(live.summary().bodyCount, 0)
+    }
+
+    /// A real import proposal is refused when the document moved past the
+    /// proposal's base revision before apply (stale revision guard), and the
+    /// failed apply does NOT consume the grant.
+    func testStaleImportProposalIsRefused() async throws {
+        let center = CadDocumentCenter()
+        let docA = rootA.appendingPathComponent("part.floecad")
+        _ = try await FloeCADDocument.create(at: docA, name: "PartA")
+        let owner = UUID()
+        let accessA = access(owner: owner)
+
+        let sourceDoc = rootA.appendingPathComponent("other.floecad")
+        _ = try await FloeCADDocument.create(at: sourceDoc, name: "Source")
+        let sourceDocument = try await FloeCAD3DBridge.shared.openDocument(at: sourceDoc)
+        let sketch = sourceDocument.executeJSON(Data(#"{"op":"sketch.create","args":{"name":"Base"}}"#.utf8))
+        let sketchID = ((try? JSONSerialization.jsonObject(with: sketch.payload)) as? [String: Any])?["sketchID"] as? String ?? ""
+        XCTAssertTrue(sourceDocument.executeJSON(Data("""
+        {"op":"sketch.addEntities","args":{"sketchID":"\(sketchID)",
+         "entities":[{"kind":"rect","min":[0,0],"max":[10,10]}]}}
+        """.utf8)).isOK)
+        let extrude = sourceDocument.executeJSON(Data("""
+        {"op":"feature.extrude","args":{"sketchID":"\(sketchID)","seedPoint":[5,5],"distance":4}}
+        """.utf8))
+        XCTAssertTrue(extrude.isOK, extrude.message ?? "")
+        _ = await sourceDocument.save()
+        var stepData: Data?
+        if case .success(let result) = sourceDocument.nativeExportData(format: "step", pageID: nil) {
+            stepData = result.data
+        }
+        let stepBytes = try XCTUnwrap(stepData)
+        await FloeCAD3DBridge.shared.releaseDocument(at: sourceDoc)
+        try stepBytes.write(to: rootA.appendingPathComponent("a.step"))
+
+        // Draft the import.
+        let importRequest: [String: Any] = [
+            "kind": "import", "payload": ["path": "a.step", "format": "step"],
+        ]
+        let importReply = try await center.threeDAction(
+            documentID: "part.floecad",
+            requestJSON: String(data: try JSONSerialization.data(withJSONObject: importRequest), encoding: .utf8)!,
+            access: accessA)
+        let importObject = try XCTUnwrap((try? JSONSerialization.jsonObject(with: Data(importReply.utf8))) as? [String: Any])
+        let proposal = try XCTUnwrap(importObject["proposal"] as? [String: Any])
+        let proposalID = try XCTUnwrap(UUID(uuidString: try XCTUnwrap(proposal["id"] as? String)))
+        let grant = try await center.issueNativeCADGrant(proposalID: proposalID)
+
+        // Move the live document past the base revision (a manual edit).
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: docA)
+        let edit = live.executeJSON(Data(#"{"op":"sketch.create","args":{"name":"Manual"}}"#.utf8))
+        XCTAssertTrue(edit.isOK, edit.message ?? "")
+        _ = await live.save()
+
+        // The stale apply must fail and must NOT consume the grant.
+        var firstError: String?
+        do {
+            _ = try await apply(center, documentID: "part.floecad", proposal: proposalID,
+                                grant: grant, access: accessA, requestID: "stale-import-1")
+            XCTFail("a stale import apply must fail")
+        } catch { firstError = error.localizedDescription }
+        XCTAssertTrue(firstError?.lowercased().contains("changed") == true,
+                      "unexpected error: \(firstError ?? "nil")")
+        // Retrying the SAME stale proposal still fails for staleness, never
+        // "already used": the failed apply released the reservation.
+        var secondError: String?
+        do {
+            _ = try await apply(center, documentID: "part.floecad", proposal: proposalID,
+                                grant: grant, access: accessA, requestID: "stale-import-2")
+            XCTFail("a stale import retry must fail")
+        } catch { secondError = error.localizedDescription }
+        XCTAssertTrue(secondError?.lowercased().contains("changed") == true)
+        XCTAssertFalse(secondError?.lowercased().contains("already used") == true)
+    }
 }
+
 #endif

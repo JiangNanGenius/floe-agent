@@ -32,6 +32,19 @@ struct HarnessExecutionLedger: Sendable {
             resultFingerprint.hasPrefix(HarnessExecutionLedger.unknownOutcomeFingerprintPrefix)
         }
 
+        /// Why the outcome is unknown. Persisted as part of the fingerprint
+        /// prefix so old checkpoints stay readable: the legacy plain prefix
+        /// reads `.unattributed` and keeps its strict non-replay semantics.
+        var outcomeUnknownReason: UnknownOutcomeReason {
+            if resultFingerprint.hasPrefix(HarnessExecutionLedger.unknownInterruptedFingerprintPrefix) {
+                return .interruptedDispatch
+            }
+            if resultFingerprint.hasPrefix(HarnessExecutionLedger.unknownCapabilityRemovedFingerprintPrefix) {
+                return .capabilityRemoved
+            }
+            return .unattributed
+        }
+
         /// True for the saturation marker that stands in for unknown-outcome
         /// receipts dropped only because the bounded ledger was full. It is
         /// recognized by the reserved identity pair so it can never collide
@@ -43,9 +56,14 @@ struct HarnessExecutionLedger: Sendable {
     }
 
     /// Reserved prefix for the persisted fingerprint of a dispatch whose
-    /// real-world outcome is unknown (capability removed/replaced mid-flight).
-    /// Such a route must never be replayed automatically.
+    /// real-world outcome is unknown (interrupted mid-flight, or its
+    /// capability removed/replaced while executing). Such a route must never
+    /// be replayed automatically.
     static let unknownOutcomeFingerprintPrefix = "unknown-outcome:"
+    /// Attributed sub-prefixes; the reason category travels in the checkpoint
+    /// so suppression wording stays honest across recovery.
+    static let unknownInterruptedFingerprintPrefix = "unknown-outcome:interrupted:"
+    static let unknownCapabilityRemovedFingerprintPrefix = "unknown-outcome:capability-removed:"
     /// Reserved identity pair for the saturation marker entry.
     static let unknownOverflowSentinelToolName = "__floe_harness_unknown_outcome_overflow__"
     static let unknownOverflowSentinelCallFingerprint = "saturation"
@@ -297,7 +315,8 @@ struct HarnessExecutionLedger: Sendable {
         call: ToolCall,
         result: ToolResult,
         isSideEffecting: Bool = false,
-        outcomeUnknown: Bool = false
+        outcomeUnknown: Bool = false,
+        outcomeUnknownReason: UnknownOutcomeReason = .unattributed
     ) {
         let callFingerprint = Self.fingerprint(call.argumentsJSON)
         let resultData = result.outputDigest.isEmpty
@@ -305,7 +324,14 @@ struct HarnessExecutionLedger: Sendable {
             : Data(result.outputDigest.lowercased().utf8)
         var resultFingerprint = Self.fingerprint(resultData)
         if outcomeUnknown {
-            resultFingerprint = Self.unknownOutcomeFingerprintPrefix + resultFingerprint
+            switch outcomeUnknownReason {
+            case .interruptedDispatch:
+                resultFingerprint = Self.unknownInterruptedFingerprintPrefix + resultFingerprint
+            case .capabilityRemoved:
+                resultFingerprint = Self.unknownCapabilityRemovedFingerprintPrefix + resultFingerprint
+            case .unattributed:
+                resultFingerprint = Self.unknownOutcomeFingerprintPrefix + resultFingerprint
+            }
         }
         let excerpt = Self.boundedExcerpt(result, toolName: call.toolName)
 
@@ -391,7 +417,7 @@ struct HarnessExecutionLedger: Sendable {
             )
         }
         let callFingerprint = Self.fingerprint(call.argumentsJSON)
-        guard entries.contains(where: {
+        guard let entry = entries.first(where: {
             $0.toolName == call.toolName
                 && $0.callFingerprint == callFingerprint
                 && $0.outcomeUnknown
@@ -399,9 +425,101 @@ struct HarnessExecutionLedger: Sendable {
         return ToolResult(
             callID: call.id,
             status: .failed,
-            outputSummary: "Harness suppression: an earlier dispatch of this exact route ended with an unknown real-world outcome (its capability changed or was removed while it was executing). It was not executed again. Inspect the current external state with a read-only call before deciding whether another action is needed; do not assume the earlier action did or did not happen.",
+            outputSummary: Self.suppressionMessage(reason: entry.outcomeUnknownReason),
             outputDigest: ""
         )
+    }
+
+    /// How a retry of a route with an unknown-outcome receipt must be handled.
+    enum UnknownOutcomeVerdict {
+        /// No receipt matches this call; dispatch normally.
+        case noReceipt
+        /// The receipt stands; substitute this result instead of executing.
+        case suppressed(ToolResult)
+        /// A reconciler proved, from authoritative state, that the earlier
+        /// attempt settled and this retry is the matching lifecycle action.
+        /// The receipt is dissolved and the normal dispatch path runs.
+        case reconciled(explanation: String)
+    }
+
+    /// Consults a matching unknown-outcome receipt, optionally through a
+    /// typed reconciler backed by authoritative lifecycle evidence. The
+    /// overflow sentinel is never reconciled: bounded-ledger saturation means
+    /// external inspection is mandatory. Non-mutating: on `.reconciled` the
+    /// caller applies `dissolveUnknownOutcomeReceipt(matching:)` (a
+    /// synchronous same-actor mutation) before dispatching.
+    func unknownOutcomeVerdict(
+        for call: ToolCall,
+        isSideEffecting: Bool,
+        reconciler: (any UnknownOutcomeReconciler)?
+    ) async -> UnknownOutcomeVerdict {
+        if hasUnknownOutcomeOverflow {
+            guard isSideEffecting else { return .noReceipt }
+            return .suppressed(ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: "Harness suppression: earlier unknown-outcome safety receipts exceeded their bounded ledger in this activation, so this side-effecting route cannot be replayed until the real external state is inspected and reported. It was not executed again.",
+                outputDigest: ""
+            ))
+        }
+        let callFingerprint = Self.fingerprint(call.argumentsJSON)
+        guard let entry = entries.first(where: {
+            $0.toolName == call.toolName
+                && $0.callFingerprint == callFingerprint
+                && $0.outcomeUnknown
+        }) else { return .noReceipt }
+        // Reconciliation is available ONLY for an interrupted dispatch: a
+        // quiet, matching external state can settle "the app relaunched
+        // mid-flight". It can never prove anything about a capability that
+        // was removed/replaced while executing, and a legacy unattributed
+        // receipt keeps its strict inspect-first semantics — so those
+        // receipts stand regardless of the configured reconciler.
+        if let reconciler, entry.outcomeUnknownReason == .interruptedDispatch {
+            let receipt = UnknownOutcomeReceipt(
+                toolName: entry.toolName,
+                callFingerprint: entry.callFingerprint,
+                reason: entry.outcomeUnknownReason
+            )
+            switch await reconciler.reconcileUnknownOutcome(receipt: receipt, retryCall: call) {
+            case .suppressed:
+                break
+            case .reconciled(let explanation):
+                return .reconciled(explanation: explanation)
+            }
+        }
+        return .suppressed(ToolResult(
+            callID: call.id,
+            status: .failed,
+            outputSummary: Self.suppressionMessage(reason: entry.outcomeUnknownReason),
+            outputDigest: ""
+        ))
+    }
+
+    /// Removes the unknown-outcome receipt matching `call` after a
+    /// reconciler returned `.reconciled`. The retry's real result replaces it
+    /// at settle time. No-op when no receipt matches.
+    mutating func dissolveUnknownOutcomeReceipt(matching call: ToolCall) {
+        let callFingerprint = Self.fingerprint(call.argumentsJSON)
+        guard let index = entries.firstIndex(where: {
+            $0.toolName == call.toolName
+                && $0.callFingerprint == callFingerprint
+                && $0.outcomeUnknown
+        }) else { return }
+        entries.remove(at: index)
+    }
+
+    /// Honest, reason-categorized suppression wording with readable escape
+    /// paths. An app-restart interruption is never described as a capability
+    /// removal.
+    private static func suppressionMessage(reason: UnknownOutcomeReason) -> String {
+        switch reason {
+        case .interruptedDispatch:
+            return "Harness suppression: an earlier dispatch of this exact route was interrupted (app relaunch or suspension) after it was sent but before its result was recorded, so the real-world outcome is unknown. It was not executed again. Escape paths: read the current external state with an observation-only call (for Linux guests, environment status shows the saved configuration), or repeat the request with an explicit user-approved change of parameters; do not assume the earlier dispatch did or did not happen."
+        case .capabilityRemoved:
+            return "Harness suppression: an earlier dispatch of this exact route ended with an unknown real-world outcome because its capability was removed or replaced while it was executing. It was not executed again. Inspect the current external state with a read-only call before deciding whether another action is needed; do not assume the earlier action did or did not happen."
+        case .unattributed:
+            return "Harness suppression: an earlier dispatch of this exact route ended with an unknown real-world outcome (interrupted mid-flight or its capability removed while executing). It was not executed again. Inspect the current external state with a read-only call before deciding whether another action is needed; do not assume the earlier action did or did not happen."
+        }
     }
 
     func promptBlock() -> String? {

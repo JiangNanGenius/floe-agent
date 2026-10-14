@@ -64,11 +64,48 @@ struct FloeAgentApp: App {
             let value = FloeL10n.localized(key: key)
             return value == key ? nil : value
         }
+        // UI acceptance runs: a spinner somewhere in a deeply nested
+        // presentation otherwise prevents XCUITest's "app idle" from ever
+        // settling (60s stalls per interaction). Animations are presentation
+        // only — never behavior — so disabling them under the explicit
+        // -ui-testing launch argument changes no product path.
+        if ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+            UIView.setAnimationsEnabled(false)
+        }
         let environment = AppEnvironment.live()
         let router = AppRouter()
         _environment = StateObject(wrappedValue: environment)
         _router = StateObject(wrappedValue: router)
         router.registerBackgroundTasksAtAppLaunch()
+        // Creative routing / canvas handoff navigation seam: foreground-only
+        // delivery through the real router (late or replayed routes never
+        // steal focus — the router service gates on the active run).
+        CreativeDestinationRouter.navigator = { conversationID in
+            router.presentRoutedDestination(conversationID)
+        }
+        // Foreground truth for routing: the initiating run must be the
+        // SELECTED conversation's active run, OR the user must be looking at
+        // the very canvas that owns the run (root canvas cover). Background
+        // runs and switched conversations answer false — navigation is
+        // honestly suppressed (no focus stealing from late/background runs).
+        let centerRef = environment.conversationCenter
+        let contextStore = CanvasRunContextStore(database: environment.database)
+        CreativeDestinationRouter.foregroundRunProbe = { runID in
+            guard let record = centerRef.activeRuns.values.first(where: { $0.id == runID })
+            else { return false }
+            if router.workbenchSelection == .conversation(record.conversationID) {
+                return true
+            }
+            // Canvas-cover foreground: the run's durable canvas binding is
+            // the canvas currently presented through the root cover.
+            guard router.presentsCanvas,
+                  let context = try? await contextStore.context(runID: runID)
+            else { return false }
+            return context.canvasID == router.presentedCanvasID
+        }
+        CreativeDestinationRouter.canvasNavigator = { canvasID in
+            router.presentRoutedCanvas(canvasID)
+        }
     }
 
     var body: some Scene {
@@ -106,6 +143,7 @@ struct FloeAgentApp: App {
                 .environmentObject(router)
                 .environmentObject(environment.voiceInput)
                 .environmentObject(environment.speechService)
+                .environmentObject(environment.designEntryState)
                 .task { await environment.bootstrap() }
         }
         .commands {
@@ -429,6 +467,21 @@ struct RootView: View {
                 .environmentObject(router)
                 .presentationSizing(.page)
         }
+        .fullScreenCover(item: $router.presentedDesignPage) { request in
+            // The preview-first design workbench for ONE bound task,
+            // presented from the STABLE app root: a presenter inside a live
+            // thread re-renders on every run event and iPad popovers
+            // anchored there dismiss spontaneously. Same conversation, same
+            // run context, no second chat. A full-screen cover (not a
+            // page-sized form sheet) gives the preview the whole available
+            // window — no dimmed margins around an in-sheet "fullscreen".
+            DesignConversationPageView(
+                target: request.target,
+                conversationID: request.conversationID,
+                environment: environment)
+                .environmentObject(router)
+        }
+        .modifier(CanvasDestinationCover(environment: environment))
         .sheet(item: $batchStartingConversation) { conversation in
             ConversationBatchManagementView(center: environment.conversationCenter, initialConversation: conversation)
         }
@@ -444,6 +497,7 @@ struct RootView: View {
             WorkspaceCanvasView(canvasID: workspace.id, name: workspace.name, workspace: workspace)
                 .environmentObject(environment)
         }
+
         .alert("app.floe_agent_app.the_local_model_needs_the_linux",
             isPresented: Binding(
                 get: { environment.heavyRuntimeConflictCenter.pending != nil },
@@ -1195,6 +1249,23 @@ private struct PrimaryDestinationView: View {
         case .more:
             MoreView(center: environment.conversationCenter)
         }
+    }
+}
+
+/// Creative-routing canvas destination cover. Extracted so the app body
+/// stays type-checkable; the design workbench sheet stays inline above.
+private struct CanvasDestinationCover: ViewModifier {
+    @EnvironmentObject private var router: AppRouter
+    let environment: AppEnvironment
+
+    func body(content: Content) -> some View {
+        content
+            .fullScreenCover(isPresented: $router.presentsCanvas) {
+                if let canvasID = router.presentedCanvasID {
+                    CanvasDestinationOpener(canvasID: canvasID, environment: environment)
+                        .environmentObject(environment)
+                }
+            }
     }
 }
 

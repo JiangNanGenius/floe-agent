@@ -121,3 +121,100 @@ struct CadDocumentSupportTests {
         func append(_ value: Int) { values.append(value) }
     }
 }
+
+// MARK: - R2 native package naming / capability matrix
+
+@Suite("Native CAD naming and path policy")
+struct NativeCADPolicyTests {
+    @Test("stem sanitization strips separators and control characters")
+    func sanitizesNames() {
+        #expect(NativeCADPolicy.sanitizedStem("Bracket") == "Bracket")
+        #expect(NativeCADPolicy.sanitizedStem("  Bracket  ") == "Bracket")
+        #expect(NativeCADPolicy.sanitizedStem("../escape") == "escape")
+        #expect(NativeCADPolicy.sanitizedStem("a/b\\c") == "a b c")
+        #expect(NativeCADPolicy.sanitizedStem("plate.floecad") == "plate")
+        #expect(NativeCADPolicy.sanitizedStem("plate.floecad.floecad") == "plate")
+        #expect(NativeCADPolicy.sanitizedStem("///") == nil)
+        #expect(NativeCADPolicy.sanitizedStem("   ") == nil)
+        #expect(NativeCADPolicy.sanitizedStem(".hidden") == "hidden")
+        let long = String(repeating: "x", count: 200)
+        let cleaned = try? #require(NativeCADPolicy.sanitizedStem(long))
+        #expect((cleaned?.count ?? 0) <= NativeCADPolicy.maximumStemLength)
+    }
+
+    @Test("package paths never traverse and keep the parent directory")
+    func packagePaths() {
+        #expect(NativeCADPolicy.packageRelativePath(parent: "", stem: "Part") == "Part.floecad")
+        #expect(NativeCADPolicy.packageRelativePath(parent: "cad", stem: "Part") == "cad/Part.floecad")
+        #expect(NativeCADPolicy.packageRelativePath(parent: "../etc", stem: "x") == "etc/x.floecad")
+        #expect(NativeCADPolicy.packageRelativePath(parent: "a/./b", stem: "x") == "a/b/x.floecad")
+    }
+
+    @Test("unique-ify never overwrites and stops at the first free name")
+    func uniqueNaming() {
+        var existing: Set<String> = ["Part.floecad", "Part 2.floecad"]
+        let result = NativeCADPolicy.uniquePackagePath(relativePath: "Part.floecad") {
+            existing.contains($0)
+        }
+        #expect(result == "Part 3.floecad")
+        existing.insert(result)
+        let again = NativeCADPolicy.uniquePackagePath(relativePath: "Part.floecad") {
+            existing.contains($0)
+        }
+        #expect(again == "Part 4.floecad")
+        let free = NativeCADPolicy.uniquePackagePath(relativePath: "New.floecad") { _ in false }
+        #expect(free == "New.floecad")
+    }
+
+    @Test("import format normalization covers aliases and rejects others")
+    func importFormats() {
+        #expect(NativeCADPolicy.normalizedImportFormat("STEP") == "step")
+        #expect(NativeCADPolicy.normalizedImportFormat("stp") == "step")
+        #expect(NativeCADPolicy.normalizedImportFormat("IGS") == "iges")
+        #expect(NativeCADPolicy.normalizedImportFormat("glb") == "glb")
+        #expect(NativeCADPolicy.normalizedImportFormat("gltf") == "gltf")
+        #expect(NativeCADPolicy.normalizedImportFormat("dwg") == nil)
+        #expect(NativeCADPolicy.normalizedImportFormat("3mf") == nil)
+        #expect(NativeCADPolicy.normalizedImportFormat(nil) == nil)
+    }
+}
+
+@Suite("Native CAD capability matrix")
+struct NativeCADCapabilityMatrixTests {
+    @Test("creation describes the native package; exchange rows state view/edit/export separately")
+    func rowsAreExplicit() throws {
+        let floecad = try #require(NativeCADCapabilityMatrix.row(forFormat: "floecad"))
+        #expect(floecad.create == true)
+        #expect(floecad.import == false)
+        #expect(floecad.edit == true)
+
+        let step = try #require(NativeCADCapabilityMatrix.row(forFormat: "stp"))
+        #expect(step.format == "step")
+        #expect(step.geometryClass == "brep")
+        #expect(step.import == true)
+        #expect(step.edit == true)
+
+        let iges = try #require(NativeCADCapabilityMatrix.row(forFormat: "iges"))
+        #expect(iges.export.contains("step"))
+        #expect(!iges.export.contains("iges"), "IGES export is not available in this build")
+
+        for meshFormat in ["stl", "obj", "glb", "gltf"] {
+            let row = try #require(NativeCADCapabilityMatrix.row(forFormat: meshFormat))
+            #expect(row.geometryClass == "mesh", "\(meshFormat) imports as render meshes")
+            #expect(row.edit == false, "\(meshFormat) bodies have no parametric history editing")
+            #expect(row.import == true)
+            #expect(row.view == true)
+        }
+    }
+
+    @Test("JSON matrix carries create/import/view/edit/export for every row")
+    func jsonShape() throws {
+        let rows = NativeCADCapabilityMatrix.json()
+        #expect(rows.count >= 6)
+        for row in rows {
+            for key in ["format", "geometry_class", "create", "import", "view", "edit", "export"] {
+                #expect(row[key] != nil, "missing \(key) in \(row)")
+            }
+        }
+    }
+}

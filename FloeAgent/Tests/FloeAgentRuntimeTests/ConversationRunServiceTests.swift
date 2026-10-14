@@ -1550,3 +1550,201 @@ private enum FloeFixtureError: Error {
     case storeReadFailed
     case consumptionWriteFailed
 }
+
+// MARK: - R6 per-call dispatch telemetry
+
+@Suite("FloeAgentRuntime.ConversationRunService.ToolTiming")
+struct ConversationRunServiceToolTimingTests {
+
+    /// Executor with per-tool delays so parallel/barrier calls have measurably
+    /// different execution times.
+    private struct DelayedExecutor: ToolExecutor {
+        struct Behavior: Sendable {
+            var delayMs: UInt64
+            var sideEffecting: Bool
+        }
+        let behaviors: [String: Behavior]
+
+        func descriptor(named name: String) -> ToolCatalog.Descriptor? {
+            guard let behavior = behaviors[name] else { return nil }
+            return ToolCatalog.Descriptor(
+                name: name,
+                riskLabels: [],
+                isSideEffecting: behavior.sideEffecting
+            )
+        }
+
+        var allDescriptors: [ToolCatalog.Descriptor] { [] }
+
+        func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
+            if let delay = behaviors[call.toolName]?.delayMs, delay > 0 {
+                try await Task.sleep(nanoseconds: delay * 1_000_000)
+            }
+            return ToolResult(
+                callID: call.id,
+                status: .ok,
+                outputSummary: "ok-\(call.id)",
+                outputDigest: "digest-\(call.id)"
+            )
+        }
+    }
+
+    private func makeStores() async throws -> (SQLiteConversationStore, SQLiteRunStore) {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        return (SQLiteConversationStore(database: database), SQLiteRunStore(database: database))
+    }
+
+    private func payload(_ event: RunEventRecord) throws -> [String: String] {
+        let data = Data(event.payloadJSON.utf8)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: String])
+        return object
+    }
+
+    @Test("two parallel read-only calls each record their real execution time")
+    func parallelReadsBothGetPositiveDuration() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "Parallel timing", createdAt: Date(), updatedAt: Date()
+        ))
+        let fast = try TestFixtures.toolCall(id: "fast-read", toolName: "test.fast", arguments: #"{"n":1}"#)
+        let slow = try TestFixtures.toolCall(id: "slow-read", toolName: "test.slow", arguments: #"{"n":2}"#)
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(fast), .toolRequest(slow)],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = DelayedExecutor(behaviors: [
+            "test.fast": .init(delayMs: 60, sideEffecting: false),
+            "test.slow": .init(delayMs: 220, sideEffecting: false)
+        ])
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            checkpointStore: MockCheckpointStore(),
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "read two things at once")
+
+        let results = try await runStore.events(runID: service.runID)
+            .filter { $0.kind == .toolResult }
+        #expect(results.count == 2)
+        let payloads = try results.map { try payload($0) }
+        let fastPayload = try #require(payloads.first { $0["id"] == "fast-read" })
+        let slowPayload = try #require(payloads.first { $0["id"] == "slow-read" })
+        // Both parallel calls were dispatched and measured — the second call
+        // no longer falls back to 0.
+        #expect(fastPayload["dispatched"] == "true")
+        #expect(slowPayload["dispatched"] == "true")
+        let fastMs = try #require(Int(fastPayload["durationMs"] ?? ""))
+        let slowMs = try #require(Int(slowPayload["durationMs"] ?? ""))
+        #expect(fastMs >= 40)
+        #expect(slowMs >= 180)
+        #expect(slowMs > fastMs)
+        #expect(fastPayload["queuedMs"] != nil)
+        #expect(slowPayload["queuedMs"] != nil)
+    }
+
+    @Test("a read after a write barrier is queued, and its wait is not counted as execution")
+    func writeBarrierQueueTimeIsNotExecutionTime() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "Barrier timing", createdAt: Date(), updatedAt: Date()
+        ))
+        let write = try TestFixtures.toolCall(id: "barrier-write", toolName: "test.write", arguments: #"{"n":1}"#)
+        let read = try TestFixtures.toolCall(id: "after-read", toolName: "test.read", arguments: #"{"n":2}"#)
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(write), .toolRequest(read)],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = DelayedExecutor(behaviors: [
+            "test.write": .init(delayMs: 220, sideEffecting: true),
+            "test.read": .init(delayMs: 0, sideEffecting: false)
+        ])
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: AutomaticApprovalPolicy(backend: RecordingApprovalBackend()),
+            executor: executor,
+            checkpointStore: MockCheckpointStore(),
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "write then read")
+
+        let payloads = try await runStore.events(runID: service.runID)
+            .filter { $0.kind == .toolResult }
+            .map { try payload($0) }
+        let writePayload = try #require(payloads.first { $0["id"] == "barrier-write" })
+        let readPayload = try #require(payloads.first { $0["id"] == "after-read" })
+        let writeMs = try #require(Int(writePayload["durationMs"] ?? ""))
+        #expect(writeMs >= 180)
+        // The read genuinely waited behind the write barrier...
+        let readQueuedMs = try #require(readPayload["queuedMs"].flatMap(Int.init))
+        #expect(readQueuedMs >= 180)
+        // ...but that wait is queue time, not execution time.
+        let readDurationMs = try #require(Int(readPayload["durationMs"] ?? ""))
+        #expect(readDurationMs < readQueuedMs)
+        #expect(readPayload["dispatched"] == "true")
+    }
+
+    @Test("a suppressed duplicate route records zero execution time and dispatched=false")
+    func suppressedCallRecordsNoFabricatedDuration() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "Suppressed timing", createdAt: Date(), updatedAt: Date()
+        ))
+        let first = try TestFixtures.toolCall(id: "dup-1", arguments: #"{"n":1}"#)
+        let duplicate = try TestFixtures.toolCall(id: "dup-2", arguments: #"{"n":1}"#)
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(first), .toolRequest(duplicate)],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = DelayedExecutor(behaviors: [
+            "test.echo": .init(delayMs: 0, sideEffecting: false)
+        ])
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            checkpointStore: MockCheckpointStore(),
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "one route, two calls")
+
+        let payloads = try await runStore.events(runID: service.runID)
+            .filter { $0.kind == .toolResult }
+            .map { try payload($0) }
+        #expect(payloads.count == 2)
+        let suppressedPayload = try #require(payloads.first { $0["id"] == "dup-2" })
+        #expect(suppressedPayload["dispatched"] == "false")
+        #expect(suppressedPayload["durationMs"] == "0")
+        #expect(suppressedPayload["queuedMs"] == nil)
+        #expect(suppressedPayload["summary"]?.contains("duplicate tool request") == true)
+    }
+}

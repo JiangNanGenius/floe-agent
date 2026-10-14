@@ -161,25 +161,69 @@ private struct DesignGetStateTool: AgentTool {
 private struct DesignCapabilitiesTool: AgentTool {
     struct Arguments: Decodable, Sendable {}
     static let name = "canvas.designCapabilities"
-    static let toolDescription = "Report which design operations are really connected for each content type, with reasons for unavailable ones."
+    static let toolDescription = "Report which design operations are really connected for each content type, with reasons for unavailable ones. Includes a live layer (live.createGenerate) re-derived from the real services — connected sessions, installed images, configured models — so a capability is never reported ready from static wiring alone."
     static let parametersJSON = #"{"type":"object","additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false
     /// Resolved per call so the report reflects the services connected right
     /// now (e.g. whether a generation model is configured), not launch state.
     let registryProvider: @MainActor @Sendable () -> DesignCapabilityRegistry
+    /// Live matrix over the real services; the create/generate row of every
+    /// family is reported alongside the static wiring so the model sees the
+    /// same readiness the UI shows.
+    let liveMatrixProvider: (@MainActor @Sendable () -> DesignCapabilityMatrix)?
+    init(
+        registryProvider: @escaping @MainActor @Sendable () -> DesignCapabilityRegistry,
+        liveMatrixProvider: (@MainActor @Sendable () -> DesignCapabilityMatrix)? = nil
+    ) {
+        self.registryProvider = registryProvider
+        self.liveMatrixProvider = liveMatrixProvider
+    }
     func validate(_ args: Arguments) throws {}
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let registry = await registryProvider()
+        let matrix: DesignCapabilityMatrix?
+        if let liveMatrixProvider {
+            matrix = await liveMatrixProvider()
+        } else {
+            matrix = nil
+        }
         var payload: [String: Any] = [:]
         for type in DesignContentType.allCases {
             let capability = registry.capability(for: type)
-            payload[type.rawValue] = [
+            var entry: [String: Any] = [
                 "available": capability.available.map(\.rawValue).sorted(),
                 "unavailable": capability.unavailableReasons
                     .map { ["operation": $0.key.rawValue, "reason": $0.value] }
                     .sorted { $0["operation"] ?? "" < $1["operation"] ?? "" }
             ]
+            if let matrix {
+                let assessment = matrix.assess(DesignCapabilityQuery(
+                    mode: .create, family: type, operation: .generate))
+                var live: [String: Any] = ["available": assessment.available]
+                if let reason = assessment.reason { live["reason"] = reason }
+                if let recovery = assessment.recovery { live["recovery"] = recovery }
+                if assessment.isCaptureOperation { live["capture"] = true }
+                entry["live"] = live
+            }
+            payload[type.rawValue] = entry
+        }
+        // Truthful per-task execution surface: while THIS run owns frozen
+        // design originals, arbitrary guest/native execution backends cannot
+        // touch them — the capability report says so explicitly (with the
+        // recovery) instead of letting the model discover it at dispatch.
+        if let conversationID = context.conversationID {
+            let frozen = DesignFreezeRegistry.shared.allProtections().contains {
+                $0.conversationID == conversationID.uuidString.lowercased()
+            }
+            if frozen {
+                payload["designFreeze"] = [
+                    "active": true,
+                    "restrictedBackends": ["exec.shell (mutating)", "exec.localPython", "shell.open/shell.exchange"],
+                    "stillAvailable": ["read-only shell inspection", "design.propose candidate staging", "workspace reads/new files"],
+                    "recovery": "stage changes with design.propose; the freeze lifts on verified adoption or last rejection",
+                ]
+            }
         }
         return DesignToolOutput.make(payload)
     }
@@ -1427,6 +1471,9 @@ private struct DesignOwnerToolDependencies: Sendable {
     /// Live run→task(conversation) lookup over the DURABLE run store. Task
     /// authority is derived from this, never from model JSON.
     let runTask: @MainActor @Sendable (UUID) async -> UUID?
+    /// App database access for design-freeze bookkeeping (the workspace
+    /// store that resolves a file target's root URL).
+    let database: @MainActor @Sendable () -> DatabaseManager?
 }
 
 /// Derives the AUTHORIZED target for a tool call BEFORE any service is
@@ -1444,6 +1491,9 @@ private func authorizedTarget(
     dependencies: DesignOwnerToolDependencies
 ) async throws -> DesignTarget {
     let raw = try input.makeTarget()
+    // An empty revision string from tool JSON is the same as an absent one:
+    // it must never shadow a frozen base token recorded at freeze time.
+    let revision = raw.revision?.isEmpty == false ? raw.revision : nil
     let liveTask = await dependencies.runTask(context.runID)
     // A supplied origin that contradicts the live run task is rejected
     // outright; it is never merged or preferred.
@@ -1469,7 +1519,7 @@ private func authorizedTarget(
         return DesignTarget(
             kind: .chatAttachment, ownerID: raw.ownerID,
             documentID: raw.documentID, sourceID: raw.sourceID,
-            environmentID: raw.environmentID ?? context.environmentID, revision: raw.revision,
+            environmentID: raw.environmentID ?? context.environmentID, revision: revision,
             originConversationID: liveTask.uuidString.lowercased(),
             requestedOutputKind: nil)
     }
@@ -1481,7 +1531,7 @@ private func authorizedTarget(
         kind: raw.kind, ownerID: raw.ownerID,
         documentID: raw.documentID, sourceID: raw.sourceID,
         environmentID: raw.environmentID ?? context.environmentID,
-        revision: raw.revision,
+        revision: revision,
         originConversationID: liveTask?.uuidString.lowercased(),
         requestedOutputKind: raw.requestedOutputKind)
 }
@@ -1500,6 +1550,32 @@ private func requireRuntimeApprovalForCreative(
     guard context.approvalGrantID != nil else {
         throw FloeError.validationFailed(
             "\(action) requires the user-confirmed runtime approval for this exact call; none is attached to the run context")
+    }
+}
+
+/// Launch-binding coherence for a bound conversation: when this run's
+/// conversation carries a durable design launch binding, a creative tool
+/// must address EXACTLY the bound target identity (ownerID + sourceID). The
+/// requested output kind is chosen at creativeBegin from the user's request
+/// (a brand-new natural creation binds a kind-less target), so the kind is
+/// NOT compared; the owner/document/source identity is. An unbound
+/// conversation is unchanged (trusted UI calls the workflow directly with
+/// runID == nil and no binding store entry).
+private func requireMatchingLaunchBinding(
+    _ target: DesignTarget,
+    context: ToolContext,
+    action: String
+) throws {
+    guard target.kind == .creativeDocument,
+          let conversationID = context.conversationID,
+          let binding = DesignLaunchBindingStore.load(conversationID: conversationID)
+    else { return }
+    let bound = binding.target
+    guard bound.kind == .creativeDocument,
+          bound.ownerID == target.ownerID,
+          bound.sourceID == target.sourceID else {
+        throw FloeError.validationFailed(
+            "\(action) must address the launch-bound creative target (ownerID=\(bound.ownerID) sourceID=\(bound.sourceID)); a run cannot create a different or parallel creative request")
     }
 }
 
@@ -1943,6 +2019,7 @@ private struct DesignCreativeBeginTool: AgentTool {
         }
         try requireRuntimeApprovalForCreative(context, action: Self.name)
         let target = try await authorizedTarget(args.target, context: context, dependencies: dependencies)
+        try requireMatchingLaunchBinding(target, context: context, action: Self.name)
         let spec = args.designMarkdown.map { DesignMDCodec.parse($0) }
         let outcome = try await dependencies.workflow.beginCreativeRequest(
             target: target, operationID: args.operationID,
@@ -1952,6 +2029,10 @@ private struct DesignCreativeBeginTool: AgentTool {
         var payload = DesignToolOutput.owner(outcome.envelope)
         payload["creativeState"] = outcome.request.state.rawValue
         payload["requestedOutputKind"] = outcome.request.requestedKind.rawValue
+        // Recency bookkeeping for the natural-language entry: the durable
+        // request lives in the owner envelope; this keeps the Creative home
+        // "recent request" row pointing at the same identity.
+        DesignCreativeRequestStore.remember(target)
         return DesignToolOutput.make(payload)
     }
 }
@@ -1989,6 +2070,7 @@ private struct DesignCreativeBindFirstResultTool: AgentTool {
         }
         try requireRuntimeApprovalForCreative(context, action: Self.name)
         let target = try await authorizedTarget(args.target, context: context, dependencies: dependencies)
+        try requireMatchingLaunchBinding(target, context: context, action: Self.name)
         let payload = try DesignToolOutput.verifiedPayload(
             args.payloadRelativePath, claimedSHA256: args.proposedContentSHA256)
         let outcome = try await dependencies.workflow.bindFirstResult(
@@ -2050,13 +2132,66 @@ private struct DesignProposeOwnerTool: AgentTool {
         // candidate and its payload without staging anything, and any
         // changed semantic input is refused there. The tool does not carry a
         // second replay policy.
+        //
+        // Work mode comes from the TRUSTED FROZEN LAUNCH BINDING, never from
+        // model text (the tool schema intentionally has no mode field): a
+        // model cannot downgrade an active 重构 to 修改 by omitting or
+        // changing a field. A 重构 additionally burns the single-use
+        // preservation claim through the trusted authority handler before
+        // any bytes are staged; the frozen operation identity must match the
+        // confirmed one exactly.
+        let workIntent: DesignWorkIntent?
+        let restructureAuthority: DesignRestructureAuthorityHandler?
+        let boundWorkMode: DesignWorkMode?
+        if let binding = context.conversationID.flatMap(DesignLaunchBindingStore.load(conversationID:)) {
+            boundWorkMode = binding.workMode
+            let operationID: String
+            if binding.workMode == .restructure {
+                guard let frozen = binding.frozenRestructureOperationID, !frozen.isEmpty else {
+                    throw FloeError.validationFailed(
+                        "design.propose: this task is bound to a 重构, but no confirmed preservation operation exists; the user must confirm the preservation requirements in the design page first")
+                }
+                guard frozen == args.operationID else {
+                    throw FloeError.validationFailed(
+                        "design.propose: 重构 operationID does not match the confirmed preservation operation; proposals cannot rebind a confirmed restructure to a different operation")
+                }
+                operationID = frozen
+            } else {
+                operationID = args.operationID
+            }
+            workIntent = binding.makeWorkIntent(
+                actualDesiredFormat: payload.format, operationID: operationID)
+            restructureAuthority = binding.workMode == .restructure
+                ? await DesignRestructureAuthorization.shared.makeAuthorityHandler()
+                : nil
+        } else {
+            workIntent = nil
+            restructureAuthority = nil
+            boundWorkMode = nil
+        }
         let proposal = try await dependencies.workflow.propose(
             target: target, operationID: args.operationID,
             expectedOwnerRevision: args.expectedOwnerRevision,
             artifactID: args.artifactID, baseRevisionID: args.baseRevisionID,
             bytes: payload.data, format: payload.format, summary: args.summary,
             diff: args.diff ?? [], feedbackIDs: args.feedbackIDs ?? [],
-            runID: context.runID)
+            runID: context.runID, workIntent: workIntent,
+            restructureAuthority: restructureAuthority)
+        // A pending candidate now exists: freeze the original source so
+        // ordinary writes cannot overwrite it before adoption. Idempotent
+        // for replays (protect replaces the same entry). The protection is
+        // keyed to the real originating conversation — a missing context
+        // conversation never mints an orphaned random-owner freeze.
+        let freezeConversationID = context.conversationID
+            ?? target.originConversationID.flatMap(UUID.init(uuidString:))
+        if let freezeConversationID {
+            await DesignFreezeProtectionCoordinator.establish(
+                binding: DesignLaunchBinding(
+                    target: target, workMode: boundWorkMode ?? .modify,
+                    originalConversationID: target.originConversationID),
+                conversationID: freezeConversationID,
+                workspaceStore: dependencies.database().map { SQLiteWorkspaceStore(database: $0) })
+        }
         var result = DesignToolOutput.owner(proposal.envelope)
         result["candidateID"] = proposal.candidate.id
         result["candidateStatus"] = proposal.candidate.status.rawValue
@@ -2093,6 +2228,14 @@ private struct DesignCompareTool: AgentTool {
             target: target, candidateID: args.candidateID, runID: context.runID)
         return DesignToolOutput.make(DesignToolOutput.comparison(comparison))
     }
+}
+
+/// The conversation that owns a design freeze for a tool call, when one can
+/// be determined honestly: the run's own conversation, else the target's
+/// recorded origin. nil means no owner — callers must skip establishing
+/// rather than mint an orphaned random-owner freeze.
+private func freezeOwner(conversationID: UUID?, target: DesignTarget) -> UUID? {
+    conversationID ?? target.originConversationID.flatMap(UUID.init(uuidString:))
 }
 
 private struct DesignAdoptOwnerTool: AgentTool {
@@ -2165,7 +2308,33 @@ private struct DesignAdoptOwnerTool: AgentTool {
             },
             // C10: a connected real-format verifier is mandatory.
             verifyReopen: await DesignOwnerWorkflowFactory.verifier(adapters: dependencies.adapters))
-        return DesignToolOutput.make(DesignToolOutput.decision(result))
+        // Run-lifecycle contract: a verified adoption permits ONLY the exact
+        // approved commit — never arbitrary subsequent raw writes by this
+        // still-active run. With no pending candidate the new bytes become
+        // the re-frozen approved baseline; the freeze lifts only when the
+        // run completes safely (ConversationCenter run-end hook) or the
+        // user resolves the work in the trusted panel. A re-arm FAILURE
+        // keeps the previous protection (fail closed: this run's next
+        // ordinary write is still refused) and is reported in the tool
+        // output — never an assumed-success void.
+        var protectionRearmFailed = false
+        if result.envelope.project.candidates.contains(where: { $0.status == .pending }) == false,
+           let owner = context.conversationID
+           ?? target.originConversationID.flatMap(UUID.init(uuidString:)) {
+            let rearmed = await DesignFreezeProtectionCoordinator.establish(
+                binding: DesignLaunchBinding(
+                    target: target, workMode: .modify,
+                    originalConversationID: target.originConversationID),
+                conversationID: owner,
+                workspaceStore: dependencies.database().map { SQLiteWorkspaceStore(database: $0) })
+            protectionRearmFailed = !rearmed
+        }
+        var output = DesignToolOutput.decision(result)
+        if protectionRearmFailed {
+            output["protectionRearmFailed"] = "true"
+            output["protectionRecovery"] = "the original stays frozen; the user can retry from the design page or restart the app"
+        }
+        return DesignToolOutput.make(output)
     }
 }
 
@@ -2199,6 +2368,12 @@ private struct DesignRejectOwnerTool: AgentTool {
             target: target, operationID: args.operationID,
             expectedOwnerRevision: args.expectedOwnerRevision,
             candidateID: args.candidateID, runID: context.runID)
+        // A model-controlled rejection NEVER lifts the original-write freeze:
+        // with no pending candidate this same run could otherwise raw-write
+        // the original and bypass the staged-adoption contract. The freeze
+        // lifts only at the safe resolution points — the user rejecting in
+        // the trusted panel with no active run, or a completed design run
+        // with nothing pending.
         return DesignToolOutput.make(DesignToolOutput.decision(result))
     }
 }
@@ -2351,9 +2526,19 @@ func registerDesignAgentTools(
     runTask: (@MainActor @Sendable (UUID) async -> UUID?)? = nil,
     registry: ToolRunnerRegistry = .shared
 ) {
+    // Creative destination routing: the model commits the destination
+    // after reading real capabilities; the project path is created and
+    // navigated here, idempotently. Ordinary Q&A never calls this.
+    ToolCatalog.register(CreativeChooseDestinationTool.self)
+    registry.register(CreativeChooseDestinationTool(environment: environment))
     let service = DesignCanvasService(repository: repository, authorize: authorize)
     ToolCatalog.register(DesignGetStateTool.self); registry.register(DesignGetStateTool(service: service))
-    ToolCatalog.register(DesignCapabilitiesTool.self); registry.register(DesignCapabilitiesTool(registryProvider: capabilities))
+    ToolCatalog.register(DesignCapabilitiesTool.self); registry.register(DesignCapabilitiesTool(
+        registryProvider: capabilities,
+        liveMatrixProvider: { [weak environment] in
+            environment?.designCapabilityMatrix
+                ?? DesignCapabilityMatrix(registry: .designCoreDefaults())
+        }))
     ToolCatalog.register(DesignCreateTool.self); registry.register(DesignCreateTool(service: service))
     ToolCatalog.register(DesignUpdateBriefTool.self); registry.register(DesignUpdateBriefTool(service: service))
     ToolCatalog.register(DesignUpdateSpecTool.self); registry.register(DesignUpdateSpecTool(service: service))
@@ -2386,7 +2571,8 @@ func registerDesignAgentTools(
             targets: targets, workflow: ownerWorkflow,
             adapters: adapters, grants: ownerAdoptionGrants,
             canvasService: canvasService ?? service,
-            runTask: effectiveRunTask)
+            runTask: effectiveRunTask,
+            database: { [weak environment] in environment?.database })
     } else {
         ownerDependencies = nil
     }

@@ -34,6 +34,24 @@ private func makeAttachment(_ name: String) -> AttachmentRef {
 @MainActor
 struct ComposerDraftStoreTests {
 
+    @Test("Creative start drafts survive independently of Home and task drafts")
+    func creativeStartDraftIsolation() {
+        let url = makeTempDraftURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ComposerDraftStore(fileURL: url)
+        let taskID = UUID()
+        #expect(CreativeDesignStartView.draftID != ComposerDraftStore.homeDraftID)
+        store.save(text: "普通任务尚未发送", conversationID: ComposerDraftStore.homeDraftID)
+        store.save(text: "制作一份带原生图表的PPT", conversationID: CreativeDesignStartView.draftID)
+        store.save(text: "已有任务的修改", conversationID: taskID)
+        #expect(store.flushAndWait())
+        let restored = ComposerDraftStore(fileURL: url)
+        #expect(restored.text(for: CreativeDesignStartView.draftID) == "制作一份带原生图表的PPT")
+        restored.clear(conversationID: CreativeDesignStartView.draftID)
+        #expect(restored.text(for: ComposerDraftStore.homeDraftID) == "普通任务尚未发送")
+        #expect(restored.text(for: taskID) == "已有任务的修改")
+    }
+
     @Test("A 100k-character draft round-trips exactly through the store")
     func largeDraftRoundTrip() {
         let url = makeTempDraftURL()

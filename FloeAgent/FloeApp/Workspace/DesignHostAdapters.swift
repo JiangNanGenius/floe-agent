@@ -937,6 +937,13 @@ struct WorkspaceFileOwnerCommitPort: DesignOwnerCommitPort {
                 "workspace file readback did not verify the proposed bytes"
             )
         }
+        // Protection lifecycle is owned by the DECISION and RUN-END layers,
+        // not by the commit port: the verified commit permits exactly these
+        // bytes to land once — it never grants the calling run (or any other
+        // writer) subsequent direct-write rights. The design.adopt tool and
+        // the trusted panel re-establish the approved baseline or release
+        // through DesignFreezeProtectionCoordinator, and ConversationCenter
+        // lifts the freeze when a completed design run has nothing pending.
         return "workspace:\(workspaceUUID.uuidString.lowercased()):sha:\(readback.sha256.lowercased()):mtime:\(Int64(readback.mtime))"
     }
 

@@ -1,12 +1,19 @@
 // FloeWorkbench — cad.document tool.
 //
-// One tool, eleven actions at explicit effect levels:
+// One tool, thirteen actions at explicit effect levels:
 //   capabilities — engine-declared capacities and limits (read-only)
+//   create       — create a new EMPTY native `.floecad` package through the
+//                  host factory (never hand-built bytes); non-overwriting,
+//                  atomic, read back with its real identity
 //   read         — document summary: format, revision, SHA-256, units, layers
 //   query        — paginated entities/text/layers scoped to the document
 //   locate       — representative point and bounds of one entity handle
 //   measure      — deterministic geometric measurement (points or handles)
 //   check        — zero-length/duplicate/layer/open-contour consistency
+//   import       — add the geometry of a workspace STEP/STP/IGES/IGS/STL/OBJ/
+//                  GLB/glTF file to an EXISTING native package by drafting an
+//                  import proposal on a throwaway copy; changes nothing until
+//                  preview + UI grant + apply
 //   propose      — validates an atomic edit batch against an exact revision
 //                  and SHA, stores a pending proposal and returns a diff
 //                  preview; changes nothing on disk
@@ -259,6 +266,33 @@ public struct CadExportReceipt: Codable, Sendable, Equatable {
     }
 }
 
+/// Verified identity of a newly created native `.floecad` package. The host
+/// factory creates the versioned package atomically and reads it back through
+/// the real store before returning this receipt; the tool never writes the
+/// package itself.
+public struct CadNativePackageReceipt: Codable, Sendable, Equatable {
+    /// Workspace-relative package path that was created.
+    public var relativePath: String
+    public var name: String
+    public var revision: Int64
+    public var schemaVersion: Int
+    public var contentSHA256: String
+    public var modelSHA256: String?
+    public var note: String?
+
+    public init(relativePath: String, name: String, revision: Int64,
+                schemaVersion: Int, contentSHA256: String, modelSHA256: String? = nil,
+                note: String? = nil) {
+        self.relativePath = relativePath
+        self.name = name
+        self.revision = revision
+        self.schemaVersion = schemaVersion
+        self.contentSHA256 = contentSHA256
+        self.modelSHA256 = modelSHA256
+        self.note = note
+    }
+}
+
 public enum CadGrantDecision: Sendable, Equatable {
     case authorized
     case unknownGrant
@@ -334,11 +368,24 @@ public protocol CadDocumentHost: Sendable {
                 access: CadDocumentAccess) async throws -> CadExportReceipt
     /// Native FloeCAD request. `requestJSON` carries a `kind` plus the typed
     /// operation/payload. Read-only kinds (`snapshot`, `measure`, `assembly`,
-    /// `drawing` reads) return JSON; `propose` validates on a throwaway copy
-    /// and never writes; `apply` requires a UI-issued single-use `grant_id`
-    /// bound to the proposal and base revision/SHA.
+    /// `drawing` reads) return JSON; `propose`/`import_propose` validate on a
+    /// throwaway copy and never write; `apply` requires a UI-issued single-use
+    /// `grant_id` bound to the proposal and base revision/SHA.
     func threeDAction(documentID: String, requestJSON: String,
                       access: CadDocumentAccess) async throws -> String
+    /// Creates a new EMPTY native `.floecad` package inside the caller's
+    /// workspace through the versioned package factory: local workspace only,
+    /// guarded relative path, sanitized unique name, non-overwriting atomic
+    /// commit, then a real store read-back. The tool never writes package
+    /// bytes itself. `relativePath` is the caller's desired package path; the
+    /// host may unique-ify the file name and returns the verified identity.
+    func createNativePackage(relativePath: String, name: String,
+                             access: CadDocumentAccess) async throws -> CadNativePackageReceipt
+    /// Engine-declared capabilities of the NATIVE 3D kernel without an open
+    /// document: package creation, per-format import/view/edit/export matrix
+    /// and limits. Environments without the kernel throw
+    /// `FloeError.notFound("native_cad_kernel")`.
+    func nativeCapabilities(access: CadDocumentAccess) async throws -> String
 }
 
 public extension CadDocumentHost {
@@ -346,6 +393,13 @@ public extension CadDocumentHost {
     /// than pretending the action is unsupported per-file.
     func threeDAction(documentID: String, requestJSON: String,
                       access: CadDocumentAccess) async throws -> String {
+        throw FloeError.notFound("native_cad_kernel")
+    }
+    func createNativePackage(relativePath: String, name: String,
+                             access: CadDocumentAccess) async throws -> CadNativePackageReceipt {
+        throw FloeError.notFound("native_cad_kernel")
+    }
+    func nativeCapabilities(access: CadDocumentAccess) async throws -> String {
         throw FloeError.notFound("native_cad_kernel")
     }
 }
@@ -470,7 +524,7 @@ public actor CadProposalGrantStore {
 // MARK: - Arguments
 
 public enum CadDocumentAction: String, Decodable, Sendable, CaseIterable {
-    case capabilities, read, query, locate, measure, check, propose, preview, apply, save, export
+    case capabilities, create, read, query, locate, measure, check, propose, `import`, preview, apply, save, export
     /// Durable native-task status and cancellation (long rebuild/export/mesh
     /// jobs). `status` lists or reports one task; `cancel` requires task_id.
     case status, cancel
@@ -514,6 +568,18 @@ public struct CadDocumentArguments: Decodable, Sendable {
     public var payload: String?
     /// Durable native task id (status/cancel).
     public var taskID: String?
+    /// `import`: workspace-relative path of the source STEP/STP/IGES/IGS/
+    /// STL/OBJ/GLB/glTF file added to the existing native package.
+    public var sourcePath: String?
+    /// `import`: explicit source format; defaults to the source path
+    /// extension. One of step/stp/iges/igs/stl/obj/glb/gltf.
+    public var format: String?
+    /// `import`: optional mm-per-file-unit scale for unitless mesh formats
+    /// (STL/OBJ); ignored for exact B-rep formats and declared-unit glTF.
+    public var unitScale: Double?
+    /// `import`/`create`: optional explicit name for the imported body(ies)
+    /// or the new document (defaults to the source stem / file stem).
+    public var name: String?
 
     enum CodingKeys: String, CodingKey {
         case action, path, summary, operations, kind, points, handles, tolerance, scope, layer, text, offset, limit, output, op, args, payload
@@ -522,6 +588,10 @@ public struct CadDocumentArguments: Decodable, Sendable {
         case requestID = "request_id"
         case taskID = "task_id"
         case entityType = "entity_type"
+        case sourcePath = "source_path"
+        case format = "format"
+        case unitScale = "unit_scale"
+        case name = "name"
     }
 }
 
@@ -532,20 +602,31 @@ public struct CadDocumentTool: AgentTool {
 
     public static let name = "cad.document"
     public static let toolDescription = """
-    Read, query, measure, propose changes to, apply confirmed proposals to, \
-    save and export a CAD document. The document representation decides the \
-    engine: a DWG/DXF drawing runs in the local 2D engine, a native `.floecad` \
-    package runs in the parametric 3D kernel. Propose binds an exact document \
-    revision and SHA-256 and returns a preview without writing; apply needs a \
-    single-use grant the user issued in the CAD UI. 2D edits are lines, \
-    circles, arcs, LWPolylines, text, dimensions and leaders plus move/copy/\
-    rotate/scale/mirror/trim/extend/offset and layer management. 3D, blocks, \
-    xrefs, splines and proxy graphics are retained read-only in the 2D engine; \
-    they are never flattened. Units stay drawing units when undefined. Native \
-    documents add parametric features, assembly constraints, drawings, \
-    ShapeScript and mesh operations through the typed operation vocabulary \
-    (feature.extrude, feature.boolean, ...) and the three_d_* aliases; \
-    status/cancel report durable native jobs. Nothing is written before apply.
+    Create, import into, read, query, measure, propose changes to, apply \
+    confirmed proposals to, save and export a CAD document. The document \
+    representation decides the engine: a DWG/DXF drawing runs in the local 2D \
+    engine, a native `.floecad` package runs in the parametric 3D kernel. \
+    Use action "create" (name/path) to make a new EMPTY native `.floecad` \
+    package through the built-in factory — never create the folder, manifest \
+    or zip by hand and never guess the internal package layout. Use action \
+    "import" on an EXISTING `.floecad` to add the geometry of a workspace \
+    STEP/STP, IGES/IGS, STL, OBJ, GLB or glTF file: it drafts a proposal on a \
+    throwaway copy and returns a preview, and like every other mutation it \
+    changes nothing until the user confirms in the CAD UI and the returned \
+    proposal is applied with that grant. STEP gives exact editable solids; \
+    IGES solids are exact while shells/faces stay render-only; STL/OBJ/GLB \
+    are render meshes with no parametric history. Propose binds an exact \
+    document revision and SHA-256 and returns a preview without writing; \
+    apply needs a single-use grant the user issued in the CAD UI. 2D edits \
+    are lines, circles, arcs, LWPolylines, text, dimensions and leaders plus \
+    move/copy/rotate/scale/mirror/trim/extend/offset and layer management. \
+    3D, blocks, xrefs, splines and proxy graphics are retained read-only in \
+    the 2D engine; they are never flattened. Units stay drawing units when \
+    undefined. Native documents add parametric features, assembly \
+    constraints, drawings, ShapeScript and mesh operations through the typed \
+    operation vocabulary (feature.extrude, feature.boolean, ...) and the \
+    three_d_* aliases; status/cancel report durable native jobs. Nothing is \
+    written before an applied and UI-confirmed proposal.
     """
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
@@ -568,9 +649,13 @@ public struct CadDocumentTool: AgentTool {
       "additionalProperties": false,
       "required": ["action"],
       "properties": {
-        "action": { "type": "string", "enum": ["capabilities", "read", "query", "locate", "measure", "check", "propose", "preview", "apply", "save", "export", "status", "cancel", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
-        "path": { "type": "string", "description": "Document path (relative to the task workspace or an allowed absolute path). Required for every action except capabilities without a path. A .floecad extension routes to the native 3D kernel; .dwg/.dxf route to the 2D engine." },
-        "summary": { "type": "string", "maxLength": 2000, "description": "Human-readable proposal summary shown before confirmation (propose)." },
+        "action": { "type": "string", "enum": ["capabilities", "create", "read", "query", "locate", "measure", "check", "propose", "import", "preview", "apply", "save", "export", "status", "cancel", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
+        "path": { "type": "string", "description": "Document path relative to the task workspace (an allowed absolute workspace path is accepted too). Required for every action except capabilities without a path. A .floecad extension routes to the native 3D kernel; .dwg/.dxf route to the 2D engine. For 'create' it is the new package location (its parent directory must exist or be omitted); for 'import' it is the EXISTING .floecad package that receives the geometry. Never write a .floecad directory, manifest.json or zip yourself: use create." },
+        "name": { "type": "string", "maxLength": 120, "description": "create: human name for the new native document (defaults to the path stem; the file name is sanitized and made unique). import: optional name for the imported body(ies)." },
+        "source_path": { "type": "string", "description": "import only: workspace-relative path of the source file to add to the existing .floecad package. Supported extensions: .step/.stp (exact solids), .iges/.igs (solids + render-only surfaces), .stl/.obj/.glb/.gltf (meshes). The file is read through the workspace guard (symlink-safe, size-bounded) and is never modified. DWG/DXF go through the 2D engine instead." },
+        "format": { "type": "string", "enum": ["step", "stp", "iges", "igs", "stl", "obj", "glb", "gltf"], "description": "import only: explicit source format; defaults to the source_path extension. A JSON .gltf imports only when its buffers/images are embedded data URIs; external .bin/texture references are reported unsupported by the tool. A self-contained .glb always works." },
+        "unit_scale": { "type": "number", "exclusiveMinimum": 0, "description": "import only: optional millimetres-per-file-unit scale for unitless meshes (STL/OBJ). Ignored for STEP/IGES and declared-unit glTF." },
+        "summary": { "type": "string", "maxLength": 2000, "description": "Human-readable proposal summary shown before confirmation (propose/import)." },
         "operations": {
           "type": "array", "maxItems": 64,
           "description": "Typed 2D engine edits (propose on a DWG/DXF drawing). Each object needs operation. Exact shapes: addLine{start:[x,y,z],end:[x,y,z],layer}; addCircle{center:[x,y,z],radius,layer}; addArc{center:[x,y,z],radius,startAngle,endAngle,layer}; addLwPolyline{points:[[x,y],...],closed?,layer} (2 numbers per point; rectangle = closed 4-point); addText{position:[x,y,z],text,height,layer}; addLeader{points:[[x,y,z],...],layer}; addDimension{kind:linear|aligned|angular|radius|diameter,points:[[x,y,z],...],layer,offset?,rotation?}; move|copy{handle,delta:[dx,dy,dz]}; rotate{handle,center:[x,y,z],angle}; scale{handle,center:[x,y,z],factor}; mirror{handle,axis:[[x,y,z],[x,y,z]]}; setText{handle,text}; setRadius{handle,radius}; setLayer{handle,layer}; setColor{handle,color}; setLineWeight{handle,lineWeight}; delete{handle}; trim|extend{handle,boundary,pick:[x,y,z]}; offset{handle,distance,side:[x,y,z]}; addLayer{name,color?,lineType?,lineWeight?}; updateLayer{name,locked?,visible?,color?,lineType?,lineWeight?}; renameLayer{from,to}; deleteLayer{name}; batch{operations:[...]} nests the same canonical shapes. Canonical vectors are arrays [x,y] (omitted z = the 2D drawing plane) or [x,y,0]; a nonzero z is rejected, never projected. The validated aliases {x,y[,z]} and {dx,dy[,dz]} are accepted and normalized to those arrays; addLwPolyline vertices are [x,y] or [x,y,0].",
@@ -627,6 +712,53 @@ public struct CadDocumentTool: AgentTool {
         switch args.action {
         case .capabilities:
             break
+        case .create:
+            // Create targets a NEW native package through the host factory.
+            // The file name is sanitized/unique-ified by the host; the tool
+            // only checks it addresses a .floecad inside the workspace.
+            guard native else {
+                throw FloeError.validationFailed(
+                    "create makes a native .floecad package; DWG/DXF drawings cannot be created by this tool")
+            }
+            if let name = args.name,
+               name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw FloeError.validationFailed("create name must not be empty")
+            }
+        case .import:
+            // Import ADDS geometry to an existing native package by drafting
+            // a proposal; it never targets the 2D engine (DWG/DXF stay on
+            // their own read/edit surface) and never writes directly.
+            guard native else {
+                throw FloeError.validationFailed(
+                    "import adds geometry to a native .floecad package; DWG/DXF are not import targets")
+            }
+            guard let source = args.sourcePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !source.isEmpty, source.count <= 1024, !source.contains("\0") else {
+                throw FloeError.validationFailed("import requires source_path (a workspace file)")
+            }
+            let inferred = (source as NSString).pathExtension.lowercased()
+            // An explicit format must itself be supported; the EXTENSION is
+            // authoritative for routing (a model cannot disguise a mesh as a
+            // B-rep exchange by lying about format). An explicit format that
+            // conflicts with a supported extension is refused.
+            let explicitFormat = NativeCADPolicy.normalizedImportFormat(args.format)
+            if let explicit = args.format, !explicit.trimmingCharacters(in: .whitespaces).isEmpty,
+               explicitFormat == nil {
+                throw FloeError.validationFailed("import format '\(explicit)' is not supported")
+            }
+            let format = explicitFormat ?? NativeCADPolicy.normalizedImportFormat(inferred)
+            guard format != nil else {
+                throw FloeError.validationFailed(
+                    "import supports STEP/STP, IGES/IGS, STL, OBJ, GLB/glTF files (got \(inferred.isEmpty ? "unknown" : inferred))")
+            }
+            if let inferredFormat = NativeCADPolicy.normalizedImportFormat(inferred),
+               let explicitFormat, explicitFormat != inferredFormat {
+                throw FloeError.validationFailed(
+                    "import format '\(args.format ?? "")' does not match the source extension '\(inferred)'")
+            }
+            if let scale = args.unitScale, !(scale.isFinite && scale > 0) {
+                throw FloeError.validationFailed("unit_scale must be a positive finite number")
+            }
         case .read, .save, .export:
             break
         case .status:
@@ -844,6 +976,15 @@ public struct CadDocumentTool: AgentTool {
     public func execute(_ args: CadDocumentArguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let access = Self.access(for: context)
         try Self.authorizeDocumentPath(args.path, context: context)
+        // `import`'s source_path is scoped by the host's workspace resolver
+        // (same authorized root as the package), NOT by the single staged
+        // Canvas document, because the source is a STEP/mesh file rather than
+        // the draft itself.
+        if args.action == .create, context.canvasStagedDocument != nil {
+            // A staged Canvas draft authorizes exactly one existing document;
+            // creating a new package is not part of that grant.
+            throw FloeError.unauthorized
+        }
         try await host.authorizeAccess(access: access)
         let requestID = args.requestID ?? context.toolCallID ?? context.runID.uuidString
         // Unified representation routing: a `.floecad` package is answered by
@@ -857,8 +998,84 @@ public struct CadDocumentTool: AgentTool {
                     documentID: args.path!, requestJSON: #"{"kind":"capabilities"}"#, access: access)
                 return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(reply)", 24_000))
             }
+            if args.path == nil {
+                // Discovery without a document reports BOTH engines: the 2D
+                // DWG/DXF surface and the native package/3D surface, each with
+                // its own format matrix. A 2D-only limitation must never read
+                // as "3D unavailable", and a missing kernel is stated honestly.
+                let twoD: Any
+                do {
+                    let json = try await host.capabilities(access: access)
+                    twoD = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) ?? ["raw": json]
+                } catch {
+                    twoD = ["available": false, "error": error.localizedDescription]
+                }
+                let nativeCaps: Any
+                do {
+                    let json = try await host.nativeCapabilities(access: access)
+                    nativeCaps = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) ?? ["raw": json]
+                } catch let error as FloeError {
+                    if case .notFound(let what) = error, what == "native_cad_kernel" {
+                        nativeCaps = ["available": false]
+                    } else {
+                        throw error
+                    }
+                }
+                let merged: [String: Any] = [
+                    "two_dimensional": twoD,
+                    "native_three_dimensional": nativeCaps,
+                ]
+                let data = try JSONSerialization.data(withJSONObject: merged, options: [.sortedKeys, .withoutEscapingSlashes])
+                let text = String(data: data, encoding: .utf8) ?? "{}"
+                return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(text)", 32_000))
+            }
             let caps = try await host.capabilities(access: access)
             return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(caps)", 24_000))
+
+        case .create:
+            let path = args.path!
+            let fallbackName = ((path as NSString).lastPathComponent as NSString)
+                .deletingPathExtension
+            let name = args.name.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty ? nil : $0 } ?? fallbackName
+            let receipt = try await host.createNativePackage(relativePath: path, name: name,
+                                                             access: access)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            let json = String(data: try encoder.encode(receipt), encoding: .utf8) ?? "{}"
+            return ToolExecutionOutput(digesting: bounded("cad.document created: \(json)", 16_000))
+
+        case .import:
+            // Import is a PROPOSAL draft, exactly like geometry propose: the
+            // host evaluates the import on a throwaway copy of the package and
+            // returns the frozen proposal/preview. Nothing is written until
+            // the user confirms in the CAD UI and a subsequent apply carries
+            // that UI-issued grant. The model cannot mint the grant.
+            let source = args.sourcePath!.trimmingCharacters(in: .whitespacesAndNewlines)
+            let inferred = (source as NSString).pathExtension.lowercased()
+            guard let format = NativeCADPolicy.normalizedImportFormat(args.format)
+                ?? NativeCADPolicy.normalizedImportFormat(inferred) else {
+                throw FloeError.validationFailed(
+                    "import supports STEP/STP, IGES/IGS, STL, OBJ, GLB/glTF files")
+            }
+            var payload: [String: Any] = [
+                "path": source,
+                "format": format,
+            ]
+            if let name = args.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+                payload["name"] = name
+            }
+            if let scale = args.unitScale { payload["unitScale"] = scale }
+            var envelope: [String: Any] = ["kind": "import", "payload": payload]
+            if let summary = args.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !summary.isEmpty {
+                envelope["summary"] = summary
+            }
+            let request = try jsonString(envelope)
+            let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                    access: access)
+            return ToolExecutionOutput(digesting: bounded("cad.document import proposal: \(reply)", 24_000),
+                                       requiresUserAction: true)
 
         case .read:
             if native {

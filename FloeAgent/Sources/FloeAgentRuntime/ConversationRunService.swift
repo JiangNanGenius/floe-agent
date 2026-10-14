@@ -156,11 +156,22 @@ public actor ConversationRunService {
         var runID: UUID
     }
     private var goalRunReservation: GoalRunReservation?
-    /// Execution start times keyed by tool call ID, captured from the
-    /// `executingTool` transition (`ExecutingInfo.startedAt`) so the
-    /// mirrored toolResult event can carry a `durationMs` payload without
-    /// modifying the frozen `ToolResult` model.
-    private var toolStartDates: [String: Date] = [:]
+    /// Per-call queue-origin instants captured when the `toolRequest` event
+    /// is handled, used only to attribute queue (wait) time. Monotonic so a
+    /// wall-clock change never fabricates or erases elapsed time.
+    private var toolRequestedAt: [String: ContinuousClock.Instant] = [:]
+    /// Per-call real dispatch instants (`didDispatchToolCall`), the
+    /// execution-time origin. Only calls that actually crossed every
+    /// pre-dispatch gate appear here; suppressed, denied, recovered and
+    /// checkpoint-failed calls never do, so they are honestly recorded as not
+    /// dispatched with zero execution time. The instant is stamped at the
+    /// real executor boundary, not when the service actor later receives it,
+    /// so actor delivery latency is never counted as execution.
+    private var toolDispatchedAt: [String: ContinuousClock.Instant] = [:]
+    /// Per-call executor-return instants (`didFinishToolCall`), the execution
+    /// end boundary. Recorded per call as each executor returns BEFORE the
+    /// batch settles, so parallel calls keep their own real durations.
+    private var toolCompletedAt: [String: ContinuousClock.Instant] = [:]
     private var toolNames: [String: String] = [:]
     /// Prevents the legacy Markdown fallback from overwriting a structured
     /// plan submitted during this run.
@@ -333,6 +344,12 @@ public actor ConversationRunService {
         }
         forwarder.onEvent = { [weak self] event in
             await self?.handleEvent(event)
+        }
+        forwarder.onToolDispatch = { [weak self] call, stamp in
+            await self?.handleToolDispatch(callID: call.id, at: stamp)
+        }
+        forwarder.onToolFinish = { [weak self] call, stamp in
+            await self?.handleToolFinish(callID: call.id, at: stamp)
         }
         forwarder.onLiveness = { [weak self] snapshot in
             await self?.handleLiveness(snapshot)
@@ -929,7 +946,6 @@ public actor ConversationRunService {
         logger.debug("Run \(runID.uuidString) transitioned to \(projectedState.name)")
         logger.info("runStateChanged run=\(runID.uuidString) state=\(projectedState.name)")
         if case .executingTool(let info) = state {
-            toolStartDates[info.toolCall.id] = info.startedAt
             eventChannel.yield(.toolLifecycle(.started(info.toolCall)))
         }
         if isTerminal(projectedState) {
@@ -995,6 +1011,22 @@ public actor ConversationRunService {
         }
     }
 
+    /// Per-call real dispatch point: every pre-dispatch gate (approval,
+    /// budget, dedup, checkpoint) has passed. This — not the batch's first
+    /// `executingTool` transition and not the batch-approval start — is the
+    /// execution-time origin for this callID. No lifecycle event is emitted
+    /// here: subscribers already received `.requested(call)` with the full
+    /// call, and a synthetic partial event would corrupt their state.
+    private func handleToolDispatch(callID: String, at stamp: ToolTimingStamp) {
+        toolDispatchedAt[callID] = stamp.monotonic
+    }
+
+    /// Per-call executor return: the execution end boundary for this callID,
+    /// independent of when the whole batch settles.
+    private func handleToolFinish(callID: String, at stamp: ToolTimingStamp) {
+        toolCompletedAt[callID] = stamp.monotonic
+    }
+
     private func handleEvent(_ event: AgentEvent) async {
         hasProviderActivity = true
         if case .reasoningSummary = event {
@@ -1058,6 +1090,7 @@ public actor ConversationRunService {
             }
             eventChannel.yield(.toolLifecycle(.requested(call)))
             toolNames[call.id] = call.toolName
+            toolRequestedAt[call.id] = ContinuousClock.now
             let input = SecretRedactor.redact(String(
                 decoding: call.argumentsJSON.prefix(32 * 1_024),
                 as: UTF8.self
@@ -1075,9 +1108,14 @@ public actor ConversationRunService {
             )
         case .toolResult(let result):
             eventChannel.yield(.toolLifecycle(.finished(result)))
-            let durationMs = Self.milliseconds(since: toolStartDates.removeValue(forKey: result.callID))
+            let timing = Self.toolTiming(
+                requestedAt: toolRequestedAt.removeValue(forKey: result.callID),
+                dispatchedAt: toolDispatchedAt.removeValue(forKey: result.callID),
+                completedAt: toolCompletedAt.removeValue(forKey: result.callID)
+            )
+            let durationMs = timing.durationMs
             let finishedToolName = toolNames.removeValue(forKey: result.callID) ?? ""
-            logger.info("toolFinished run=\(runID.uuidString) tool=\(finishedToolName) status=\(result.status.rawValue) durationMs=\(durationMs)")
+            logger.info("toolFinished run=\(runID.uuidString) tool=\(finishedToolName) status=\(result.status.rawValue) durationMs=\(durationMs) queuedMs=\(timing.queuedMs ?? -1) dispatched=\(timing.dispatched)")
             var persisted = [
                 "tool": finishedToolName,
                 "id": result.callID,
@@ -1090,8 +1128,15 @@ public actor ConversationRunService {
                     secret: secretForRedaction
                 ),
                 "outputDigest": result.outputDigest,
-                "durationMs": String(durationMs)
+                "durationMs": String(durationMs),
+                "dispatched": timing.dispatched ? "true" : "false"
             ]
+            // Queue time is persisted only for genuinely dispatched calls:
+            // approval resolution and write-barrier waits are queue time, not
+            // execution time, and a missing record must never be fabricated.
+            if let queuedMs = timing.queuedMs {
+                persisted["queuedMs"] = String(queuedMs)
+            }
             if !result.artifacts.isEmpty,
                let data = try? JSONEncoder().encode(result.artifacts),
                let encoded = String(data: data, encoding: .utf8) {
@@ -2052,13 +2097,52 @@ public actor ConversationRunService {
         return String(format: "%@%02d:%02d", sign, magnitude / 3_600, (magnitude % 3_600) / 60)
     }
 
-    /// Whole milliseconds between `start` and now, clamped at zero. A
-    /// missing start (tool result without an observed executingTool
-    /// transition — e.g. a resumed run) yields 0 rather than an absent key,
-    /// keeping the payload shape stable.
-    static func milliseconds(since start: Date?) -> Int {
-        guard let start else { return 0 }
-        return max(0, Int(Date().timeIntervalSince(start) * 1000))
+    /// Whole forward milliseconds between two monotonic instants, clamped at
+    /// zero. `Duration` division is immune to wall-clock changes.
+    static func monotonicMilliseconds(from start: ContinuousClock.Instant, to end: ContinuousClock.Instant) -> Int {
+        let elapsed = start.duration(to: end) / Duration.milliseconds(1)
+        return max(0, Int(elapsed.rounded(.down)))
+    }
+
+    private struct ToolTiming: Sendable {
+        /// Monotonic execution time in milliseconds. 0 when the call was
+        /// never dispatched (suppressed, denied, recovered,
+        /// checkpoint-failed) — never fabricated.
+        var durationMs: Int
+        /// Monotonic queue time (request → dispatch) in milliseconds; nil
+        /// when the call was never dispatched.
+        var queuedMs: Int?
+        var dispatched: Bool
+    }
+
+    /// Per-call timing attribution. The real dispatch instant is the
+    /// execution origin and the executor-return instant is its end, BOTH read
+    /// from a monotonic `ContinuousClock` captured at the actual executor
+    /// boundaries, so wall-clock adjustments and actor/sink delivery latency
+    /// cannot inflate or shrink execution time. Queue time is reported
+    /// separately so approval waits and write-barrier waits never inflate
+    /// execution time, and non-dispatched results honestly record zero
+    /// execution time.
+    private static func toolTiming(
+        requestedAt: ContinuousClock.Instant?,
+        dispatchedAt: ContinuousClock.Instant?,
+        completedAt: ContinuousClock.Instant?
+    ) -> ToolTiming {
+        guard let dispatchedAt else {
+            return ToolTiming(durationMs: 0, queuedMs: nil, dispatched: false)
+        }
+        // Finish is stamped at the executor boundary; it is effectively always
+        // present for a dispatched call. A missing finish (e.g. an interrupted
+        // process) must never fabricate a duration from the unrelated current
+        // instant, so report zero execution time but keep the dispatch fact.
+        guard let completedAt else {
+            return ToolTiming(durationMs: 0, queuedMs: nil, dispatched: true)
+        }
+        return ToolTiming(
+            durationMs: monotonicMilliseconds(from: dispatchedAt, to: completedAt),
+            queuedMs: requestedAt.map { monotonicMilliseconds(from: $0, to: dispatchedAt) },
+            dispatched: true
+        )
     }
 
     private static func utf8Prefix(_ value: String, maxBytes: Int) -> String {
@@ -2115,9 +2199,28 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onCompaction: (@Sendable (ContextCompactionRecord) async -> Void)?
     var onApprovalReview: (@Sendable (ApprovalReviewSnapshot) async -> Void)?
     var onApprovalDecisionRecorded: (@Sendable (ApprovalDecisionReceipt) async -> Void)?
+    var onToolDispatch: (@Sendable (ToolCall, ToolTimingStamp) async -> Void)?
+    var onToolFinish: (@Sendable (ToolCall, ToolTimingStamp) async -> Void)?
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
         await onTransition?(state)
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didDispatchToolCall call: ToolCall,
+        at stamp: ToolTimingStamp
+    ) async {
+        await onToolDispatch?(call, stamp)
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didFinishToolCall call: ToolCall,
+        result: ToolResult,
+        at stamp: ToolTimingStamp
+    ) async {
+        await onToolFinish?(call, stamp)
     }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didEmit event: AgentEvent) async {

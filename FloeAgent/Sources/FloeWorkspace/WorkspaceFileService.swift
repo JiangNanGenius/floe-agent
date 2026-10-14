@@ -152,13 +152,29 @@ public struct WorkspaceFileService: Sendable {
 
     public let guardResolver: WorkspacePathGuard
 
+    /// Optional gate invoked with the RESOLVED target URL before any mutation
+    /// (create-overwrite, write, patch, binary write, move source/destination,
+    /// copy destination, delete). Reads never invoke it. The design freeze
+    /// registry wires this to block ordinary writes to a frozen design
+    /// original; the trusted design commit port constructs its service
+    /// WITHOUT a gate (it is the verified adoption path).
+    public let mutationGuard: (@Sendable (URL) throws -> Void)?
+
     /// `FileManager` is not Sendable; the shared instance is documented as
     /// safe to call from any thread (we never set a delegate), so we access
     /// it through this computed property instead of a stored one.
     private var fileManager: FileManager { FileManager.default }
 
-    public init(guard guardResolver: WorkspacePathGuard) {
+    public init(
+        guard guardResolver: WorkspacePathGuard,
+        mutationGuard: (@Sendable (URL) throws -> Void)? = nil
+    ) {
         self.guardResolver = guardResolver
+        self.mutationGuard = mutationGuard
+    }
+
+    private func assertNotFrozen(_ url: URL) throws {
+        try mutationGuard?(url)
     }
 
     // MARK: - Listing
@@ -448,6 +464,7 @@ public struct WorkspaceFileService: Sendable {
                     : WorkspaceToolError.alreadyExistsOverwritable(path)
             }
         }
+        try assertNotFrozen(url)
         return try performWrite(url, path: path, content: content)
     }
 
@@ -474,6 +491,7 @@ public struct WorkspaceFileService: Sendable {
                     : WorkspaceToolError.alreadyExistsOverwritable(path)
             }
         }
+        try assertNotFrozen(url)
         try guardResolver.assertWritableSize(bytes: data.count)
         try guardResolver.assertWritable(url)
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -546,6 +564,7 @@ public struct WorkspaceFileService: Sendable {
                 expected: "existing file", actual: "missing file"
             )
         }
+        try assertNotFrozen(url)
         return try performWrite(url, path: path, content: content)
     }
 
@@ -573,6 +592,7 @@ public struct WorkspaceFileService: Sendable {
             throw WorkspaceToolError.isDirectory(path)
         }
         try guardResolver.assertReadableSize(url)
+        try assertNotFrozen(url)
 
         let hunks = try Self.parseUnifiedDiff(patch)
         let originalData = try Data(floeContentsOf: url)
@@ -637,6 +657,7 @@ public struct WorkspaceFileService: Sendable {
         try cancellation?.throwIfCancelled()
         let source = try guardResolver.resolve(from)
         try rejectWorkspaceRootMutation(source, operation: "move")
+        try assertNotFrozen(source)
         guard fileManager.fileExists(atPath: source.path) else {
             throw WorkspaceToolError.notFound(from)
         }
@@ -645,6 +666,7 @@ public struct WorkspaceFileService: Sendable {
         guard !fileManager.fileExists(atPath: destination.path) else {
             throw WorkspaceToolError.alreadyExists(to)
         }
+        try assertNotFrozen(destination)
         let parent = destination.deletingLastPathComponent()
         try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
         try fileManager.moveItem(at: source, to: destination)
@@ -670,6 +692,7 @@ public struct WorkspaceFileService: Sendable {
         guard !fileManager.fileExists(atPath: destination.path) else {
             throw WorkspaceToolError.alreadyExists(to)
         }
+        try assertNotFrozen(destination)
         let parent = destination.deletingLastPathComponent()
         try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
         try fileManager.copyItem(at: source, to: destination)
@@ -689,6 +712,7 @@ public struct WorkspaceFileService: Sendable {
         try cancellation?.throwIfCancelled()
         let url = try guardResolver.resolve(path)
         try rejectWorkspaceRootMutation(url, operation: "delete")
+        try assertNotFrozen(url)
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw WorkspaceToolError.notFound(path)

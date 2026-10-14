@@ -333,6 +333,18 @@ final class FloePlatformServices: @unchecked Sendable {
         return composed
     }
 
+    /// Synchronous read of the service-owned snapshot, for live capability
+    /// probes that must re-derive availability without awaiting. Returns the
+    /// last fully-successful status while it is fresh (same short max age as
+    /// the async path); nil means "unknown — re-read asynchronously", which
+    /// probes must treat as NOT proof of availability.
+    func cachedLinuxImageStatus(id: String?) -> LinuxGuestImageInstallationService.ImageStatus? {
+        guard let id else { return nil }
+        return linuxImageStatusCache.cached(
+            id: id, maxAge: Self.linuxImageStatusCacheMaxAge
+        )?.status
+    }
+
     /// Cancellation-aware variant for the component card: the card's refresh
     /// replaces its previous task, and a superseded refresh must stop a large
     /// real-file verification at its next read instead of holding the

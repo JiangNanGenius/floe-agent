@@ -3,9 +3,9 @@
 > 用户操作：[中文手册](../docs/USER_GUIDE.zh-CN.md) · [English manual](../docs/USER_GUIDE.md) · [当前版本与验证状态](../docs/CURRENT_STATUS.md)。工程构建证据与 TestFlight 可安装状态分别记录。
 
 
-Current source: **1.7.24 (265)**, iOS/iPadOS 26 minimum. See [current delivery status](../docs/CURRENT_STATUS.md), [creative tool contracts](../docs/FLOE_1_7_24_CREATIVE_TOOLS.md), and [architecture](../docs/ARCHITECTURE_OVERVIEW.md). Current code includes 2D CAD, Drawing Assistant, Office shared commands, Notes proposals and file-backed Canvas/media projects. Engine-level Office and physical-device acceptance remain separately qualified.
+Current source: `FloeAgent/project.yml` declares **1.7.30 (271)**, iOS/iPadOS 26 minimum. That version is the current internal hotfix; branch `codex/design-workflows-20261013` (baseline `734e97f5`) carries unreleased work in progress (conversational design workflow, CAD create/import, runtime receipt repairs) that is **not version-bumped, committed, compiled into an App, UI-accepted or released**. See [current delivery status](../docs/CURRENT_STATUS.md), [creative tool contracts](../docs/FLOE_1_7_24_CREATIVE_TOOLS.md), and [architecture](../docs/ARCHITECTURE_OVERVIEW.md). Current code includes 2D CAD, Drawing Assistant, Office shared commands, Notes proposals and file-backed Canvas/media projects. Engine-level Office and physical-device acceptance remain separately qualified.
 
-当前源码与安装渠道分别核对。优先本地定向测试及完整 App 验证，云端承担独立检查和发布流程。旧构建过程保留在[历史工程记录](../docs/history/ENGINEERING_RELEASE_CHRONOLOGY.pre-20261009.md)。
+当前源码与安装渠道分别核对。优先本地 Xcode 27 定向测试、完整 App 编译与模拟器/归档验证；CI 只作补充独立检查，不作为必须等待的门槛。旧构建过程记录保留在[历史工程记录](../docs/history/ENGINEERING_RELEASE_CHRONOLOGY.pre-20261009.md)。
 
 ## Build prerequisites
 
@@ -18,7 +18,7 @@ The scripts use `DEVELOPER_DIR` where practical and do not require changing the 
 
 ## Build and test
 
-Prefer focused local tests and relevant local App builds; use cloud CI for required independent checks and release workflows. From the repository root, with a full Xcode selected through `DEVELOPER_DIR`:
+Local Xcode 27 qualification is the default path: focused module tests, a full App compile, Simulator verification and archiving run on this machine. CI is a short supplementary lane for independent read-only/asset checks and an optional full matrix — it is not a required release waiting gate. From the repository root, with a full Xcode selected through `DEVELOPER_DIR`:
 
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -55,7 +55,18 @@ capability catalog) and is not an App-bundled language runtime.
 
 Check mode does not install resources or modify locks. Qualification covers environment, package, media, persistence and signed catalog paths; it does not replace App or device tests. Run commands sharing the SwiftPM scratch directory sequentially.
 
-For a full local App build when needed, use `bash scripts/local_build.sh` from this directory after installing XcodeGen and checking free space. Cloud CI owns the normal development-SDK and release-SDK App checks and heavy archives. See [complete build and acceptance instructions](../docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md).
+`scripts/local_build.sh` is the cross-platform SwiftPM subset for machines without full Xcode: it deliberately excludes the App and iOS-only targets and must not be reported as a full App build. For the App, regenerate and build the committed generated project with Xcode:
+
+```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+bash FloeAgent/scripts/gen_project.sh
+xcodebuild -project FloeAgent/FloeAgent.xcodeproj -scheme FloeAgent \
+  -destination 'generic/platform=iOS Simulator' \
+  -derivedDataPath "$HOME/Library/Caches/CodexBuild/Floe/README-qual/app" \
+  CODE_SIGNING_ALLOWED=NO build-for-testing
+```
+
+Use a task-specific derived-data path on the internal SSD and start heavy builds at six jobs, adjusting from measured memory pressure; `gen_project.sh` fails when the tree is dirty, so a failing check is not a successful generation. Version bumps, tags, signing, uploads and distribution are separate, explicitly authorized actions. See [complete build and acceptance instructions](../docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) and [local qualification](../docs/FLOE_LOCAL_QUALIFICATION.md).
 
 A Command Line Tools-only selection cannot provide iOS Simulator builds or all Swift Testing macro plugins reliably. Adjust the Xcode path to the installed full developer directory.
 
@@ -101,6 +112,8 @@ CI regenerates the project and fails if the committed project differs.
 11. Stateful tool chains preserve verified identifiers and artifact bindings before bounded output; missing IDs route to a read-only discovery predecessor instead of a guessed value or repeated mutation.
 
 ## Release checks
+
+Current policy: the repository [`AGENTS.md`](../AGENTS.md) governs releases. Local Xcode 27 compilation, relevant tests, Simulator verification and archiving are the qualification path; CI remains supplementary and is not a mandatory waiting gate. Only the release owner bumps versions or build numbers, tags, signs, uploads or distributes, and each round states its own authorized scope. The pipeline description below is retained as historical and recovery context.
 
 Version and build number live in `project.yml`. A SemVer tag must match `MARKETING_VERSION`, and the integer build must increase from the previous tag.
 

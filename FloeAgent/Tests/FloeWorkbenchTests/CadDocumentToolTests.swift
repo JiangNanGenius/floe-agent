@@ -46,6 +46,29 @@ actor FakeCadHost: CadDocumentHost {
 
     func setThreeDReply(_ reply: String) { threeDReply = reply }
 
+    var createdPackages: [String] = []
+    var createReply: CadNativePackageReceipt = CadNativePackageReceipt(
+        relativePath: "untitled.floecad", name: "untitled", revision: 1,
+        schemaVersion: 1, contentSHA256: String(repeating: "0", count: 64))
+    var createError: Error?
+    var nativeCapabilitiesReply: String = #"{"ok":true,"available":true}"#
+
+    func setCreateError(_ error: Error?) { createError = error }
+
+    func createNativePackage(relativePath: String, name: String,
+                             access: CadDocumentAccess) async throws -> CadNativePackageReceipt {
+        if let createError { throw createError }
+        createdPackages.append(relativePath)
+        var receipt = createReply
+        receipt.relativePath = relativePath
+        receipt.name = name
+        return receipt
+    }
+
+    func nativeCapabilities(access: CadDocumentAccess) async throws -> String {
+        nativeCapabilitiesReply
+    }
+
     func threeDAction(documentID: String, requestJSON: String,
                       access: CadDocumentAccess) async throws -> String {
         threeDRequests.append(requestJSON)
@@ -722,5 +745,187 @@ struct CadDocumentToolTests {
             _ = try await execute(tool, #"{"action":"read","path":"plate.dwg"}"#)
         }
         #expect(await host.snapshotCalls == 0)
+    }
+
+    // MARK: - R2 native create / import / capability discovery
+
+    @Test("create action validates a .floecad target and delegates to the host factory")
+    func createActionRoutesToHostFactory() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        let output = try await execute(
+            tool, #"{"action":"create","path":"parts/Bracket.floecad","name":"Bracket"}"#)
+        #expect(output.summary.contains("cad.document created"))
+        #expect(output.summary.contains("parts/Bracket.floecad"))
+        let created = await host.createdPackages
+        #expect(created == ["parts/Bracket.floecad"])
+    }
+
+    @Test("create refuses a DWG/DXF target: the tool never builds drawings")
+    func createRefusesTwoDTarget() throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"create","path":"plate.dwg"}"#))
+        }
+    }
+
+    @Test("create requires an explicit path (no implicit package location)")
+    func createRequiresPath() throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"create"}"#))
+        }
+    }
+
+    @Test("create rejects path traversal/control characters in the target")
+    func createRejectsUnsafeNames() throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        // The tool only validates the `.floecad` shape; the shared host
+        // factory is the authority that resolves the path and rejects
+        // traversal/outside-root targets (covered by the App-level factory
+        // test). Here the tool-level contract is the NUL-byte refusal:
+        // `validate` must reject a path containing a control character
+        // BEFORE any host call. (JSON cannot encode a NUL byte, so the
+        // arguments are built programmatically.)
+        var args = try decode(#"{"action":"create","path":"x.floecad"}"#)
+        args.path = "a\u{0000}.floecad"
+        #expect(throws: FloeError.self) {
+            try tool.validate(args)
+        }
+    }
+
+    @Test("import requires an existing .floecad target and a workspace source_path")
+    func importValidation() throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        // DWG target is not an import destination.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(
+                #"{"action":"import","path":"plate.dwg","source_path":"a.step"}"#))
+        }
+        // Missing source.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"import","path":"part.floecad"}"#))
+        }
+        // Unsupported extension.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(
+                #"{"action":"import","path":"part.floecad","source_path":"model.3mf"}"#))
+        }
+        // An explicit format that is not a supported exchange is refused.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(
+                #"{"action":"import","path":"part.floecad","source_path":"a.step","format":"dwg"}"#))
+        }
+        // A mismatched explicit format against the extension is refused.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(
+                #"{"action":"import","path":"part.floecad","source_path":"a.step","format":"stl"}"#))
+        }
+        // Non-positive scale.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(
+                #"{"action":"import","path":"part.floecad","source_path":"a.stl","unit_scale":0}"#))
+        }
+        // Accepted combinations.
+        for json in [
+            #"{"action":"import","path":"part.floecad","source_path":"a.step"}"#,
+            #"{"action":"import","path":"part.floecad","source_path":"a.IGS"}"#,
+            #"{"action":"import","path":"part.floecad","source_path":"mesh.gltf","format":"gltf"}"#,
+            #"{"action":"import","path":"part.floecad","source_path":"m.stl","unit_scale":2.5}"#,
+        ] {
+            try tool.validate(try decode(json))
+        }
+    }
+
+    @Test("import action drafts a proposal, requires confirmation and never writes directly")
+    func importActionDraftsProposal() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"proposal":{"id":"00000000-0000-0000-0000-000000000000"}}"#)
+        let tool = CadDocumentTool(host: host)
+        let output = try await execute(tool, #"""
+        {"action":"import","path":"part.floecad","source_path":"vendor/bracket.step","format":"step"}
+        """#)
+        #expect(output.requiresUserAction == true)
+        #expect(output.summary.contains("cad.document import proposal"))
+        let requests = await host.threeDRequests
+        #expect(requests.count == 1)
+        let envelope = try JSONSerialization.jsonObject(with: Data(requests[0].utf8)) as? [String: Any]
+        #expect(envelope?["kind"] as? String == "import")
+        let payload = try #require(envelope?["payload"] as? [String: Any])
+        #expect(payload["path"] as? String == "vendor/bracket.step")
+        #expect(payload["format"] as? String == "step")
+    }
+
+    @Test("capabilities without a path report both 2D and native engines separately")
+    func capabilitiesReportBothEngines() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"unused":true}"#)
+        let tool = CadDocumentTool(host: host)
+        let output = try await execute(tool, #"{"action":"capabilities"}"#)
+        #expect(output.summary.contains("two_dimensional"))
+        #expect(output.summary.contains("native_three_dimensional"))
+        // The native matrix lists create and per-format import/view/edit/export.
+        #expect(output.summary.contains("\"available\":true"))
+        #expect(await host.threeDRequests.isEmpty, "no-document capabilities must not open a document")
+    }
+
+    @Test("a host without the native kernel reports the native engine honestly")
+    func capabilitiesHonestMissingKernel() async throws {
+        struct KernellessHost: CadDocumentHost {
+            func authorizeAccess(access: CadDocumentAccess) async throws {}
+            func capabilities(access: CadDocumentAccess) async throws -> String {
+                #"{"version":2}"#
+            }
+            func snapshot(documentID: String, access: CadDocumentAccess) async throws -> CadDocumentSnapshot {
+                throw FloeError.notFound("x")
+            }
+            func query(documentID: String, requestJSON: String, access: CadDocumentAccess) async throws -> String { "" }
+            func prepareProposal(documentID: String, snapshot: CadDocumentSnapshot, summary: String,
+                                 operationsJSON: String, access: CadDocumentAccess) async throws -> CadProposal {
+                throw FloeError.notFound("x")
+            }
+            func storeProposal(_ proposal: CadProposal) async throws {}
+            func loadProposal(id: UUID, access: CadDocumentAccess) async throws -> CadProposal? { nil }
+            func loadProposalOutcome(id: UUID, access: CadDocumentAccess) async throws -> CadProposalOutcome? { nil }
+            func verifyProposalBinding(_ proposal: CadProposal, documentID: String,
+                                       access: CadDocumentAccess) async throws {}
+            func removeProposal(id: UUID) async throws {}
+            func consumeGrant(grantID: String, proposalID: UUID, documentID: String,
+                              revision: Int64, sha256: String) async -> CadGrantDecision { .unknownGrant }
+            func apply(proposal: CadProposal, grantID: String, requestID: String,
+                       access: CadDocumentAccess) async throws -> CadDocumentReceipt {
+                throw FloeError.notFound("x")
+            }
+            func save(documentID: String, expectedSHA256: String, requestID: String,
+                      access: CadDocumentAccess) async throws -> CadDocumentReceipt {
+                throw FloeError.notFound("x")
+            }
+            func export(documentID: String, relativeOutput: String,
+                        access: CadDocumentAccess) async throws -> CadExportReceipt {
+                throw FloeError.notFound("x")
+            }
+        }
+        let tool = CadDocumentTool(host: KernellessHost())
+        let output = try await execute(tool, #"{"action":"capabilities"}"#)
+        #expect(output.summary.contains("\"available\":false"))
+        #expect(output.summary.contains("two_dimensional"))
+    }
+
+    @Test("schema enum advertises create and import and their fields")
+    func schemaAdvertisesCreateImport() throws {
+        let schema = CadDocumentTool.parametersJSON
+        #expect(schema.contains("\"create\""))
+        #expect(schema.contains("\"import\""))
+        #expect(schema.contains("source_path"))
+        #expect(schema.contains("unit_scale"))
+        #expect(schema.contains("\"name\""))
+        let object = try JSONSerialization.jsonObject(with: Data(schema.utf8)) as? [String: Any]
+        let properties = try #require(object?["properties"] as? [String: Any])
+        let action = try #require(properties["action"] as? [String: Any])
+        let enumValues = Set(try #require(action["enum"] as? [String]))
+        #expect(enumValues.contains("create"))
+        #expect(enumValues.contains("import"))
+        let runtime = Set(CadDocumentAction.allCases.map(\.rawValue))
+        #expect(enumValues == runtime)
     }
 }

@@ -11,6 +11,16 @@
 import SwiftUI
 import UIKit
 import Foundation
+import FloeCore
+
+/// One root-level design page presentation: the typed target and the SAME
+/// original conversation it belongs to. Identifiable by its own id so
+/// repeated entries replace cleanly.
+struct DesignPageRequest: Identifiable, Hashable, Sendable {
+    let id = UUID()
+    let target: DesignTarget
+    let conversationID: UUID
+}
 
 enum SetupPresentation: String, Identifiable, Hashable, Sendable {
     case firstLaunch
@@ -220,6 +230,19 @@ final class AppRouter: ObservableObject {
     @Published var inspectorRoute: InspectorRoute?
     @Published var presentedSettings = false
 
+    /// Root-level design conversation page request (preview-first workbench
+    /// for one bound task). Presented from the APP ROOT — not from a thread
+    /// or message bubble — because a presenter inside a live thread re-
+    /// renders on every run event, and iPad popovers anchored there dismiss
+    /// spontaneously. The root does not churn, so the page stays up for the
+    /// whole design session (fullscreen, rotation, decisions).
+    @Published var presentedDesignPage: DesignPageRequest?
+
+    /// Canvas destination navigation (creative routing): the canvas id
+    /// opens through the SAME canvas surface as every other canvas.
+    @Published var presentedCanvasID: UUID?
+    @Published var presentsCanvas = false
+
     /// Convenience flag derived from inspectorContent (views bind to
     /// this; FileInspectorView reads the content).
     var inspectorVisible: Bool { inspectorRoute != nil }
@@ -353,6 +376,30 @@ final class AppRouter: ObservableObject {
         selection = .more
         sidebarSelection = .more(destination)
         morePath = [destination]
+    }
+
+    /// Delivers a ROUTED destination conversation in the foreground: any
+    /// root-owned modal that would hide it (the canvas destination cover,
+    /// the design page cover) is dismissed FIRST — after a real canvas→
+    /// ordinary-task handoff the destination must actually be visible, not
+    /// open underneath the still-presented canvas. Only foreground routes
+    /// reach this method (the routing service gates delivery on the
+    /// initiating run); late/background routes are suppressed, so nothing
+    /// here can steal focus from another surface.
+    func presentRoutedDestination(_ conversationID: UUID) {
+        presentsCanvas = false
+        presentedCanvasID = nil
+        presentedDesignPage = nil
+        openConversation(conversationID)
+    }
+
+    /// Presents a ROUTED canvas destination through the same canvas cover
+    /// every canvas uses. The design page cover (also a root full-screen
+    /// cover) is dismissed first so the two covers never stack.
+    func presentRoutedCanvas(_ canvasID: UUID) {
+        presentedDesignPage = nil
+        presentedCanvasID = canvasID
+        presentsCanvas = true
     }
 
     /// Opens one conversation through the idiom-appropriate presentation.

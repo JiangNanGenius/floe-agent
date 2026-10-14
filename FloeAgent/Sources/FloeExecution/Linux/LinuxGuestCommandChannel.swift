@@ -1159,6 +1159,61 @@ public actor LinuxGuestCommandChannel {
     /// new boot's console.
     private var routerGeneration: UInt64 = 0
 
+    /// Identity context for staged command tracing, installed by the
+    /// registry once the session identity exists. Identity fields only —
+    /// never command bodies or sensitive arguments.
+    private var traceContext: TraceContext?
+
+    /// Staged command lifecycle trace. Written for stalled-channel
+    /// investigation: queued → sent → guest-accepted → output →
+    /// cancel/stop-confirmed → guest exit. Carries environment,
+    /// launchGeneration, lease and request id; never the command itself.
+    public enum Stage: String, Sendable {
+        case admitted
+        case sent
+        case guestAccepted
+        case cancelRequested
+        case stopConfirmed
+        case completed
+        case guestExited
+        case poisoned
+    }
+
+    public struct TraceContext: Sendable, Equatable {
+        public var environmentID: String
+        public var launchGeneration: UInt64
+        public var lease: String?
+
+        public init(environmentID: String, launchGeneration: UInt64, lease: String? = nil) {
+            self.environmentID = environmentID
+            self.launchGeneration = launchGeneration
+            self.lease = lease
+        }
+    }
+
+    /// Installed by the session owner after registration (generation + lease
+    /// only exist then). Passing nil disables tracing.
+    public func setTraceContext(_ context: TraceContext?) {
+        traceContext = context
+    }
+
+    private func trace(_ stage: Stage, token: String, note: String = "") {
+        guard let traceContext else { return }
+        let suffix = note.isEmpty ? "" : " note=\(note)"
+        FloeLogger(category: .tools).info(
+            "guestCommand stage=\(stage.rawValue) environment=\(traceContext.environmentID) generation=\(traceContext.launchGeneration) lease=\(traceContext.lease ?? "-") request=\(token) routerGeneration=\(routerGeneration)\(suffix)"
+        )
+    }
+
+    /// Honest quarantine wording shared by the recovery paths and asserted by
+    /// tests: poison means the session was torn down and the NEXT command
+    /// cold-starts a fresh guest — never "the guest must be reset" and never
+    /// a claim about whether the interrupted command ran.
+    static let unresponsiveTokenMessage =
+        "guest did not confirm the interrupted command stopped within the stop-recovery window; the process state is unknown. This guest session was torn down and its channel poisoned: the next command automatically cold-starts a fresh guest with the last successful configuration. Do not assume the interrupted command did or did not run."
+    static let silentStartupMessage =
+        "guest produced no response to an accepted command within 30s; the process state is unknown. This guest session was torn down and its channel poisoned: the next command automatically cold-starts a fresh guest with the last successful configuration. Do not assume the command did or did not start."
+
     public init(transport: any LinuxGuestConsoleTransport, limits: LinuxGuestLimits = .standard) {
         self.transport = transport
         self.limits = limits
@@ -1732,7 +1787,7 @@ public actor LinuxGuestCommandChannel {
             throw LinuxGuestError.invalidConfiguration("argv must not contain NUL bytes")
         }
         guard !poisoned else {
-            throw LinuxGuestError.consoleUnavailable("the guest channel was poisoned by an earlier failed command")
+            throw LinuxGuestError.consoleUnavailable("the guest channel was poisoned by an earlier command whose outcome is unknown; this guest session was torn down and the next command automatically cold-starts a fresh guest with the last successful configuration")
         }
         guard !closed else {
             throw LinuxGuestError.consoleUnavailable("the guest channel is closed")
@@ -1755,6 +1810,7 @@ public actor LinuxGuestCommandChannel {
         let tokenStream = LinuxGuestTokenStream()
         registerToken(token, stream: tokenStream)
         runningCommands.insert(token)
+        trace(.admitted, token: token, note: "queued on the guest channel")
         defer {
             unregisterToken(token)
             runningCommands.remove(token)
@@ -1834,12 +1890,15 @@ public actor LinuxGuestCommandChannel {
 
         ExecutionBreadcrumbs.shared.record(.shell, .sending, id: breadcrumbID)
         try await send(LinuxGuestFraming.payloadFrames(name: "EXEC", token: token, payload: payload))
+        trace(.sent, token: token)
 
         ExecutionBreadcrumbs.shared.record(.shell, .awaitingReply, id: breadcrumbID)
         var parser = LinuxGuestFraming.Parser(token: token, maxOutputBytes: effectiveLimit)
+        var sawFirstFrame = false
         while true {
             guard let chunk = await tokenStream.next() else {
                 startupWatchdog.cancel()
+                trace(.guestExited, token: token, note: "token stream finished before completion")
                 // Router finished or the recovery path failed the token.
                 if let failure = await tokenStream.takeFailure() {
                     throw failure
@@ -1848,13 +1907,18 @@ public actor LinuxGuestCommandChannel {
                     // Console died after we asked for an interrupt: the
                     // process state is unknown — quarantine, not "stopped".
                     poisoned = true
+                    trace(.poisoned, token: token, note: "console closed with an interrupt pending")
                     throw LinuxGuestError.consoleUnavailable(
-                        "guest console closed while an interrupt was pending (\(interruptError.localizedDescription)); the guest state is unknown"
+                        "guest console closed while an interrupt was pending (\(interruptError.localizedDescription)); the guest state is unknown. This guest session was torn down and its channel poisoned: the next command automatically cold-starts a fresh guest with the last successful configuration."
                     )
                 }
-                throw LinuxGuestError.consoleUnavailable("guest console closed before the command reported completion")
+                throw LinuxGuestError.consoleUnavailable("guest console closed before the command reported completion; this guest session was torn down and the next command automatically cold-starts a fresh guest with the last successful configuration")
             }
             startupWatchdog.cancel()
+            if !sawFirstFrame {
+                sawFirstFrame = true
+                trace(.guestAccepted, token: token, note: "guest emitted the first frame")
+            }
             switch parser.feed(chunk) {
             case .needMore:
                 continue
@@ -1862,9 +1926,11 @@ public actor LinuxGuestCommandChannel {
                 if let interruptError = pendingInterrupts[token] {
                     // The guest really reaped the process group; only now is
                     // the timeout/cancellation allowed to surface.
+                    trace(.stopConfirmed, token: token, note: "guest reaped the interrupted command")
                     throw interruptError
                 }
                 breadcrumbCompleted = true
+                trace(.completed, token: token, note: "exit=\(exitCode)")
                 ExecutionBreadcrumbs.shared.record(.shell, .completed, id: breadcrumbID, code: exitCode)
                 return LinuxCommandResult(
                     stdout: parser.stdoutText,
@@ -1873,6 +1939,7 @@ public actor LinuxGuestCommandChannel {
                 )
             case .failed(let reason):
                 poisoned = true
+                trace(.poisoned, token: token, note: "framing failure")
                 throw LinuxGuestError.consoleUnavailable(reason)
             }
         }
@@ -1992,7 +2059,7 @@ public actor LinuxGuestCommandChannel {
             if let operation, !completed { ExecutionBreadcrumbs.shared.record(operation, .failed, id: breadcrumbID) }
         }
         guard !poisoned else {
-            throw LinuxGuestError.consoleUnavailable("the guest channel was poisoned by an earlier failed command")
+            throw LinuxGuestError.consoleUnavailable("the guest channel was poisoned by an earlier command whose outcome is unknown; this guest session was torn down and the next command automatically cold-starts a fresh guest with the last successful configuration")
         }
         guard !closed else {
             throw LinuxGuestError.consoleUnavailable("the guest channel is closed")
@@ -2064,7 +2131,7 @@ public actor LinuxGuestCommandChannel {
             throw LinuxGuestError.invalidConfiguration("session argv must not be empty")
         }
         guard !poisoned else {
-            throw LinuxGuestError.consoleUnavailable("the guest channel was poisoned by an earlier failed command")
+            throw LinuxGuestError.consoleUnavailable("the guest channel was poisoned by an earlier command whose outcome is unknown; this guest session was torn down and the next command automatically cold-starts a fresh guest with the last successful configuration")
         }
         guard !closed else {
             throw LinuxGuestError.consoleUnavailable("the guest channel is closed")
@@ -2246,6 +2313,7 @@ public actor LinuxGuestCommandChannel {
         guard runningCommands.contains(token), pendingInterrupts[token] == nil else { return }
         pendingInterrupts[token] = error
         if let id = UUID(uuidString: token) { ExecutionBreadcrumbs.shared.record(.shell, .interruptRequested, id: id) }
+        trace(.cancelRequested, token: token, note: "interrupt signaled to the guest")
         // A command waiting on host work cannot finish it after an interrupt:
         // cancel the handler now so it stops touching the share instead of
         // running to completion for a reply nobody will read.
@@ -2261,27 +2329,28 @@ public actor LinuxGuestCommandChannel {
 
     /// Recovery path: the guest neither reaped (END) nor quarantined
     /// (FAILED) the interrupted command within the bounded window. The
-    /// process state is unknown, so the channel is poisoned (the owner
-    /// resets the guest) and the caller fails with a quarantine error —
-    /// never a "stopped" claim.
+    /// process state is unknown, so the channel is poisoned (the owner tears
+    /// the guest session down and the next command cold-starts a fresh guest
+    /// from the last successful configuration) and the caller fails with a
+    /// quarantine error — never a "stopped" claim.
     private func failUnresponsiveToken(_ token: String) async {
         guard pendingInterrupts[token] != nil, let stream = tokenStreams[token] else { return }
         poisoned = true
+        trace(.poisoned, token: token, note: "interrupt not confirmed within the stop-recovery window; outcome unknown")
         cancelHostRequest(token: token)
-        await stream.fail(LinuxGuestError.consoleUnavailable(
-            "guest did not confirm the interrupted command stopped within the stop-recovery window; the process state is unknown and the guest must be reset"
-        ))
+        await stream.fail(LinuxGuestError.consoleUnavailable(Self.unresponsiveTokenMessage))
     }
 
     /// Startup watchdog path: the guest never emitted a single frame for a
     /// command that was fully written. The process state is unknown (the
-    /// EXEC may or may not have started), so this poisons the channel.
+    /// EXEC may or may not have started), so this poisons the channel: the
+    /// owner tears the session down and the next command cold-starts a fresh
+    /// guest with the last successful configuration.
     private func failSilentStartup(_ token: String) async {
         guard runningCommands.contains(token), let stream = tokenStreams[token] else { return }
         poisoned = true
+        trace(.poisoned, token: token, note: "no guest frame within 30s of a fully written command; outcome unknown")
         cancelHostRequest(token: token)
-        await stream.fail(LinuxGuestError.consoleUnavailable(
-            "guest produced no response to an accepted command within 30s; the process state is unknown and the guest must be reset"
-        ))
+        await stream.fail(LinuxGuestError.consoleUnavailable(Self.silentStartupMessage))
     }
 }

@@ -40,6 +40,9 @@ final class MockAdapter: ProviderAdapter, @unchecked Sendable {
         var script: [[AgentEvent]] = []
         var callCount = 0
         var requests: [ProviderStreamRequest] = []
+        /// Script a stream that throws at a given request index (a transport /
+        /// adapter failure instead of a yielded .error event).
+        var throwAt: [Int: Error] = [:]
     }
     private let storage = AsyncLock(Storage())
 
@@ -50,17 +53,28 @@ final class MockAdapter: ProviderAdapter, @unchecked Sendable {
 
     var requests: [ProviderStreamRequest] { storage.withLock { $0.requests } }
 
+    /// Mark request index `index` (0-based, in adapter call order) to throw
+    /// `error` instead of yielding its scripted events.
+    func setThrow(_ error: Error, at index: Int) {
+        storage.withLock { $0.throwAt[index] = error }
+    }
+
     func stream(
         request: ProviderStreamRequest,
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
-        let events = storage.withLock { state -> [AgentEvent] in
+        let (events, thrown) = storage.withLock { state -> ([AgentEvent], Error?) in
             state.requests.append(request)
             let events = state.callCount < state.script.count ? state.script[state.callCount] : []
+            let thrown = state.throwAt[state.callCount]
             state.callCount += 1
-            return events
+            return (events, thrown)
         }
         return AsyncThrowingStream { continuation in
+            if let thrown {
+                continuation.finish(throwing: thrown)
+                return
+            }
             for event in events { continuation.yield(event) }
             continuation.finish()
         }

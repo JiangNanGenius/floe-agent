@@ -107,3 +107,21 @@ struct OfficialSkillHubTests {
     #expect(!shell.toolNames.contains("ssh.shell"))
     #expect(shell.toolNames.contains("exec.shell"))
 }
+
+@Test func bundledDesignGuideResolvesRealToolReferences() throws {
+    let guide = try #require(BundledDomainSkills.all.first { $0.id == "floe-design" })
+    // Hidden built-in: readable on demand, never hub-exposed, and its tool
+    // references resolve through the same provenance scan as other guides.
+    #expect(!guide.exposed)
+    for name in ["design.resolveTarget", "design.propose", "design.compare",
+                 "design.adopt", "canvas.designPropose", "canvas.designAdopt",
+                 "image.models", "image.generate", "video.models"] {
+        #expect(guide.toolNames.contains(name), "missing tool reference: \(name)")
+    }
+    // Retired names and non-catalog roots must not leak in as dependencies.
+    #expect(!guide.toolNames.contains("image.process"))
+    #expect(!guide.toolNames.contains("workspace.replaceText"))
+    // ContentUpdate version priority/frozen-run machinery serves bundled
+    // guides through the SAME BundledDomainSkills.all entry point.
+    #expect(BundledDomainSkills.all.contains { $0.id == "floe-design" && $0.version == "1.0.0" })
+}

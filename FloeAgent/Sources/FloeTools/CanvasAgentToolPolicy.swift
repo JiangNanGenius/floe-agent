@@ -20,6 +20,12 @@ public enum CanvasAgentToolPolicy {
         // the canvas model choose a public candidate itself instead of asking
         // the user for an internal UUID.
         "video.models",
+        // Read-only image candidate catalog, same discovery contract as
+        // video.models: canvas image work executes through canvas.generate /
+        // the native image editors so results bind to nodes; image.models
+        // only lists configured routes and their parameter limits. Generation
+        // and editing stay off the canvas ceiling.
+        "image.models",
         "canvas.getState", "canvas.applyOperations", "canvas.delete",
         "canvas.assetSearch", "canvas.assetInsert", "canvas.assetImport",
         "canvas.generate", "canvas.generationStatus",
@@ -30,7 +36,14 @@ public enum CanvasAgentToolPolicy {
         "canvas.designCreate", "canvas.designUpdateBrief", "canvas.designUpdateSpec",
         "canvas.designRegisterRevision", "canvas.designAddFeedback",
         "canvas.designPropose", "canvas.designAdopt", "canvas.designReject",
-        "canvas.designRestore"
+        "canvas.designRestore",
+        // Bounded canvas→ordinary-task handoff: transfers ONLY the user's
+        // selected/named materials as verified immutable snapshots to a new
+        // or existing ordinary project+task (idempotent per operationID).
+        // It grants NO execution authority: no Linux, shell, or workspace
+        // write enters the canvas ceiling through this tool; the destination
+        // task runs under its own capabilities and approvals.
+        "canvas.startOrdinaryTask"
     ]
 
     public static func allowedToolNames(

@@ -1076,6 +1076,10 @@ final class ConversationCenter: ObservableObject {
             try await NotesRepository.shared.reconcileAssistantOwnership(database: environment.database)
             conversations = try await environment.conversationStore.conversations()
                 .sorted { $0.updatedAt > $1.updatedAt }
+            // Entry state derives from DURABLE binding/envelope truth, so a
+            // relaunch/restore republishes it without opening any page.
+            await environment.designEntryState.refreshAll(
+                conversationIDs: conversations.map(\.id), environment: environment)
         } catch {
             FloeLogger(category: .app).warning("conversationHistoryReloadFailed")
         }
@@ -1423,6 +1427,23 @@ final class ConversationCenter: ObservableObject {
             stagedRelativePath: bound.stagedRelativePath)
     }
 
+    /// The Linux-bound session container identity for this conversation, when
+    /// one already exists in the registry. This is the same identity the
+    /// execution layer binds into `ToolContext` for the run's tool calls, so
+    /// the unknown-outcome reconciler evaluates quiet-stop evidence for
+    /// exactly the guest the run owns. Read-only lookup: it never materializes
+    /// a new container, so runs without a prior Linux binding keep the
+    /// baseline strict suppression (nil).
+    static func runBoundLinuxEnvironmentID(
+        registry: EnvironmentRegistry,
+        conversationID: UUID
+    ) async -> String? {
+        await registry
+            .containersOwned(by: conversationID.uuidString)
+            .first(where: { $0.kind == .session && $0.effectiveExecutionBackend == .linuxVM })?
+            .id
+    }
+
     func runService(
         for conversationID: UUID,
         provider: ProviderProfile,
@@ -1647,6 +1668,16 @@ final class ConversationCenter: ObservableObject {
         // document the review sheet presents. Authority comes from the
         // durable binding (verified at bind time), never from prompt text.
         let canvasStagedDocument = Self.canvasStagedBinding(conversationID: conversationID)
+        // R3 recovery bridge: bind the runtime's unknown-outcome reconciler
+        // to THIS run's real Linux environment — the same session-container
+        // identity the execution layer binds into ToolContext through
+        // ToolEnvironmentRouting. Never inferred from model text or tool
+        // arguments. Runs without a Linux-bound environment keep the strict
+        // suppress-until-inspected behavior (nil reconciler).
+        let runLinuxEnvironmentID = await Self.runBoundLinuxEnvironmentID(
+            registry: environment.environmentRegistry,
+            conversationID: conversationID
+        )
         let configuration = FloeAgentRuntime.Configuration(
             conversationID: conversationID,
             provider: provider,
@@ -1669,6 +1700,12 @@ final class ConversationCenter: ObservableObject {
             unchangedToolOutcomeLimit: runSurface == .canvas ? 2 : 3,
             planChecklistProvider: { [database = environment.database] in
                 try? await TaskChecklistStore(database: database).latest(conversationID: conversationID)
+            },
+            unknownOutcomeReconciler: runLinuxEnvironmentID.map { id in
+                LinuxUnknownOutcomeReconcilerBridge(
+                    reconciler: LinuxUnknownOutcomeReconciler(
+                        environmentID: id,
+                        lifecycle: environment.linuxGuestLifecycle))
             }
         )
         await environment.subagentRunnerRegistry.register(
@@ -2172,6 +2209,23 @@ final class ConversationCenter: ObservableObject {
         guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
             throw FloeError.validationFailed("Conversation was deleted during launch")
         }
+        // Continuation of bound design work: re-establish the original-write
+        // freeze BEFORE the deferred run can reach the provider or any tool
+        // (the same fail-closed rule startTask applies). Covers sends,
+        // queued-input launches and steered follow-ups on a conversation
+        // whose durable launch binding still requires protection.
+        do {
+            try await establishDesignProtectionIfRequired(conversationID: conversationID)
+        } catch {
+            // Fail closed without leaving a durable "preparing" run behind.
+            try? await environment.runStore.updateRunState(
+                id: prepared.run.id,
+                state: "failed",
+                endedAt: Date())
+            throw error
+        }
+        await environment.designEntryState.refresh(
+            conversationID: conversationID, environment: environment)
         // The durable run already exists. Return its identity immediately and
         // perform auxiliary image understanding off the send path so a photo
         // never leaves the composer apparently stuck in "preparing".
@@ -2200,6 +2254,7 @@ final class ConversationCenter: ObservableObject {
         executionMode: AgentExecutionMode = .agent,
         initialPolicy: DraftTaskPolicy? = nil,
         newConversationID: UUID? = nil,
+        designLaunchBinding: DesignLaunchBinding? = nil,
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationTask {
         let ingress = SecretIngressScanner.scan(goal)
@@ -2242,6 +2297,62 @@ final class ConversationCenter: ObservableObject {
         guard !isClearingHistory else {
             throw FloeError.validationFailed("Conversation history was cleared during launch")
         }
+        // Design launch binding: freeze the typed target + work mode BEFORE
+        // the deferred run task starts provider I/O. A mock provider that
+        // requests tools immediately must already see the frozen identity.
+        // On a persistence failure, fail closed: remove the just-prepared
+        // conversation so no empty session or half-bound task survives, and
+        // let the user retry (the draft still holds the text).
+        if var binding = designLaunchBinding {
+            // `DesignTarget` fields are immutable (FloeCore value); the
+            // launch rebind constructs the rebound identity explicitly.
+            let rebound = binding.target
+            binding.target = DesignTarget(
+                kind: rebound.kind,
+                ownerID: rebound.ownerID,
+                documentID: rebound.documentID,
+                sourceID: rebound.sourceID,
+                environmentID: rebound.environmentID,
+                revision: rebound.revision,
+                originConversationID: prepared.conversation.id.uuidString,
+                requestedOutputKind: rebound.requestedOutputKind)
+            binding.originalConversationID = binding.originalConversationID
+                ?? prepared.conversation.id.uuidString
+            do {
+                try DesignLaunchBindingStore.save(binding, conversationID: prepared.conversation.id)
+            } catch {
+                try? await deleteConversation(id: prepared.conversation.id)
+                throw error
+            }
+            // Keep the creative recency list (presentation only) in sync with
+            // the rebound identity; the durable request itself already lives
+            // in the owner envelope under the same stable key.
+            if binding.target.kind == .creativeDocument {
+                DesignCreativeRequestStore.remember(binding.target)
+            }
+            // Ordinary-write freeze for an EXPLICIT bound design
+            // modification/restructure of a workspace file — and for EVERY
+            // later continuation run of this conversation (see
+            // establishDesignProtectionIfRequired in startRun): the
+            // original is re-frozen BEFORE the deferred run task can reach
+            // the provider or any tool, so the run's FIRST ordinary
+            // mutating call already hits the barrier. FAIL CLOSED: a file
+            // original whose protection cannot be established (missing
+            // workspace, broken bookmark, missing file, persistence
+            // failure) never launches unprotected.
+            do {
+                try await establishDesignProtectionIfRequired(
+                    conversationID: prepared.conversation.id)
+            } catch {
+                // The just-prepared conversation is removed: no empty
+                // session or half-bound task survives (the draft still
+                // holds the text).
+                try? await deleteConversation(id: prepared.conversation.id)
+                throw error
+            }
+            await environment.designEntryState.refresh(
+                conversationID: prepared.conversation.id, environment: environment)
+        }
         // Navigation must not wait for auxiliary visual analysis. The launch
         // transaction above already made the conversation/run durable, so
         // return that identity now and let the run task preprocess images in
@@ -2276,12 +2387,49 @@ final class ConversationCenter: ObservableObject {
         return StartedConversationTask(conversationID: prepared.conversation.id, run: run)
     }
 
+    // MARK: - Design original-write protection lifecycle
+
+    /// Re-establishes the launch freeze for a conversation whose durable
+    /// binding requires it (fileDocument + modify/restructure). Runs BEFORE
+    /// the deferred run task can reach the provider or any tool — brand-new
+    /// launches AND every later continuation. FAIL CLOSED: when the required
+    /// protection cannot be established (missing workspace/bookmark/file or
+    /// a persistence failure) the launch aborts instead of running
+    /// unprotected. Create bindings and chat attachments need no file
+    /// freeze (their originals are not workspace-addressable at launch).
+    private func establishDesignProtectionIfRequired(conversationID: UUID) async throws {
+        guard let binding = DesignLaunchBindingStore.load(conversationID: conversationID),
+              binding.target.kind == .fileDocument,
+              binding.workMode == .modify || binding.workMode == .restructure else { return }
+        let protected = await DesignFreezeProtectionCoordinator.establish(
+            binding: binding,
+            conversationID: conversationID,
+            workspaceStore: SQLiteWorkspaceStore(database: environment.database))
+        if !protected {
+            throw FloeError.invalidConfiguration(
+                "设计保护未能建立：无法冻结原文件，任务未启动。请重试或先打开原工作区。/ Design protection could not be established: the original file could not be frozen, so the task was not started. Retry or open the original workspace first.")
+        }
+    }
+
+    /// Completed-run safe resolution: with no pending candidate the
+    /// protected design work of this conversation has ended, so the
+    /// original-write freeze lifts; a pending candidate (or a missing
+    /// envelope/binding) keeps it protected.
+    private func releaseDesignProtectionAfterCompletedRun(conversationID: UUID) async {
+        guard let binding = DesignLaunchBindingStore.load(conversationID: conversationID) else { return }
+        let envelope = try? await environment.designOwnerWorkflow.state(binding.target)
+        await DesignFreezeProtectionCoordinator.releaseAfterCompletedRun(
+            binding: binding,
+            conversationID: conversationID,
+            envelope: envelope,
+            workspaceStore: SQLiteWorkspaceStore(database: environment.database))
+    }
+
     /// Persists a launch fence before any provider or local-runtime work. Keep
     /// this diagnostic at the shared boundary so cloud and on-device failures
     /// can be distinguished from adapter/model-loading failures without ever
     /// logging the prompt, credentials, or attachment contents.
-    private func prepareRunLaunch(_ request: RunLaunchRequest) async throws -> PreparedRun {
-        let logger = FloeLogger(category: .persistence)
+    private func prepareRunLaunch(_ request: RunLaunchRequest) async throws -> PreparedRun {        let logger = FloeLogger(category: .persistence)
         logger.info(
             "runLaunchPrepareStarted run=\(request.runID.uuidString) conversation=\(request.conversationID?.uuidString ?? "new") provider=\(request.providerID?.uuidString ?? "none") model=\(request.modelID?.uuidString ?? "none") workspace=\(request.workspaceID?.uuidString ?? "private") attachments=\(request.attachments.count)"
         )
@@ -3075,6 +3223,40 @@ final class ConversationCenter: ObservableObject {
         return [ConversationMessage(role: "system", content: block)]
     }
 
+    /// Trusted, launch-frozen design binding context for a bound
+    /// conversation. This is UI/service truth (never model text): the model
+    /// learns the exact typed target identity it must address, the frozen
+    /// work mode (制作/修改/重构) and — for a confirmed restructure — the
+    /// exact operation identity design.propose must use. Unbound
+    /// conversations get nothing, so ordinary chat gains no design surface.
+    private func designBindingContext(conversationID: UUID) -> [ConversationMessage] {
+        guard let binding = DesignLaunchBindingStore.load(conversationID: conversationID) else {
+            return []
+        }
+        let target = binding.target
+        var lines: [String] = []
+        lines.append("Design launch binding (trusted, frozen before this run started):")
+        lines.append("- target kind=\(target.kind.rawValue) ownerID=\(target.ownerID) sourceID=\(target.sourceID)")
+        if let kind = target.requestedOutputKind {
+            lines.append("- requestedOutputKind=\(kind.rawValue)")
+        }
+        lines.append("- frozen workMode=\(binding.workMode.rawValue) (create=make a new artifact, modify=scoped edits inside the frozen base, restructure=structural reorganization)")
+        if binding.workMode == .restructure,
+           let operation = binding.frozenRestructureOperationID, !operation.isEmpty {
+            lines.append("- confirmed restructure operationID=\(operation): design.propose MUST use exactly this operationID")
+        }
+        if let digest = binding.preservationDigest, !digest.isEmpty {
+            lines.append("- preservation digest=\(digest)")
+        }
+        if target.kind == .fileDocument,
+           binding.workMode == .modify || binding.workMode == .restructure {
+            lines.append("- the ORIGINAL source is write-frozen for this task: ordinary workspace writes to it are refused, and arbitrary Linux guest commands (exec.shell / exec.localPython / interactive shell input) are denied BEFORE dispatch while any candidate is pending (read-only inspection commands stay available)")
+            lines.append("- recovery: stage changes as isolated candidates with design.propose and let the user adopt them; the freeze lifts on verified adoption or when the last pending candidate is rejected")
+        }
+        lines.append("Address design.creativeBegin/design.propose/design.resolveTarget to EXACTLY this target identity. For a new creative request the requested output kind is chosen from the user's request; it is frozen at creativeBegin and must not change afterwards.")
+        return [ConversationMessage(role: "system", content: lines.joined(separator: "\n"))]
+    }
+
     private static let recoveredToolEvidenceCharacterBudget = 2_400
 
     /// Head/tail compaction with an explicit omission marker. The recovered
@@ -3247,6 +3429,7 @@ final class ConversationCenter: ObservableObject {
                 workspaceID: prepared.workspace.id,
                 memoryQuery: goal,
                 conversationHistory: recoveredToolEvidence
+                    + self.designBindingContext(conversationID: conversationID)
                     + assembled.filter { $0.id != prepared.userMessage.id }
                     + visual.context,
                 currentUserImages: visual.images,
@@ -3398,11 +3581,19 @@ final class ConversationCenter: ObservableObject {
             )
         }
         runTasks[runID] = nil
+        await environment.designEntryState.refresh(
+            conversationID: service.conversationID, environment: environment)
         if terminalState == "completed" {
             // Final, non-recoverable: the frozen content snapshot can never
             // be resumed into, so release it. Failed/checkpointed runs keep
             // theirs (Continue resumes them).
             await environment.contentUpdateCenter.releaseRunSnapshot(runID)
+            // Design-run safe resolution: a COMPLETED bound design run with
+            // no pending candidate is the legitimate end of the protected
+            // lifecycle — lift the original-write freeze. A pending
+            // candidate keeps it protected for the user's decision.
+            await releaseDesignProtectionAfterCompletedRun(
+                conversationID: service.conversationID)
         }
         if localModelID != nil {
             await environment.localModelRuntime.releaseForTask(
@@ -3864,6 +4055,7 @@ final class ConversationCenter: ObservableObject {
         defer { deletingConversationIDs.remove(id) }
         let removedConversation = conversations.first(where: { $0.id == id })
         conversations.removeAll { $0.id == id }
+        environment.designEntryState.clear(conversationID: id)
         do {
             let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
             let ownedWorkspaceID = try await workspaceStore.workspaceID(conversationID: id)

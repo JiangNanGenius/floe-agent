@@ -90,67 +90,105 @@ actor CadDocumentCenter: CadDocumentHost {
         guard let data = requestJSON.data(using: .utf8),
               let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let kind = request["kind"] as? String else {
-            return try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
+            return try await mapClassified {
+                try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
+            }
         }
-        switch kind {
-        case "apply":
-            return try await nativeApply(request: request, access: access,
-                                         canonicalTarget: canonicalTarget)
-        case "propose":
-            let reply = try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
-            if let proposalID = Self.nativeProposalID(in: reply) {
-                nativeProposalContexts[proposalID] = NativeProposalContext(
-                    access: access, canonicalPath: canonicalTarget)
-                // Durable BEFORE the model learns the id: a proposal that
-                // cannot be persisted must not linger half-alive (the banner
-                // would offer an apply that dies at relaunch). The throw also
-                // removes the in-process copy, so no half-state remains.
-                do {
-                    try await persistNativeProposal(reply: reply, proposalID: proposalID,
-                                                    access: access, canonicalTarget: canonicalTarget)
-                } catch {
-                    await FloeCAD3DBridge.shared.discard(proposalID: proposalID)
-                    nativeProposalContexts[proposalID] = nil
-                    throw FloeError.storageCorrupted(
-                        "The proposal could not be persisted, so it was not drafted: \(error.localizedDescription)")
+        return try await mapClassified {
+            switch kind {
+            case "apply":
+                return try await nativeApply(request: request, access: access,
+                                             canonicalTarget: canonicalTarget)
+            case "propose":
+                let reply = try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
+                if let proposalID = Self.nativeProposalID(in: reply) {
+                    nativeProposalContexts[proposalID] = NativeProposalContext(
+                        access: access, canonicalPath: canonicalTarget)
+                    // Durable BEFORE the model learns the id: a proposal that
+                    // cannot be persisted must not linger half-alive (the banner
+                    // would offer an apply that dies at relaunch). The throw also
+                    // removes the in-process copy, so no half-state remains.
+                    do {
+                        try await persistNativeProposal(reply: reply, proposalID: proposalID,
+                                                        access: access, canonicalTarget: canonicalTarget)
+                    } catch {
+                        await FloeCAD3DBridge.shared.discard(proposalID: proposalID)
+                        nativeProposalContexts[proposalID] = nil
+                        throw FloeError.storageCorrupted(
+                            "The proposal could not be persisted, so it was not drafted: \(error.localizedDescription)")
+                    }
                 }
+                return reply
+            case "import":
+                // Import DRAFTS a proposal on a throwaway copy (same
+                // propose → UI grant → apply authority as geometry edits).
+                // It never mutates the package directly.
+                return try await nativeImportProposal(resolved: resolved, documentURL: url,
+                                                      request: request, access: access,
+                                                      canonicalTarget: canonicalTarget)
+            case "preview":
+                return try await nativePreview(request: request, access: access,
+                                               canonicalTarget: canonicalTarget)
+            case "export":
+                return try await nativeExport(resolved: resolved, documentURL: url, request: request,
+                                              access: access)
+            case "status":
+                return try await nativeTaskStatus(request, resolved: resolved, access: access)
+            case "cancel":
+                return try await nativeTaskCancel(request, resolved: resolved, access: access)
+            case "assembly", "drawing", "script", "mesh":
+                // Read-only service actions run directly; MUTATING ones share the
+                // geometry proposal transaction (propose on a throwaway copy, user
+                // grant, apply). A model can never mutate through a payload call.
+                let payload = request["payload"] as? [String: Any] ?? [:]
+                let action = (payload["action"] as? String) ?? Self.defaultReadAction(for: kind)
+                if CADServiceOperations.isMutating(kind: kind, action: action) {
+                    return Self.encodeNativeJSON([
+                        "ok": false,
+                        "error": "proposal_required",
+                        "message": "\(kind).\(action) mutates the document and is not callable directly. "
+                            + "Draft it with propose using op \"\(kind).\(action)\" and apply it after the "
+                            + "user confirms in the CAD UI.",
+                    ])
+                }
+                // Read-only native jobs are registered durably (status/cancel) and
+                // run through the bridge; the reply carries the task id.
+                return try await nativeLongOperation(resolved: resolved, url: url,
+                                                     requestJSON: requestJSON, kind: kind, access: access)
+            default:
+                return try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
             }
-            return reply
-        case "preview":
-            return try await nativePreview(request: request, access: access,
-                                           canonicalTarget: canonicalTarget)
-        case "export":
-            return try await nativeExport(resolved: resolved, documentURL: url, request: request,
-                                          access: access)
-        case "import":
-            return try await nativeImport(resolved: resolved, documentURL: url, request: request,
-                                          access: access)
-        case "status":
-            return try await nativeTaskStatus(request, resolved: resolved, access: access)
-        case "cancel":
-            return try await nativeTaskCancel(request, resolved: resolved, access: access)
-        case "assembly", "drawing", "script", "mesh":
-            // Read-only service actions run directly; MUTATING ones share the
-            // geometry proposal transaction (propose on a throwaway copy, user
-            // grant, apply). A model can never mutate through a payload call.
-            let payload = request["payload"] as? [String: Any] ?? [:]
-            let action = (payload["action"] as? String) ?? Self.defaultReadAction(for: kind)
-            if CADServiceOperations.isMutating(kind: kind, action: action) {
-                return Self.encodeNativeJSON([
-                    "ok": false,
-                    "error": "proposal_required",
-                    "message": "\(kind).\(action) mutates the document and is not callable directly. "
-                        + "Draft it with propose using op \"\(kind).\(action)\" and apply it after the "
-                        + "user confirms in the CAD UI.",
-                ])
-            }
-            // Read-only native jobs are registered durably (status/cancel) and
-            // run through the bridge; the reply carries the task id.
-            return try await nativeLongOperation(resolved: resolved, url: url,
-                                                 requestJSON: requestJSON, kind: kind, access: access)
-        default:
-            return try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
         }
+    }
+
+    /// Kernel capabilities without an open document (host requirement).
+    func nativeCapabilities(access: CadDocumentAccess) async throws -> String {
+        try await authorizeAccess(access: access)
+        return try await FloeCAD3DBridge.shared.globalCapabilitiesJSON()
+    }
+
+    // MARK: - Native package creation (host factory)
+
+    /// Creates a new EMPTY native `.floecad` package inside the caller's
+    /// workspace through the SAME versioned factory the file-tree UI uses:
+    /// local workspace only, guarded relative path, sanitized unique name,
+    /// non-overwriting atomic staged commit, then a real store read-back.
+    /// The tool never writes package bytes; this host method is the only
+    /// creation authority exposed to it.
+    func createNativePackage(relativePath: String, name: String,
+                             access: CadDocumentAccess) async throws -> CadNativePackageReceipt {
+        let resolved = try resolve(documentID: relativePath, access: access,
+                                   allowingNativePackages: true)
+        try await authorizeAccess(access: access)
+        return try await withDocumentGate(Self.creationGateKey(root: resolved.root)) {
+            try await NativeCADPackageCreation.create(service: resolved.service,
+                                                      desiredRelativePath: resolved.id,
+                                                      explicitName: name)
+        }
+    }
+
+    private static func creationGateKey(root: URL) -> String {
+        "create:\(root.standardizedFileURL.resolvingSymlinksInPath().path)"
     }
 
     /// The default payload action for each service kind is its report action.
@@ -356,57 +394,227 @@ actor CadDocumentCenter: CadDocumentHost {
         ])
     }
 
-    /// Native import reads a workspace file (guarded, size-capped) and adds its
-    /// geometry as one undoable body add, then commits with the normal save.
-    private func nativeImport(resolved: Resolved, documentURL: URL,
-                              request: [String: Any], access: CadDocumentAccess) async throws -> String {
+    /// Native import as a PROPOSAL: the guarded workspace source is read,
+    /// size-checked and hashed, the bridge drafts an import on a throwaway
+    /// package copy, and the proposal is persisted exactly like a geometry
+    /// proposal. Nothing changes until the user confirms in the CAD UI and a
+    /// later apply carries that single-use grant. The source file itself is
+    /// never modified.
+    private func nativeImportProposal(resolved: Resolved, documentURL: URL,
+                                      request: [String: Any], access: CadDocumentAccess,
+                                      canonicalTarget: String) async throws -> String {
         let payload = request["payload"] as? [String: Any] ?? [:]
         guard let input = payload["path"] as? String, !input.isEmpty else {
-            throw FloeError.validationFailed("native import requires payload.path (a workspace path).")
+            throw FloeError.validationFailed("import requires payload.path (a workspace path).")
         }
-        var relative = input
-        if relative.hasPrefix("/") {
-            guard relative.hasPrefix(resolved.root.path + "/") else {
-                throw FloeError.validationFailed("Native import path must be inside the workspace.")
+        var sourceRelative = input
+        if sourceRelative.hasPrefix("/") {
+            guard sourceRelative.hasPrefix(resolved.root.path + "/") else {
+                throw FloeError.validationFailed("The import source must be inside the task workspace.")
             }
-            relative = String(relative.dropFirst(resolved.root.path.count + 1))
+            sourceRelative = String(sourceRelative.dropFirst(resolved.root.path.count + 1))
         }
-        let inputURL = try resolved.service.guardResolver.resolve(relative)
+        // The source must be a FILE inside the SAME workspace guard root
+        // (symlinks are resolved by the guard; traversal and secret paths are
+        // rejected), bounded in size, and distinct from the package itself.
+        let inputURL = try resolved.service.guardResolver.resolve(sourceRelative)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: inputURL.path, isDirectory: &isDirectory) else {
+            throw FloeError.notFound("The import source \(inputURL.lastPathComponent) was not found in the workspace.")
+        }
+        guard !isDirectory.boolValue else {
+            throw FloeError.validationFailed(
+                "The import source \(inputURL.lastPathComponent) is a folder; select a single STEP/IGES/STL/OBJ/GLB/glTF file.")
+        }
         try resolved.service.guardResolver.assertReadableSize(inputURL)
         let bytes = try Data(contentsOf: inputURL)
-        let format = ((payload["format"] as? String) ?? (relative as NSString).pathExtension).lowercased()
+        guard !bytes.isEmpty else {
+            throw FloeError.validationFailed(
+                "The import source \(inputURL.lastPathComponent) is empty; nothing to import.")
+        }
+        let inferredExt = inputURL.pathExtension.lowercased()
+        let format = NativeCADPolicy.normalizedImportFormat(payload["format"] as? String)
+            ?? NativeCADPolicy.normalizedImportFormat(inferredExt)
+        guard let format else {
+            throw FloeError.validationFailed(
+                "Import supports STEP/STP, IGES/IGS, STL, OBJ, GLB/glTF files (got \(inferredExt.isEmpty ? "unknown" : inferredExt)).")
+        }
+        let packageCanonical = Self.canonicalDocumentPath(
+            try resolved.service.guardResolver.resolve(resolved.id))
+        let sourceCanonical = Self.canonicalDocumentPath(inputURL)
+        guard sourceCanonical != packageCanonical else {
+            throw FloeError.validationFailed("The import source cannot be the .floecad package itself.")
+        }
+        if let scale = payload["unitScale"] as? Double, !(scale.isFinite && scale > 0) {
+            throw FloeError.validationFailed("unitScale must be a positive finite number.")
+        }
+        let sourceSHA = FloeDigest.sha256Hex(bytes)
+        let explicitName = (payload["name"] as? String).flatMap { raw in
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        let summary = (request["summary"] as? String).flatMap { raw in
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        } ?? "Import \(inputURL.lastPathComponent) (\(format.uppercased()))"
+
+        // First, fail fast if the target package itself cannot be opened as a
+        // native document: a missing package is distinct from a non-package
+        // directory or a malformed manifest.
+        if !FileManager.default.fileExists(atPath: documentURL.path) {
+            throw FloeError.notFound("CAD document package \(resolved.id)")
+        }
+        let identity = await FloeCADDocument.storedIdentity(at: documentURL)
+        guard let identity else {
+            throw Self.classifyUnreadablePackage(at: documentURL, relativeID: resolved.id)
+        }
+
         let taskID = await NativeCADTaskRegistry.shared.begin(
-            kind: "import",
+            kind: "import-propose",
             ownership: NativeCADTaskRegistry.Ownership(access: access, documentPath: resolved.id))
-        let imported: FloeCAD3DBridge.NativeImportResult
+        let record: CADProposalRecord
         do {
-            imported = try await FloeCAD3DBridge.shared.importNativeData(
-                at: documentURL, data: bytes, format: format,
-                fileName: (payload["name"] as? String) ?? nil,
-                unitScale: payload["unitScale"] as? Double)
+            record = try await FloeCAD3DBridge.shared.proposeImport(
+                at: documentURL, sourceRelativePath: sourceRelative, data: bytes,
+                format: format,
+                fileName: explicitName ?? inputURL.lastPathComponent,
+                unitScale: payload["unitScale"] as? Double,
+                sourceSHA256: sourceSHA, summary: summary)
         } catch let error as CADDocumentError {
             await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
                                                       detail: error.message)
-            return Self.encodeNativeJSON([
-                "ok": false,
-                "error": error.code,
-                "message": error.message,
-                "task_id": taskID.uuidString,
-                "mutated": error.code == "save_failed",
-            ])
+            throw Self.classifiedNativeError(error)
         }
-        await NativeCADTaskRegistry.shared.finish(id: taskID, state: .completed, detail: relative)
+        await NativeCADTaskRegistry.shared.finish(id: taskID, state: .completed,
+                                                  detail: sourceRelative)
+
+        nativeProposalContexts[record.id] = NativeProposalContext(
+            access: access, canonicalPath: canonicalTarget)
+        do {
+            try await persistNativeImportProposal(
+                record: record, access: access, canonicalTarget: canonicalTarget)
+        } catch {
+            await FloeCAD3DBridge.shared.discard(proposalID: record.id)
+            nativeProposalContexts[record.id] = nil
+            throw FloeError.storageCorrupted(
+                "The import proposal could not be persisted, so it was not drafted: \(error.localizedDescription)")
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let previewData = try encoder.encode(record.preview)
+        let previewObject = (try? JSONSerialization.jsonObject(with: previewData)) as? [String: Any] ?? [:]
         return Self.encodeNativeJSON([
             "ok": true,
+            "proposal": [
+                "id": record.id.uuidString,
+                "summary": record.summary,
+                "baseRevision": record.baseRevision,
+                "baseContentSHA256": record.baseContentSHA256,
+                "preview": previewObject,
+            ] as [String: Any],
+            "import": [
+                "source": sourceRelative,
+                "source_sha256": sourceSHA,
+                "format": format,
+                "geometry_class": ["stl", "obj", "glb", "gltf"].contains(format) ? "mesh" : "brep",
+                "source_bytes": bytes.count,
+                "target_revision": identity.revision,
+            ],
             "task_id": taskID.uuidString,
-            "count": imported.bodyIDs.count,
-            "body_ids": imported.bodyIDs,
-            "names": imported.names,
-            "mutated": true,
-            "revision": imported.revision,
-            "content_sha256": imported.contentSHA256,
-            "source": relative,
+            "message": "Import drafted on a throwaway copy; the source file and package are unchanged. "
+                + "Preview it, then apply with a grant issued from the CAD UI after the user confirms.",
         ])
+    }
+
+    /// Persist an import proposal with the SAME durable store as geometry
+    /// proposals, so restart recovery, the banner and preview keep working.
+    private func persistNativeImportProposal(record: CADProposalRecord,
+                                              access: CadDocumentAccess,
+                                              canonicalTarget: String) async throws {
+        let proposalData = try JSONEncoder().encode(record)
+        let proposalObject = (try JSONSerialization.jsonObject(with: proposalData)) as? [String: Any] ?? [:]
+        try await nativeProposals.save(NativeCADProposalStore.Record(
+            proposalID: record.id,
+            canonicalDocumentPath: canonicalTarget,
+            access: NativeCADProposalStore.AccessRecord(access),
+            baseRevision: record.baseRevision,
+            baseContentSHA256: record.baseContentSHA256,
+            summary: record.summary,
+            operationJSON: record.operationJSON,
+            proposalJSON: String(data: proposalData, encoding: .utf8) ?? "{}",
+            createdAt: record.createdAt,
+            status: .pending,
+            statusNote: nil,
+            receipt: nil))
+    }
+
+    /// Distinguishes the documented failure classes for a path that did not
+    /// verify as a native package: missing, present-but-not-a-package,
+    /// unreadable manifest, unsupported version. Normal UI messages name the
+    /// file, never the absolute container path.
+    private static func classifyUnreadablePackage(at url: URL, relativeID: String) -> Error {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        if !exists {
+            return FloeError.notFound("CAD document package \(relativeID)")
+        }
+        if !isDirectory.boolValue {
+            return FloeError.validationFailed(
+                "\(relativeID) exists but is a file, not a .floecad package. Create a native package with the create action instead of writing one by hand.")
+        }
+        let manifest = url.appendingPathComponent("manifest.json")
+        let document = url.appendingPathComponent("document.json")
+        if !FileManager.default.fileExists(atPath: manifest.path)
+            || !FileManager.default.fileExists(atPath: document.path) {
+            return FloeError.validationFailed(
+                "\(relativeID) is a folder but not a valid .floecad package (manifest/document missing). Use the create action to make a native package; do not rename a zip or folder to .floecad.")
+        }
+        struct ManifestVersion: Decodable { let schemaVersion: Int? }
+        if let data = try? Data(contentsOf: manifest),
+           let value = try? JSONDecoder().decode(ManifestVersion.self, from: data),
+           let version = value.schemaVersion,
+           version > 1 {
+            return FloeError.validationFailed(
+                "\(relativeID) was written by a newer version (schema \(version)); this build can open it read-only but cannot import into it. Update the app or use a matching document.")
+        }
+        return FloeError.storageCorrupted(
+            "\(relativeID) is a .floecad package but its manifest is unreadable. Do not edit package contents by hand; restore a copy or create a new package.")
+    }
+
+    /// Maps kernel errors to the documented, user-readable failure classes
+    /// without exposing absolute container paths.
+    static func classifiedNativeError(_ error: CADDocumentError) -> Error {
+        switch error.code {
+        case "exists":
+            return FloeError.validationFailed(
+                "A CAD package already exists at that name; the factory unique-ifies automatically—retry create without removing anything.")
+        case "no_solids", "iges_empty", "empty_mesh", "iges_read_failed", "iges_import_failed",
+             "mesh_parse_failed", "unsupported_format":
+            return FloeError.validationFailed(error.message)
+        case "stale_proposal":
+            return FloeError.validationFailed(error.message)
+        case "unknown_proposal", "grant_authority", "grant_required":
+            return FloeError.unauthorized
+        case "document_read_only":
+            return FloeError.validationFailed(error.message)
+        case "source_changed":
+            return FloeError.validationFailed(error.message)
+        case "save_failed":
+            return FloeError.storageCorrupted(error.message)
+        default:
+            return FloeError.storageCorrupted(error.message)
+        }
+    }
+
+    /// Maps a thrown native error to the documented taxonomy without
+    /// changing the thrown error surface.
+    private func mapClassified(_ body: () async throws -> String) async rethrows -> String {
+        do {
+            return try await body()
+        } catch let error as CADDocumentError {
+            throw Self.classifiedNativeError(error)
+        }
     }
 
     /// Tool-facing apply: validate request shape, receipt replay, then the
@@ -517,6 +725,10 @@ actor CadDocumentCenter: CadDocumentHost {
             if let applied = self.nativeApplyReceipts[proposalID] {
                 return (applied.receipt, true)
             }
+            // An import proposal re-reads its guarded source at apply time and
+            // runs through the bridge's import transaction; every other
+            // proposal runs the typed geometry/service operation.
+            let importSpec = await FloeCAD3DBridge.shared.importSpec(for: proposalID)
             switch await self.grants.reserve(grantID: grantID, proposalID: proposalID,
                                              documentID: binding.documentPath,
                                              revision: Int64(binding.revision),
@@ -556,7 +768,14 @@ actor CadDocumentCenter: CadDocumentHost {
                         + error.localizedDescription)
             }
             do {
-                let receipt = try await FloeCAD3DBridge.shared.performAuthorizedApply(proposalID: proposalID)
+                let receipt: CADApplyReceipt
+                if let importSpec {
+                    receipt = try await self.performAuthorizedImport(
+                        proposalID: proposalID, spec: importSpec,
+                        binding: binding, access: recordedAccess)
+                } else {
+                    receipt = try await FloeCAD3DBridge.shared.performAuthorizedApply(proposalID: proposalID)
+                }
                 _ = await self.grants.commitReservation(grantID: grantID)
                 await self.recordNativeApplySuccess(proposalID: proposalID, receipt: receipt,
                                                     requestID: requestID, canonicalPath: gateKey,
@@ -576,6 +795,47 @@ actor CadDocumentCenter: CadDocumentHost {
             }
         }
     }
+
+    /// Reads the import proposal's source through the SAME guarded workspace
+    /// resolver used at draft time, verifies the exact bytes (SHA-256) the
+    /// preview was computed from, and runs the authorized import transaction.
+    /// A changed/missing/oversized source refuses before any mutation and
+    /// leaves the grant reserved? — no: callers release on throw.
+    private func performAuthorizedImport(proposalID: UUID,
+                                         spec: FloeCAD3DBridge.ImportSpec,
+                                         binding: FloeCAD3DBridge.ProposalBinding,
+                                         access: CadDocumentAccess) async throws -> CADApplyReceipt {
+        let resolved = try resolve(documentID: binding.documentPath, access: access,
+                                   allowingNativePackages: true)
+        var sourceRelative = spec.sourceRelativePath
+        if sourceRelative.hasPrefix("/") {
+            guard sourceRelative.hasPrefix(resolved.root.path + "/") else {
+                throw FloeError.validationFailed("The import source is no longer inside the task workspace.")
+            }
+            sourceRelative = String(sourceRelative.dropFirst(resolved.root.path.count + 1))
+        }
+        let sourceURL = try resolved.service.guardResolver.resolve(sourceRelative)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue else {
+            throw FloeError.validationFailed(
+                "The import source \(sourceURL.lastPathComponent) is no longer available; re-read it and draft the import again.")
+        }
+        try resolved.service.guardResolver.assertReadableSize(sourceURL)
+        let bytes = try Data(contentsOf: sourceURL)
+        let sourceSHA = FloeDigest.sha256Hex(bytes)
+        guard sourceSHA.lowercased() == spec.sourceSHA256.lowercased() else {
+            throw FloeError.validationFailed(
+                "The import source \(sourceURL.lastPathComponent) changed after the preview; re-read it and draft the import again.")
+        }
+        do {
+            return try await FloeCAD3DBridge.shared.performAuthorizedImport(
+                proposalID: proposalID, data: bytes, expectedSourceSHA256: sourceSHA)
+        } catch let error as CADDocumentError {
+            throw Self.classifiedNativeError(error)
+        }
+    }
+
 
     /// Post-commit bookkeeping shared by the tool and the UI banner: durable
     /// receipt + shared write-ahead journal + in-process replay tombstone +
@@ -752,11 +1012,20 @@ actor CadDocumentCenter: CadDocumentHost {
                 || nativeProposals.record(for: proposalID)?.status == .pending else {
             throw FloeError.unauthorized
         }
+        // An import proposal registers with the bridge but not with the
+        // geometry CADProposalService; its frozen record still supplies the
+        // binding via the bridge's pending list.
         let binding = try await FloeCAD3DBridge.shared.proposalBinding(proposalID: proposalID)
         return await grants.issueGrant(proposalID: proposalID,
                                        documentID: binding.documentPath,
                                        revision: Int64(binding.revision),
                                        sha256: binding.contentSHA256)
+    }
+
+    /// The bridge's import proposal spec for a pending proposal, if any.
+    /// Used by the interactive banner to show the source/format of an import.
+    func nativeImportSpec(proposalID: UUID) async -> FloeCAD3DBridge.ImportSpec? {
+        await FloeCAD3DBridge.shared.importSpec(for: proposalID)
     }
 
     /// Interactive rejection from the confirmation banner. The durable record
@@ -1985,6 +2254,156 @@ extension CadDocumentCenter {
                           workspacePath: workspaceRoot?.path,
                           ownerKind: conversationID == nil ? "workspace" : "chat",
                           ownerID: conversationID)
+    }
+}
+
+/// Shared native `.floecad` package creation authority used by BOTH the
+/// file-tree "New CAD Document" action and the agent `cad.document` create
+/// action, so there is exactly one creation contract:
+///
+///   * local workspace only (virtual Cloud/Network inspector roots refused);
+///   * the target is a workspace-relative path resolved through
+///     `WorkspacePathGuard` (traversal, symlink and secret checks);
+///   * the document name is sanitized to a safe stem and the file name is
+///     unique-ified ("name 2.floecad", …); an existing package is never
+///     overwritten;
+///   * the package is created by the versioned FloeCAD store
+///     (`FloeCADDocument.create` → `FileCADDocumentStore.createPackage`),
+///     which stages a complete package and swaps it atomically;
+///   * the new package is read back through the store's verified identity
+///     before a receipt is returned.
+///
+/// Nothing here builds manifest.json/document.json/blobs or a zip — the
+/// versioned store owns that layout.
+enum NativeCADPackageCreation {
+    private static func isVirtualRoot(_ relativePath: String) -> Bool {
+        let normalized = relativePath
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .filter { $0 != "." }
+            .joined(separator: "/")
+        return normalized == "Cloud" || normalized.hasPrefix("Cloud/")
+            || normalized == "Network" || normalized.hasPrefix("Network/")
+    }
+
+    static func create(service: WorkspaceFileService,
+                       desiredRelativePath: String,
+                       explicitName: String?) async throws -> CadNativePackageReceipt {
+        // An absolute (or home-relative) caller path is NEVER a workspace
+        // reference: refuse it before any normalization can strip the
+        // leading slash and smuggle it inside the guard root ("/etc/x"
+        // must not become "etc/x" in the workspace).
+        let trimmedInput = desiredRelativePath
+            .trimmingCharacters(in: .whitespaces)
+        guard !trimmedInput.hasPrefix("/"), !trimmedInput.hasPrefix("~") else {
+            throw FloeError.validationFailed(
+                "The CAD package path must be relative to the workspace root.")
+        }
+        let relative = desiredRelativePath
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .joined(separator: "/")
+        guard !relative.isEmpty,
+              (relative as NSString).pathExtension.lowercased() == NativeCADPolicy.packageExtension else {
+            throw FloeError.validationFailed(
+                "create targets a .floecad package path inside the workspace.")
+        }
+        if isVirtualRoot(relative) {
+            throw FloeError.validationFailed(
+                "Native CAD packages are created in a local task workspace; cloud and network folders are not supported.")
+        }
+
+        let directory = (relative as NSString).deletingLastPathComponent
+        let pathStem = ((relative as NSString).lastPathComponent as NSString)
+            .deletingPathExtension
+        let trimmedName = explicitName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Parenthesize so this binds Optional<String>.flatMap (String?), not
+        // String's Sequence.flatMap (which yields [Character]? and has no
+        // isEmpty on its Character element).
+        let nameSource = (trimmedName.flatMap { $0.isEmpty ? nil : $0 }) ?? pathStem
+        guard let stem = NativeCADPolicy.sanitizedStem(nameSource) else {
+            throw FloeError.validationFailed(
+                "A CAD document name is required and must contain usable characters.")
+        }
+
+        // FIRST validate the REAL target/parent directory: a traversal or a
+        // path outside the guard root must throw NOW, never be treated as a
+        // name collision. `exists` only consults the file system AFTER the
+        // path is already guard-resolved; a resolution failure is a throw,
+        // not a false "exists" (which would spin the unique-ifier forever).
+        let desired: URL
+        do {
+            desired = try service.guardResolver.resolve(relative)
+        } catch let error as WorkspaceToolError {
+            throw FloeError.validationFailed(
+                "The CAD package path is outside the allowed workspace: \(error.localizedDescription)")
+        }
+        _ = desired
+        let parentRelative = directory.isEmpty ? "." : directory
+        do {
+            _ = try service.guardResolver.resolve(parentRelative)
+        } catch let error as WorkspaceToolError {
+            throw FloeError.validationFailed(
+                "The CAD package parent directory is outside the allowed workspace: \(error.localizedDescription)")
+        }
+
+        // Bounded unique-ification against the guarded root. `exists` throws
+        // on resolution failure instead of pretending a collision; the loop
+        // is also hard-bounded so it can never spin indefinitely.
+        var uniqueRelative = NativeCADPolicy.packageRelativePath(parent: directory, stem: stem)
+        var serial = 2
+        let maximumAttempts = 1000
+        func existingRelative(_ candidate: String) throws -> Bool {
+            guard let url = try? service.guardResolver.resolve(candidate) else {
+                // Should not happen after the pre-validation; treat as an
+                // error rather than a collision.
+                throw FloeError.validationFailed(
+                    "The CAD package path \(candidate) could not be resolved inside the workspace.")
+            }
+            return FileManager.default.fileExists(atPath: url.path)
+        }
+        while try existingRelative(uniqueRelative) {
+            guard serial < maximumAttempts else {
+                throw FloeError.validationFailed(
+                    "Too many existing CAD packages named '\(stem)'; choose a different name.")
+            }
+            let stemName = "\(stem) \(serial)"
+            uniqueRelative = NativeCADPolicy.packageRelativePath(parent: directory, stem: stemName)
+            serial += 1
+        }
+
+        let url: URL
+        do {
+            url = try service.guardResolver.resolve(uniqueRelative)
+        } catch let error as WorkspaceToolError {
+            throw FloeError.validationFailed(
+                "The CAD package path is outside the allowed workspace: \(error.localizedDescription)")
+        }
+        let parent = url.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: parent.path) {
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        }
+
+        let documentName = ((uniqueRelative as NSString).lastPathComponent as NSString)
+            .deletingPathExtension
+        do {
+            _ = try await FloeCADDocument.create(at: url, name: documentName, overwrite: false)
+        } catch let error as CADDocumentError {
+            throw FloeError.validationFailed(error.message)
+        }
+
+        // Real read-back through the versioned store; never report a fake
+        // empty body when the package does not independently verify.
+        guard let identity = await FloeCADDocument.storedIdentity(at: url) else {
+            throw FloeError.storageCorrupted(
+                "The new CAD package could not be read back through the native store; it was not reported as created.")
+        }
+        return CadNativePackageReceipt(
+            relativePath: uniqueRelative,
+            name: documentName,
+            revision: Int64(identity.revision),
+            schemaVersion: 1,
+            contentSHA256: identity.contentSHA256,
+            modelSHA256: identity.modelSHA256,
+            note: "Empty native package created and verified through the versioned store; add geometry with the editor or an import proposal.")
     }
 }
 

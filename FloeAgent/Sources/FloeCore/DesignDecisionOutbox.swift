@@ -75,6 +75,11 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
     /// The frozen base token of the in-place source at decision time
     /// (e.g. the workspace file digest gate). Additive/optional as above.
     public let frozenBaseToken: String?
+    /// Canonical digest of the preservation constraints a 重构 candidate
+    /// was confirmed against (audit for crash-recovery reconcile of a
+    /// restructure decision). Additive/optional: nil on legacy records and
+    /// on create/modify decisions.
+    public let preservationDigest: String?
     /// Deterministic fingerprint over the complete operation identity.
     public let fingerprint: String
     public var phase: Phase
@@ -95,6 +100,7 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         target: DesignTarget? = nil,
         proposedContentSHA256: String? = nil,
         frozenBaseToken: String? = nil,
+        preservationDigest: String? = nil,
         phase: Phase = .committing,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -112,12 +118,14 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         self.target = target
         self.proposedContentSHA256 = proposedContentSHA256
         self.frozenBaseToken = frozenBaseToken
+        self.preservationDigest = preservationDigest
         self.fingerprint = target.map { target in
             DesignDecisionIntent.makeTargetFingerprint(
                 target: target, candidateID: candidateID,
                 conversationID: conversationID, decision: decision,
                 operationID: operationID, mode: mode,
-                baseRevisionID: baseRevisionID
+                baseRevisionID: baseRevisionID,
+                preservationDigest: preservationDigest
             )
         } ?? DesignDecisionIntent.makeFingerprint(
             canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
@@ -143,7 +151,8 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         mode: String? = nil,
         baseRevisionID: String? = nil,
         proposedContentSHA256: String? = nil,
-        frozenBaseToken: String? = nil
+        frozenBaseToken: String? = nil,
+        preservationDigest: String? = nil
     ) -> DesignDecisionIntent {
         DesignDecisionIntent(
             canvasID: "",
@@ -157,7 +166,8 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
             expectedCanvasRevision: nil,
             target: target,
             proposedContentSHA256: proposedContentSHA256,
-            frozenBaseToken: frozenBaseToken
+            frozenBaseToken: frozenBaseToken,
+            preservationDigest: preservationDigest
         )
     }
 
@@ -202,9 +212,16 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         decision: String,
         operationID: String,
         mode: String?,
-        baseRevisionID: String?
+        baseRevisionID: String?,
+        preservationDigest: String? = nil
     ) -> String {
-        let canonical = [
+        // Field list is APPEND-ONLY: records written by older builds decode
+        // their stored fingerprint verbatim, and new records bind the extra
+        // identity component. Two restructure decisions over the same
+        // operation but different preservation requirements therefore
+        // produce distinct fingerprints and can never be mistaken for a
+        // replay of one another.
+        var fields = [
             // Source identity (kind/owner/doc/source/environment)…
             "target", target.sourceIdentity,
             // …plus the originating run attribution: the same source acted
@@ -218,7 +235,12 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
             "operation", operationID,
             "mode", mode ?? "",
             "base", baseRevisionID ?? ""
-        ].joined(separator: "\u{1f}")
+        ]
+        if let preservationDigest {
+            fields.append("preservation")
+            fields.append(preservationDigest)
+        }
+        let canonical = fields.joined(separator: "\u{1f}")
         return FloeDigest.sha256Hex(Data(canonical.utf8))
     }
 
@@ -226,7 +248,7 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         case id, canvasID, nodeID, candidateID, conversationID, decision
         case operationID, mode, baseRevisionID, expectedCanvasRevision
         case target
-        case proposedContentSHA256, frozenBaseToken
+        case proposedContentSHA256, frozenBaseToken, preservationDigest
         case fingerprint, phase, createdAt, updatedAt
     }
 
@@ -251,6 +273,7 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         target = decodedTarget
         proposedContentSHA256 = try c.decodeIfPresent(String.self, forKey: .proposedContentSHA256)
         frozenBaseToken = try c.decodeIfPresent(String.self, forKey: .frozenBaseToken)
+        preservationDigest = try c.decodeIfPresent(String.self, forKey: .preservationDigest)
         phase = try c.decode(Phase.self, forKey: .phase)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)

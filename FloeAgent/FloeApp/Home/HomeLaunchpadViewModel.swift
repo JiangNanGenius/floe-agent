@@ -28,6 +28,16 @@ protocol HomeTaskStarting: Sendable {
     /// Implementations MUST throw (and leave no empty thread behind) when
     /// the run fails to start.
     func startTask(goal: String, modelID: UUID?) async throws -> UUID
+    /// Design launch: freeze the typed target + work mode inside the launch
+    /// transaction, before provider I/O. The default ignores the binding so
+    /// test fakes keep compiling; the live path always provides it.
+    func startTask(goal: String, modelID: UUID?, designLaunchBinding: DesignLaunchBinding?) async throws -> UUID
+}
+
+extension HomeTaskStarting {
+    func startTask(goal: String, modelID: UUID?, designLaunchBinding: DesignLaunchBinding?) async throws -> UUID {
+        try await startTask(goal: goal, modelID: modelID)
+    }
 }
 
 @MainActor
@@ -83,23 +93,34 @@ final class HomeLaunchpadViewModel: ObservableObject {
 
     let center: ConversationCenter
     let environment: AppEnvironment
+    /// Separate start surfaces share the launch service, not their unsent text.
+    let draftStorageID: UUID
     /// Injectable task starter (defaults to the live center-backed one).
     private let taskStarter: (any HomeTaskStarting)?
+    /// Design entry (Creative continue): builds the frozen launch binding at
+    /// send time, evaluated inside `sendNewTask` so the async-loaded owner
+    /// envelope state (create vs modify) is known before the launch.
+    private let designLaunchBindingProvider: (@MainActor () -> DesignLaunchBinding?)?
 
     init(
         center: ConversationCenter,
         taskStarter: (any HomeTaskStarting)? = nil,
-        selectedProjectID: UUID? = nil
+        selectedProjectID: UUID? = nil,
+        draftStorageID: UUID = ComposerDraftStore.homeDraftID,
+        initialDraft: String? = nil,
+        designLaunchBindingProvider: (@MainActor () -> DesignLaunchBinding?)? = nil
     ) {
         self.center = center
         self.environment = center.environment
         self.taskStarter = taskStarter
         self.selectedProjectID = selectedProjectID
+        self.draftStorageID = draftStorageID
+        self.designLaunchBindingProvider = designLaunchBindingProvider
         // An unsent Home draft (and staged attachments) survive app restarts
         // under the stable launchpad identity — not the per-launch staging
         // UUID, which rotates after each send.
-        let stored = ComposerDraftStore.shared.entry(for: ComposerDraftStore.homeDraftID)
-        _draft = Published(initialValue: stored?.text ?? "")
+        let stored = ComposerDraftStore.shared.entry(for: draftStorageID)
+        _draft = Published(initialValue: stored?.text ?? initialDraft ?? "")
         _attachments = Published(initialValue: stored?.attachments ?? [])
         // Default the draft policy to the user's global default agent mode so
         // "自动审批" actually takes effect on new tasks started from Home.
@@ -215,7 +236,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
             draft: sentText,
             attachments: stagedAttachments,
             editorGeneration: draftGeneration,
-            conversationID: ComposerDraftStore.homeDraftID
+            conversationID: draftStorageID
         )
         isSending = true
         isConsumingDraft = true
@@ -225,13 +246,16 @@ final class HomeLaunchpadViewModel: ObservableObject {
         }
         do {
             let conversationID: UUID
+            let designLaunchBinding = designLaunchBindingProvider?()
             if let taskStarter {
                 conversationID = try await taskStarter.startTask(
-                    goal: goal, modelID: selectedModelID
+                    goal: goal, modelID: selectedModelID,
+                    designLaunchBinding: designLaunchBinding
                 )
             } else {
                 conversationID = try await startTaskLive(
-                    goal: goal, stagedAttachments: stagedAttachments
+                    goal: goal, stagedAttachments: stagedAttachments,
+                    designLaunchBinding: designLaunchBinding
                 )
             }
             // Clear only what this send consumed: text typed while the task
@@ -265,7 +289,13 @@ final class HomeLaunchpadViewModel: ObservableObject {
 
     /// Live path: one persistence transaction creates the conversation, run,
     /// first message, attachments and workspace link before provider I/O.
-    private func startTaskLive(goal: String, stagedAttachments: [AttachmentRef]) async throws -> UUID {
+    /// The design launch binding (when present) is frozen in the SAME window,
+    /// before the deferred run task can reach the provider.
+    private func startTaskLive(
+        goal: String,
+        stagedAttachments: [AttachmentRef],
+        designLaunchBinding: DesignLaunchBinding? = nil
+    ) async throws -> UUID {
         guard let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
             throw FloeError.invalidConfiguration("No provider and model configured")
         }
@@ -279,6 +309,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
             executionMode: agentMode,
             initialPolicy: draftPolicy,
             newConversationID: draftConversationID,
+            designLaunchBinding: designLaunchBinding,
             startOrigin: .explicitUserAction
         )
         return started.conversationID

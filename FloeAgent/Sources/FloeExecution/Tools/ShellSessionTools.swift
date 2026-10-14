@@ -58,6 +58,13 @@ public struct ShellOpenTool: AgentTool {
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        // Design original-write barrier: an interactive session is arbitrary
+        // input over time and can reach the frozen original through the
+        // workspace share. Open is refused while this run owns frozen
+        // originals, before any PTY exists.
+        if let denial = DesignGuestWriteGate.arbitraryCodeDenial(context: context) {
+            return ToolExecutionOutput(digesting: denial.message, exitStatus: 126)
+        }
         guard let root = context.workspaceRootURL else {
             throw FloeError.validationFailed("A workspace root is required for shell sessions")
         }
@@ -122,6 +129,15 @@ public struct ShellExchangeTool: AgentTool {
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        // Design original-write barrier: exchanged input is arbitrary shell
+        // input; while this run owns frozen originals only strictly read-only
+        // lines reach the session.
+        if let input = args.input,
+           let denial = DesignGuestWriteGate.evaluate(
+               interactiveInput: input, context: context
+           ) {
+            return ToolExecutionOutput(digesting: denial.message, exitStatus: 126)
+        }
         let result = try await center.exchange(
             sessionID: args.sessionID,
             input: args.input,

@@ -506,6 +506,11 @@ targets:
       - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
       - path: Tests/FloeAppTests/DesignWorkflowIntegrationTests.swift
+      - path: Tests/FloeAppTests/DesignFreezeLaunchTests.swift
+      - path: Tests/FloeAppTests/DesignWorkflowFixtureTests.swift
+      - path: Tests/FloeAppTests/DesignPageResourceLimitTests.swift
+      - path: Tests/FloeAppTests/DesignEntryPolicyTests.swift
+      - path: Tests/FloeAppTests/CreativeDestinationRouteTests.swift
       - path: Tests/FloeAppTests/DesignAdapterReopenTests.swift
       - path: Tests/FloeAppTests/DesignBuiltinNodeTests.swift
       - path: Tests/FloeAppTests/OfficePresentationOpeningTests.swift

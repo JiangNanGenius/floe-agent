@@ -79,9 +79,10 @@ struct CreativeModeHubView: View {
     @State private var editingFolder: UUID?
     @State private var showsFolderName = false
     @State private var folderName = ""
-    /// T6 design entrance: a creative START request (brief/spec/requested
-    /// output kind) that can exist BEFORE any source material does.
+    /// Saved requests are restored into the conversational entry; no new
+    /// request is written until the user actually starts a task.
     @State private var creativeDesignTarget: DesignTarget?
+    @State private var showsConversationalDesignStart = false
 
     @State private var renamingCanvas: WorkspaceCanvasRegistry.CanvasSummary?
     @State private var renameValue = ""
@@ -143,7 +144,10 @@ struct CreativeModeHubView: View {
             NavigationStack { CanvasMaterialLibraryView() }
         }
         .sheet(item: $creativeDesignTarget) { target in
-            DesignOwnerWorkflowSheet(target: target, environment: environment)
+            CreativeDesignStartView(previousTarget: target)
+        }
+        .sheet(isPresented: $showsConversationalDesignStart) {
+            CreativeDesignStartView(previousTarget: nil)
         }
         .fileImporter(
             isPresented: $importsCanvasPackage,
@@ -259,22 +263,12 @@ struct CreativeModeHubView: View {
                 .buttonStyle(.plain)
                 .frame(minHeight: FloeTheme.minimumTarget)
                 .accessibilityIdentifier("canvas.home.materials")
-                // T6 design entrance: a brief/spec/requested-output-type can
-                // be saved before ANY source material exists. The request is
-                // durable in the SAME owner design envelope; no hidden Canvas
-                // and no fabricated webpage is created here.
-                Menu {
-                    ForEach(DesignContentType.allCases, id: \.self) { type in
-                        Button(FloeL10n.l("design.panel.type.\(type.rawValue)")) {
-                            let target = DesignOwnerTargets.creative(
-                                requestID: UUID(), kind: type)
-                            DesignCreativeRequestStore.remember(target)
-                            creativeDesignTarget = target
-                        }
-                        .accessibilityIdentifier("canvas.home.design.\(type.rawValue)")
-                    }
+                // A description starts a normal, scoped task. There is no
+                // type-selection menu or mandatory goal/audience form.
+                Button {
+                    showsConversationalDesignStart = true
                 } label: {
-                    Label("workspace.workspace_canvas_view.design_request", systemImage: "square.on.square.dashed")
+                    Label("design.conversation.start_title", systemImage: "text.bubble")
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                 }
@@ -5593,6 +5587,12 @@ struct WorkspaceCanvasView: View {
     @StateObject private var store: CanvasDocumentStore
     private let workspace: WorkspaceRecord?
     @State private var selectedNodeIDs = Set<UUID>()
+    /// Manual canvas→ordinary-task handoff: the SAME service the model
+    /// tool uses (supplementary path; materials are explicit by selection).
+    @State private var ordinaryTaskHandoffGoal = false
+    @State private var handoffGoalDraft = ""
+    @State private var handoffRunning = false
+    @State private var handoffError: String?
     @State private var editingNodeID: UUID?
     @State private var selectedStrokeIDs = Set<UUID>()
     @State private var mode: CanvasMode = .select
@@ -5827,6 +5827,34 @@ struct WorkspaceCanvasView: View {
                 canvasOnboardingVersion = 1
                 showsCanvasOnboarding = false
             }
+        }
+        .sheet(isPresented: $ordinaryTaskHandoffGoal) {
+            NavigationStack {
+                Form {
+                    TextField("canvas.handoff.goalPlaceholder", text: $handoffGoalDraft, axis: .vertical)
+                        .lineLimit(2...6)
+                        .accessibilityIdentifier("canvas.handoff.goalInput")
+                    if let handoffError {
+                        Text(handoffError).foregroundStyle(.red)
+                            .font(.caption)
+                            .accessibilityIdentifier("canvas.handoff.error")
+                    }
+                }
+                .navigationTitle("canvas.handoff.title")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("action.cancel") { ordinaryTaskHandoffGoal = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("action.confirm") {
+                            Task { await startOrdinaryTaskFromSelection() }
+                        }
+                        .disabled(handoffGoalDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || handoffRunning)
+                        .accessibilityIdentifier("canvas.handoff.confirm")
+                    }
+                }
+            }
+            .presentationDetents([.medium])
         }
         .sheet(isPresented: $showsInspector) {
             if let nodeID = selectedNodeIDs.first,
@@ -8514,6 +8542,19 @@ struct WorkspaceCanvasView: View {
             .accessibilityIdentifier("canvas.node.finishEditing")
         } else if !selectedNodeIDs.isEmpty, mode == .select {
             HStack(spacing: 4) {
+                Menu {
+                    Button("canvas.handoff.startOrdinaryTask", systemImage: "square.and.arrow.up") {
+                        handoffGoalDraft = ""
+                        ordinaryTaskHandoffGoal = true
+                    }
+                    .accessibilityIdentifier("canvas.handoff.manualEntry")
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityIdentifier("canvas.handoff.menu")
+                .disabled(handoffRunning)
                 if selectedNodeIDs.count == 1, let nodeID = selectedNodeIDs.first {
                     if let node = store.selectedDocument?.nodes.first(where: { $0.id == nodeID }) {
                         if let taskNode = generationTaskNode(for: node) {
@@ -9086,6 +9127,64 @@ struct WorkspaceCanvasView: View {
     ///     with the recoverable original preserved — and then opens the SAME
     ///     workbench. Unsupported content shows precise reasons and keeps the
     ///     read-only legacy preview; nothing is written on failure.
+    /// Manual handoff: the SAME service as the model tool — explicit
+    /// selection materials, verified immutable snapshots, durable
+    /// idempotency, foreground navigation (the user initiated this). A
+    /// minimal durable run record anchors attribution (run→conversation).
+    private func startOrdinaryTaskFromSelection() async {
+        let nodeIDs = selectedNodeIDs.sorted { $0.uuidString < $1.uuidString }
+        let goal = handoffGoalDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !nodeIDs.isEmpty, !goal.isEmpty, !handoffRunning else { return }
+        handoffRunning = true
+        let manualRunID = UUID()
+        let originConversation = environment.conversationCenter.conversations
+            .first { $0.id == store.project.id }?.id ?? store.project.id
+        try? await environment.runStore.saveRun(.init(
+            id: manualRunID, conversationID: originConversation,
+            state: "running", goal: goal, startedAt: Date()))
+        defer {
+            handoffRunning = false
+            ordinaryTaskHandoffGoal = false
+        }
+        do {
+            // The manual entry shares the EXACT same service and authority
+            // as the model tool: the visible UI selection is the explicit
+            // material set (runContext nil = UI-authoritative), the document
+            // is the selected document, and the same preflight bounds apply.
+            let staged = try await CreativeDestinationRouter.materialSnapshots(
+                canvasID: store.project.id,
+                nodeIDs: nodeIDs,
+                repository: FileCanvasDocumentRepository(),
+                environment: environment)
+            // Manual entry: the run identity is a fresh sentinel (no model
+            // run owns it); the durable record still pins attribution to
+            // THIS canvas and the staged materials.
+            let outcome = try await CreativeDestinationRouter.routeToOrdinaryTask(
+                goal: goal,
+                family: .webpage,
+                needsLinux: false,
+                operationID: "manual-handoff-\(UUID().uuidString)",
+                sourceRunID: manualRunID,
+                sourceCanvasID: store.project.id,
+                sourceNodeIDs: nodeIDs,
+                snapshots: staged.materials,
+                existingWorkspaceID: nil,
+                createProject: true,
+                sourceDocumentID: staged.documentID,
+                sourceRevision: staged.sourceRevision,
+                environment: environment)
+            // The user is looking at the canvas: foreground by definition.
+            if !outcome.navigated, let navigator = CreativeDestinationRouter.navigator,
+               let destination = outcome.record.destinationConversationID {
+                navigator(destination)
+            }
+            handoffGoalDraft = ""
+            selectedNodeIDs.removeAll()
+        } catch {
+            handoffError = error.localizedDescription
+        }
+    }
+
     private func openUnified3DEditor(_ node: FloeCanvasNode) {
         guard !node.isLocked else { return }
         selectedNodeIDs = [node.id]

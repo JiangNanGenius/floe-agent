@@ -125,6 +125,35 @@ public actor LocalShellService {
             ))
             return .blocked(verdict)
         }
+        // Design original-write barrier (BEFORE any backend dispatch): when
+        // this run owns frozen design originals, arbitrary guest/native shell
+        // commands that could overwrite a frozen original are refused here —
+        // the guest addresses the same workspace through its share, so this
+        // is the single pre-dispatch choke point for exec.shell (and for
+        // jobs.submit, which funnels through this same service). Only
+        // strictly read-only inspection reaches the backend; the denial is
+        // structured with the recovery actions. Runs without a freeze are
+        // untouched.
+        if let denial = DesignGuestWriteGate.evaluate(command: command, context: context) {
+            await journal.record(ShellOperationJournal.Entry(
+                runID: context.runID.uuidString,
+                toolCallID: context.toolCallID,
+                sessionID: context.toolCallID ?? context.runID.uuidString,
+                commandSHA256: FloeDigest.sha256Hex(Data(command.utf8)),
+                cwd: cwd,
+                exitCode: 126,
+                stdoutBytes: 0,
+                stderrBytes: denial.message.utf8.count,
+                truncated: false,
+                durationMs: 0,
+                outcome: "denied:designFreezePreDispatch",
+                approvalGrantID: context.approvalGrantID?.uuidString
+            ))
+            return .outcome(.exited(
+                code: 126, stdout: "", stderr: denial.message,
+                truncated: false, stderrTruncated: false, durationMs: 0
+            ))
+        }
         let resolvedRoot: URL?
         if let provided = context.workspaceRootURL {
             resolvedRoot = provided

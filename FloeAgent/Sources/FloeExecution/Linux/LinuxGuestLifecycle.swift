@@ -77,6 +77,67 @@ public enum LinuxGuestLifecyclePhase: String, Sendable, Codable, Equatable {
     case stopped
 }
 
+/// Read-only reconciliation facts for one environment, used by the
+/// unknown-outcome bridge: an interrupted start-class dispatch may only be
+/// retried automatically when the environment is provably quiet (stopped, no
+/// registered instance, engine not running, not quarantined, no lifecycle
+/// operation in flight, and the probe reads were a single consistent
+/// generation) and the saved shape matches the retried request.
+public struct LinuxGuestStoppedReconciliation: Sendable, Equatable {
+    public var phase: LinuxGuestLifecyclePhase
+    /// The persisted last-successful shape, when one exists.
+    public var savedConfig: LinuxGuestLifecycleConfig?
+    /// Generation of the currently registered instance, if any.
+    public var launchGeneration: UInt64?
+    public var quarantined: Bool
+    public var instanceRegistered: Bool
+    public var engineRunning: Bool
+    /// A serialized lifecycle operation (start, stop, restart, repair) owned
+    /// this environment at any point during the probe. A starting/restarting/
+    /// stopping guest can transiently report NO instance and NO engine signal,
+    /// so such a window can never be read as "quietly stopped".
+    public var operationActive: Bool
+    /// False when the environment changed generations while the probe was
+    /// reading (a lifecycle operation began and/or finished between the pre-
+    /// and post-read gates, or the registered instance generation rotated).
+    /// The individual facts then belong to different generations and the
+    /// snapshot must not be used as evidence of a settled stop.
+    public var probeConsistent: Bool
+
+    /// True only when every activity signal says the earlier attempt settled.
+    /// Missing probes (no instance, engine signal absent) are never treated
+    /// as stop evidence while an operation is active or the reads straddled a
+    /// generation change.
+    public var isQuietlyStopped: Bool {
+        phase == .stopped
+            && !instanceRegistered
+            && !engineRunning
+            && !quarantined
+            && !operationActive
+            && probeConsistent
+    }
+
+    public init(
+        phase: LinuxGuestLifecyclePhase,
+        savedConfig: LinuxGuestLifecycleConfig?,
+        launchGeneration: UInt64?,
+        quarantined: Bool,
+        instanceRegistered: Bool,
+        engineRunning: Bool,
+        operationActive: Bool = false,
+        probeConsistent: Bool = true
+    ) {
+        self.phase = phase
+        self.savedConfig = savedConfig
+        self.launchGeneration = launchGeneration
+        self.quarantined = quarantined
+        self.instanceRegistered = instanceRegistered
+        self.engineRunning = engineRunning
+        self.operationActive = operationActive
+        self.probeConsistent = probeConsistent
+    }
+}
+
 /// Truthful result of one lifecycle operation. Requested fields echo the
 /// caller's typed choice (nil when none); actual fields are read back from the
 /// runtime's own session table after the operation, never assumed from the
@@ -311,6 +372,26 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
     /// reentrancy at awaited boundaries.
     private var busyEnvironments = Set<String>()
     private var sharedStarts: [String: (id: UUID, config: LinuxGuestLifecycleConfig, task: Task<LinuxGuestLifecycleReceipt, Error>)] = [:]
+    /// Monotonic per-environment operation epoch. Every serialized lifecycle
+    /// operation bumps it on begin AND on end. A read-only reconciliation
+    /// probe stamps it before its awaited controller reads and re-checks it
+    /// afterwards: an operation that began OR finished while the probe was
+    /// reading changes the epoch, which invalidates the snapshot even when
+    /// the instance was absent both before and after (a start/restart/stop
+    /// that fully elapsed during the probe must not be read as "quiet").
+    private var operationEpoch: [String: UInt64] = [:]
+    /// Internal deterministic interleaving point (never set by the app): a
+    /// reconciliation probe awaits it BETWEEN its pre- and post-read gates, so
+    /// cross-concurrency tests can land a start/restart/stop exactly inside
+    /// the probe window and prove the epoch/generation guard rejects the
+    /// resulting mixed-generation snapshot.
+    private var reconciliationProbeBarrier: (@Sendable () async -> Void)?
+
+    /// Installs (or clears, with nil) the internal reconciliation-probe
+    /// barrier used by the cross-concurrency tests. Never called by app code.
+    func setReconciliationProbeBarrier(_ barrier: (@Sendable () async -> Void)?) {
+        reconciliationProbeBarrier = barrier
+    }
     /// Internal deterministic interleaving point (never set by the app): a
     /// hard restart awaits it after the old instance is confirmed stopped and
     /// before the replacement start, so cross-concurrency tests can land a
@@ -344,10 +425,12 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
             throw LinuxGuestLifecycleError.busy(environmentID: environmentID)
         }
         busyEnvironments.insert(environmentID)
+        operationEpoch[environmentID] = (operationEpoch[environmentID] ?? 0) &+ 1
     }
 
     private func endOperation(_ environmentID: String) {
         busyEnvironments.remove(environmentID)
+        operationEpoch[environmentID] = (operationEpoch[environmentID] ?? 0) &+ 1
     }
 
     private static func throwIfCancelled(_ token: CancellationToken?) throws {
@@ -593,6 +676,81 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
     }
 
     // MARK: status
+
+    /// Read-only snapshot used to reconcile an interrupted lifecycle dispatch
+    /// with authoritative current state: the environment is quiet (no
+    /// registered instance, engine not running, not quarantined, no lifecycle
+    /// operation in flight, and the reads are a single consistent generation)
+    /// and the saved startup shape is known. Never starts, stops or mutates
+    /// anything.
+    ///
+    /// The reads straddle several `await` boundaries. A start/restart/stop
+    /// that begins AND finishes while those awaits are in flight can leave
+    /// the environment transiently with no registered instance and no engine
+    /// signal, which the raw probes would misread as "quietly stopped". The
+    /// epoch gate stamps the operation epoch before the reads and re-checks
+    /// it after; any begin/end in the window marks the snapshot
+    /// `probeConsistent == false`, and the registered-instance generation is
+    /// compared before/after as a second, controller-level guard. Missing
+    /// probes are therefore never treated as stop evidence.
+    public func reconciliationSnapshot(
+        environmentID: String
+    ) async -> LinuxGuestStoppedReconciliation {
+        // Pre-read gate, synchronous within the actor: no hop (and therefore
+        // no interleaving manager operation) between the busy flag and the
+        // stamp. The registered generation here is the BEFORE authority that
+        // the terminal read is compared against.
+        let busyBefore = busyEnvironments.contains(environmentID)
+            || sharedStarts[environmentID] != nil
+        let epochBefore = operationEpoch[environmentID] ?? 0
+        let generationBefore = await snapshot(environmentID)?.launchGeneration
+
+        // Deterministic cross-concurrency interleave point (tests only).
+        if let barrier = reconciliationProbeBarrier { await barrier() }
+
+        // Mid-read facts that cannot settle the quiet question on their own.
+        let activity = await activity(environmentID)
+        let quarantined = activity?.quarantined ?? false
+        // Controller's own activity view may also report a guest that is
+        // starting but has no running vCPU yet.
+        let starting = activity?.starting ?? false
+        let saved = await controller.preferredGuestConfiguration(environmentID: environmentID)
+
+        // TERMINAL authoritative facts, read AFTER every other await (the
+        // saved-config read above can itself suspend while the controller
+        // changes state). A start/stop that elapses during the earlier reads
+        // is visible here as a generation/registration change relative to the
+        // BEFORE read, and the reported facts use this terminal view.
+        let terminalInstance = await snapshot(environmentID)
+        let terminalEngineRunning = await controller.guestIsRunning(environmentID: environmentID)
+
+        // Post-read gate: evaluated inside the actor before constructing the
+        // snapshot. An epoch delta means a SERIALIZED operation began or ended
+        // during the reads; a generation delta (nil↔value or rotated) means
+        // the controller booted or removed an instance directly, even outside
+        // the manager's busy set. Either invalidates the mixed-generation
+        // snapshot.
+        let busyAfter = busyEnvironments.contains(environmentID)
+            || sharedStarts[environmentID] != nil
+        let epochAfter = operationEpoch[environmentID] ?? 0
+        let generationAfter = terminalInstance?.launchGeneration
+        let probeConsistent =
+            epochBefore == epochAfter
+            && generationBefore == generationAfter
+        let operationActive = busyBefore || busyAfter || starting
+
+        let running = (terminalInstance?.running ?? false) || terminalEngineRunning
+        return LinuxGuestStoppedReconciliation(
+            phase: running ? .running : .stopped,
+            savedConfig: saved,
+            launchGeneration: terminalInstance?.launchGeneration,
+            quarantined: quarantined,
+            instanceRegistered: terminalInstance != nil,
+            engineRunning: terminalEngineRunning,
+            operationActive: operationActive,
+            probeConsistent: probeConsistent
+        )
+    }
 
     public func status(environmentID: String) async throws -> LinuxGuestLifecycleReceipt {
         let current = await snapshot(environmentID)

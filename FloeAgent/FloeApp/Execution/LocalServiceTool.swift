@@ -151,6 +151,13 @@ struct LocalServiceTool: AgentTool {
             throw FloeError.validationFailed("Start this persistent service through jobs.submit in the current workspace")
         }
         try context.cancellation.throwIfCancelled()
+        // Design original-write barrier: a persistent service is arbitrary
+        // guest code with the workspace share mounted; while this run owns
+        // frozen design originals it is denied BEFORE dispatch (jobs.submit
+        // replays funnel through here too).
+        if let denial = DesignGuestWriteGate.arbitraryCodeDenial(context: context) {
+            return ToolExecutionOutput(digesting: denial.message, exitStatus: 126)
+        }
         try context.authorizeWorkspacePath(args.entry)
         try context.authorizeWorkspacePath(args.cwd ?? ".")
         let guardPaths = WorkspacePathGuard(rootURL: root)

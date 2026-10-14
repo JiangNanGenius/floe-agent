@@ -289,4 +289,58 @@ struct DesignDecisionOutboxTests {
         )
         #expect(decoded.fingerprint == expected)
     }
+
+    @Test func legacyEnvelopeWithoutPreservationDigestDecodesNil() async throws {
+        let url = makeURL()
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // A record from before the restructure-audit field existed: no
+        // preservationDigest key at all.
+        let legacy = """
+        {"schemaVersion":1,"intents":[{"id":"22222222-2222-2222-2222-222222222222","canvasID":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","nodeID":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","candidateID":"cccccccc-cccc-cccc-cccc-cccccccccccc","conversationID":"dddddddd-dddd-dddd-dddd-dddddddddddd","decision":"adopted","operationID":"op-legacy2","phase":"committing","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]}
+        """
+        try Data(legacy.utf8).write(to: url)
+        let outbox = DesignDecisionOutbox(fileURL: url)
+        let pending = await outbox.pendingIntents()
+        let decoded = try #require(pending.first)
+        #expect(decoded.preservationDigest == nil)
+    }
+
+    @Test func restructureDecisionBindsPreservationDigestIntoTargetFingerprint() async throws {
+        let url = makeURL()
+        let outbox = DesignDecisionOutbox(fileURL: url)
+        let target = DesignTarget(
+            kind: .fileDocument, ownerID: "owner-1", documentID: "",
+            sourceID: "docs/site", environmentID: nil, revision: "rev-9")
+        let base = DesignDecisionIntent.forTarget(
+            target, candidateID: "cand-1", conversationID: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            decision: "adopted", operationID: "op-r1", mode: "restructure",
+            baseRevisionID: "rev-8", preservationDigest: "digest-A")
+        try await outbox.prepare(base)
+        let reopened = DesignDecisionOutbox(fileURL: url)
+        let decoded = try #require(await reopened.pendingIntents().first)
+        #expect(decoded.preservationDigest == "digest-A")
+        // The fingerprint covers the digest: the same operation decided with
+        // different preservation requirements is a DIFFERENT decision and
+        // must not dedupe against this record.
+        let different = DesignDecisionIntent.forTarget(
+            target, candidateID: "cand-1", conversationID: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            decision: "adopted", operationID: "op-r1", mode: "restructure",
+            baseRevisionID: "rev-8", preservationDigest: "digest-B")
+        #expect(different.fingerprint != decoded.fingerprint)
+        let replay = try await reopened.prepareIfNew(different)
+        #expect(replay.isNew == true)
+        #expect(await reopened.pendingIntents().count == 2)
+        // And a create/modify decision without the field keeps the legacy
+        // fingerprint shape (append-only compatibility).
+        let plain = DesignDecisionIntent.forTarget(
+            target, candidateID: "cand-1", conversationID: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            decision: "adopted", operationID: "op-r1", mode: "modify",
+            baseRevisionID: "rev-8")
+        let legacyFingerprint = DesignDecisionIntent.makeTargetFingerprint(
+            target: target, candidateID: "cand-1",
+            conversationID: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            decision: "adopted", operationID: "op-r1", mode: "modify",
+            baseRevisionID: "rev-8")
+        #expect(plain.fingerprint == legacyFingerprint)
+    }
 }

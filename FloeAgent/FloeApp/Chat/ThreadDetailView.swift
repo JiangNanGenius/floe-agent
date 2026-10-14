@@ -34,6 +34,7 @@ struct ThreadComposerInput: Identifiable {
 struct ThreadDetailView: View {
     @StateObject private var viewModel: ThreadDetailViewModel
     @EnvironmentObject private var router: AppRouter
+    @EnvironmentObject private var designEntryState: DesignEntryStateCenter
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var editingPendingInput: PendingUserInput?
@@ -53,6 +54,11 @@ struct ThreadDetailView: View {
     @State private var showsChecklist = false
     @State private var consumedInputID: UUID?
     @State private var refreshingMediaJobs = false
+    /// Natural-language design page for this conversation's frozen launch
+    /// binding (same conversation/run/workspace; embedded + fullscreen).
+    /// Presented from the APP ROOT (AppRouter): a sheet anchored here would
+    /// dismiss spontaneously while the live thread re-renders behind it.
+    /// (`router` is declared at the top of this view.)
     private let composerInput: ThreadComposerInput?
     private let onSaveToNotes: ((String) -> Void)?
     private let embedded: Bool
@@ -117,6 +123,11 @@ struct ThreadDetailView: View {
             .task {
                 if !embedded { viewModel.selectedRunID = router.selectedRunID }
                 await viewModel.load()
+                // Re-derive the shared design-entry state when a thread
+                // opens: bootstrap-time refresh can race design-service
+                // initialization, and run-end updates land here too.
+                await environment.designEntryState.refresh(
+                    conversationID: viewModel.conversationID, environment: environment)
             }
             .task(id: composerInput?.id) {
                 guard let input = composerInput, consumedInputID != input.id else { return }
@@ -127,6 +138,7 @@ struct ThreadDetailView: View {
                 onInputConsumed(input.id)
             }
             .onDisappear { viewModel.stopLiveUpdates() }
+
             .sheet(item: $structuredExport) { file in
                 TaskExportShareSheet(url: file.url, lease: file.lease)
             }
@@ -565,6 +577,25 @@ struct ThreadDetailView: View {
     private var stateToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             usageToolbarHost
+        }
+        // Natural-language design page entry — the SHARED, published entry
+        // state (derived from durable binding/envelope/capability truth,
+        // refreshed at launch/restore/run-end). Ordinary Q&A gets nothing;
+        // creative tasks stay conversation-first until a REAL artifact.
+        let entry = designEntryState.presentation(for: viewModel.conversationID)
+        if entry == .openWorkbench || entry == .viewArtifactEntry {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    guard let target = DesignLaunchBindingStore.load(
+                        conversationID: viewModel.conversationID)?.target else { return }
+                    router.presentedDesignPage = DesignPageRequest(
+                        target: target, conversationID: viewModel.conversationID)
+                } label: {
+                    Label("design.page.open", systemImage: "square.on.square.dashed")
+                }
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("thread.designPage")
+            }
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
@@ -1225,6 +1256,7 @@ private struct MissingFinalMessageRow: View {
 private struct MessageBubble: View {
     let message: PersistedMessage
     @EnvironmentObject private var environment: AppEnvironment
+    @EnvironmentObject private var router: AppRouter
     /// T6 design entrance: the FIRST attachment of this message as a typed
     /// chat-attachment target (original task + exact attachment identity).
     @State private var designTarget: DesignTarget?
@@ -1233,16 +1265,24 @@ private struct MessageBubble: View {
         AttachmentChipItem.items(in: message.parts)
     }
 
-    private var attachmentDesignTarget: DesignTarget? {
-        for part in message.parts {
+    /// Explicit typed design entry for ONE attachment. Multi-attachment
+    /// messages list every file/image attachment as its own entry — never a
+    /// first-attachment or current-selection heuristic.
+    private func attachmentDesignTarget(attachmentID: UUID) -> DesignTarget {
+        DesignOwnerTargets.chatAttachment(
+            conversationID: message.conversationID,
+            messageID: message.id,
+            attachmentID: attachmentID)
+    }
+
+    private var attachmentDesignEntries: [(id: UUID, name: String)] {
+        message.parts.compactMap { part in
             guard part.kind == .file || part.kind == .image,
-                  let attachmentID = part.attachmentID else { continue }
-            return DesignOwnerTargets.chatAttachment(
-                conversationID: message.conversationID,
-                messageID: message.id,
-                attachmentID: attachmentID)
+                  let attachmentID = part.attachmentID else { return nil }
+            // Same name resolution as the visible attachment chips.
+            let name = part.metadata["name"] ?? part.text ?? attachmentID.uuidString
+            return (attachmentID, name)
         }
-        return nil
     }
 
     var body: some View {
@@ -1256,16 +1296,30 @@ private struct MessageBubble: View {
             }
         }
         .contextMenu {
-            if let target = attachmentDesignTarget {
+            // Per-attachment explicit entry/selection: with several
+            // attachments each one gets its own design item bound to its
+            // exact attachment identity.
+            ForEach(attachmentDesignEntries, id: \.id) { entry in
                 Button {
-                    designTarget = target
+                    designTarget = attachmentDesignTarget(attachmentID: entry.id)
                 } label: {
-                    Label("design.owner.from_attachment", systemImage: "square.on.square.dashed")
+                    Label {
+                        Text("design.owner.from_attachment_named \(entry.name)")
+                    } icon: {
+                        Image(systemName: "square.on.square.dashed")
+                    }
                 }
+                .accessibilityIdentifier("design.owner.fromAttachment.\(entry.id.uuidString)")
             }
         }
-        .sheet(item: $designTarget) { target in
-            DesignOwnerWorkflowSheet(target: target, environment: environment)
+.onChange(of: designTarget, initial: false) { _, target in
+            // The per-attachment design entry opens the SAME conversation's
+            // design page (preview + conversation), never a second chat and
+            // never the old form — presented from the stable app root.
+            guard let target else { return }
+            router.presentedDesignPage = DesignPageRequest(
+                target: target, conversationID: message.conversationID)
+            designTarget = nil
         }
     }
 }

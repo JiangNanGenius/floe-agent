@@ -107,6 +107,11 @@ final class AppEnvironment: ObservableObject {
     /// Explicit native tools (exec.localPython, …) are never rerouted. nil
     /// only where the engine is not built in.
     let linuxGuestService: TinyEMULinuxCommandService?
+    /// Single lifecycle manager shared by the execution tools and the
+    /// runtime's unknown-outcome reconciliation bridge. One instance per app
+    /// so the authority probes (quiet-stop facts, launch generation, epoch)
+    /// observe exactly the state the tools mutate.
+    let linuxGuestLifecycle: LinuxGuestLifecycleManager
     /// App-facing half of the Build 222 heavy-runtime arbitration: the local
     /// model start reports active Linux guests/services here and the alert in
     /// `FloeAgentApp` gets the explicit confirmation before anything is
@@ -217,6 +222,11 @@ final class AppEnvironment: ObservableObject {
     private lazy var _officeCommandCenter = OfficeCommandCenter()
 
     var conversationCenter: ConversationCenter { _conversationCenter }
+
+    /// Shared, published design-entry state (durable-derived; see
+    /// DesignEntryStateCenter). The root re-vends it as an environment
+    /// object so toolbars update live.
+    let designEntryState = DesignEntryStateCenter()
     /// Set during tool registration; used at launch to reconcile interrupted
     /// in-process jobs and by UI surfaces that list active background work.
     private(set) var backgroundJobService: BackgroundJobService?
@@ -241,6 +251,13 @@ final class AppEnvironment: ObservableObject {
         let center = DesignAdapterCenter(adapters: Self.makeDesignAdapters(environment: self))
         center.bind(environment: self)
         return center
+    }()
+    /// Live capability matrix over the real services (Office session, Linux
+    /// guest, configured media routes, CAD kernel, Notes/PDF). A capability
+    /// is offered only when static wiring AND the live probe agree; a gap
+    /// carries the honest reason + recovery, never a static "ready".
+    lazy var designCapabilityMatrix: DesignCapabilityMatrix = {
+        DesignCapabilityProbeFactory.makeMatrix(environment: self)
     }()
     /// Central design composition (constructed ONCE).
     ///
@@ -616,6 +633,21 @@ final class AppEnvironment: ObservableObject {
         )
         self.managedPythonInstaller = managedPython
 
+        // The app-wide guest lifecycle manager is a stored property (probes
+        // and tools observe the same instance); it must be assigned BEFORE
+        // any closure below captures self, so it is created here — after
+        // `linuxPreparation` exists, before ContainerLifecycle hooks.
+        let linuxGuestLifecycle = LinuxGuestLifecycleManager(
+            controller: linuxGuests,
+            prepareImage: { environmentID, cancellation in
+                _ = try await linuxPreparation(LinuxPreparationRequest(
+                    environmentID: environmentID,
+                    cancellation: cancellation ?? CancellationToken()
+                ))
+            }
+        )
+        self.linuxGuestLifecycle = linuxGuestLifecycle
+
         // exec.shell routes per request: Linux environments run in their
         // guest, every other environment keeps the ios_system substrate.
         let shellBackend = RoutingLocalShellBackend(
@@ -732,15 +764,7 @@ final class AppEnvironment: ObservableObject {
             sshCommandService: sshCommandService,
             cloudWorkspaceService: cloudWorkspaceService,
             linuxPreparation: linuxPreparation,
-            linuxLifecycle: LinuxGuestLifecycleManager(
-                controller: linuxGuests,
-                prepareImage: { environmentID, cancellation in
-                    _ = try await linuxPreparation(LinuxPreparationRequest(
-                        environmentID: environmentID,
-                        cancellation: cancellation ?? CancellationToken()
-                    ))
-                }
-            )
+            linuxLifecycle: linuxGuestLifecycle
         )
         FloeShortcutsRuntime.shared.install(environment: self)
         // Build 233 R2: every Office surface (workspace preview, IDE tab,
@@ -1491,6 +1515,16 @@ final class AppEnvironment: ObservableObject {
             }
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains("--ui-test-reset-creative-draft") {
+                // The creative conversational entry uses ONE fixed draft
+                // slot; the UI acceptance that proves draft retention across
+                // a relaunch asks for a clean slot (keyboard-based clearing
+                // is unreliable on the simulator). Only this test-owned slot
+                // is cleared, only under -ui-testing.
+                ComposerDraftStore.shared.clear(
+                    conversationID: CreativeDesignStartView.draftID)
+            }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains("--ui-test-batch-fixture") {
                 let fixtureID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
                 if try await conversationStore.conversation(id: fixtureID) == nil {
@@ -1500,8 +1534,19 @@ final class AppEnvironment: ObservableObject {
                 }
             }
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
-               ProcessInfo.processInfo.arguments.contains("--ui-test-checklist-fixture") {
-                let taskID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
+               ProcessInfo.processInfo.arguments.contains(DesignWorkflowFixture.launchArgument) {
+                // Synthetic design-workflow fixtures through the REAL
+                // stores/typed services (bound modify with frozen original +
+                // pending candidate; creative first-result-bound + candidate;
+                // restructure-bound frozen webroot). Named, idempotent; only
+                // under -ui-testing. See DesignWorkflowFixture.
+                await DesignWorkflowFixture.seedIfRequested(environment: self)
+                // The center loaded its list before seeding: publish the
+                // fixture conversations so the sidebar shows them immediately.
+                await conversationCenter.reload()
+            }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains("--ui-test-checklist-fixture") {                let taskID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
                 let runID = UUID(uuidString: "8C09095D-7CB9-4BB0-AC5D-3C58CB71A2B4")!
                 let store = TaskChecklistStore(database: database)
                 if try await store.latest(conversationID: taskID) == nil {
@@ -1655,6 +1700,17 @@ final class AppEnvironment: ObservableObject {
             } else {
                 persistenceReady = true
                 bootstrapError = nil
+            }
+            // Design freeze reconciliation: drop protections whose owning
+            // conversation no longer exists (deleted task / crashed launch)
+            // so an original can never stay frozen forever.
+            if !isEphemeral {
+                let database = self.database
+                await DesignFreezeProtectionCoordinator.reconcile { conversationID in
+                    guard let uuid = UUID(uuidString: conversationID) else { return false }
+                    return (try? await SQLiteConversationStore(database: database)
+                        .conversation(id: uuid)) != nil
+                }
             }
             // PiP/service truth: observe the existing Linux guest supervisor's
             // bounded lifecycle stream now that the environment is fully

@@ -71,7 +71,10 @@ public struct DocumentCreateTool: AgentTool {
         }
         do {
             try context.authorizeWorkspacePath(args.name)
-            let service = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root))
+            let service = WorkspaceFileService(
+                guard: WorkspacePathGuard(rootURL: root),
+                mutationGuard: WorkspaceToolEnvironment.designFreezeGate(
+                    registry: DesignFreezeRegistry.shared))
             _ = try service.createFile(
                 args.name, content: args.content, cancellation: context.cancellation
             )

@@ -29,6 +29,7 @@
 import Foundation
 import Observation
 import FloeCAD
+import FloeWorkbench
 
 @MainActor
 @Observable
@@ -38,6 +39,20 @@ final class FloeCAD3DBridge {
     /// Proposal awaiting interactive confirmation, shown by the CAD preview.
     private(set) var pending: [CADProposalRecord] = []
     private(set) var lastMessage: String?
+
+    /// Frozen specification of an import proposal. Geometry proposals are
+    /// owned by `CADProposalService`; an import proposal is drafted here on a
+    /// throwaway package copy and, after a UI grant, applied by re-reading the
+    /// source bytes through the host's guarded resolver (the bridge never
+    /// opens a workspace path itself).
+    struct ImportSpec: Sendable, Equatable {
+        let sourceRelativePath: String
+        let format: String
+        let fileName: String?
+        let unitScale: Double?
+        let sourceSHA256: String
+    }
+    private var importSpecs: [UUID: ImportSpec] = [:]
 
     private var documents: [String: FloeCADDocument] = [:]
     /// In-flight opens keyed by canonical path: concurrent callers share one
@@ -334,18 +349,46 @@ final class FloeCAD3DBridge {
     // MARK: Capabilities
 
     private func capabilitiesObject(_ document: FloeCADDocument) -> [String: Any] {
-        let summary = document.summary()
-        return [
+        var object = Self.globalCapabilitiesObject()
+        object["schema_version"] = document.summary().schemaVersion
+        object["unit"] = document.summary().unit ?? "mm"
+        object["read_only"] = document.summary().isReadOnly
+        object["representation"] = "floecad"
+        return object
+    }
+
+    /// Kernel/format capabilities without an open document: action surface,
+    /// package creation and the per-format import/view/edit/export matrix.
+    /// Shared by the no-document capability discovery and the per-document
+    /// capabilities reply (which additionally reports this document's state).
+    static func globalCapabilitiesObject() -> [String: Any] {
+        [
             "ok": true,
             "representation": "floecad",
+            "available": true,
             "kernel": ["name": "OpenCASCADE",
                        "version": FloeCADDocument.kernelVersion],
-            "schema_version": summary.schemaVersion,
-            "unit": summary.unit ?? "mm",
-            "read_only": summary.isReadOnly,
-            "actions": ["read", "query", "locate", "measure", "check",
-                        "propose", "preview", "apply", "save", "export",
+            "package_schema_version": 1,
+            "actions": ["create", "read", "query", "locate", "measure", "check",
+                        "import", "propose", "preview", "apply", "save", "export",
                         "status", "cancel"],
+            "creation": [
+                "extension": "floecad",
+                "new_document_is_empty": true,
+                "factory_only": true,
+                "non_overwriting": true,
+                "atomic_commit": true,
+                "read_back_verified": true,
+                "note": "Create packages with the cad.document create action or the file tree; never hand-build the directory, manifest or zip.",
+            ],
+            "import": [
+                "requires_existing_package": true,
+                "proposal_required": true,
+                "source_unchanged": true,
+                "symlink_safe": true,
+                "parametric_history": false,
+                "formats": NativeCADCapabilityMatrix.json(),
+            ],
             "operation_names": FloeCADDocument.nativeOperationNames,
             "assembly_actions": ["report", "instances", "addInstance", "removeInstance",
                                  "setTransform", "setVisible", "addConstraint",
@@ -362,6 +405,11 @@ final class FloeCAD3DBridge {
                        "script_triangles": 200000,
                        "mesh_input_triangles": 500000],
         ]
+    }
+
+    /// No-document kernel capabilities JSON (host `nativeCapabilities`).
+    func globalCapabilitiesJSON() throws -> String {
+        try jsonString(Self.globalCapabilitiesObject())
     }
 
     // MARK: Interactive grant loop (UI only)
@@ -405,6 +453,324 @@ final class FloeCAD3DBridge {
         lastMessage = message
     }
 
+    // MARK: Native import proposals (host-guarded bytes)
+
+    /// Formats imported as exact B-rep geometry through `nativeImportData`.
+    private static let brepImportFormats: Set<String> = ["step", "stp", "iges", "igs"]
+    /// Formats imported as render meshes through `nativeImportData`.
+    private static let meshImportFormats: Set<String> = ["stl", "obj"]
+    /// Mesh exchange formats only the command-vocabulary importer accepts
+    /// (glTF/GLB reuse the kernel's `document.import` mesh path).
+    private static let commandImporterFormats: Set<String> = ["glb", "gltf"]
+
+    /// Whether an import format yields render-only mesh bodies (no analytic
+    /// B-rep, no parametric feature history).
+    static func isMeshImportFormat(_ format: String) -> Bool {
+        meshImportFormats.contains(format) || commandImporterFormats.contains(format)
+    }
+
+    /// The frozen import specification for a pending proposal, if any. The
+    /// center uses this to route an authorized apply through the import
+    /// transaction (and to re-read/verify the guarded source bytes).
+    func importSpec(for proposalID: UUID) -> ImportSpec? { importSpecs[proposalID] }
+
+    /// Re-register the frozen import spec of a restored durable proposal
+    /// after relaunch (the in-process `importSpecs` map is empty then).
+    func registerRestoredImport(spec: ImportSpec, proposalID: UUID, documentURL: URL) {
+        importSpecs[proposalID] = spec
+        proposalDocument[proposalID] = documentURL
+    }
+
+    /// Draft an import proposal on a throwaway COPY of the package: the live
+    /// document, its revision and its package are untouched. `data` was read
+    /// by the host through its guarded workspace resolver; the bridge never
+    /// opens the workspace path. `sourceSHA256` binds the exact source bytes,
+    /// so an apply after the source changed is refused and re-drafted.
+    ///
+    /// STEP/IGES/STL/OBJ reuse `FloeCADDocument.nativeImportData`; GLB/glTF
+    /// reuse the kernel's `document.import` mesh importer against a staged
+    /// temp copy of the guarded bytes. No parser is implemented here, and no
+    /// parametric feature history is synthesized for imported geometry.
+    func proposeImport(at url: URL, sourceRelativePath: String, data: Data,
+                       format rawFormat: String,
+                       fileName: String?, unitScale: Double?,
+                       sourceSHA256: String, summary: String) async throws -> CADProposalRecord {
+        let format = rawFormat.lowercased()
+        let document = try await document(at: url)
+        // Mirror CADProposalService: flush live edits first so the proposal
+        // binds the bytes the grant will validate; a flush failure refuses.
+        // `flushIfDirty` is package-internal, so this uses the public
+        // save() which is a no-op identity-refresh on a clean document.
+        if document.hasUnsavedChanges {
+            let flushed = await document.save()
+            guard flushed.succeeded else {
+                throw CADDocumentError(code: "dirty_document",
+                                       message: "The document has unsaved changes that could not be flushed: "
+                                        + (flushed.error ?? "unknown error"))
+            }
+        }
+        if document.isReadOnly {
+            throw CADDocumentError(
+                code: "document_read_only",
+                message: "This .floecad package was written by a newer version and opens read-only; "
+                    + "import is not available for it in this build.")
+        }
+        let bodyCountBefore = document.summary().bodyCount
+        let revisionBefore = document.revision
+        let contentBefore = document.contentSHA256
+
+        let cloneURL = fileManagerTempURL("floecad-import-propose")
+        defer { try? FileManager.default.removeItem(at: cloneURL) }
+        do {
+            try FileManager.default.copyItem(at: url, to: cloneURL)
+        } catch {
+            throw CADDocumentError(code: "clone_failed",
+                                   message: "The import preview copy could not be made: \(error.localizedDescription)")
+        }
+        let clone = try await FloeCADDocument.open(at: cloneURL)
+        let outcome = try Self.applyImport(document: clone, data: data, format: format,
+                                           fileName: fileName, unitScale: unitScale)
+        guard outcome.isOK else {
+            clone.close()
+            throw CADDocumentError(code: outcome.errorCode ?? "import_failed",
+                                   message: outcome.message ?? "The import failed on the preview copy.")
+        }
+        let addedNames = Self.importedBodyNames(outcome.payload)
+        let bodyCountAfter = clone.summary().bodyCount
+        let warnings = Self.importWarnings(outcome.payload, format: format)
+        clone.close()
+        guard bodyCountAfter > bodyCountBefore || !addedNames.isEmpty else {
+            throw CADDocumentError(code: outcome.errorCode ?? "empty_import",
+                                   message: outcome.message
+                                    ?? "The file produced no importable bodies; nothing was changed.")
+        }
+
+        let geometryClass = Self.isMeshImportFormat(format) ? "mesh" : "brep"
+        let message = "Import \(format.uppercased()) preview: \(addedNames.count) \(geometryClass) "
+            + "body(ies) would be added; no parametric feature history is created."
+            + (warnings.isEmpty ? "" : " \(warnings)")
+        // CADProposalPreview has no public memberwise initializer; round-trip
+        // it through its Codable conformance.
+        let previewJSON: [String: Any] = [
+            "bodyCountBefore": bodyCountBefore,
+            "bodyCountAfter": bodyCountAfter,
+            "addedBodyNames": addedNames,
+            "removedBodyNames": [String](),
+            "volumeBeforeMM3": 0,
+            "volumeAfterMM3": 0,
+            "evalErrors": warnings.isEmpty ? [] : [warnings],
+            "failed": false,
+            "serviceOperation": "document.import",
+            "serviceMutated": true,
+            "serviceMessage": message,
+        ]
+        let previewData = try JSONSerialization.data(withJSONObject: previewJSON)
+        let preview = try JSONDecoder().decode(CADProposalPreview.self, from: previewData)
+
+        let operation: [String: Any] = [
+            "op": "document.import",
+            "args": Self.importArgs(sourcePath: sourceRelativePath, format: format,
+                                    fileName: fileName, unitScale: unitScale,
+                                    sourceSHA256: sourceSHA256, geometryClass: geometryClass),
+        ]
+        let operationJSON = try jsonString(operation)
+        let record = CADProposalRecord(
+            documentPath: url.path,
+            baseRevision: revisionBefore,
+            baseContentSHA256: contentBefore,
+            summary: summary,
+            operationJSON: operationJSON,
+            preview: preview)
+        pending.removeAll { $0.id == record.id }
+        pending.append(record)
+        proposalDocument[record.id] = url
+        importSpecs[record.id] = ImportSpec(sourceRelativePath: sourceRelativePath,
+                                           format: format,
+                                           fileName: fileName,
+                                           unitScale: unitScale,
+                                           sourceSHA256: sourceSHA256)
+        return record
+    }
+
+    /// Apply an ALREADY-AUTHORIZED import proposal to the live document with
+    /// the guarded, re-verified source bytes. Re-checks the base revision/SHA
+    /// and source SHA, mutates once and commits. A failed commit drops the
+    /// cached live session so the next open reloads the last committed
+    /// package rather than keeping an uncommitted import.
+    @discardableResult
+    func performAuthorizedImport(proposalID: UUID, data: Data,
+                                 expectedSourceSHA256: String) async throws -> CADApplyReceipt {
+        guard let url = proposalDocument[proposalID],
+              let spec = importSpecs[proposalID],
+              let record = pending.first(where: { $0.id == proposalID }) else {
+            throw CADDocumentError(code: "unknown_proposal", message: "No such pending import proposal.")
+        }
+        guard spec.sourceSHA256 == expectedSourceSHA256 else {
+            throw CADDocumentError(
+                code: "source_changed",
+                message: "The source file changed after this import was proposed; re-read it and draft the import again.")
+        }
+        let document = try await document(at: url)
+        guard document.revision == record.baseRevision,
+              document.contentSHA256 == record.baseContentSHA256 else {
+            throw CADDocumentError(code: "stale_proposal",
+                                   message: "The document changed after this proposal was drafted; "
+                                    + "re-read it and draft the import again.")
+        }
+        if document.isReadOnly {
+            throw CADDocumentError(code: "document_read_only",
+                                   message: "The package is read-only in this build; import is not available.")
+        }
+        let outcome = try Self.applyImport(document: document, data: data, format: spec.format,
+                                           fileName: spec.fileName, unitScale: spec.unitScale)
+        guard outcome.isOK else {
+            throw CADDocumentError(code: outcome.errorCode ?? "import_failed",
+                                   message: outcome.message ?? "The import failed; the document was not changed.")
+        }
+        let save = await document.save()
+        guard save.succeeded else {
+            // Reload the committed package on the next open so the failed
+            // import cannot linger as an uncommitted draft.
+            if let cached = documents[key(url)] {
+                cached.close()
+                documents[key(url)] = nil
+                services[key(url)] = nil
+            }
+            throw CADDocumentError(code: "save_failed",
+                                   message: save.error
+                                    ?? "The imported geometry could not be committed; the document was reloaded from the last saved package.")
+        }
+        let receipt = CADApplyReceipt(proposalID: proposalID,
+                                      revision: save.revision,
+                                      contentSHA256: save.contentSHA256,
+                                      message: "Imported and committed \(spec.format.uppercased()) geometry "
+                                        + "(\(Self.importedBodyNames(outcome.payload).count) body/bodies).")
+        pending.removeAll { $0.id == proposalID }
+        proposalDocument[proposalID] = nil
+        importSpecs[proposalID] = nil
+        lastMessage = receipt.message
+        return receipt
+    }
+
+    /// One import attempt against `document`: B-rep/mesh formats reuse
+    /// `nativeImportData`. GLB/glTF external-resource reuse is NOT
+    /// implemented in this round: the kernel command importer stages the
+    /// guarded source bytes in a fresh temp directory (no sibling scan), so a
+    /// self-contained `.glb` works, while a loose `.gltf` whose buffers/
+    /// textures live beside it is reported as unsupported rather than
+    /// silently losing geometry. No uncontrolled folder scan and no new
+    /// parser are added here.
+    private static func applyImport(document: FloeCADDocument, data: Data, format: String,
+                                    fileName: String?, unitScale: Double?) throws -> CADCommandOutcome {
+        if brepImportFormats.contains(format) || meshImportFormats.contains(format) {
+            return document.nativeImportData(data, format: format,
+                                             fileName: fileName, unitScale: unitScale)
+        }
+        // A JSON .gltf may be self-contained (every buffer/image URI is a
+        // data: URI, or the only buffer has no URI at all) or reference
+        // external .bin buffers/textures beside the file. The staged-temp
+        // import copy cannot resolve siblings, so distinguish the two by
+        // inspecting the JSON buffer/image URIs: self-contained bytes are
+        // staged and imported by the kernel command importer; external
+        // references get an explicit unsupported error (never a silent
+        // geometry drop, never an unguarded sibling scan).
+        if format == "gltf" {
+            switch Self.gltfResourceDependency(of: data) {
+            case .selfContained:
+                break
+            case .externalReferences(let names):
+                let list = names.joined(separator: ", ")
+                throw CADDocumentError(
+                    code: "gltf_external_resources_unsupported",
+                    message: "A loose .gltf that references external resources (\(list)) is not imported by the tool in this build. Provide a self-contained .glb or a .gltf whose buffers/images are embedded data URIs.")
+            case .invalidJSON:
+                throw CADDocumentError(
+                    code: "gltf_invalid_json",
+                    message: "The .gltf source is not valid JSON; the document was not changed.")
+            }
+        }
+        // Self-contained binary .glb: stage the guarded bytes for the kernel
+        // importer (no folder sibling scan).
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("floecad-import-stage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let staged = directory.appendingPathComponent("source.\(format)")
+        try data.write(to: staged, options: .atomic)
+        let operation: [String: Any] = [
+            "op": "document.import",
+            "args": [
+                "path": staged.path,
+                "fileName": fileName ?? staged.lastPathComponent,
+                "unitScale": unitScale as Any,
+            ].compactMapValues { $0 },
+        ]
+        return document.execute(operation, documentName: fileName)
+    }
+
+    /// How a JSON .gltf sources its buffers/images. `.selfContained` means
+    /// every present URI is an embedded `data:` URI (or the buffer carries no
+    /// URI at all, as in a GLB-style payload), so the staged import copy is
+    /// complete. `.externalReferences` lists the referenced resource names —
+    /// those bytes live beside the source file and are NOT staged.
+    enum GLTFResourceDependency: Equatable {
+        case selfContained
+        case externalReferences([String])
+        case invalidJSON
+    }
+
+    static func gltfResourceDependency(of data: Data) -> GLTFResourceDependency {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return .invalidJSON }
+        var external: [String] = []
+        func collect(_ key: String) {
+            guard let items = object[key] as? [[String: Any]] else { return }
+            for item in items {
+                guard let uri = item["uri"] as? String, !uri.isEmpty else { continue }
+                if !uri.hasPrefix("data:") { external.append(uri) }
+            }
+        }
+        collect("buffers")
+        collect("images")
+        return external.isEmpty ? .selfContained : .externalReferences(external)
+    }
+
+    private static func importedBodyNames(_ payload: Data) -> [String] {        guard let object = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any] else {
+            return []
+        }
+        if let imported = object["imported"] as? [[String: Any]] {
+            return imported.compactMap { $0["name"] as? String }
+        }
+        return object["names"] as? [String] ?? []
+    }
+
+    private static func importWarnings(_ payload: Data, format: String) -> String {
+        guard let object = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              let note = object["note"] as? String else { return "" }
+        return note
+    }
+
+    /// The frozen operation args persisted on an import proposal (and later
+    /// decoded by `importSpec(from:)` to re-register it after a relaunch).
+    static func importArgs(sourcePath: String, format: String, fileName: String?,
+                            unitScale: Double?, sourceSHA256: String,
+                            geometryClass: String) -> [String: Any] {
+        var args: [String: Any] = [
+            "sourcePath": sourcePath,
+            "format": format,
+            "sourceSHA256": sourceSHA256,
+            "geometryClass": geometryClass,
+        ]
+        if let fileName { args["fileName"] = fileName }
+        if let unitScale { args["unitScale"] = unitScale }
+        return args
+    }
+
+    private func fileManagerTempURL(_ prefix: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString).floecad")
+    }
+
     // MARK: Native export / import (host-guarded callers)
 
     struct NativeExportResult: Sendable {
@@ -426,49 +792,25 @@ final class FloeCAD3DBridge {
         }
     }
 
-    struct NativeImportResult: Sendable {
-        let bodyIDs: [String]
-        let names: [String]
-        let revision: Int
-        let contentSHA256: String
-    }
-
-    /// Imports exact STEP or mesh bytes as one undoable body add and commits.
-    /// The host reads the bytes through its guarded workspace resolver; the
-    /// bridge never opens a path on its own.
-    func importNativeData(at url: URL, data: Data, format: String,
-                          fileName: String?, unitScale: Double?) async throws -> NativeImportResult {
-        let document = try await document(at: url)
-        let outcome = document.nativeImportData(data, format: format,
-                                                fileName: fileName, unitScale: unitScale)
-        guard outcome.isOK else {
-            throw CADDocumentError(code: outcome.errorCode ?? "import_failed",
-                                   message: outcome.message ?? "The import failed.")
-        }
-        let save = await document.save()
-        guard save.succeeded else {
-            throw CADDocumentError(code: "save_failed",
-                                   message: save.error ?? "The imported geometry could not be committed.")
-        }
-        let object = (try? JSONSerialization.jsonObject(with: outcome.payload)) as? [String: Any]
-        let imported = object?["imported"] as? [[String: Any]] ?? []
-        return NativeImportResult(bodyIDs: imported.compactMap { $0["bodyID"] as? String },
-                                  names: imported.compactMap { $0["name"] as? String },
-                                  revision: save.revision,
-                                  contentSHA256: save.contentSHA256)
-    }
-
     func discard(proposalID: UUID) {
         service.discardProposal(proposalID)
         pending.removeAll { $0.id == proposalID }
         proposalDocument[proposalID] = nil
+        importSpecs[proposalID] = nil
     }
 
+    /// Whether a pending proposal was drafted as an import (vs a typed
+    /// geometry/service proposal). The center routes the authorized apply
+    /// accordingly.
+    func isImportProposal(_ proposalID: UUID) -> Bool { importSpecs[proposalID] != nil }
+
     /// Re-registers a durably recorded pending proposal after an app restart
-    /// (the in-process `pending` list is empty then). The proposal service
-    /// re-adopts the frozen record — no evaluation re-runs — and the live
-    /// document must still be at the recorded base revision/SHA, otherwise
-    /// the restored proposal would be stale and is refused.
+    /// (the in-process `pending` list is empty then). Geometry/service
+    /// proposals are re-adopted by the proposal service — no evaluation
+    /// re-runs — and the live document must still be at the recorded base
+    /// revision/SHA, otherwise the restored proposal is refused as stale.
+    /// Import proposals re-register their frozen source specification from
+    /// the record's operation args (the host re-reads the source at apply).
     func restore(proposal: CADProposalRecord, documentURL: URL) async throws {
         let document = try await document(at: documentURL)
         guard document.revision == proposal.baseRevision,
@@ -481,9 +823,31 @@ final class FloeCAD3DBridge {
         pending.removeAll { $0.id == proposal.id }
         pending.append(proposal)
         proposalDocument[proposal.id] = documentURL
-        // The proposal service owns the apply path; re-register the frozen
-        // record there too (it validates revision/SHA again at apply).
-        service.adoptRestored(proposal)
+        if let spec = Self.importSpec(from: proposal) {
+            importSpecs[proposal.id] = spec
+        } else {
+            // The proposal service owns the geometry/service apply path;
+            // re-register the frozen record there too (it validates
+            // revision/SHA again at apply).
+            service.adoptRestored(proposal)
+        }
+    }
+
+    /// Reconstructs the frozen import specification from a persisted record's
+    /// operation JSON; nil when the record is not an import proposal.
+    static func importSpec(from proposal: CADProposalRecord) -> ImportSpec? {
+        guard let data = proposal.operationJSON.data(using: .utf8),
+              let operation = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              operation["op"] as? String == "document.import",
+              let args = operation["args"] as? [String: Any],
+              let format = args["format"] as? String,
+              let sha = args["sourceSHA256"] as? String,
+              let sourcePath = args["sourcePath"] as? String else { return nil }
+        return ImportSpec(sourceRelativePath: sourcePath,
+                          format: format,
+                          fileName: args["fileName"] as? String,
+                          unitScale: args["unitScale"] as? Double,
+                          sourceSHA256: sha)
     }
 
     /// Pending proposals for one document as the interactive banner shows

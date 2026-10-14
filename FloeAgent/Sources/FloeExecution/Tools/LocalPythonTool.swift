@@ -149,6 +149,14 @@ public struct LocalPythonTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        // Design original-write barrier: a Python script is arbitrary guest
+        // code and can address the frozen original through the workspace
+        // share. While this run owns frozen design originals the ONLY honest
+        // answer is a pre-dispatch refusal with the recovery actions (stage
+        // via design.propose), never execution.
+        if let denial = DesignGuestWriteGate.arbitraryCodeDenial(context: context) {
+            return Self.output(denial.message, exitStatus: 126)
+        }
         // Every execution runs in the environment's Linux guest, where pip,
         // subprocess and OS access are ordinary language features. Package
         // authority stays with the reviewed `packages`/`pipCommand` path and

@@ -107,6 +107,20 @@ public struct URLDownloadTool: AgentTool {
             try context.authorizeWorkspacePath(args.destination)
             let guarder = WorkspacePathGuard(rootURL: root)
             let destination = try guarder.resolve(args.destination)
+            // Design original-write barrier: this downloader writes through
+            // its own atomic committer (NOT WorkspaceFileService), so the
+            // registry is consulted here. A NEW destination path stays open;
+            // a destination that IS a frozen original (or whose ancestor
+            // directory holds one and would be replaced) is refused BEFORE
+            // any byte is fetched.
+            let registry = DesignGuestWriteGateTesting.registry
+            if let protection = registry.protection(for: destination)
+                ?? registry.protection(ancestorOf: destination) {
+                let denial = DesignGuestWriteGate.Denial(
+                    canonicalPath: protection.canonicalPath,
+                    conversationID: protection.conversationID)
+                return Self.output(denial.message, exitStatus: 126)
+            }
             let staging = destination.deletingLastPathComponent()
                 .appendingPathComponent(".floe-download-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: staging) }

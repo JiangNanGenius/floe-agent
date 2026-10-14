@@ -19,8 +19,59 @@ public enum DesignContentTypeMapper {
         case .text, .stickyNote: return .notes
         case .file: return .pdf
         case .scene3D: return .cad
-        case .card, .shape, .group, .generationTask, .audio: return .webpage
+        // Ordinary layout objects are NOT webpages: they carry no verified
+        // web bytes. They classify as `.composition` so capability/UI layers
+        // never offer web generation or web editing for a shape or card.
+        case .card, .shape, .group, .generationTask, .audio: return .composition
         }
+    }
+
+    /// Real document formats a design workflow recognizes as FILES but has
+    /// no design family for. Bounded and explicit: unknown formats are
+    /// `.unknown`, these are `.unsupported(format:)` because the bytes are a
+    /// real document of a kind design work must not pretend to edit.
+    public static let unsupportedDesignFormats: Set<String> = [
+        "zip", "rar", "7z", "tar", "gz", "exe", "dll", "so", "dylib",
+        "wav", "mp3", "aac", "flac", "psd", "ai", "eps", "ttf", "otf"
+    ]
+
+    /// Typed classification of a real source. Built-in text plugins keep
+    /// their real types (markdown→notes, html/svg→webpage); layout nodes are
+    /// `.composition`; a verified-but-unsupported format is preserved as
+    /// such; everything unrecognized is `.unknown` — never a webpage guess.
+    public static func classification(
+        format: String?,
+        kind: CanvasNodeKind?,
+        metadata: [String: String]?
+    ) -> DesignSourceClassification {
+        if let kind, kind == .card || kind == .shape || kind == .group
+            || kind == .generationTask || kind == .audio {
+            // A built-in text-source plugin on a card IS typed content; the
+            // raw layout object is not.
+            if let pluginID = metadata?[builtinPluginMetadataKey],
+               let pluginType = builtinPluginContentType(pluginID) {
+                return .typed(pluginType)
+            }
+            return .composition
+        }
+        if let format {
+            let normalized = format.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalized.isEmpty {
+                if let family = DesignContentType.from(format: normalized) {
+                    return .typed(family)
+                }
+                if unsupportedDesignFormats.contains(normalized) {
+                    return .unsupported(format: normalized)
+                }
+                return .unknown
+            }
+        }
+        // No format: fall back to the node kind mapping (never webpage for
+        // layout kinds — see `contentType(for:)`).
+        if let kind {
+            return .typed(contentType(for: kind))
+        }
+        return .unknown
     }
 
     /// Node-metadata key marking a Canvas built-in source node
@@ -59,18 +110,19 @@ public enum DesignContentTypeMapper {
     /// Resolves the effective design content type for a node. An existing
     /// design subdocument stays authoritative; otherwise a built-in
     /// text-source card resolves to the plugin's real type (markdown→notes,
-    /// html/svg→webpage) instead of the generic card→webpage mapping.
+    /// html/svg→webpage) and an ordinary layout node resolves to
+    /// `.composition` — never the old card→webpage fallback.
     public static func effectiveContentType(
         existing: DesignContentType?,
         kind: CanvasNodeKind,
         metadata: [String: String]
     ) -> DesignContentType {
         if let existing { return existing }
-        if let pluginID = metadata[builtinPluginMetadataKey],
-           let pluginType = builtinPluginContentType(pluginID) {
-            return pluginType
+        switch classification(format: nil, kind: kind, metadata: metadata) {
+        case .typed(let family): return family
+        case .composition: return .composition
+        case .unsupported, .unknown: return contentType(for: kind)
         }
-        return contentType(for: kind)
     }
 }
 

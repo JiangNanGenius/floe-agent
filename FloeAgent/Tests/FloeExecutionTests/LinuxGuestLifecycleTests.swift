@@ -13,6 +13,46 @@ import FloeTools
 
 // MARK: - in-memory controller
 
+/// One rendezvous between a scripted in-flight operation and the test:
+/// the operation parks at `park()` (after marking arrival), the test waits on
+/// `arrived`, drives the probe, then calls `release()`.
+fileprivate final class CheckedContinuationGate: @unchecked Sendable {
+    private final class Latch: @unchecked Sendable {
+        let lock = NSLock()
+        var open = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+        func park(_ continuation: CheckedContinuation<Void, Never>) {
+            lock.lock()
+            if open { lock.unlock(); continuation.resume(); return }
+            waiters.append(continuation)
+            lock.unlock()
+        }
+        func wait() async {
+            await withCheckedContinuation { continuation in park(continuation) }
+        }
+        func release() {
+            lock.lock()
+            open = true
+            let pending = waiters
+            waiters = []
+            lock.unlock()
+            for continuation in pending { continuation.resume() }
+        }
+    }
+    private let arrival = Latch()
+    private let released = Latch()
+
+    /// Called by the parked operation once it is in flight and holds the
+    /// manager's busy flag.
+    func signalArrived() { arrival.release() }
+    /// Test side: wait until the operation is parked in flight.
+    func waitForArrival() async { await arrival.wait() }
+    /// Parked operation blocks here until the test releases it.
+    func park() async { await released.wait() }
+    /// Test side: let the parked operation finish.
+    func release() { released.release() }
+}
+
 private actor FakeLifecycleController: LinuxGuestControlling {
     struct Guest {
         var vcpus: Int
@@ -27,7 +67,24 @@ private actor FakeLifecycleController: LinuxGuestControlling {
     private var nextGeneration: UInt64 = 0
     private var savedConfiguration: LinuxGuestLifecycleConfig?
     func setSavedConfiguration(_ value: LinuxGuestLifecycleConfig) { savedConfiguration = value }
-    func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig? { savedConfiguration }
+    func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig? {
+        if let gate = preferredConfigGate {
+            preferredConfigGate = nil
+            gate.signalArrived()
+            await gate.park()
+        }
+        return savedConfiguration
+    }
+    /// Direct controller-side boot that bypasses the manager's busy set and
+    /// operation epoch (e.g. an engine/registry start not routed through the
+    /// lifecycle manager). Used to prove the probe's terminal generation read
+    /// rejects a mixed snapshot even with no manager operation in flight.
+    func bootDirectly(environmentID: String, vcpus: Int = 1, ramMB: Int = 256) {
+        nextGeneration += 1
+        active[environmentID] = Guest(
+            vcpus: vcpus, ramMB: ramMB, generation: nextGeneration, services: 0, terminals: 0
+        )
+    }
     /// When true a start fails with imageNotQualified (used to test the
     /// prepare-and-retry path).
     var failNextStartUnqualified = false
@@ -41,6 +98,15 @@ private actor FakeLifecycleController: LinuxGuestControlling {
     /// backend).
     var scriptedRepair: RuntimeV2Store.RepairResolutionReport?
     private(set) var repairCalls = 0
+    /// Optional scripted suspend points inside start/stop, used by the
+    /// reconciliation probe races to hold a lifecycle operation in flight
+    /// (busy, epoch bumped) across the probe's read window.
+    var startGate: CheckedContinuationGate?
+    var stopGate: CheckedContinuationGate?
+    /// Parks INSIDE `preferredGuestConfiguration`, after the probe's pre-read
+    /// and before its terminal read, so a test can mutate the controller
+    /// directly (bypassing the manager's busy set / epoch) in that window.
+    var preferredConfigGate: CheckedContinuationGate?
 
     func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport {
         repairCalls += 1
@@ -57,7 +123,11 @@ private actor FakeLifecycleController: LinuxGuestControlling {
     }
 
     func startGuest(environmentID: String, taskID: String?) async throws -> Bool {
-        try start(environmentID, vcpus: 1, ramMB: 256)
+        if let gate = consumeStartGate() {
+            gate.signalArrived()
+            await gate.park()
+        }
+        return try start(environmentID, vcpus: 1, ramMB: 256)
     }
 
     func startGuest(
@@ -65,6 +135,10 @@ private actor FakeLifecycleController: LinuxGuestControlling {
         taskID: String?,
         shape: GuestResourceRequest?
     ) async throws -> Bool {
+        if let gate = consumeStartGate() {
+            gate.signalArrived()
+            await gate.park()
+        }
         guard let shape else {
             return try await startGuest(environmentID: environmentID, taskID: taskID)
         }
@@ -73,6 +147,12 @@ private actor FakeLifecycleController: LinuxGuestControlling {
             vcpus: shape.vcpus.count,
             ramMB: shape.memory.mb
         )
+    }
+
+    private func consumeStartGate() -> CheckedContinuationGate? {
+        let gate = startGate
+        startGate = nil
+        return gate
     }
 
     private func start(_ environmentID: String, vcpus: Int, ramMB: Int) throws -> Bool {
@@ -95,10 +175,19 @@ private actor FakeLifecycleController: LinuxGuestControlling {
     }
 
     func stopGuest(environmentID: String) async {
+        let gate = stopGate
+        stopGate = nil
         // A scripted ineffective stop (the engine never confirmed the guest
         // left) keeps the guest present so the manager must quarantine.
-        guard !stopIsIneffective else { return }
+        guard !stopIsIneffective else {
+            if let gate { gate.signalArrived(); await gate.park() }
+            return
+        }
         active.removeValue(forKey: environmentID)
+        // Park AFTER the instance left but BEFORE stop returns: the manager
+        // still holds the busy flag, reproducing the stopping window where a
+        // naive probe would see no instance and misread it as "quiet".
+        if let gate { gate.signalArrived(); await gate.park() }
     }
 
     func resetGuest(environmentID: String) async {
@@ -200,6 +289,9 @@ private actor FakeLifecycleController: LinuxGuestControlling {
     func makeStopsIneffective() { stopIsIneffective = true }
     func forceStartMemory(_ mb: Int) { forcedStartMemoryMB = mb }
     func recordPrepare() { prepareCount += 1 }
+    func startGuestGate(_ gate: CheckedContinuationGate) { startGate = gate }
+    func stopGuestGate(_ gate: CheckedContinuationGate) { stopGate = gate }
+    func preferredConfigGate(_ gate: CheckedContinuationGate) { preferredConfigGate = gate }
     var preparations: Int { prepareCount }
     func activeGeneration(_ environmentID: String) -> UInt64? {
         active[environmentID]?.generation
@@ -986,5 +1078,307 @@ final class LinuxLifecycleToolDispatchTests: XCTestCase {
         let output = try await tool.run(Data("{}".utf8), context())
         XCTAssertEqual(output.exitStatus, 125)
         XCTAssertTrue(output.summary.contains("status=repairRefused"))
+    }
+}
+
+// MARK: - reconciliation probe races (R3 hardening)
+//
+// A read-only reconciliation snapshot straddles several awaits. A start,
+// restart or stop that is in flight — or that fully elapses during the probe
+// — can leave the environment transiently with no registered instance and no
+// engine signal. These tests prove such mixed-generation windows are never
+// reported as `isQuietlyStopped`, which is the authority an interrupted
+// startLinux retry needs before it may run. XCTest in this toolchain runs
+// each method on the main actor; the race helpers use Sendable boxes and
+// parked @Sendable barrier closures so the cross-actor interleave is explicit.
+
+/// A sendable reference box so a value can cross into a parked @Sendable
+/// barrier closure or a detached Task without capturing actor-isolated state.
+/// Its payload is only ever touched through its own synchronization or after
+/// a clear happens-before edge, so the unchecked conformance is sound.
+private struct SendableBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
+}
+
+final class LinuxReconciliationProbeRaceTests: XCTestCase {
+    private let environmentID = "env-probe-race"
+
+    private func makeManager(controller: FakeLifecycleController) -> LinuxGuestLifecycleManager {
+        LinuxGuestLifecycleManager(
+            controller: controller,
+            releasePolicy: .production,
+            prepareImage: nil,
+            stopVerificationTimeout: 0.2
+        )
+    }
+
+    private func startArgs() -> Data {
+        Data(#"{}"#.utf8) // omitted dimensions preserve the saved shape
+    }
+
+    func testIdleStoppedEnvironmentIsAQuietConsistentSnapshot() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        await controller.setSavedConfiguration(.init(vcpus: 1, memoryMB: 256))
+        let manager = makeManager(controller: controller)
+
+        let snapshot = await manager.reconciliationSnapshot(environmentID: environmentID)
+        XCTAssertTrue(snapshot.probeConsistent)
+        XCTAssertFalse(snapshot.operationActive)
+        XCTAssertFalse(snapshot.instanceRegistered)
+        XCTAssertFalse(snapshot.engineRunning)
+        XCTAssertTrue(snapshot.isQuietlyStopped)
+
+        // The reconciler may allow the guarded retry on this evidence.
+        let decision = await LinuxUnknownOutcomeReconciler(
+            environmentID: environmentID, lifecycle: manager
+        ).reconcile(
+            reason: "interruptedDispatch",
+            retryToolName: LinuxUnknownOutcomeReconciler.startToolName,
+            retryArgumentsJSON: startArgs()
+        )
+        guard case .allowed = decision else {
+            return XCTFail("expected .allowed for a quiet consistent snapshot, got \(decision)")
+        }
+    }
+
+    func testProbeDuringStartWindowIsNeverQuiet() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        await controller.setSavedConfiguration(.init(vcpus: 1, memoryMB: 256))
+        let manager = makeManager(controller: controller)
+
+        let probeGate = CheckedContinuationGate()
+        let probeBox = SendableBox(probeGate)
+        await manager.setReconciliationProbeBarrier {
+            probeBox.value.signalArrived()
+            await probeBox.value.park()
+        }
+
+        let snapshotBox = SendableBox(manager)
+        let snapshotEnv = SendableBox(environmentID)
+        let probeTask = Task {
+            await snapshotBox.value.reconciliationSnapshot(environmentID: snapshotEnv.value)
+        }
+        // Deterministically wait until the probe is parked between its gates.
+        await probeGate.waitForArrival()
+
+        // Begin a start and park it INSIDE startGuest: the manager holds the
+        // busy flag and bumped the epoch, but no instance is registered and
+        // the engine reports not running — the dangerous window.
+        let startGate = CheckedContinuationGate()
+        await controller.startGuestGate(startGate)
+        let startBox = SendableBox(manager)
+        let startEnv = SendableBox(environmentID)
+        let startTask = Task {
+            try? await startBox.value.start(
+                environmentID: startEnv.value,
+                config: .init(vcpus: 1, memoryMB: 256),
+                ownerTaskID: "run-1"
+            )
+        }
+        await startGate.waitForArrival()
+
+        // Release the probe while the start is still in flight.
+        probeGate.release()
+        let snapshot = await probeTask.value
+        XCTAssertTrue(snapshot.operationActive, "an in-flight start must be visible as activity")
+        XCTAssertFalse(snapshot.isQuietlyStopped,
+                       "missing instance/engine probes during a start must not read as stopped")
+
+        let decision = await LinuxUnknownOutcomeReconciler(
+            environmentID: environmentID, lifecycle: manager
+        ).reconcile(
+            reason: "interruptedDispatch",
+            retryToolName: LinuxUnknownOutcomeReconciler.startToolName,
+            retryArgumentsJSON: startArgs()
+        )
+        XCTAssertEqual(decision, .stillSuppressed)
+
+        startGate.release()
+        _ = await startTask.result
+        await manager.setReconciliationProbeBarrier(nil)
+    }
+
+    func testProbeAcrossACompletingStopIsMixedGenerationAndNotQuiet() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        await controller.setSavedConfiguration(.init(vcpus: 1, memoryMB: 256))
+        let manager = makeManager(controller: controller)
+        _ = try await manager.start(
+            environmentID: environmentID, config: .init(vcpus: 1, memoryMB: 256), ownerTaskID: "run-1"
+        )
+        let oldGeneration = await controller.activeGeneration(environmentID)
+        XCTAssertNotNil(oldGeneration)
+
+        let probeGate = CheckedContinuationGate()
+        let probeBox = SendableBox(probeGate)
+        await manager.setReconciliationProbeBarrier {
+            probeBox.value.signalArrived()
+            await probeBox.value.park()
+        }
+        let snapshotBox = SendableBox(manager)
+        let snapshotEnv = SendableBox(environmentID)
+        let probeTask = Task {
+            await snapshotBox.value.reconciliationSnapshot(environmentID: snapshotEnv.value)
+        }
+        await probeGate.waitForArrival()
+
+        // Run the stop fully WHILE the probe is parked: post-read sees no
+        // instance and no engine (raw "stopped"), but pre-read saw the guest
+        // and the operation epoch changed — different generations.
+        let stopGate = CheckedContinuationGate()
+        await controller.stopGuestGate(stopGate)
+        let stopBox = SendableBox(manager)
+        let stopEnv = SendableBox(environmentID)
+        let stopTask = Task {
+            try? await stopBox.value.stop(environmentID: stopEnv.value)
+        }
+        await stopGate.waitForArrival()
+        stopGate.release()
+        _ = await stopTask.result
+
+        probeGate.release()
+        let snapshot = await probeTask.value
+        XCTAssertFalse(snapshot.probeConsistent,
+                       "a stop that completed during the probe straddles two epochs/generations")
+        XCTAssertFalse(snapshot.instanceRegistered)
+        XCTAssertFalse(snapshot.engineRunning)
+        XCTAssertFalse(snapshot.isQuietlyStopped,
+                       "a quiet post-read after a generation change is mixed evidence")
+
+        await manager.setReconciliationProbeBarrier(nil)
+
+        // After everything settles, a fresh probe with no barrier is quiet.
+        let settled = await manager.reconciliationSnapshot(environmentID: environmentID)
+        XCTAssertTrue(settled.probeConsistent)
+        XCTAssertTrue(settled.isQuietlyStopped)
+    }
+
+    func testProbeAcrossACompletingRestartRotatesGenerationAndIsNotQuiet() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        await controller.setSavedConfiguration(.init(vcpus: 1, memoryMB: 256))
+        let manager = makeManager(controller: controller)
+        _ = try await manager.start(
+            environmentID: environmentID, config: .init(vcpus: 1, memoryMB: 256), ownerTaskID: "run-1"
+        )
+        let oldGeneration = await controller.activeGeneration(environmentID)
+        XCTAssertNotNil(oldGeneration)
+
+        // The probe parks BEFORE the manager's own pre-read, so a whole hard
+        // restart (stop → verify → replacement start) can elapse inside the
+        // probe window without any extra stop gate.
+        let probeGate = CheckedContinuationGate()
+        let probeBox = SendableBox(probeGate)
+        await manager.setReconciliationProbeBarrier {
+            probeBox.value.signalArrived()
+            await probeBox.value.park()
+        }
+        let snapshotBox = SendableBox(manager)
+        let snapshotEnv = SendableBox(environmentID)
+        let probeTask = Task {
+            await snapshotBox.value.reconciliationSnapshot(environmentID: snapshotEnv.value)
+        }
+        await probeGate.waitForArrival()
+
+        // Run the complete restart while the probe is parked: the replacement
+        // boots a NEW generation and the operation epoch bumps twice.
+        _ = try await manager.hardRestart(
+            environmentID: environmentID, config: .init(vcpus: 1, memoryMB: 256)
+        )
+        let newGeneration = await controller.activeGeneration(environmentID)
+        XCTAssertNotNil(newGeneration)
+        XCTAssertNotEqual(oldGeneration, newGeneration)
+
+        probeGate.release()
+        let snapshot = await probeTask.value
+        XCTAssertFalse(snapshot.probeConsistent,
+                       "the probe straddled a full stop→start restart: different epochs/generations")
+        XCTAssertNotEqual(snapshot.launchGeneration, oldGeneration)
+        XCTAssertFalse(snapshot.isQuietlyStopped,
+                       "a guest booted by the restart that elapses in the probe window is not quiet")
+
+        await manager.setReconciliationProbeBarrier(nil)
+    }
+
+    func testDirectControllerGenerationChangeDuringSavedConfigReadIsMixed() async throws {
+        // A controller-side boot that does NOT go through the manager leaves
+        // busyEnvironments empty and the operation epoch unchanged. The probe
+        // must still detect it via its terminal runtimeStates/engine read and
+        // the BEFORE→AFTER generation comparison, so a guest booted (or an
+        // instance removed) during the saved-config await never reads as a
+        // single quiet generation.
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        await controller.setSavedConfiguration(.init(vcpus: 1, memoryMB: 256))
+        let manager = makeManager(controller: controller)
+
+        // Park the probe inside its preferredConfig read, after its BEFORE
+        // generation read and before its terminal read.
+        let configGate = CheckedContinuationGate()
+        await controller.preferredConfigGate(configGate)
+
+        let probeGate = CheckedContinuationGate()
+        let probeBox = SendableBox(probeGate)
+        await manager.setReconciliationProbeBarrier {
+            probeBox.value.signalArrived()
+            await probeBox.value.park()
+        }
+        let snapshotBox = SendableBox(manager)
+        let snapshotEnv = SendableBox(environmentID)
+        let probeTask = Task {
+            await snapshotBox.value.reconciliationSnapshot(environmentID: snapshotEnv.value)
+        }
+        await probeGate.waitForArrival()
+        probeGate.release()
+        // Now the probe is parked inside preferredGuestConfiguration.
+        await configGate.waitForArrival()
+
+        // Boot a guest DIRECTLY on the controller (no manager busy/epoch).
+        await controller.bootDirectly(environmentID: environmentID)
+        configGate.release()
+
+        let snapshot = await probeTask.value
+        XCTAssertFalse(snapshot.probeConsistent,
+                       "generation nil→booted during the reads must invalidate the snapshot")
+        XCTAssertTrue(snapshot.instanceRegistered)
+        XCTAssertTrue(snapshot.engineRunning)
+        XCTAssertFalse(snapshot.isQuietlyStopped)
+        await manager.setReconciliationProbeBarrier(nil)
+
+        // After it settles, a normal guarded start retry still works: the
+        // running guest is reused and a fresh quiet probe succeeds after a
+        // normal manager stop (single consistent generation).
+        let reused = try await manager.status(environmentID: environmentID)
+        XCTAssertEqual(reused.phase, .running)
+        _ = try await manager.stop(environmentID: environmentID)
+        let settled = await manager.reconciliationSnapshot(environmentID: environmentID)
+        XCTAssertTrue(settled.probeConsistent)
+        XCTAssertTrue(settled.isQuietlyStopped)
+        let decision = await LinuxUnknownOutcomeReconciler(
+            environmentID: environmentID, lifecycle: manager
+        ).reconcile(
+            reason: "interruptedDispatch",
+            retryToolName: LinuxUnknownOutcomeReconciler.startToolName,
+            retryArgumentsJSON: Data("{}".utf8)
+        )
+        guard case .allowed = decision else {
+            return XCTFail("a normal guarded start must be allowed once the environment is quiet: \(decision)")
+        }
+    }
+
+    func testRunningGuestSnapshotIsNotQuiet() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        let manager = makeManager(controller: controller)
+        _ = try await manager.start(
+            environmentID: environmentID, config: .init(vcpus: 1, memoryMB: 256), ownerTaskID: "run-1"
+        )
+        let snapshot = await manager.reconciliationSnapshot(environmentID: environmentID)
+        XCTAssertFalse(snapshot.isQuietlyStopped)
+        XCTAssertTrue(snapshot.instanceRegistered && snapshot.engineRunning)
+        XCTAssertTrue(snapshot.probeConsistent)
     }
 }

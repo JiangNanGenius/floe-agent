@@ -29,6 +29,12 @@ public enum DesignContentType: String, Codable, Sendable, CaseIterable {
     case notes
     case pdf
     case cad
+    /// A Canvas layout/composition object (shape/group/card/audio/generation
+    /// task). This is deliberately NOT `webpage`: an ordinary Canvas node has
+    /// no verified web bytes, and pretending otherwise would offer web
+    /// generation/editing for a layout object. Only verified HTML/SVG
+    /// built-in source plugins freeze/adopt as real webpage content.
+    case composition
 }
 
 /// Project (canvas) level brief/spec authority. Stored ON the CanvasProject
@@ -234,6 +240,17 @@ public struct DesignRunFrozen: Codable, Sendable, Equatable {
     public var inputRevisionID: String?
     public var specSHA256: String?
     public var targetRevisionID: String?
+    /// The ACTUAL desired output format frozen with the run (e.g. "pptx"),
+    /// when the run was started from a typed work intent. Optional so runs
+    /// frozen before this field decode unchanged.
+    public var desiredFormat: String?
+    /// Work mode frozen with the run when it was started from a typed work
+    /// intent (nil for legacy runs: mode-agnostic modify work).
+    public var workMode: DesignWorkMode?
+    /// Digest of the preservation constraints whose trusted claim was
+    /// verified by the freeze-before-generation seam for a restructure run.
+    /// nil for create/modify and for legacy runs.
+    public var preservationDigest: String?
     public var frozenAt: Date
 
     public init(
@@ -241,12 +258,18 @@ public struct DesignRunFrozen: Codable, Sendable, Equatable {
         inputRevisionID: String? = nil,
         specSHA256: String? = nil,
         targetRevisionID: String? = nil,
+        desiredFormat: String? = nil,
+        workMode: DesignWorkMode? = nil,
+        preservationDigest: String? = nil,
         frozenAt: Date = Date()
     ) {
         self.operationID = operationID
         self.inputRevisionID = inputRevisionID
         self.specSHA256 = specSHA256
         self.targetRevisionID = targetRevisionID
+        self.desiredFormat = desiredFormat
+        self.workMode = workMode
+        self.preservationDigest = preservationDigest
         self.frozenAt = frozenAt
     }
 }
@@ -284,6 +307,26 @@ public enum DesignRevisionOrigin: String, Codable, Sendable {
     /// retained asset bytes, CAD/Office workspace document) without an
     /// external export/reimport.
     case currentNode
+
+    /// Capture-as-revision: bytes frozen from EXISTING content (a file/Chat
+    /// import or the current node). A capture is never reported as
+    /// generation — e.g. capturing a webpage into a revision must not be
+    /// presented as "made a webpage".
+    public var isCapture: Bool {
+        switch self {
+        case .importFile, .currentNode: return true
+        case .generate, .edit, .adopt, .restore, .variant: return false
+        }
+    }
+
+    /// An actual generation/edit produced new candidate content (as opposed
+    /// to capturing or re-pointing at existing bytes).
+    public var isGeneration: Bool {
+        switch self {
+        case .generate: return true
+        case .importFile, .currentNode, .edit, .adopt, .restore, .variant: return false
+        }
+    }
 }
 
 public struct DesignRevision: Codable, Sendable, Equatable, Identifiable {
@@ -302,6 +345,13 @@ public struct DesignRevision: Codable, Sendable, Equatable, Identifiable {
     /// to choose the actual reopen parser on export. Optional so revisions
     /// written before this field decode unchanged.
     public var payloadFormat: String?
+    /// Owner-side frozen base token (e.g. the workspace
+    /// "workspace:<id>:sha:<hex>:mtime:<n>" token) captured when this
+    /// revision became the adoptable base of an in-place owner. Recorded so
+    /// a later adoption can re-gate the commit on the FROZEN digest even
+    /// when the caller addresses the target without a revision token.
+    /// Optional so revisions written before this field decode unchanged.
+    public var ownerBaseToken: String?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -312,7 +362,8 @@ public struct DesignRevision: Codable, Sendable, Equatable, Identifiable {
         parentRevisionID: String? = nil,
         createdAt: Date = Date(),
         payloadRelativePath: String? = nil,
-        payloadFormat: String? = nil
+        payloadFormat: String? = nil,
+        ownerBaseToken: String? = nil
     ) {
         self.id = id
         self.artifactID = artifactID
@@ -323,6 +374,7 @@ public struct DesignRevision: Codable, Sendable, Equatable, Identifiable {
         self.createdAt = createdAt
         self.payloadRelativePath = payloadRelativePath
         self.payloadFormat = payloadFormat
+        self.ownerBaseToken = ownerBaseToken
     }
 }
 
@@ -514,6 +566,15 @@ public struct DesignCandidate: Codable, Sendable, Equatable, Identifiable {
     /// summary, diff, feedback ids and origin). Guards replay against
     /// changed bytes/format/artifact/base/summary/feedback/origin.
     public var proposalFingerprint: String?
+    /// The work mode this proposal belongs to, when it was created from a
+    /// typed work intent. Optional so candidates written before this field
+    /// decode unchanged (legacy candidates are mode-agnostic modify work).
+    public var workMode: DesignWorkMode?
+    /// Digest of the preservation constraints confirmed for a restructure
+    /// proposal (`DesignPreservationConstraints.canonicalDigest`). nil for
+    /// create/modify. A restructure candidate ALWAYS carries both this and a
+    /// valid confirmation was required at propose time.
+    public var preservationDigest: String?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -530,7 +591,9 @@ public struct DesignCandidate: Codable, Sendable, Equatable, Identifiable {
         originConversationID: String? = nil,
         originEnvironmentID: String? = nil,
         proposalOperationID: String? = nil,
-        proposalFingerprint: String? = nil
+        proposalFingerprint: String? = nil,
+        workMode: DesignWorkMode? = nil,
+        preservationDigest: String? = nil
     ) {
         self.id = id
         self.artifactID = artifactID
@@ -547,6 +610,8 @@ public struct DesignCandidate: Codable, Sendable, Equatable, Identifiable {
         self.originEnvironmentID = originEnvironmentID
         self.proposalOperationID = proposalOperationID
         self.proposalFingerprint = proposalFingerprint
+        self.workMode = workMode
+        self.preservationDigest = preservationDigest
     }
 }
 
@@ -604,6 +669,453 @@ public struct DesignCreativeRequest: Codable, Sendable, Equatable {
         self.environmentID = environmentID
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+}
+
+/// The three approved work modes (制作/修改/重构). A request names exactly
+/// one; mode transitions keep the current artifact and constraints instead
+/// of restarting another task.
+public enum DesignWorkMode: String, Codable, Sendable, CaseIterable {
+    /// 制作: create a NEW real, editable result in its own target. No
+    /// mandatory audience/form gate; missing substantive input is asked in
+    /// the conversation, not enforced by a requirements form.
+    case create
+    /// 修改: scoped, reversible edits inside the frozen base. Content outside
+    /// the scope is preserved; "优化一下" of a local region is modify, not a
+    /// rebuild.
+    case modify
+    /// 重构: structural reorganization (narrative order, layout system,
+    /// document structure). Requires explicit preservation constraints
+    /// confirmed by the trusted UI BEFORE any mutation; the model can never
+    /// mint that confirmation.
+    case restructure
+}
+
+// MARK: - Work intent (frozen typed request contract)
+
+/// Typed failure of a `DesignWorkIntent` validation. Distinct from
+/// `DesignWorkflowError` so conversational creators can ask for the missing
+/// piece instead of surfacing a generic conflict.
+public enum DesignWorkIntentError: Error, Equatable {
+    /// 重构 without a trusted preservation confirmation (or with one whose
+    /// digest does not match its constraints).
+    case preservationConfirmationRequired
+    case preservationConfirmationInvalid(String)
+    /// Scope locators are malformed (negative page, empty object id, an
+    /// inverted time range...).
+    case invalidScope(String)
+    /// `actualDesiredFormat` does not map to the artifact's content family:
+    /// a desired format is a real routing decision, never a guess.
+    case formatFamilyMismatch(format: String, family: DesignContentType)
+}
+
+/// Exact scope of a modify/restructure request: the user points at a real
+/// object/page/time range/region and the operation must address exactly that.
+/// An empty scope means the whole artifact (allowed for modify; restructure
+/// SHOULD still name what may change, but a whole-artifact restructure with
+/// confirmed preservation constraints is legitimate).
+public struct DesignWorkScope: Codable, Sendable, Equatable, Hashable {
+    /// Stable object identifiers inside the artifact (slide shape, CAD body,
+    /// image layer, table range...). Opaque to the core; owner adapters map
+    /// them to real objects.
+    public var objectIDs: [String]
+    /// Zero-based page/slide/sheet indexes for paged families.
+    public var pageIndexes: [Int]
+    /// Normalized region inside one page/object, when the request is spatial.
+    public var region: Region?
+    /// Seconds range inside a timeline (video/audio).
+    public var timeRange: TimeRange?
+
+    public struct Region: Codable, Sendable, Equatable, Hashable {
+        public var x: Double
+        public var y: Double
+        public var width: Double
+        public var height: Double
+        public init(x: Double, y: Double, width: Double, height: Double) {
+            self.x = x; self.y = y; self.width = width; self.height = height
+        }
+    }
+
+    public struct TimeRange: Codable, Sendable, Equatable, Hashable {
+        public var startSeconds: Double
+        public var endSeconds: Double
+        public init(startSeconds: Double, endSeconds: Double) {
+            self.startSeconds = startSeconds; self.endSeconds = endSeconds
+        }
+    }
+
+    public init(
+        objectIDs: [String] = [],
+        pageIndexes: [Int] = [],
+        region: Region? = nil,
+        timeRange: TimeRange? = nil
+    ) {
+        self.objectIDs = objectIDs
+        self.pageIndexes = pageIndexes
+        self.region = region
+        self.timeRange = timeRange
+    }
+
+    public var isEmpty: Bool {
+        objectIDs.isEmpty && pageIndexes.isEmpty && region == nil && timeRange == nil
+    }
+
+    /// Structural validation; returns the first problem found.
+    public func validated() throws -> DesignWorkScope {
+        for id in objectIDs where id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw DesignWorkIntentError.invalidScope("object id is empty")
+        }
+        for index in pageIndexes where index < 0 {
+            throw DesignWorkIntentError.invalidScope("page index \(index) is negative")
+        }
+        if let region {
+            guard region.width > 0, region.height > 0, region.x >= 0, region.y >= 0 else {
+                throw DesignWorkIntentError.invalidScope("region must be positive and origin-non-negative")
+            }
+        }
+        if let timeRange {
+            guard timeRange.startSeconds >= 0, timeRange.endSeconds > timeRange.startSeconds else {
+                throw DesignWorkIntentError.invalidScope("time range must be non-negative and increasing")
+            }
+        }
+        return self
+    }
+}
+
+/// What a 重构 MUST preserve, in the user's own words, confirmed before any
+/// mutation. Each entry is an explicit preservation requirement (content,
+/// data, behavior, format bounds); adoption verification checks them one by
+/// one rather than asserting "done".
+public struct DesignPreservationConstraints: Codable, Sendable, Equatable, Hashable {
+    /// Content that must survive (pages, sections, named objects, wording).
+    public var content: [String]
+    /// Data/values that must survive (numbers, formulas, datasets, units).
+    public var data: [String]
+    /// Behavior/interactions that must keep working (links, navigation,
+    /// playback, form submission).
+    public var behavior: [String]
+    /// Format boundaries that may not change (e.g. "stays .pptx", "no
+    /// conversion to images", "keeps vector layers").
+    public var formatBounds: [String]
+
+    public init(
+        content: [String] = [],
+        data: [String] = [],
+        behavior: [String] = [],
+        formatBounds: [String] = []
+    ) {
+        self.content = content
+        self.data = data
+        self.behavior = behavior
+        self.formatBounds = formatBounds
+    }
+
+    public var isEmpty: Bool {
+        content.isEmpty && data.isEmpty && behavior.isEmpty && formatBounds.isEmpty
+    }
+
+    /// Canonical digest binding a confirmation to EXACTLY these constraints:
+    /// a confirmation over different wording is invalid, so a model (or a
+    /// stale UI sheet) cannot re-attach a confirmation to new requirements.
+    public var canonicalDigest: String {
+        struct Payload: Codable {
+            let content: [String]
+            let data: [String]
+            let behavior: [String]
+            let formatBounds: [String]
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = (try? encoder.encode(Payload(
+            content: content.sorted(), data: data.sorted(),
+            behavior: behavior.sorted(), formatBounds: formatBounds.sorted()
+        ))) ?? Data()
+        return FloeDigest.sha256Hex(data)
+    }
+}
+
+/// Who produced a preservation confirmation. Only the trusted UI may mint
+/// one; model output, tool results and imported metadata can never become a
+/// confirmation by carrying the right strings.
+public enum DesignConfirmationSource: String, Codable, Sendable {
+    /// The user tapped through the preservation-confirmation sheet in the
+    /// app; the claim is burned through the existing approval-grant store
+    /// before the first mutation (see `DesignOwnerWorkflow.adopt`).
+    case trustedUI
+}
+
+/// A trusted confirmation that the preservation constraints for one
+/// restructure are exactly what the user approved. Verified by digest, so a
+/// tampered confirmation fails closed before any state changes.
+public struct DesignPreservationConfirmation: Codable, Sendable, Equatable, Hashable {
+    public var constraints: DesignPreservationConstraints
+    public var source: DesignConfirmationSource
+    public var confirmedAt: Date
+    /// Must equal `constraints.canonicalDigest`; checked on every use.
+    public var constraintsDigest: String
+
+    public init(
+        constraints: DesignPreservationConstraints,
+        source: DesignConfirmationSource = .trustedUI,
+        confirmedAt: Date = Date(),
+        constraintsDigest: String? = nil
+    ) {
+        self.constraints = constraints
+        self.source = source
+        self.confirmedAt = confirmedAt
+        self.constraintsDigest = constraintsDigest ?? constraints.canonicalDigest
+    }
+
+    /// False for a digest computed over anything other than `constraints`.
+    public var isValid: Bool {
+        constraintsDigest == constraints.canonicalDigest
+    }
+}
+
+/// The frozen typed request every 制作/修改/重构 run addresses. It extends
+/// the existing envelope/revision/candidate flow — it never replaces target
+/// identity, never creates a second store and never auto-starts work.
+public struct DesignWorkIntent: Codable, Sendable, Equatable, Hashable {
+    public var mode: DesignWorkMode
+    /// The ACTUAL desired output format (extension, e.g. "pptx", "png",
+    /// "docx"), taken from the real request — not a capability default and
+    /// never a webpage fallback. Must map to the artifact's content family.
+    public var actualDesiredFormat: String
+    /// Exact object/page/time/region scope for modify/restructure; nil (or
+    /// empty) means the whole artifact. Ignored for create.
+    public var scope: DesignWorkScope?
+    /// Preservation requirements; REQUIRED for restructure and carried into
+    /// the trusted confirmation.
+    public var preservation: DesignPreservationConstraints?
+    /// The input revision frozen when this intent was recorded.
+    public var frozenRevisionID: String?
+    /// The ORIGINATING task the adopted result belongs to (opaque
+    /// conversation identity); attribution, never store identity.
+    public var originalTaskOwnerID: String?
+    /// Trusted confirmation for restructure; nil for create/modify.
+    public var confirmation: DesignPreservationConfirmation?
+    /// Idempotency key of the operation that recorded this intent.
+    public var operationID: String
+
+    public init(
+        mode: DesignWorkMode,
+        actualDesiredFormat: String,
+        scope: DesignWorkScope? = nil,
+        preservation: DesignPreservationConstraints? = nil,
+        frozenRevisionID: String? = nil,
+        originalTaskOwnerID: String? = nil,
+        confirmation: DesignPreservationConfirmation? = nil,
+        operationID: String
+    ) {
+        self.mode = mode
+        self.actualDesiredFormat = actualDesiredFormat
+        self.scope = scope
+        self.preservation = preservation
+        self.frozenRevisionID = frozenRevisionID
+        self.originalTaskOwnerID = originalTaskOwnerID
+        self.confirmation = confirmation
+        self.operationID = operationID
+    }
+
+    /// Structural + semantic validation against the artifact's real family.
+    /// - 重构 requires a valid trusted confirmation over non-empty
+    ///   preservation constraints BEFORE any mutation is proposed.
+    /// - `actualDesiredFormat` must classify into `family` (extension-based
+    ///   routing; the owner adapter's reopen verification remains the real
+    ///   format proof on adopt/export).
+    public func validated(family: DesignContentType) throws -> DesignWorkIntent {
+        _ = try scope?.validated()
+        guard let routed = DesignContentType.from(format: actualDesiredFormat) else {
+            throw DesignWorkIntentError.formatFamilyMismatch(
+                format: actualDesiredFormat, family: family
+            )
+        }
+        guard routed == family else {
+            throw DesignWorkIntentError.formatFamilyMismatch(
+                format: actualDesiredFormat, family: family
+            )
+        }
+        if mode == .restructure {
+            guard let preservation, !preservation.isEmpty else {
+                throw DesignWorkIntentError.preservationConfirmationRequired
+            }
+            guard let confirmation else {
+                throw DesignWorkIntentError.preservationConfirmationRequired
+            }
+            guard confirmation.isValid,
+                  confirmation.constraints == preservation else {
+                 throw DesignWorkIntentError.preservationConfirmationInvalid(
+                    "restructure requires a trusted confirmation whose digest matches the preservation constraints"
+                )
+            }
+        }
+        return self
+    }
+}
+
+// MARK: - Trusted restructure authority (service-native, NON-Codable)
+//
+// `DesignPreservationConfirmation` is DATA: it is Codable, its
+// `constraintsDigest` is publicly computable, and its only source case is a
+// plain string — so raw model JSON can mint a structurally perfect
+// confirmation (`.trustedUI` + matching digest). Structural validation can
+// therefore never authorize a restructure. Authority lives ONLY in a claim
+// burned by the trusted UI through the existing approval-grant store, and it
+// crosses the service boundary as the NON-Codable types below: model tool
+// arguments, tool results and imported metadata are all JSON and can never
+// mint or carry them. A closure hook can likewise never arrive through tool
+// arguments. Data records what was confirmed; authority proves the trusted
+// UI confirmed it.
+
+/// Exact binding a trusted restructure-preservation claim must cover. Built
+/// by the service (never by the caller) and verified field-by-field against
+/// the returned receipt, so a nil, forged, stale or wrong-owner claim is
+/// refused before any side effect.
+public struct DesignRestructureAuthorityRequest: Sendable, Equatable, Hashable {
+    /// Exact owner target the restructure addresses (owner stable key).
+    public var targetKey: String
+    /// Idempotency key of the confirmed restructure (the intent's
+    /// `operationID`): one confirmation authorizes exactly one restructure
+    /// operation identity.
+    public var operationID: String
+    /// ORIGINATING task the confirmed result belongs to (attribution only).
+    public var originalTaskOwnerID: String?
+    /// Base revision the restructure starts from.
+    public var baseRevisionID: String?
+    /// Canonical digest of the preservation constraints the user confirmed.
+    public var preservationDigest: String
+
+    public init(
+        targetKey: String,
+        operationID: String,
+        originalTaskOwnerID: String? = nil,
+        baseRevisionID: String? = nil,
+        preservationDigest: String
+    ) {
+        self.targetKey = targetKey
+        self.operationID = operationID
+        self.originalTaskOwnerID = originalTaskOwnerID
+        self.baseRevisionID = baseRevisionID
+        self.preservationDigest = preservationDigest
+    }
+}
+
+/// Non-Codable receipt returned by the trusted handler AFTER it burned a
+/// real claim through the existing approval-grant store. Because the type is
+/// not Codable, a raw `DesignPreservationConfirmation` — however perfect its
+/// source and digest — can never satisfy the propose/freeze gate, and the
+/// field-by-field request binding refuses stale, wrong-owner or re-bound
+/// claims.
+public struct DesignRestructureAuthorityReceipt: Sendable, Equatable, Hashable {
+    /// The exact request this receipt authorizes.
+    public var request: DesignRestructureAuthorityRequest
+    /// Identity of the claim burned in the trusted store (audit trail).
+    public var claimID: UUID
+    public var issuedAt: Date
+
+    public init(
+        request: DesignRestructureAuthorityRequest,
+        claimID: UUID,
+        issuedAt: Date = Date()
+    ) {
+        self.request = request
+        self.claimID = claimID
+        self.issuedAt = issuedAt
+    }
+}
+
+/// Failure of the trusted restructure-authority gate. Distinct from the
+/// data-validation errors: these fire only after structural validation
+/// passed, when the actual trusted claim is missing or does not bind.
+public enum DesignRestructureAuthorityError: Error, Sendable, Equatable {
+    /// A restructure operation reached the gate without any trusted
+    /// authority (no handler wired, or no receipt supplied on the sync
+    /// engine/freeze path). A matching Codable confirmation is data, not
+    /// authority — this fails closed with zero side effects.
+    case claimRequired(String)
+    /// A receipt/handler result was supplied but does not bind the exact
+    /// target / task / base revision / constraints digest / operationID of
+    /// this call (stale claim, wrong owner, re-bound digest...).
+    case claimMismatch(String)
+}
+
+/// Typed trusted-authority hook. The interactive UI wires this to its
+/// confirmation sheet plus the existing approval-grant store
+/// (`ApprovalGrantStore.claimSingleUse`); the handler burns the single-use
+/// grant and returns the bound receipt. A closure can never arrive through
+/// model tool arguments, so the model layer can never satisfy this hook.
+public typealias DesignRestructureAuthorityHandler =
+    @Sendable (DesignRestructureAuthorityRequest) async throws -> DesignRestructureAuthorityReceipt
+
+/// Shared builder/verifier for the trusted restructure-authority seam. Used
+/// by the owner propose gate, the sync engine propose gate and the
+/// freeze-before-generation seam so every path binds the identical fields.
+public enum DesignRestructureAuthority {
+
+    /// The exact request one validated restructure intent must claim.
+    /// `targetKey` is the owner identity the calling service knows (owner
+    /// stable key, or the design project node id on the Canvas engine path);
+    /// `baseRevisionID` is the RESOLVED base so a stale claim over an older
+    /// revision is refused.
+    public static func request(
+        for intent: DesignWorkIntent,
+        targetKey: String,
+        baseRevisionID: String?
+    ) throws -> DesignRestructureAuthorityRequest {
+        guard intent.mode == .restructure else {
+            throw DesignRestructureAuthorityError.claimRequired(
+                "trusted restructure authority is only defined for restructure intents, not \(intent.mode.rawValue)"
+            )
+        }
+        guard let preservation = intent.preservation, !preservation.isEmpty else {
+            throw DesignRestructureAuthorityError.claimRequired(
+                "restructure authority requires non-empty preservation constraints confirmed by the trusted UI"
+            )
+        }
+        return DesignRestructureAuthorityRequest(
+            targetKey: targetKey,
+            operationID: intent.operationID,
+            originalTaskOwnerID: intent.originalTaskOwnerID,
+            baseRevisionID: baseRevisionID ?? intent.frozenRevisionID,
+            preservationDigest: preservation.canonicalDigest
+        )
+    }
+
+    /// Verifies a receipt binds the exact request. nil, forged (hand-built
+    /// outside the trusted handler), stale or wrong-owner receipts are
+    /// refused here — before any bytes are staged or any state is recorded.
+    @discardableResult
+    public static func validate(
+        _ receipt: DesignRestructureAuthorityReceipt?,
+        for request: DesignRestructureAuthorityRequest
+    ) throws -> DesignRestructureAuthorityReceipt {
+        guard let receipt else {
+            throw DesignRestructureAuthorityError.claimRequired(
+                "restructure of \(request.targetKey) requires a trusted claim bound to operation \(request.operationID); a Codable confirmation (source/digest) is data, never authority"
+            )
+        }
+        guard receipt.request == request else {
+            var details: [String] = []
+            if receipt.request.targetKey != request.targetKey {
+                details.append("target \(receipt.request.targetKey) != \(request.targetKey)")
+            }
+            if receipt.request.operationID != request.operationID {
+                details.append("operation \(receipt.request.operationID) != \(request.operationID)")
+            }
+            if receipt.request.originalTaskOwnerID != request.originalTaskOwnerID {
+                details.append("original task mismatch")
+            }
+            if receipt.request.baseRevisionID != request.baseRevisionID {
+                details.append("base revision \(receipt.request.baseRevisionID ?? "nil") != \(request.baseRevisionID ?? "nil")")
+            }
+            if receipt.request.preservationDigest != request.preservationDigest {
+                details.append("preservation digest mismatch (stale or re-bound constraints)")
+            }
+            throw DesignRestructureAuthorityError.claimMismatch(
+                "trusted claim does not bind this restructure: \(details.joined(separator: "; "))"
+            )
+        }
+        return receipt
     }
 }
 
@@ -852,13 +1364,57 @@ public enum DesignWorkflowEngine {
         operationID: String,
         in project: inout DesignProject,
         inputRevisionID: String? = nil,
-        targetRevisionID: String? = nil
+        targetRevisionID: String? = nil,
+        desiredFormat: String? = nil
     ) -> DesignRunFrozen {
         let frozen = DesignRunFrozen(
             operationID: operationID,
             inputRevisionID: inputRevisionID,
             specSHA256: project.spec?.sha256,
-            targetRevisionID: targetRevisionID
+            targetRevisionID: targetRevisionID,
+            desiredFormat: desiredFormat
+        )
+        project.frozenRun = frozen
+        project.updatedAt = Date()
+        return frozen
+    }
+
+    /// Freeze-before-generation validation seam for a typed restructure
+    /// intent. Integration calls this BEFORE the model runs so the trusted
+    /// claim is confirmed up front — not only after generation. The supplied
+    /// receipt must bind the intent's exact operation, this project's node,
+    /// the frozen input revision and the confirmed constraints digest; a
+    /// nil, forged, stale or wrong-owner receipt fails closed BEFORE the run
+    /// is frozen (the project is left untouched). The frozen run records the
+    /// mode/digest/desired format as auditable evidence of the confirmed
+    /// constraints that authorized generation.
+    @discardableResult
+    public static func freezeRun(
+        operationID: String,
+        in project: inout DesignProject,
+        workIntent: DesignWorkIntent,
+        restructureReceipt: DesignRestructureAuthorityReceipt?,
+        inputRevisionID: String? = nil,
+        targetRevisionID: String? = nil
+    ) throws -> DesignRunFrozen {
+        let validated = try workIntent.validated(family: project.contentType)
+        var preservationDigest: String? = nil
+        if validated.mode == .restructure {
+            let request = try DesignRestructureAuthority.request(
+                for: validated, targetKey: project.nodeID,
+                baseRevisionID: inputRevisionID
+            )
+            _ = try DesignRestructureAuthority.validate(restructureReceipt, for: request)
+            preservationDigest = request.preservationDigest
+        }
+        let frozen = DesignRunFrozen(
+            operationID: operationID,
+            inputRevisionID: inputRevisionID,
+            specSHA256: project.spec?.sha256,
+            targetRevisionID: targetRevisionID,
+            desiredFormat: validated.actualDesiredFormat,
+            workMode: validated.mode,
+            preservationDigest: preservationDigest
         )
         project.frozenRun = frozen
         project.updatedAt = Date()
@@ -877,7 +1433,8 @@ public enum DesignWorkflowEngine {
         expectedRevisionID: String? = nil,
         payloadRelativePath: String? = nil,
         payloadFormat: String? = nil,
-        revisionID: String? = nil
+        revisionID: String? = nil,
+        ownerBaseToken: String? = nil
     ) throws -> DesignRevision {
         guard let index = project.artifacts.firstIndex(where: { $0.id == artifactID }) else {
             throw DesignWorkflowError.artifactNotFound(artifactID)
@@ -899,7 +1456,8 @@ public enum DesignWorkflowEngine {
             origin: origin,
             parentRevisionID: current,
             payloadRelativePath: payloadRelativePath,
-            payloadFormat: payloadFormat
+            payloadFormat: payloadFormat,
+            ownerBaseToken: ownerBaseToken
         )
         project.artifacts[index].revisions.append(revision)
         project.artifacts[index].currentRevisionID = revision.id
@@ -1020,6 +1578,18 @@ public enum DesignWorkflowEngine {
 
     // MARK: - Candidates and adoption
 
+    /// Propose a candidate. `workIntent`, when supplied, is validated
+    /// against the artifact's family: a 重构 intent without a valid trusted
+    /// preservation confirmation is rejected BEFORE any revision or candidate
+    /// is recorded. Structural validation alone is data validation — a raw
+    /// model JSON can mint a matching Codable confirmation — so a
+    /// restructure additionally requires `restructureReceipt`, the NON-
+    /// Codable receipt a trusted service produced after burning a real claim
+    /// (see `DesignRestructureAuthority`): it must bind the intent's exact
+    /// operation, this project's node, the resolved base revision and the
+    /// confirmed constraints digest, otherwise the call fails closed with
+    /// zero staged bytes. The intent's mode/preservation digest are stamped
+    /// on the candidate for adoption-time auditing.
     @discardableResult
     public static func proposeCandidate(
         in project: inout DesignProject,
@@ -1033,7 +1603,9 @@ public enum DesignWorkflowEngine {
         payloadRelativePath: String? = nil,
         payloadFormat: String? = nil,
         originConversationID: String? = nil,
-        originEnvironmentID: String? = nil
+        originEnvironmentID: String? = nil,
+        workIntent: DesignWorkIntent? = nil,
+        restructureReceipt: DesignRestructureAuthorityReceipt? = nil
     ) throws -> DesignCandidate {
         guard let index = project.artifacts.firstIndex(where: { $0.id == artifactID }) else {
             throw DesignWorkflowError.artifactNotFound(artifactID)
@@ -1044,6 +1616,34 @@ public enum DesignWorkflowEngine {
         }
         guard let baseRevision = artifact.revision(base) else {
             throw DesignWorkflowError.revisionNotFound(base)
+        }
+        if let workIntent {
+            let validated = try workIntent.validated(family: artifact.contentType)
+            // TRUSTED AUTHORITY GATE (sync path): a restructure intent must
+            // carry a receipt minted by the trusted service AFTER the actual
+            // claim. It is verified BEFORE any mutation of `project` (no
+            // frozen-run stamping, no revision, no candidate), so a missing
+            // or forged receipt leaves the project untouched.
+            if validated.mode == .restructure {
+                let request = try DesignRestructureAuthority.request(
+                    for: validated, targetKey: project.nodeID,
+                    baseRevisionID: base
+                )
+                _ = try DesignRestructureAuthority.validate(restructureReceipt, for: request)
+            }
+        }
+        // Freeze the actual desired format with the run that produced this
+        // proposal: format claims are routing decisions, recorded where the
+        // input revision is recorded.
+        if let workIntent {
+            if project.frozenRun != nil {
+                project.frozenRun?.desiredFormat = workIntent.actualDesiredFormat
+            } else {
+                project.frozenRun = DesignRunFrozen(
+                    operationID: workIntent.operationID,
+                    desiredFormat: workIntent.actualDesiredFormat
+                )
+            }
         }
         // Proposals never mutate the artifact: the proposed bytes are stored as
         // a new revision that adoption will promote. If the proposed bytes are
@@ -1072,7 +1672,10 @@ public enum DesignWorkflowEngine {
             summary: summary,
             diff: diff,
             originConversationID: originConversationID,
-            originEnvironmentID: originEnvironmentID
+            originEnvironmentID: originEnvironmentID,
+            workMode: workIntent?.mode,
+            preservationDigest: workIntent?.mode == .restructure
+                ? workIntent?.preservation?.canonicalDigest : nil
         )
         // Supersede any older pending candidate for the same artifact.
         for i in project.candidates.indices

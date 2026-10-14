@@ -460,6 +460,14 @@ public actor HarnessBudgetLedger {
         activeChildren.remove(id)
     }
 
+    /// Best-effort read of one child's remaining iteration allowance. The
+    /// subagent runner uses it to reserve a wrap-up slot; an unknown child
+    /// reads 0, never an invented value.
+    public func childRemainingIterations(id: UUID) -> Int {
+        guard activeChildren.contains(id), let count = childIterations[id] else { return 0 }
+        return max(0, budgets.maxChildIterations - count)
+    }
+
     public func snapshot() -> (parent: Int, total: Int, activeChildren: Int) {
         (parentIterations, totalIterations, activeChildren.count)
     }

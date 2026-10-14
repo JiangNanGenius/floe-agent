@@ -57,6 +57,50 @@ public protocol AgentEventSink: Sendable {
         _ runtime: FloeAgentRuntime,
         didRecordApprovalDecision receipt: ApprovalDecisionReceipt
     ) async
+    /// Fired at the real per-call dispatch point: every pre-dispatch gate
+    /// (approval, budget, dedup, checkpoint) has passed and the executor is
+    /// about to run this call. Telemetry uses it to attribute execution time
+    /// per callID; suppressed, denied and recovered calls never emit it, so
+    /// they are never counted as executed.
+    ///
+    /// The stamp carries a `ContinuousClock.Instant` (monotonic, immune to
+    /// wall-clock changes) for every duration computation, plus a wall-clock
+    /// `Date` used solely as the human-facing persisted fact time. Sink actor
+    /// delivery latency must never be treated as execution time: callers pair
+    /// the two monotonic stamps captured at emission, not their own receipt
+    /// times.
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didDispatchToolCall call: ToolCall,
+        at stamp: ToolTimingStamp
+    ) async
+    /// Fired the moment one call's executor returns, BEFORE the batch settles:
+    /// the per-call execution end boundary. Paired with
+    /// `didDispatchToolCall` it gives true per-call durations even for
+    /// parallel reads that settle together.
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didFinishToolCall call: ToolCall,
+        result: ToolResult,
+        at stamp: ToolTimingStamp
+    ) async
+}
+
+/// Boundary timestamp pair for per-call tool timing. `monotonic`
+/// (`ContinuousClock.Instant`) is the authority for all elapsed-time math;
+/// `wallClock` is a `Date` recorded at the same instant purely for durable,
+/// human-facing fact timestamps and must never be subtracted for durations.
+public struct ToolTimingStamp: Sendable, Equatable {
+    public var monotonic: ContinuousClock.Instant
+    public var wallClock: Date
+
+    public init(
+        monotonic: ContinuousClock.Instant = ContinuousClock.now,
+        wallClock: Date = Date()
+    ) {
+        self.monotonic = monotonic
+        self.wallClock = wallClock
+    }
 }
 
 public extension AgentEventSink {
@@ -72,6 +116,17 @@ public extension AgentEventSink {
     func agentRuntime(
         _ runtime: FloeAgentRuntime,
         didChangeApprovalReview snapshot: ApprovalReviewSnapshot
+    ) async {}
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didDispatchToolCall call: ToolCall,
+        at stamp: ToolTimingStamp
+    ) async {}
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didFinishToolCall call: ToolCall,
+        result: ToolResult,
+        at stamp: ToolTimingStamp
     ) async {}
 }
 
@@ -338,6 +393,11 @@ public actor FloeAgentRuntime {
         public var providerRetryMaxDelay: TimeInterval
         /// Proportion of the backoff added as positive jitter.
         public var providerRetryJitterRatio: Double
+        /// Optional typed bridge from authoritative lifecycle evidence to
+        /// unknown-outcome suppression. Consulted only for retries matching a
+        /// durable unknown-outcome receipt; nil keeps the strict suppress-
+        /// until-inspected behavior for every route.
+        public var unknownOutcomeReconciler: (any UnknownOutcomeReconciler)?
 
         public init(
             conversationID: UUID = UUID(),
@@ -365,7 +425,8 @@ public actor FloeAgentRuntime {
             providerReasoningIdleTimeout: TimeInterval = 180,
             providerRetryBaseDelay: TimeInterval = 1,
             providerRetryMaxDelay: TimeInterval = 30,
-            providerRetryJitterRatio: Double = 0.2
+            providerRetryJitterRatio: Double = 0.2,
+            unknownOutcomeReconciler: (any UnknownOutcomeReconciler)? = nil
         ) {
             self.conversationID = conversationID
             self.provider = provider
@@ -396,6 +457,7 @@ public actor FloeAgentRuntime {
             self.providerRetryBaseDelay = max(0, providerRetryBaseDelay)
             self.providerRetryMaxDelay = max(self.providerRetryBaseDelay, providerRetryMaxDelay)
             self.providerRetryJitterRatio = min(1, max(0, providerRetryJitterRatio))
+            self.unknownOutcomeReconciler = unknownOutcomeReconciler
         }
     }
 
@@ -1188,7 +1250,8 @@ public actor FloeAgentRuntime {
                 call: call,
                 result: result,
                 isSideEffecting: isSideEffecting,
-                outcomeUnknown: outcomeUnknown
+                outcomeUnknown: outcomeUnknown,
+                outcomeUnknownReason: .interruptedDispatch
             )
             setToolLifecycle(call: call, phase: .resultCommitted)
         }
@@ -2801,6 +2864,14 @@ public actor FloeAgentRuntime {
             didRecordApprovalDecision: ApprovalDecisionReceipt(callID: call.id)
         )
 
+        // Real dispatch point for this callID: every pre-dispatch gate
+        // (approval, idempotency, checkpoint) has passed. The monotonic stamp
+        // is captured at the actual executor boundary (below), not here, so
+        // child-budget/context setup and sink delivery latency are never
+        // counted as execution time. Calls that were suppressed, denied,
+        // recovered or checkpoint-failed never reach here and are honestly
+        // recorded as not dispatched.
+
         // Subagent delegation opens a child slot in the shared budget ledger
         // so the subagent's iterations are charged against this run's total.
         let childBudget = await makeChildBudget(for: call)
@@ -2819,6 +2890,15 @@ public actor FloeAgentRuntime {
             childBudget: childBudget,
             conversationID: configuration.conversationID
         )
+        // Monotonic per-call execution origin: the executor for THIS call is
+        // about to run. The boundary observation is delivered CONCURRENTLY
+        // with execution rather than awaited before it, so the service
+        // actor's receive latency is never counted as execution; the finish
+        // side awaits this delivery first, preserving observe order.
+        let dispatchStamp = ToolTimingStamp()
+        async let dispatchDelivery: Void = {
+            await sink?.agentRuntime(self, didDispatchToolCall: call, at: dispatchStamp)
+        }()
         let result: ToolResult
         do {
             result = try await executor.execute(
@@ -2839,6 +2919,15 @@ public actor FloeAgentRuntime {
             )
         }
 
+        // Per-call execution end boundary, stamped the moment the executor
+        // for THIS call returned, independent of when the batch settles.
+        // Join the dispatch observation before emitting finish so telemetry
+        // always observes dispatch before finish, then pair the two
+        // monotonic stamps for the true per-call duration.
+        let finishStamp = ToolTimingStamp()
+        _ = await dispatchDelivery
+        await sink?.agentRuntime(self, didFinishToolCall: call, result: result, at: finishStamp)
+
         // Audit lands before the result flows back — cancellation must
         // never silently drop it.
         await audit(toolCall: call, result: result, decision: "allow:\(grant.policyName)")
@@ -2847,7 +2936,6 @@ public actor FloeAgentRuntime {
         }
         return result
     }
-
     /// Atomically drains the pending tool batch (used by the stream loop when
     /// the provider closes without an explicit completion event).
     private func drainPendingToolBatch() -> [ToolCall] {
@@ -3004,14 +3092,34 @@ public actor FloeAgentRuntime {
                 continue
             }
             let candidateIsSideEffecting = executor.descriptor(named: call.toolName)?.isSideEffecting == true
-            if let suppressedUnknown = executionLedger.suppressedUnknownOutcomeResult(
+            switch await executionLedger.unknownOutcomeVerdict(
                 for: call,
-                isSideEffecting: candidateIsSideEffecting
+                isSideEffecting: candidateIsSideEffecting,
+                reconciler: configuration.unknownOutcomeReconciler
             ) {
+            case .noReceipt:
+                break
+            case .reconciled(let explanation):
+                // A typed reconciler proved from authoritative lifecycle
+                // evidence that the earlier interrupted dispatch settled and
+                // this retry is the matching lifecycle action. Dissolve the
+                // receipt; the dispatch below runs through the normal path
+                // with all of its own guards.
+                executionLedger.dissolveUnknownOutcomeReceipt(matching: call)
+                await audit(
+                    toolCall: call,
+                    result: ToolResult(
+                        callID: call.id,
+                        status: .ok,
+                        outputSummary: "Unknown-outcome receipt reconciled: \(explanation)",
+                        outputDigest: ""
+                    ),
+                    decision: "allow:unknown-outcome-reconciled"
+                )
+            case .suppressed(let suppressedUnknown):
                 // An earlier dispatch of this exact route ended with an
-                // unknown real-world outcome (its capability changed while it
-                // was executing). Never replay it automatically: the model
-                // must inspect the external state first. Deliberately not
+                // unknown real-world outcome. Never replay it automatically:
+                // the model must inspect the external state first. Deliberately not
                 // added to `suppressedCallIDs`, so repeated re-emissions are
                 // still counted by the loop guard and a stubborn replay stops
                 // instead of looping.
@@ -3214,7 +3322,8 @@ public actor FloeAgentRuntime {
                 call: call,
                 result: result,
                 isSideEffecting: executedIsSideEffecting,
-                outcomeUnknown: outcomeUnknown
+                outcomeUnknown: outcomeUnknown,
+                outcomeUnknownReason: .capabilityRemoved
             )
             if result.status == .ok, Self.isConversationHistoryTool(call.toolName) {
                 historyLookupSucceededInRun = true
@@ -3518,15 +3627,32 @@ public actor FloeAgentRuntime {
                 }
                 return failedResults
             }
+            // The shared checkpoint above committed; every call in `toRun`
+            // crossed all pre-dispatch gates. The per-call monotonic dispatch
+            // stamp is captured INSIDE each task at the real executor
+            // boundary below (not here), so concurrent task scheduling and
+            // sink delivery latency never inflate execution time.
+            // Suppressed/denied/recovered reads never reach here.
         }
 
         let executor = self.executor
+        let sink = self.sink
         let results = await withTaskGroup(
             of: (String, ToolResult).self,
             returning: [String: ToolResult].self
         ) { group in
             for (call, grant, context) in toRun {
                 group.addTask {
+                    // Monotonic per-call execution origin. The boundary
+                    // observation is delivered CONCURRENTLY with execution so
+                    // the service actor's receive time (which can queue behind
+                    // another call's durable result write) is never counted as
+                    // execution; the finish side joins it first, preserving
+                    // dispatch-before-finish order.
+                    let dispatchStamp = ToolTimingStamp()
+                    async let dispatchDelivery: Void = {
+                        await sink?.agentRuntime(self, didDispatchToolCall: call, at: dispatchStamp)
+                    }()
                     let result: ToolResult
                     do {
                         result = try await executor.execute(
@@ -3540,6 +3666,20 @@ public actor FloeAgentRuntime {
                             status: .failed,
                             outputSummary: "Execution error: \(error.localizedDescription)",
                             outputDigest: ""
+                        )
+                    }
+                    // Per-call execution end boundary, stamped the moment the
+                    // executor returned and emitted before the group waits for
+                    // slower siblings, so each parallel read keeps its own
+                    // real monotonic duration instead of the batch settle time.
+                    let finishStamp = ToolTimingStamp()
+                    _ = await dispatchDelivery
+                    if let sink {
+                        await sink.agentRuntime(
+                            self,
+                            didFinishToolCall: call,
+                            result: result,
+                            at: finishStamp
                         )
                     }
                     return (call.id, result)
@@ -3600,6 +3740,9 @@ public actor FloeAgentRuntime {
             },
             finish: {
                 await ledger.finishChild(id: childID)
+            },
+            remaining: {
+                await ledger.childRemainingIterations(id: childID)
             }
         )
     }

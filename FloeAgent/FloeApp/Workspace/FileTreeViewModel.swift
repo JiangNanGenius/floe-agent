@@ -165,15 +165,17 @@ final class FileTreeViewModel: ObservableObject {
     }
 
     /// Production creation of a native `.floecad` document through the
-    /// versioned package store (the same `FloeCADDocument.create` the
-    /// workbench opens later — no fixture, no manufactured JSON). Refuses
-    /// cloud/network workspaces (native CAD commits packages locally), names
-    /// are sanitized to a unique `<name>.floecad`, and the created relative
-    /// path is returned so the caller can select it.
+    /// versioned package store. Both this file-tree flow and the agent
+    /// `cad.document` create action share `NativeCADPackageCreation`, so the
+    /// sanitized unique name, non-overwriting atomic commit and store
+    /// read-back are identical. Refuses cloud/network workspaces (native CAD
+    /// commits packages locally); the created relative path is returned so
+    /// the caller can select it.
     @discardableResult
     func createNativeCADDocument(parent relativePath: String, name: String) async throws -> String {
-        guard !center.isCloudWorkspacePath(relativePath.isEmpty ? "." : relativePath),
-              !center.isNetworkWorkspacePath(relativePath.isEmpty ? "." : relativePath),
+        let targetParent = relativePath.isEmpty ? "." : relativePath
+        guard !center.isCloudWorkspacePath(targetParent),
+              !center.isNetworkWorkspacePath(targetParent),
               let service = center.fileService else {
             throw FloeError.validationFailed(
                 FloeL10n.l("workspace.file_tree_view.cad_needs_local_workspace"))
@@ -185,23 +187,20 @@ final class FileTreeViewModel: ObservableObject {
             throw FloeError.validationFailed(
                 FloeL10n.l("workspace.file_tree_view.cad_document_name"))
         }
-        let base = stem.hasSuffix(".floecad") ? stem : "\(stem).floecad"
-        // Unique-ify against the guard-resolved tree (never overwrite).
-        func relative(_ file: String) -> String {
-            relativePath.isEmpty ? file : "\(relativePath)/\(file)"
+        // The shared factory sanitizes the stem, unique-ifies against the
+        // guarded root, commits atomically and reads the package back.
+        let desiredRelative: String
+        if relativePath.isEmpty {
+            desiredRelative = "\(stem).floecad"
+        } else {
+            desiredRelative = "\(relativePath)/\(stem).floecad"
         }
-        var candidate = base
-        var serial = 2
-        while pathExists(relative(candidate)) {
-            candidate = "\((base as NSString).deletingPathExtension) \(serial).floecad"
-            serial += 1
-        }
-        let relative = relative(candidate)
-        let url = try service.guardResolver.resolve(relative)
-        _ = try await FloeCADDocument.create(at: url,
-                                             name: (candidate as NSString).deletingPathExtension)
+        let receipt = try await NativeCADPackageCreation.create(
+            service: service,
+            desiredRelativePath: desiredRelative,
+            explicitName: stem)
         await loadRoot()
-        return relative
+        return receipt.relativePath
     }
 
     /// Deletes a node and reloads the tree.

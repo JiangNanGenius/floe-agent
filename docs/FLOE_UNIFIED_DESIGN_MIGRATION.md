@@ -1,7 +1,9 @@
-<!-- docs-updated: 2026-10-11 -->
+<!-- docs-updated: 2026-10-13 -->
 # Unified 3D and shared design workflow — migration and recovery
 
-Status: this update is released as **1.7.29 (270)** from the frozen source tag `v1.7.29` (2026-10-11); its internal TestFlight availability in the existing Floe QA group was independently confirmed. The build you have may predate it, and external (public beta) review is a separate gate — do not rely on this page alone before migrating the only copy of important work; live installation state is tracked in [CURRENT_STATUS.md](CURRENT_STATUS.md).
+Status: the unified-3D update described in sections 1–8 is released as **1.7.29 (270)** from the frozen source tag `v1.7.29` (2026-10-11); its internal TestFlight availability in the existing Floe QA group was independently confirmed. The later 1.7.30 (271) hotfix changes provider-name normalization and Bluetooth authorization timing only. The build you have may predate either, and external (public beta) review is a separate gate — do not rely on this page alone before migrating the only copy of important work; live installation state is tracked in [CURRENT_STATUS.md](CURRENT_STATUS.md).
+
+Section 9 describes an **unreleased** work-in-progress update (branch `codex/design-workflows-20261013`, baseline `734e97f5`). It is not committed, not built into an App, not UI-accepted and not installable; its verification steps will be written only after integration. Existing data needs no migration for either state.
 
 Related: [User manual](USER_GUIDE.md) · [Floe 1.7 migration and recovery](FLOE_1_7_MIGRATION.md) · [Design workflow](FLOE_DESIGN_WORKFLOW.md) · [Design workflow tool contract](DESIGN_WORKFLOW_TOOLS.md)
 
@@ -62,3 +64,16 @@ The lighting and shadow disclosures are shown in the migration sheet and recorde
 3. Existing native `.floecad` nodes and canvases open. If you switch canvas documents while a conversion is running, its result surfaces only in the original document; the newly selected document is not changed.
 4. File Preview → **Design workflow** opens on a live workspace file; the chat attachment menu appears on a message with a file/image part; confirmation is requested before any adoption.
 5. Provider configuration is unchanged and saves; a pending iCloud sync can be retried without re-entering secrets.
+
+## 9. Next update (unreleased): conversational design workflow
+
+Branch `codex/design-workflows-20261013` (baseline `734e97f5`) implements the next round of the shared design workflow. **This source is not committed, not built into an app, not UI-accepted, not installable and not covered by the verification steps above.** It changes no existing data format and requires no migration:
+
+- **Natural-language start and continuation in the same task.** Creative home's type-selection menu and mandatory brief/audience form are removed from every reachable entry and reopen path (no hidden duplicate form). A description starts an ordinary scoped task through the existing task launch, and follow-up messages continue it. Saved briefs, specs, history and candidates are preserved and shown as an editable summary; a saved request restores its original task when one is bound, and reading old data never launches a model run. An unsent draft survives cancel/restart and never consumes another task's draft.
+- **Four entrances, one service.** Chat, Creative home, current workspace file and original chat attachment share the same typed binding, revision authority and confirmation; a Canvas node keeps its existing panel. No hidden canvas, second project or parallel runtime is created. Canvas keeps its layout/image capabilities and does not receive Linux, a web project directory or the ordinary task's full tool set.
+- **Three work modes.** *Create* makes a new artifact without a form; *modify* edits inside a frozen revision and preserves everything outside the scope; *restructure* first asks what content, data, behavior and format must be preserved, then reorganizes in a separate candidate. “Optimize this a bit” is not silently treated as a rebuild.
+- **Restructure authority.** The preservation confirmation record is data (`Codable`, public digest) and cannot authorize anything by itself. The real authority is a non-`Codable` receipt minted by a trusted handler after a single-use claim, bound to the exact target/task/base revision/operation/digest, checked before any candidate byte is staged or generation starts. The adoption-time single-use confirmation is unchanged. Model JSON `source`/`digest` values are never permission.
+- **Candidates and conflicts.** Candidates are previewed/compared before adoption; a manual edit that moved the baseline makes an update-original adoption fail with a revision conflict instead of overwriting, and a variant branches safely. Adopted attachment results return to the original task only.
+- **Other unreleased repairs.** CAD adds tool-level `create`/`import` (the built-in factory creates legal `.floecad` packages; importing STEP/IGES/STL/OBJ/glTF drafts a proposal that needs your confirmation before apply, and mesh imports carry no fabricated feature history). Delegated subagents report partial/budget/cancelled/error outcomes honestly instead of an ok status, Linux unknown-outcome messages state that the session was torn down and the next command cold-starts, and per-call timing records real monotonic execution separately from queue time.
+
+Until this update is integrated, compiled, UI-tested with a real model and released, treat it as a plan with module-level evidence only — not as available behavior.

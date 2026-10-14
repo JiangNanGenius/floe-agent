@@ -173,6 +173,9 @@ struct ThreadComposerView: View {
     /// Changes when the composer is reused for another conversation. Local
     /// transient errors must not leak into the next task.
     var contextID: UUID? = nil
+    /// A start page can own a durable draft before a conversation exists.
+    /// This is never a conversation identity and never grants tool access.
+    var draftIdentity: UUID? = nil
     /// True from the moment a send consumes this draft until its outcome is
     /// known. While set, an emptied field means "the send took it", so the
     /// store keeps the sent content: a failure can restore it and a success
@@ -234,7 +237,7 @@ struct ThreadComposerView: View {
     /// the stable Home launchpad slot (Home's staging UUID rotates per
     /// launch/send and is only the Notes-picker identity).
     private var draftKey: UUID {
-        contextID ?? ComposerDraftStore.homeDraftID
+        contextID ?? draftIdentity ?? ComposerDraftStore.homeDraftID
     }
 
     var body: some View {

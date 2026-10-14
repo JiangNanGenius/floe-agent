@@ -35,7 +35,7 @@ public enum BundledDomainSkills {
             let pattern = #"(?<![A-Za-z0-9_.-])[a-z][A-Za-z0-9]*(?:\.[a-zA-Z][A-Za-z0-9]*)+(?![A-Za-z0-9_.*-])"#
             let regex = try! NSRegularExpression(pattern: pattern)
             let ns = markdown as NSString
-            let allowedRoots = ["document", "presentation", "font", "network", "web", "exec", "shell", "apt", "ssh", "canvas", "image", "apple", "mail", "browser", "workspace", "crypto", "credential", "vnc", "remote", "remoteHosting", "cloudWorkspace", "bluetooth"]
+            let allowedRoots = ["design", "document", "presentation", "font", "network", "web", "exec", "shell", "apt", "ssh", "canvas", "image", "video", "cad", "apple", "mail", "browser", "workspace", "crypto", "credential", "vnc", "remote", "remoteHosting", "cloudWorkspace", "bluetooth"]
             return Set(regex.matches(in: markdown, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range) }.filter { allowedRoots.contains(String($0.split(separator: ".")[0])) }).sorted()
         }
     }
@@ -330,6 +330,41 @@ public enum BundledDomainSkills {
                 handle.write(updated)
             print(json.dumps({"path": path, "occurrences": occurrences}))
             ```
+            """
+        ),
+        Definition(
+            id: "floe-design",
+            name: "Design Workflow Guide",
+            description: "制作/修改/重构 design work across chat attachments, creative requests, workspace files and Canvas nodes: typed targets, candidate preview/adopt, real format limits and the trusted-confirmation boundary.",
+            version: "1.0.0",
+            exposed: false,
+            markdown: """
+            ## Design workflow (traditional guide)
+            This guide describes the FROZEN design contract; it grants no tools and escalates no permissions. Loading it never switches the UI and never approves a mutation.
+            ### Work modes (工况)
+            - 制作 (create): a NEW real, editable result in its own target. No mandatory audience/form gate; missing substantive input is asked in the conversation.
+            - 修改 (modify): scoped, reversible edits inside the frozen base. Content outside the scope is preserved; "优化一下" of a local region is modify, never a rebuild.
+            - 重构 (restructure): structural reorganization. The user FIRST confirms the preservation requirements in the trusted design page (content/data/behavior/format bounds); the run cannot mint that confirmation, and a model that omits the mode cannot downgrade an active restructure.
+            ### Typed targets (never heuristics)
+            Resolve the exact target before proposing anything: `design.resolveTarget` maps a chat attachment, creative request, workspace file or canvas node to its stable identity. Chat attachments bind conversation+message+attachment; workspace files bind workspace+relative path under the granted root; creative requests bind the request id. Multi-attachment messages pick the explicit attachment, never "the first one". Canvas layout objects (shape/group/card/audio) stay layout; they are not webpage sources.
+            ### Candidate lifecycle
+            1. Propose real bytes: `design.propose` (typed owners) or `canvas.designPropose` (canvas nodes) stages verified bytes as a PENDING candidate. The original is never overwritten by a proposal.
+            2. Compare: `design.compare` / the owner page shows the real diff against the frozen base.
+            3. Adopt: `design.adopt` / `canvas.designAdopt` applies the candidate ONLY against a single-use user grant minted by the trusted UI for that exact candidate/base/mode. Replays return the recorded result and never burn a second grant. Reject/restore stay explicit.
+            4. Validate: adoption verifies the bytes really reopen (`verifyExportReopen`); a candidate that cannot reopen is never adopted. Saving to the source requires the source still to exist and the revision to match.
+            ### Format limits (honest)
+            - Web/prototype: real multi-file sites (html/css/js/assets) in the workspace; preview through the task browser; page capture is a revision, NOT creation.
+            - Presentation: real editable .pptx through `document.presentation.createDeck` / Office sessions; a full-page image is not an editable slide.
+            - Image: configured routes only — read the public candidates with `image.models`, then `image.generate`; local deterministic edits use `exec.localPython` recipes; layered edits need an editor, never a fabricated history.
+            - Video: `video.models` candidates and durable generation jobs with real timeline/export verification.
+            - Office documents: .docx/.xlsx/.pptx via native package tools or a live Office session; a PDF is never a substitute for the source file.
+            - PDF/Notes: page-accurate work goes through the PDF service and `document.pdf*` tools; protected documents keep their gate.
+            - 2D/3D CAD: `.floecad` documents via `cad.document`; STEP/STP, IGES/IGS, STL, OBJ and self-contained GLB import through the guarded import proposal (loose .gltf with external resources is unsupported, never silently dropped).
+            ### Boundaries
+            - Never create a hidden canvas or a parallel project/runtime to "help" the design flow.
+            - Ordinary chat tasks have no canvas tools; Canvas agents have no Linux lifecycle, no webpage projects and no full tool catalog.
+            - Linux is used only when a step genuinely needs it and the image/architecture/packages are probed; JavaScriptCore is not Node.
+            - A small model may recommend entering the design page; it must not auto-navigate or block sending.
             """
         ),
     ]

@@ -18,14 +18,21 @@ public struct ChildBudgetContext: Sendable {
     /// Releases the child's concurrency slot. Must be called exactly once
     /// when the subagent finishes (or throws).
     public var finish: @Sendable () async -> Void
+    /// Best-effort read of the child's remaining iteration allowance, if the
+    /// backing ledger exposes one. The subagent uses this to reserve its last
+    /// slot for a bounded wrap-up pass instead of spending every iteration on
+    /// tool calls; nil means "unknown", never "unbounded".
+    public var remaining: (@Sendable () async -> Int)?
 
     public init(
         maximumIterations: Int,
         reserve: @escaping @Sendable () async -> Bool,
-        finish: @escaping @Sendable () async -> Void
+        finish: @escaping @Sendable () async -> Void,
+        remaining: (@Sendable () async -> Int)? = nil
     ) {
         self.maximumIterations = max(1, maximumIterations)
         self.reserve = reserve
         self.finish = finish
+        self.remaining = remaining
     }
 }

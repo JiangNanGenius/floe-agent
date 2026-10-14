@@ -27,7 +27,7 @@ public struct DelegateTool: AgentTool {
 
     public static let name = "delegate"
     public static let toolDescription =
-        "Delegate one subtask to a focused, strictly read-only subagent that works in a clean context and returns a self-contained handoff summary. Types: `explore` (default; fast local workspace/conversation reads, no network) or `research` (adds read-only web/network evidence). It inherits the parent task's tool and workspace ceilings and cannot modify files, control GUIs, run code, or delegate again. Several independent delegate calls in one batch run in parallel — batch them. Give the subagent complete context: it sees nothing of this conversation beyond what you pass."
+        "Delegate one subtask to a focused, strictly read-only subagent that works in a clean context and returns a self-contained handoff summary. Types: `explore` (default; fast local workspace/conversation reads, no network) or `research` (adds read-only web/network evidence). It inherits the parent task's tool and workspace ceilings and cannot modify files, control GUIs, run code, or delegate again. Several independent delegate calls in one batch run in parallel — batch them. Give the subagent complete context: it sees nothing of this conversation beyond what you pass. The result is a structured receipt: `status=ok` means the subagent finished with a final answer; `status=partial` / `status=budgetExhausted` mean it ran out of iterations or shared budget and the findings are incomplete (treat them as non-success, not as a completed subtask); `status=cancelled`, `status=providerError` and `status=toolError` are failures. Each non-ok receipt lists bounded findings, evidence references and unfinished items."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -68,7 +68,7 @@ public struct DelegateTool: AgentTool {
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         do {
-            let summary = try await runners.run(
+            let outcome = try await runners.runSubagent(
                 SubagentRequest(
                     task: args.task,
                     context: args.context,
@@ -78,10 +78,42 @@ public struct DelegateTool: AgentTool {
                 ),
                 context: context
             )
-            return Self.output("status=ok\n\(summary)", exitStatus: 0)
+            return Self.output(Self.render(outcome), exitStatus: Self.exitStatus(for: outcome.status))
         } catch {
             return Self.output("status=failed error=\(error.localizedDescription)", exitStatus: 1)
         }
+    }
+
+    /// Partial/exhausted/cancelled/error terminations are NON-success: the
+    /// parent model, the timeline and plan completion must read the real
+    /// state instead of an "ok" wrapper around "no final answer".
+    private static func exitStatus(for status: SubagentOutcome.Status) -> Int32 {
+        switch status {
+        case .completed: 0
+        default: 1
+        }
+    }
+
+    private static func render(_ outcome: SubagentOutcome) -> String {
+        // Keep the historical provider-facing contract: a completed subagent
+        // reads status=ok; every non-success state carries its structured
+        // status name so the parent can tell partial/budget/cancel/error
+        // apart instead of reading "ok" around "no final answer".
+        let statusName = outcome.status == .completed
+            ? "ok"
+            : outcome.status.rawValue
+        var text = "status=\(statusName) iterationsUsed=\(outcome.iterationsUsed)"
+        if !outcome.unfinished.isEmpty {
+            text += " unfinished=\(outcome.unfinished.count)"
+        }
+        if !outcome.evidence.isEmpty {
+            text += "\nevidence: " + outcome.evidence.joined(separator: "; ")
+        }
+        if !outcome.unfinished.isEmpty {
+            text += "\nunfinished: " + outcome.unfinished.joined(separator: "; ")
+        }
+        text += "\n\(outcome.findings)"
+        return text
     }
 
     private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {
@@ -105,6 +137,19 @@ public actor SubagentRunnerRegistry {
         runners[runID] = nil
     }
 
+    /// Runs the structured subagent loop for one delegated subtask.
+    public func runSubagent(
+        _ request: SubagentRequest,
+        context: ToolContext
+    ) async throws -> SubagentOutcome {
+        guard let runner = runners[context.runID] else {
+            throw FloeError.invalidConfiguration("No subagent runner is bound to this run")
+        }
+        return try await runner.runStructured(request, context: context)
+    }
+
+    /// Legacy plain-summary entry point kept for existing callers; new callers
+    /// should use `runSubagent` and read the structured termination status.
     public func run(_ request: SubagentRequest, context: ToolContext) async throws -> String {
         guard let runner = runners[context.runID] else {
             throw FloeError.invalidConfiguration("No subagent runner is bound to this run")

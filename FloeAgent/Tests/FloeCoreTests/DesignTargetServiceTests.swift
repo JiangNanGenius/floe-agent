@@ -1115,24 +1115,58 @@ struct DesignOwnerWorkflowTests {
             baseRevisionID: frozen.revision.id,
             bytes: Data("new".utf8), format: "png", summary: "adopt"
         )
-        // The UNFROZEN target has no base token: in-place adoption fails
-        // closed instead of performing an ungated overwrite.
+        // The UNFROZEN target (no revision in the caller's identity) still
+        // adopts SAFELY: the frozen base token recorded at freeze time
+        // re-gates the commit, so the overwrite is never ungated.
+        let adopted = try await workflow.adopt(
+            target: target, operationID: "op-adopt",
+            expectedOwnerRevision: proposal.envelope.revision,
+            candidateID: proposal.candidate.id,
+            mode: .updateOriginal,
+            verifyReopen: { _, _, _ in }
+        )
+        #expect(commitPort.commitCount == 1)
+        #expect(adopted.envelope.project.candidate(proposal.candidate.id)?.status == .adopted)
+        // Only a caller with NEITHER a frozen target identity NOR a recorded
+        // base token fails closed. Simulate the legacy no-token shape by
+        // stripping the recorded token before the adoption cycle.
+        var legacyEnvelope = frozen.envelope
+        for artifactIndex in legacyEnvelope.project.artifacts.indices {
+            for revisionIndex in legacyEnvelope.project.artifacts[artifactIndex].revisions.indices {
+                legacyEnvelope.project.artifacts[artifactIndex].revisions[revisionIndex].ownerBaseToken = nil
+            }
+        }
+        let legacyStore = InMemoryOwnerStore()
+        let savedLegacy = try await legacyStore.save(
+            legacyEnvelope, targetKey: target.stableKey, expectedRevision: nil)
+        let commitPort2 = StubCommitPort()
+        let workflow3 = DesignOwnerWorkflow(
+            targets: service, store: legacyStore, payloads: payloads,
+            commitPorts: [.fileDocument: commitPort2], outbox: makeOutbox()
+        )
+        let proposal3 = try await workflow3.propose(
+            target: target, operationID: "op-propose",
+            expectedOwnerRevision: savedLegacy,
+            artifactID: frozen.revision.artifactID,
+            baseRevisionID: frozen.revision.id,
+            bytes: Data("new".utf8), format: "png", summary: "adopt"
+        )
         do {
-            _ = try await workflow.adopt(
+            _ = try await workflow3.adopt(
                 target: target, operationID: "op-adopt",
-                expectedOwnerRevision: proposal.envelope.revision,
-                candidateID: proposal.candidate.id,
+                expectedOwnerRevision: proposal3.envelope.revision,
+                candidateID: proposal3.candidate.id,
                 mode: .updateOriginal,
                 verifyReopen: { _, _, _ in }
             )
-            Issue.record("expected invalidReference for ungated in-place adoption")
+            Issue.record("expected invalidReference for a no-token in-place adoption")
         } catch let error as DesignTargetError {
             guard case .invalidReference = error else {
                 Issue.record("unexpected \(error)")
                 return
             }
         }
-        #expect(commitPort.commitCount == 0)
+        #expect(commitPort2.commitCount == 0)
     }
 
     @Test func feedbackResolvesOnlyWithVerifiedChangingRevision() async throws {

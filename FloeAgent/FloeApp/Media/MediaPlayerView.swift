@@ -131,6 +131,17 @@ public struct MediaPlayerView: View {
 
     public init(url: URL) {
         self.url = url
+        _model = StateObject(wrappedValue: MediaPlayerModel())
+    }
+
+    /// Shares ONE playback session (the same AVPlayer) across every
+    /// presentation of the same URL: the design conversation page and its
+    /// fullscreen cover hand in the same model, so entering or leaving
+    /// fullscreen never resets playback position. Callers own the cached
+    /// model (keyed by URL) and must release it with the surface.
+    init(url: URL, sharedModel: MediaPlayerModel) {
+        self.url = url
+        _model = StateObject(wrappedValue: sharedModel)
     }
 
     public var body: some View {

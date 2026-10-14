@@ -356,5 +356,13 @@ final class OfficeLiveSessionRegistry {
     func session(root: URL?, relativePath: String) -> OfficeFileSession? {
         entries[Self.key(root: root, relativePath: relativePath)]?.session
     }
+
+    /// Whether ANY live engine session is registered right now. Live
+    /// capability probes use this to cross-check a caller-supplied
+    /// "connected" tag: a tag can never mint readiness while the registry
+    /// holds no real session.
+    var hasLiveSession: Bool {
+        entries.contains { $0.value.session != nil }
+    }
 }
 #endif

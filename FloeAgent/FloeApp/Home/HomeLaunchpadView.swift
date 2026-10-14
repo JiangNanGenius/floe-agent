@@ -25,12 +25,23 @@ struct HomeLaunchpadView: View {
     @StateObject private var viewModel: HomeLaunchpadViewModel
     @EnvironmentObject private var router: AppRouter
     @State private var showsDraftPermissions = false
+    private let designStart: Bool
+    private let onTaskCreated: (@MainActor (UUID) -> Void)?
 
-    init(center: ConversationCenter, workspaceID: UUID? = nil) {
+    init(center: ConversationCenter, workspaceID: UUID? = nil,
+         draftStorageID: UUID = ComposerDraftStore.homeDraftID,
+         initialDraft: String? = nil, designStart: Bool = false,
+         designLaunchBindingProvider: (@MainActor () -> DesignLaunchBinding?)? = nil,
+         onTaskCreated: (@MainActor (UUID) -> Void)? = nil) {
         self.center = center
+        self.designStart = designStart
+        self.onTaskCreated = onTaskCreated
         _viewModel = StateObject(wrappedValue: HomeLaunchpadViewModel(
             center: center,
-            selectedProjectID: workspaceID
+            selectedProjectID: workspaceID,
+            draftStorageID: draftStorageID,
+            initialDraft: initialDraft,
+            designLaunchBindingProvider: designLaunchBindingProvider
         ))
     }
 
@@ -66,7 +77,7 @@ struct HomeLaunchpadView: View {
             // available height (rotation, split, dynamic type).
             .environment(\.composerHeightBudget, proxy.size.height)
         }
-        .navigationTitle("workbench.new_task")
+        .navigationTitle(LocalizedStringKey(designStart ? "design.conversation.start_title" : "workbench.new_task"))
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await viewModel.load()
@@ -108,7 +119,7 @@ struct HomeLaunchpadView: View {
                 .shadow(color: FloeTheme.primary.opacity(0.18), radius: 18, y: 8)
                 .accessibilityHidden(true)
 
-            Text("home.welcome")
+            Text(LocalizedStringKey(designStart ? "design.conversation.start_prompt" : "home.welcome"))
                 .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
                 .accessibilityAddTraits(.isHeader)
@@ -146,6 +157,7 @@ struct HomeLaunchpadView: View {
                 onStop: {},
                 onPermissions: { showsDraftPermissions = true },
                 approvalMode: viewModel.draftPolicy.approvalMode,
+                draftIdentity: viewModel.draftStorageID,
                 isDraftConsumedBySend: viewModel.isConsumingDraft,
                 notesDraftID: viewModel.draftConversationID
             )
@@ -223,7 +235,11 @@ struct HomeLaunchpadView: View {
     private func sendTask() {
         Task {
             if let conversationID = await viewModel.sendNewTask() {
-                router.openThreadFromHome(conversationID)
+                if let onTaskCreated {
+                    onTaskCreated(conversationID)
+                } else {
+                    router.openThreadFromHome(conversationID)
+                }
             }
         }
     }

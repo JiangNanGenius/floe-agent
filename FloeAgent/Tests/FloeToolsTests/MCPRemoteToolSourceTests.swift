@@ -112,7 +112,12 @@ struct MCPRemoteToolSourceTests {
             "canvas.designRestore",
             "notes.read", "notes.search", "notes.edit", "notes.attachFile", "notes.export",
             "video.models",
+            "image.models",
         ])
+        // Read-only discovery catalogs only: no image/video generation or
+        // editing tools enter the canvas ceiling through them.
+        #expect(!names.contains("image.generate"))
+        #expect(!names.contains("image.process"))
         #expect(!names.contains("canvas.inspect"))
         #expect(!names.contains("canvas.applyPatch"))
         #expect(!names.contains("web.searchAI"))

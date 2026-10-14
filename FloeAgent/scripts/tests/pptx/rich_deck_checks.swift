@@ -317,6 +317,18 @@ func run() async throws {
     let legacyArgs = try JSONDecoder().decode(PresentationCreateDeckTool.Arguments.self, from: legacyJSON)
     try check("legacy slide JSON still decodes without objects", legacyArgs.slides.count == 1 && legacyArgs.slides[0].objects == nil)
 
+    let objectsOnlyJSON = Data(#"{"path":"chart-only.pptx","title":"Chart","slides":[{"title":"Revenue","objects":[{"kind":"chart","layout":"center","chart":{"chartType":"bar","categories":["A","B"],"series":[{"name":"Revenue","values":[1,2]}]}}]}]}"#.utf8)
+    let objectsOnlyArgs = try JSONDecoder().decode(PresentationCreateDeckTool.Arguments.self, from: objectsOnlyJSON)
+    try check("object-only slide decodes without a dummy bullet list", objectsOnlyArgs.slides[0].bullets.isEmpty)
+    for invalid in [#"{"title":"S","bullets":null}"#, #"{"title":"S","bullets":3}"#] {
+        try check("explicit malformed bullets remain rejected", (try? JSONDecoder().decode(OfficePresentationSlide.self, from: Data(invalid.utf8))) == nil)
+    }
+    if let properties = schema?["properties"] as? [String: Any],
+       let slides = properties["slides"] as? [String: Any],
+       let item = slides["items"] as? [String: Any] {
+        try check("slide schema agrees with optional bullets", item["required"] as? [String] == ["title"])
+    } else { try check("slide schema exposes the actual contract", false) }
+
     let richJSON = Data(#"{"path":"rich.pptx","title":"T","slides":[{"title":"S","bullets":[],"objects":[{"kind":"image","imagePath":"logo.png","layout":"center"},{"kind":"chart","layout":"right","chart":{"chartType":"bar","categories":["A","B"],"series":[{"name":"S","values":[1,2]}]}}]}]}"#.utf8)
     let richArgs = try JSONDecoder().decode(PresentationCreateDeckTool.Arguments.self, from: richJSON)
     try check("rich slide JSON decodes objects", richArgs.slides[0].objects?.count == 2)
@@ -332,6 +344,12 @@ func run() async throws {
     try check("tool-created deck embeds the workspace image", deckPaths.contains("ppt/media/image1.png"))
     try check("tool-created deck embeds the chart workbook", deckPaths.contains("ppt/embeddings/floe-chart-data-1.xlsx"))
     try check("tool-created deck passes strict validation", (try? OfficeNativeSaveValidation.validate(deckURL)) != nil)
+
+    _ = try await PresentationCreateDeckTool(rootProvider: { workspace }).execute(objectsOnlyArgs, context: context)
+    let objectsOnlyURL = workspace.appendingPathComponent("chart-only.pptx")
+    try check("object-only slide exports a validated editable deck", (try? OfficeNativeSaveValidation.validate(objectsOnlyURL)) != nil)
+    let objectsOnlyPaths = try entryPaths(objectsOnlyURL)
+    try check("object-only chart retains its editable workbook", objectsOnlyPaths.contains("ppt/embeddings/floe-chart-data-1.xlsx"))
 
     let wordArgs = try JSONDecoder().decode(DocumentCreateWordTool.Arguments.self, from: Data(#"{"path":"w.docx","title":"T","paragraphs":["p"]}"#.utf8))
     let wordOutput = try await DocumentCreateWordTool(rootProvider: { workspace }).execute(wordArgs, context: context)

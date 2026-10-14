@@ -30,6 +30,12 @@ struct FilePreviewView: View {
     var onAddToContext: (() -> Void)? = nil
     /// Disabled when the preview is already hosted inside WorkspaceIDEView.
     var allowsIDEExpansion = true
+    /// Disabled when the preview is already hosted INSIDE the design
+    /// conversation page's editor handoff: the page is presenting this
+    /// view, so re-presenting the same design page from here would
+    /// recursively stack a second one. The design entry is the page
+    /// owner's job, never the nested handoff's.
+    var allowsDesignPage = true
 
     @StateObject private var remotePreview = RemoteFilePreviewCopy()
     @StateObject private var officeSession = OfficeFileSession()
@@ -67,6 +73,9 @@ struct FilePreviewView: View {
     /// T6 design entrance: the current workspace file as a typed design
     /// target (workspace-scoped, permission re-derived by the adapter).
     @State private var designTarget: DesignTarget?
+    /// File entry without a conversation: presents the conversational start
+    /// bound to this file (a genuine ordinary task, no old form).
+    @State private var fileDesignTarget: DesignTarget?
 
     var body: some View {
         Group {
@@ -160,7 +169,19 @@ struct FilePreviewView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
         .sheet(item: $designTarget) { target in
-            DesignOwnerWorkflowSheet(target: target, environment: environment)
+            // In-conversation file design opens the original task's design
+            // page (preview + conversation); the standalone owner form is
+            // not the chat entry anymore.
+            if let conversationID = engineeringConversationID {
+                DesignConversationPageView(
+                    target: target, conversationID: conversationID,
+                    environment: environment)
+            } else {
+                DesignOwnerWorkflowSheet(target: target, environment: environment)
+            }
+        }
+        .sheet(item: $fileDesignTarget) { target in
+            CreativeDesignStartView(previousTarget: nil, fileTarget: target)
         }
         .task(id: relativePath) { await load() }
         .fullScreenCover(isPresented: $isIDEPresented, onDismiss: {
@@ -381,10 +402,29 @@ struct FilePreviewView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(proposal.summary)
                         .font(.subheadline.weight(.semibold))
-                    Text("\(proposal.preview.bodyCountBefore) → \(proposal.preview.bodyCountAfter) bodies · "
-                         + String(format: "%+.1f mm³", proposal.preview.volumeDeltaMM3))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    // Import proposals name the source, the format and the
+                    // geometry class explicitly; a mesh import has no
+                    // parametric history and says so.
+                    if proposal.preview.serviceOperation == "document.import",
+                       let spec = FloeCAD3DBridge.shared.importSpec(for: proposal.id) {
+                        let isMesh = proposal.preview.serviceMessage?
+                            .localizedCaseInsensitiveContains("mesh") == true
+                        Text(String(format: String(localized: "cad.native.import_detail"),
+                                    spec.fileName ?? spec.sourceRelativePath,
+                                    spec.format.uppercased(),
+                                    isMesh
+                                        ? String(localized: "cad.native.import_geometry_mesh")
+                                        : String(localized: "cad.native.import_geometry_brep"),
+                                    proposal.preview.addedBodyNames.count))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("cad.native.importDetail")
+                    } else {
+                        Text("\(proposal.preview.bodyCountBefore) → \(proposal.preview.bodyCountAfter) bodies · "
+                             + String(format: "%+.1f mm³", proposal.preview.volumeDeltaMM3))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer(minLength: 8)
                 Button("Discard") {
@@ -649,13 +689,22 @@ struct FilePreviewView: View {
             // T6 design entrance for a real workspace file. Only shown when
             // the file is addressable through the live workspace authority;
             // cloud/network stubs are read-only copies without a design owner.
-            if let workspace = center.currentWorkspace,
+            // With a conversation context the design page opens for the same
+            // task; without one, a genuine ordinary task bound to this file
+            // starts through the conversational entry (no old form).
+            if allowsDesignPage,
+               let workspace = center.currentWorkspace,
                center.fileService != nil,
                !center.isCloudWorkspacePath(relativePath),
                !center.isNetworkWorkspacePath(relativePath) {
                 Button {
-                    designTarget = DesignOwnerTargets.file(
+                    let target = DesignOwnerTargets.file(
                         workspaceID: workspace.id, relativePath: relativePath)
+                    if engineeringConversationID != nil {
+                        designTarget = target
+                    } else {
+                        fileDesignTarget = target
+                    }
                 } label: {
                     Label("design.owner.open", systemImage: "square.on.square.dashed")
                 }

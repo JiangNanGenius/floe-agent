@@ -716,7 +716,10 @@ struct DesignWorkflowPanel: View {
                 if model.design == nil && model.nodeID != nil {
                     Section("design.panel.new_design") {
                         Picker("design.panel.type", selection: $newType) {
-                            ForEach(DesignContentType.allCases, id: \.self) { type in
+                            // Canvas layout objects (.composition, e.g. shape/
+                            // group/card/audio nodes) are not creatable design
+                            // types here; they stay in the graph/layout tools.
+                            ForEach(DesignContentType.allCases.filter { $0 != .composition }, id: \.self) { type in
                                 Text(FloeL10n.l("design.panel.type.\(type.rawValue)")).tag(type)
                             }
                         }
@@ -1533,6 +1536,77 @@ final class DesignOwnerWorkflowModel: ObservableObject {
         return "ui-\(suffix)-\(UUID().uuidString.lowercased())"
     }
 
+    // MARK: - Work mode binding (trusted UI)
+
+    /// The durable launch binding for this design target's originating task,
+    /// when one was frozen at launch (or by an earlier confirmation here).
+    /// Design tools read this value to derive the work mode, so model text
+    /// can never downgrade an active 重构 to 修改.
+    @Published private(set) var workModeBinding: DesignLaunchBinding?
+
+    func reloadWorkModeBinding() {
+        workModeBinding = confirmationOriginConversationID
+            .flatMap { DesignLaunchBindingStore.load(conversationID: $0) }
+    }
+
+    /// Trusted UI only: the user confirmed the exact preservation
+    /// requirements for a 重构 of this target. Burns nothing here — MINTS the
+    /// single-use grant (the propose burns it atomically before staging) and
+    /// freezes the upgraded launch binding, so a subsequent natural-language
+    /// "重组…" in the originating task routes as a real restructure with
+    /// authority. Requires an existing artifact (restructure reorganizes real
+    /// content; 制作 continues through the request flow). Returns a localized
+    /// error key on failure, nil on success.
+    @discardableResult
+    func confirmRestructure(
+        content: [String],
+        data: [String],
+        behavior: [String],
+        formatBounds: [String]
+    ) async -> String? {
+        guard let conversationID = confirmationOriginConversationID else {
+            return "design.owner.restructure.no_conversation"
+        }
+        guard let artifact = currentArtifact else {
+            return "design.owner.restructure.no_artifact"
+        }
+        let constraints = DesignPreservationConstraints(
+            content: content, data: data, behavior: behavior,
+            formatBounds: formatBounds)
+        guard !constraints.isEmpty else {
+            return "design.owner.restructure.empty"
+        }
+        let operation = operationID("restructure")
+        let baseRevisionID = artifact.currentRevisionID
+        await DesignRestructureAuthorization.shared.issueRestructureConfirmation(
+            targetKey: target.stableKey,
+            operationID: operation,
+            baseRevisionID: baseRevisionID,
+            preservationDigest: constraints.canonicalDigest,
+            originalTaskOwnerID: conversationID.uuidString)
+        var binding = workModeBinding ?? DesignLaunchBinding(
+            target: target, workMode: .restructure)
+        binding.workMode = .restructure
+        binding.preservation = constraints
+        binding.preservationDigest = constraints.canonicalDigest
+        binding.originalConversationID = conversationID.uuidString
+        binding.frozenRestructureOperationID = operation
+        do {
+            try DesignLaunchBindingStore.save(binding, conversationID: conversationID)
+        } catch {
+            return "design.owner.restructure.persist_failed"
+        }
+        workModeBinding = binding
+        return nil
+    }
+
+    /// Failure banner dismissal (the preview-first page): the failure stays
+    /// visible until the user dismisses it or a later mutation succeeds —
+    /// a refresh alone never clears it.
+    func dismissError() {
+        errorMessage = nil
+    }
+
     func reload() async {
         guard !busy else { return }
         busy = true
@@ -1597,9 +1671,10 @@ final class DesignOwnerWorkflowModel: ObservableObject {
 
     // MARK: - Creative first real result (import + bind)
 
-    /// Real capability for the requested output kind: only an operation the
-    /// adapter registry actually connects is offered; otherwise the honest
-    /// reason is shown and no button pretends to generate.
+    /// Real capability for the requested output kind: the static adapter
+    /// wiring AND the live probe (configured generation route, connected
+    /// service) must both agree; otherwise the honest reason + recovery is
+    /// shown and no button pretends to generate.
     func refreshGenerationAvailability() {
         guard target.kind == .creativeDocument,
               let kind = target.requestedOutputKind else {
@@ -1607,13 +1682,16 @@ final class DesignOwnerWorkflowModel: ObservableObject {
             generationUnavailableReason = nil
             return
         }
-        let capability = environment.designAdapterCenter.capabilityRegistry()
-            .capability(for: kind)
-        generationAvailable = capability.available.contains(.generate)
-        generationUnavailableReason = generationAvailable
-            ? nil
-            : DesignOwnerLabels.generationUnavailableReason(
-                capability.unavailableReasons[.generate])
+        let assessment = environment.designCapabilityMatrix.assess(
+            DesignCapabilityQuery(mode: .create, family: kind, operation: .generate))
+        generationAvailable = assessment.available
+        if assessment.available {
+            generationUnavailableReason = nil
+        } else if let reason = assessment.reason {
+            generationUnavailableReason = DesignOwnerLabels.generationUnavailableReason(reason)
+        } else {
+            generationUnavailableReason = FloeL10n.l("design.owner.generate_unavailable")
+        }
     }
 
     /// Loads real, local creative-library assets whose verified format matches
@@ -2449,6 +2527,99 @@ final class DesignOwnerWorkflowModel: ObservableObject {
         }
     }
 
+    // MARK: - Preview-first page support (verified bytes, never model text)
+
+    /// One retained revision rendered by the design conversation page.
+    struct RevisionPreview: Sendable {
+        let bytes: Data
+        let format: String
+        let byteCount: Int
+        let contentSHA256: String
+    }
+
+    /// Verified preview bytes per revision id (current base, candidate
+    /// proposed/base sides). Loaded through the same verified payload store
+    /// the compare/adopt paths use; failures publish an explicit error so
+    /// the page shows the real failure instead of a blank stage.
+    ///
+    /// Bounded: full history can hold many revisions, but retained preview
+    /// BYTES are capped by count and bytes and pruned to the live lens set
+    /// (current + pending candidate revisions) — heavyweight payloads never
+    /// accumulate for revisions no surface can show.
+    @Published private(set) var revisionPreviews: [String: RevisionPreview] = [:]
+    static let maxRevisionPreviews = 6
+    static let maxRevisionPreviewBytes = 96 * 1024 * 1024
+
+    func loadPreview(artifactID: String, revisionID: String) async {
+        guard revisionPreviews[revisionID] == nil else { return }
+        do {
+            let bytes = try await environment.designOwnerWorkflow.revisionPreviewBytes(
+                target: target, artifactID: artifactID, revisionID: revisionID)
+            let revision = currentArtifact?.revision(revisionID)
+                ?? project?.artifacts.flatMap(\.revisions).first { $0.id == revisionID }
+            revisionPreviews[revisionID] = RevisionPreview(
+                bytes: bytes,
+                format: revision?.payloadFormat ?? "bin",
+                byteCount: bytes.count,
+                contentSHA256: revision?.contentSHA256
+                    ?? FloeDigest.sha256Hex(bytes))
+            pruneRevisionPreviews()
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
+    /// Keep the live lens set (current + every pending candidate's base and
+    /// proposed revision) plus the most recent spares, bounded by count and
+    /// total bytes; oldest-inserted entries leave first.
+    private func pruneRevisionPreviews() {
+        var live = Set<String>()
+        if let current = currentArtifact?.currentRevisionID { live.insert(current) }
+        for candidate in pendingCandidates {
+            live.insert(candidate.proposedRevisionID)
+            live.insert(candidate.baseRevisionID)
+        }
+        for key in revisionPreviews.keys where !live.contains(key) {
+            revisionPreviews[key] = nil
+        }
+        var totalBytes = revisionPreviews.values.reduce(0) { $0 + $1.byteCount }
+        while let oldest = revisionPreviews.keys.first,
+              (revisionPreviews.count > Self.maxRevisionPreviews
+                  || totalBytes > Self.maxRevisionPreviewBytes) {
+            let removed = revisionPreviews.removeValue(forKey: oldest)
+            totalBytes -= removed?.byteCount ?? 0
+        }
+    }
+
+    /// Restores the artifact's latest non-current revision (the explicit
+    /// user recovery action in the page chrome).
+    func restoreLatestRevision() async {
+        guard !busy, let revision = envelope?.revision,
+              let artifact = currentArtifact,
+              let currentID = artifact.currentRevisionID else { return }
+        let previous = artifact.revisions
+            .filter { $0.id != currentID }
+            .sorted { $0.number > $1.number }
+            .first
+        guard let previous else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let restored = try await environment.designOwnerWorkflow.restore(
+                target: target,
+                operationID: operationID("restore"),
+                expectedOwnerRevision: revision,
+                artifactID: artifact.id,
+                revisionID: previous.id,
+                runID: nil)
+            envelope = restored
+            errorMessage = nil
+            statusNote = FloeL10n.l("design.owner.restored")
+        } catch {
+            errorMessage = Self.friendly(error)
+        }
+    }
+
     func adopt(_ candidateID: String, mode: DesignAdoptMode) async {
         guard !busy, let revision = envelope?.revision else { return }
         busy = true
@@ -2464,11 +2635,43 @@ final class DesignOwnerWorkflowModel: ObservableObject {
                 verifyReopen: DesignOwnerWorkflowFactory.verifier(
                     adapters: environment.designAdapterCenter))
             envelope = result.envelope
+            // Trusted-UI decision: keep staged-adoption semantics consistent
+            // with the tool path — an active design run never gains
+            // direct-write rights from a decision made while it lives; a
+            // verified adoption re-freezes the new approved baseline; with
+            // no pending candidate and no active run the work is resolved
+            // and the freeze lifts.
+            await resolveProtectionAfterPanelDecision(envelope: result.envelope)
             errorMessage = nil
             statusNote = Self.adoptionNote(result)
         } catch {
             errorMessage = Self.friendly(error)
         }
+    }
+
+    /// Panel-side post-decision protection (shared by adopt/reject):
+    /// consults the run lifecycle so a decision taken while the model still
+    /// runs keeps the original frozen until the run ends. A re-arm failure
+    /// after an adoption KEEPS the freeze (fail closed) and surfaces the
+    /// real error here — the active run's next ordinary write is still
+    /// refused and the recoverable state stays intact.
+    private func resolveProtectionAfterPanelDecision(envelope: DesignOwnerEnvelope) async {
+        guard let origin = confirmationOriginConversationID ?? envelope.target.originConversationID.flatMap(UUID.init(uuidString:)),
+              let binding = DesignLaunchBindingStore.load(conversationID: origin) else { return }
+        let runIsActive = environment.conversationCenter.activeRuns.values
+            .contains { $0.conversationID == origin }
+        let outcome = await DesignFreezeProtectionCoordinator.resolveAfterDecision(
+            binding: binding,
+            conversationID: origin,
+            envelope: envelope,
+            runIsActive: runIsActive,
+            workspaceStore: SQLiteWorkspaceStore(database: environment.database))
+        if outcome == .rearmFailed {
+            errorMessage = FloeL10n.l("design.owner.protection_rearm_failed")
+        }
+        // The durable envelope changed (candidate resolved): republish the
+        // shared entry state for this conversation.
+        await environment.designEntryState.refresh(conversationID: origin, environment: environment)
     }
 
     func reject(_ candidateID: String) async {
@@ -2482,6 +2685,11 @@ final class DesignOwnerWorkflowModel: ObservableObject {
                 expectedOwnerRevision: revision,
                 candidateID: candidateID)
             envelope = result.envelope
+            // Same trusted-UI decision policy as adopt (see
+            // resolveProtectionAfterPanelDecision): the user rejecting while
+            // the model still runs keeps the original frozen until the run
+            // ends; with nothing pending and no active run the freeze lifts.
+            await resolveProtectionAfterPanelDecision(envelope: result.envelope)
             errorMessage = nil
             statusNote = Self.adoptionNote(result)
         } catch {
@@ -2626,6 +2834,8 @@ final class DesignOwnerWorkflowModel: ObservableObject {
                 return FloeL10n.l("design.owner.canvas_authority")
             case .resultPublicationUnavailable:
                 return FloeL10n.l("design.owner.error.publication_unavailable")
+            case .restructureRequiresTrustedConfirmation:
+                return FloeL10n.l("design.owner.error.restructure_confirmation")
             }
         }
         return FloeL10n.l("design.owner.error.generic")
@@ -2751,11 +2961,13 @@ struct DesignOwnerWorkflowSheet: View {
                     }
                     specSection
                     if !model.isCreativeAwaitingFirstResult {
+                        DesignWorkModeSection(model: model)
                         frozenSection
                     }
                 } else {
                     briefSection
                     specSection
+                    DesignWorkModeSection(model: model)
                     frozenSection
                 }
                 artifactsSection
@@ -2781,6 +2993,7 @@ struct DesignOwnerWorkflowSheet: View {
             }
             .task {
                 await model.reload()
+                model.reloadWorkModeBinding()
                 loadFieldsIfNeeded(force: loadedRevision == nil)
             }
             .onChange(of: model.envelope?.revision) { _, _ in
@@ -3193,46 +3406,54 @@ struct DesignOwnerWorkflowSheet: View {
                             Text("design.owner.no_change").font(.caption).foregroundStyle(.secondary)
                         }
                         HStack(spacing: 10) {
+                            // ONE clear primary action; variant/reject and the
+                            // assistant authorization live in the compact
+                            // "更多" menu. Nothing stays resident once the
+                            // candidate resolves — the section renders only
+                            // while candidates are pending.
                             Button("design.owner.compare") {
                                 Task { await model.compare(candidate.id) }
                             }
                             .disabled(model.busy)
                             .accessibilityIdentifier("design.owner.compare.\(candidate.id)")
-                        }
-                        DesignCandidateActionButtons(
-                            busy: model.busy,
-                            adoptTitle: model.isImmutableOwner
-                                ? "design.owner.adopt_return"
-                                : "design.owner.adopt",
-                            showsVariant: !model.isImmutableOwner,
-                            rejectTitle: "design.owner.reject",
-                            adoptIdentifier: "design.owner.adopt.\(candidate.id)",
-                            variantIdentifier: "design.owner.adoptVariant.\(candidate.id)",
-                            rejectIdentifier: "design.owner.reject.\(candidate.id)",
-                            onAdopt: { Task { await model.adopt(candidate.id, mode: .updateOriginal) } },
-                            onVariant: { Task { await model.adopt(candidate.id, mode: .variant) } },
-                            onReject: { Task { await model.reject(candidate.id) } })
-                        // Trusted-UI mint for the assistant's design.adopt:
-                        // same confirmation service the tools consume, bound
-                        // to this exact candidate/base/proposed/mode, and
-                        // DURABLY delivered to the frozen originating task.
-                        // Only offered when an honest origin exists; a target
-                        // without one shows the manual adopt only.
-                        if model.canAuthorizeAssistant {
+                            Spacer(minLength: 8)
+                            Button(model.isImmutableOwner
+                                   ? "design.owner.adopt_return"
+                                   : "design.owner.adopt") {
+                                Task { await model.adopt(candidate.id, mode: .updateOriginal) }
+                            }
+                            .disabled(model.busy)
+                            .accessibilityIdentifier("design.owner.adopt.\(candidate.id)")
                             Menu {
-                                Button("design.owner.authorize_update") {
-                                    Task { await model.authorizeAssistantAdoption(candidate.id, mode: .updateOriginal) }
-                                }
                                 if !model.isImmutableOwner {
-                                    Button("design.owner.authorize_variant") {
-                                        Task { await model.authorizeAssistantAdoption(candidate.id, mode: .variant) }
+                                    Button("design.owner.adopt_variant") {
+                                        Task { await model.adopt(candidate.id, mode: .variant) }
+                                    }
+                                    .accessibilityIdentifier("design.owner.adoptVariant.\(candidate.id)")
+                                }
+                                Button("design.owner.reject", role: .destructive) {
+                                    Task { await model.reject(candidate.id) }
+                                }
+                                .accessibilityIdentifier("design.owner.reject.\(candidate.id)")
+                                if model.canAuthorizeAssistant {
+                                    Divider()
+                                    Button("design.owner.authorize_update") {
+                                        Task { await model.authorizeAssistantAdoption(candidate.id, mode: .updateOriginal) }
+                                    }
+                                    if !model.isImmutableOwner {
+                                        Button("design.owner.authorize_variant") {
+                                            Task { await model.authorizeAssistantAdoption(candidate.id, mode: .variant) }
+                                        }
                                     }
                                 }
                             } label: {
-                                Label("design.owner.authorize_assistant", systemImage: "checkmark.shield")
+                                Image(systemName: "ellipsis.circle")
+                                    .font(.body.weight(.semibold))
+                                    .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+                                    .contentShape(Rectangle())
                             }
                             .disabled(model.busy)
-                            .accessibilityIdentifier("design.owner.authorizeAssistant.\(candidate.id)")
+                            .accessibilityIdentifier("design.owner.candidateMenu.\(candidate.id)")
                         }
                         if model.authorizedAssistantAdoption?.candidateID == candidate.id {
                             Text("design.owner.authorized_note")

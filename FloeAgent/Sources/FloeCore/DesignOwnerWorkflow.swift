@@ -61,6 +61,12 @@ public enum DesignOwnerWorkflowError: Error, Equatable {
     /// state change; the caller must wire a `DesignResultPublicationPort`
     /// (T6 integration) or use the existing owner path.
     case resultPublicationUnavailable(String)
+    /// A restructure-mode adoption reached the mutation boundary WITHOUT the
+    /// trusted-UI confirmation claim (the single-use grant burn). Restructure
+    /// requires the user-confirmed preservation constraints BEFORE any
+    /// mutation; a replay or a tool path that skips the claim fails closed
+    /// here with zero side effects.
+    case restructureRequiresTrustedConfirmation(String)
 }
 
 /// Honest outcome of delivering a target decision to the originating task.
@@ -761,7 +767,8 @@ public actor DesignOwnerWorkflow {
                 origin: .importFile,
                 payloadRelativePath: relative,
                 payloadFormat: source.format,
-                revisionID: revisionID
+                revisionID: revisionID,
+                ownerBaseToken: source.baseRevisionToken
             )
             DesignWorkflowEngine.freezeRun(
                 operationID: operationID,
@@ -869,7 +876,10 @@ public actor DesignOwnerWorkflow {
 
     /// Canonical, length-prefixed fingerprint of one proposal's exact
     /// semantic inputs. Uses the RESOLVED base revision so a replay that
-    /// omitted the optional base still matches its recorded candidate.
+    /// omitted the optional base still matches its recorded candidate. The
+    /// work mode and preservation digest participate so a replay of a
+    /// restructure proposal with different (or missing) confirmation
+    /// requirements is a mismatch, never a silent re-attach.
     private static func proposalFingerprint(
         artifactID: String,
         baseRevisionID: String,
@@ -879,7 +889,9 @@ public actor DesignOwnerWorkflow {
         diff: [String],
         feedbackIDs: [String],
         originConversationID: String?,
-        originEnvironmentID: String?
+        originEnvironmentID: String?,
+        workMode: DesignWorkMode?,
+        preservationDigest: String?
     ) -> String {
         func field(_ value: String) -> String { "\(value.utf8.count):\(value)" }
         let parts = [
@@ -891,11 +903,33 @@ public actor DesignOwnerWorkflow {
             field(diff.joined(separator: "\u{1E}")),
             field(feedbackIDs.joined(separator: "\u{1E}")),
             field(originConversationID ?? ""),
-            field(originEnvironmentID ?? "")
+            field(originEnvironmentID ?? ""),
+            field(workMode?.rawValue ?? ""),
+            field(preservationDigest ?? "")
         ]
         return FloeDigest.sha256Hex(Data(parts.joined(separator: "\u{1F}").utf8))
     }
 
+    /// Propose a candidate. `workIntent` carries the frozen 制作/修改/重构
+    /// request: a restructure intent is validated BEFORE any payload staging
+    /// (its trusted preservation confirmation must exist and match), and the
+    /// intent's mode/digest are stamped on the candidate and bound into the
+    /// replay fingerprint — a replay with different preservation requirements
+    /// is a mismatch, never a silent re-attach.
+    ///
+    /// Structural intent validation is DATA validation only: a raw model JSON
+    /// can mint a Codable confirmation with `.trustedUI` source and a
+    /// matching (publicly computable) digest. A restructure therefore also
+    /// requires `restructureAuthority`, the typed trusted hook the app wires
+    /// to its confirmation sheet + existing approval-grant store. The service
+    /// builds the exact `DesignRestructureAuthorityRequest` (target, original
+    /// task, resolved base revision, constraints digest, intent operation)
+    /// and refuses the proposal unless the handler returns a receipt binding
+    /// every field — BEFORE any payload bytes are staged. A nil hook, a
+    /// handler that throws (grant refused/expired), or a stale/wrong-owner
+    /// receipt fails closed here with zero staged bytes. Idempotent replays
+    /// return the recorded candidate WITHOUT invoking the hook again, so a
+    /// replay never burns a second claim.
     public func propose(
         target: DesignTarget,
         operationID: String,
@@ -907,7 +941,9 @@ public actor DesignOwnerWorkflow {
         summary: String,
         diff: [String] = [],
         feedbackIDs: [String] = [],
-        runID: UUID? = nil
+        runID: UUID? = nil,
+        workIntent: DesignWorkIntent? = nil,
+        restructureAuthority: DesignRestructureAuthorityHandler? = nil
     ) async throws -> Proposal {
         try Self.requireNonCanvasOwner(target, operation: "propose a candidate")
         guard !operationID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -934,6 +970,10 @@ public actor DesignOwnerWorkflow {
                   candidate.artifactID == artifactID else {
                 throw DesignOwnerWorkflowError.replayMismatch(operationID)
             }
+            let replayWorkMode = workIntent?.mode ?? candidate.workMode
+            let replayPreservation = workIntent.map {
+                $0.mode == .restructure ? $0.preservation?.canonicalDigest : nil
+            } ?? candidate.preservationDigest
             let expectedFingerprint = Self.proposalFingerprint(
                 artifactID: artifactID,
                 baseRevisionID: baseRevisionID ?? candidate.baseRevisionID,
@@ -943,7 +983,9 @@ public actor DesignOwnerWorkflow {
                 diff: diff,
                 feedbackIDs: feedbackIDs,
                 originConversationID: target.originConversationID,
-                originEnvironmentID: target.environmentID
+                originEnvironmentID: target.environmentID,
+                workMode: replayWorkMode,
+                preservationDigest: replayPreservation
             )
             guard candidate.proposalFingerprint == expectedFingerprint,
                   let recordedArtifact = loaded.envelope.project.artifact(candidate.artifactID),
@@ -969,6 +1011,39 @@ public actor DesignOwnerWorkflow {
         }
         guard let artifact = loaded.envelope.project.artifact(artifactID) else {
             throw DesignWorkflowError.artifactNotFound(artifactID)
+        }
+        // Validate the typed work intent BEFORE any payload staging: a
+        // restructure without a valid trusted preservation confirmation (or
+        // with a format that does not match the artifact family) fails here
+        // with zero staged bytes.
+        var verifiedAuthority: DesignRestructureAuthorityReceipt? = nil
+        if let workIntent {
+            let validated = try workIntent.validated(family: artifact.contentType)
+            // TRUSTED AUTHORITY GATE: structural validation is data
+            // validation — raw model JSON can forge a Codable confirmation
+            // (`.trustedUI` source + publicly computable digest). Before any
+            // candidate bytes are staged, a restructure MUST burn a real
+            // claim through the trusted handler (integration wires it to the
+            // existing approval-grant store). The request binds the exact
+            // target, original task, RESOLVED base revision, constraints
+            // digest and intent operation; nil hook, refused grant, or a
+            // stale/wrong-owner receipt fails closed with zero side effects.
+            if validated.mode == .restructure {
+                let authorityRequest = try DesignRestructureAuthority.request(
+                    for: validated,
+                    targetKey: target.stableKey,
+                    baseRevisionID: baseRevisionID ?? artifact.currentRevisionID
+                )
+                guard let restructureAuthority else {
+                    throw DesignRestructureAuthorityError.claimRequired(
+                        "restructure propose for \(target.stableKey) requires the trusted authority handler; a matching Codable confirmation (source/digest) is data, never authority"
+                    )
+                }
+                let receipt = try await restructureAuthority(authorityRequest)
+                verifiedAuthority = try DesignRestructureAuthority.validate(
+                    receipt, for: authorityRequest
+                )
+            }
         }
         let formatFamily = DesignContentType.from(format: format)
         // A candidate family from extension alone is routing, not format
@@ -1009,7 +1084,9 @@ public actor DesignOwnerWorkflow {
                     payloadRelativePath: relative,
                     payloadFormat: format,
                     originConversationID: target.originConversationID,
-                    originEnvironmentID: target.environmentID
+                    originEnvironmentID: target.environmentID,
+                    workIntent: workIntent,
+                    restructureReceipt: verifiedAuthority
                 )
                 // The operation record is committed in the SAME envelope CAS
                 // as the candidate: replay identity can never diverge from
@@ -1025,7 +1102,11 @@ public actor DesignOwnerWorkflow {
                         diff: diff,
                         feedbackIDs: feedbackIDs,
                         originConversationID: target.originConversationID,
-                        originEnvironmentID: target.environmentID
+                        originEnvironmentID: target.environmentID,
+                        workMode: workIntent?.mode,
+                        preservationDigest: workIntent.map {
+                            $0.mode == .restructure ? $0.preservation?.canonicalDigest : nil
+                        } ?? nil
                     )
                 }
             }.envelope
@@ -1595,6 +1676,25 @@ public actor DesignOwnerWorkflow {
                 "adopting a \(target.kind.rawValue) result requires a result-publication port so the new result is returned to its owner destination; none is configured (T6 integration gate)"
             )
         }
+        // RESTRUCTURE GATE: a restructure candidate may only be adopted while
+        // the trusted UI burns a single-use confirmation claim through the
+        // existing approval-grant store (invoked atomically below, after all
+        // pre-flight checks, before any side effect). Without a recorded
+        // preservation digest or without the claim hook the adoption fails
+        // closed here — BEFORE any durable intent, source write or CAS. The
+        // model layer can never satisfy this gate by supplying strings.
+        if candidate.workMode == .restructure {
+            guard candidate.preservationDigest != nil else {
+                throw DesignOwnerWorkflowError.restructureRequiresTrustedConfirmation(
+                    "the restructure candidate records no preservation digest; propose it again from a confirmed intent"
+                )
+            }
+            guard claimAuthorization != nil else {
+                throw DesignOwnerWorkflowError.restructureRequiresTrustedConfirmation(
+                    "adopting a restructure requires the trusted-UI confirmation claim (claimAuthorization); none was supplied"
+                )
+            }
+        }
         // Pre-flight the owner CAS BEFORE any in-place commit. The
         // same-target reservation makes this a real barrier: no local
         // mutation of this target can move the owner revision between this
@@ -1628,6 +1728,12 @@ public actor DesignOwnerWorkflow {
             && target.kind != .chatAttachment
             && target.kind != .creativeDocument
             && commitPorts[target.kind]?.canCommit(target) == true
+        // In-place commits re-gate on the FROZEN base token: the caller's
+        // frozen target identity wins, else the token recorded on the base
+        // revision at freeze time (the AI tool and the panel address the
+        // target without one).
+        let recordedBaseToken = artifact.revision(candidate.baseRevisionID)?.ownerBaseToken
+        let effectiveBaseToken = target.revision ?? recordedBaseToken
         guard let relative = proposed.payloadRelativePath else {
             throw DesignOwnerWorkflowError.missingPayload(proposed.id)
         }
@@ -1672,7 +1778,7 @@ public actor DesignOwnerWorkflow {
                 mode: mode.rawValue,
                 baseRevisionID: candidate.baseRevisionID,
                 proposedContentSHA256: proposed.contentSHA256,
-                frozenBaseToken: target.revision
+                frozenBaseToken: effectiveBaseToken
             )
             let result = try await outbox.prepareIfNew(intent)
             if !result.isNew, result.intent.phase == .recorded {
@@ -1709,10 +1815,9 @@ public actor DesignOwnerWorkflow {
 
         var committedToken: String?
         if inPlace, let commitPort = commitPorts[target.kind] {
-            // In-place writes require the FROZEN base token captured at
-            // resolve time; without it there is no optimistic gate, so the
-            // commit fails closed rather than overwriting.
-            guard let baseToken = target.revision, !baseToken.isEmpty else {
+            // The optimistic gate needs the FROZEN token (see above); without
+            // it the commit fails closed rather than overwriting.
+            guard let baseToken = effectiveBaseToken, !baseToken.isEmpty else {
                 await cancelFreshIntent(prepared)
                 throw DesignTargetError.invalidReference(
                     "in-place adoption requires the frozen base revision token"
@@ -1772,6 +1877,18 @@ public actor DesignOwnerWorkflow {
                 _ = try DesignWorkflowEngine.adoptCandidate(
                     in: &project, candidateID: candidateID, mode: mode
                 )
+                // Record the new owner-side base token on the adopted
+                // revision so the NEXT in-place cycle re-gates on the
+                // committed digest (a stale token would fail closed on
+                // every subsequent adoption).
+                if let committedToken,
+                   let artifactIndex = project.artifacts
+                       .firstIndex(where: { $0.id == candidate.artifactID }),
+                   let revisionIndex = project.artifacts[artifactIndex].revisions
+                       .firstIndex(where: { $0.id == candidate.proposedRevisionID }) {
+                    project.artifacts[artifactIndex]
+                        .revisions[revisionIndex].ownerBaseToken = committedToken
+                }
             }.envelope
         } catch {
             if committedToken != nil {
@@ -2160,6 +2277,7 @@ public actor DesignOwnerWorkflow {
     }
 
     /// Verified export: retained bytes, digest re-check, then the owner's
+    /// Verified export: retained bytes, digest re-check, then the owner's
     /// real reopen verification (app-supplied adapter parser). No format
     /// conversion is performed.
     public func exportVerified(
@@ -2181,5 +2299,27 @@ public actor DesignOwnerWorkflow {
         )
         try await verifyReopen(bytes, revision.payloadFormat ?? "bin", artifact.contentType)
         return bytes
+    }
+
+    /// Verified read of ONE retained revision's bytes for UI preview (the
+    /// design conversation page renders CURRENT and CANDIDATE payloads from
+    /// these exact bytes — never model text). The digest recorded on the
+    /// revision is enforced on read; the payload store is the same verified
+    /// authority the compare/adopt paths use.
+    public func revisionPreviewBytes(
+        target: DesignTarget,
+        artifactID: String,
+        revisionID: String,
+        runID: UUID? = nil
+    ) async throws -> Data {
+        guard let envelope = try await state(target, runID: runID),
+              let artifact = envelope.project.artifact(artifactID),
+              let revision = artifact.revision(revisionID) else {
+            throw DesignWorkflowError.revisionNotFound(revisionID)
+        }
+        return try payloads.verifiedBytes(
+            ownerKey: target.stableKey, revisionID: revisionID,
+            expectedContentSHA256: revision.contentSHA256
+        )
     }
 }

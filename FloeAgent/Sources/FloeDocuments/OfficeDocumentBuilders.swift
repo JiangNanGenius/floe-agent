@@ -167,6 +167,21 @@ public struct OfficePresentationSlide: Codable, Sendable, Equatable {
         self.notes = notes
         self.objects = objects
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case title, bullets, notes, objects
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decode(String.self, forKey: .title)
+        // An object-only slide does not need a dummy bullet list. Explicit
+        // null or a wrong type still fails rather than hiding malformed input.
+        bullets = container.contains(.bullets)
+            ? try container.decode([String].self, forKey: .bullets) : []
+        notes = try container.decodeIfPresent(String.self, forKey: .notes)
+        objects = try container.decodeIfPresent([OfficePresentationObject].self, forKey: .objects)
+    }
 }
 
 /// Creates small, standards-based Office files without downloading or

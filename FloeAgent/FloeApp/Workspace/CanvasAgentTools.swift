@@ -1253,6 +1253,14 @@ private struct CanvasDeleteTool: AgentTool {
 
 @MainActor
 func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerRegistry = .shared) {
+    // Canvas → ordinary-task handoff: deterministic, idempotent, transfers
+    // materials (not execution authority). Shares the destination router
+    // with the manual canvas entry and the creative destination tool.
+    ToolCatalog.register(CanvasStartOrdinaryTaskTool.self)
+    registry.register(CanvasStartOrdinaryTaskTool(
+        environment: environment,
+        canvasRepository: FileCanvasDocumentRepository(),
+        runContexts: CanvasRunContextStore(database: environment.database)))
     let assetIngestion = CreativeAssetIngestionService(assetStore: environment.creativeAssetStore)
     let coordinator = CanvasToolCoordinator(
         repository: FileCanvasDocumentRepository(),

@@ -30,7 +30,10 @@ public struct WorkspaceToolEnvironment: Sendable {
         self.maxWriteBytes = maxWriteBytes
     }
 
-    /// Builds a file service for the current workspace root.
+    /// Builds a file service for the current workspace root. Agent
+    /// executions carry the design freeze gate: ordinary model writes to a
+    /// frozen design original are refused (with the recovery action) until
+    /// the owning task adopts or rejects its candidate. Reads are unaffected.
     public func makeService(context: ToolContext) throws -> WorkspaceFileService {
         let root = try rootURL(context: context)
         let guardResolver = WorkspacePathGuard(
@@ -39,7 +42,34 @@ public struct WorkspaceToolEnvironment: Sendable {
             maxWriteBytes: maxWriteBytes,
             mounts: WorkspaceMountRegistry.shared.mounts(for: root)
         )
-        return WorkspaceFileService(guard: guardResolver)
+        return WorkspaceFileService(
+            guard: guardResolver,
+            mutationGuard: Self.designFreezeGate(registry: DesignFreezeRegistry.shared))
+    }
+
+    /// The design freeze gate. A mutation is rejected when its canonical
+    /// target path — or the live (device, inode) identity of that target —
+    /// is frozen by a design task, when the target is an EXISTING file
+    /// inside a frozen webroot, or when the target is an ANCESTOR directory
+    /// of a frozen original (deleting/renaming the parent would move the
+    /// original to a path and inode the registry can no longer guard).
+    /// New files at unprotected paths (including new staging paths inside a
+    /// frozen webroot), reads, and trusted manual edits (which never pass
+    /// through the agent tool services) are untouched.
+    public static func designFreezeGate(
+        registry: DesignFreezeRegistry = .shared
+    ) -> (@Sendable (URL) throws -> Void) {
+        { url in
+            guard let protection = registry.protection(for: url)
+                ?? registry.protection(ancestorOf: url) else {
+                return
+            }
+            throw DesignFreezeError.sourceFrozen(
+                path: url.lastPathComponent,
+                conversationID: protection.conversationID,
+                reason: "Stage the change as a design candidate (design.propose) and let the user adopt it, or ask the user to reject/cancel the pending design change first."
+            )
+        }
     }
 
     public func rootURL(context: ToolContext) throws -> URL {
