@@ -41,6 +41,35 @@ enum ProviderSavePhaseLogger {
     }
 }
 
+/// One optional additional service role offered for the provider being
+/// edited. The role can only be enabled when a shipped adapter exists, the
+/// connection is shareable (same origin/auth) and verified model identifiers
+/// are available.
+struct ProviderServiceOfferState: Identifiable, Equatable {
+    var role: ProviderServiceRole
+    var isEnabled: Bool
+    var models: [String]
+    var connection: ProviderServiceOfferResolution.ConnectionMode
+    var isUsable: Bool
+    var endpoint: URL?
+    /// True when the role needs a real discovery round trip before it can be
+    /// configured (no invented model identifiers).
+    var requiresDiscovery: Bool = false
+    var reason: String?
+    var note: String?
+
+    var id: String { role.rawValue }
+}
+
+/// One transitory confirmation request shown after a multi-role vendor is
+/// selected: the initiating role stays fixed and every extra role is opt-in.
+struct ProviderServiceOfferPrompt: Identifiable, Equatable {
+    var primaryRole: ProviderServiceRole
+    var offers: [ProviderServiceOfferState]
+
+    var id: String { offers.map(\.role.rawValue).sorted().joined(separator: "-") }
+}
+
 /// Which part of the Save lifecycle failed, so the UI can distinguish "nothing
 /// was saved" (preflight rejection, zero side effects) from "local save
 /// failed" (credential/sync state may already have changed) from "saved
@@ -126,13 +155,49 @@ final class ProviderEditorViewModel: ObservableObject {
     @Published private(set) var lastSaveSyncError: String?
     /// True while a sync-only retry (no local rewrite) is in flight.
     @Published private(set) var isRetryingSync = false
+    /// Optional additional roles (image/video) that a shipped adapter can
+    /// really serve for this provider kind. Only `.shared` offers can be
+    /// opted in; `.distinct` offers are shown as separate settings with a
+    /// non-secret reason.
+    @Published private(set) var serviceOffers: [ProviderServiceOfferState] = []
+    /// True when at least one usable offer is still undecided. Drives the
+    /// one-time prompt section.
+    var hasPendingServiceOfferPrompt: Bool {
+        serviceOffers.contains { offer in
+            guard offer.isUsable, offer.connection == .shared, !offer.isEnabled,
+                  !declinedServiceRoles.contains(offer.role) else { return false }
+            if case .testing = serviceOfferDiscoveryState[offer.role] { return false }
+            return true
+        }
+    }
+    /// Transient one-time confirmation shown after selecting a multi-role
+    /// vendor. Nil while no decision is pending.
+    @Published var pendingServiceOfferPrompt: ProviderServiceOfferPrompt?
+    /// Per-role state of the real discovery round trip a role needs before it
+    /// can be configured (roles with verified catalog identifiers never use
+    /// this path).
+    @Published private(set) var serviceOfferDiscoveryState: [ProviderServiceRole: ConnectionTestState] = [:]
+    /// Secret-free discovery failure for one role; the role stays OFF.
+    @Published private(set) var serviceOfferDiscoveryError: [ProviderServiceRole: String] = [:]
+    /// True when the endpoint host changed while a stored credential exists:
+    /// the form then requires a fresh key instead of silently reusing the old
+    /// secret on the new host.
+    @Published private(set) var requiresNewCredentialForConnection = false
 
     let center: ConversationCenter
     /// The provider being edited, or nil when adding a new one.
     let existing: ProviderProfile?
     let serviceRole: ProviderServiceRole
+    /// Optional validated catalog. Enables embedded catalog search and the
+    /// optional multi-service offers; nil keeps the manual-only editor.
+    let catalog: ProviderCatalogIndex?
     private let secretStore = KeychainSecretStore()
     private let adapterFactory = ProviderAdapterFactory()
+    private let promptStore: ProviderServiceOfferPromptStore
+    /// Models staged for opted-in additional roles (media or chat) that are
+    /// saved in the same bundle transaction as the primary role.
+    private var additionalRoleModels: [ProviderServiceRole: [ModelProfile]] = [:]
+    private var declinedServiceRoles: Set<ProviderServiceRole> = []
 
     /// The provider ID (stable across edit; new when adding).
     let providerID: UUID
@@ -141,10 +206,15 @@ final class ProviderEditorViewModel: ObservableObject {
         center: ConversationCenter,
         existing: ProviderProfile?,
         initialRole: ProviderServiceRole? = nil,
-        catalogEntry: ProviderCatalogEntry? = nil
+        catalogEntry: ProviderCatalogEntry? = nil,
+        catalog: ProviderCatalogIndex? = nil,
+        promptStore: ProviderServiceOfferPromptStore = .shared,
+        serviceOfferEndpointOverride: URL? = nil
     ) {
         self.center = center
         self.existing = existing
+        self.catalog = catalog
+        self.promptStore = promptStore
         let existingModels = existing.flatMap { center.configuredModelsByProvider[$0.id] } ?? []
         self.serviceRole = initialRole ?? ProviderServiceRole.infer(from: existingModels)
         if let existing {
@@ -171,14 +241,26 @@ final class ProviderEditorViewModel: ObservableObject {
         if existing == nil, let catalogEntry {
             applyCatalogEntry(catalogEntry)
         }
+        if let serviceOfferEndpointOverride {
+            // A distinct-endpoint offer opens its own editor; the credential
+            // for this new connection is entered by the user.
+            apiKey = ""
+            baseURLString = serviceOfferEndpointOverride.absoluteString
+        }
+        declinedServiceRoles = promptStore.declinedRoles(for: providerID)
+        refreshConnectionCredentialState()
+        refreshServiceOffers()
     }
 
     /// Applies a preset's defaults to the editable fields.
     func applyPreset(_ preset: ProviderPreset) {
         let previousPresetName = selectedPreset.displayName
-        let shouldReplaceDisplayName = displayName
-            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || displayName == previousPresetName
+        let shouldReplaceDisplayName = ProviderConfigurationValidation
+            .ProviderSelectionFieldPolicy.shouldReplaceDisplayName(
+                current: displayName,
+                previousDefault: previousPresetName
+            )
+        let previousIdentity = currentConnectionIdentity()
         selectedPreset = preset
         // Only auto-fill the name when the user hasn't customized it, so a
         // typed "DeepSeek" survives switching protocols/presets.
@@ -187,12 +269,27 @@ final class ProviderEditorViewModel: ObservableObject {
         }
         baseURLString = preset.defaultBaseURL.absoluteString
         selectedProtocol = preset.defaultProtocol
+        if previousIdentity != currentConnectionIdentity() {
+            // Never carry a typed key across an incompatible connection (a
+            // different origin, port, scheme or provider/auth family); the
+            // stored-key case is enforced by the save preflight.
+            apiKey = ""
+        }
+        refreshConnectionCredentialState()
+        refreshServiceOffers()
     }
 
     /// Pre-fills the editor from one official-catalog entry. The entry's
     /// kind selects the closest shipped adapter preset; the catalog identity
     /// is remembered so `buildProfile()` persists it as `presetID`.
     func applyCatalogEntry(_ entry: ProviderCatalogEntry) {
+        let previousPresetName = selectedPreset.displayName
+        let shouldReplaceDisplayName = ProviderConfigurationValidation
+            .ProviderSelectionFieldPolicy.shouldReplaceDisplayName(
+                current: displayName,
+                previousDefault: previousPresetName
+            )
+        let previousIdentity = currentConnectionIdentity()
         switch entry.kind {
         case .local, .custom:
             selectedPreset = ProviderPreset.all.first { $0.id == .custom } ?? .custom
@@ -200,14 +297,371 @@ final class ProviderEditorViewModel: ObservableObject {
             selectedPreset = ProviderPreset.all.first { $0.kind == entry.kind } ?? .custom
         }
         selectedProtocol = entry.defaultProtocol
-        displayName = entry.name
+        // Selection happens mid-form: only an untouched/uncustomized name is
+        // replaced by the catalog name.
+        if shouldReplaceDisplayName {
+            displayName = entry.name
+        }
         if let baseURL = entry.baseURL {
             baseURLString = baseURL.absoluteString
+        }
+        // Selecting a catalog entry that changes the connection identity must
+        // never carry the typed key with it (the stored-key case is enforced
+        // at preflight). Same-provider alias/path changes keep the key.
+        if previousIdentity != currentConnectionIdentity() {
+            apiKey = ""
         }
         // DeepSeek rejects dotted tool names; the catalog flag (or its known
         // preset identity) turns the compatibility rewrite on.
         toolNameCompatibility = entry.toolNameCompatibility || entry.presetID == "deepseek"
         catalogPresetID = entry.presetID
+        refreshConnectionCredentialState()
+        refreshServiceOffers()
+        // Selecting a multi-role vendor raises the ONE-TIME native prompt;
+        // extras are opted in there, never as a permanent inline invitation.
+        presentServiceOfferPromptIfNeeded()
+    }
+
+    /// Connection identity of the CURRENT form fields (scheme/host/port plus
+    /// provider routing and auth family). Nil while the URL does not parse.
+    private func currentConnectionIdentity() -> ProviderConfigurationValidation.ProviderConnectionIdentity.Key? {
+        guard let url = URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+        return ProviderConfigurationValidation.ProviderConnectionIdentity.key(
+            kind: selectedPreset.kind,
+            baseURL: url
+        )
+    }
+
+    // MARK: - Optional service roles
+
+    /// Supplier-field selection finished: recompute the optional role offers
+    /// and raise the one-time prompt when genuine multi-role support exists.
+    /// Used by the unified supplier selector for BOTH built-in presets and
+    /// catalog entries.
+    func supplierSelectionDidComplete() {
+        refreshServiceOffers()
+        presentServiceOfferPromptIfNeeded()
+    }
+
+    /// Recomputes the offered additional roles from the selected provider
+    /// kind, shipped adapters, official model identifiers, the optional
+    /// catalog metadata and the connection's compatibility. Configured roles
+    /// and prior declines are never re-offered.
+    func refreshServiceOffers() {
+        declinedServiceRoles = promptStore.declinedRoles(for: providerID)
+        let entry = resolvedCatalogEntry()
+        let kind = selectedPreset.kind
+        let resolutions = ProviderServiceOfferResolver.resolvedOffers(
+            for: kind,
+            baseURL: URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)),
+            authStyle: Self.catalogAuthStyle(for: selectedPreset),
+            availability: entry?.availability ?? .available,
+            declared: entry?.serviceOffers
+        )
+        let existingModels = existing.flatMap { center.configuredModelsByProvider[$0.id] } ?? []
+        var states: [ProviderServiceOfferState] = []
+        for resolution in resolutions {
+            guard let role = ProviderServiceRole(rawValue: resolution.role.rawValue),
+                  role != serviceRole else { continue }
+            let alreadyConfigured = existingModels.contains { model in
+                switch role {
+                case .conversation: model.supportsChatAgentSurface
+                case .image: model.supportsImageGenerationSurface
+                case .video: model.supportsVideoGenerationSurface
+                }
+            }
+            if alreadyConfigured { continue }
+            if declinedServiceRoles.contains(role) { continue }
+            guard resolution.isUsable else {
+                // Declared but unsupported: keep it visible with the reason so
+                // a dead control is never silently offered.
+                if resolution.reason != nil {
+                    states.append(ProviderServiceOfferState(
+                        role: role,
+                        isEnabled: false,
+                        models: resolution.models,
+                        connection: resolution.connection,
+                        isUsable: false,
+                        endpoint: resolution.endpoint,
+                        reason: resolution.reason,
+                        note: resolution.note
+                    ))
+                }
+                continue
+            }
+            states.append(ProviderServiceOfferState(
+                role: role,
+                isEnabled: additionalRoleModels[role] != nil,
+                models: resolution.models,
+                connection: resolution.connection,
+                isUsable: true,
+                endpoint: resolution.endpoint,
+                requiresDiscovery: resolution.requiresDiscovery,
+                reason: resolution.reason,
+                note: resolution.note
+            ))
+        }
+        serviceOffers = states
+    }
+
+    /// Opts in or out of one additional role. Only shareable connections can
+    /// be enabled; distinct connections keep their own settings and are never
+    /// silently merged into this provider. A role without verified catalog
+    /// identifiers runs the existing real discovery round trip first; failure
+    /// leaves the role OFF with the exact reason (no invented models).
+    func setServiceOfferEnabled(_ role: ProviderServiceRole, isEnabled: Bool) {
+        guard let index = serviceOffers.firstIndex(where: { $0.role == role }),
+              serviceOffers[index].isUsable,
+              serviceOffers[index].connection == .shared else { return }
+        if !isEnabled {
+            additionalRoleModels[role] = nil
+            serviceOffers[index].isEnabled = false
+            serviceOfferDiscoveryState[role] = .idle
+            serviceOfferDiscoveryError[role] = nil
+            return
+        }
+        if additionalRoleModels[role] != nil {
+            serviceOffers[index].isEnabled = true
+            return
+        }
+        if serviceOffers[index].requiresDiscovery {
+            if case .testing = serviceOfferDiscoveryState[role] { return }
+            serviceOfferDiscoveryState[role] = .testing
+            serviceOfferDiscoveryError[role] = nil
+            Task { await enableServiceOfferWithDiscovery(role) }
+            return
+        }
+        additionalRoleModels[role] = makeRoleModels(
+            for: role,
+            discovered: serviceOffers[index].models.map {
+                Self.syntheticRoleModel($0, role: role)
+            }
+        )
+        serviceOffers[index].isEnabled = true
+    }
+
+    /// Runs the real adapter model discovery for one additional role. The
+    /// discovered identifiers come from the endpoint itself; nothing is
+    /// invented locally. On failure the role stays off with the exact
+    /// reason and no partial models are staged.
+    private func enableServiceOfferWithDiscovery(_ role: ProviderServiceRole) async {
+        do {
+            let profile = try buildProfile()
+            let enteredKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            let credentials: ProviderCredentials
+            if !enteredKey.isEmpty {
+                credentials = ProviderCredentials(apiKey: enteredKey)
+            } else {
+                credentials = center.resolveCredentials(for: profile)
+            }
+            let adapter = adapterFactory.adapter(for: profile)
+            let discovered = try await adapter.listModels(
+                provider: profile,
+                credentials: credentials
+            )
+            guard !discovered.isEmpty else {
+                throw FloeError.validationFailed("Model discovery returned no models")
+            }
+            additionalRoleModels[role] = makeRoleModels(
+                for: role,
+                discovered: discovered.map { Self.normalizedRoleModel($0, role: role, providerID: providerID) }
+            )
+            if let index = serviceOffers.firstIndex(where: { $0.role == role }) {
+                serviceOffers[index].isEnabled = true
+            }
+            serviceOfferDiscoveryState[role] = .succeeded(modelCount: discovered.count)
+        } catch {
+            let message = SecretRedactor.redact(error.localizedDescription)
+            serviceOfferDiscoveryState[role] = .failed(message)
+            serviceOfferDiscoveryError[role] = message
+            additionalRoleModels[role] = nil
+            if let index = serviceOffers.firstIndex(where: { $0.role == role }) {
+                serviceOffers[index].isEnabled = false
+            }
+        }
+    }
+
+    /// Catalog identifiers staged as role models without any local guessing:
+    /// capabilities and surfaces come from the role's fixed contract, the
+    /// display name from the product-owned media manifest when it is a media
+    /// identifier, otherwise the identifier itself.
+    private static func syntheticRoleModel(
+        _ remoteID: String,
+        role: ProviderServiceRole
+    ) -> ModelProfile {
+        ModelProfile(
+            providerID: UUID(),
+            remoteModelID: remoteID,
+            displayName: OfficialMediaModelCatalog.models
+                .first { $0.remoteModelID == remoteID }?.displayName ?? remoteID,
+            limits: ModelLimits(
+                contextTokens: role == .conversation ? 128_000 : 32_768,
+                maxOutputTokens: 0
+            ),
+            capabilities: role.defaultCapabilities,
+            useSurfaces: role.defaultUseSurfaces,
+            isEnabled: true,
+            isHiddenFromPrimaryPicker: role != .conversation
+        )
+    }
+
+    /// Normalizes one discovered model for a role: preserves the endpoint's
+    /// identifiers and any capability flags it reported, and applies the
+    /// role's surfaces/picker-visibility contract.
+    private static func normalizedRoleModel(
+        _ model: ModelProfile,
+        role: ProviderServiceRole,
+        providerID: UUID
+    ) -> ModelProfile {
+        var normalized = model
+        normalized.providerID = providerID
+        normalized.isHiddenFromPrimaryPicker = role != .conversation
+        normalized.useSurfaces = (normalized.useSurfaces ?? []).union(role.defaultUseSurfaces)
+        if role != .conversation {
+            normalized.capabilities.formUnion(role.defaultCapabilities)
+        }
+        return normalized
+    }
+
+    /// Raises the transient confirmation when undecided usable roles exist.
+    private func presentServiceOfferPromptIfNeeded() {
+        let pending = serviceOffers.filter {
+            $0.isUsable && $0.connection == .shared && !$0.isEnabled
+                && !declinedServiceRoles.contains($0.role)
+        }
+        guard !pending.isEmpty else {
+            pendingServiceOfferPrompt = nil
+            return
+        }
+        pendingServiceOfferPrompt = ProviderServiceOfferPrompt(
+            primaryRole: serviceRole,
+            offers: pending
+        )
+    }
+
+    /// Confirms the one-time prompt: selected extra roles are staged (and
+    /// discovered where required), unselected extras are recorded as declined
+    /// so the prompt is not shown again for this provider.
+    func confirmServiceOfferSelection(_ roles: Set<ProviderServiceRole>) {
+        guard let prompt = pendingServiceOfferPrompt else { return }
+        pendingServiceOfferPrompt = nil
+        let pendingRoles = Set(prompt.offers.map(\.role))
+        let declined = pendingRoles.subtracting(roles)
+        if !declined.isEmpty {
+            promptStore.recordDecline(roles: declined, for: providerID)
+            declinedServiceRoles.formUnion(declined)
+            serviceOffers.removeAll { declined.contains($0.role) }
+        }
+        for role in roles.sorted(by: { $0.rawValue < $1.rawValue }) {
+            setServiceOfferEnabled(role, isEnabled: true)
+        }
+    }
+
+    /// Declines the whole one-time prompt (the explicit button and the sheet
+    /// dismissal both land here): every pending role is recorded once.
+    func declineServiceOfferPrompt() {
+        guard let prompt = pendingServiceOfferPrompt else { return }
+        pendingServiceOfferPrompt = nil
+        let roles = Set(prompt.offers.map(\.role))
+        guard !roles.isEmpty else { return }
+        promptStore.recordDecline(roles: roles, for: providerID)
+        declinedServiceRoles.formUnion(roles)
+        serviceOffers.removeAll { roles.contains($0.role) }
+    }
+
+    /// Sheet `onDismiss` hook: a dismissal that is not a confirmation is a
+    /// decline.
+    func dismissServiceOfferPrompt() {
+        declineServiceOfferPrompt()
+    }
+
+    /// Records a one-time decline for every still-undecided usable role and
+    /// removes those rows; the prompt is not shown again for this provider.
+    func declineServiceOffers() {
+        let roles = Set(
+            serviceOffers
+                .filter { $0.isUsable && $0.connection == .shared && !$0.isEnabled }
+                .map(\.role)
+        )
+        guard !roles.isEmpty else { return }
+        promptStore.recordDecline(roles: roles, for: providerID)
+        declinedServiceRoles.formUnion(roles)
+        serviceOffers.removeAll { roles.contains($0.role) }
+    }
+
+    /// Canonical models for an opted-in role: every existing model that
+    /// already serves the role (with its stored capability overrides intact)
+    /// plus the verified/discovered models that are not configured yet.
+    private func makeRoleModels(
+        for role: ProviderServiceRole,
+        discovered: [ModelProfile]
+    ) -> [ModelProfile] {
+        var models = (existing.flatMap { center.configuredModelsByProvider[$0.id] } ?? [])
+            .filter { model in
+                switch role {
+                case .conversation: model.supportsChatAgentSurface
+                case .image: model.supportsImageGenerationSurface
+                case .video: model.supportsVideoGenerationSurface
+                }
+            }
+        var known = Set(models.map(\.remoteModelID))
+        for model in discovered where known.insert(model.remoteModelID).inserted {
+            models.append(Self.normalizedRoleModel(model, role: role, providerID: providerID))
+        }
+        return models
+    }
+
+    /// The catalog entry this editor is anchored to: the stored presetID for
+    /// an existing provider, or the identity applied from the picker.
+    private func resolvedCatalogEntry() -> ProviderCatalogEntry? {
+        // catalogPresetID is seeded from the stored presetID and updated by
+        // catalog selection, so it is the current catalog identity.
+        guard let presetID = catalogPresetID, let catalog else { return nil }
+        return catalog.all.first { $0.presetID == presetID }
+    }
+
+    /// Catalog entry exposed to the view for the "configure separately" flow
+    /// of a distinct-connection offer.
+    var catalogEntryForSeparateOffer: ProviderCatalogEntry? { resolvedCatalogEntry() }
+
+    private static func catalogAuthStyle(for preset: ProviderPreset) -> String {
+        switch preset.authStyle {
+        case .bearer: "bearer"
+        case .apiKeyHeader: "apiKeyHeader"
+        case .none: "none"
+        }
+    }
+
+    /// True when a stored credential exists but the current form's connection
+    /// identity (origin, port, scheme, provider routing/auth family) differs
+    /// from the stored profile's. Saving then requires a new key.
+    private func refreshConnectionCredentialState() {
+        guard let existing, existing.secretRef != nil,
+              let newURL = URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            requiresNewCredentialForConnection = false
+            return
+        }
+        requiresNewCredentialForConnection = !ProviderConfigurationValidation
+            .ProviderConnectionIdentity.isCompatible(
+                from: existing.kind,
+                oldBaseURL: existing.baseURL,
+                to: selectedPreset.kind,
+                newBaseURL: newURL
+            )
+    }
+
+    /// User-facing hint shown when the connection identity changed while a
+    /// stored credential exists. Uses the App catalog key when present,
+    /// otherwise the bilingual validation-boundary message.
+    var connectionCredentialRequirementMessage: String? {
+        guard requiresNewCredentialForConnection else { return nil }
+        return Self.presentableMessage(for: ProviderConfigurationIssue(
+            field: .baseURL,
+            problem: .connectionChangedRequiresNewCredential,
+            messageKey: "providers.validation.connection_changed_requires_key"
+        ))
     }
 
     var availableProtocols: [ModelProtocol] { selectedPreset.supportedProtocols }
@@ -266,9 +720,32 @@ final class ProviderEditorViewModel: ObservableObject {
         })
         selectedModelIDs = Set(candidateModels.map(\.id))
         defaultModelID = center.modelPreferences.defaultAgentModelID
+        refreshServiceOffers()
     }
 
     // MARK: - Build profile / frozen save request
+
+    /// The complete model set this save will commit: the primary role's
+    /// selection plus every opted-in additional role, in a stable order.
+    var modelsForSave: [ModelProfile] {
+        var models = selectedModels
+        for role in serviceOffers.map(\.role).sorted(by: { $0.rawValue < $1.rawValue }) {
+            guard let extras = additionalRoleModels[role] else { continue }
+            models.append(contentsOf: extras)
+        }
+        return models
+    }
+
+    /// Capability union for stale-row cleanup: only roles this save manages
+    /// may remove rows, so a conversation save that never opted into media
+    /// leaves existing media models untouched.
+    var managedCapabilitiesForSave: ModelCapabilities {
+        var capabilities = serviceRole.managedCapabilities
+        for role in additionalRoleModels.keys {
+            capabilities.formUnion(role.managedCapabilities)
+        }
+        return capabilities
+    }
 
     /// Captures the CURRENT field values synchronously. No suspension points:
     /// the draft is a consistent snapshot even if fields mutate immediately
@@ -280,7 +757,7 @@ final class ProviderEditorViewModel: ObservableObject {
             wireProtocol: selectedProtocol,
             baseURLString: baseURLString,
             displayName: displayName,
-            presetID: existing?.presetID ?? catalogPresetID,
+            presetID: catalogPresetID,
             existingSecretRef: existing?.secretRef,
             nonSecretHeaders: Self.parseHeaders(nonSecretHeadersText),
             isEnabled: enabled,
@@ -288,12 +765,14 @@ final class ProviderEditorViewModel: ObservableObject {
             toolNameCompatibility: toolNameCompatibility,
             syncEnabled: syncEnabled,
             enteredAPIKey: apiKey,
-            selectedModels: selectedModels,
-            managedCapabilities: serviceRole.managedCapabilities,
+            selectedModels: modelsForSave,
+            managedCapabilities: managedCapabilitiesForSave,
             serviceRoleIsConversation: serviceRole == .conversation,
             defaultModelID: defaultModelID,
             existingCreatedAt: existing?.createdAt,
-            existingSyncRevision: existing?.syncRevision ?? 0
+            existingSyncRevision: existing?.syncRevision ?? 0,
+            existingBaseURL: existing?.baseURL,
+            existingKind: existing?.kind
         )
     }
 
@@ -783,7 +1262,25 @@ final class ProviderEditorViewModel: ObservableObject {
                 errorMessage = message
             }
         }
+        // The optional-role prompt is shown once per provider: a successful
+        // save with the section left undecided records those declines so the
+        // user is not asked again.
+        declineUndecidedOffersAfterSave()
         return true
+    }
+
+    /// Records the implicit decline after a successful save that left enabled
+    /// offers untouched.
+    private func declineUndecidedOffersAfterSave() {
+        let roles = Set(
+            serviceOffers
+                .filter { $0.isUsable && $0.connection == .shared && !$0.isEnabled }
+                .map(\.role)
+        )
+        guard !roles.isEmpty else { return }
+        promptStore.recordDecline(roles: roles, for: providerID)
+        declinedServiceRoles.formUnion(roles)
+        serviceOffers.removeAll { roles.contains($0.role) }
     }
 
     /// Retries ONLY the CloudKit enqueue for the provider bundle that already

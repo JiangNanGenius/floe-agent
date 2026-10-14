@@ -291,6 +291,56 @@ struct OfficeEditToolContractTests {
         #expect(output.summary.contains("verified=true"))
         #expect(try sha(document) != digest)
     }
+
+    /// Shared host default: a token-aware call on a host that only implements
+    /// the legacy requirement must still leave at its safe pre-effect boundary
+    /// when the context is ALREADY cancelled. The token is never widened into
+    /// authority; without cancellation the host keeps its honest refusal.
+    @Test("the token-aware host default respects a pre-cancelled context")
+    func legacyForwardingRespectsPreCancelledContext() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let document = root.appendingPathComponent("brief.docx")
+        try OfficeDocumentBuilder.createWord(at: document, title: "Brief", paragraphs: ["One"])
+        let (fake, _, _) = try host(for: document)
+        let binding = RuntimeAuthorityBinding(
+            runID: UUID(), taskID: UUID(), environmentBinding: "test",
+            canonicalTarget: "document:brief.docx", toolName: "document.office.edit",
+            operation: "apply", operationID: "call-1", idempotencyKey: "key-1",
+            baseRevision: nil, payloadDigest: String(repeating: "d", count: 64))
+        let authorization = OfficeAutomaticAuthorization(
+            runID: binding.runID, taskID: binding.taskID, operationID: binding.operationID,
+            idempotencyKey: binding.idempotencyKey, approvalGrantID: UUID(), binding: binding)
+        let proposal = OfficeCommandProposal(
+            documentID: "brief.docx", format: "docx",
+            baseSHA256: String(repeating: "a", count: 64), summary: "legacy forwarding",
+            commandsJSON: "[]", expectations: [])
+        let access = OfficeCommandAccess(workspacePath: root.path)
+
+        let cancelled = CancellationToken()
+        cancelled.cancel()
+        do {
+            _ = try await fake.applyAutomatic(proposal: proposal, authorization: authorization,
+                                              relativeOutput: nil, requestID: "req-1", access: access,
+                                              cancellation: cancelled)
+            Issue.record("a pre-cancelled context must not start automatic execution")
+        } catch let error as FloeError {
+            guard case .cancelled = error else {
+                Issue.record("unexpected error: \(error)")
+                return
+            }
+        }
+        // Without cancellation the legacy default keeps its honest refusal.
+        do {
+            _ = try await fake.applyAutomatic(proposal: proposal, authorization: authorization,
+                                              relativeOutput: nil, requestID: "req-1", access: access,
+                                              cancellation: nil)
+            Issue.record("a host without a service-owned engine session must refuse")
+        } catch {
+            // Expected: the documented "no service-owned Office engine session"
+            // refusal (FloeError.validationFailed), never a silent success.
+        }
+    }
 }
 
 private extension FakeOfficeHost {

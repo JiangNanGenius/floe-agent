@@ -189,6 +189,58 @@ public protocol OfficeCommandHost: Sendable {
                access: OfficeCommandAccess) async throws -> OfficeCommandReceipt
     func export(documentID: String, relativeOutput: String,
                 access: OfficeCommandAccess) async throws -> OfficeExportReceipt
+    /// Authorized automatic copy execution through a service-owned engine
+    /// session. Called ONLY after the tool consumed the runtime-issued task
+    /// authority for the exact apply call; the host runs the isolated working
+    /// copy and never touches the original document. A host without a
+    /// service-owned engine session keeps the default refusal below.
+    func applyAutomatic(proposal: OfficeCommandProposal,
+                        authorization: OfficeAutomaticAuthorization,
+                        relativeOutput: String?,
+                        requestID: String,
+                        access: OfficeCommandAccess) async throws -> OfficeAutomaticReceipt
+
+    /// Token-aware variant of the same call: production callers forward the
+    /// tool context's cancellation so an automatic operation can leave at its
+    /// safe pre-effect boundary (before any engine session or edit).
+    func applyAutomatic(proposal: OfficeCommandProposal,
+                        authorization: OfficeAutomaticAuthorization,
+                        relativeOutput: String?,
+                        requestID: String,
+                        access: OfficeCommandAccess,
+                        cancellation: CancellationToken?) async throws -> OfficeAutomaticReceipt
+}
+
+public extension OfficeCommandHost {
+    /// Default token-aware forwarding for hosts that only implement the legacy
+    /// requirement: this host cannot interrupt a running operation, but a
+    /// context that is ALREADY cancelled must still leave at its safe
+    /// pre-effect boundary instead of starting engine work. The token is never
+    /// widened into authority; a live cancellation during the operation stays
+    /// the legacy host's responsibility.
+    func applyAutomatic(proposal: OfficeCommandProposal,
+                        authorization: OfficeAutomaticAuthorization,
+                        relativeOutput: String?,
+                        requestID: String,
+                        access: OfficeCommandAccess,
+                        cancellation: CancellationToken?) async throws -> OfficeAutomaticReceipt {
+        try cancellation?.throwIfCancelled()
+        return try await applyAutomatic(proposal: proposal, authorization: authorization,
+                                        relativeOutput: relativeOutput, requestID: requestID,
+                                        access: access)
+    }
+
+    /// No service-owned engine session is installed: automatic execution is
+    /// refused with the interactive alternative instead of a silent fallback.
+    func applyAutomatic(proposal: OfficeCommandProposal,
+                        authorization: OfficeAutomaticAuthorization,
+                        relativeOutput: String?,
+                        requestID: String,
+                        access: OfficeCommandAccess) async throws -> OfficeAutomaticReceipt {
+        throw FloeError.validationFailed(
+            "This build has no service-owned Office engine session for automatic execution; "
+                + "confirm the proposal in the editor UI (grant_id) or use a package-level tool.")
+    }
 }
 
 /// Single-use, expiring, opaque grant store. Only the interactive editor calls
@@ -464,10 +516,16 @@ public struct OfficeEditTool: AgentTool {
     Presentation slide duplicate, slide reorder, object alignment. Package-level \
     (verified, atomic): formula cell updates via document.office.updateText, image \
     replacement (action=replaceImage, same image format), formula-error cell locations \
-    (action=errors). propose binds the exact sha256 and changes nothing; apply needs a \
-    single-use grant the user issued in the editor UI. Never claim an engine change was \
-    accepted without the returned verified facts. Unsupported engine operations are \
-    reported unavailable, never faked with screenshots or PDF edits.
+    (action=errors). propose binds the exact sha256 and changes nothing. apply has two \
+    modes: with grant_id (the user confirmed this proposal in the editor UI) it commits \
+    the document through the live session; without grant_id, and only when the runtime \
+    approved this exact call, it runs a service-owned engine session on an isolated \
+    copy and publishes a verified <name>.edited.<ext> COPY — the original document is \
+    never overwritten, the output is reopened and checked (including persisted formula \
+    cached value/type/error for workbooks), and selection-relative commands are refused \
+    automatically. A model cannot mint a grant or an authorization; never claim an \
+    engine change was accepted without the returned verified facts. Unsupported engine \
+    operations are reported unavailable, never faked with screenshots or PDF edits.
     """
     public static let parametersJSON = #"""
     {
@@ -480,14 +538,14 @@ public struct OfficeEditTool: AgentTool {
         "summary": { "type": "string", "maxLength": 2000, "description": "Human-readable proposal summary shown before confirmation (propose)." },
         "commands": {
           "type": "array", "maxItems": 64,
-          "description": "Validated engine commands (propose). Supported ids: word.style{style}; word.bulletList; word.numberedList; word.alignment{alignment}; word.insertTable{rows,columns}; excel.numberFormat{format,cell}; excel.insertRows{count,cell}; excel.deleteRows{count,cell}; excel.insertColumns{count,cell}; excel.deleteColumns{count,cell}; excel.freezePanes{cell?}; excel.sort{ascending,range?}; excel.autoFilter; excel.goToCell{cell}; excel.recalculate; pptx.duplicateSlide{at}; pptx.moveSlide{from,to}; pptx.alignObjects{alignment}. Word style/list/alignment, excel sort/autoFilter and pptx.alignObjects act on the live selection: propose captures the engine selection identity and apply refuses if it changed. Cell-addressed commands move the cell cursor to the explicit cell first.",
+          "description": "Validated engine commands (propose). Supported ids: word.style{style}; word.bulletList; word.numberedList; word.alignment{alignment}; word.insertTable{rows,columns}; excel.numberFormat{format,cell}; excel.insertRows{count,cell}; excel.deleteRows{count,cell}; excel.insertColumns{count,cell}; excel.deleteColumns{count,cell}; excel.freezePanes{cell?}; excel.sort{ascending,range?}; excel.autoFilter; excel.goToCell{cell}; excel.recalculate; pptx.duplicateSlide{at}; pptx.moveSlide{from,to}; pptx.alignObjects{alignment}. Word style/list/alignment, excel sort/autoFilter and pptx.alignObjects act on the live selection: propose captures the engine selection identity and apply refuses if it changed. They are unavailable in automatic copy execution (no user selection exists); use explicit cell-addressed commands.",
           "items": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string" }, "arguments": { "type": "object", "additionalProperties": { "type": "string" } } } }
         },
         "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id from propose (preview/apply)." },
-        "grant_id": { "type": "string", "description": "Opaque single-use confirmation token issued by the editor UI after the user accepts. The model cannot mint this." },
+        "grant_id": { "type": "string", "description": "Opaque single-use confirmation token issued by the editor UI after the user accepts. The model cannot mint this. OMIT for an authorized automatic copy execution: the runtime approval of this exact call authorizes an isolated verified copy and the original is never modified." },
         "request_id": { "type": "string", "description": "Optional caller idempotency key; defaults to the tool call id." },
         "expected_sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$", "description": "Exact revision for propose/replaceImage (from action=read or inspect)." },
-        "output": { "type": "string", "description": "export relative path; defaults to <name>.export.<ext>" },
+        "output": { "type": "string", "description": "export relative path (default <name>.export.<ext>); for an apply without grant_id it is the verified edited-copy destination (default <name>.edited.<ext>). An apply that passes both grant_id and output is refused; an existing different file is never overwritten." },
         "image": { "type": "string", "description": "replaceImage target: package member such as ppt/media/image2.png or #N for the N-th image." },
         "imagePath": { "type": "string", "description": "replaceImage source: workspace-relative PNG/JPEG/GIF path, same format as the target member." }
       }
@@ -556,8 +614,14 @@ public struct OfficeEditTool: AgentTool {
             guard args.proposalID != nil else {
                 throw FloeError.validationFailed("proposal_id is required")
             }
-            if args.action == .apply, (args.grantID ?? "").isEmpty {
-                throw FloeError.validationFailed("apply requires grant_id issued by the editor UI")
+            if args.action == .apply, let grant = args.grantID, !grant.isEmpty,
+               let output = args.output?.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
+                throw FloeError.validationFailed(
+                    "apply accepts output only for an authorized automatic copy execution; "
+                        + "remove output to commit the document in the editor, or omit grant_id to write a verified copy")
+            }
+            if args.action == .apply, let output = args.output, output.utf8.count > 1_024 {
+                throw FloeError.validationFailed("output path is too long")
             }
         case .export:
             guard let path = args.path, !path.isEmpty else {
@@ -696,8 +760,8 @@ public struct OfficeEditTool: AgentTool {
     }
 
     private func apply(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        guard let id = args.proposalID, let grantID = args.grantID else {
-            throw FloeError.validationFailed("proposal_id and grant_id are required")
+        guard let id = args.proposalID else {
+            throw FloeError.validationFailed("proposal_id is required")
         }
         let access = Self.access(from: context)
         guard let proposal = try await host.loadProposal(id: id, access: access) else {
@@ -705,13 +769,61 @@ public struct OfficeEditTool: AgentTool {
         }
         try await host.verifyProposalBinding(proposal, documentID: proposal.documentID, access: access)
         let requestID = args.requestID ?? context.toolCallID ?? UUID().uuidString
-        let receipt = try await host.apply(proposal: proposal, grantID: grantID,
-                                           requestID: requestID, access: access)
+        let interactiveGrant = (args.grantID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !interactiveGrant.isEmpty {
+            let receipt = try await host.apply(proposal: proposal, grantID: interactiveGrant,
+                                               requestID: requestID, access: access)
+            try? await host.removeProposal(id: id)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            let json = String(decoding: (try? encoder.encode(receipt)) ?? Data("{}".utf8), as: UTF8.self)
+            return output("status=\(receipt.saved ? "saved" : "partial") replay=\(receipt.replay)\n\(json)")
+        }
+        // No UI grant: the ONLY authority for an automatic copy execution is
+        // the runtime-issued task authority for this exact approved call. A
+        // model-supplied `confirmed`/grant-looking value is never consulted.
+        let binding: RuntimeAuthorityBinding
+        do {
+            binding = try Self.runtimeAuthorityBinding(for: args, context: context, workspaceRoot: workspaceRoot)
+        } catch {
+            throw FloeError.validationFailed(
+                "automatic apply could not bind the approved call: \(error.localizedDescription)")
+        }
+        let verdict = await context.consumeRuntimeAuthority(binding: binding)
+        guard verdict.isValid else {
+            throw FloeError.validationFailed(
+                "automatic apply needs the runtime-approved call authority for this exact operation"
+                    + (verdict.failureReason.map { " (\($0))" } ?? "")
+                    + "; a model-provided confirmation is not authority. Confirm the proposal in the editor UI (grant_id), "
+                    + "or send the apply call with canonical JSON arguments (omit optional fields instead of null).")
+        }
+        // A selection-relative command cannot be redirected without the live
+        // editor selection; refuse before opening any session.
+        for command in (try? OfficeCommandCodec.decode(proposal.commandsJSON)) ?? []
+        where command.requiresSelectionFingerprint {
+            throw FloeError.validationFailed(
+                "\(command.id) acts on the live editor selection and is unavailable for automatic copy execution; "
+                    + "use explicit cell-addressed commands or confirm it in the editor UI")
+        }
+        let authorization = OfficeAutomaticAuthorization(
+            runID: context.runID,
+            taskID: context.conversationID,
+            operationID: context.toolCallID ?? "",
+            idempotencyKey: context.toolIdempotencyKey,
+            approvalGrantID: context.approvalGrantID,
+            binding: binding)
+        let receipt = try await host.applyAutomatic(proposal: proposal,
+                                                    authorization: authorization,
+                                                    relativeOutput: args.output,
+                                                    requestID: requestID,
+                                                    access: access,
+                                                    cancellation: context.cancellation)
         try? await host.removeProposal(id: id)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let json = String(decoding: (try? encoder.encode(receipt)) ?? Data("{}".utf8), as: UTF8.self)
-        return output("status=\(receipt.saved ? "saved" : "partial") replay=\(receipt.replay)\n\(json)")
+        return output("status=\(receipt.saved ? "saved" : "partial") replay=\(receipt.replay) "
+            + "mode=automatic-copy sourceUnchanged=\(receipt.sourceUnchanged)\n\(json)")
     }
 
     private func export(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -765,9 +877,69 @@ public struct OfficeEditTool: AgentTool {
         return try entries.map { try OfficeCommandCodec.decode(entry: $0) }
     }
 
+    /// Canonical JSON of the DECODED approved arguments, in exactly the shape
+    /// the runtime hashed when it minted this call's authority. Optional fields
+    /// that were absent stay absent; a model must send canonical JSON (lowercase
+    /// UUIDs, no null placeholders) for the automatic path to bind.
+    public static func canonicalApprovedPayload(_ args: OfficeEditArguments) throws -> Data {
+        var object: [String: Any] = ["action": args.action.rawValue]
+        if let path = args.path { object["path"] = path }
+        if let summary = args.summary { object["summary"] = summary }
+        if let commands = args.commands {
+            object["commands"] = commands.map { entry -> [String: Any] in
+                ["id": entry.id, "arguments": entry.arguments]
+            }
+        }
+        if let proposalID = args.proposalID { object["proposal_id"] = proposalID.uuidString.lowercased() }
+        if let grantID = args.grantID { object["grant_id"] = grantID }
+        if let requestID = args.requestID { object["request_id"] = requestID }
+        if let expectedSHA256 = args.expectedSHA256 { object["expected_sha256"] = expectedSHA256 }
+        if let output = args.output { object["output"] = output }
+        if let image = args.image { object["image"] = image }
+        if let imagePath = args.imagePath { object["imagePath"] = imagePath }
+        return try JSONSerialization.data(withJSONObject: object, options: [])
+    }
+
+    /// Mirrors `RuntimeAuthorityDigest.canonicalTarget` for this tool's exact
+    /// resolution rules (`document.` prefix → path argument, else the workspace
+    /// wildcard). Both sides must derive the same string or the token refuses.
+    public static func canonicalTarget(for args: OfficeEditArguments, workspaceRoot: URL?) -> String {
+        if let raw = args.path {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, trimmed.utf8.count <= 4_096 {
+                var url: URL?
+                if trimmed.hasPrefix("/") {
+                    url = URL(fileURLWithPath: trimmed)
+                } else if let workspaceRoot {
+                    url = workspaceRoot.appendingPathComponent(trimmed)
+                }
+                if let url {
+                    return "file:" + url.standardizedFileURL.resolvingSymlinksInPath().path
+                }
+            }
+        }
+        guard let workspaceRoot else { return "workspace:*" }
+        return "workspace:" + workspaceRoot.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// Builds the binding this apply call implies, exactly like the runtime
+    /// minted it. Throws only when the approved arguments cannot be
+    /// canonicalized (which itself is a refusal, never a bypass).
+    public static func runtimeAuthorityBinding(for args: OfficeEditArguments,
+                                               context: ToolContext,
+                                               workspaceRoot: @escaping @Sendable () -> URL?) throws -> RuntimeAuthorityBinding {
+        let root = context.workspaceRootURL ?? workspaceRoot()
+        let payload = try canonicalApprovedPayload(args)
+        return context.runtimeAuthorityBinding(
+            toolName: name,
+            operation: "apply",
+            canonicalTarget: canonicalTarget(for: args, workspaceRoot: root),
+            baseRevision: RuntimeAuthorityDigest.baseRevision(in: payload),
+            payloadDigest: RuntimeAuthorityDigest.payloadDigest(payload))
+    }
+
     /// Argument shape shown by action=query for one command.
-    static func arguments(of command: OfficeEngineCommand) -> [String: String] {
-        switch command {
+    static func arguments(of command: OfficeEngineCommand) -> [String: String] {        switch command {
         case .wordStyle(let name): return ["style": name]
         case .wordAlignment(let alignment): return ["alignment": alignment.rawValue]
         case .wordInsertTable(let rows, let columns): return ["rows": "\(rows)", "columns": "\(columns)"]

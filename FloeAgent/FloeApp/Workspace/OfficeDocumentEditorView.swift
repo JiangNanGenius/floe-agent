@@ -2541,6 +2541,10 @@ final class OfficeFileSession: ObservableObject {
             self.phase = .failed
         }
         try OfficeExplicitSaveBridge.installEmbeddedControls(controller: native)
+        // The validated command adapter (AI/host edits) is a document-start
+        // user script; without this injection the engine page has no dispatch
+        // function and every command dispatch fails as an invalid response.
+        try OfficeCommandBridge.install(controller: native)
         if !readOnly {
             explicitSaveBridge = try OfficeExplicitSaveBridge(controller: native) { [weak self, weak native] in
                 guard let self, let native, self.controller === native else { return false }

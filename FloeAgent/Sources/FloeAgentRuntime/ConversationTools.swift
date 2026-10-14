@@ -335,6 +335,13 @@ public struct ConversationSpawnTool: AgentTool {
     public static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .internalState
+    /// Creating a user-visible task is main-run only: a delegated child can
+    /// never spawn another task (directly or through a wrapper), because a
+    /// new task would carry its own fresh approvals and workspace ownership.
+    /// Enforced at discovery/dispatch structurally AND at the callable
+    /// boundary through the runtime-issued `ToolCallOrigin` for this exact
+    /// run/call, so clearing `childBudget` in a rebuilt context is not enough.
+    public static let executionBoundary: ToolExecutionBoundary = .mainRunOnly
 
     private let sourceConversationID: @Sendable (UUID) async throws -> UUID?
     private let hasExplicitUserAuthority: @Sendable (UUID) async throws -> Bool
@@ -361,8 +368,24 @@ public struct ConversationSpawnTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        guard context.childBudget == nil else {
-            throw FloeError.validationFailed("A delegated subagent cannot create a user-visible task")
+        // Main-run-only at the CALLABLE boundary too, using the runtime's
+        // trusted provenance for this exact run/call AND this exact tool:
+        // a delegated child, a wrapper that reconstructed a context, a
+        // main-run wrapper forwarding its own identical runID/callID/origin
+        // into this raw registry entry, a legacy context carrying only
+        // `childBudget` metadata, or any context without a matching origin is
+        // refused. `childBudget == nil` alone is a legacy signal a wrapper can
+        // clear; the tool-name-bound origin cannot be minted outside the
+        // runtime for the exact approved call.
+        guard context.childBudget == nil,
+              context.callOrigin?.authorizesMainOnlyCapability(
+                  toolName: Self.name,
+                  runID: context.runID,
+                  callID: context.toolCallID
+              ) == true else {
+            throw FloeError.validationFailed(
+                "conversation.spawn is main-run only: a delegated subagent or a reconstructed context cannot create a user-visible task"
+            )
         }
         guard try await hasExplicitUserAuthority(context.runID) else {
             return ConversationSearchTool.output(

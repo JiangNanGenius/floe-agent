@@ -52,6 +52,15 @@ public enum MailFailure: String, Error, Sendable, LocalizedError {
     case invalidConfiguration, invalidAddress, connectionFailed, tlsFailed, timedOut
     case authenticationFailed, protocolRejected, responseTooLarge, invalidMessage
     case messageNotFound, mailboxChanged, deliveryUnknown, cancelled, busy
+    /// The operation requires IMAP; POP3 cannot express it. Returned instead
+    /// of a silent empty result.
+    case unsupportedForPOP3
+    /// A mutating command was written but its outcome could not be read back.
+    /// Callers must reconcile (or stop) instead of automatically retrying.
+    case mutationUnknown
+    /// A pagination cursor was created for a different account, folder or
+    /// criteria. Callers must start a new search instead of mixing results.
+    case cursorMismatch
     public var errorDescription: String? {
         switch self {
         case .invalidConfiguration: "Check the mail host, port, encryption mode and username."
@@ -68,6 +77,9 @@ public enum MailFailure: String, Error, Sendable, LocalizedError {
         case .deliveryUnknown: "Delivery status is unknown. Do not automatically resend; check the recipient or server first."
         case .cancelled: "Mail operation cancelled."
         case .busy: "Another mail operation is running. Wait for it to finish."
+        case .unsupportedForPOP3: "This search or move operation requires IMAP. POP3 mailboxes support listing, downloading and sending only."
+        case .mutationUnknown: "The server did not confirm whether the mailbox change completed. Check the mailbox before trying again; no automatic retry."
+        case .cursorMismatch: "The pagination cursor belongs to a different account, folder or search criteria. Start a new search."
         }
     }
 }

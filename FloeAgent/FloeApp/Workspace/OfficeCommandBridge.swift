@@ -86,6 +86,33 @@ enum OfficeCommandBridge {    struct DispatchOutcome {
         return DispatchOutcome(token: token, commandIDs: commands.map(\.id))
     }
 
+    /// Installs the command adapter into the engine page. Must be called
+    /// before the engine document finishes loading: the script is a
+    /// document-start user script, and without it `dispatch` has no function
+    /// to call (the previous code shipped the adapter but never injected it).
+    static func install(controller: UIViewController) throws {
+        controller.loadViewIfNeeded()
+        guard let webView = OfficeExplicitSaveBridge.findWebView(in: controller.view) else {
+            throw OfficeCommandBridgeError.bridgeUnavailable
+        }
+        webView.configuration.userContentController.addUserScript(
+            WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+    }
+
+    /// Bounded readiness probe: true only when the engine page has installed
+    /// the command-dispatch function. A service-owned (hidden-window) session
+    /// waits for this after open so the first command cannot race the page's
+    /// JavaScript bring-up and be reported as an invalid bridge response.
+    static func isReady(controller: UIViewController) async -> Bool {
+        controller.loadViewIfNeeded()
+        guard let webView = OfficeExplicitSaveBridge.findWebView(in: controller.view) else {
+            return false
+        }
+        let value = try? await webView.evaluateJavaScript(
+            "typeof window.__floeOfficeCommandDispatch === 'function'")
+        return (value as? Bool) == true
+    }
+
     /// Fresh `commandstatechanged` events correlated with one dispatch token.
     /// Returns the command names that reported a NEW state after the dispatch.
     /// This is supplementary evidence only; an absent event never fails a

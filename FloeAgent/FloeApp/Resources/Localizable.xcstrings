@@ -39209,6 +39209,262 @@
         }
       }
     },
+    "providers.catalog.also_serves": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Also serves: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还支持：%@"
+          }
+        }
+      }
+    },
+    "providers.service_offers.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Also configure for this provider"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同时配置此服务商"
+          }
+        }
+      }
+    },
+    "providers.service_offers.footer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Optional extra roles share this connection's endpoint and API key. Declined roles are not offered again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可选的附加角色共用此连接的接口地址与 API 密钥；已拒绝的角色不会再次提示。"
+          }
+        }
+      }
+    },
+    "providers.service_offers.not_now": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not now"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不配置"
+          }
+        }
+      }
+    },
+    "providers.service_offers.model_count": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Includes %d verified models"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "包含 %d 个已验证模型"
+          }
+        }
+      }
+    },
+    "providers.service_offers.requires_discovery": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Runs a real model discovery request before enabling."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用前会执行一次真实的模型发现请求。"
+          }
+        }
+      }
+    },
+    "providers.service_offers.configure_separately": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure separately"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "单独配置"
+          }
+        }
+      }
+    },
+    "providers.service_offers.confirm": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure selected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配置所选角色"
+          }
+        }
+      }
+    },
+    "providers.service_offers.current_role": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current use: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前用途：%@"
+          }
+        }
+      }
+    },
+    "providers.validation.connection_changed_requires_key": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The provider connection changed. Enter the API key for the new connection; the stored key is not reused across connections."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务商连接已更改，请重新输入新连接的 API 密钥；已保存的密钥不会跨连接复用。"
+          }
+        }
+      }
+    },
+    "providers.supplier_field": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provider"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务商"
+          }
+        }
+      }
+    },
+    "providers.supplier_picker.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a provider"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择服务商"
+          }
+        }
+      }
+    },
+    "providers.supplier_picker.builtin": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built-in"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内置"
+          }
+        }
+      }
+    },
+    "providers.supplier_picker.no_matching_catalog": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No catalog result matches. Choose a built-in or manual option above."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目录中没有匹配结果，请选择上方的内置或手动选项。"
+          }
+        }
+      }
+    },
+    "providers.service_offers.additional_uses": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Additional uses"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "额外用途"
+          }
+        }
+      }
+    },
+    "providers.service_offers.configure": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配置"
+          }
+        }
+      }
+    },
     "providers.search_models": {
       "extractionState": "manual",
       "localizations": {

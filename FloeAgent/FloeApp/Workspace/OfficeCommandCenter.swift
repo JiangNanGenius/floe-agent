@@ -17,6 +17,15 @@ import FloeTools
 import FloeDocuments
 import FloeWorkbench
 import FloeWorkspace
+#if canImport(UIKit)
+import UIKit
+#endif
+#if canImport(WebKit)
+import WebKit
+#endif
+#if canImport(FloeOfficeNative)
+import FloeOfficeNative
+#endif
 
 /// Registers the Office edit tool with both the compile-time catalog and the
 /// runtime runner registry; both are required for discovery/execution.
@@ -155,6 +164,81 @@ enum OfficeBatchReconciliation: Equatable {
     }
 }
 
+/// Process-wide serialization for service-owned automatic Office sessions.
+///
+/// The pinned engine is ONE shared runtime (single web-server and document
+/// workspace). Concurrent hidden sessions compete for it and its teardown can
+/// abort; automatic execution therefore holds one bounded lease at a time.
+/// The wait is bounded and honors the operation's cancellation token so a
+/// cancelled job leaves at its safe pre-effect boundary instead of queueing
+/// forever. A session whose close was not acknowledged quarantines the gate:
+/// the engine may still hold a working copy, so no further shared-engine
+/// automatic work is admitted until the app restarts. The interactive editor
+/// is untouched (it owns its visible session).
+actor OfficeAutomaticExecutionGate {
+    static let shared = OfficeAutomaticExecutionGate()
+
+    enum Outcome: Sendable, Equatable {
+        case acquired
+        case cancelledBeforeStart
+        case timedOut
+        case hostQuarantined(String)
+    }
+
+    private var busy = false
+    private var quarantineReason: String?
+
+    /// Bounded, cancellation-aware lease acquisition that honors BOTH the
+    /// operation token and Task cancellation. A cancelled sleep ends the wait
+    /// immediately (never a busy spin to the deadline).
+    func acquire(cancellation: CancellationToken? = nil, timeout: TimeInterval = 120) async -> Outcome {
+        if let quarantineReason { return .hostQuarantined(quarantineReason) }
+        if cancellation?.isCancelled == true || Task.isCancelled { return .cancelledBeforeStart }
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let quarantineReason { return .hostQuarantined(quarantineReason) }
+            if cancellation?.isCancelled == true || Task.isCancelled { return .cancelledBeforeStart }
+            if !busy {
+                busy = true
+                return .acquired
+            }
+            if Date() >= deadline { return .timedOut }
+            do {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            } catch {
+                return .cancelledBeforeStart
+            }
+        }
+    }
+
+    /// Releases the lease. `closeAcknowledged == false` quarantines the gate:
+    /// the engine may still hold a working copy, so no further shared-engine
+    /// automatic session is admitted until the app restarts.
+    func release(closeAcknowledged: Bool, failureReason: String? = nil) {
+        if !closeAcknowledged {
+            quarantineReason = failureReason ?? "a previous engine session was not acknowledged"
+        }
+        busy = false
+    }
+
+    /// Quarantines the gate after a session reported an unacknowledged close
+    /// (called by the session itself so every path is covered).
+    func markHostQuarantined(reason: String) {
+        quarantineReason = reason
+    }
+
+    var isQuarantined: Bool { quarantineReason != nil }
+
+    #if DEBUG
+    /// Test-only reset (the DEBUG App test bundle); production keeps the
+    /// quarantine sticky until the app restarts.
+    func resetForTesting() {
+        quarantineReason = nil
+        busy = false
+    }
+    #endif
+}
+
 actor OfficeCommandCenter: OfficeCommandHost {
     struct Resolved {
         var root: URL
@@ -173,6 +257,13 @@ actor OfficeCommandCenter: OfficeCommandHost {
     private var requestPayloads: [String: String] = [:]
     private var gates: [String: CadDocumentGate] = [:]
     private let maximumDocumentBytes = 128 * 1024 * 1024
+    /// Authorized automatic copy execution (service-owned engine session).
+    private let automaticExecutor: OfficeAutomaticExecutor
+
+    init() {
+        automaticExecutor = OfficeAutomaticExecutor(
+            factory: OfficeServiceNativeSessionFactory.makeDefault())
+    }
 
     private func gate(for key: String) -> CadDocumentGate {
         if let existing = gates[key] { return existing }
@@ -498,6 +589,61 @@ actor OfficeCommandCenter: OfficeCommandHost {
                                    note: "Source document unchanged")
     }
 
+    // MARK: - Authorized automatic copy execution (T4)
+
+    /// Runs a runtime-approved apply as an isolated verified copy through a
+    /// service-owned engine session; the original document is only read.
+    /// The tool already consumed the single-use runtime authority for the
+    /// exact call; this method performs the execution and verification.
+    func applyAutomatic(proposal: OfficeCommandProposal,
+                        authorization: OfficeAutomaticAuthorization,
+                        relativeOutput: String?,
+                        requestID: String,
+                        access: OfficeCommandAccess) async throws -> OfficeAutomaticReceipt {
+        try await applyAutomatic(proposal: proposal, authorization: authorization,
+                                 relativeOutput: relativeOutput, requestID: requestID,
+                                 access: access, cancellation: nil)
+    }
+
+    func applyAutomatic(proposal: OfficeCommandProposal,
+                        authorization: OfficeAutomaticAuthorization,
+                        relativeOutput: String?,
+                        requestID: String,
+                        access: OfficeCommandAccess,
+                        cancellation: CancellationToken?) async throws -> OfficeAutomaticReceipt {
+        // One shared engine runtime: serialize service-owned automatic
+        // sessions with a bounded, cancellation-aware lease and release only
+        // after the session closed and acknowledged.
+        switch await OfficeAutomaticExecutionGate.shared.acquire(cancellation: cancellation) {
+        case .acquired:
+            break
+        case .cancelledBeforeStart:
+            throw FloeError.cancelled
+        case .timedOut:
+            throw OfficeServiceSessionFailure(
+                reason: "another automatic Office session is still running; try again shortly")
+        case .hostQuarantined(let reason):
+            throw OfficeServiceSessionFailure(
+                reason: "shared automatic engine work is suspended after an unacknowledged session close: \(reason)")
+        }
+        do {
+            let receipt = try await automaticExecutor.execute(proposal: proposal,
+                                                              authorization: authorization,
+                                                              relativeOutput: relativeOutput,
+                                                              requestID: requestID,
+                                                              access: access,
+                                                              cancellation: cancellation)
+            await OfficeAutomaticExecutionGate.shared.release(closeAcknowledged: true)
+            return receipt
+        } catch {
+            let unsafe = (error as? OfficeAutomaticExecutionError)?.isUnsafeResourceState == true
+            await OfficeAutomaticExecutionGate.shared.release(
+                closeAcknowledged: !unsafe,
+                failureReason: (error as? LocalizedError)?.errorDescription)
+            throw error
+        }
+    }
+
     // MARK: - UI confirmation path
 
     /// Trusted UI path: the editor mints a single-use grant after the user
@@ -549,3 +695,430 @@ actor OfficeCommandCenter: OfficeCommandHost {
          documentID, requestID, payload].joined(separator: "|")
     }
 }
+
+// MARK: - Service-owned engine session (authorized automatic copy execution)
+
+/// Builds the service-owned session used by authorized automatic execution.
+/// A build without the pinned engine framework keeps an explicit unavailable
+/// factory so the executor reports an honest failure instead of a fabricated
+/// edit.
+enum OfficeServiceNativeSessionFactory {
+    static func makeDefault() -> any OfficeServiceEngineSessionFactory {
+        #if canImport(UIKit) && canImport(WebKit) && canImport(FloeOfficeNative)
+        return OfficeServiceNativeSessionFactoryImpl()
+        #else
+        return OfficeServiceUnavailableSessionFactory()
+        #endif
+    }
+}
+
+struct OfficeServiceUnavailableSessionFactory: OfficeServiceEngineSessionFactory {
+    struct Unavailable: LocalizedError {
+        var errorDescription: String? {
+            "The pinned Office engine is not linked in this build; automatic engine edits are unavailable."
+        }
+    }
+    func openServiceSession(workingCopyURL: URL, format: OfficeDocumentFormat,
+                            originalURL: URL,
+                            access: OfficeCommandAccess) async throws -> any OfficeServiceEngineSession {
+        throw Unavailable()
+    }
+}
+
+#if canImport(UIKit) && canImport(WebKit) && canImport(FloeOfficeNative)
+
+/// Off-document host for one service-owned engine session. It mounts the
+/// pinned controller in a dedicated, non-user-facing window so an automatic
+/// edit never steals the user's editor, their document, or their selection.
+/// Readiness follows the same truthful contract as the visible editor: the
+/// open/permission report is not render evidence, and a presentation that
+/// never paints is reported as a bounded failure instead of an edit that
+/// "worked".
+@MainActor
+final class OfficeServiceNativeSessionFactoryImpl: OfficeServiceEngineSessionFactory {
+    func openServiceSession(workingCopyURL: URL, format: OfficeDocumentFormat,
+                            originalURL: URL,
+                            access: OfficeCommandAccess) async throws -> any OfficeServiceEngineSession {
+        try await OfficeServiceNativeSession.open(workingCopyURL: workingCopyURL,
+                                                  format: format,
+                                                  readOnly: false)
+    }
+
+    func verifyEngineReopen(savedCopyURL: URL, format: OfficeDocumentFormat,
+                            access: OfficeCommandAccess) async -> OfficeEngineReopenEvidence {
+        do {
+            let session = try await OfficeServiceNativeSession.open(workingCopyURL: savedCopyURL,
+                                                                    format: format,
+                                                                    readOnly: true)
+            try? await session.close()
+            return .engineOpened
+        } catch {
+            let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return .unavailable(reason: reason)
+        }
+    }
+}
+
+@MainActor
+final class OfficeServiceNativeSession: OfficeServiceEngineSession {
+    // Immutable Sendable values witness the protocol's nonisolated
+    // requirements directly; every other requirement is async and hops to the
+    // main actor.
+    nonisolated let workingCopyURL: URL
+    nonisolated let engineLabel = "floe-office-native"
+
+    private let native: FloeOfficeNativeViewController
+    private let container: UIViewController
+    private let readOnly: Bool
+    private let requiresVisibleRender: Bool
+    private var window: UIWindow?
+    /// Close lifecycle: references are only released after the engine
+    /// acknowledged the close; a failed close quarantines the session.
+    enum CloseState { case open, closing, closed, quarantined }
+    private var closeState: CloseState = .open
+
+    // Open readiness state. Callbacks may settle before a wait attaches and
+    // vice versa; the settled outcome is retained and replayed.
+    private var openSettled: Result<Bool, Error>?
+    private var openWaiter: CheckedContinuation<Bool, Error>?
+    private var renderSettled: Result<Void, Error>?
+    private var renderWaiter: CheckedContinuation<Void, Error>?
+
+    private init(workingCopyURL: URL,
+                 format: OfficeDocumentFormat,
+                 readOnly: Bool,
+                 native: FloeOfficeNativeViewController,
+                 container: UIViewController) {
+        self.workingCopyURL = workingCopyURL
+        self.readOnly = readOnly
+        self.requiresVisibleRender = OfficeRenderRequirement.forDocument(
+            pathExtension: workingCopyURL.pathExtension) == .visibleRenderRequired
+        self.native = native
+        self.container = container
+        installCallbacks()
+    }
+
+    // MARK: Opening
+
+    static func open(workingCopyURL: URL,
+                     format: OfficeDocumentFormat,
+                     readOnly: Bool) async throws -> OfficeServiceNativeSession {
+        try await prepareRuntime()
+        let sessionDirectory = workingCopyURL.deletingLastPathComponent()
+        let native: FloeOfficeNativeViewController
+        do {
+            native = try FloeOfficeNativeViewController(workingFileURL: workingCopyURL,
+                                                        sessionDirectory: sessionDirectory,
+                                                        readOnly: readOnly)
+        } catch {
+            throw OfficeServiceSessionFailure(
+                reason: "the pinned engine could not open the working copy: \(error.localizedDescription)")
+        }
+        // Install the command adapter before the engine page loads; the
+        // hidden service session dispatches engine commands but never had the
+        // bridge script injected.
+        try OfficeCommandBridge.install(controller: native)
+        let container = UIViewController()
+        container.view.backgroundColor = .clear
+        let session = OfficeServiceNativeSession(workingCopyURL: workingCopyURL,
+                                                 format: format,
+                                                 readOnly: readOnly,
+                                                 native: native,
+                                                 container: container)
+        session.mount()
+        do {
+            try await session.awaitOpen()
+            if !readOnly, await session.engineReportsReadOnly() {
+                throw OfficeServiceSessionFailure(reason: "the engine kept the working copy read-only")
+            }
+            if session.requiresVisibleRender {
+                try await session.awaitVisibleRender()
+            }
+            // The document-open callback is not proof that the engine page has
+            // installed its command bridge; a hidden-window session must wait
+            // for it or the first dispatch would be an invalid response.
+            try await session.awaitCommandBridgeReady()
+            return session
+        } catch {
+            // A failed open must never leak a mounted engine session; if the
+            // cleanup close cannot be acknowledged, report the unsafe state so
+            // the caller retains the working copy instead of deleting it.
+            do {
+                try await session.close()
+            } catch let closeError {
+                throw OfficeAutomaticExecutionError.sessionOpenUnsafe(
+                    (closeError as? LocalizedError)?.errorDescription ?? closeError.localizedDescription)
+            }
+            throw error
+        }
+    }
+
+    private static func prepareRuntime(timeout: TimeInterval = 30) async throws {
+        try await withBoundedCompletion(timeout: timeout,
+                                        timeoutError: OfficeServiceSessionFailure(
+                                            reason: "the pinned engine runtime did not start in time")) { completion in
+            FloeOfficeNativeRuntime.shared.prepare { error in
+                completion(error.map { .failure($0) } ?? .success(()))
+            }
+        }
+    }
+
+    private func installCallbacks() {
+        native.onWorkingCopyOpened = { [weak self] success in
+            Task { @MainActor in
+                guard let self, !success else { return }
+                self.resolveOpen(.failure(OfficeServiceSessionFailure(
+                    reason: "the pinned engine reported the working copy open failed")))
+            }
+        }
+        native.onWorkingCopyOpenedWithPermission = { [weak self] success, engineReadOnly in
+            Task { @MainActor in
+                guard let self else { return }
+                guard success else {
+                    self.resolveOpen(.failure(OfficeServiceSessionFailure(
+                        reason: "the pinned engine reported the working copy open failed")))
+                    return
+                }
+                self.resolveOpen(.success(engineReadOnly))
+            }
+        }
+        native.onVisibleRenderReady = { [weak self] _, _ in
+            Task { @MainActor in self?.resolveRender(.success(())) }
+        }
+        native.onVisibleRenderFailed = { [weak self] error in
+            Task { @MainActor in
+                self?.resolveRender(.failure(OfficeServiceSessionFailure(
+                    reason: "the engine produced no visible render: \(error.localizedDescription)")))
+            }
+        }
+        native.onWebContentProcessTerminated = { [weak self] in
+            Task { @MainActor in
+                let failure = OfficeServiceSessionFailure(
+                    reason: "the engine renderer process terminated")
+                self?.resolveOpen(.failure(failure))
+                self?.resolveRender(.failure(failure))
+            }
+        }
+    }
+
+    private func mount() {
+        // A dedicated hidden window keeps the engine's web process running
+        // without presenting anything to the user. It is released with the
+        // session; the user's own editor and selection are never touched.
+        let window: UIWindow
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+            window = UIWindow(windowScene: scene)
+        } else {
+            window = UIWindow(frame: CGRect(x: -50_000, y: -50_000, width: 1_024, height: 768))
+        }
+        window.frame = CGRect(x: -50_000, y: -50_000, width: 1_024, height: 768)
+        window.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.normal.rawValue - 1)
+        window.alpha = 0.02
+        window.rootViewController = container
+        container.view.frame = window.bounds
+        container.addChild(native)
+        native.view.frame = window.bounds
+        native.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.view.addSubview(native.view)
+        native.didMove(toParent: container)
+        window.isHidden = false
+        self.window = window
+    }
+
+    private func awaitOpen(timeout: TimeInterval = 45) async throws {
+        if let settled = openSettled {
+            _ = try settled.get()
+            return
+        }
+        let engineReadOnly = try await withCheckedThrowingContinuation { continuation in
+            openWaiter = continuation
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                self?.resolveOpen(.failure(OfficeServiceSessionFailure(
+                    reason: "the working copy did not finish opening in time")))
+            }
+        }
+        _ = engineReadOnly
+    }
+
+    /// Bounded wait for the engine page's command bridge after open.
+    private func awaitCommandBridgeReady(timeout: TimeInterval = 30) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await OfficeCommandBridge.isReady(controller: native) { return }
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+        throw OfficeServiceSessionFailure(
+            reason: "the engine command bridge did not become ready in time")
+    }
+
+    private func awaitVisibleRender(timeout: TimeInterval = 60) async throws {
+        if let settled = renderSettled {
+            try settled.get()
+            return
+        }
+        try await withCheckedThrowingContinuation { continuation in
+            renderWaiter = continuation
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                self?.resolveRender(.failure(OfficeServiceSessionFailure(
+                    reason: "the presentation produced no visible render in time; automatic engine edits are unavailable for it")))
+            }
+        }
+    }
+
+    private func engineReportsReadOnly() async -> Bool {
+        if readOnly { return true }
+        let ack = OfficeEditEntryAck()
+        let timeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            ack.resolve((true, false))
+        }
+        Task { @MainActor in
+            self.native.enterEditMode { readOnly, error in
+                let pendingPassword = (error as NSError?)?.code == 42
+                ack.resolve((readOnly, pendingPassword))
+            }
+        }
+        let result = await ack.wait()
+        timeoutTask.cancel()
+        return result.readOnly
+    }
+
+    private func resolveOpen(_ result: Result<Bool, Error>) {
+        if let waiter = openWaiter {
+            openWaiter = nil
+            waiter.resume(with: result)
+            return
+        }
+        if openSettled == nil { openSettled = result }
+    }
+
+    private func resolveRender(_ result: Result<Void, Error>) {
+        if let waiter = renderWaiter {
+            renderWaiter = nil
+            waiter.resume(with: result)
+            return
+        }
+        if renderSettled == nil { renderSettled = result }
+    }
+
+    // MARK: OfficeServiceEngineSession
+
+    @MainActor func status() async throws -> OfficeServiceSessionStatus {
+        if let settled = openSettled, case .failure(let error) = settled {
+            throw error
+        }
+        guard native.isViewLoaded else {
+            return OfficeServiceSessionStatus(editable: false,
+                                              unavailableReason: "the engine surface is not mounted")
+        }
+        let engineReadOnly = native.isReadOnly || native.sessionIsReadOnly
+        return OfficeServiceSessionStatus(editable: !readOnly && !engineReadOnly,
+                                          unavailableReason: engineReadOnly
+                                            ? "the engine reports the working copy read-only"
+                                            : nil,
+                                          hasUnsavedChanges: false)
+    }
+
+    @MainActor func apply(commands: [OfficeEngineCommand], batchID: String) async throws {
+        guard !commands.isEmpty else {
+            throw OfficeServiceSessionFailure(reason: "no commands were supplied")
+        }
+        do {
+            _ = try await OfficeCommandBridge.dispatch(commands, controller: native)
+        } catch let error as OfficeCommandBridgeError {
+            throw OfficeServiceSessionFailure(
+                reason: error.errorDescription ?? "the engine rejected the command batch")
+        }
+    }
+
+    @MainActor func save() async throws {
+        try await Self.withBoundedCompletion(timeout: 30,
+                                             timeoutError: OfficeServiceSessionFailure(
+                                                reason: "the engine did not finish saving the working copy in time")) { completion in
+            native.saveWorkingCopy { error in
+                completion(error.map { .failure($0) } ?? .success(()))
+            }
+        }
+    }
+
+    @MainActor func close() async throws {
+        switch closeState {
+        case .closed:
+            return
+        case .closing:
+            throw OfficeServiceSessionFailure(reason: "the engine session is already closing")
+        case .quarantined:
+            throw OfficeServiceSessionFailure(
+                reason: "the engine session is quarantined after an unacknowledged close; restart the app to recover the engine")
+        case .open:
+            break
+        }
+        closeState = .closing
+        do {
+            try await Self.withBoundedCompletion(timeout: 20,
+                                                  timeoutError: OfficeServiceSessionFailure(
+                                                    reason: "the engine did not acknowledge the close in time")) { completion in
+                native.closeWorkingCopy { error in
+                    completion(error.map { .failure($0) } ?? .success(()))
+                }
+            }
+        } catch {
+            // Unacknowledged close: KEEP the native host, its window and its
+            // working copy mounted. Releasing references while the engine may
+            // still use them risks the retained mutex/worker race, so the
+            // session is quarantined and shared engine work is suspended.
+            closeState = .quarantined
+            let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            await OfficeAutomaticExecutionGate.shared.markHostQuarantined(reason: reason)
+            throw OfficeServiceSessionFailure(
+                reason: "the engine did not acknowledge the close; the native session is retained and shared automatic engine work is suspended until the app restarts")
+        }
+        closeState = .closed
+        let pendingOpen = openWaiter
+        let pendingRender = renderWaiter
+        openWaiter = nil
+        renderWaiter = nil
+        pendingOpen?.resume(throwing: OfficeServiceSessionFailure(reason: "the session was closed"))
+        pendingRender?.resume(throwing: OfficeServiceSessionFailure(reason: "the session was closed"))
+        native.willMove(toParent: nil)
+        native.view.removeFromSuperview()
+        native.removeFromParent()
+        window?.isHidden = true
+        window?.rootViewController = nil
+        window = nil
+    }
+
+    /// Bounds one native completion: the receipt settles on the native
+    /// callback OR the deadline, whichever is first; the settled outcome is
+    /// retained for a late waiter.
+    private static func withBoundedCompletion(
+        timeout: TimeInterval,
+        timeoutError: @autoclosure @escaping () -> Error,
+        _ operation: (@escaping (Result<Void, Error>) -> Void) -> Void
+    ) async throws {
+        let receipt = OfficeSaveReceipt()
+        let timeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(max(0.1, timeout) * 1_000_000_000))
+            receipt.resolve(.failure(timeoutError()))
+        }
+        operation { result in
+            receipt.resolve(result)
+        }
+        do {
+            try await receipt.wait()
+            timeoutTask.cancel()
+        } catch {
+            timeoutTask.cancel()
+            throw error
+        }
+    }
+}
+
+struct OfficeServiceSessionFailure: LocalizedError {
+    var reason: String
+    var errorDescription: String? { "The service-owned Office session failed: \(reason)" }
+}
+
+#endif

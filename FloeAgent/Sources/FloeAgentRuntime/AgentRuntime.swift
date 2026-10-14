@@ -479,6 +479,22 @@ public actor FloeAgentRuntime {
     private let sink: (any AgentEventSink)?
     private let contextEngine: (any ContextEngine)?
     private let budgetLedger: HarnessBudgetLedger
+    /// Runtime-issued operation authorities. Tokens are minted here only
+    /// AFTER the canonical approval path produced its result, so effectful
+    /// tools (Office/media apply, exports, job handlers) can prove at their
+    /// own boundary that the runtime — never the model — authorized exactly
+    /// this operation.
+    private let runtimeAuthorities: RuntimeAuthorityStore
+    /// Sibling subagent collaboration bus (same-root-task messaging).
+    private let peerBus: SubagentPeerBus
+    /// Serializes canonical mutation targets across concurrent children.
+    private let mutationLeases = MutationLeaseCoordinator()
+    /// Serializes human approval escalations. The parent resolves calls
+    /// serially, but concurrent children can reach the policy at the same
+    /// time; an approval card must never be re-targeted by a second
+    /// escalation while one is parked.
+    private var escalationBusy = false
+    private var escalationWaiters: [CheckedContinuation<Void, Never>] = []
     /// Last boundary before model-produced tool arguments can enter approval,
     /// checkpoints, audit events or logs. App hosts use this to replace raw
     /// credential fields with Keychain-backed references.
@@ -677,7 +693,9 @@ public actor FloeAgentRuntime {
         toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)? = nil,
         liveSystemContext: (@Sendable () async throws -> String)? = nil,
         sink: (any AgentEventSink)? = nil,
-        runID: UUID = UUID()
+        runID: UUID = UUID(),
+        runtimeAuthorities: RuntimeAuthorityStore = .shared,
+        peerBus: SubagentPeerBus = .shared
     ) {
         self.configuration = configuration
         self.adapter = adapter
@@ -694,6 +712,8 @@ public actor FloeAgentRuntime {
         self.liveSystemContext = liveSystemContext
         self.sink = sink
         self.runID = runID
+        self.runtimeAuthorities = runtimeAuthorities
+        self.peerBus = peerBus
         self.forceCompactionOnNextTurn = configuration.forceInitialCompaction
         self.latestContextCompaction = nil
         self.latestProviderDispatchRequest = nil
@@ -839,6 +859,11 @@ public actor FloeAgentRuntime {
             throw FloeError.invalidConfiguration("start(goal:) requires idle state, currently \(state.name)")
         }
         dispatchAuthorityByCallID.removeAll(keepingCapacity: true)
+        // Runtime-issued authority is per activation: a token minted for a
+        // previous activation of this run must never validate in a new one,
+        // and the ledger stays bounded.
+        await runtimeAuthorities.revoke(runID: runID)
+        await runtimeAuthorities.purgeExpired()
         // Seed deferred-schema discovery from the conversation-level store so a
         // fresh run keeps previously loaded tools instead of re-guessing from
         // the goal text or re-enumerating the catalog.
@@ -940,6 +965,7 @@ public actor FloeAgentRuntime {
         // result. Recovery then failed at the provider boundary with a 400.
         await activeRunTask?.value
         // 5. Persist and park.
+        await releaseRunAuthorities()
         do {
             try await writeCheckpoint()
             await transition(to: .checkpointed(AgentState.CheckpointRef(
@@ -1528,6 +1554,9 @@ public actor FloeAgentRuntime {
         } else {
             catalogDescriptors = executor.allDescriptors
         }
+        // Child-only sibling collaboration tools exist solely for delegated
+        // children; the main run must never see them (discovery included).
+        catalogDescriptors.removeAll { $0.executionBoundary == .childOnly }
         if configuration.model.capabilities.contains(.vision) {
             // A multimodal model receives the current image bytes directly.
             // Do not offer auxiliary inspection/OCR escape hatches that make
@@ -2564,17 +2593,22 @@ public actor FloeAgentRuntime {
     /// gate and approval policy. Approval escalation blocks here (the runtime
     /// waits for the human decision), so this phase must always run serially —
     /// never inside a concurrent task group.
-    private func resolveToolCall(_ call: ToolCall) async -> ToolResolution {
+    /// `chargeParentBudget` is false for delegated child calls: the child's
+    /// own iteration budget already accounts for them, and charging the
+    /// parent again would double-count one logical step.
+    private func resolveToolCall(_ call: ToolCall, chargeParentBudget: Bool = true) async -> ToolResolution {
         await publishLiveness(
             phase: .resolvingTool,
             message: "Resolving tool authorization and safety policy for \(call.toolName)",
             isRecoverable: true
         )
-        do {
-            try await budgetLedger.reserveParentIteration()
-            toolStepCount += 1
-        } catch {
-            return .budgetExhausted
+        if chargeParentBudget {
+            do {
+                try await budgetLedger.reserveParentIteration()
+                toolStepCount += 1
+            } catch {
+                return .budgetExhausted
+            }
         }
         guard let descriptor = executor.descriptor(named: call.toolName) else {
             return .denied(
@@ -2693,6 +2727,11 @@ public actor FloeAgentRuntime {
         case .deny(let reason):
             return .denied(reason: reason, decision: "deny:\(reason)")
         case .escalateToHuman(let reason):
+            // Concurrent children can reach the policy at the same time; the
+            // parent itself resolves serially. Serialize the escalation so a
+            // second card can never re-target the parked continuation.
+            await acquireEscalationSlot()
+            defer { releaseEscalationSlot() }
             // Arm the gate before publishing so a decision racing the
             // publish is attributed to this exact escalation.
             approvalGate = .publishing(callID: call.id)
@@ -2738,6 +2777,27 @@ public actor FloeAgentRuntime {
             }
         case .stopped(let gateReason):
             return .stopped(reason: gateReason)
+        }
+    }
+
+    /// Hands the single approval-escalation slot to the next waiter. The slot
+    /// stays held across the await so only one card is live at a time.
+    private func acquireEscalationSlot() async {
+        if !escalationBusy {
+            escalationBusy = true
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            escalationWaiters.append(continuation)
+        }
+    }
+
+    private func releaseEscalationSlot() {
+        if escalationWaiters.isEmpty {
+            escalationBusy = false
+        } else {
+            // Direct hand-off keeps `escalationBusy` true for the successor.
+            escalationWaiters.removeFirst().resume()
         }
     }
 
@@ -2795,7 +2855,8 @@ public actor FloeAgentRuntime {
     private func executeResolved(
         call: ToolCall,
         grant: ApprovalGrant,
-        emitTransition: Bool = true
+        emitTransition: Bool = true,
+        childExecution: ChildExecutionIdentity? = nil
     ) async -> ToolResult {
         guard let descriptor = executor.descriptor(named: call.toolName),
               !grant.isExpired(),
@@ -2839,7 +2900,16 @@ public actor FloeAgentRuntime {
         // before crossing a side-effect boundary. If persistence is
         // unavailable we must not dispatch the action: recovery could
         // otherwise replay a write whose real-world outcome is unknown.
-        if descriptor.isSideEffecting {
+        //
+        // A delegated child call is NOT part of the parent's provider
+        // history: the delegation envelope itself was already checkpointed
+        // before the child started (the parent batch durably recorded the
+        // delegate call), and a child call must never be injected into the
+        // parent's pending-call set or its checkpoint would mispair provider
+        // history. An interrupted child therefore surfaces as an
+        // unknown-outcome delegate call at the parent level — the honest
+        // durable state — while its own lifecycle is settled below.
+        if descriptor.isSideEffecting, childExecution == nil {
             do {
                 try await writeCheckpoint()
             } catch {
@@ -2876,9 +2946,47 @@ public actor FloeAgentRuntime {
         // so the subagent's iterations are charged against this run's total.
         let childBudget = await makeChildBudget(for: call)
 
+        // Runtime-issued delegation handoff: present on the `delegate` call
+        // itself (the child about to run) and on every tool call a child
+        // executes. Never derived from model data.
+        let handoff: ChildExecutionHandoff? = childExecution.map { makeChildHandoff(identity: $0) }
+            ?? (call.toolName == DelegateTool.name ? makeDelegateHandoff(for: call) : nil)
+
+        // Runtime-issued operation authority, minted only AFTER this call
+        // passed every pre-dispatch gate above (approval grant, idempotency,
+        // checkpoint). Every field is derived from the runtime's own resolved
+        // state — run/task, environment/workspace derivation, canonical
+        // target, the approved call id and the canonical payload digest — so
+        // a model field such as `confirmed: true` can never produce one.
+        // Effectful tools consume it at their own boundary; the model cannot
+        // mint or replay it.
+        let runtimeAuthority: RuntimeTaskAuthority? = descriptor.isSideEffecting
+            ? await runtimeAuthorities.issue(RuntimeAuthorityEvidence(
+                runID: runID,
+                taskID: configuration.conversationID,
+                environmentBinding: RuntimeAuthorityDigest.environmentBinding(
+                    workspaceRootURL: configuration.workspaceRootURL,
+                    conversationID: configuration.conversationID
+                ),
+                canonicalTarget: RuntimeAuthorityDigest.canonicalTarget(
+                    for: call,
+                    descriptor: descriptor,
+                    workspaceRootURL: configuration.workspaceRootURL
+                ),
+                toolName: call.toolName,
+                operation: Self.runtimeAuthorityOperation(for: call),
+                operationID: call.id,
+                idempotencyKey: call.idempotencyKey,
+                baseRevision: RuntimeAuthorityDigest.baseRevision(in: call.argumentsJSON),
+                payloadDigest: RuntimeAuthorityDigest.payloadDigest(call.argumentsJSON),
+                approvalGrantID: grant.id
+            ))
+            : nil
+
         let context = ToolContext(
             runID: runID,
             toolCallID: call.id,
+            toolIdempotencyKey: call.idempotencyKey,
             approvalGrantID: grant.id,
             scope: call.scope,
             activeSkillIDs: configuration.activeSkillIDs,
@@ -2888,7 +2996,10 @@ public actor FloeAgentRuntime {
             allowedWorkspacePaths: configuration.allowedWorkspacePaths,
             cancellation: cancellationToken,
             childBudget: childBudget,
-            conversationID: configuration.conversationID
+            conversationID: configuration.conversationID,
+            childExecution: handoff,
+            runtimeAuthority: runtimeAuthority,
+            callOrigin: makeCallOrigin(for: call, handoff: handoff)
         )
         // Monotonic per-call execution origin: the executor for THIS call is
         // about to run. The boundary observation is delivered CONCURRENTLY
@@ -2936,6 +3047,216 @@ public actor FloeAgentRuntime {
         }
         return result
     }
+
+    // MARK: - Canonical delegated-child dispatch (T3 + T0 seam)
+
+    /// Operation label bound into a runtime-issued authority token.
+    static func runtimeAuthorityOperation(for call: ToolCall) -> String {
+        switch call.toolName {
+        case DelegateTool.name: return "delegate"
+        case "jobs.submit": return "job.submit"
+        default: return "apply"
+        }
+    }
+
+    /// Builds the runtime handle for one delegated child. The dispatcher is
+    /// the SAME runtime that approves main-run calls; the peer handle is the
+    /// process bus scoped to the child's identity.
+    private func makeChildHandoff(identity: ChildExecutionIdentity) -> ChildExecutionHandoff {
+        let executor = self.executor
+        let peerBus = self.peerBus
+        return ChildExecutionHandoff(
+            identity: identity,
+            dispatcher: ChildToolDispatcher(
+                descriptorProvider: { name in executor.descriptor(named: name) },
+                allDescriptors: { executor.allDescriptors },
+                dispatch: { [weak self] call, context in
+                    guard let self else {
+                        return ToolResult(
+                            callID: call.id,
+                            status: .failed,
+                            outputSummary: "The parent runtime ended before this child call could be dispatched",
+                            outputDigest: ""
+                        )
+                    }
+                    return await self.dispatchChildTool(
+                        call,
+                        identity: identity,
+                        childContext: context
+                    )
+                }
+            ),
+            peers: peerBus.handle(for: identity)
+        )
+    }
+
+    /// Runtime-issued provenance for one call. Every call the main run
+    /// executes gets `.mainRunDelegate` bound to its exact run id, call id
+    /// AND approved tool name; every call a child executes gets
+    /// `.delegatedChild`. Main-run-only capabilities (`delegate`,
+    /// `conversation.spawn`) verify all three at their callable boundary, so
+    /// a wrapper cannot forward its own context into a different raw registry
+    /// tool even with an identical runID/callID/origin. Main-run calls
+    /// previously carried no origin at all; minting one for every main call
+    /// closed the gap where a wrapper cleared `childBudget` and a legacy
+    /// metadata check accepted it as main-run.
+    private func makeCallOrigin(
+        for call: ToolCall,
+        handoff: ChildExecutionHandoff?
+    ) -> ToolCallOrigin? {
+        guard let handoff else {
+            return ToolCallOrigin(
+                kind: .mainRunDelegate,
+                runID: runID,
+                callID: call.id,
+                toolName: call.toolName
+            )
+        }
+        return ToolCallOrigin(
+            kind: handoff.identity.delegateCallID == call.id ? .mainRunDelegate : .delegatedChild,
+            runID: runID,
+            callID: call.id,
+            toolName: call.toolName,
+            childID: handoff.identity.childID,
+            rootTaskID: handoff.identity.rootTaskID
+        )
+    }
+
+    /// Mints the child identity for a `delegate` call. The identity is
+    /// runtime state only: it is never persisted and never model-supplied.
+    private func makeDelegateHandoff(for call: ToolCall) -> ChildExecutionHandoff {
+        let identity = ChildExecutionIdentity(
+            parentRunID: runID,
+            rootTaskID: configuration.conversationID,
+            delegateCallID: call.id
+        )
+        return makeChildHandoff(identity: identity)
+    }
+
+    /// Dispatches one delegated child tool call through the SAME canonical
+    /// permission path as a main-run call: catalog, effective ceiling,
+    /// boundary (children can never delegate), plan/stateful policy,
+    /// catastrophic gate, approval policy and reusable grants, then the same
+    /// executor under a canonical mutation lease. `identity` is runtime-issued
+    /// for this run, so a cross-run or forged identity is refused.
+    public func dispatchChildTool(
+        _ call: ToolCall,
+        identity: ChildExecutionIdentity,
+        childContext: ToolContext
+    ) async -> ToolResult {
+        guard identity.parentRunID == runID else {
+            return await childDenied(
+                call,
+                reason: "Delegated identity belongs to a different run; the call was not dispatched.",
+                decision: "deny:child-cross-run"
+            )
+        }
+        guard identity.depth == 1 else {
+            return await childDenied(
+                call,
+                reason: "Nested delegation is not permitted: a delegated subagent cannot create another subagent.",
+                decision: "deny:child-nested"
+            )
+        }
+        guard let descriptor = executor.descriptor(named: call.toolName) else {
+            return await childDenied(
+                call,
+                reason: "Unknown tool '\(call.toolName)' — not in catalog",
+                decision: "deny:not-in-catalog"
+            )
+        }
+        guard descriptor.executionBoundary != .mainRunOnly else {
+            return await childDenied(
+                call,
+                reason: "Tool '\(call.toolName)' is main-run only and cannot be called from a delegated subagent",
+                decision: "deny:child-main-only"
+            )
+        }
+        if let allowed = childContext.allowedToolNames, !allowed.contains(call.toolName) {
+            return await childDenied(
+                call,
+                reason: "Tool '\(call.toolName)' is outside this task's effective capability set",
+                decision: "deny:child-ceiling"
+            )
+        }
+        let resolution = await resolveToolCall(call, chargeParentBudget: false)
+        switch resolution {
+        case .approved(let grant):
+            let result = await executeChildCall(call, grant: grant, identity: identity, childContext: childContext)
+            // The child's result settles in the CHILD's provider history, not
+            // in the parent's batch. Mark this lifecycle boundary committed so
+            // a later parent checkpoint never reports it as an orphaned open
+            // boundary (the child's own subagent loop replays it).
+            setToolLifecycle(
+                call: call,
+                phase: .resultCommitted,
+                authorizationIdentity: descriptor.authorizationIdentity,
+                isSideEffecting: descriptor.isSideEffecting
+            )
+            return result
+        case .denied(let reason, let decision):
+            return await childDenied(call, reason: reason, decision: decision)
+        case .stopped(let reason):
+            return await childDenied(call, reason: "Stopped: \(reason)", decision: "stopped:\(reason)")
+        case .budgetExhausted:
+            return await childDenied(
+                call,
+                reason: "The activation iteration budget is exhausted.",
+                decision: "deny:harness-budget"
+            )
+        }
+    }
+
+    /// Executes one approved child call under its canonical mutation lease.
+    /// The lease is what keeps concurrent siblings from interleaving writes
+    /// to the same file/document: a resolvable target serializes only its own
+    /// target; a Shell/Python/unknown write takes the workspace wildcard.
+    private func executeChildCall(
+        _ call: ToolCall,
+        grant: ApprovalGrant,
+        identity: ChildExecutionIdentity,
+        childContext: ToolContext
+    ) async -> ToolResult {
+        let descriptor = executor.descriptor(named: call.toolName)
+        let keys = MutationTargetResolver.keys(
+            for: call,
+            descriptor: descriptor,
+            workspaceRootURL: configuration.workspaceRootURL ?? childContext.workspaceRootURL
+        )
+        guard !keys.isEmpty else {
+            return await executeResolved(
+                call: call,
+                grant: grant,
+                emitTransition: false,
+                childExecution: identity
+            )
+        }
+        let owner = "child:\(identity.childID.uuidString.prefix(8)):\(call.toolName)"
+        do {
+            let lease = try await mutationLeases.acquire(keys: keys, owner: owner)
+            let result = await executeResolved(
+                call: call,
+                grant: grant,
+                emitTransition: false,
+                childExecution: identity
+            )
+            await mutationLeases.release(lease)
+            return result
+        } catch {
+            return await childDenied(
+                call,
+                reason: error.localizedDescription,
+                decision: "deny:mutation-lease"
+            )
+        }
+    }
+
+    private func childDenied(_ call: ToolCall, reason: String, decision: String) async -> ToolResult {
+        let result = ToolResult(callID: call.id, status: .denied, outputSummary: reason, outputDigest: "")
+        _ = await audit(toolCall: call, result: result, decision: decision)
+        return result
+    }
+
     /// Atomically drains the pending tool batch (used by the stream loop when
     /// the provider closes without an explicit completion event).
     private func drainPendingToolBatch() -> [ToolCall] {
@@ -3205,12 +3526,19 @@ public actor FloeAgentRuntime {
             )))
         }
         // Preserve provider order: consecutive reads may run in parallel, but
-        // every write is a barrier before and after its position in the batch.
+        // every DIRECT write is a barrier before and after its position in the
+        // batch. An approved delegation envelope may join the parallel group
+        // because its own effects are indirect and internally serialized by
+        // the child dispatcher (per-call approval + mutation leases), so
+        // sibling subagents really run concurrently while file writes still
+        // serialize on their canonical targets.
         var pendingReads: [(call: ToolCall, grant: ApprovalGrant)] = []
         for call in calls {
             guard let grant = approvedByID[call.id] else { continue }
-            let isReadOnly = executor.descriptor(named: call.toolName)?.isSideEffecting == false
-            if isReadOnly {
+            let descriptor = executor.descriptor(named: call.toolName)
+            let isParallelSafe = descriptor?.isSideEffecting == false
+                || descriptor?.supportsConcurrentBatchDispatch == true
+            if isParallelSafe {
                 pendingReads.append((call, grant))
                 continue
             }
@@ -3581,9 +3909,15 @@ public actor FloeAgentRuntime {
                 reservedIdempotencyKeys.insert(call.idempotencyKey)
             }
             let childBudget = await makeChildBudget(for: call)
+            // A parallel-safe delegation envelope still needs its runtime
+            // child handoff on the call context.
+            let handoff: ChildExecutionHandoff? = call.toolName == DelegateTool.name
+                ? makeDelegateHandoff(for: call)
+                : nil
             let context = ToolContext(
                 runID: runID,
                 toolCallID: call.id,
+                toolIdempotencyKey: call.idempotencyKey,
                 approvalGrantID: grant.id,
                 scope: call.scope,
                 activeSkillIDs: configuration.activeSkillIDs,
@@ -3593,7 +3927,9 @@ public actor FloeAgentRuntime {
                 allowedWorkspacePaths: configuration.allowedWorkspacePaths,
                 cancellation: cancellationToken,
                 childBudget: childBudget,
-                conversationID: configuration.conversationID
+                conversationID: configuration.conversationID,
+                childExecution: handoff,
+                callOrigin: makeCallOrigin(for: call, handoff: handoff)
             )
             toRun.append((call, grant, context))
         }
@@ -3615,7 +3951,7 @@ public actor FloeAgentRuntime {
                     let failed = ToolResult(
                         callID: item.call.id,
                         status: .failed,
-                        outputSummary: "Read-only tool not dispatched because its recovery checkpoint could not be saved: \(error.localizedDescription)",
+                        outputSummary: "Parallel-safe tool not dispatched because its recovery checkpoint could not be saved: \(error.localizedDescription)",
                         outputDigest: ""
                     )
                     await audit(
@@ -4054,6 +4390,7 @@ public actor FloeAgentRuntime {
         if !streamText.isEmpty, !isConfirmation {
             messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
         }
+        await releaseRunAuthorities()
         await transition(to: .completed(AgentState.CompletionInfo(
             stopReason: stopReason,
             totalInputTokens: totalInputTokens,
@@ -4062,10 +4399,20 @@ public actor FloeAgentRuntime {
     }
 
     private func failRun(message: String, recoverable: Bool) async {
+        // The activation is over: revoke this run's outstanding operation
+        // authorities so no token outlives the run state that justified it.
+        // A resume mints fresh tokens at dispatch.
+        await releaseRunAuthorities()
         await transition(to: .failed(AgentState.AgentFailure(
             message: message,
             isRecoverable: recoverable
         )))
+    }
+
+    /// Revokes and purges this run's runtime-issued operation authorities.
+    private func releaseRunAuthorities() async {
+        await runtimeAuthorities.revoke(runID: runID)
+        await runtimeAuthorities.purgeExpired()
     }
 
     private static func isTerminalState(_ state: AgentState) -> Bool {

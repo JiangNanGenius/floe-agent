@@ -288,6 +288,28 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// tap that created it, so its retry is rejected once a newer tap
     /// superseded it.
     private var notificationRouteRequest = TaskDeepLinkRouteRequest()
+    /// Environment-owned persistence readiness for the notification route
+    /// gate. The app reads the real migrated-database state; the focused route
+    /// regressions in the App-hosted bundle run against an in-memory database
+    /// that never goes through `AppEnvironment.bootstrap()`, so a DEBUG build
+    /// may pin exactly this one fact. The active scene and the mounted
+    /// subscribers still come from the real `handleScenePhase` /
+    /// `reconcileSchedulesAfterLaunch` calls, and Release reads only the
+    /// environment.
+    private var notificationRoutePersistenceReady: Bool {
+        #if DEBUG
+        if let notificationRoutePersistenceOverride { return notificationRoutePersistenceOverride }
+        #endif
+        return environment.persistenceReady
+    }
+    #if DEBUG
+    private var notificationRoutePersistenceOverride: Bool?
+    /// Pins the environment-owned persistence fact for the focused route
+    /// regressions; `nil` restores the real environment value.
+    func setNotificationRoutePersistenceOverrideForTesting(_ ready: Bool?) {
+        notificationRoutePersistenceOverride = ready
+    }
+    #endif
     /// Actual "the navigation subscribers are mounted" evidence. Persistence
     /// plus an active scene only prove the hierarchy may exist; the
     /// `.floeOpenConversation` / `.floeOpenExecutionEnvironment` subscribers
@@ -3087,36 +3109,32 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
     }
 
+    /// The system's completion-handler selector, implemented directly.
+    ///
+    /// Build 271 evidence (private `CRASH-271-SYMBOLICATED.md`): the faulting
+    /// thread ran `@objc closure #1 in ...userNotificationCenter(_:didReceive:)`
+    /// — the compiler-generated bridge of the Swift `async` convenience — when
+    /// an exception raised from Foundation inside the completion path went
+    /// uncaught. This method is that same Objective-C selector without the
+    /// continuation bridging: the payload is parsed here (the raw dictionary
+    /// never crosses an actor), the route gate runs on the main actor, and the
+    /// completion handler is invoked exactly once on the main actor by
+    /// `NotificationResponseIntake`, never across the route's reload/target
+    /// work. The exception itself is a framework-raised Objective-C exception;
+    /// this bridge makes our side of the boundary explicit and observable, it
+    /// does not claim to catch a framework exception.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
-        let payload = response.notification.request.content.userInfo
-        // The deep-link payload is the routing contract. Parsing is shared
-        // with the in-app banner, and legacy notifications that carried only
-        // a conversation id still route to their conversation.
-        guard let link = BackgroundWorkDeepLink.parse(payload) else { return }
-        // The parsed identity is `Sendable`; only its string payload crosses to
-        // the main actor, never the raw `Any`-valued notification dictionary.
-        let identifier = response.notification.request.identifier
-        let key = Self.notificationRouteKey(identifier: identifier, link: link)
-        await MainActor.run { [weak self] in
-            self?.handleNotificationRoute(key: key, link: link, identifier: identifier)
-        }
-    }
-
-    /// Stable identity for duplicate suppression: the notification identifier
-    /// plus the deep-link payload, so repeat taps of the same alert collapse
-    /// while distinct alerts never do.
-    nonisolated static func notificationRouteKey(
-        identifier: String,
-        link: BackgroundWorkDeepLink
-    ) -> String {
-        let payload = link.userInfo
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: "&")
-        return "\(identifier)|\(payload)"
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let request = response.notification.request
+        NotificationResponseIntake.accept(
+            identifier: request.identifier,
+            payload: request.content.userInfo,
+            completion: completionHandler,
+            routing: self
+        )
     }
 
     /// Routes one parsed notification deep link behind four gates: duplicate
@@ -3140,6 +3158,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // A repeat tap of the route that is already being handled. It must
             // not supersede the in-flight request: the request owns the single
             // durable event and will consume it exactly once when it finishes.
+            NotificationResponseTrace.mark(.suppressed, kind: link.kind)
             FloeLogger(category: .app).info(
                 "notificationRouteIgnored reason=duplicate key=\(key)"
             )
@@ -3152,6 +3171,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // navigate under that newer generation.
             guard let retryGeneration,
                   notificationRouteRequest.accepts(generation: retryGeneration) else {
+                NotificationResponseTrace.mark(.suppressed, kind: link.kind)
                 FloeLogger(category: .app).info(
                     "notificationRouteIgnored reason=staleDeferredGeneration key=\(key)"
                 )
@@ -3163,7 +3183,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // still-deferred route from an older tap.
             generation = notificationRouteRequest.begin()
         }
-        guard environment.persistenceReady, effectiveScenePhase == .active,
+        guard notificationRoutePersistenceReady, effectiveScenePhase == .active,
               navigationSubscribersReady else {
             // Cold launch (or a transition that has not produced a mounted,
             // active root view yet): hold the single pending slot and retry
@@ -3176,8 +3196,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 identifier: identifier,
                 generation: generation
             )
+            NotificationResponseTrace.mark(.deferred, kind: link.kind)
             FloeLogger(category: .app).info(
-                "notificationRouteDeferred key=\(key) generation=\(generation) persistenceReady=\(self.environment.persistenceReady) scene=\(String(describing: self.effectiveScenePhase)) navigationReady=\(self.navigationSubscribersReady)"
+                "notificationRouteDeferred key=\(key) generation=\(generation) persistenceReady=\(self.notificationRoutePersistenceReady) scene=\(String(describing: self.effectiveScenePhase)) navigationReady=\(self.navigationSubscribersReady)"
             )
             return
         }
@@ -3193,6 +3214,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 // A newer tap supersedes this in-flight check: navigating
                 // now would race the newer route.
                 guard self.notificationRouteRequest.accepts(generation: generation) else {
+                    NotificationResponseTrace.mark(.suppressed, kind: link.kind)
                     FloeLogger(category: .app).info(
                         "notificationRouteIgnored reason=staleGeneration key=\(key)"
                     )
@@ -3289,7 +3311,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         generation: UInt64
     ) {
         let routing = TaskNotificationDecision.resolveRouting(
-            persistenceReady: environment.persistenceReady,
+            persistenceReady: notificationRoutePersistenceReady,
             hasActiveScene: effectiveScenePhase == .active,
             navigationSubscribersReady: navigationSubscribersReady,
             isDuplicate: false,
@@ -3298,6 +3320,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         switch routing {
         case .routeNow:
             Self.route(deepLink: link)
+            NotificationResponseTrace.mark(.routed, kind: link.kind)
         case .deferUntilReady:
             // The route stays owned by the tap that created it, so a newer
             // tap supersedes it instead of letting it replay later.
@@ -3307,14 +3330,18 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 identifier: identifier,
                 generation: generation
             )
+            NotificationResponseTrace.mark(.deferred, kind: link.kind)
             if !stored {
                 FloeLogger(category: .app).info(
                     "notificationRouteDeferredRejected reason=staleGeneration key=\(key)"
                 )
             }
         case .ignoreDuplicate:
-            break
+            NotificationResponseTrace.mark(.suppressed, kind: link.kind)
         case .promptMissingTarget, .promptStoppedTarget, .promptUnavailableTarget:
+            // The user is told why the target cannot open; nothing claims a
+            // navigation that did not happen.
+            NotificationResponseTrace.mark(.unreachableTarget, kind: link.kind)
             presentUnreachableTargetPrompt(
                 link: link,
                 target: routing.promptedTargetState ?? .unknown,
@@ -3340,7 +3367,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// still current, so a route a newer tap superseded can never replay.
     @MainActor
     private func flushPendingNotificationRoute() {
-        let ready = environment.persistenceReady
+        let ready = notificationRoutePersistenceReady
             && effectiveScenePhase == .active
             && navigationSubscribersReady
         let hadPending = notificationRouteRequest.pending != nil
@@ -3445,6 +3472,21 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 userInfo: payload
             )
         }
+    }
+}
+
+extension BackgroundRunCoordinator: NotificationResponseRouting {
+    /// Main-actor conformance driven by `NotificationResponseIntake`: the real
+    /// duplicate suppression, cold-launch readiness, generation ownership and
+    /// authoritative target lookup run here, exactly as before. Only the
+    /// parsed `Sendable` route reaches this method — never the raw `Any`-valued
+    /// notification dictionary and never the `UNNotificationResponse`.
+    func routeNotificationResponse(
+        key: String,
+        link: BackgroundWorkDeepLink,
+        identifier: String
+    ) {
+        handleNotificationRoute(key: key, link: link, identifier: identifier)
     }
 }
 

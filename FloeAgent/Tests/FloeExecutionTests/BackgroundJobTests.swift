@@ -91,7 +91,9 @@ struct BackgroundJobTests {
         let submitTool = JobsSubmitTool(service: service)
         let output = try await submitTool.execute(
             .init(tool: "exec.localPython", arguments: #"{"script":"print(1)"}"#, purpose: "test"),
-            context: .init(runID: run, toolCallID: "call-9", cancellation: CancellationToken())
+            context: .init(runID: run, toolCallID: "call-9", cancellation: CancellationToken(),
+                           callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
+                                                      callID: "call-9", toolName: "jobs.submit"))
         )
         let jobID = try #require(extractJobID(output.summary))
         // The submit returned immediately, long before the 500ms runner ends.
@@ -101,7 +103,9 @@ struct BackgroundJobTests {
         // Idempotent retry of the same tool call returns the same job.
         let retry = try await submitTool.execute(
             .init(tool: "exec.localPython", arguments: #"{"script":"changed"}"#),
-            context: .init(runID: run, toolCallID: "call-9", cancellation: CancellationToken())
+            context: .init(runID: run, toolCallID: "call-9", cancellation: CancellationToken(),
+                           callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
+                                                      callID: "call-9", toolName: "jobs.submit"))
         )
         #expect(retry.summary.contains(jobID.uuidString))
 
@@ -127,7 +131,7 @@ struct BackgroundJobTests {
         }
     }
 
-    @Test("Cancelling a running job lands in the cancelled terminal state")
+    @Test("Cancelling a running job stays non-terminal until the processor acknowledges")
     func cancelRunningJob() async throws {
         let (db, _, run) = try await fixture()
         let registry = ToolRunnerRegistry()
@@ -146,15 +150,20 @@ struct BackgroundJobTests {
         let submit = JobsSubmitTool(service: service)
         let output = try await submit.execute(
             .init(tool: "exec.localPython", arguments: #"{"script":"loop"}"#),
-            context: .init(runID: run, toolCallID: "call-c", cancellation: CancellationToken())
+            context: .init(runID: run, toolCallID: "call-c", cancellation: CancellationToken(),
+                           callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
+                                                      callID: "call-c", toolName: "jobs.submit"))
         )
         let jobID = try #require(extractJobID(output.summary))
         try await Task.sleep(nanoseconds: 100_000_000)
-        let cancelled = try await JobsCancelTool(service: service).execute(
+        let requested = try await JobsCancelTool(service: service).execute(
             .init(jobID: jobID.uuidString),
             context: .init(runID: run, cancellation: CancellationToken())
         )
-        #expect(cancelled.summary.contains("\"state\":\"cancelled\""))
+        // The cancellation is a REQUEST: the job is still running (or queued)
+        // and reports cancelling=true, never a premature terminal "cancelled".
+        #expect(!requested.summary.contains("\"state\":\"cancelled\""))
+        #expect(requested.summary.contains("\"cancelling\":true"))
         let terminal = try await waitForTerminal(service, id: jobID)
         #expect(terminal.state == .cancelled)
     }
@@ -188,7 +197,9 @@ struct BackgroundJobTests {
         await #expect(throws: (any Error).self) {
             try await tool.execute(
                 .init(tool: "web.fetch", arguments: #"{"url":"https://example.com"}"#),
-                context: .init(runID: run, toolCallID: "call-x", cancellation: CancellationToken())
+                context: .init(runID: run, toolCallID: "call-x", cancellation: CancellationToken(),
+                               callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
+                                                          callID: "call-x", toolName: "jobs.submit"))
             )
         }
     }
@@ -206,7 +217,9 @@ struct BackgroundJobTests {
         do {
             _ = try await tool.execute(
                 .init(tool: "exec.localPython", arguments: #"{"code":"print(1)","timeout":30}"#),
-                context: .init(runID: run, toolCallID: "bad-args", cancellation: CancellationToken())
+                context: .init(runID: run, toolCallID: "bad-args", cancellation: CancellationToken(),
+                               callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
+                                                          callID: "bad-args", toolName: "jobs.submit"))
             )
             Issue.record("Expected submit-time argument validation")
         } catch {
@@ -243,7 +256,9 @@ struct BackgroundJobTests {
                 .init(tool: "exec.localService", arguments: #"{"runtime":"node","entry":"server.py","port":8080}"#),
                 context: .init(
                     runID: run, toolCallID: "call-preflight",
-                    workspaceRootURL: workspace, cancellation: CancellationToken()
+                    workspaceRootURL: workspace, cancellation: CancellationToken(),
+                    callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
+                                               callID: "call-preflight", toolName: "jobs.submit")
                 )
             )
             Issue.record("Expected the preflight failure at submit time")
@@ -261,7 +276,9 @@ struct BackgroundJobTests {
             .init(tool: "exec.localService", arguments: #"{"runtime":"node","entry":"server.py","port":8080}"#),
             context: .init(
                 runID: run, toolCallID: "call-preflight-ok",
-                workspaceRootURL: workspace, cancellation: CancellationToken()
+                workspaceRootURL: workspace, cancellation: CancellationToken(),
+                callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
+                                           callID: "call-preflight-ok", toolName: "jobs.submit")
             )
         )
         #expect(output.summary.contains("jobID"))
@@ -302,7 +319,9 @@ struct BackgroundJobTests {
         do {
             _ = try await tool.execute(
                 .init(tool: "exec.localService", arguments: #"{"runtime":"node","entry":"server.py"}"#),
-                context: .init(runID: run, toolCallID: "call-noport", cancellation: CancellationToken())
+                context: .init(runID: run, toolCallID: "call-noport", cancellation: CancellationToken(),
+                               callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
+                                                          callID: "call-noport", toolName: "jobs.submit"))
             )
             Issue.record("Expected a submit-time validation error")
         } catch {
@@ -387,7 +406,8 @@ struct BackgroundJobTests {
             })
         let service = BackgroundJobService(store: store, registry: registry)
         let job = try await service.submit(runID: run, toolCallID: "service", targetTool: "exec.localService",
-            payloadJSON: Data("{}".utf8), scope: .local, workspaceRootURL: nil, allowedWorkspacePaths: [], environmentID: "owner")
+            payloadJSON: Data("{}".utf8), scope: .local, workspaceRootURL: nil, allowedWorkspacePaths: [],
+            environmentID: "owner", submissionSource: .nativeService)
         for _ in 0..<200 {
             if await gate.entered { break }
             try await Task.sleep(for: .milliseconds(10))
@@ -399,8 +419,11 @@ struct BackgroundJobTests {
         #expect(try await store.activeJobs().contains(where: { $0.id == job.id }))
         await gate.allowExit()
         #expect(try await waitForTerminal(service, id: job.id).state == .cancelled)
+        // A late progress write after the terminal transition is ignored; the
+        // engine's own final progress document stays.
+        let terminalProgress = try await store.job(id: job.id)?.progressJSON
         try await store.updateProgress(id: job.id, data: Data("late write".utf8))
-        #expect(try await store.job(id: job.id)?.progressJSON == Data(#"{"state":"stopping"}"#.utf8))
+        #expect(try await store.job(id: job.id)?.progressJSON == terminalProgress)
         #expect(try await store.jobs(environmentID: "owner").count == 1)
         #expect(try await store.jobs(environmentID: "other").isEmpty)
     }

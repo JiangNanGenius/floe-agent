@@ -4,7 +4,7 @@
   "models": [
     {
       "id": "floe/model-rife-v4",
-      "version": "4.0.0",
+      "version": "4.25.0-lite",
       "kind": "coreml",
       "capability": "video.interpolate",
       "skillID": "floe-video",
@@ -15,8 +15,63 @@
       "files": [],
       "reviewedSourceCommit": "bbfd2ea90910789a860ea3e2b32a240cd577b75e",
       "codeLicenseEvidence": "https://github.com/hzwer/Practical-RIFE/blob/bbfd2ea90910789a860ea3e2b32a240cd577b75e/LICENSE",
-      "conversionStatus": "not-validated",
-      "deviceQualification": "not-executed"
+      "conversionStatus": "coreml-converted-local",
+      "deviceQualification": "macOS-native-qualified; simulator unsupported",
+      "notes": "RIFE 4.25 Lite (2024-10-20 release) converted locally from the pinned archive (flownet.pkl sha256 81cdba223fe72a120130cc8552e5d2ecac824259d406f0c15323b3decf96b8b1) with the pinned Practical-RIFE architecture; Core ML inputs frame0/frame1 (RGB 256x256) + timestep, output frame; FLOAT32 compute precision (fp16 measured unusable); PyTorch reference comparison maxAbsDiff=0.00197 psnr=59.19dB; installable bundle not published; readiness requires a hash-verified fixture inference. Bundle LICENSE.txt carries the full MIT text plus a pinned-commit/weights attribution header staged by fetch_assets.py and verified by package_models.py --provenance.",
+      "weightsSha256": "81cdba223fe72a120130cc8552e5d2ecac824259d406f0c15323b3decf96b8b1",
+      "weightsArchiveSha256": "e84366c23e0eb1a637a55aad2e4f3442ec2bf4c388043b4aabbf590be289e6e8",
+      "coremlContract": {
+        "inputs": [
+          {
+            "name": "frame0",
+            "type": "image",
+            "shape": [
+              1,
+              3,
+              256,
+              256
+            ],
+            "scale": "1/255"
+          },
+          {
+            "name": "frame1",
+            "type": "image",
+            "shape": [
+              1,
+              3,
+              256,
+              256
+            ],
+            "scale": "1/255"
+          },
+          {
+            "name": "timestep",
+            "type": "tensor",
+            "shape": [
+              1,
+              1
+            ],
+            "range": [
+              0,
+              1
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "frame",
+            "type": "image",
+            "scale": "x255, clamped to [0,1]"
+          }
+        ],
+        "computePrecision": "FLOAT32",
+        "referenceComparison": {
+          "maxAbsDiff": 0.00197,
+          "psnr": 59.19
+        }
+      },
+      "weightsLicense": "MIT",
+      "weightsLicenseEvidence": "Practical-RIFE README (pinned commit bbfd2ea90910789a860ea3e2b32a240cd577b75e): \"The content of these links are under the same MIT license as this project.\" README sha256 b695ac5d4a69c2f551512678883f8234d784c286d805ca546f4873cb465959b4; LICENSE sha256 7932fb49341512b959b1744a6d9cbb39e5a1ec89da438a34d0454d5d8df9fecd; weights archive sha256 e84366c23e0eb1a637a55aad2e4f3442ec2bf4c388043b4aabbf590be289e6e8"
     },
     {
       "id": "floe/model-film",
@@ -80,8 +135,48 @@
       "files": [],
       "reviewedSourceCommit": "a4abfb2979a7bbff3f69f58f58ae324608821e27",
       "codeLicenseEvidence": "https://github.com/xinntao/Real-ESRGAN/blob/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE",
-      "conversionStatus": "not-validated",
-      "deviceQualification": "not-executed"
+      "conversionStatus": "coreml-converted-local",
+      "deviceQualification": "macOS-native-qualified; simulator unsupported",
+      "notes": "Real-ESRGAN x4plus converted locally from the pinned checkpoint (RealESRGAN_x4plus.pth sha256 4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1) with the pinned BasicSR v1.4.2 RRDBNet architecture; Core ML input image (RGB 256x256), output image_out at x4; PyTorch reference comparison maxAbsDiff=0.001965 psnr=59.04dB; installable bundle not published; readiness requires a hash-verified fixture inference. Architecture provenance now pinned to BasicSR commit 651835a1b9d38dbbdaf45750f56906be2364f01a (tag v1.4.2, rrdbnet_arch.py sha256 6aa8eb3f77e918b90eeff4ebfaf8745abe0c40eb8fcc03abbc1928693d70ab58, Apache-2.0 LICENSE.txt); the bundle LICENSE.txt retains the full Real-ESRGAN BSD-3-Clause text and the BasicSR Apache-2.0 text with weights/architecture evidence recorded separately; weights sha256 4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1; output x4; installable bundle not published.",
+      "weightsSha256": "4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1",
+      "coremlContract": {
+        "inputs": [
+          {
+            "name": "image",
+            "type": "image",
+            "shape": [
+              1,
+              3,
+              256,
+              256
+            ],
+            "scale": "1/255"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "image_out",
+            "type": "image",
+            "scale": "x255, clamped to [0,1]"
+          }
+        ],
+        "scaleFactor": 4,
+        "computePrecision": "FLOAT32",
+        "referenceComparison": {
+          "maxAbsDiff": 0.001965,
+          "psnr": 59.04
+        }
+      },
+      "architectureSource": "XPixelGroup/BasicSR RRDBNet (vendored as FloeAgent/scripts/media-enhancement/rrdbnet_arch.py)",
+      "architectureSourceTag": "v1.4.2",
+      "architectureSourceCommit": "651835a1b9d38dbbdaf45750f56906be2364f01a",
+      "architectureSourceSha256": "6aa8eb3f77e918b90eeff4ebfaf8745abe0c40eb8fcc03abbc1928693d70ab58",
+      "architectureHelperSha256": "45b322b874057c4bff382cc8f1b64554857b9aa4e0c47e73fe67e4afc0b28ac1",
+      "architectureLicense": "Apache-2.0",
+      "architectureLicenseEvidence": "https://github.com/XPixelGroup/BasicSR/blob/651835a1b9d38dbbdaf45750f56906be2364f01a/LICENSE.txt (sha256 5447872f21ddc29dc0dc060d5c885513c01c904e9da9931bba69898a6fb4d415; note /LICENSE is a directory, /LICENSE.txt is the real text)",
+      "weightsLicense": "BSD-3-Clause (repository license only)",
+      "weightsLicenseStatus": "Upstream publishes no separate model-weights license grant; only the repository LICENSE exists. Recorded as an unresolved limitation: bundles stay internal/pending-assets until clarified.",
+      "weightsLicenseEvidence": "https://github.com/xinntao/Real-ESRGAN/blob/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE (sha256 4a699ec4863d96a91fc265948a0c90033f7e8735d515524dcf3444736406e0c2; no separate weights grant found in the pinned README)"
     },
     {
       "id": "floe/model-realesrgan-x2plus",
@@ -96,8 +191,48 @@
       "files": [],
       "reviewedSourceCommit": "a4abfb2979a7bbff3f69f58f58ae324608821e27",
       "codeLicenseEvidence": "https://github.com/xinntao/Real-ESRGAN/blob/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE",
-      "conversionStatus": "not-validated",
-      "deviceQualification": "not-executed"
+      "conversionStatus": "coreml-converted-local",
+      "deviceQualification": "macOS-native-qualified; simulator unsupported",
+      "notes": "Real-ESRGAN x2plus converted locally from the pinned checkpoint (RealESRGAN_x2plus.pth sha256 49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb) with the pinned BasicSR v1.4.2 RRDBNet architecture; Core ML input image (RGB 256x256), output image_out at x2; PyTorch reference comparison maxAbsDiff=0.001962 psnr=59.02dB; installable bundle not published; readiness requires a hash-verified fixture inference. Architecture provenance now pinned to BasicSR commit 651835a1b9d38dbbdaf45750f56906be2364f01a (tag v1.4.2, rrdbnet_arch.py sha256 6aa8eb3f77e918b90eeff4ebfaf8745abe0c40eb8fcc03abbc1928693d70ab58, Apache-2.0 LICENSE.txt); the bundle LICENSE.txt retains the full Real-ESRGAN BSD-3-Clause text and the BasicSR Apache-2.0 text with weights/architecture evidence recorded separately; weights sha256 49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb; output x2; installable bundle not published.",
+      "weightsSha256": "49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb",
+      "coremlContract": {
+        "inputs": [
+          {
+            "name": "image",
+            "type": "image",
+            "shape": [
+              1,
+              3,
+              256,
+              256
+            ],
+            "scale": "1/255"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "image_out",
+            "type": "image",
+            "scale": "x255, clamped to [0,1]"
+          }
+        ],
+        "scaleFactor": 2,
+        "computePrecision": "FLOAT32",
+        "referenceComparison": {
+          "maxAbsDiff": 0.001962,
+          "psnr": 59.02
+        }
+      },
+      "architectureSource": "XPixelGroup/BasicSR RRDBNet (vendored as FloeAgent/scripts/media-enhancement/rrdbnet_arch.py)",
+      "architectureSourceTag": "v1.4.2",
+      "architectureSourceCommit": "651835a1b9d38dbbdaf45750f56906be2364f01a",
+      "architectureSourceSha256": "6aa8eb3f77e918b90eeff4ebfaf8745abe0c40eb8fcc03abbc1928693d70ab58",
+      "architectureHelperSha256": "45b322b874057c4bff382cc8f1b64554857b9aa4e0c47e73fe67e4afc0b28ac1",
+      "architectureLicense": "Apache-2.0",
+      "architectureLicenseEvidence": "https://github.com/XPixelGroup/BasicSR/blob/651835a1b9d38dbbdaf45750f56906be2364f01a/LICENSE.txt (sha256 5447872f21ddc29dc0dc060d5c885513c01c904e9da9931bba69898a6fb4d415; note /LICENSE is a directory, /LICENSE.txt is the real text)",
+      "weightsLicense": "BSD-3-Clause (repository license only)",
+      "weightsLicenseStatus": "Upstream publishes no separate model-weights license grant; only the repository LICENSE exists. Recorded as an unresolved limitation: bundles stay internal/pending-assets until clarified.",
+      "weightsLicenseEvidence": "https://github.com/xinntao/Real-ESRGAN/blob/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE (sha256 4a699ec4863d96a91fc265948a0c90033f7e8735d515524dcf3444736406e0c2; no separate weights grant found in the pinned README)"
     },
     {
       "id": "floe/model-realesrgan-anime",

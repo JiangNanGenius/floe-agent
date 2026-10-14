@@ -79,6 +79,21 @@ public struct OfficeOutputSnapshot: Equatable, Sendable {
     public var formulasByCell: [String: String] = [:]
     public var errorCells: [OfficeErrorCell] = []
     public var firstSheetColumnA: [String] = []
+    /// Workbook sheet order (workbook.xml order, falling back to member order).
+    public var sheetNamesInOrder: [String] = []
+    /// Workbook sheet name per worksheet member (`xl/worksheets/sheet1.xml`).
+    public var sheetNameByMember: [String: String] = [:]
+    /// Every formula cell with its PERSISTED cached result, result type and
+    /// error code. This is what a recalculation check reads after reopening:
+    /// the formula text alone can never prove the saved cached value is fresh.
+    public var formulaCells: [OfficeFormulaCellRecord] = []
+    /// Persisted cached value/type per sheet member and A1 cell, used as the
+    /// dependency context when verifying a formula's cached result.
+    public var cachedCellsBySheet: [String: [String: OfficeCachedCellValue]] = [:]
+    /// True when the workbook declared parser bounds were hit and the formula
+    /// dependency context is incomplete; verification then reports unknown
+    /// dependencies instead of pretending they are empty.
+    public var formulaContextTruncated: Bool = false
 
     // Presentation
     public var slideCount: Int = 0
@@ -124,9 +139,16 @@ public struct OfficeOutputSnapshot: Equatable, Sendable {
             let members = package.paths.filter {
                 $0.hasPrefix("xl/worksheets/sheet") && $0.hasSuffix(".xml") && !$0.contains("/_rels/")
             }.sorted(by: OfficeXMLScan.entryOrder)
+            let workbookXML = (try? package.xml(path: "xl/workbook.xml", limit: xmlLimit)) ?? ""
+            let declaredSheets = OfficeXMLScan.declaredSheets(workbookXML: workbookXML)
             for (index, member) in members.enumerated() {
                 guard let xml = try? package.xml(path: member, limit: xmlLimit) else { continue }
                 snapshot.sheetNames.append(member)
+                let declaredName = declaredSheets.first(where: { $0.index == index + 1 })?.name
+                    ?? declaredSheets.first(where: { $0.member == member })?.name
+                let sheetName = declaredName ?? "Sheet\(index + 1)"
+                snapshot.sheetNameByMember[member] = sheetName
+                snapshot.sheetNamesInOrder.append(sheetName)
                 snapshot.sheetRowCounts.append(OfficeXMLScan.count(of: "<row ", in: xml))
                 snapshot.sheetColumnCounts.append(OfficeXMLScan.maxColumn(in: xml))
                 if index == 0 {
@@ -141,6 +163,11 @@ public struct OfficeOutputSnapshot: Equatable, Sendable {
                     snapshot.frozenPaneTopLeftCell = OfficeXMLScan.frozenPaneTopLeftCell(in: xml)
                 }
                 snapshot.hasAutoFilter = snapshot.hasAutoFilter || xml.contains("<autoFilter")
+                let parsed = OfficeXMLScan.formulaCells(in: xml, sheet: sheetName, member: member,
+                                                        shared: shared)
+                snapshot.formulaCells.append(contentsOf: parsed.formulas)
+                snapshot.cachedCellsBySheet[member] = parsed.cachedValues
+                if parsed.truncated { snapshot.formulaContextTruncated = true }
             }
             snapshot.numberFormatCodes = formatCodesByStyleIndex.values.sorted()
         case .presentation:
@@ -190,6 +217,11 @@ public enum OfficeOutputExpectation: Equatable, Sendable {
     /// have changed while remaining a valid package.
     case excelSortApplied(ascending: Bool)
     case excelErrorCells(atLeast: Int)
+    /// Recalculation evidence: every formula cell must carry a persisted cached
+    /// result whose value/type/error is consistent with the workbook's own
+    /// dependency caches (bounded evaluator). "Requested" or "file changed"
+    /// never satisfies this expectation.
+    case excelFormulaResultsRecalculated
     case pptSlideCountDelta(Int)
     case pptSlideOrder([Int])
     case pptText(String)
@@ -233,7 +265,12 @@ public enum OfficeOutputExpectation: Equatable, Sendable {
         case .excelGoToCell:
             return [.informational("cell cursor moved")]
         case .excelRecalculate:
-            return [.informational("recalculation requested")]
+            // A recalculation is only meaningful when the reopened package
+            // actually carries fresh cached formula results. The bounded
+            // dependency checker verifies value/type/error against the
+            // workbook's own persisted dependencies; it reports shapes it
+            // cannot evaluate instead of claiming them.
+            return [.excelFormulaResultsRecalculated]
         case .pptDuplicateSlide:
             return [.pptSlideCountDelta(1)]
         case .pptMoveSlide(let from, let to):
@@ -462,6 +499,16 @@ public enum OfficeOutputValidator {
                         "expected at least \(atLeast) error cell(s), found \(after.errorCells.count)")
                 }
                 facts.append("errorCells=\(after.errorCells.count)")
+
+            case .excelFormulaResultsRecalculated:
+                let report = OfficeFormulaVerifier.verify(snapshot: after)
+                guard report.isClean else {
+                    throw OfficeOutputValidationError.expectationFailed(
+                        "recalculated formula cache is not trustworthy: "
+                            + report.failures.prefix(8).joined(separator: "; "))
+                }
+                facts.append(report.summary)
+                facts.append(contentsOf: report.facts.prefix(24))
 
             case .pptSlideCountDelta(let delta):
                 let beforeCount = before?.slideCount ?? 0

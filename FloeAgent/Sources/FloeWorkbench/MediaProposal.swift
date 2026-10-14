@@ -2,9 +2,20 @@
 //
 // Proposals are the ONLY way the model-facing tool changes a project. A
 // proposal binds the exact revision it was prepared against and a validated
-// command sequence. The UI previews it; applying requires a trusted grant
-// from `MediaProposalGrantStore` (issued only by the interactive UI after
-// the user accepts). A Codable value in a tool request is never authority.
+// command sequence. A model-supplied Codable value is never authority. There
+// are exactly two apply paths:
+//
+//   * INTERACTIVE: the UI previews the proposal and the user accepts it; the
+//     single-use, revision-bound grant from `MediaProposalGrantStore` is the
+//     only key that commits through `applyAuthorized`.
+//   * RUNTIME-AUTHORIZED AUTOMATIC: an `apply` without `grant_id` consumes
+//     the runtime-issued authority for that exact approved `media.project`
+//     call (`MediaProposalGate.applyAutomatic`, which re-checks tool,
+//     operation, proposal, base revision, canonical target and commands
+//     digest) — or, when the submission was deferred through an authorized
+//     `jobs.submit` call, the frozen service operation prepared from that
+//     consumed submission authority.
+//
 // Manual edits — including undo/redo, which always advance the revision —
 // invalidate a pending proposal, and the grant store then refuses apply.
 
@@ -40,7 +51,62 @@ public enum MediaProposalError: Error, Sendable, Equatable {
     case notAuthorized(String)
 }
 
+/// Proof that the runtime approved this exact `media.project` apply call and
+/// the consumer claimed its single-use authority. Built ONLY by
+/// `MediaProjectTool.apply` after `consumeRuntimeAuthority` returned `.valid`
+/// for the call's own binding; never reconstructed from model output.
+public struct MediaAutomaticAuthorization: Sendable, Equatable {
+    public var runID: UUID
+    public var taskID: UUID?
+    public var operationID: String
+    public var idempotencyKey: String
+    public var approvalGrantID: UUID?
+    /// Canonical target exactly as the runtime resolved it for the approved
+    /// call (the workspace wildcard for this tool, or an explicit document
+    /// target when the caller supplied one).
+    public var canonicalTarget: String
+    /// Revision the project had when the authority was consumed.
+    public var baseRevision: Int64
+    /// Digest of the approved tool-call payload.
+    public var payloadDigest: String
+    /// Digest of the concrete proposal commands this authorization covers.
+    public var commandsDigest: String
+    public var proposalID: UUID
+    public var toolName: String
+    public var operation: String
+    public var consumedAt: Date
+
+    public init(runID: UUID, taskID: UUID?, operationID: String, idempotencyKey: String,
+                approvalGrantID: UUID?, canonicalTarget: String, baseRevision: Int64,
+                payloadDigest: String, commandsDigest: String, proposalID: UUID,
+                toolName: String = "media.project", operation: String = "apply",
+                consumedAt: Date = Date()) {
+        self.runID = runID
+        self.taskID = taskID
+        self.operationID = operationID
+        self.idempotencyKey = idempotencyKey
+        self.approvalGrantID = approvalGrantID
+        self.canonicalTarget = canonicalTarget
+        self.baseRevision = baseRevision
+        self.payloadDigest = payloadDigest
+        self.commandsDigest = commandsDigest
+        self.proposalID = proposalID
+        self.toolName = toolName
+        self.operation = operation
+        self.consumedAt = consumedAt
+    }
+}
+
 public enum MediaProposalGate {
+    /// Canonical digest of one validated command sequence, shared by the tool
+    /// (which builds the authorization) and the gate (which re-checks it).
+    public static func commandsDigest(_ commands: [MediaEditCommand]) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(commands) else { return "" }
+        return FloeDigest.sha256Hex(data)
+    }
+
     /// Validates the proposal and produces the resulting DRAFT project
     /// without mutating anything. Used both for UI preview and before the
     /// trusted grant is consumed.
@@ -85,10 +151,73 @@ public enum MediaProposalGate {
         _ = try dryRun(proposal, against: project)
         try MediaTransactions.apply(proposal.commands, to: &project)
     }
+
+    /// Applies a proposal under a runtime-issued automatic authorization. The
+    /// authorization was built by the tool after `consumeRuntimeAuthority`
+    /// returned `.valid` for the approved call; this gate re-checks every
+    /// project-scoped field against the real current project so a mismatched
+    /// or stale proof can never mutate a different project or revision.
+    public static func applyAutomatic(
+        _ proposal: MediaProposal,
+        authorization: MediaAutomaticAuthorization,
+        to project: inout MediaProject
+    ) throws {
+        guard authorization.toolName == MediaProjectTool.name,
+              authorization.operation == "apply" else {
+            throw MediaProposalError.notAuthorized(
+                "the authorization is not bound to a media.project apply operation")
+        }
+        guard authorization.proposalID == proposal.id else {
+            throw MediaProposalError.notAuthorized("the authorization was issued for a different proposal")
+        }
+        guard authorization.baseRevision == project.revision else {
+            throw MediaProposalError.stale(
+                "the authorization was issued for revision \(authorization.baseRevision), the project is at \(project.revision)")
+        }
+        guard !authorization.payloadDigest.isEmpty else {
+            throw MediaProposalError.notAuthorized("the authorization carries no approved payload digest")
+        }
+        guard authorization.commandsDigest == commandsDigest(proposal.commands),
+              !authorization.commandsDigest.isEmpty else {
+            throw MediaProposalError.notAuthorized(
+                "the authorization does not match this proposal's commands")
+        }
+        if authorization.canonicalTarget.hasPrefix("document:") {
+            guard authorization.canonicalTarget == "document:mediaproject:\(project.id.uuidString.lowercased())" else {
+                throw MediaProposalError.notAuthorized(
+                    "the authorization targets a different media project")
+            }
+        } else if !authorization.canonicalTarget.hasPrefix("workspace:") {
+            throw MediaProposalError.notAuthorized(
+                "the authorization target is not a workspace or media-project identity")
+        }
+        _ = try dryRun(proposal, against: project)
+        try MediaTransactions.apply(proposal.commands, to: &project)
+    }
+}
+
+/// Reopen/verification helpers for the automatic apply path. These read the
+/// real reopened project; they never synthesize a success.
+public enum MediaAutomaticVerification {
+    /// Canonical content digest of a persisted project (sorted-key JSON of the
+    /// actual reopened value). Used as the immutable snapshot identity of the
+    /// applied revision; a byte-level store digest is host-owned and private.
+    public static func canonicalProjectDigest(_ project: MediaProject) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(project) else { return "" }
+        return FloeDigest.sha256Hex(data)
+    }
+
+    /// Referenced source assets and their recorded content hashes. Automatic
+    /// apply must only reference assets, never replace or rewrite them, so the
+    /// pair set is unchanged across an apply.
+    public static func assetHashes(_ project: MediaProject) -> [UUID: String] {
+        Dictionary(uniqueKeysWithValues: project.assets.map { ($0.id, $0.contentHash ?? "") })
+    }
 }
 
 // MARK: - Export validation
-
 public enum MediaExportValidation {
     /// Validates explicit image export combinations. Transparency on JPEG is
     /// rejected (not silently flattened); PNG/HEIC alpha is supported.

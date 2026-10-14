@@ -85,6 +85,14 @@ public struct ProviderSaveDraft: Sendable, Equatable {
     public let defaultModelID: UUID?
     public let existingCreatedAt: Date?
     public let existingSyncRevision: Int64
+    /// Endpoint of the profile being edited, when this is an edit. Used with
+    /// `existingKind` to refuse silent credential reuse when the connection
+    /// identity changes (different origin, port, scheme, provider routing
+    /// family or auth style): the stored key stays bound to its original
+    /// connection and a new key must be entered.
+    public let existingBaseURL: URL?
+    /// Provider kind of the profile being edited, when this is an edit.
+    public let existingKind: ProviderKind?
 
     public init(
         providerID: UUID,
@@ -105,7 +113,9 @@ public struct ProviderSaveDraft: Sendable, Equatable {
         serviceRoleIsConversation: Bool,
         defaultModelID: UUID?,
         existingCreatedAt: Date?,
-        existingSyncRevision: Int64
+        existingSyncRevision: Int64,
+        existingBaseURL: URL? = nil,
+        existingKind: ProviderKind? = nil
     ) {
         self.providerID = providerID
         self.kind = kind
@@ -126,6 +136,8 @@ public struct ProviderSaveDraft: Sendable, Equatable {
         self.defaultModelID = defaultModelID
         self.existingCreatedAt = existingCreatedAt
         self.existingSyncRevision = existingSyncRevision
+        self.existingBaseURL = existingBaseURL
+        self.existingKind = existingKind
     }
 
     /// Builds the frozen request from the draft, or every field-level issue.
@@ -143,6 +155,29 @@ public struct ProviderSaveDraft: Sendable, Equatable {
             ]))
         }
         let trimmedKey = enteredAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Never reuse a stored credential across incompatible connections.
+        // Selecting a catalog entry for a different origin, port, scheme,
+        // provider routing family or auth style (or editing those fields)
+        // requires a fresh key; otherwise the old secret would silently follow
+        // the new connection. Same-connection alias/path changes stay
+        // compatible and do not force redundant entry. Zero side effects:
+        // this returns before any Keychain write.
+        if let existingBaseURL, existingSecretRef != nil, trimmedKey.isEmpty,
+           let existingKind,
+           !ProviderConfigurationValidation.ProviderConnectionIdentity.isCompatible(
+               from: existingKind,
+               oldBaseURL: existingBaseURL,
+               to: kind,
+               newBaseURL: url
+           ) {
+            return .failure(ProviderConfigurationValidationReport(issues: [
+                ProviderConfigurationIssue(
+                    field: .baseURL,
+                    problem: .connectionChangedRequiresNewCredential,
+                    messageKey: "providers.validation.connection_changed_requires_key"
+                )
+            ]))
+        }
         let hasKey = !trimmedKey.isEmpty || existingSecretRef != nil
         let secretRef = hasKey ? SecretReference(
             keychainAccount: existingSecretRef?.keychainAccount

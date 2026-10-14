@@ -526,6 +526,13 @@ targets:
       - path: Tests/FloeAppTests/IDEMarkdownOutlineTests.swift
       - path: Tests/FloeAppTests/ComposerTests.swift
       - path: Tests/FloeAppTests/ProviderSaveRegressionTests.swift
+      - path: Tests/FloeAppTests/PersonalToolPaginationTests.swift
+      - path: Tests/FloeAppTests/SubagentSimulatorExecutionTests.swift
+      - path: Tests/FloeAppTests/OfficeNativeAutomaticExecutionTests.swift
+      - path: Tests/FloeAppTests/NotificationResponseBridgeTests.swift
+      - path: Tests/FloeAppTests/BackgroundWorkNotificationRouteTests.swift
+      - path: Tests/FloeAgentUITests/office-native-real-budget.xlsx
+        buildPhase: resources
       - path: Tests/FloeCoreTests/ProviderProfileTests.swift
       - path: Tests/FloeAppTests/T6IntegrationTests.swift
       - path: Tests/FloeAppTests/T6PublicationPortTests.swift

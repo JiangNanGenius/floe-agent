@@ -5,6 +5,12 @@ import FloeTools
 import AVFoundation
 import VideoToolbox
 import CoreImage
+#if canImport(Metal)
+import Metal
+#endif
+#if canImport(MetalFX)
+import MetalFX
+#endif
 #endif
 
 /// Probed media capabilities. The model reads this instead of relying on
@@ -15,15 +21,24 @@ public struct MediaCapabilities: Sendable, Codable {
         public var lowLatencyInterpolation: Bool
         public var superResolution: Bool
         public var lowLatencySuperResolution: Bool
+        /// Still-image super resolution through VTFrameProcessor (separate
+        /// from the video path: sizes and scale factors differ).
+        public var superResolutionImage: Bool
         public var opticalFlow: Bool
         public var temporalNoiseFilter: Bool
         public var motionBlur: Bool
+        public var metalFXSpatialScaler: Bool
         public var metalFXFrameInterpolator: Bool
         public var hardwareEncodeH264: Bool
         public var hardwareEncodeHEVC: Bool
         public var hardwareDecodeAV1: Bool
         public var personSegmentation: Bool
+        /// Video-input scale factors accepted by VT super resolution.
         public var supportedScaleFactors: [Int]
+        /// Image-input scale factors accepted by VT super resolution.
+        public var imageSupportedScaleFactors: [Int]
+        /// `ready`, `downloadRequired`, `downloading` or `unavailable`.
+        public var superResolutionModelStatus: String
         public var maximumDimension: Int
     }
 
@@ -69,22 +84,97 @@ public struct MediaCapabilities: Sendable, Codable {
 
     public static func probe(appBuild: String) -> MediaCapabilities {
         #if canImport(AVFoundation)
-        let native = Native(
+        var native = Native(
             frameRateConversion: false,
             lowLatencyInterpolation: false,
             superResolution: false,
             lowLatencySuperResolution: false,
+            superResolutionImage: false,
             opticalFlow: false,
             temporalNoiseFilter: false,
             motionBlur: false,
+            metalFXSpatialScaler: false,
             metalFXFrameInterpolator: false,
             hardwareEncodeH264: supportsHardwareEncoding(kCMVideoCodecType_H264),
             hardwareEncodeHEVC: supportsHardwareEncoding(kCMVideoCodecType_HEVC),
             hardwareDecodeAV1: VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1),
             personSegmentation: false,
             supportedScaleFactors: [],
+            imageSupportedScaleFactors: [],
+            superResolutionModelStatus: "unavailable",
             maximumDimension: 0
         )
+        var notes: [String] = [
+            "Parameters are never defaulted; read this capability report and pass explicit values.",
+            "Native frame processors are unavailable on Simulator; values below are probed on the running device only."
+        ]
+        #if !targetEnvironment(simulator)
+        if #available(iOS 26.0, macOS 15.4, *) {
+            native.frameRateConversion = VTFrameRateConversionConfiguration.isSupported
+            native.opticalFlow = VTOpticalFlowConfiguration.isSupported
+            native.motionBlur = VTMotionBlurConfiguration.isSupported
+        }
+        if #available(iOS 26.0, macOS 26.0, *) {
+            native.temporalNoiseFilter = VTTemporalNoiseFilterConfiguration.isSupported
+            if #available(iOS 26.0, macOS 26.0, *), let dimensions = VTFrameRateConversionConfiguration.maximumDimensions {
+                native.maximumDimension = max(Int(dimensions.width), Int(dimensions.height))
+            } else {
+                // Header-documented bounds when the runtime reports no session
+                // dimensions: 8192x4320 on macOS, 4096x2160 on iOS.
+                #if os(macOS)
+                native.maximumDimension = 8192
+                #else
+                native.maximumDimension = 4096
+                #endif
+            }
+            native.superResolution = VTSuperResolutionScalerConfiguration.isSupported
+            native.lowLatencyInterpolation = VTLowLatencyFrameInterpolationConfiguration.isSupported
+            native.lowLatencySuperResolution = VTLowLatencySuperResolutionScalerConfiguration.isSupported
+            if VTSuperResolutionScalerConfiguration.isSupported {
+                let videoFactors = VTSuperResolutionScalerConfiguration.supportedScaleFactors
+                native.supportedScaleFactors = videoFactors
+                var statuses: [String] = []
+                var imageFactors: [Int] = []
+                let sample = (width: 640, height: 360)
+                for factor in videoFactors {
+                    if let configuration = VTSuperResolutionScalerConfiguration(
+                        frameWidth: sample.width, frameHeight: sample.height, scaleFactor: factor,
+                        inputType: .video, usePrecomputedFlow: false, qualityPrioritization: .normal,
+                        revision: VTSuperResolutionScalerConfiguration.defaultRevision
+                    ) {
+                        statuses.append("video=\(Self.modelStatusLabel(configuration.configurationModelStatus))")
+                        native.superResolutionModelStatus = Self.modelStatusLabel(configuration.configurationModelStatus)
+                        break
+                    }
+                }
+                for factor in videoFactors {
+                    if VTSuperResolutionScalerConfiguration(
+                        frameWidth: 512, frameHeight: 512, scaleFactor: factor,
+                        inputType: .image, usePrecomputedFlow: false, qualityPrioritization: .normal,
+                        revision: VTSuperResolutionScalerConfiguration.defaultRevision
+                    ) != nil {
+                        imageFactors.append(factor)
+                    }
+                }
+                native.imageSupportedScaleFactors = imageFactors
+                native.superResolutionImage = !imageFactors.isEmpty
+                if !statuses.isEmpty {
+                    notes.append("VT super-resolution system model status: \(statuses.joined(separator: ","))")
+                }
+            }
+        }
+        #if canImport(Metal) && canImport(MetalFX)
+        if let device = MTLCreateSystemDefaultDevice() {
+            if #available(iOS 16.0, macOS 13.0, *) {
+                native.metalFXSpatialScaler = MTLFXSpatialScalerDescriptor.supportsDevice(device)
+            }
+            if #available(iOS 26.0, macOS 26.0, *) {
+                native.metalFXFrameInterpolator = MTLFXFrameInterpolatorDescriptor.supportsDevice(device)
+            }
+        }
+        #endif
+        #endif
+        notes.append("metalFXFrameInterpolator reports device support only: MetalFX frame interpolation consumes renderer motion vectors/depth and is rejected for decoded video files.")
         return MediaCapabilities(
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
             appBuild: appBuild,
@@ -92,7 +182,7 @@ public struct MediaCapabilities: Sendable, Codable {
             installedModels: [],
             availableModels: [],
             containers: [],
-            notes: ["Parameters are never defaulted; read this capability report and pass explicit values."]
+            notes: notes
         )
         #else
         return MediaCapabilities(
@@ -100,11 +190,12 @@ public struct MediaCapabilities: Sendable, Codable {
             appBuild: appBuild,
             native: Native(
                 frameRateConversion: false, lowLatencyInterpolation: false,
-                superResolution: false, lowLatencySuperResolution: false,
+                superResolution: false, lowLatencySuperResolution: false, superResolutionImage: false,
                 opticalFlow: false, temporalNoiseFilter: false, motionBlur: false,
-                metalFXFrameInterpolator: false, hardwareEncodeH264: false,
+                metalFXSpatialScaler: false, metalFXFrameInterpolator: false, hardwareEncodeH264: false,
                 hardwareEncodeHEVC: false, hardwareDecodeAV1: false,
-                personSegmentation: false, supportedScaleFactors: [], maximumDimension: 0
+                personSegmentation: false, supportedScaleFactors: [], imageSupportedScaleFactors: [],
+                superResolutionModelStatus: "unavailable", maximumDimension: 0
             ),
             installedModels: [],
             availableModels: [],
@@ -113,6 +204,21 @@ public struct MediaCapabilities: Sendable, Codable {
         )
         #endif
     }
+
+    #if canImport(AVFoundation) && !targetEnvironment(simulator)
+    // VTFrameProcessor's configuration types are absent from the Simulator SDK
+    // headers (`#if ! TARGET_OS_SIMULATOR`); this helper is only called from
+    // the simulator-guarded probe above.
+    @available(iOS 26.0, macOS 26.0, *)
+    private static func modelStatusLabel(_ status: VTSuperResolutionScalerConfiguration.ModelStatus) -> String {
+        switch status {
+        case .ready: return "ready"
+        case .downloading: return "downloading"
+        case .downloadRequired: return "downloadRequired"
+        @unknown default: return "unknown"
+        }
+    }
+    #endif
 }
 
 /// Non-destructive edit plan. Every operation carries explicit parameters;

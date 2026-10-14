@@ -35,6 +35,8 @@ If a model is missing, check provider/model switches and “Hide from main model
 
 Floe validates the form before it writes anything. An invalid field is reported in your language, no write starts and the form keeps its content. A local save and an iCloud upload are reported separately: “Saved on this device; iCloud sync is pending” means the configuration is committed locally and the upload can be retried — it is not a failed save, and you do not need to re-enter an API key. Remote records that fail validation are skipped while the local copy is kept.
 
+In Add text/image/video, tap the **Provider** field itself to open ONE searchable selector: the built-in provider presets (including an explicit manual/custom choice) and the verified catalog entries live in the same list and are filtered together as you type (aliases and configured badges included). There is no separate preset row, no "add from catalog" button and no separate catalog page. Choosing an entry closes the selector and preserves everything else you already entered, including a custom display name. Selecting a vendor that genuinely supports more than one service role raises a one-time **Additional uses** prompt where the role you started with is fixed and every extra role is opt-in; choose **Configure**, **Not now**, or dismiss the sheet — a declined role is not offered again. Extra roles share this connection's endpoint and API key only when the origin, protocol family and auth style really match; a different origin is shown as **Configure separately** with its own visible settings. Changing the connection identity (scheme/host/port/provider family/auth style) clears the typed key and refuses to silently reuse a stored key across connections.
+
 <!-- doc-anchor: section-5 -->
 ### Vision, generation and image editing
 
@@ -84,6 +86,8 @@ Tool cards show the progress and results of actions. Review the target and effec
 
 Documents, websites, tool results and memory cannot grant new permissions. Never follow embedded instructions to expose credentials or broaden access.
 
+Delegated subagents run with the same effective permissions as the current task: the explore/research/execute choice is a focus hint, not a permission level, and every child call goes through the same approval, workspace, environment and mutation-serialization path as the main task. A subagent can never delegate again or create a new user-visible task — `delegate` and `conversation.spawn` are main-task-only and are refused at execution time, not merely hidden. Sibling subagents of one task may exchange bounded messages; a message is untrusted data, never a permission grant, and cannot restart a subagent that has finished.
+
 <!-- doc-anchor: section-10 -->
 ## 6. Files, editors and concurrent changes
 
@@ -120,6 +124,8 @@ Check save status before closing or switching. Use Trash for recovery and review
 5. Save and wait for completion. Export the file when ready to share.
 
 Available operations depend on the file format; unavailable options explain why. If loading or saving fails, keep the original and check the error. Compare conflicting versions before saving.
+
+An AI edit that was not confirmed in the editor can still run as an authorized automatic copy: only after the task's runtime approves that exact tool call, the engine works on an isolated copy and publishes a new `<name>.edited.<ext>` — the original is never overwritten, the output is reopened and verified (formula cells check their persisted cached value/type/error), and an existing different file at the output path is refused. A user-confirmed edit (the editor's confirmation) keeps its existing path. Long Office/media work can be submitted as a background job: the job freezes the workspace, revision and command payload at submission, reports real progress, keeps running when you close the page, and cancellation only becomes terminal after the processor acknowledges and cleans its staging.
 
 <!-- doc-anchor: section-13 -->
 ## 9. Local terminal and Linux performance
@@ -240,6 +246,15 @@ never squeezed into a strip.
 - **Export**: choose PNG, JPEG or HEIC for images, with size and quality options; choose H.264 or HEVC for video, with resolution and frame-rate options. Files go to `Workbench/Exports` in the workspace. Use Share / Save to Files after export.
 - **AI**: open the AI drawer, choose your assets and model, then review parameters and costs before submitting. Accept a candidate to add it as a new layer or clip; you can still undo it. Jobs and candidates remain after closing the workbench. If generation is interrupted, check its status before resubmitting a paid request.
 
+### Frame interpolation and super resolution
+
+`video.interpolate` and `video.superResolution` (listed with the rest of the surface by `media.capabilities`) run through one shared processor; the result reports the effective engine and measured counters after re-opening the output, and a failed or cancelled run leaves no destination and never modifies the source.
+
+- **`quality`** uses Apple VideoToolbox frame-rate conversion / super resolution. **`lowLatency`** uses the low-latency variants (interpolation is 2x only). **`coreml`** uses an installed RIFE 4.25 Lite or Real-ESRGAN x2plus/x4plus bundle. **`metalFX`** is a GPU spatial upscale, not learned super resolution; MetalFX interpolation is rejected with a reason.
+- `overwrite` defaults to off: an existing output is refused unless you explicitly pass `overwrite=true`; even then the replacement is staged and atomic. HDR (BT.2020/PQ) and alpha sources are rejected with an explicit reason rather than converted silently.
+- A Core ML model is reported `runnable` only after Floe re-hashes every bundle file and runs one bounded fixture inference (or revalidates a cached qualification whose bytes, version and runtime marker still match). Installing a bundle alone reports “not qualified” and never runs silently.
+- Availability is host-specific and is reported separately: VideoToolbox frame processing runs on macOS qualification hosts and is expected on physical devices, but Apple's frame-processing headers do not support the Simulator. Core ML inference is verified on macOS and still pending physical-iPad acceptance. Do not read a macOS result as a physical-device result.
+
 ### 3D models: one unified workbench
 
 Within a canvas, Floe has one 3D creation entry: open the bottom insertion menu (**+ ▸ 3D Model (unified workbench)**). It creates a native `.floecad` node owned by the canvas and opens the same full-screen workbench used by File Preview. **3D Panorama** stays a separate viewer node for panoramic images.
@@ -291,6 +306,12 @@ Live input, file transcription and video subtitles are separate paths. Check tex
 Skills supply methods; installation/enabling does not grant file, network or account access. Use only needed skills and inspect source/version. MCP tools depend on configured, available servers.
 
 After connecting mail, verify account/folders read-only before sending. Check recipients, subject, body and attachments. For automatic tasks, define triggers, actions and a stop condition, then inspect execution records. Creating a schedule does not prove the action ran. See [mail](MAIL_CONNECTOR.md) and [Skill Hub](../skill-hub/README.md).
+
+Mail search and organization: `mail.search` is read-only and pages with an opaque cursor bound to the account, folder and mailbox version (UIDVALIDITY) plus the exact criteria — repeating a page with a changed account/folder/criteria fails loudly instead of returning wrong messages. `mail.move` (move/archive/trash, one message per call) requires approval, never issues a global EXPUNGE and never deletes permanently; POP3 accounts report these operations as unsupported instead of pretending. If the connection drops after a mutating command, the next attempt first reconciles read-only and reports whether the action actually completed.
+
+Calendar and reminder lists (`apple.calendar.list`, `apple.reminders.list`) accept `limit` 1–200 (default 100) and return a task-owned cursor with `hasMore`/`nextCursor`/`snapshotTime`; a cursor from another task or filter is refused with an explicit error, never an empty success, and permission is re-checked on continuation. Calendar rows keep a per-occurrence identity for repeating events.
+
+Web search results (`web.search`/`web.searchAI`) are search-index metadata, not page verification. Titles, URLs, excerpts, source/profile and index dates are returned as the provider supplies them; `pageAge` is “published OR last modified”, with relative age and crawl date kept separate and never relabeled as a publication date. Empty metadata is reported as empty, never fabricated, and is not the same as a failed search. Use `web.fetch` before relying on page contents or exact dates. The payload is bounded to valid JSON within the tool boundary — including very long queries, long citation URLs (an oversize row is omitted rather than returned with a changed URL) and large provider error text — and states explicitly when fields or results were shortened.
 
 <!-- doc-anchor: section-22 -->
 ## 18. Background work, PiP, notifications and data

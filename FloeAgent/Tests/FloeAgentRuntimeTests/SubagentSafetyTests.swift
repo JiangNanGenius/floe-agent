@@ -9,10 +9,14 @@ import FloeTestSupport
 
 @Suite("FloeAgentRuntime.SubagentSafety")
 struct SubagentSafetyTests {
-    @Test("delegate is strictly read-only and exposes no write override")
-    func descriptorIsReadOnly() {
-        #expect(!DelegateTool.isSideEffecting)
-        #expect(DelegateTool.toolEffect == .readOnly)
+    @Test("delegate is effectful, main-run only and exposes no write override")
+    func descriptorIsEffectful() {
+        // Children may now execute with the parent's effective ceiling, so the
+        // envelope must never claim read-only: a model cannot use delegation
+        // as a silent write/approval bypass.
+        #expect(DelegateTool.isSideEffecting)
+        #expect(DelegateTool.toolEffect == .mutating)
+        #expect(DelegateTool.executionBoundary == .mainRunOnly)
         #expect(!DelegateTool.parametersJSON.contains("allowWrites"))
     }
 
@@ -32,7 +36,14 @@ struct SubagentSafetyTests {
         let tool = DelegateTool(runners: runners)
         let output = try await tool.execute(
             .init(task: "inspect the workspace"),
-            context: ToolContext(runID: runID, cancellation: CancellationToken())
+            context: ToolContext(
+                runID: runID,
+                toolCallID: "delegate-budget",
+                cancellation: CancellationToken(),
+                callOrigin: ToolCallOrigin(
+                    kind: .mainRunDelegate, runID: runID, callID: "delegate-budget", toolName: "delegate"
+                )
+            )
         )
 
         #expect(output.exitStatus == 1)
@@ -41,11 +52,13 @@ struct SubagentSafetyTests {
 
     @Test("delegate type maps to subagent kind and schema ceiling follows it")
     func typeMappingAndSchemaCeiling() {
-        #expect(DelegateTool.parametersJSON.contains("\"enum\": [\"explore\", \"research\"]"))
+        #expect(DelegateTool.parametersJSON.contains("\"enum\": [\"explore\", \"research\", \"execute\"]"))
         let args = DelegateTool.Arguments(task: "t", type: .research)
         #expect(args.type == .research)
+        #expect(DelegateTool.Arguments(task: "t", type: .execute).type == .execute)
         // explore (default) strips web/network groups from the child schema.
         #expect(SubagentRequest.Kind.explore != .research)
+        #expect(SubagentRequest.Kind.execute != .explore)
         #expect(DelegateTool.Arguments(task: "t").type == nil)
     }
 
@@ -223,7 +236,14 @@ struct SubagentSafetyTests {
         let runners = SubagentRunnerRegistry()
         await runners.register(runner, for: runID)
         let tool = DelegateTool(runners: runners)
-        var context = ToolContext(runID: runID, cancellation: CancellationToken())
+        var context = ToolContext(
+            runID: runID,
+            toolCallID: "delegate-partial",
+            cancellation: CancellationToken(),
+            callOrigin: ToolCallOrigin(
+                kind: .mainRunDelegate, runID: runID, callID: "delegate-partial", toolName: "delegate"
+            )
+        )
         context.childBudget = budgetContext()
         let output = try await tool.execute(
             .init(task: "inspect"),
@@ -252,7 +272,14 @@ struct SubagentSafetyTests {
         let runners = SubagentRunnerRegistry()
         await runners.register(runner, for: runID)
         let tool = DelegateTool(runners: runners)
-        var context = ToolContext(runID: runID, cancellation: CancellationToken())
+        var context = ToolContext(
+            runID: runID,
+            toolCallID: "delegate-complete",
+            cancellation: CancellationToken(),
+            callOrigin: ToolCallOrigin(
+                kind: .mainRunDelegate, runID: runID, callID: "delegate-complete", toolName: "delegate"
+            )
+        )
         context.childBudget = budgetContext()
         let output = try await tool.execute(.init(task: "answer"), context: context)
         #expect(output.exitStatus == 0)

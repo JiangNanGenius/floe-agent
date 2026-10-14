@@ -92,9 +92,13 @@ public struct MediaProjectTool: AgentTool {
     public static let toolDescription = """
     Read, inspect capabilities of, propose changes to, apply confirmed proposals to, or export a Floe \
     unified image/video workbench project. Workflow is discover -> read/capabilities -> propose (draft, \
-    revision-bound) -> user confirms in the workbench UI (grant) -> apply -> verify the returned revision/export. \
-    Proposals never change the project until the user accepts them; the model cannot mint a grant. Editing the \
-    current draft and making a variant are distinct: use the bound project for the current draft, forks for variants.
+    revision-bound) -> confirm. apply has two modes: with grant_id (the user accepted this proposal in the \
+    workbench UI) it commits through the interactive path; without grant_id, and only when the runtime \
+    approved this exact call, it applies as a runtime-authorized automatic transaction, reopens the persisted \
+    project and reports the verified revision digest with the source assets unchanged. A model cannot mint a \
+    grant or an authorization; the model cannot force overwrite of original assets. Proposals never change \
+    the project until an authorized apply; editing the current draft and making a variant are distinct: use \
+    the bound project for the current draft, forks for variants.
     """
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
@@ -145,6 +149,42 @@ public struct MediaProjectTool: AgentTool {
         self.host = host
     }
 
+    /// Canonical JSON of the DECODED approved arguments, in exactly the shape
+    /// the runtime hashed when it minted this call's authority. Optional fields
+    /// that were absent stay absent.
+    static func canonicalApprovedPayload(_ args: MediaProjectArguments) throws -> Data {
+        var object: [String: Any] = ["action": args.action.rawValue]
+        object["project_id"] = args.projectID.uuidString.lowercased()
+        if let summary = args.summary { object["summary"] = summary }
+        if let commands = args.commands { object["commands"] = commands.map { $0.mapValues(\.jsonValue) } }
+        if let proposalID = args.proposalID { object["proposal_id"] = proposalID.uuidString.lowercased() }
+        if let grantID = args.grantID { object["grant_id"] = grantID }
+        if let export = args.export { object["export"] = export.jsonValue }
+        return try JSONSerialization.data(withJSONObject: object, options: [])
+    }
+
+    /// Mirrors `RuntimeAuthorityDigest.canonicalTarget` for this tool: no
+    /// mutation-key path argument, so the runtime resolves the workspace
+    /// wildcard from the canonical root.
+    static func canonicalTarget(context: ToolContext) -> String {
+        guard let root = context.workspaceRootURL else { return "workspace:*" }
+        return "workspace:" + root.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// Builds the binding this apply call implies, exactly like the runtime
+    /// minted it. Throws only when the approved arguments cannot be
+    /// canonicalized (itself a refusal, never a bypass).
+    static func runtimeAuthorityBinding(for args: MediaProjectArguments,
+                                        context: ToolContext) throws -> RuntimeAuthorityBinding {
+        let payload = try canonicalApprovedPayload(args)
+        return context.runtimeAuthorityBinding(
+            toolName: name,
+            operation: "apply",
+            canonicalTarget: canonicalTarget(context: context),
+            baseRevision: RuntimeAuthorityDigest.baseRevision(in: payload),
+            payloadDigest: RuntimeAuthorityDigest.payloadDigest(payload))
+    }
+
     public func validate(_ args: Arguments) throws {
         switch args.action {
         case .capabilities, .read:
@@ -157,9 +197,8 @@ public struct MediaProjectTool: AgentTool {
                 throw FloeError.validationFailed("propose requires a human-readable summary")
             }
         case .apply:
-            guard let proposalID = args.proposalID, let grantID = args.grantID,
-                  !grantID.isEmpty else {
-                throw FloeError.validationFailed("apply requires proposal_id and a UI-issued grant_id")
+            guard let proposalID = args.proposalID else {
+                throw FloeError.validationFailed("apply requires proposal_id")
             }
             _ = proposalID
         case .export:
@@ -207,8 +246,8 @@ public struct MediaProjectTool: AgentTool {
             return ToolExecutionOutput(digesting: preview, requiresUserAction: true)
 
         case .apply:
-            guard let proposalID = args.proposalID, let grantID = args.grantID else {
-                throw FloeError.validationFailed("proposal_id and grant_id are required")
+            guard let proposalID = args.proposalID else {
+                throw FloeError.validationFailed("proposal_id is required")
             }
             guard let proposal = try await host.loadProposal(id: proposalID) else {
                 throw FloeError.notFound("proposal \(proposalID.uuidString)")
@@ -216,15 +255,71 @@ public struct MediaProjectTool: AgentTool {
             guard var live = try await host.loadProject(id: project.id) else {
                 throw FloeError.notFound("media project disappeared")
             }
-            // Trusted, single-use, revision-bound grant.
-            let decision = await host.consumeGrant(grantID: grantID, proposalID: proposal.id,
-                                                   projectID: project.id, revision: live.revision)
-            // Tool-supplied grant ids are not authority; the host owns grants.
-            try MediaProposalGate.applyAuthorized(proposal, grant: decision, to: &live)
+            let grantText = (args.grantID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !grantText.isEmpty {
+                // Interactive path: trusted, single-use, revision-bound grant.
+                let decision = await host.consumeGrant(grantID: grantText, proposalID: proposal.id,
+                                                       projectID: project.id, revision: live.revision)
+                // Tool-supplied grant ids are not authority; the host owns grants.
+                try MediaProposalGate.applyAuthorized(proposal, grant: decision, to: &live)
+                try await host.persistProject(live, expectedRevision: project.revision)
+                try await host.removeProposal(id: proposal.id)
+                let summary = try MediaProjectSummaries.summary(live)
+                return ToolExecutionOutput(digesting: "Proposal applied as revision \(live.revision).\n\(summary)")
+            }
+            // Automatic path: the ONLY authority is the runtime-issued task
+            // authority for this exact approved call. A model-supplied
+            // confirmed flag or grant-looking string is never consulted.
+            let binding = try Self.runtimeAuthorityBinding(for: args, context: context)
+            let verdict = await context.consumeRuntimeAuthority(binding: binding)
+            guard verdict.isValid else {
+                throw FloeError.validationFailed(
+                    "automatic apply needs the runtime-approved call authority for this exact operation"
+                        + (verdict.failureReason.map { " (\($0))" } ?? "")
+                        + "; confirm the proposal in the workbench UI (grant_id), or send the apply call "
+                        + "with canonical JSON arguments (omit optional fields instead of null).")
+            }
+            let beforeAssets = MediaAutomaticVerification.assetHashes(live)
+            let proof = MediaAutomaticAuthorization(
+                runID: context.runID,
+                taskID: context.conversationID,
+                operationID: context.toolCallID ?? "",
+                idempotencyKey: context.toolIdempotencyKey,
+                approvalGrantID: context.approvalGrantID,
+                canonicalTarget: binding.canonicalTarget,
+                baseRevision: live.revision,
+                payloadDigest: binding.payloadDigest,
+                commandsDigest: MediaProposalGate.commandsDigest(proposal.commands),
+                proposalID: proposal.id)
+            try MediaProposalGate.applyAutomatic(proposal, authorization: proof, to: &live)
+            let appliedRevision = live.revision
             try await host.persistProject(live, expectedRevision: project.revision)
             try await host.removeProposal(id: proposal.id)
-            let summary = try MediaProjectSummaries.summary(live)
-            return ToolExecutionOutput(digesting: "Proposal applied as revision \(live.revision).\n\(summary)")
+            // REOPEN the persisted project and verify the snapshot: the exact
+            // revision is readable again, its canonical digest is recorded and
+            // the referenced source assets are untouched.
+            guard let reopened = try await host.loadProject(id: project.id) else {
+                throw FloeError.validationFailed(
+                    "the applied project could not be reopened; treat the revision as unverified")
+            }
+            guard reopened.revision == appliedRevision else {
+                throw FloeError.validationFailed(
+                    "the reopened project reports revision \(reopened.revision), expected \(appliedRevision)")
+            }
+            let reopenedAssets = MediaAutomaticVerification.assetHashes(reopened)
+            guard reopenedAssets == beforeAssets else {
+                throw FloeError.validationFailed(
+                    "the apply changed referenced source assets; the revision is not a safe snapshot")
+            }
+            let digest = MediaAutomaticVerification.canonicalProjectDigest(reopened)
+            let summary = try MediaProjectSummaries.summary(reopened)
+            let receipt = """
+            status=applied mode=automatic revision=\(reopened.revision) \
+            projectDigest=\(digest) sourceAssetsUnchanged=true \
+            authorization=\(proof.operationID)
+            \(summary)
+            """
+            return ToolExecutionOutput(digesting: receipt)
 
         case .export:
             guard let spec = args.export else {
@@ -325,6 +420,21 @@ public struct MediaExportArguments: Decodable, Sendable {
         case preserveTransparency = "preserve_transparency"
         case stripMetadata = "strip_metadata"
         case frameRate = "frame_rate"
+    }
+
+    /// JSON-compatible canonical shape (for the approved-payload digest).
+    var jsonValue: [String: Any] {
+        var object: [String: Any] = ["kind": kind, "file_name": fileName]
+        if let format { object["format"] = format }
+        if let width { object["width"] = width }
+        if let height { object["height"] = height }
+        if let quality { object["quality"] = quality }
+        if let preserveTransparency { object["preserve_transparency"] = preserveTransparency }
+        if let stripMetadata { object["strip_metadata"] = stripMetadata }
+        if let codec { object["codec"] = codec }
+        if let frameRate { object["frame_rate"] = frameRate }
+        if let preset { object["preset"] = preset }
+        return object
     }
 
     func validate() throws {

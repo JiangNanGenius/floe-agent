@@ -282,6 +282,7 @@ struct ConversationToolsTests {
     @Test("spawn requires an explicit latest user request")
     func spawnRequiresExplicitRequest() async throws {
         let sourceID = UUID()
+        let runID = UUID()
         let tool = ConversationSpawnTool(
             sourceConversationID: { _ in sourceID },
             hasExplicitUserAuthority: { _ in false },
@@ -289,7 +290,7 @@ struct ConversationToolsTests {
         )
         let output = try await tool.execute(
             .init(title: "Separate work", objective: "Do the work"),
-            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+            context: mainRunContext(runID: runID, callID: "call-spawn")
         )
         #expect(output.exitStatus == 1)
         #expect(output.summary.contains("needsExplicitUserRequest"))
@@ -310,11 +311,7 @@ struct ConversationToolsTests {
         let runID = UUID()
         let output = try await tool.execute(
             .init(title: "Separate work", objective: "Do the work"),
-            context: ToolContext(
-                runID: runID,
-                toolCallID: "provider-call-42",
-                cancellation: CancellationToken()
-            )
+            context: mainRunContext(runID: runID, callID: "provider-call-42")
         )
         #expect(output.exitStatus == 0)
         #expect(output.summary.contains(spawnedID.uuidString))
@@ -325,6 +322,133 @@ struct ConversationToolsTests {
         #expect(
             ConversationSpawnIdentity.uuid(operationID: request.operationID, suffix: "conversation")
                 == ConversationSpawnIdentity.uuid(operationID: request.operationID, suffix: "conversation")
+        )
+    }
+
+    /// The gap this guards: `childBudget == nil` used to be the only main-run
+    /// signal, so a child or a wrapper that rebuilt a "weaker" context
+    /// (clearing the budget) could reach the spawner with the main run's
+    /// explicit-user-request authority. The spawner must require the
+    /// runtime's exact call provenance for THIS run and call id; a
+    /// reconstructed context is refused even when every other field looks
+    /// main-run.
+    @Test("spawn requires the runtime's exact main-run provenance, never a rebuilt context")
+    func spawnRequiresExactMainRunProvenance() async throws {
+        let sourceID = UUID()
+        let spawnedID = UUID()
+        let recorder = SpawnRecorder(result: .init(
+            conversationID: spawnedID, title: "Separate work", workspaceID: nil
+        ))
+        let tool = ConversationSpawnTool(
+            sourceConversationID: { _ in sourceID },
+            hasExplicitUserAuthority: { _ in true },
+            spawner: { request in try await recorder.spawn(request) }
+        )
+        let runID = UUID()
+        let callID = "call-spawn"
+
+        // 1. A delegated child's provenance with the child budget cleared.
+        await #expect(throws: Error.self) {
+            _ = try await tool.execute(
+                .init(title: "T", objective: "O"),
+                context: ToolContext(
+                    runID: runID,
+                    toolCallID: callID,
+                    cancellation: CancellationToken(),
+                    callOrigin: ToolCallOrigin(
+                        kind: .delegatedChild,
+                        runID: runID,
+                        callID: callID,
+                        toolName: "test.mainwrapper",
+                        childID: UUID(),
+                        rootTaskID: UUID()
+                    )
+                )
+            )
+        }
+        // 2. A from-scratch reconstruction with no provenance at all.
+        await #expect(throws: Error.self) {
+            _ = try await tool.execute(
+                .init(title: "T", objective: "O"),
+                context: ToolContext(runID: runID, toolCallID: callID, cancellation: CancellationToken())
+            )
+        }
+        // 3. A wrapper that copies its OWN main origin but keeps a different
+        //    call id: exact-call binding refuses it.
+        await #expect(throws: Error.self) {
+            _ = try await tool.execute(
+                .init(title: "T", objective: "O"),
+                context: ToolContext(
+                    runID: runID,
+                    toolCallID: callID,
+                    cancellation: CancellationToken(),
+                    callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: runID, callID: "wrapper-call", toolName: "conversation.spawn")
+                )
+            )
+        }
+        // 4. Another run's provenance never authorizes this run.
+        await #expect(throws: Error.self) {
+            _ = try await tool.execute(
+                .init(title: "T", objective: "O"),
+                context: ToolContext(
+                    runID: runID,
+                    toolCallID: callID,
+                    cancellation: CancellationToken(),
+                    callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: UUID(), callID: callID, toolName: "conversation.spawn")
+                )
+            )
+        }
+        // 5. A legacy child budget refuses even when an origin claims main.
+        await #expect(throws: Error.self) {
+            _ = try await tool.execute(
+                .init(title: "T", objective: "O"),
+                context: ToolContext(
+                    runID: runID,
+                    toolCallID: callID,
+                    cancellation: CancellationToken(),
+                    childBudget: ChildBudgetContext(maximumIterations: 3, reserve: { true }, finish: {}),
+                    callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: runID, callID: callID, toolName: "conversation.spawn")
+                )
+            )
+        }
+        // 5b. A main-run WRAPPER with a genuine runtime origin for its OWN
+        //     approved tool forwards the identical runID + callID: the
+        //     tool-name binding refuses it instead of inheriting main
+        //     provenance.
+        await #expect(throws: Error.self) {
+            _ = try await tool.execute(
+                .init(title: "T", objective: "O"),
+                context: ToolContext(
+                    runID: runID,
+                    toolCallID: callID,
+                    cancellation: CancellationToken(),
+                    callOrigin: ToolCallOrigin(
+                        kind: .mainRunDelegate,
+                        runID: runID,
+                        callID: callID,
+                        toolName: "test.mainwrapper"
+                    )
+                )
+            )
+        }
+        #expect(await recorder.request == nil)
+
+        // 6. The legitimate main-run call with its exact provenance succeeds.
+        let output = try await tool.execute(
+            .init(title: "Separate work", objective: "Do the work"),
+            context: mainRunContext(runID: runID, callID: callID)
+        )
+        #expect(output.exitStatus == 0)
+        #expect(output.summary.contains(spawnedID.uuidString))
+        #expect(await recorder.request != nil)
+    }
+
+    private func mainRunContext(runID: UUID, callID: String) -> ToolContext {
+        ToolContext(
+            runID: runID,
+            toolCallID: callID,
+            cancellation: CancellationToken(),
+            callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: runID, callID: callID, toolName: "conversation.spawn")
         )
     }
 

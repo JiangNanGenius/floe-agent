@@ -179,7 +179,7 @@ enum MediaTranscodePipeline {
 /// Each stream owns one serial worker and retains at most one sample. Blocking
 /// calls never execute on Swift's cooperative pool. The continuation resumes only
 /// after the worker leaves, including after cancellation; no sample memory escapes.
-private final class MediaSampleTransfer: @unchecked Sendable {
+final class MediaSampleTransfer: @unchecked Sendable {
     private let source: AVAssetReaderOutput
     private let destination: AVAssetWriterInput
     private let control: MediaTransferControl
@@ -228,7 +228,7 @@ private final class MediaSampleTransfer: @unchecked Sendable {
 /// Cancellation can arrive from the token watcher, task cancellation and error unwind.
 /// Deliver it once: concurrent repeated cancellation can race AVFoundation observer teardown.
 /// The wrapper stays alive until all sample workers and writer completion have returned.
-private final class MediaTransferControl: @unchecked Sendable {
+final class MediaTransferControl: @unchecked Sendable {
     let reader: AVAssetReader
     let writer: AVAssetWriter
     init(reader: AVAssetReader, writer: AVAssetWriter) { self.reader = reader; self.writer = writer }

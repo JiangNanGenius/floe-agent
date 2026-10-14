@@ -51,6 +51,11 @@ public struct ProviderCatalogEntry: Codable, Sendable, Equatable, Hashable, Iden
     public var authStyle: String
     /// Mirrors `ProviderProfile.toolNameCompatibility` for this preset.
     public var toolNameCompatibility: Bool
+    /// Optional directory metadata for additional product roles this provider
+    /// can serve (image, video). Backward compatible: catalogs written before
+    /// multi-service metadata existed decode as `nil`, and the app only offers
+    /// a role when a shipped adapter can actually execute it.
+    public var serviceOffers: [ProviderCatalogServiceOffer]?
 
     public var id: String { presetID }
 
@@ -67,7 +72,8 @@ public struct ProviderCatalogEntry: Codable, Sendable, Equatable, Hashable, Iden
         unsupportedReason: String? = nil,
         upstreamID: String,
         authStyle: String,
-        toolNameCompatibility: Bool = false
+        toolNameCompatibility: Bool = false,
+        serviceOffers: [ProviderCatalogServiceOffer]? = nil
     ) {
         self.presetID = presetID
         self.name = name
@@ -82,6 +88,7 @@ public struct ProviderCatalogEntry: Codable, Sendable, Equatable, Hashable, Iden
         self.upstreamID = upstreamID
         self.authStyle = authStyle
         self.toolNameCompatibility = toolNameCompatibility
+        self.serviceOffers = serviceOffers
     }
 }
 
@@ -266,6 +273,7 @@ public struct ProviderCatalogIndex: Sendable {
                 throw ProviderCatalogValidationError("\(presetID): invalid model identifier \(model)")
             }
         }
+        try validateServiceOffers(entry.serviceOffers, presetID: presetID)
         switch entry.availability {
         case .available:
             guard entry.unsupportedReason == nil else {
@@ -344,6 +352,69 @@ public struct ProviderCatalogIndex: Sendable {
             }
         }
         try validateBaseURL(entry.baseURL, presetID: presetID, availability: entry.availability)
+    }
+
+    /// Validates optional multi-service metadata. Offers are descriptive only:
+    /// they never carry credentials, and the app additionally filters them by
+    /// the adapters that actually ship. Rule set: at most 4 offers, unique
+    /// roles, at most 100 model identifiers per offer validated exactly like
+    /// entry models, at most 3 protocols per offer, known auth styles only,
+    /// bounded notes, and a clean HTTPS endpoint when one is declared.
+    private static func validateServiceOffers(
+        _ offers: [ProviderCatalogServiceOffer]?,
+        presetID: String
+    ) throws {
+        guard let offers, !offers.isEmpty else { return }
+        guard offers.count <= 4 else {
+            throw ProviderCatalogValidationError("\(presetID): more than 4 service offers")
+        }
+        var seenRoles = Set<ProviderCatalogServiceRole>()
+        for offer in offers {
+            guard seenRoles.insert(offer.role).inserted else {
+                throw ProviderCatalogValidationError(
+                    "\(presetID): duplicate service offer role \(offer.role.rawValue)"
+                )
+            }
+            guard offer.models.count <= 100 else {
+                throw ProviderCatalogValidationError(
+                    "\(presetID): more than 100 models in the \(offer.role.rawValue) service offer"
+                )
+            }
+            for model in offer.models {
+                guard !model.isEmpty, model.count <= 256,
+                      model.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+                      model.rangeOfCharacter(from: .controlCharacters) == nil else {
+                    throw ProviderCatalogValidationError(
+                        "\(presetID): invalid \(offer.role.rawValue) service offer model \(model)"
+                    )
+                }
+            }
+            if let protocols = offer.protocols {
+                guard !protocols.isEmpty, protocols.count <= 3 else {
+                    throw ProviderCatalogValidationError(
+                        "\(presetID): service offer protocols must be 1...3 entries"
+                    )
+                }
+            }
+            if let authStyle = offer.authStyle {
+                guard ["bearer", "apiKeyHeader", "none"].contains(authStyle) else {
+                    throw ProviderCatalogValidationError(
+                        "\(presetID): unknown service offer authStyle \(authStyle)"
+                    )
+                }
+            }
+            if let note = offer.note {
+                guard !note.isEmpty, note.count <= 256,
+                      note.rangeOfCharacter(from: .controlCharacters) == nil else {
+                    throw ProviderCatalogValidationError(
+                        "\(presetID): service offer note must be 1...256 characters"
+                    )
+                }
+            }
+            if let baseURL = offer.baseURL {
+                try validateBaseURL(baseURL, presetID: presetID, availability: .available)
+            }
+        }
     }
 
     private static func validateBaseURL(

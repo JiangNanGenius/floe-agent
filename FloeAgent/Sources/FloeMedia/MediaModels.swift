@@ -286,6 +286,103 @@ public actor ModelArtifactStore {
         }
     }
 
+    /// Installs a locally produced, already-compiled model bundle (the
+    /// development/qualification path). Every file is verified against the
+    /// bundle manifest before it is copied, and the same `InstalledModel`
+    /// records the catalog installer writes. This is deliberately separate
+    /// from the tool-visible `media.models install` path, which stays
+    /// catalog-only. Returns the existing record when the identical version
+    /// is already installed.
+    @discardableResult
+    public func installLocalBundle(at bundleURL: URL, scope: InstalledModel.Scope) async throws -> InstalledModel {
+        guard !mutationActive else { throw FloeError.validationFailed("Another model mutation is active") }
+        mutationActive = true
+        defer { mutationActive = false }
+        let fileManager = FileManager.default
+        let manifestURL = bundleURL.appendingPathComponent("manifest.json")
+        guard let manifestData = try? Data(floeContentsOf: manifestURL) else {
+            throw FloeError.validationFailed("model bundle has no manifest.json")
+        }
+        struct Manifest: Decodable {
+            struct File: Decodable {
+                var path: String
+                var sha256: String
+                var sizeBytes: Int64?
+            }
+            var id: String
+            var version: String
+            var capability: String
+            var license: String?
+            var files: [File]
+        }
+        let manifest = try JSONDecoder().decode(Manifest.self, from: manifestData)
+        let contractURL = bundleURL.appendingPathComponent("contract.json")
+        if let contractData = try? Data(floeContentsOf: contractURL),
+           let contract = try? JSONDecoder().decode(MediaModelContract.self, from: contractData) {
+            guard contract.id == manifest.id, contract.version == manifest.version else {
+                throw FloeError.validationFailed("model bundle manifest and contract disagree on id/version")
+            }
+        }
+        if let existing = try installedChecked().first(where: { $0.id == manifest.id }) {
+            if existing.version == manifest.version,
+               URL(fileURLWithPath: existing.rootPath).standardizedFileURL ==
+               (try safePath("\(scope.rawValue)/\(manifest.id)/\(manifest.version)", beneath: rootURL)).standardizedFileURL {
+                return existing
+            }
+            throw FloeError.validationFailed("Model already installed; remove it before installing another version")
+        }
+        for file in manifest.files {
+            let source = bundleURL.appendingPathComponent(file.path)
+            guard fileManager.fileExists(atPath: source.path) else {
+                throw FloeError.validationFailed("model bundle is missing \(file.path)")
+            }
+            let digest = (try? FloeDigest.sha256Hex(ofFileAt: source)) ?? ""
+            guard digest.caseInsensitiveCompare(file.sha256) == .orderedSame else {
+                throw FloeError.validationFailed("sha256 mismatch for \(file.path)")
+            }
+            _ = try safePath(file.path, beneath: bundleURL)
+        }
+        let destination = try safePath("\(scope.rawValue)/\(manifest.id)/\(manifest.version)", beneath: rootURL)
+        let staging = destination.deletingLastPathComponent()
+            .appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+        do {
+            for file in manifest.files {
+                let source = bundleURL.appendingPathComponent(file.path)
+                let target = try safePath(file.path, beneath: staging)
+                try fileManager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fileManager.copyItem(at: source, to: target)
+            }
+            // The manifest itself is the verification source, so it is not in
+            // its own file list; copy it so an installed bundle stays
+            // hash-verifiable after installation.
+            let manifestCopy = try safePath("manifest.json", beneath: staging)
+            try fileManager.copyItem(at: manifestURL, to: manifestCopy)
+            try fileManager.moveItem(at: staging, to: destination)
+            var models = try installedChecked()
+            let record = InstalledModel(
+                id: manifest.id,
+                version: manifest.version,
+                capability: manifest.capability,
+                scope: scope,
+                rootPath: destination.path,
+                sha256: manifest.files.map(\.sha256).joined(separator: ":"),
+                license: manifest.license
+            )
+            models.removeAll { $0.id == manifest.id }
+            models.append(record)
+            do { try persist(models) }
+            catch {
+                try? fileManager.moveItem(at: destination, to: staging)
+                throw error
+            }
+            return record
+        } catch {
+            try? fileManager.removeItem(at: staging)
+            throw error
+        }
+    }
+
     /// Removes one model install and deletes its files.
     public func remove(id: String) throws {
         guard !mutationActive else { throw FloeError.validationFailed("Another model mutation is active") }

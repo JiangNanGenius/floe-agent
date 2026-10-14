@@ -38,6 +38,9 @@ public struct ToolContext: Sendable {
     /// Durable provider call identifier. Remote/durable tools use it as an
     /// idempotency key so reconnecting never starts the same action twice.
     public var toolCallID: String?
+    /// Provider idempotency key of this exact approved call (may be empty).
+    /// Runtime-issued authority binds it and consumers compare it.
+    public var toolIdempotencyKey: String
     /// Approval grant under which this execution proceeds. `nil` only for
     /// non-side-effecting tools.
     public var approvalGrantID: UUID?
@@ -62,10 +65,32 @@ public struct ToolContext: Sendable {
     public var cancellation: CancellationToken
     /// Subagent budget handle when this tool runs as a delegated child.
     public var childBudget: ChildBudgetContext?
+    /// Runtime-issued delegated-child handoff. Present on the `delegate`
+    /// call context (the child about to run) and on every tool context a
+    /// child executes, so the child knows its identity and can only reach
+    /// tools through the parent's canonical dispatcher. Never Codable: a
+    /// provider cannot mint an identity, a dispatcher or a peer handle.
+    public var childExecution: ChildExecutionHandoff?
+    /// Runtime-issued operation authority for this exact call. Minted by the
+    /// runtime only after the canonical approval path already allowed the
+    /// call; effectful tools that require trusted task authorization consume
+    /// it at their own boundary. Never Codable and never model-minted.
+    public var runtimeAuthority: RuntimeTaskAuthority?
+    /// Runtime-issued provenance of this exact call. `delegate` and any other
+    /// main-only capability check it at the callable boundary, so a wrapper
+    /// context or a nested child can never smuggle a call that claims to
+    /// originate from the main run. Never Codable and never model-minted.
+    public var callOrigin: ToolCallOrigin?
+    /// Progress reporter injected by the job executor while this tool runs
+    /// inside a durable background job; nil in ordinary foreground runs.
+    /// Read-only for tools: report only real processor units at natural
+    /// checkpoints (coalescing/persistence belong to the injected reporter).
+    public var taskProgress: (any TaskProgressReporting)?
 
     public init(
         runID: UUID,
         toolCallID: String? = nil,
+        toolIdempotencyKey: String = "",
         approvalGrantID: UUID? = nil,
         scope: ToolScope = .local,
         activeSkillIDs: Set<String> = [],
@@ -77,13 +102,18 @@ public struct ToolContext: Sendable {
         childBudget: ChildBudgetContext? = nil,
         environmentID: String? = nil,
         conversationID: UUID? = nil,
-        environment: ToolEnvironment? = nil
+        environment: ToolEnvironment? = nil,
+        childExecution: ChildExecutionHandoff? = nil,
+        runtimeAuthority: RuntimeTaskAuthority? = nil,
+        callOrigin: ToolCallOrigin? = nil,
+        taskProgress: (any TaskProgressReporting)? = nil
     ) {
         self.runID = runID
         self.environmentID = environmentID
         self.conversationID = conversationID
         self.environment = environment
         self.toolCallID = toolCallID
+        self.toolIdempotencyKey = toolIdempotencyKey
         self.approvalGrantID = approvalGrantID
         self.scope = scope
         self.activeSkillIDs = activeSkillIDs
@@ -93,6 +123,10 @@ public struct ToolContext: Sendable {
         self.allowedWorkspacePaths = allowedWorkspacePaths
         self.cancellation = cancellation
         self.childBudget = childBudget
+        self.childExecution = childExecution
+        self.runtimeAuthority = runtimeAuthority
+        self.callOrigin = callOrigin
+        self.taskProgress = taskProgress
     }
 
     /// Enforces the task's persisted file scope before the workspace path

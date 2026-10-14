@@ -13,9 +13,39 @@ import FloeModels
 import FloePersistence
 import FloeWorkspace
 
-private enum AppleToolOutput {
+enum AppleToolOutput {
     static func make(_ text: String, exitStatus: Int32 = 0) -> ToolExecutionOutput {
         return ToolExecutionOutput(digesting: text, exitStatus: exitStatus)
+    }
+
+    /// Explicit pagination failure. Never an empty success.
+    static func cursorError(_ error: PersonalToolCursorError) -> ToolExecutionOutput {
+        make(
+            "status=error code=\(error.code) message=\(error.localizedDescription)",
+            exitStatus: 1
+        )
+    }
+
+    /// Downstream character budget for one page. The runtime prefixes tool
+    /// summaries to 4096 characters without a JSON-aware marker, so the
+    /// store slices rows under this budget BEFORE the cursor is chosen and
+    /// the header reserve keeps the rendered page inside the boundary.
+    static let paginationCharacterBudget = 4_000
+    static let paginationHeaderReserve = 320
+
+    /// Renders one stable snapshot page with the complete pagination contract.
+    /// The page's rows were already sliced to the character budget, so the
+    /// header counts and the cursor describe exactly these visible rows.
+    static func page(_ page: PersonalToolPage, kind: String) -> ToolExecutionOutput {
+        var header = "status=ok kind=\(kind) count=\(page.returnedCount) totalCount=\(page.totalCount)"
+            + " hasMore=\(page.hasMore) nextCursor=\(page.nextCursor ?? "none")"
+            + " pageCount=\(page.pageCount) snapshotTime=\(iso(page.snapshotTime))"
+            + " completeness=\(page.completeness)"
+        if page.truncatedRows > 0 {
+            header += " truncatedRows=\(page.truncatedRows)"
+        }
+        guard !page.lines.isEmpty else { return make(header) }
+        return make(header + "\n" + page.lines.joined(separator: "\n"))
     }
 
     static func date(_ value: String?) throws -> Date? {
@@ -59,18 +89,103 @@ private func openMapItem(_ args: AppleMapsOpenTool.Arguments) -> Bool {
     return item.openInMaps(launchOptions: options)
 }
 
+/// Trusted task identity for paginated personal listings: the durable
+/// conversation (stable across runs of the same task) plus the environment
+/// where one applies; conversation-less runs fall back to the run identity.
+extension PersonalToolOwnerID {
+    init(context: ToolContext) {
+        self.init(
+            conversationID: context.conversationID,
+            environmentID: context.environmentID,
+            fallbackRunID: context.runID
+        )
+    }
+}
+
+/// Production paging seam for the personal list tools. The handlers call these
+/// exact functions, so App tests exercise the real owner binding and store
+/// behaviour without EventKit permission.
+enum ApplePersonalListPaging {
+    static func begin(
+        kind: String,
+        filterKey: String,
+        lines: [String],
+        context: ToolContext,
+        pageSize: Int
+    ) async throws -> PersonalToolPage {
+        try await PersonalToolCursorStore.shared.begin(
+            kind: kind,
+            filterKey: filterKey,
+            lines: lines,
+            owner: PersonalToolOwnerID(context: context),
+            pageSize: pageSize,
+            characterBudget: AppleToolOutput.paginationCharacterBudget,
+            reservedHeaderCharacters: AppleToolOutput.paginationHeaderReserve
+        )
+    }
+
+    static func next(
+        cursor: String,
+        context: ToolContext,
+        kind: String,
+        filterKey: String?,
+        pageSize: Int
+    ) async throws -> PersonalToolPage {
+        try await PersonalToolCursorStore.shared.next(
+            cursor: cursor,
+            owner: PersonalToolOwnerID(context: context),
+            kind: kind,
+            filterKey: filterKey,
+            pageSize: pageSize,
+            characterBudget: AppleToolOutput.paginationCharacterBudget,
+            reservedHeaderCharacters: AppleToolOutput.paginationHeaderReserve
+        )
+    }
+}
+
 struct AppleCalendarListTool: AgentTool {
-    struct Arguments: Decodable, Sendable { var start: String?; var end: String?; var query: String? }
+    struct Arguments: Decodable, Sendable {
+        var start: String?; var end: String?; var query: String?
+        var limit: Int?; var cursor: String?
+    }
     static let name = "apple.calendar.list"
-    static let toolDescription = "List Apple Calendar events in an ISO-8601 date range after system permission. Returns stable event identifiers for later edits."
-    static let parametersJSON = #"{"type":"object","properties":{"start":{"type":"string"},"end":{"type":"string"},"query":{"type":"string"}},"additionalProperties":false}"#
+    static let toolDescription = "List Apple Calendar events in an ISO-8601 date range after system permission. Returns stable event identifiers and per-occurrence identities for later edits. Pages are stable snapshots: limit defaults to 100 (maximum 200); when hasMore is true, pass nextCursor back as cursor to continue the SAME snapshot. A cursor is owned by the task that started it and reports explicit errors when expired, revoked or given different filters."
+    static let parametersJSON = #"{"type":"object","properties":{"start":{"type":"string"},"end":{"type":"string"},"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200},"cursor":{"type":"string","maxLength":2048}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = false
 
-    func validate(_ args: Arguments) throws {}
+    func validate(_ args: Arguments) throws {
+        if let limit = args.limit, !(1...200).contains(limit) {
+            throw FloeError.validationFailed("limit must be 1...200")
+        }
+    }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        let limit = args.limit ?? 100
+        guard (1...200).contains(limit) else {
+            throw FloeError.validationFailed("limit must be 1...200")
+        }
         let store = EKEventStore()
+        if let cursor = args.cursor {
+            // A cursor page still requires live calendar access: revocation
+            // must be explicit, never served from cache.
+            guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
+                return AppleToolOutput.make("status=permissionDenied capability=calendar", exitStatus: 77)
+            }
+            let filterKey = try Self.canonicalFilterKey(args, required: false)
+            do {
+                let page = try await ApplePersonalListPaging.next(
+                    cursor: cursor,
+                    context: context,
+                    kind: "calendar",
+                    filterKey: filterKey,
+                    pageSize: limit
+                )
+                return AppleToolOutput.page(page, kind: "calendar")
+            } catch let error as PersonalToolCursorError {
+                return AppleToolOutput.cursorError(error)
+            }
+        }
         guard try await store.requestFullAccessToEvents() else {
             return AppleToolOutput.make("status=permissionDenied capability=calendar", exitStatus: 77)
         }
@@ -82,12 +197,51 @@ struct AppleCalendarListTool: AgentTool {
         let query = args.query?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let events = store.events(matching: store.predicateForEvents(withStart: start, end: end, calendars: nil))
             .filter { query?.isEmpty != false || $0.title.lowercased().contains(query ?? "") }
-            .prefix(200)
-        let lines = events.map {
-            "id=\($0.eventIdentifier ?? "unknown") start=\(AppleToolOutput.iso($0.startDate)) end=\(AppleToolOutput.iso($0.endDate)) calendar=\($0.calendar.title) title=\($0.title ?? "")"
+            .sorted {
+                if $0.startDate != $1.startDate { return $0.startDate < $1.startDate }
+                if $0.endDate != $1.endDate { return $0.endDate < $1.endDate }
+                let lhsID = $0.eventIdentifier ?? ""
+                let rhsID = $1.eventIdentifier ?? ""
+                if lhsID != rhsID { return lhsID < rhsID }
+                return ($0.title ?? "") < ($1.title ?? "")
+            }
+        let lines = events.map { event -> String in
+            let id = event.eventIdentifier ?? "unknown"
+            let startISO = AppleToolOutput.iso(event.startDate)
+            // Occurrence identity: a recurring series shares eventIdentifier,
+            // so the occurrence start distinguishes instances across pages.
+            let occurrence = "\(id)@\(startISO)"
+            return "id=\(id) occurrence=\(occurrence) start=\(startISO)"
+                + " end=\(AppleToolOutput.iso(event.endDate)) allDay=\(event.isAllDay)"
+                + " calendar=\(event.calendar.title) title=\(event.title ?? "")"
         }
-        return AppleToolOutput.make("status=ok count=\(lines.count)\n" + lines.joined(separator: "\n"))
+        do {
+            let page = try await ApplePersonalListPaging.begin(
+                kind: "calendar",
+                filterKey: try Self.canonicalFilterKey(args, required: true) ?? Self.emptyFilterKey,
+                lines: lines,
+                context: context,
+                pageSize: limit
+            )
+            return AppleToolOutput.page(page, kind: "calendar")
+        } catch let error as PersonalToolCursorError {
+            return AppleToolOutput.cursorError(error)
+        }
     }
+
+    /// Canonical, secret-free filter identity for the snapshot. With
+    /// `required == false` the key is only produced when the caller supplied
+    /// at least one filter, so a bare cursor continuation stays valid.
+    private static func canonicalFilterKey(_ args: Arguments, required: Bool) throws -> String? {
+        let hasAny = args.start != nil || args.end != nil || args.query != nil
+        guard hasAny else { return required ? Self.emptyFilterKey : nil }
+        let start = try AppleToolOutput.date(args.start)
+        let end = try AppleToolOutput.date(args.end)
+        let query = args.query?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return "start=\(AppleToolOutput.iso(start)) end=\(AppleToolOutput.iso(end)) query=\(query)"
+    }
+
+    private static let emptyFilterKey = "start=none end=none query="
 }
 
 struct AppleCalendarUpdateTool: AgentTool {
@@ -137,17 +291,48 @@ struct AppleCalendarUpdateTool: AgentTool {
 }
 
 struct AppleReminderListTool: AgentTool {
-    struct Arguments: Decodable, Sendable { var includeCompleted: Bool?; var query: String? }
+    struct Arguments: Decodable, Sendable {
+        var includeCompleted: Bool?; var query: String?
+        var limit: Int?; var cursor: String?
+    }
     static let name = "apple.reminders.list"
-    static let toolDescription = "List Apple Reminders after system permission. Returns stable identifiers for completion or edits."
-    static let parametersJSON = #"{"type":"object","properties":{"includeCompleted":{"type":"boolean"},"query":{"type":"string"}},"additionalProperties":false}"#
+    static let toolDescription = "List Apple Reminders after system permission. Returns stable identifiers for completion or edits. Pages are stable snapshots: limit defaults to 100 (maximum 200); when hasMore is true, pass nextCursor back as cursor to continue the SAME snapshot. A cursor is owned by the task that started it and reports explicit errors when expired, revoked or given different filters."
+    static let parametersJSON = #"{"type":"object","properties":{"includeCompleted":{"type":"boolean"},"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200},"cursor":{"type":"string","maxLength":2048}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = false
-    func validate(_ args: Arguments) throws {}
+    func validate(_ args: Arguments) throws {
+        if let limit = args.limit, !(1...200).contains(limit) {
+            throw FloeError.validationFailed("limit must be 1...200")
+        }
+    }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        let limit = args.limit ?? 100
+        guard (1...200).contains(limit) else {
+            throw FloeError.validationFailed("limit must be 1...200")
+        }
+        if let cursor = args.cursor {
+            guard EKEventStore.authorizationStatus(for: .reminder) == .fullAccess else {
+                return AppleToolOutput.make("status=permissionDenied capability=reminders", exitStatus: 77)
+            }
+            let filterKey = Self.canonicalFilterKey(args, required: false)
+            do {
+                let page = try await ApplePersonalListPaging.next(
+                    cursor: cursor,
+                    context: context,
+                    kind: "reminders",
+                    filterKey: filterKey,
+                    pageSize: limit
+                )
+                return AppleToolOutput.page(page, kind: "reminders")
+            } catch let error as PersonalToolCursorError {
+                return AppleToolOutput.cursorError(error)
+            }
+        }
         let store = EKEventStore()
-        guard try await store.requestFullAccessToReminders() else { return AppleToolOutput.make("status=permissionDenied capability=reminders", exitStatus: 77) }
+        guard try await store.requestFullAccessToReminders() else {
+            return AppleToolOutput.make("status=permissionDenied capability=reminders", exitStatus: 77)
+        }
         let query = args.query?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let includeCompleted = args.includeCompleted ?? false
         let predicate = store.predicateForReminders(in: nil)
@@ -156,15 +341,51 @@ struct AppleReminderListTool: AgentTool {
                 let values = (reminders ?? []).filter {
                     (includeCompleted || !$0.isCompleted)
                         && (query?.isEmpty != false || $0.title.lowercased().contains(query ?? ""))
-                }.prefix(200).map {
+                }.sorted { lhs, rhs in
+                    if lhs.isCompleted != rhs.isCompleted { return !lhs.isCompleted }
+                    let lhsDue = lhs.dueDateComponents.flatMap(Calendar.current.date(from:))
+                    let rhsDue = rhs.dueDateComponents.flatMap(Calendar.current.date(from:))
+                    switch (lhsDue, rhsDue) {
+                    case (nil, nil): break
+                    case (nil, _): return false
+                    case (_, nil): return true
+                    case let (left?, right?):
+                        if left != right { return left < right }
+                    }
+                    if lhs.title != rhs.title { return lhs.title < rhs.title }
+                    return lhs.calendarItemIdentifier < rhs.calendarItemIdentifier
+                }.map {
                     let due = $0.dueDateComponents.flatMap(Calendar.current.date(from:))
                     return "id=\($0.calendarItemIdentifier) completed=\($0.isCompleted) due=\(AppleToolOutput.iso(due)) list=\($0.calendar.title) title=\($0.title ?? "")"
                 }
                 continuation.resume(returning: values)
             }
         }
-        return AppleToolOutput.make("status=ok count=\(lines.count)\n" + lines.joined(separator: "\n"))
+        do {
+            let page = try await ApplePersonalListPaging.begin(
+                kind: "reminders",
+                filterKey: Self.canonicalFilterKey(args, required: true) ?? Self.emptyFilterKey,
+                lines: lines,
+                context: context,
+                pageSize: limit
+            )
+            return AppleToolOutput.page(page, kind: "reminders")
+        } catch let error as PersonalToolCursorError {
+            return AppleToolOutput.cursorError(error)
+        }
     }
+
+    /// Canonical filter identity. With `required == false` the key is only
+    /// produced when the caller supplied filters, so a bare cursor
+    /// continuation stays valid.
+    private static func canonicalFilterKey(_ args: Arguments, required: Bool) -> String? {
+        let hasAny = args.query != nil || args.includeCompleted != nil
+        guard hasAny else { return required ? emptyFilterKey : nil }
+        let query = args.query?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return "query=\(query) includeCompleted=\(args.includeCompleted ?? false)"
+    }
+
+    private static let emptyFilterKey = "query= includeCompleted=false"
 }
 
 struct AppleReminderUpdateTool: AgentTool {

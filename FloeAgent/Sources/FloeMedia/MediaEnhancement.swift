@@ -159,10 +159,12 @@ public actor AudioEngine {
 }
 #endif
 
-/// Native frame enhancement. Uses VTFrameProcessor (iOS 26+) for frame rate
-/// conversion and super resolution, and reports honest errors when a mode is
-/// unavailable on the device. Core ML and MetalFX modes require injected
-/// runners; without them the request fails with a structured explanation.
+/// Thin request facade over the shared `FrameProcessing` engine. Native frame
+/// processing runs in `MediaEnhancementService` (VTFrameProcessor on iOS 26+/
+/// macOS, Core ML installed models, MetalFX spatial); this type only carries
+/// the legacy request shape. The default processor is the honest unavailable
+/// implementation, so a caller without an injected engine gets a structured
+/// explanation instead of a placeholder success.
 public struct MediaEnhancementRouting: Sendable {
     public struct Request: Sendable {
         public var input: URL
@@ -172,10 +174,15 @@ public struct MediaEnhancementRouting: Sendable {
         public var mode: String
         public var modelID: String?
         public var quality: String?
+        public var overwrite: Bool
+        /// Immutable workspace scope for this request (see
+        /// `FrameProcessingRequest.workspaceRoot`).
+        public var workspaceRoot: URL?
 
         public init(
             input: URL, output: URL, targetFPS: Double? = nil, scaleFactor: Int? = nil,
-            mode: String, modelID: String? = nil, quality: String? = nil
+            mode: String, modelID: String? = nil, quality: String? = nil, overwrite: Bool = false,
+            workspaceRoot: URL? = nil
         ) {
             self.input = input
             self.output = output
@@ -184,50 +191,39 @@ public struct MediaEnhancementRouting: Sendable {
             self.mode = mode
             self.modelID = modelID
             self.quality = quality
+            self.overwrite = overwrite
+            self.workspaceRoot = workspaceRoot
         }
     }
 
-    public init() {}
+    private let processor: any FrameProcessing
+
+    public init(processor: any FrameProcessing = UnavailableFrameProcessing()) {
+        self.processor = processor
+    }
 
     public func interpolate(_ request: Request) async throws -> String {
-        switch request.mode {
-        case "quality", "lowLatency":
-            return try await videoToolboxProcess(request, kind: .interpolation)
-        case "metalFX":
-            throw FloeError.invalidConfiguration("MetalFX frame interpolation requires the Metal renderer, which is not enabled in this build")
-        case "coreml":
-            guard let modelID = request.modelID else {
-                throw FloeError.validationFailed("mode=coreml requires an explicit modelID from media.models")
-            }
-            throw FloeError.invalidConfiguration("model \(modelID) must be loaded by the Core ML runner; no runner is registered")
-        default:
-            throw FloeError.validationFailed("mode must be quality, lowLatency, metalFX or coreml")
+        guard let targetFPS = request.targetFPS else {
+            throw FloeError.validationFailed("targetFPS is required for interpolation")
         }
+        return try await processor.process(FrameProcessingRequest(
+            operation: .interpolation(targetFPS: targetFPS),
+            input: request.input, output: request.output, mode: request.mode,
+            modelID: request.modelID, quality: request.quality, overwrite: request.overwrite,
+            workspaceRoot: request.workspaceRoot
+        ))
     }
 
     public func superResolution(_ request: Request) async throws -> String {
-        switch request.mode {
-        case "quality", "lowLatency":
-            return try await videoToolboxProcess(request, kind: .superResolution)
-        case "metalFX":
-            throw FloeError.invalidConfiguration("MetalFX spatial scaling requires the Metal renderer, which is not enabled in this build")
-        case "coreml":
-            guard let modelID = request.modelID else {
-                throw FloeError.validationFailed("mode=coreml requires an explicit modelID from media.models")
-            }
-            throw FloeError.invalidConfiguration("model \(modelID) must be loaded by the Core ML runner; no runner is registered")
-        default:
-            throw FloeError.validationFailed("mode must be quality, lowLatency, metalFX or coreml")
+        guard let scaleFactor = request.scaleFactor else {
+            throw FloeError.validationFailed("scaleFactor is required for super resolution")
         }
-    }
-
-    private enum Kind {
-        case interpolation
-        case superResolution
-    }
-
-    private func videoToolboxProcess(_ request: Request, kind: Kind) async throws -> String {
-        throw FloeError.invalidConfiguration("Native frame processing has no connected output pipeline in this build")
+        return try await processor.process(FrameProcessingRequest(
+            operation: .superResolution(scaleFactor: scaleFactor),
+            input: request.input, output: request.output, mode: request.mode,
+            modelID: request.modelID, quality: request.quality, overwrite: request.overwrite,
+            workspaceRoot: request.workspaceRoot
+        ))
     }
 }
 
@@ -239,12 +235,24 @@ public struct VideoInterpolateTool: AgentTool {
         public var mode: String
         public var modelID: String?
         public var quality: String?
+        public var overwrite: Bool?
+
+        public init(input: String, output: String, targetFPS: Double, mode: String,
+                    modelID: String? = nil, quality: String? = nil, overwrite: Bool? = nil) {
+            self.input = input
+            self.output = output
+            self.targetFPS = targetFPS
+            self.mode = mode
+            self.modelID = modelID
+            self.quality = quality
+            self.overwrite = overwrite
+        }
     }
 
     public static let name = "video.interpolate"
     public static let toolDescription =
-        "Increase a video's frame rate with explicit parameters. mode selects the engine: quality (VTFrameProcessor frame rate conversion), lowLatency, metalFX, or coreml (requires an installed modelID from media.models). targetFPS is required. The result reports the effective mode and source properties; it never silently changes mode."
-    public static let parametersJSON = #"{"type":"object","properties":{"input":{"type":"string"},"output":{"type":"string"},"targetFPS":{"type":"number"},"mode":{"type":"string","enum":["quality","lowLatency","metalFX","coreml"]},"modelID":{"type":"string"},"quality":{"type":"string"}},"required":["input","output","targetFPS","mode"],"additionalProperties":false}"#
+        "Increase a video's frame rate with explicit parameters. mode selects the engine: quality (VTFrameProcessor frame rate conversion), lowLatency (VT low-latency interpolation; 2x only), metalFX (rejected: MetalFX interpolation needs render motion vectors), or coreml (requires an installed interpolation modelID from media.models). targetFPS must be an integer 2x-8x multiple of the source frame rate. quality is quality, balanced or fast. An existing output is refused unless overwrite=true is passed explicitly. The result reports the effective engine, measured frame/dimension/audio counters and never silently changes mode."
+    public static let parametersJSON = #"{"type":"object","properties":{"input":{"type":"string"},"output":{"type":"string"},"targetFPS":{"type":"number"},"mode":{"type":"string","enum":["quality","lowLatency","metalFX","coreml"]},"modelID":{"type":"string"},"quality":{"type":"string","enum":["quality","balanced","fast"]},"overwrite":{"type":"boolean"}},"required":["input","output","targetFPS","mode"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
@@ -254,19 +262,33 @@ public struct VideoInterpolateTool: AgentTool {
 
     public func validate(_ args: Arguments) throws {
         guard args.targetFPS > 0 else { throw FloeError.validationFailed("targetFPS must be positive") }
+        _ = try MediaEnhancementQuality(requested: args.quality)
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        guard let root = context.workspaceRootURL else {
-            throw FloeError.validationFailed("a workspace root is required")
-        }
-        let result = try await processor.interpolate(
-            input: root.appendingPathComponent(args.input),
-            output: root.appendingPathComponent(args.output),
-            targetFPS: args.targetFPS,
+        try context.authorizeWorkspacePath(args.input)
+        try context.authorizeWorkspacePath(args.output)
+        // One snapshotted root for both paths; the request freezes it so a
+        // later task/workspace switch cannot redirect this run.
+        let root = context.workspaceRootURL
+        let input = try MediaPathGuard.resolve(args.input, root: root)
+        let output = try MediaPathGuard.resolveOutput(args.output, root: root)
+        // Real processor progress reaches the durable job record through the
+        // injected reporter (or an adapter-installed job scope); outside a job
+        // no progress is claimed.
+        let progress = MediaProgressRouting.closure(for: context)
+        let result = try await processor.process(FrameProcessingRequest(
+            operation: .interpolation(targetFPS: args.targetFPS),
+            input: input,
+            output: output,
             mode: args.mode,
-            modelID: args.modelID
-        )
+            modelID: args.modelID,
+            quality: args.quality,
+            overwrite: args.overwrite ?? false,
+            workspaceRoot: root,
+            progress: progress,
+            cancellation: context.cancellation
+        ))
         return ToolExecutionOutput(digesting: result, exitStatus: 0)
     }
 }
@@ -279,12 +301,24 @@ public struct VideoSuperResolutionTool: AgentTool {
         public var mode: String
         public var modelID: String?
         public var quality: String?
+        public var overwrite: Bool?
+
+        public init(input: String, output: String, scaleFactor: Int, mode: String,
+                    modelID: String? = nil, quality: String? = nil, overwrite: Bool? = nil) {
+            self.input = input
+            self.output = output
+            self.scaleFactor = scaleFactor
+            self.mode = mode
+            self.modelID = modelID
+            self.quality = quality
+            self.overwrite = overwrite
+        }
     }
 
     public static let name = "video.superResolution"
     public static let toolDescription =
-        "Upscale a video or image with explicit parameters. mode selects the engine: quality (VTFrameProcessor super resolution), lowLatency, metalFX, or coreml (requires an installed modelID from media.models). scaleFactor is required and validated against the device's supported factors; unsupported factors fail with the supported list."
-    public static let parametersJSON = #"{"type":"object","properties":{"input":{"type":"string"},"output":{"type":"string"},"scaleFactor":{"type":"integer"},"mode":{"type":"string","enum":["quality","lowLatency","metalFX","coreml"]},"modelID":{"type":"string"},"quality":{"type":"string"}},"required":["input","output","scaleFactor","mode"],"additionalProperties":false}"#
+        "Upscale a video or still image (png, jpeg, heic, tiff) with explicit parameters. mode selects the engine: quality (VTFrameProcessor super resolution), lowLatency (VT low-latency scaler), metalFX (GPU spatial upscale, not a learned SR network), or coreml (requires an installed x2/x4 modelID from media.models). scaleFactor is validated against the engine's real supported list; unsupported factors fail with the supported list. An existing output is refused unless overwrite=true is passed explicitly. The result reports the effective engine and measured dimensions."
+    public static let parametersJSON = #"{"type":"object","properties":{"input":{"type":"string"},"output":{"type":"string"},"scaleFactor":{"type":"integer"},"mode":{"type":"string","enum":["quality","lowLatency","metalFX","coreml"]},"modelID":{"type":"string"},"quality":{"type":"string","enum":["quality","balanced","fast"]},"overwrite":{"type":"boolean"}},"required":["input","output","scaleFactor","mode"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
@@ -294,19 +328,28 @@ public struct VideoSuperResolutionTool: AgentTool {
 
     public func validate(_ args: Arguments) throws {
         guard args.scaleFactor > 1 else { throw FloeError.validationFailed("scaleFactor must be greater than 1") }
+        _ = try MediaEnhancementQuality(requested: args.quality)
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        guard let root = context.workspaceRootURL else {
-            throw FloeError.validationFailed("a workspace root is required")
-        }
-        let result = try await processor.superResolution(
-            input: root.appendingPathComponent(args.input),
-            output: root.appendingPathComponent(args.output),
-            scaleFactor: args.scaleFactor,
+        try context.authorizeWorkspacePath(args.input)
+        try context.authorizeWorkspacePath(args.output)
+        let root = context.workspaceRootURL
+        let input = try MediaPathGuard.resolve(args.input, root: root)
+        let output = try MediaPathGuard.resolveOutput(args.output, root: root)
+        let progress = MediaProgressRouting.closure(for: context)
+        let result = try await processor.process(FrameProcessingRequest(
+            operation: .superResolution(scaleFactor: args.scaleFactor),
+            input: input,
+            output: output,
             mode: args.mode,
-            modelID: args.modelID
-        )
+            modelID: args.modelID,
+            quality: args.quality,
+            overwrite: args.overwrite ?? false,
+            workspaceRoot: root,
+            progress: progress,
+            cancellation: context.cancellation
+        ))
         return ToolExecutionOutput(digesting: result, exitStatus: 0)
     }
 }

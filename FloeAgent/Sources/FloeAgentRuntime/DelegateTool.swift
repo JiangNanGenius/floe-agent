@@ -1,15 +1,23 @@
 // FloeAgentRuntime — delegate agent tool.
 //
-// Lets the parent run hand one subtask to a focused read-only subagent and
-// receive a concise summary back. This is the Supervisor-Worker seam: the
+// Lets the main run hand one subtask to a focused subagent and receive a
+// concise, structured summary back. This is the Supervisor-Worker seam: the
 // parent decides and aggregates; the subagent works in a clean context.
+//
+// Delegation is MAIN-RUN ONLY and is not read-only: with `type=execute` the
+// child holds the parent's effective tool ceiling and every side-effecting
+// child call is resolved by the parent runtime's canonical permission path
+// (catalog, effective ceiling, catastrophic gate, approval policy and grants)
+// before it executes. A child can never delegate further, and a denied call
+// stays denied — the tool itself carries a conservative effect classification
+// so it can never act as a silent read-only bypass.
 
 import Foundation
 import Crypto
 import FloeCore
 import FloeTools
 
-/// Delegates a subtask to a strictly read-only subagent and returns its summary.
+/// Delegates one subtask to a focused subagent and returns its structured summary.
 public struct DelegateTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var task: String
@@ -27,7 +35,7 @@ public struct DelegateTool: AgentTool {
 
     public static let name = "delegate"
     public static let toolDescription =
-        "Delegate one subtask to a focused, strictly read-only subagent that works in a clean context and returns a self-contained handoff summary. Types: `explore` (default; fast local workspace/conversation reads, no network) or `research` (adds read-only web/network evidence). It inherits the parent task's tool and workspace ceilings and cannot modify files, control GUIs, run code, or delegate again. Several independent delegate calls in one batch run in parallel — batch them. Give the subagent complete context: it sees nothing of this conversation beyond what you pass. The result is a structured receipt: `status=ok` means the subagent finished with a final answer; `status=partial` / `status=budgetExhausted` mean it ran out of iterations or shared budget and the findings are incomplete (treat them as non-success, not as a completed subtask); `status=cancelled`, `status=providerError` and `status=toolError` are failures. Each non-ok receipt lists bounded findings, evidence references and unfinished items."
+        "Delegate one subtask to a focused subagent that works in a clean context and returns a self-contained handoff summary. The subagent inherits this task's ACTUAL effective tools, workspace, environment and permissions — the same ceiling you hold, resolved per call by this task's own approval policy, so expect and honor approval prompts or denials. `type` is only a focus hint: `explore` (default; prefer fast local workspace/conversation reads), `research` (prefer web/network evidence) or `execute` (emphasize implementing/running the work end-to-end). No type grants extra rights or removes a right you hold. Children never modify their own permission ceiling and can never delegate further. Several independent delegate calls in one batch run in parallel — batch them; live sibling children may coordinate through delegate.peers/delegate.message. Give the subagent complete context: it sees nothing of this conversation beyond what you pass. The result is a structured receipt: `status=ok` means the subagent finished with a final answer; `status=partial` / `status=budgetExhausted` mean it ran out of iterations or shared budget and the findings are incomplete (treat them as non-success, not as a completed subtask); `status=cancelled`, `status=providerError` and `status=toolError` are failures. Each non-ok receipt lists bounded findings, evidence references and unfinished items."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -35,15 +43,25 @@ public struct DelegateTool: AgentTool {
         "task": {"type": "string", "description": "The subtask for the subagent to complete"},
         "context": {"type": "string", "description": "Optional background the subagent needs"},
         "maxIterations": {"type": "integer", "description": "Maximum subagent turns (default 6, max 20)"},
-        "type": {"type": "string", "enum": ["explore", "research"], "description": "explore = local reads only (default); research = adds read-only web/network tools"}
+        "type": {"type": "string", "enum": ["explore", "research", "execute"], "description": "Focus hint only, never a permission change: explore = prefer fast local reads (default); research = prefer web/network evidence; execute = emphasize end-to-end execution. All types inherit the same effective parent ceiling with per-call approval"}
       },
       "required": ["task"],
       "additionalProperties": false
     }
     """#
-    public static let riskLabels: Set<RiskLabel> = [.networkAccess]
-    public static let isSideEffecting = false
-    public static let toolEffect: ToolEffect = .readOnly
+    public static let riskLabels: Set<RiskLabel> = [
+        .networkAccess, .readsFiles, .writesFiles, .deletesFiles, .executesLocalCode, .controlsGUI
+    ]
+    public static let isSideEffecting = true
+    public static let toolEffect: ToolEffect = .mutating
+    /// Delegation is main-run only: children cannot delegate, directly or
+    /// through any wrapper, in discovery or at execution.
+    public static let executionBoundary: ToolExecutionBoundary = .mainRunOnly
+    /// The envelope's own effects are indirect and internally serialized by
+    /// the child dispatcher (per-call approval + mutation leases), so two
+    /// approved delegate calls in one batch may really run in parallel while
+    /// direct writes remain batch barriers.
+    public static let supportsConcurrentBatchDispatch = true
 
     static let maxTaskBytes = 32 * 1024
 
@@ -67,8 +85,32 @@ public struct DelegateTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        // Callable-boundary main-origin check: `delegate` may only run as the
+        // main run's OWN approved call with this exact call id AND this exact
+        // tool name. A delegated child — or a main-run wrapper/jobs/procedure
+        // path that forwards its own identical context into this raw registry
+        // entry — cannot delegate, because the origin is bound to the tool the
+        // runtime actually approved. This is never a model-supplied flag, and
+        // a missing origin is a refusal, never a main-run fallback.
+        guard context.callOrigin?.authorizesMainOnlyCapability(
+            toolName: Self.name,
+            runID: context.runID,
+            callID: context.toolCallID
+        ) == true else {
+            return Self.output(
+                "status=denied reason=delegate may only run as the main run's own approved tool call; a delegated child or wrapper context cannot delegate",
+                exitStatus: 1
+            )
+        }
+        // The runtime seeds the child's identity/handoff on this call context.
+        // Registering here (and unregistering on every exit path) gives the
+        // child a real, bounded peer identity for its whole lifetime and
+        // guarantees that no message can reach it after it finishes.
+        let peers = context.childExecution?.peers
+        await peers?.register(String(args.task.prefix(120)))
+        let outcome: SubagentOutcome
         do {
-            let outcome = try await runners.runSubagent(
+            outcome = try await runners.runSubagent(
                 SubagentRequest(
                     task: args.task,
                     context: args.context,
@@ -78,10 +120,12 @@ public struct DelegateTool: AgentTool {
                 ),
                 context: context
             )
-            return Self.output(Self.render(outcome), exitStatus: Self.exitStatus(for: outcome.status))
         } catch {
+            await peers?.unregister()
             return Self.output("status=failed error=\(error.localizedDescription)", exitStatus: 1)
         }
+        await peers?.unregister()
+        return Self.output(Self.render(outcome), exitStatus: Self.exitStatus(for: outcome.status))
     }
 
     /// Partial/exhausted/cancelled/error terminations are NON-success: the
@@ -158,7 +202,9 @@ public actor SubagentRunnerRegistry {
     }
 }
 
-/// Registers the delegate tool against the run-scoped runner registry.
+/// Registers the delegate tool plus the child-only sibling collaboration
+/// tools against the run-scoped runner registry. One call site wires main-run
+/// delegation and peer collaboration; the app needs no separate registration.
 @discardableResult
 public func registerDelegateTool(
     registry: ToolRunnerRegistry = .shared,
@@ -166,5 +212,6 @@ public func registerDelegateTool(
 ) -> SubagentRunnerRegistry {
     ToolCatalog.register(DelegateTool.self)
     registry.register(DelegateTool(runners: runners))
+    registerSubagentPeerTools(registry: registry)
     return runners
 }

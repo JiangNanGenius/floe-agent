@@ -38,6 +38,13 @@ import UIKit
 final class OfficeRealEngineUITests: XCTestCase {
     static let receiptAttachmentName = "office-real-engine-receipt"
     static let fixtureStem = "floe-sim-qual"
+    /// Unique per-run fixture identity: a rerun never reads the previous run's
+    /// (possibly saved/edited) document. The app-side qualification seeder
+    /// binds the imported note title and its receipt to this identity and
+    /// trashes only its own exact previously recorded document id.
+    static let fixtureRunID = String(UUID().uuidString.replacingOccurrences(
+        of: "-", with: "").prefix(8)).lowercased()
+    static var fixtureTitle: String { "\(fixtureStem)-\(fixtureRunID)" }
     /// Exact phase coverage, in order. Single source of truth shared with
     /// verify_real_engine_trace.SCENARIO_PHASES.
     static let expectedPhases = [
@@ -89,7 +96,8 @@ final class OfficeRealEngineUITests: XCTestCase {
     func attachReceipt() {
         OfficeRealEngineUITests.receipt["expectedPhases"] = OfficeRealEngineUITests.expectedPhases
         OfficeRealEngineUITests.receipt["hostKind"] = "fullFloeAppSimulator"
-        OfficeRealEngineUITests.receipt["fixture"] = OfficeRealEngineUITests.fixtureStem + ".pptx"
+        OfficeRealEngineUITests.receipt["fixture"] = OfficeRealEngineUITests.fixtureTitle + ".pptx"
+        OfficeRealEngineUITests.receipt["fixtureRunID"] = OfficeRealEngineUITests.fixtureRunID
         var data: Data
         do {
             data = try JSONSerialization.data(
@@ -194,23 +202,47 @@ final class OfficeRealEngineUITests: XCTestCase {
         return total > 0 ? Double(changed) / Double(total) : 0
     }
 
-    /// Advance exactly one slideshow page through the real canvas tap. The
-    /// first tap can be consumed as a pointer move that only reveals the
-    /// slideshow controls, so an unchanged frame is retried (bounded); the
-    /// first observed change returns immediately, therefore a verified step
-    /// never skips a page. `nil` means no verified single-page advance.
+    /// Locate one of the slideshow's own navigation controls by its stable
+    /// accessible label. In the current qualification runtime the slideshow's
+    /// strip controls (End Show/Previous/Next/Disable Animations) are NOT
+    /// exposed in the web accessibility tree — only editor controls are — so
+    /// this returns nil there and the caller advances through the real canvas
+    /// tap instead.
+    func slideshowControl(_ app: XCUIApplication, labels: [String]) -> XCUIElement? {
+        for label in labels {
+            let element = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label == %@", label)).firstMatch
+            if element.exists { return element }
+        }
+        return nil
+    }
+
+    /// Advance exactly one slideshow page through the REAL presentation UI.
+    ///
+    /// Evidence (23:13 run: frame-by-frame video + XCUITest action log):
+    /// a bare canvas tap is the real advance (`SlideShowNavigator.onClick` →
+    /// `dispatchEffect`); the very first tap of a fresh show can be consumed
+    /// by the engine's exit hint / pointer-move chrome, so an unchanged frame
+    /// is retried. The old "first frame change wins" logic returned the cover
+    /// slide again when only chrome appeared; a verified step now requires the
+    /// presentation letterbox AND the caller's expected page identity (no
+    /// fixture markers on the inserted blank page, green oval on fixture
+    /// slide 2). Navigation deliberately stays tap-only: a horizontal swipe
+    /// also advances but can END the show when it is already on the last
+    /// slide (observed), which must never turn a page check into an exit.
+    /// `nil` means no verified single-page advance.
     func advanceOneSlideshowPage(_ app: XCUIApplication,
-                                 from previous: SlideshowFrameFacts) -> SlideshowFrameFacts? {
-        let deadline = Date().addingTimeInterval(24)
-        var taps = 0
+                                 from previous: SlideshowFrameFacts,
+                                 expecting: (SlideshowFrameFacts) -> Bool,
+                                 phase: String) -> SlideshowFrameFacts? {
+        let deadline = Date().addingTimeInterval(36)
         while Date() < deadline {
-            if taps < 3 {
-                app.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.45)).tap()
-                taps += 1
-            }
+            guard app.state == .runningForeground else { return nil }
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
             Thread.sleep(forTimeInterval: 2.0)
             let facts = slideshowFrameFacts(XCUIScreen.main.screenshot().image)
-            if slideshowDiffRatio(previous.rgba, facts.rgba) > 0.01 && facts.isPresenting {
+            if facts.isPresenting && expecting(facts)
+                && slideshowDiffRatio(previous.rgba, facts.rgba) > 0.01 {
                 return facts
             }
         }
@@ -352,7 +384,7 @@ final class OfficeRealEngineUITests: XCTestCase {
     }
 
     func revealCard(_ app: XCUIApplication) -> XCUIElement {
-        let title = OfficeRealEngineUITests.fixtureStem
+        let title = OfficeRealEngineUITests.fixtureTitle
         let card = app.scrollViews["notes.library.scroll"].buttons
             .matching(NSPredicate(format: "identifier BEGINSWITH %@", "notes.card.office.\(title)."))
             .element(boundBy: 0)
@@ -526,6 +558,8 @@ final class OfficeRealEngineUITests: XCTestCase {
                                "--ui-test-skip-onboarding", "--ui-test-office-real-engine"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         app.launchEnvironment["FLOE_OFFICE_REAL_ENGINE_FIXTURE_B64"] = fixture.base64EncodedString()
+        // Unique per-run fixture identity (app side: note title + receipt).
+        app.launchEnvironment["FLOE_OFFICE_REAL_ENGINE_RUN_ID"] = OfficeRealEngineUITests.fixtureRunID
         app.launch()
         defer { app.terminate() }
         let scenarioStart = Date()
@@ -599,7 +633,10 @@ final class OfficeRealEngineUITests: XCTestCase {
                  "blue=\(pageOneFacts.cropBlue) orange=\(pageOneFacts.cropOrange) "
                     + "black=\(pageOneFacts.blackFraction)")
 
-            guard let blankFacts = advanceOneSlideshowPage(app, from: pageOneFacts) else {
+            guard let blankFacts = advanceOneSlideshowPage(
+                app, from: pageOneFacts,
+                expecting: { $0.isInsertedBlank },
+                phase: "slideshow-blank-page") else {
                 throw NSError(domain: "OfficeRealEngineUITests", code: 3,
                               userInfo: [NSLocalizedDescriptionKey:
                                             "no verified single-page advance from fixture slide 1"])
@@ -615,7 +652,10 @@ final class OfficeRealEngineUITests: XCTestCase {
             mark("slideshow-blank-page", true,
                  "inserted blank page observed as page 2 (no fixture markers)")
 
-            guard let pageTwoFacts = advanceOneSlideshowPage(app, from: blankFacts) else {
+            guard let pageTwoFacts = advanceOneSlideshowPage(
+                app, from: blankFacts,
+                expecting: { $0.isFixtureSlideTwo },
+                phase: "slideshow-page2") else {
                 throw NSError(domain: "OfficeRealEngineUITests", code: 3,
                               userInfo: [NSLocalizedDescriptionKey:
                                             "no verified single-page advance from the blank page"])
@@ -634,26 +674,38 @@ final class OfficeRealEngineUITests: XCTestCase {
             mark("slideshow-page2", true,
                  "green=\(pageTwoFacts.cropGreen) black=\(pageTwoFacts.blackFraction)")
 
-            // Touch quit path of the real slideshow: a vertical swipe ends
-            // the presentation (Escape is unavailable to XCUITest on iOS).
-            // Exit is proven by the letterbox being GONE (the editor chrome
-            // mounted behind a still-active canvas cannot satisfy this), the
-            // editable surface ready, and the real edit thumbnail rail being
-            // interactive (tap + selected) on the SAME document identity.
+            // Touch quit path of the real slideshow: the strip's End Show
+            // control ends the presentation, with a vertical swipe (the
+            // engine's quit gesture) as fallback. Exit is proven by the
+            // letterbox being GONE (the editor chrome mounted behind a
+            // still-active canvas cannot satisfy this), the editable surface
+            // ready, and the real edit thumbnail rail being interactive
+            // (tap + selected) on the SAME document identity.
             let editorSurface = anyElement(app, "office.editor.native")
             let editorBack = anyElement(app, "office.editor.back")
             var presentationExited = false
-            let exitAttempts: [(CGFloat, CGFloat)] = [(0.25, 0.92), (0.92, 0.25)]
             let exitDeadline = Date().addingTimeInterval(45)
             var exitAttempt = 0
             var exitFacts = blankFacts
             while Date() < exitDeadline && !presentationExited {
-                if exitAttempt < exitAttempts.count {
-                    let from = app.coordinate(withNormalizedOffset:
-                                                CGVector(dx: 0.5, dy: exitAttempts[exitAttempt].0))
-                    let to = app.coordinate(withNormalizedOffset:
-                                              CGVector(dx: 0.5, dy: exitAttempts[exitAttempt].1))
-                    from.press(forDuration: 0.05, thenDragTo: to)
+                if exitAttempt < 4 {
+                    let endShow = slideshowControl(app, labels: ["End Show", "结束放映", "退出放映"])
+                    if let endShow, endShow.isHittable {
+                        endShow.tap()
+                    } else {
+                        // The engine's quit gesture is a vertical swipe; a
+                        // horizontal next-swipe on the last slide also ends
+                        // the show (observed), so it is the final fallback.
+                        let drag: (CGVector, CGVector)
+                        switch exitAttempt {
+                        case 0: drag = (CGVector(dx: 0.5, dy: 0.25), CGVector(dx: 0.5, dy: 0.92))
+                        case 1: drag = (CGVector(dx: 0.5, dy: 0.92), CGVector(dx: 0.5, dy: 0.25))
+                        default: drag = (CGVector(dx: 0.85, dy: 0.5), CGVector(dx: 0.15, dy: 0.5))
+                        }
+                        let from = app.coordinate(withNormalizedOffset: drag.0)
+                        let to = app.coordinate(withNormalizedOffset: drag.1)
+                        from.press(forDuration: 0.05, thenDragTo: to)
+                    }
                     exitAttempt += 1
                 }
                 Thread.sleep(forTimeInterval: 2.5)

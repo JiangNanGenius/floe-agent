@@ -42,6 +42,21 @@ public enum ToolEffect: String, Sendable, Codable, Hashable, CaseIterable {
     }
 }
 
+/// Where a compiled tool may execute. Enforced in schema composition (a
+/// child's tool directory never advertises `delegate`) and again in the
+/// canonical dispatcher (execution, not just discovery).
+public enum ToolExecutionBoundary: String, Sendable, Codable, Hashable {
+    /// Ordinary tool: main run and delegated children.
+    case any
+    /// Only the main (user-visible) run may invoke this tool. Delegated
+    /// children are refused in discovery and at dispatch, which is what keeps
+    /// delegation main-only across batch/jobs/skill wrappers: a child cannot
+    /// spawn another child, directly or through a wrapper.
+    case mainRunOnly
+    /// Only a delegated child may invoke this tool (sibling collaboration).
+    case childOnly
+}
+
 /// A deterministic lifecycle dependency that must be satisfied before a
 /// tool can produce a meaningful result. This metadata is compiled into the
 /// catalog so providers and the harness can explain the required predecessor
@@ -83,6 +98,11 @@ public protocol AgentTool: Sendable {
     static var requiresHostScope: Bool { get }
     /// Explicit lifecycle dependencies. The default is stateless.
     static var prerequisites: [ToolPrerequisite] { get }
+    /// Where this tool may run. Default `.any`; `delegate` is `.mainRunOnly`
+    /// and peer collaboration tools are `.childOnly`.
+    static var executionBoundary: ToolExecutionBoundary { get }
+    /// See `ToolCatalog.Descriptor.supportsConcurrentBatchDispatch`.
+    static var supportsConcurrentBatchDispatch: Bool { get }
 
     /// Validates decoded arguments before they reach the policy engine.
     func validate(_ args: Arguments) throws
@@ -98,6 +118,8 @@ public extension AgentTool {
         !riskLabels.isDisjoint(with: [.executesRemoteCommand, .modifiesRemoteSystem])
     }
     static var prerequisites: [ToolPrerequisite] { [] }
+    static var executionBoundary: ToolExecutionBoundary { .any }
+    static var supportsConcurrentBatchDispatch: Bool { false }
 }
 
 /// Bounded execution output; the digest covers the full pre-truncation bytes.

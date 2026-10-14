@@ -188,10 +188,15 @@ public actor BackgroundJobStore {
         }
     }
 
-    public func requestCancellation(id: UUID) async throws {
+    /// Records that cancellation was requested WITHOUT claiming a terminal
+    /// state. Only a running job can be asked to stop; a queued job is
+    /// cancelled directly by the service and a terminal job keeps its actual
+    /// result. The processor's own exit settles the state afterwards.
+    public func requestCancellation(id: UUID, reason: String = "Stop requested; waiting for the executor to exit and clean up") async throws {
+        let bounded = String(reason.prefix(4_096))
         try await database.writer { db in
             try db.execute(sql: "UPDATE background_jobs SET last_error=?,updated_at=? WHERE id=? AND state='running'",
-                           arguments: ["Stop requested; waiting for the executor to exit", Date(), id.uuidString])
+                           arguments: [bounded, Date(), id.uuidString])
         }
     }
 

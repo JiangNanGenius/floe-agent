@@ -1,6 +1,21 @@
 // FloeExecution — Durable background job execution for long-running tools.
 // The model-facing contract mirrors the SSH guardian pattern: submit returns
 // a jobID immediately; status/result/cancel operate on that jobID.
+//
+// Native long-job rules enforced here:
+//   * submission verifies runtime-issued CALL PROVENANCE and freezes
+//     run/task/environment/workspace before the durable record exists;
+//   * a delegated child is admitted through the same effective ceiling and
+//     the same admission checks as a main-run call (and can never smuggle
+//     delegation or a main-run-only capability into deferred work);
+//   * targets with a registered service adapter prepare a SERVICE-OWNED
+//     operation at submission — including consuming the runtime authority for
+//     the exact approved `jobs.submit` call when the adapter requires it —
+//     and run it with real progress, cooperative cancellation and terminal
+//     verification instead of a raw registry execute;
+//   * cancellation REQUESTS a stop and keeps the job non-terminal until the
+//     running processor acknowledges and its cleanup completes; a job that
+//     finished first keeps its ACTUAL result.
 
 import Foundation
 import FloeCore
@@ -24,16 +39,20 @@ public struct BackgroundJobDownloadContext: Sendable {
 /// persisted first, then executed on a detached task with its own cooperative
 /// cancellation token, so the calling run settles immediately.
 public actor BackgroundJobService {
-    /// Tools whose execution may be moved off the run's critical path.
-    /// Only non-host-scoped, workspace-safe targets are eligible; expanding
-    /// this list requires a fresh approval-surface review.
-    public static let supportedTargets: Set<String> = [
-        "exec.localService",
-        "exec.localPython", "exec.shell", "network.download", "network.http", "web.fetch"
-    ]
+    /// Tools whose execution may be moved off the run's critical path. This is
+    /// the default action-aware policy's target set; a service may be built
+    /// with a narrower/tighter policy. `media.project` apply and
+    /// `document.office.edit` apply are admitted when a service adapter owns
+    /// them (the adapter freezes the operation and consumes the runtime
+    /// authority for the submitting call); without an adapter only their
+    /// export actions are admitted.
+    public static let supportedTargets: Set<String> = NativeJobActionPolicy.default.supportedTargetNames
 
     private let store: BackgroundJobStore
     private let registry: ToolRunnerRegistry
+    private let policy: NativeJobActionPolicy
+    /// Service-owned prepared operation adapters, keyed by target tool.
+    private let adapters: [String: NativeJobServiceAdapter]
     /// App-injected completion hook: steer a live run, queue a follow-up
     /// input, and post a local notification. Kept outside this module so the
     /// SPM target stays platform-independent.
@@ -49,11 +68,15 @@ public actor BackgroundJobService {
 
     private var runningTasks: [UUID: Task<Void, Never>] = [:]
     private var cancellations: [UUID: CancellationToken] = [:]
+    private var preparedOperations: [UUID: any NativeJobPreparedOperation] = [:]
+    private var progressRecorders: [UUID: NativeJobProgressRecorder] = [:]
     private var restartingIDs: Set<UUID> = []
 
     public init(
         store: BackgroundJobStore,
         registry: ToolRunnerRegistry = .shared,
+        policy: NativeJobActionPolicy = .default,
+        adapters: [String: NativeJobServiceAdapter] = [:],
         onTerminal: @escaping @Sendable (BackgroundJob) async -> Void = { _ in },
         downloadHandler: (@Sendable (BackgroundJob, BackgroundJobDownloadContext) async throws -> Bool)? = nil,
         downloadCancelHandler: (@Sendable (UUID) async -> Void)? = nil,
@@ -61,6 +84,8 @@ public actor BackgroundJobService {
     ) {
         self.store = store
         self.registry = registry
+        self.policy = policy
+        self.adapters = adapters
         self.onTerminal = onTerminal
         self.downloadHandler = downloadHandler
         self.downloadCancelHandler = downloadCancelHandler
@@ -68,7 +93,18 @@ public actor BackgroundJobService {
     }
 
     /// Validates and persists the job, then starts it. Retried tool calls
-    /// (same runID + toolCallID) return the original job unchanged.
+    /// (same runID + toolCallID) return the original job unchanged, without
+    /// re-consuming an authorization or re-preparing an operation.
+    ///
+    /// `submissionSource` is an explicit API split, never a provenance
+    /// fallback: the default `.nativeService` is the in-process API for
+    /// trusted app actions (shell `floe-service`, IDE run-service,
+    /// local-service restart) that are not model/tool calls to `jobs.submit`;
+    /// the raw registered `JobsSubmitTool` always passes `.runtime`
+    /// explicitly, and `.runtime` refuses any context without the
+    /// runtime-issued nonnil call id + `jobs.submit` origin for the exact call
+    /// (so a reconstructed wrapper context with stripped provenance can never
+    /// submit ordinary write/export jobs through the raw entry).
     @discardableResult
     public func submit(
         runID: UUID,
@@ -79,18 +115,80 @@ public actor BackgroundJobService {
         workspaceRootURL: URL?,
         allowedWorkspacePaths: [String],
         environmentID: String? = nil,
-        allowedToolNames: Set<String>? = nil
+        allowedToolNames: Set<String>? = nil,
+        callOrigin: ToolCallOrigin? = nil,
+        childExecution: ChildExecutionHandoff? = nil,
+        toolIdempotencyKey: String = "",
+        approvalGrantID: UUID? = nil,
+        runtimeAuthority: RuntimeTaskAuthority? = nil,
+        runtimeAuthorityBinding: RuntimeAuthorityBinding? = nil,
+        submissionSource: NativeJobSubmissionSource = .nativeService
     ) async throws -> BackgroundJob {
-        guard Self.supportedTargets.contains(targetTool) else {
-            throw FloeError.validationFailed(
-                "jobs.submit supports \(Self.supportedTargets.sorted().joined(separator: ", ")) for now; call other tools directly"
-            )
+        let action = policy.action(in: payloadJSON)
+        let adapter = adapters[targetTool].flatMap { $0.handles(action: action) ? $0 : nil }
+        guard policy.allows(target: targetTool, action: action) || adapter != nil else {
+            throw FloeError.validationFailed(policy.refusal(target: targetTool, action: action))
+        }
+        // Runtime-verified provenance. A delegated child is ELIGIBLE for the
+        // same native long jobs its parent's effective ceiling admits; the
+        // child kind is never a permission difference. For `.runtime` a
+        // missing call id/origin, a legacy origin without the approved tool
+        // name, a wrapper origin bound to another tool, a mismatched call id
+        // or a contradictory child handoff all fail closed before anything is
+        // persisted; only an explicitly declared `.nativeService` submission
+        // may omit the `jobs.submit` binding.
+        let origin = try NativeJobProvenance.verify(
+            runID: runID, toolCallID: toolCallID,
+            origin: callOrigin, childExecution: childExecution,
+            source: submissionSource)
+        // Idempotent replay first: a retried call id must return its original
+        // job and must never re-consume a single-use authorization.
+        if let toolCallID, let existing = try await store.job(runID: runID, toolCallID: toolCallID) {
+            return existing
+        }
+        // When the runtime issued an approval token for this exact call, its
+        // binding is verified BEFORE anything is persisted: the token names the
+        // approved tool+operation+target+payload, so a context that carries a
+        // mismatched/stale token is refused instead of being treated as an
+        // ordinary main-run submission. Adapters that need the single-use
+        // token still consume it below; this check is read-only.
+        if let runtimeAuthority {
+            guard let runtimeAuthorityBinding else {
+                throw FloeError.validationFailed(
+                    "the submission carries a runtime approval that could not be bound to this call; the job is refused")
+            }
+            let verdict = await RuntimeAuthorityStore.shared.validate(
+                runtimeAuthority, binding: runtimeAuthorityBinding)
+            guard verdict.isValid else {
+                throw FloeError.validationFailed(
+                    "the runtime approval carried by this call does not bind the job submission"
+                        + (verdict.failureReason.map { " (\($0))" } ?? "")
+                        + "; the job is refused")
+            }
         }
         guard allowedToolNames?.contains(targetTool) != false else {
             throw FloeError.validationFailed("The current task does not permit this background target")
         }
+        guard !NativeJobActionPolicy.delegationDeniedTargets.contains(targetTool) else {
+            throw FloeError.validationFailed(
+                "'\(targetTool)' can never run as deferred work: delegation itself is main-run-only and cannot be smuggled through a job")
+        }
         guard let runner = registry.runner(named: targetTool) else {
             throw FloeError.validationFailed("Tool '\(targetTool)' is not available in this build")
+        }
+        // Main-only capabilities can never become deferred work: the exact
+        // call-scoped origin check would refuse the dispatch later, and a job
+        // wrapper must not try anyway. Child-only capabilities need a live
+        // child and can never be detached either.
+        switch runner.descriptor.executionBoundary {
+        case .mainRunOnly:
+            throw FloeError.validationFailed(
+                "'\(targetTool)' is a main-run-only capability and cannot run as a background job")
+        case .childOnly:
+            throw FloeError.validationFailed(
+                "'\(targetTool)' requires a live delegated child and cannot run as a background job")
+        case .any:
+            break
         }
         // Fail fast at the call site: a job whose arguments never decode would
         // otherwise fail asynchronously with no caller left to correct them.
@@ -102,14 +200,83 @@ public actor BackgroundJobService {
         if let preflight = runner.preflightSubmission {
             try await preflight(payloadJSON, workspaceRootURL)
         }
+        // Action-aware native preflight: real target existence, workspace
+        // confinement and the declared base revision, before persistence.
+        if let handler = policy.handlers[targetTool], let preflight = handler.preflight {
+            try await preflight(payloadJSON, workspaceRootURL)
+        }
         guard let conversationID = try await store.conversationID(runID: runID) else {
             throw FloeError.validationFailed("Run has no owning task")
         }
+        // A payload that DECLARES another task/environment is refused instead
+        // of being silently rerouted onto this call's frozen scope.
+        try NativeJobRequestScope.check(payload: payloadJSON, runID: runID,
+                                        conversationID: conversationID,
+                                        environmentID: environmentID)
+        let operationID = NativeJobOperationIdentity.derive(
+            runID: runID, toolCallID: toolCallID,
+            payloadDigest: RuntimeAuthorityDigest.payloadDigest(payloadJSON))
+        // Service-owned prepared operation (Office/media edit jobs). Prepared
+        // BEFORE persistence; throwing leaves no durable record behind.
+        var prepared: (any NativeJobPreparedOperation)?
+        var preparationSummary: NativeJobPreparationSummary?
+        if let adapter {
+            let authorization: NativeJobAuthorization
+            if adapter.requiresRuntimeAuthorization {
+                // The ONLY authority for a deferred authorized edit is the
+                // runtime-issued token for this exact approved `jobs.submit`
+                // call. A model field, a rehearsed grant id or a re-serialized
+                // payload creates nothing; a missing/mismatched token fails
+                // closed before any operation is prepared.
+                guard let runtimeAuthority, let runtimeAuthorityBinding else {
+                    throw FloeError.validationFailed(
+                        "'\(targetTool)' requires the runtime-issued approval for this exact jobs.submit call; "
+                            + "the submission cannot be prepared without it")
+                }
+                let verdict = await RuntimeAuthorityStore.shared.consume(
+                    runtimeAuthority, binding: runtimeAuthorityBinding)
+                guard verdict.isValid else {
+                    throw FloeError.validationFailed(
+                        "the jobs.submit runtime authorization for this exact call is not valid"
+                            + (verdict.failureReason.map { " (\($0))" } ?? "")
+                            + "; no operation was prepared")
+                }
+                authorization = .consumed(binding: runtimeAuthorityBinding, at: Date())
+            } else {
+                authorization = .notRequired
+            }
+            let request = NativeJobPreparationRequest(
+                operationID: operationID,
+                runID: runID,
+                conversationID: conversationID,
+                environmentID: environmentID,
+                workspaceRootURL: workspaceRootURL,
+                allowedWorkspacePaths: allowedWorkspacePaths,
+                scope: scope,
+                payloadJSON: payloadJSON,
+                origin: origin,
+                authorization: authorization,
+                approvalGrantID: approvalGrantID ?? runtimeAuthority?.approvalGrantID,
+                submittedCallID: toolCallID,
+                idempotencyKey: toolIdempotencyKey)
+            let operation = try await adapter.prepare(request)
+            prepared = operation
+            preparationSummary = NativeJobPreparationSummary(
+                operationID: operation.operationID,
+                serviceLabel: operation.serviceLabel,
+                frozenRevision: operation.frozenRevision)
+        }
         let isDownload = targetTool == "network.download"
+        let progressDocument = NativeJobProgressDocument(
+            origin: origin,
+            prepared: preparationSummary,
+            progress: NativeJobProgress(stage: .preparing, note: "queued"),
+            updatedAt: Date())
         let job = BackgroundJob(
             conversationID: conversationID, runID: runID, toolCallID: toolCallID,
             kind: isDownload ? .download : .tool,
             targetTool: targetTool, payloadJSON: payloadJSON,
+            progressJSON: progressDocument.encoded(),
             workspaceRootPath: workspaceRootURL?.path,
             environmentID: environmentID
         )
@@ -142,7 +309,8 @@ public actor BackgroundJobService {
             }
         }
         start(job: persisted, scope: scope, workspaceRootURL: workspaceRootURL,
-              allowedWorkspacePaths: allowedWorkspacePaths, allowedToolNames: allowedToolNames)
+              allowedWorkspacePaths: allowedWorkspacePaths, allowedToolNames: allowedToolNames,
+              origin: origin, prepared: prepared, progressDocument: progressDocument)
         return persisted
     }
 
@@ -151,10 +319,16 @@ public actor BackgroundJobService {
         scope: ToolScope,
         workspaceRootURL: URL?,
         allowedWorkspacePaths: [String],
-        allowedToolNames: Set<String>?
+        allowedToolNames: Set<String>?,
+        origin: NativeJobOrigin,
+        prepared: (any NativeJobPreparedOperation)?,
+        progressDocument: NativeJobProgressDocument
     ) {
         let token = CancellationToken()
         cancellations[job.id] = token
+        if let prepared { preparedOperations[job.id] = prepared }
+        let recorder = NativeJobProgressRecorder(store: store, jobID: job.id, document: progressDocument)
+        progressRecorders[job.id] = recorder
         let registry = self.registry
         let store = self.store
         runningTasks[job.id] = Task.detached(priority: .utility) { [weak self] in
@@ -162,47 +336,108 @@ public actor BackgroundJobService {
             var summary: String?
             var digest: String?
             var errorText: String?
+            var resultPath: String?
             do {
                 _ = try await store.transition(id: job.id, to: .running)
-                guard let runner = registry.runner(named: job.targetTool) else {
+                await recorder.record(NativeJobProgress(stage: .running, note: "processor started"))
+                if let prepared {
+                    let hooks = NativeJobRunHooks(
+                        report: { update in await recorder.record(update) },
+                        isCancellationRequested: { token.isCancelled })
+                    let outcome = try await prepared.run(hooks: hooks)
+                    if let artifact = outcome.artifactPath {
+                        var isDirectory: ObjCBool = false
+                        guard FileManager.default.fileExists(atPath: artifact, isDirectory: &isDirectory),
+                              !isDirectory.boolValue else {
+                            throw FloeError.validationFailed(
+                                "the prepared operation reported an artifact that does not exist: \(artifact)")
+                        }
+                        resultPath = artifact
+                    }
+                    summary = NativeJobTextLimits.bounded(outcome.summary)
+                    digest = outcome.digest ?? FloeDigest.sha256Hex(Data(outcome.summary.utf8))
+                    if token.isCancelled {
+                        // A prepared operation that RETURNED a terminal outcome
+                        // reached its own commit boundary and verified the
+                        // result; report the ACTUAL result with an honest note
+                        // instead of falsely claiming a cancelled success. An
+                        // operation that did not commit throws cancelled
+                        // itself (after its cleanup).
+                        finalState = .completed
+                        summary = (summary ?? "") + "\nnote: cancellation was requested while this operation was "
+                            + "already completing; its verified terminal result is reported."
+                    } else {
+                        finalState = .completed
+                    }
+                } else if let runner = registry.runner(named: job.targetTool) {
+                    let context = ToolContext(
+                        runID: job.runID,
+                        toolCallID: "jobs.\(job.id.uuidString)",
+                        toolIdempotencyKey: "job:\(job.id.uuidString)",
+                        scope: scope,
+                        allowedToolNames: allowedToolNames,
+                        workspaceRootURL: workspaceRootURL,
+                        allowedWorkspacePaths: allowedWorkspacePaths,
+                        cancellation: token,
+                        environmentID: job.environmentID,
+                        conversationID: job.conversationID,
+                        taskProgress: NativeJobTaskProgressReporter { update in
+                            await recorder.record(update)
+                        }
+                    )
+                    let output = try await runner.execute(argumentsJSON: job.payloadJSON, context: context)
+                    summary = NativeJobTextLimits.bounded(output.summary)
+                    digest = output.fullOutputSHA256
+                    if token.isCancelled {
+                        finalState = .cancelled
+                        errorText = "Cancellation acknowledged after the processor stopped. Check the workspace for partial outputs before retrying."
+                    } else if output.requiresUserAction {
+                        finalState = .failed
+                        errorText = NativeJobTextLimits.bounded(
+                            "User action is required before this job can complete: \(output.summary)")
+                    } else if let exit = output.exitStatus, exit != 0 {
+                        finalState = .failed
+                        errorText = NativeJobTextLimits.bounded(
+                            "Tool exited with status \(exit): \(output.summary)")
+                    } else {
+                        finalState = .completed
+                    }
+                } else {
                     throw FloeError.validationFailed("Tool '\(job.targetTool)' is no longer registered")
                 }
-                let context = ToolContext(
-                    runID: job.runID,
-                    toolCallID: "jobs.\(job.id.uuidString)",
-                    scope: scope,
-                    allowedToolNames: allowedToolNames,
-                    workspaceRootURL: workspaceRootURL,
-                    allowedWorkspacePaths: allowedWorkspacePaths,
-                    cancellation: token,
-                    environmentID: job.environmentID,
-                    conversationID: job.conversationID
-                )
-                let output = try await runner.execute(argumentsJSON: job.payloadJSON, context: context)
-                summary = output.summary
-                digest = output.fullOutputSHA256
-                if token.isCancelled {
-                    finalState = .cancelled
-                } else if output.requiresUserAction {
-                    finalState = .failed
-                    errorText = "User action is required before this job can complete: \(output.summary)"
-                } else if let exit = output.exitStatus, exit != 0 {
-                    finalState = .failed
-                    errorText = "Tool exited with status \(exit): \(output.summary)"
-                } else {
-                    finalState = .completed
-                }
             } catch {
-                finalState = token.isCancelled ? .cancelled : .failed
-                errorText = String(describing: error)
+                // Safety first: a failure that leaves live native resources or
+                // retained staging must NEVER be reported as a clean
+                // cancellation, even when the job token was cancelled. The
+                // shared contract's discriminant decides: mere conformance is
+                // not enough, because an error family may also carry ordinary
+                // safe failures (e.g. a clean Office cancellation).
+                if let unsafe = error as? any UnsafeResourceStateError, unsafe.isUnsafeResourceState {
+                    finalState = .failed
+                    errorText = NativeJobTextLimits.bounded(
+                        "Unsafe resource state (not a clean cancellation): \(unsafe.unsafeResourceReason). "
+                            + "Staging was retained and native workers may still be finishing; "
+                            + "do not retry until the app restarts.")
+                } else if Self.isCancellationSignal(error, token: token) {
+                    finalState = .cancelled
+                    errorText = "Cancellation acknowledged after the processor stopped and its staging was cleaned. "
+                        + "Check the workspace for partial outputs before retrying."
+                } else {
+                    finalState = .failed
+                    errorText = NativeJobTextLimits.bounded(String(describing: error))
+                }
             }
+            await recorder.record(NativeJobProgress(stage: .finalizing, note: "settling terminal state"))
+            await recorder.finish()
             do {
                 let finalSummary = summary
                 let finalDigest = digest
                 let finalError = errorText
+                let finalPath = resultPath
                 let terminal = try await store.transition(id: job.id, to: finalState) { job in
                     job.resultSummary = finalSummary
                     job.resultDigest = finalDigest
+                    job.resultPath = finalPath
                     job.lastError = finalError
                 }
                 await self?.jobDidFinish(terminal)
@@ -212,6 +447,39 @@ public actor BackgroundJobService {
                 await self?.jobDidFinish(id: job.id)
             }
         }
+    }
+
+    /// Cancellation is a REQUEST, not a terminal result. A running job stays
+    /// non-terminal (with `cancellationRequested` in its progress document)
+    /// until its processor acknowledges and its cleanup completes; a queued
+    /// job (nothing started) is cancelled directly; a job that finished first
+    /// keeps its ACTUAL terminal state.
+    public func cancel(id: UUID) async throws -> BackgroundJob {
+        guard let job = try await store.job(id: id) else { throw BackgroundJobStoreError.missingJob(id) }
+        guard !job.state.isTerminal else { return job }
+        cancellations[id]?.cancel()
+        if job.kind == .download { await downloadCancelHandler?(id) }
+        if let operation = preparedOperations[id] { await operation.requestCancellation() }
+        if let recorder = progressRecorders[id] { await recorder.markCancellationRequested() }
+        try await store.requestCancellation(
+            id: id,
+            reason: job.targetTool == "exec.localService"
+                ? "Stop requested; waiting for the native service to exit"
+                : "Cancellation requested; waiting for the processor to stop and clean up")
+        if job.state == .queued {
+            // Nothing has started executing yet; queued work may cancel
+            // safely before effects. If the runner won the race, report it.
+            do {
+                let cancelled = try await store.transition(id: id, to: .cancelled) {
+                    $0.lastError = "Cancelled before execution started; no effects were produced."
+                }
+                jobDidFinish(cancelled)
+                return cancelled
+            } catch {
+                return try await store.job(id: id) ?? job
+            }
+        }
+        return try await store.job(id: id) ?? job
     }
 
     public func job(id: UUID) async throws -> BackgroundJob? {
@@ -241,27 +509,8 @@ public actor BackgroundJobService {
         }) { return existing }
         return try await submit(runID: job.runID, toolCallID: nil, targetTool: job.targetTool,
             payloadJSON: job.payloadJSON, scope: .local, workspaceRootURL: URL(fileURLWithPath: path),
-            allowedWorkspacePaths: [], environmentID: job.environmentID)
-    }
-
-    public func cancel(id: UUID) async throws -> BackgroundJob {
-        guard let job = try await store.job(id: id) else { throw BackgroundJobStoreError.missingJob(id) }
-        guard !job.state.isTerminal else { return job }
-        cancellations[id]?.cancel()
-        if job.targetTool == "exec.localService", job.state == .running {
-            // The service runner retains its environment lease until native exit.
-            // Cancellation acknowledgement is not a terminal execution result.
-            try await store.requestCancellation(id: id)
-            return try await store.job(id: id) ?? job
-        }
-        if job.kind == .download { await downloadCancelHandler?(id) }
-        do {
-            return try await store.transition(id: id, to: .cancelled) { $0.lastError = "Cancelled by user or agent request" }
-        } catch BackgroundJobStoreError.invalidStateTransition {
-            // The runner reached a terminal state first; report that state.
-            if let current = try await store.job(id: id) { return current }
-            throw BackgroundJobStoreError.missingJob(id)
-        }
+            allowedWorkspacePaths: [], environmentID: job.environmentID,
+            submissionSource: .nativeService)
     }
 
     /// Marks every non-terminal in-process job interrupted. Called once at
@@ -270,13 +519,29 @@ public actor BackgroundJobService {
     /// URLSession stay untouched while their system task is still alive;
     /// orphaned tasks (no live URLSession task) are interrupted too, so a
     /// relaunch cannot leave them stuck at "running" forever.
+    ///
+    /// An action-aware handler (or adapter) may check a REAL side effect
+    /// before the honest `interrupted` outcome; an unknown outcome is never
+    /// reported as success and never silently replayed.
     @discardableResult
     public func reconcileInterruptedOnLaunch() async throws -> Int {
         let active = try await store.activeJobs()
         var count = 0
         for job in active where job.kind == .tool {
+            let reconcile = policy.handlers[job.targetTool]?.reconcile
+                ?? adapters[job.targetTool]?.reconcile
+            if let reconcile,
+               let resolved = await reconcile(job), resolved.isTerminal,
+               job.state.canTransition(to: resolved) {
+                if (try? await store.transition(id: job.id, to: resolved) {
+                    $0.lastError = "Reconciled after relaunch: \(resolved.rawValue)"
+                }) != nil {
+                    count += 1
+                    continue
+                }
+            }
             if (try? await store.transition(id: job.id, to: .interrupted) {
-                $0.lastError = "Process exited before the job finished"
+                $0.lastError = "Process exited before the job finished. The outcome is UNKNOWN: inspect the workspace/output first (read-only) before resubmitting; do not blindly rerun."
             }) != nil { count += 1 }
         }
         for job in active where job.kind == .download {
@@ -289,14 +554,33 @@ public actor BackgroundJobService {
         return count
     }
 
+    /// True when an error means "the processor stopped on a cancellation
+    /// request" rather than a genuine failure.
+    static func isCancellationSignal(_ error: any Error, token: CancellationToken) -> Bool {
+        // An unsafe resource state is not a cancellation, whatever the token.
+        // Only the contract's discriminant counts: a conforming error whose
+        // discriminant is false (a clean Office cancellation, an ordinary
+        // output conflict) keeps the normal error path below.
+        if let unsafe = error as? any UnsafeResourceStateError, unsafe.isUnsafeResourceState { return false }
+        if token.isCancelled { return true }
+        if error is CancellationError { return true }
+        if let floe = error as? FloeError, floe == .cancelled { return true }
+        let text = String(describing: error).lowercased()
+        return text.contains("cancelled") || text.contains("canceled")
+    }
+
     private func jobDidFinish(_ job: BackgroundJob) {
         runningTasks[job.id] = nil
         cancellations[job.id] = nil
+        preparedOperations[job.id] = nil
+        progressRecorders[job.id] = nil
         Task { await onTerminal(job) }
     }
 
     private func jobDidFinish(id: UUID) {
         runningTasks[id] = nil
         cancellations[id] = nil
+        preparedOperations[id] = nil
+        progressRecorders[id] = nil
     }
 }

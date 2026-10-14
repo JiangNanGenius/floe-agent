@@ -19,21 +19,34 @@ struct ProviderEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showModelPicker = false
     @State private var editingModel: ModelProfile?
+    @State private var showsCatalogPicker = false
+    /// Distinct-connection offer opened as its own visible editor (different
+    /// endpoint/auth): never merged into this provider's connection.
+    @State private var separateOfferRoute: SeparateOfferRoute?
+    private let catalog: ProviderCatalogIndex?
+    private let onRefreshCatalog: (() async -> Void)?
 
     init(
         center: ConversationCenter,
         existing: ProviderProfile?,
         initialRole: ProviderServiceRole? = nil,
-        initialCatalogEntry: ProviderCatalogEntry? = nil
+        initialCatalogEntry: ProviderCatalogEntry? = nil,
+        catalog: ProviderCatalogIndex? = nil,
+        onRefreshCatalog: (() async -> Void)? = nil,
+        serviceOfferEndpointOverride: URL? = nil
     ) {
         _viewModel = StateObject(
             wrappedValue: ProviderEditorViewModel(
                 center: center,
                 existing: existing,
                 initialRole: initialRole,
-                catalogEntry: initialCatalogEntry
+                catalogEntry: initialCatalogEntry,
+                catalog: catalog,
+                serviceOfferEndpointOverride: serviceOfferEndpointOverride
             )
         )
+        self.catalog = catalog
+        self.onRefreshCatalog = onRefreshCatalog
     }
 
     var body: some View {
@@ -47,6 +60,7 @@ struct ProviderEditorView: View {
                 }
             }
             presetSection
+            serviceOffersSection
             protocolSection
             endpointSection
             credentialsSection
@@ -142,6 +156,31 @@ struct ProviderEditorView: View {
                 onMakeDefault: { viewModel.setDefaultModel(model.id) }
             ) { updated in viewModel.updateModel(updated) }
         }
+        .sheet(item: $separateOfferRoute) { route in
+            NavigationStack {
+                ProviderEditorView(
+                    center: viewModel.center,
+                    existing: nil,
+                    initialRole: route.role,
+                    initialCatalogEntry: route.entry,
+                    catalog: catalog,
+                    onRefreshCatalog: onRefreshCatalog,
+                    serviceOfferEndpointOverride: route.endpoint
+                )
+            }
+            .presentationSizing(.page)
+        }
+        // One-time native confirmation after selecting a multi-role vendor.
+        // A dismissal that is not a confirmation records the decline.
+        .sheet(item: $viewModel.pendingServiceOfferPrompt, onDismiss: {
+            viewModel.dismissServiceOfferPrompt()
+        }) { prompt in
+            ServiceOfferPromptSheet(
+                prompt: prompt,
+                onConfirm: { viewModel.confirmServiceOfferSelection($0) },
+                onDecline: { viewModel.declineServiceOfferPrompt() }
+            )
+        }
     }
 
     private var protocolSection: some View {
@@ -163,22 +202,216 @@ struct ProviderEditorView: View {
             TextField("providers.display_name", text: $viewModel.displayName)
                 .textInputAutocapitalization(.words)
                 .accessibilityIdentifier("providers.display_name")
-            Picker("providers.preset", selection: Binding(
-                get: { viewModel.selectedPreset },
-                set: { viewModel.applyPreset($0) }
-            )) {
-                ForEach(viewModel.availablePresets) { preset in
-                    Text(preset.displayName).tag(preset)
+            // ONE unified supplier field: tapping the field itself opens the
+            // searchable selector where the built-in presets and the verified
+            // catalog entries live together (plus an explicit manual/custom
+            // choice). There is deliberately no separate preset picker row and
+            // no "add from catalog" button/page.
+            Button {
+                showsCatalogPicker = true
+            } label: {
+                HStack(spacing: 8) {
+                    Text("providers.supplier_field")
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 0)
+                    Text(viewModel.selectedPreset.displayName)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(minHeight: FloeTheme.minimumTarget)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("providers.supplier_field")
+            .popover(isPresented: $showsCatalogPicker) {
+                ProviderCatalogPicker(
+                    presets: viewModel.availablePresets,
+                    selectedPresetID: viewModel.selectedPreset.id,
+                    catalog: catalog,
+                    configuredPresetIDs: Set(
+                        viewModel.center.configuredProviders.compactMap(\.presetID)
+                    ),
+                    onRefresh: onRefreshCatalog,
+                    onSelect: { entry in
+                        viewModel.applyCatalogEntry(entry)
+                        showsCatalogPicker = false
+                    },
+                    onSelectPreset: { preset in
+                        viewModel.applyPreset(preset)
+                        viewModel.supplierSelectionDidComplete()
+                        showsCatalogPicker = false
+                    }
+                )
+                // A List/NavigationStack has no intrinsic popover size; an
+                // explicit compact-pad frame keeps the search field and rows
+                // visible (the iPhone adaptation presents a sheet and fills
+                // it). `.presentationSizing(.page)` alone collapsed the
+                // popover to ~68pt in the Simulator.
+                .frame(minWidth: 420, idealWidth: 520, minHeight: 540, idealHeight: 680)
+                .presentationSizing(.page)
+            }
+        }
+    }
+
+    // MARK: - Optional additional service roles
+
+    /// Inline status ONLY: undecided roles never appear here (they are raised
+    /// once through the transient confirmation sheet). This section shows the
+    /// roles already opted into, their discovery progress/errors, and declared
+    /// offers that cannot share this connection.
+    @ViewBuilder
+    private var serviceOffersSection: some View {
+        let visible = viewModel.serviceOffers.filter { offer in
+            offer.isEnabled
+                || !offer.isUsable
+                || offer.connection == .distinct
+                || viewModel.serviceOfferDiscoveryState[offer.role] != nil
+        }
+        if !visible.isEmpty {
+            Section {
+                ForEach(visible) { offer in
+                    serviceOfferRow(offer)
+                }
+            } header: {
+                Text("providers.service_offers.title")
+            } footer: {
+                Text("providers.service_offers.footer")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func serviceOfferRow(_ offer: ProviderServiceOfferState) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if offer.isUsable, offer.connection == .shared {
+                Toggle(isOn: Binding(
+                    get: { offer.isEnabled },
+                    set: { viewModel.setServiceOfferEnabled(offer.role, isEnabled: $0) }
+                )) {
+                    HStack {
+                        Label(offer.role.title, systemImage: offer.role.icon)
+                        if case .testing = viewModel.serviceOfferDiscoveryState[offer.role] {
+                            Spacer()
+                            ProgressView()
+                        }
+                    }
+                }
+                .tint(FloeTheme.primary)
+                .disabled(viewModel.serviceOfferDiscoveryState[offer.role] == .testing)
+                .accessibilityIdentifier("providers.service_offers.\(offer.role.rawValue)")
+                if !offer.models.isEmpty {
+                    Text(FloeL10n.l("providers.service_offers.model_count", offer.models.count))
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                }
+                if let error = viewModel.serviceOfferDiscoveryError[offer.role], !error.isEmpty {
+                    Text(error)
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.destructive)
+                }
+            } else {
+                Label(offer.role.title, systemImage: offer.role.icon)
+                    .foregroundStyle(.secondary)
+                if let reason = offer.reason {
+                    Text(reason)
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.pending)
+                }
+                if offer.isUsable, offer.connection == .distinct, catalog != nil,
+                   let entry = viewModel.catalogEntryForSeparateOffer {
+                    // Different endpoint/auth: visible distinct settings, not a
+                    // shared credential.
+                    Button("providers.service_offers.configure_separately") {
+                        separateOfferRoute = SeparateOfferRoute(
+                            entry: entry,
+                            role: offer.role,
+                            endpoint: offer.endpoint
+                        )
+                    }
+                    .frame(minHeight: FloeTheme.minimumTarget)
+                    .accessibilityIdentifier("providers.service_offers.separate.\(offer.role.rawValue)")
                 }
             }
-            .accessibilityLabel("providers.preset")
-            .accessibilityIdentifier("providers.preset")
-        } footer: {
-            if let catalogPresetID = viewModel.catalogPresetID {
-                Text(FloeL10n.l("providers.catalog.preset_footer", catalogPresetID))
+            if let note = offer.note, !note.isEmpty {
+                Text(note)
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// Native, transient one-time confirmation raised after selecting a
+    /// multi-role vendor: the initiating role is fixed, extras are opt-in.
+    private struct ServiceOfferPromptSheet: View {
+        let prompt: ProviderServiceOfferPrompt
+        let onConfirm: (Set<ProviderServiceRole>) -> Void
+        let onDecline: () -> Void
+
+        @Environment(\.dismiss) private var dismiss
+        @State private var selectedRoles: Set<ProviderServiceRole> = []
+
+        var body: some View {
+            NavigationStack {
+                Form {
+                    Section {
+                        Label(
+                            FloeL10n.l("providers.service_offers.current_role", prompt.primaryRole.title),
+                            systemImage: prompt.primaryRole.icon
+                        )
+                        .foregroundStyle(.secondary)
+                    }
+                    Section {
+                        ForEach(prompt.offers) { offer in
+                            Toggle(isOn: Binding(
+                                get: { selectedRoles.contains(offer.role) },
+                                set: { enabled in
+                                    if enabled { selectedRoles.insert(offer.role) }
+                                    else { selectedRoles.remove(offer.role) }
+                                }
+                            )) {
+                                Label(offer.role.title, systemImage: offer.role.icon)
+                            }
+                            .tint(FloeTheme.primary)
+                            .accessibilityIdentifier("providers.service_offers.prompt.\(offer.role.rawValue)")
+                            if offer.requiresDiscovery {
+                                Text("providers.service_offers.requires_discovery")
+                                    .font(FloeTheme.Typography.metadata)
+                                    .foregroundStyle(.secondary)
+                            } else if !offer.models.isEmpty {
+                                Text(FloeL10n.l("providers.service_offers.model_count", offer.models.count))
+                                    .font(FloeTheme.Typography.metadata)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    } footer: {
+                        Text("providers.service_offers.footer")
+                    }
+                }
+                .navigationTitle("providers.service_offers.additional_uses")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("providers.service_offers.not_now") {
+                            onDecline()
+                            dismiss()
+                        }
+                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                        .accessibilityIdentifier("providers.service_offers.not_now")
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("providers.service_offers.configure") {
+                            onConfirm(selectedRoles)
+                            dismiss()
+                        }
+                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                        .accessibilityIdentifier("providers.service_offers.confirm")
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
     }
 
@@ -234,6 +467,12 @@ struct ProviderEditorView: View {
                 Label("providers.waiting_secret.hint", systemImage: "key.fill")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(FloeTheme.pending)
+            }
+            if let message = viewModel.connectionCredentialRequirementMessage {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(FloeTheme.pending)
+                    .accessibilityIdentifier("providers.validation.endpointChanged")
             }
         } header: {
             Text("providers.credentials")
@@ -421,5 +660,14 @@ private extension ModelProtocol {
         case .anthropicMessages: "Anthropic Messages"
         }
     }
+}
+
+/// A distinct-connection offer opened as its own provider editor.
+private struct SeparateOfferRoute: Identifiable {
+    let entry: ProviderCatalogEntry
+    let role: ProviderServiceRole
+    let endpoint: URL?
+
+    var id: String { "\(entry.presetID)-\(role.rawValue)" }
 }
 #endif

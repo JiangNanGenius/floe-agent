@@ -110,6 +110,9 @@ struct MCPRemoteToolSourceTests {
             "canvas.designRegisterRevision", "canvas.designAddFeedback",
             "canvas.designPropose", "canvas.designAdopt", "canvas.designReject",
             "canvas.designRestore",
+            // Bounded canvas→ordinary-task handoff (already in nativeToolNames
+            // since the accepted handoff round; the explicit list was stale).
+            "canvas.startOrdinaryTask",
             "notes.read", "notes.search", "notes.edit", "notes.attachFile", "notes.export",
             "video.models",
             "image.models",

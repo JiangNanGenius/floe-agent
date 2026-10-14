@@ -1969,9 +1969,18 @@ public actor ConversationRunService {
         var dataSections: [String] = []
         lines.append("Current local date and time at run start: \(localTimestamp(currentDate, in: timeZone))")
         lines.append("Current time zone: \(timeZone.identifier) (UTC\(utcOffset(timeZone.secondsFromGMT(for: currentDate))))")
+        // Child-only collaboration tools belong to delegated subagents; the
+        // main run neither sees them in its schemas nor reads them as
+        // available capabilities here.
+        let childOnlyNames = Set(
+            ToolRunnerRegistry.shared.allDescriptors
+                .filter { $0.executionBoundary == .childOnly }
+                .map(\.name)
+        )
         let toolNames = toolsAvailable
             ? (context?.availableToolNames.map(Array.init)?.sorted()
                 ?? ToolRunnerRegistry.shared.allDescriptors.map(\.name).sorted())
+                .filter { !childOnlyNames.contains($0) }
             : []
         if let workspace = context?.workspaceName, !workspace.isEmpty {
             lines.append("Workspace: \(workspace)")

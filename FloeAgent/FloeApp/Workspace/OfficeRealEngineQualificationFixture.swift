@@ -22,16 +22,43 @@ import FloeNotes
 /// in OfficeDiagnostics so the persistence gate can locate the imported
 /// resource inside the app container; the durable stage trace records only
 /// the fixture SHA-256 (content-free by construction).
+///
+/// Reruns: the UI test passes a `FLOE_OFFICE_REAL_ENGINE_RUN_ID`; the note
+/// title and the receipt are then bound to that run identity, so a rerun
+/// never reads the previous run's (possibly edited/saved) document. The
+/// seeder trashes ONLY the exact document id recorded by its own previous
+/// receipt — an identity match, never a title/name match — so the task-owned
+/// synthetic fixtures cannot accumulate or be confused with user notes.
 @MainActor
 enum OfficeRealEngineQualificationFixture {
     static let launchArgument = "--ui-test-office-real-engine"
     static let environmentKey = "FLOE_OFFICE_REAL_ENGINE_FIXTURE_B64"
+    static let runIDEnvironmentKey = "FLOE_OFFICE_REAL_ENGINE_RUN_ID"
     static let receiptName = "office-real-engine-import.json"
     static let fixtureBaseName = "floe-sim-qual.pptx"
+    static let fixtureStem = "floe-sim-qual"
     /// Pinned synthetic fixture (scripts/office_real_simulator/sim_paths.py).
     static let fixtureSHA256 = "4b8ab9081859526bd019323f4b08e1d109f6a4ffa5deb43b71631f3da049fff5"
     /// Container-relative Notes resources directory (NotesRepository storage root).
     static let notesResourcesRelativePath = "Library/Application Support/FloeAgent/Notes/Resources"
+
+    /// Sanitized per-run identity (bounded, ASCII-alphanumeric). `nil` keeps
+    /// the legacy fixed title for callers that do not pass one.
+    static var runID: String? {
+        guard let raw = ProcessInfo.processInfo.environment[runIDEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        let sanitized = String(raw.unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0)
+        }.prefix(16))
+        return sanitized.isEmpty ? nil : sanitized.lowercased()
+    }
+
+    /// The Notes card title the UI test opens. Unique per qualification run
+    /// when a run id is supplied.
+    static var noteTitle: String {
+        guard let runID else { return fixtureStem }
+        return "\(fixtureStem)-\(runID)"
+    }
 
     static func seedIfRequested(session: NotesSession) async {
         let arguments = ProcessInfo.processInfo.arguments
@@ -41,8 +68,13 @@ enum OfficeRealEngineQualificationFixture {
         guard let encoded = ProcessInfo.processInfo.environment[environmentKey],
               let data = Data(base64Encoded: encoded), !data.isEmpty,
               let store = session.store else { return }
+        let title = noteTitle
         let existing = (try? await store.documents(includeTrash: true)) ?? []
-        guard !existing.contains(where: { $0.title == noteTitle }) else { return }
+        guard !existing.contains(where: { $0.title == title }) else { return }
+        // Exact-identity cleanup of this qualification's OWN previous fixture
+        // (recorded in the previous receipt). Never a title/name match, and
+        // never a document this seeder did not create.
+        await trashPreviousRunFixtureIfRecorded(store: store, documents: existing)
 
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         guard digest == fixtureSHA256 else {
@@ -58,7 +90,9 @@ enum OfficeRealEngineQualificationFixture {
             .appendingPathComponent("office-real-engine-fixture-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let url = root.appendingPathComponent(fixtureBaseName)
+        // The imported note title is the file basename: the per-run identity
+        // must live in the file name.
+        let url = root.appendingPathComponent("\(title).pptx")
         do {
             try data.write(to: url, options: .atomic)
             let draft = try await NoteFileImporter.importFile(url, notebookID: nil, store: store)
@@ -74,7 +108,8 @@ enum OfficeRealEngineQualificationFixture {
                                               generation: 0,
                                               stage: "qualification.fixture.imported",
                                               detail: ["sha256": digest, "format": "pptx"])
-            writeReceipt(documentID: draft.id, originalResourceSHA256: originalResourceSHA256,
+            writeReceipt(documentID: draft.id, title: title,
+                         originalResourceSHA256: originalResourceSHA256,
                          fixtureSHA256: digest)
         } catch {
             OfficeStageRecorder.shared.record(session: "qualification",
@@ -85,27 +120,52 @@ enum OfficeRealEngineQualificationFixture {
         #endif
     }
 
-    /// The Notes card title the UI test opens (import keeps the file basename).
-    static var noteTitle: String { (fixtureBaseName as NSString).deletingPathExtension }
+    /// Reads the previous qualification receipt and trashes exactly the
+    /// document id it recorded — only when that receipt belongs to a DIFFERENT
+    /// qualification run. The document stays recoverable in Trash.
+    private static func trashPreviousRunFixtureIfRecorded(store: NotesStore,
+                                                          documents: [NoteDocument]) async {
+        guard let receiptURL = receiptFileURL(),
+              let body = try? Data(contentsOf: receiptURL),
+              let receipt = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              let previousRun = receipt["runID"] as? String,
+              let previousDocumentID = receipt["documentID"] as? String,
+              let documentID = UUID(uuidString: previousDocumentID),
+              previousRun != runID else { return }
+        guard let document = documents.first(where: { $0.id == documentID }),
+              document.deletedAt == nil else { return }
+        _ = try? await store.setTrashed(documentID, expectedRevision: document.revision, trashed: true)
+        OfficeStageRecorder.shared.record(session: "qualification",
+                                          generation: 0,
+                                          stage: "qualification.fixture.previousTrashed",
+                                          detail: [:])
+    }
 
-    private static func writeReceipt(documentID: UUID,
-                                     originalResourceSHA256: String,
-                                     fixtureSHA256: String) {
+    private static func receiptFileURL() -> URL? {
         guard let support = try? FileManager.default.url(for: .applicationSupportDirectory,
                                                          in: .userDomainMask,
                                                          appropriateFor: nil,
-                                                         create: true) else { return }
-        let directory = support.appendingPathComponent("FloeAgent/OfficeDiagnostics", isDirectory: true)
+                                                         create: true) else { return nil }
+        return support.appendingPathComponent("FloeAgent/OfficeDiagnostics", isDirectory: true)
+            .appendingPathComponent(receiptName)
+    }
+
+    private static func writeReceipt(documentID: UUID,
+                                     title: String,
+                                     originalResourceSHA256: String,
+                                     fixtureSHA256: String) {
+        guard let directory = receiptFileURL()?.deletingLastPathComponent() else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let receipt: [String: Any] = [
+        var receipt: [String: Any] = [
             "documentID": documentID.uuidString,
-            "noteTitle": noteTitle,
+            "noteTitle": title,
             "fixtureSHA256": fixtureSHA256,
             "originalResourceSHA256": originalResourceSHA256,
             "resourcesRelativePath": notesResourcesRelativePath,
             "synthetic": true,
             "userContent": false,
         ]
+        if let runID { receipt["runID"] = runID }
         guard let body = try? JSONSerialization.data(withJSONObject: receipt,
                                                      options: [.prettyPrinted, .sortedKeys]) else { return }
         try? body.write(to: directory.appendingPathComponent(receiptName), options: .atomic)

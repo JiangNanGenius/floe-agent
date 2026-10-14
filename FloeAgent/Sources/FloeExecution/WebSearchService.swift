@@ -288,11 +288,18 @@ public actor WebSearchService {
         case .brave:
             guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
             let endpoint = configuration.endpoint ?? URL(string: "https://api.search.brave.com/res/v1/web/search")!
-            request = try get(endpoint, query: [
+            var items: [URLQueryItem] = [
                 URLQueryItem(name: "q", value: query.text),
                 URLQueryItem(name: "count", value: String(min(count, 20))),
-                URLQueryItem(name: "freshness", value: query.recencyDays.map { "pd\($0)d" })
-            ])
+                // Documented optional parameters on the SAME endpoint:
+                // additional excerpts plus fetch metadata (page_fetched).
+                URLQueryItem(name: "extra_snippets", value: "true"),
+                URLQueryItem(name: "include_fetch_metadata", value: "true")
+            ]
+            if let freshness = Self.braveFreshness(days: query.recencyDays, now: now) {
+                items.append(URLQueryItem(name: "freshness", value: freshness))
+            }
+            request = try get(endpoint, query: items)
             request.setValue(apiKey, forHTTPHeaderField: "X-Subscription-Token")
 
         case .tavily:
@@ -372,6 +379,27 @@ public actor WebSearchService {
         }
     }
 
+    /// Brave's documented freshness values: `pd` (<=24h), `pw` (<=7d), `pm`
+    /// (<=31d), `py` (<=365d) or a custom `YYYY-MM-DDtoYYYY-MM-DD` range.
+    /// The previous `pd<days>d` form is not part of the API and was ignored.
+    /// The custom range is deterministic for a given `now`.
+    static func braveFreshness(days: Int?, now: Date) -> String? {
+        guard let days, days > 0 else { return nil }
+        switch days {
+        case ...1: return "pd"
+        case ...7: return "pw"
+        case ...31: return "pm"
+        case ...365: return "py"
+        default:
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "yyyy-MM-dd"
+            let start = now.addingTimeInterval(-Double(days - 1) * 86_400)
+            return "\(formatter.string(from: start))to\(formatter.string(from: now))"
+        }
+    }
+
     private static func signTencent(
         request: inout URLRequest,
         body: Data,
@@ -420,19 +448,56 @@ public actor WebSearchService {
             let title = string(item, keys: ["title", "name"])
             let rawURL = string(item, keys: ["url", "link"])
             guard !title.isEmpty, let url = URL(string: rawURL), url.scheme == "https" || url.scheme == "http" else { return nil }
-            let snippet = string(item, keys: ["snippet", "summary", "passage", "content", "text"])
+            // Excerpt priority preserves existing providers and adds Brave's
+            // documented `description`. `extra_snippets` stays a SEPARATE,
+            // bounded list and is never concatenated into the main excerpt.
+            let snippet = string(item, keys: ["snippet", "summary", "passage", "content", "text", "description"])
             let seed = "\(provider.rawValue)|\(url.absoluteString)"
             return WebSearchResult(
                 title: title,
                 url: url,
                 snippet: String(snippet.prefix(4_000)),
-                sourceName: optionalString(item, keys: ["siteName", "site", "source"]),
+                sourceName: sourceName(item),
+                // Only explicit provider publication fields feed publishedAt.
+                // Brave's `page_age` (published OR modified) and `age`
+                // (relative) are surfaced separately and never relabeled.
                 publishedAt: optionalString(item, keys: ["date", "published_date", "publishedAt"]),
                 score: item["score"] as? Double,
                 provider: provider,
-                citationID: String(sha256Hex(Data(seed.utf8)).prefix(12))
+                citationID: String(sha256Hex(Data(seed.utf8)).prefix(12)),
+                extraSnippets: boundedStrings(item["extra_snippets"], maxCount: 5, maxCharacters: 1_000),
+                pageAge: optionalString(item, keys: ["page_age"]),
+                relativeAge: optionalString(item, keys: ["age"]),
+                pageFetched: optionalString(item, keys: ["page_fetched"]),
+                sourceProfileName: nestedString(item, parent: "profile", keys: ["long_name", "name"]),
+                sourceProfileURL: nestedString(item, parent: "profile", keys: ["url"]),
+                faviconURL: nestedString(item, parent: "meta_url", keys: ["favicon"]),
+                displayPath: nestedString(item, parent: "meta_url", keys: ["path"]),
+                contentState: .searchMetadataOnly
             )
         }
+    }
+
+    /// Source display name: existing flat keys keep priority; Brave's
+    /// `profile`/`meta_url` objects are the documented fallback.
+    private static func sourceName(_ item: [String: Any]) -> String? {
+        if let flat = optionalString(item, keys: ["siteName", "site", "source"]) { return flat }
+        return nestedString(item, parent: "profile", keys: ["long_name", "name"])
+            ?? nestedString(item, parent: "meta_url", keys: ["hostname"])
+    }
+
+    private static func nestedString(_ item: [String: Any], parent: String, keys: [String]) -> String? {
+        guard let dictionary = item[parent] as? [String: Any] else { return nil }
+        return optionalString(dictionary, keys: keys)
+    }
+
+    /// Bounded string list: count and per-entry characters are capped and
+    /// empty entries dropped; an empty/invalid value yields nil (absent), not
+    /// a fabricated placeholder.
+    private static func boundedStrings(_ value: Any?, maxCount: Int, maxCharacters: Int) -> [String]? {
+        guard let values = value as? [String] else { return nil }
+        let bounded = values.prefix(maxCount).map { String($0.prefix(maxCharacters)) }.filter { !$0.isEmpty }
+        return bounded.isEmpty ? nil : bounded
     }
 
     private static func resultDictionaries(_ root: Any, provider: WebSearchProviderKind) -> [[String: Any]] {

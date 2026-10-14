@@ -108,6 +108,15 @@ public struct WebSearchQuery: Hashable, Sendable {
     }
 }
 
+/// Whether a result's metadata came from the search index only or from a page
+/// that was actually fetched and verified. Search metadata is NOT page
+/// verification: it can prove a page was indexed with an excerpt, never that
+/// its content or any date is accurate.
+public enum WebSearchContentState: String, Codable, Sendable, CaseIterable {
+    case searchMetadataOnly
+    case fetchedAndVerified
+}
+
 public struct WebSearchResult: Codable, Hashable, Sendable {
     public var title: String
     public var url: URL
@@ -118,6 +127,34 @@ public struct WebSearchResult: Codable, Hashable, Sendable {
     public var provider: WebSearchProviderKind
     public var citationID: String
 
+    // MARK: Search-index metadata (optional; older payloads decode unchanged)
+
+    /// Additional excerpts the provider returned (Brave `extra_snippets`,
+    /// max 5). Still search excerpts, never fetched page text.
+    public var extraSnippets: [String]?
+    /// Provider-reported page date: published OR last modified, per the Brave
+    /// documentation. Deliberately NOT mapped into `publishedAt`.
+    public var pageAge: String?
+    /// Provider-reported human-readable relative age (e.g. "2 days ago"), not
+    /// an exact timestamp.
+    public var relativeAge: String?
+    /// Provider-reported crawl/fetch date of the indexed copy (`page_fetched`).
+    public var pageFetched: String?
+    /// Provider profile for the source (Brave `profile.long_name/name/url`).
+    public var sourceProfileName: String?
+    public var sourceProfileURL: String?
+    /// Provider favicon URL (Brave `meta_url.favicon`).
+    public var faviconURL: String?
+    /// Provider display path (Brave `meta_url.path`).
+    public var displayPath: String?
+    /// Explicit evidence state. `nil` means `.searchMetadataOnly`, so records
+    /// written before this field existed keep their exact meaning.
+    public var contentState: WebSearchContentState?
+
+    public var effectiveContentState: WebSearchContentState {
+        contentState ?? .searchMetadataOnly
+    }
+
     public init(
         title: String,
         url: URL,
@@ -126,7 +163,16 @@ public struct WebSearchResult: Codable, Hashable, Sendable {
         publishedAt: String? = nil,
         score: Double? = nil,
         provider: WebSearchProviderKind,
-        citationID: String
+        citationID: String,
+        extraSnippets: [String]? = nil,
+        pageAge: String? = nil,
+        relativeAge: String? = nil,
+        pageFetched: String? = nil,
+        sourceProfileName: String? = nil,
+        sourceProfileURL: String? = nil,
+        faviconURL: String? = nil,
+        displayPath: String? = nil,
+        contentState: WebSearchContentState? = nil
     ) {
         self.title = title
         self.url = url
@@ -136,6 +182,15 @@ public struct WebSearchResult: Codable, Hashable, Sendable {
         self.score = score
         self.provider = provider
         self.citationID = citationID
+        self.extraSnippets = extraSnippets
+        self.pageAge = pageAge
+        self.relativeAge = relativeAge
+        self.pageFetched = pageFetched
+        self.sourceProfileName = sourceProfileName
+        self.sourceProfileURL = sourceProfileURL
+        self.faviconURL = faviconURL
+        self.displayPath = displayPath
+        self.contentState = contentState
     }
 }
 

@@ -44,6 +44,20 @@ public enum OfficeCapabilityTool {
             }
         }
 
+        /// apply-without-grant copy execution through the service-owned
+        /// engine session. Only present in builds that link the engine; the
+        /// capability is unavailable (never faked) otherwise.
+        func applyAutomaticOp() -> Op {
+            Op(name: "applyAutomatic",
+               tier: enginePresent ? engine : unavailable,
+               path: "service-engine-session",
+               detail: "apply without grant_id when the runtime approved that exact call: "
+                   + "service-owned engine session on an isolated copy, saved-copy reopen verification, "
+                   + "verified <name>.edited.<ext> output; the original is never modified and "
+                   + "selection-relative commands are refused"
+                   + (enginePresent ? "" : " (engine not present in this build)"))
+        }
+
         let docx: [Op] = [
             Op(name: "inspect", tier: verified, path: "ooxml", detail: "document.office.inspect: paragraphs, headers/footers"),
             Op(name: "updateText", tier: verified, path: "ooxml", detail: "paragraph find/replace via document.office.updateText with expectedSHA256 CAS"),
@@ -51,6 +65,7 @@ public enum OfficeCapabilityTool {
             Op(name: "replaceImage", tier: verified, path: "package", detail: "same-format picture bytes replaced in place, atomic reopen-verified"),
             Op(name: "images", tier: enginePresent ? engine : unavailable, path: "native-host",
                detail: "native insertAttachment(fromFileURL:) at the cursor; live-editor only"),
+            applyAutomaticOp(),
         ] + engineOps(.docx)
         let xlsx: [Op] = [
             Op(name: "inspect", tier: verified, path: "ooxml", detail: "cells via shared-string table"),
@@ -59,7 +74,13 @@ public enum OfficeCapabilityTool {
             Op(name: "createWorkbook", tier: verified, path: "ooxml", detail: "document.createWorkbook"),
             Op(name: "formulaErrorLocation", tier: verified, path: "ooxml",
                detail: "document.office.edit action=errors reads t=\"e\" cells with codes from the saved package"),
+            Op(name: "recalcVerification", tier: verified, path: "ooxml",
+               detail: "recalculation is verified from the reopened package: every formula cell's persisted cached "
+                   + "value/result type/error is checked against the workbook's own persisted dependency values "
+                   + "(bounded SUM/MIN/MAX/COUNT, direct and cross-sheet references, constant arithmetic); missing or "
+                   + "stale caches fail and unsupported shapes are reported unverified"),
             Op(name: "replaceImage", tier: verified, path: "package", detail: "same-format picture bytes replaced in place, atomic reopen-verified"),
+            applyAutomaticOp(),
         ] + engineOps(.xlsx)
         let pptx: [Op] = [
             Op(name: "inspect", tier: verified, path: "ooxml", detail: "slide + notes text"),
@@ -70,6 +91,7 @@ public enum OfficeCapabilityTool {
                detail: "native startPresentation; live-editor only"),
             Op(name: "imageReplaceEngine", tier: unavailable, path: "engine-uno",
                detail: "no .uno:ChangePicture in the pinned bundle; use action=replaceImage (package path) instead"),
+            applyAutomaticOp(),
         ] + engineOps(.pptx)
         let formats: [Format] = [
             Format(format: "docx", read: true, operations: docx),
@@ -89,7 +111,7 @@ public struct OfficeCapabilitiesTool: AgentTool {
     public struct Arguments: Decodable, Sendable { public var format: String? }
     public static let name = "document.office.capabilities"
     public static let toolDescription =
-        "Dynamic per-format Office capability matrix. Tiers: verified (unit-tested in this build), engine (available through the packaged Collabora engine but not device-qualified yet), unavailable (no faithful implementation; never faked). Use discover → inspect → propose → confirm → apply → verify; never claim engine-tier ops as accepted."
+        "Dynamic per-format Office capability matrix. Tiers: verified (unit-tested in this build), engine (available through the packaged Collabora engine but not device-qualified yet), unavailable (no faithful implementation; never faked). Use discover → inspect → propose → confirm → apply → verify; apply also has a runtime-authorized automatic copy mode (no grant_id) that writes a verified edited copy without touching the original, and excel.recalculate is verified from persisted cached formula results, not from a request. Never claim engine-tier ops as accepted."
     public static let parametersJSON = #"{"type":"object","properties":{"format":{"type":"string","enum":["docx","xlsx","pptx"],"description":"optional format filter"}},"required":[],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false

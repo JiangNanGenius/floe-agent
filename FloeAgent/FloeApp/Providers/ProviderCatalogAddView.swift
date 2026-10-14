@@ -1,28 +1,39 @@
-// FloeApp — Add from provider catalog.
+// FloeApp — Embedded unified supplier selector.
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// A searchable sheet over the bundled/verified ProviderCatalogIndex. Search is
-// pure local computation on the passed index: typing never performs network
-// I/O. Rows carry no credentials; selecting an available entry hands the
-// catalog entry back to the caller, which owns duplicate checks and the editor
-// prefill.
+// ONE searchable selector for the add/edit provider form (anchored popover on
+// iPad, adaptive sheet on iPhone): the built-in provider presets and the
+// verified catalog entries appear in the same list, searched locally together.
+// It is presented by tapping the provider/supplier FIELD itself — there is no
+// separate "add from catalog" row or top-level catalog page. Search is pure
+// local computation on the passed index: typing never performs network I/O.
+// Rows carry no credentials; selecting hands the choice back to the editor,
+// which owns duplicate checks, custom-name preservation and prefill.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeCore
 import FloeProviders
 
-/// Sheet listing official catalog providers with local search and filters.
-struct ProviderCatalogAddView: View {
-    let catalog: ProviderCatalogIndex
+/// Compact, searchable supplier selector embedded in the provider editor.
+struct ProviderCatalogPicker: View {
+    /// Built-in presets valid for the editor's service role.
+    let presets: [ProviderPreset]
+    /// Currently selected preset (marked in the built-in section).
+    let selectedPresetID: ProviderTemplateID
+    /// Verified catalog index, when available. Without it the selector still
+    /// offers every built-in preset.
+    let catalog: ProviderCatalogIndex?
     /// presetIDs of already saved providers, used for the configured badge.
     let configuredPresetIDs: Set<String>
     /// Optional async refresh of the official catalog. Errors are owned by
     /// the caller's existing content-update error surface.
     let onRefresh: (() async -> Void)?
-    /// Called for selectable rows. Unsupported rows never call this.
+    /// Called for selectable catalog rows. Unsupported rows never call this.
     let onSelect: (ProviderCatalogEntry) -> Void
+    /// Called for a built-in preset choice (including manual/custom).
+    let onSelectPreset: (ProviderPreset) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
@@ -44,35 +55,54 @@ struct ProviderCatalogAddView: View {
                     .accessibilityIdentifier("providers.catalog.filter")
                 }
 
-                Section {
-                    if results.isEmpty {
-                        emptyResults
-                    } else {
-                        ForEach(results) { entry in
-                            row(entry)
+                if !matchingPresets.isEmpty {
+                    Section {
+                        ForEach(matchingPresets) { preset in
+                            presetRow(preset)
                         }
+                    } header: {
+                        Text("providers.supplier_picker.builtin")
                     }
-                } header: {
-                    catalogHeader
-                } footer: {
-                    catalogFooter
+                }
+
+                if let catalog {
+                    Section {
+                        if results.isEmpty && matchingPresets.isEmpty {
+                            emptyResults
+                        } else if results.isEmpty {
+                            Text("providers.supplier_picker.no_matching_catalog")
+                                .font(FloeTheme.Typography.metadata)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(results) { entry in
+                                row(entry)
+                            }
+                        }
+                    } header: {
+                        Text("providers.catalog.official")
+                    } footer: {
+                        catalogFooter(catalog)
+                    }
                 }
             }
             .listStyle(.insetGrouped)
-            .navigationTitle("providers.catalog.title")
+            // A persistent search bar stays visible above the scrolling list,
+            // so search and selection happen inside the same supplier popup.
             .searchable(
                 text: $query,
                 placement: .navigationBarDrawer(displayMode: .always),
                 prompt: Text("providers.catalog.search_placeholder")
             )
             .accessibilityIdentifier("providers.catalog.search")
+            .navigationTitle("providers.supplier_picker.title")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("action.cancel") { dismiss() }
                         .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                         .accessibilityIdentifier("providers.catalog.cancel")
                 }
-                if onRefresh != nil {
+                if onRefresh != nil, catalog != nil {
                     ToolbarItem(placement: .primaryAction) {
                         refreshButton
                     }
@@ -81,31 +111,35 @@ struct ProviderCatalogAddView: View {
         }
     }
 
+    /// Built-in presets matching the current query by display name or host.
+    /// Manual/custom stays present for an explicit, non-catalog choice.
+    private var matchingPresets: [ProviderPreset] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return presets }
+        let needle = ProviderCatalogIndex.normalized(trimmed)
+        return presets.filter { preset in
+            ProviderCatalogIndex.normalized(preset.displayName).contains(needle)
+                || ProviderCatalogIndex.normalized(preset.defaultBaseURL.host ?? "").contains(needle)
+        }
+    }
+
     // MARK: - Search results (pure local)
 
     private var results: [ProviderCatalogEntry] {
-        catalog.search(
+        guard let catalog else { return [] }
+        return catalog.search(
             query: query,
             filter: filter,
             configuredPresetIDs: configuredPresetIDs
         )
     }
 
-    // MARK: - Header / footer
+    // MARK: - Footer
 
-    private var catalogHeader: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Label("providers.catalog.official", systemImage: "books.vertical")
-            Text(catalog.document.source.project)
-                .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var catalogFooter: some View {
+    private func catalogFooter(_ catalog: ProviderCatalogIndex) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(FloeL10n.l("providers.catalog.provider_count", catalog.all.count))
-            Text(FloeL10n.l("providers.catalog.document_hash", shortDocumentSHA256))
+            Text(FloeL10n.l("providers.catalog.document_hash", shortDocumentSHA256(catalog)))
             Text(FloeL10n.l("providers.catalog.fetched_at", catalog.document.source.fetchedAt))
         }
         .font(FloeTheme.Typography.metadata)
@@ -113,11 +147,46 @@ struct ProviderCatalogAddView: View {
     }
 
     /// Short display form of the pinned source document hash.
-    private var shortDocumentSHA256: String {
-        String(catalog.document.source.documentSHA256.prefix(12))
+    private func shortDocumentSHA256(_ catalog: ProviderCatalogIndex) -> String {
+        String(catalog.document.source.sha256Prefix)
     }
 
     // MARK: - Rows
+
+    /// One built-in preset choice, marked when it is the current selection.
+    private func presetRow(_ preset: ProviderPreset) -> some View {
+        Button {
+            onSelectPreset(preset)
+        } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(preset.displayName)
+                        .font(FloeTheme.Typography.body)
+                        .foregroundStyle(.primary)
+                    HStack(spacing: 4) {
+                        Text(protocolName(preset.defaultProtocol))
+                        Text("·")
+                        Text(preset.defaultBaseURL.host ?? "—")
+                    }
+                    .font(FloeTheme.Typography.evidence)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if preset.id == selectedPresetID {
+                    Image(systemName: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(FloeTheme.primary)
+                }
+            }
+            .padding(.vertical, 2)
+            .frame(minHeight: FloeTheme.minimumTarget)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("providers.supplier.preset.\(preset.id.rawValue)")
+    }
 
     private func row(_ entry: ProviderCatalogEntry) -> some View {
         Button {
@@ -153,6 +222,14 @@ struct ProviderCatalogAddView: View {
                 .font(FloeTheme.Typography.evidence)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                if !serviceRoleLabels(entry).isEmpty {
+                    Text(FloeL10n.l(
+                        "providers.catalog.also_serves",
+                        serviceRoleLabels(entry).joined(separator: ", ")
+                    ))
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(FloeTheme.success)
+                }
                 if entry.availability == .unsupported,
                    let reason = entry.unsupportedReason {
                     Text(Self.localizedUnsupportedReason(reason))
@@ -213,6 +290,26 @@ struct ProviderCatalogAddView: View {
 
     // MARK: - Labels
 
+    /// Media roles a shipped adapter can really serve for this entry, so the
+    /// row shows actual capability instead of a model-name guess.
+    private func serviceRoleLabels(_ entry: ProviderCatalogEntry) -> [String] {
+        ProviderServiceOfferResolver.resolvedOffers(
+            for: entry.kind,
+            baseURL: entry.baseURL,
+            authStyle: entry.authStyle,
+            availability: entry.availability,
+            declared: entry.serviceOffers
+        )
+        .filter(\.isUsable)
+        .map {
+            switch $0.role {
+            case .conversation: FloeL10n.l("providers.provider_service_role.chat_model")
+            case .image: FloeL10n.l("providers.provider_service_role.image_generation_and_editing")
+            case .video: FloeL10n.l("providers.provider_service_role.video_generation_extra")
+            }
+        }
+    }
+
     /// Known capability-failure reasons map to localized strings (matched on
     /// stable tokens so minor catalog wording edits do not break the mapping);
     /// unknown reasons stay readable through a localized wrapper with the
@@ -263,5 +360,11 @@ struct ProviderCatalogAddView: View {
             ProviderCatalogIndex.normalized($0).contains(normalized)
         }
     }
+}
+
+private extension ProviderCatalogDocument.Source {
+    /// Short hash prefix used by the picker footer; kept here so the picker
+    /// does not duplicate string slicing logic.
+    var sha256Prefix: String { String(documentSHA256.prefix(12)) }
 }
 #endif

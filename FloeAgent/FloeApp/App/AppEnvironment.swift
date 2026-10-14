@@ -1158,11 +1158,42 @@ final class AppEnvironment: ObservableObject {
         NotesToolRegistration.register()
         ToolCatalog.register(AudioTranscribeTool.self)
         ToolRunnerRegistry.shared.register(AudioTranscribeTool())
+        // Real shared enhancement processor (VideoToolbox frame-rate
+        // conversion/low-latency/super resolution, installed Core ML RIFE
+        // and Real-ESRGAN bundles, MetalFX spatial scaler). There is
+        // deliberately no global workspace provider: each tool request
+        // freezes the caller's immutable `context.workspaceRootURL`
+        // snapshot into `FrameProcessingRequest.workspaceRoot`, so a
+        // concurrent project/task switch can never redirect a queued job.
+        let mediaProcessor = MediaEnhancementIntegration.makeFrameProcessing(
+            modelResolver: MediaModelResolution.store(mediaModelStore)
+        )
         MediaToolRegistration.register(
             appBuild: (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "dev",
-            modelProvider: { await MediaModelCatalogService.shared.report() },
+            // Real readiness: the store's installed records are the installed
+            // list, and every entry is hash-verified and qualified by one
+            // bounded fixture inference (or a revalidated persisted
+            // qualification). Installation alone never reports runnable; the
+            // verified catalog still supplies the presentation metadata.
+            modelProvider: {
+                let (catalogInstalled, available) = await MediaModelCatalogService.shared.report()
+                let records = await mediaModelStore.installed()
+                let readiness = await MediaModelReadiness.report(
+                    installed: records.map { (id: $0.id, rootPath: $0.rootPath) }
+                )
+                var catalogByID: [String: MediaCapabilities.Model] = [:]
+                for model in catalogInstalled { catalogByID[model.id] = model }
+                let installed = readiness.map { qualified -> MediaCapabilities.Model in
+                    guard var model = catalogByID[qualified.id] else { return qualified }
+                    model.runnable = qualified.runnable
+                    model.unavailableReason = qualified.unavailableReason
+                    return model
+                }
+                return (installed, available)
+            },
             modelStore: mediaModelStore,
-            modelCatalogProvider: { await MediaModelCatalogService.shared.catalog() }
+            modelCatalogProvider: { await MediaModelCatalogService.shared.catalog() },
+            frameProcessing: mediaProcessor
         )
         Task {
             await MediaModelCatalogService.shared.configure(
@@ -1190,6 +1221,17 @@ final class AppEnvironment: ObservableObject {
         }
         backgroundJobService = registerBackgroundJobTools(
             database: database,
+            // Service-owned prepared operations for the authorized Office and
+            // media apply paths: they consume the runtime authority for the
+            // exact submitting `jobs.submit` call, freeze root/revision/digests
+            // at submission and run the real services with progress and
+            // cooperative cancellation. Ordinary targets keep the generic
+            // runner path (adapters are per-target).
+            adapters: NativeJobAppAdapters.make(
+                officeCenter: officeCommandCenter,
+                workbenchCenter: workbenchCenter,
+                frameProcessing: mediaProcessor
+            ),
             onTerminal: { [weak self] job in
                 await self?.handleBackgroundJobTerminal(job)
             },
@@ -1662,6 +1704,13 @@ final class AppEnvironment: ObservableObject {
                 UserDefaults.standard.removeObject(forKey: SyncControlPreferences.overallKey)
                 UserDefaults.standard.removeObject(forKey: SyncControlPreferences.configurationKey)
                 await configurationSync.setSynchronizationEnabled(true)
+            }
+            // System-notification tap qualification: prepares one synthetic
+            // task and posts ONE real terminal notification through the
+            // production path. It never simulates the tap or the route.
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains(NotificationQualificationFixture.launchArgument) {
+                await NotificationQualificationFixture.seedIfRequested(environment: self)
             }
             #endif
             #if !targetEnvironment(simulator)

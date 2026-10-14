@@ -18,6 +18,15 @@ public enum ToolCatalog {
         public var effect: ToolEffect
         public var requiresHostScope: Bool
         public var prerequisites: [ToolPrerequisite]
+        /// Where this tool may execute: any run, only the main run, or only
+        /// inside a delegated child. Enforced in schema composition AND in
+        /// the canonical dispatcher.
+        public var executionBoundary: ToolExecutionBoundary
+        /// True only for tools whose own side effects are indirect and
+        /// internally serialized (the delegation envelope): the runtime may
+        /// execute an approved call concurrently with sibling parallel-safe
+        /// calls. Direct writes stay batch barriers.
+        public var supportsConcurrentBatchDispatch: Bool
 
         public init(
             name: String,
@@ -27,7 +36,9 @@ public enum ToolCatalog {
             isSideEffecting: Bool,
             effect: ToolEffect? = nil,
             requiresHostScope: Bool? = nil,
-            prerequisites: [ToolPrerequisite] = []
+            prerequisites: [ToolPrerequisite] = [],
+            executionBoundary: ToolExecutionBoundary = .any,
+            supportsConcurrentBatchDispatch: Bool = false
         ) {
             self.name = name
             self.toolDescription = toolDescription ?? name
@@ -38,6 +49,8 @@ public enum ToolCatalog {
             self.requiresHostScope = requiresHostScope
                 ?? !riskLabels.isDisjoint(with: [.executesRemoteCommand, .modifiesRemoteSystem])
             self.prerequisites = prerequisites
+            self.executionBoundary = executionBoundary
+            self.supportsConcurrentBatchDispatch = supportsConcurrentBatchDispatch
         }
 
         /// Stable identity of the exact authority shown to policy and the
@@ -48,7 +61,7 @@ public enum ToolCatalog {
             let prerequisiteMaterial = prerequisites.map {
                 "\($0.state)|\($0.resolverToolName ?? "none")|\($0.mayResolveAutomatically)"
             }.sorted().joined(separator: ",")
-            let material = [
+            var material = [
                 name,
                 toolDescription,
                 parametersJSON,
@@ -57,8 +70,14 @@ public enum ToolCatalog {
                 effect.rawValue,
                 requiresHostScope ? "host" : "local",
                 prerequisiteMaterial
-            ].joined(separator: "\u{1f}")
-            return SHA256.hash(data: Data(material.utf8))
+            ]
+            // Boundary flags join the digest only when non-default, so every
+            // ordinary tool keeps its historical authorization identity while
+            // a main-only/child-only or parallel-safe classification is bound
+            // to the exact authority policy approved.
+            if executionBoundary != .any { material.append("boundary:\(executionBoundary.rawValue)") }
+            if supportsConcurrentBatchDispatch { material.append("concurrent-batch") }
+            return SHA256.hash(data: Data(material.joined(separator: "\u{1f}").utf8))
                 .map { String(format: "%02x", $0) }
                 .joined()
         }
@@ -162,7 +181,9 @@ public enum ToolCatalog {
             isSideEffecting: T.isSideEffecting,
             effect: T.toolEffect,
             requiresHostScope: T.requiresHostScope,
-            prerequisites: T.prerequisites
+            prerequisites: T.prerequisites,
+            executionBoundary: T.executionBoundary,
+            supportsConcurrentBatchDispatch: T.supportsConcurrentBatchDispatch
         ), compatibilityOnly: compatibilityOnly)
     }
 

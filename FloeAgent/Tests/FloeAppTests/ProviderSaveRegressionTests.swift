@@ -338,4 +338,201 @@ struct ProviderSaveRegressionTests {
         #expect(frozen.apiKey == nil)
     }
 }
-#endif
+
+// MARK: - Embedded catalog selection and optional multi-service offers
+
+/// Pins the editor wiring for the T1 contract: the catalog search lives in
+/// the same add/edit form (no independent page), selection preserves
+/// uncustomized form state, credentials never cross an incompatible
+/// connection, and an additional role stages real models on the SAME
+/// provider connection without touching the default model.
+@Suite("FloeApp.ProviderServiceOfferEditor")
+@MainActor
+struct ProviderServiceOfferEditorTests {
+
+    private func makeCatalog(_ providers: [ProviderCatalogEntry]) throws -> ProviderCatalogIndex {
+        let document = ProviderCatalogDocument(
+            schemaVersion: 1,
+            source: .init(
+                project: "tests",
+                url: "https://example.invalid",
+                license: "MIT",
+                documentSHA256: String(repeating: "a", count: 64),
+                fetchedAt: "2026-10-14T00:00:00Z"
+            ),
+            providers: providers
+        )
+        return try ProviderCatalogIndex.validated(from: JSONEncoder().encode(document))
+    }
+
+    private func openAIEntry(
+        presetID: String,
+        baseURL: String,
+        serviceOffers: [ProviderCatalogServiceOffer]? = nil,
+        kind: ProviderKind = .openAI
+    ) -> ProviderCatalogEntry {
+        ProviderCatalogEntry(
+            presetID: presetID,
+            name: presetID,
+            aliases: [],
+            kind: kind,
+            defaultProtocol: .openAIChatCompletions,
+            baseURL: URL(string: baseURL),
+            domains: [],
+            models: ["gpt-5"],
+            availability: .available,
+            unsupportedReason: nil,
+            upstreamID: presetID,
+            authStyle: "bearer",
+            toolNameCompatibility: false,
+            serviceOffers: serviceOffers
+        )
+    }
+
+    @Test("Selection preserves a custom name, keeps same-origin credentials and clears them on a host change")
+    func selectionPreservesFormStateAndBoundsCredentials() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let suiteName = "floe.provider.offer.tests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let catalog = try makeCatalog([
+            openAIEntry(presetID: "alias", baseURL: "https://api.openai.com/v1/alias"),
+            openAIEntry(presetID: "openai", baseURL: "https://api.openai.com/v1")
+        ])
+        let viewModel = ProviderEditorViewModel(
+            center: environment.conversationCenter,
+            existing: nil,
+            initialRole: .image,
+            catalog: catalog,
+            promptStore: ProviderServiceOfferPromptStore(defaults: defaults)
+        )
+        viewModel.displayName = "My Gateway"
+        viewModel.apiKey = "fixture-key"
+
+        // Same origin, different path: the typed key and custom name survive.
+        let alias = try #require(catalog.all.first { $0.presetID == "alias" })
+        viewModel.applyCatalogEntry(alias)
+        #expect(viewModel.displayName == "My Gateway")
+        #expect(viewModel.apiKey == "fixture-key")
+
+        // Different host (the OpenAI entry is on the same host here, so use a
+        // cross-host catalog entry to prove the clearing rule).
+        let remote = try makeCatalog([
+            openAIEntry(presetID: "remote", baseURL: "https://api.remote.example.com/v1")
+        ])
+        let remoteEntry = try #require(remote.all.first)
+        viewModel.apiKey = "fixture-key"
+        viewModel.applyCatalogEntry(remoteEntry)
+        #expect(viewModel.displayName == "My Gateway")
+        #expect(viewModel.apiKey.isEmpty)
+    }
+
+    @Test("Image start offers verified conversation configuration on the same connection")
+    func imageStartOffersConversationWithDeclaredModels() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let suiteName = "floe.provider.offer.tests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let conversationOffer = ProviderCatalogServiceOffer(
+            role: .conversation,
+            protocols: [.openAIChatCompletions],
+            models: ["gemini-2.5-pro"]
+        )
+        let catalog = try makeCatalog([
+            openAIEntry(
+                presetID: "gemini-images",
+                baseURL: "https://generativelanguage.googleapis.com/v1",
+                serviceOffers: [conversationOffer],
+                kind: .googleGemini
+            )
+        ])
+        let viewModel = ProviderEditorViewModel(
+            center: environment.conversationCenter,
+            existing: nil,
+            initialRole: .image,
+            catalogEntry: catalog.all.first,
+            catalog: catalog,
+            promptStore: ProviderServiceOfferPromptStore(defaults: defaults)
+        )
+        let conversation = try #require(viewModel.serviceOffers.first { $0.role == .conversation })
+        #expect(conversation.isUsable)
+        #expect(!conversation.requiresDiscovery)
+        #expect(conversation.models == ["gemini-2.5-pro"])
+
+        // The prompt is transient and opt-in; confirming stages only the
+        // selected extra role and records the rest as declined.
+        let prompt = try #require(viewModel.pendingServiceOfferPrompt)
+        #expect(prompt.primaryRole == .image)
+        #expect(prompt.offers.map(\.role).contains(.conversation))
+        viewModel.confirmServiceOfferSelection([.conversation])
+        #expect(viewModel.pendingServiceOfferPrompt == nil)
+        #expect(viewModel.serviceOffers.allSatisfy { $0.role != .video })
+        let staged = viewModel.modelsForSave.filter { $0.remoteModelID == "gemini-2.5-pro" }
+        #expect(staged.count == 1)
+        #expect(staged.first?.providerID == viewModel.providerID)
+        #expect(staged.first?.capabilities.contains(.text) == true)
+        #expect(viewModel.managedCapabilitiesForSave.contains(.text))
+
+        // The frozen request keeps the media role as the initiating role and
+        // never touches the default model.
+        switch viewModel.makeSaveRequest() {
+        case .success(let request):
+            #expect(request.serviceRoleIsConversation == false)
+            #expect(request.selectedModels.contains { $0.remoteModelID == "gemini-2.5-pro" })
+        case .failure(let report):
+            Issue.record("preflight rejected: \(report.issues.map(\.problem.rawValue))")
+        }
+        #expect(viewModel.defaultModelID == nil)
+    }
+
+    @Test("Declining an optional role hides the prompt and is remembered")
+    func declineIsRememberedOnce() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let suiteName = "floe.provider.offer.tests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let promptStore = ProviderServiceOfferPromptStore(defaults: defaults)
+
+        let catalog = try makeCatalog([
+            openAIEntry(presetID: "openai", baseURL: "https://api.openai.com/v1")
+        ])
+        let viewModel = ProviderEditorViewModel(
+            center: environment.conversationCenter,
+            existing: nil,
+            initialRole: .image,
+            catalogEntry: catalog.all.first,
+            catalog: catalog,
+            promptStore: promptStore
+        )
+        #expect(viewModel.hasPendingServiceOfferPrompt)
+        #expect(viewModel.pendingServiceOfferPrompt != nil)
+        // A dismissal that is not a confirmation records the decline once.
+        viewModel.dismissServiceOfferPrompt()
+        #expect(viewModel.pendingServiceOfferPrompt == nil)
+        #expect(!viewModel.hasPendingServiceOfferPrompt)
+        #expect(viewModel.serviceOffers.allSatisfy { $0.role != .conversation })
+        #expect(promptStore.declinedRoles(for: viewModel.providerID).contains(.conversation))
+
+        // A second editor for the same provider identity does not re-prompt.
+        let existingProfile = ProviderProfile(
+            id: viewModel.providerID,
+            kind: .openAI,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://api.openai.com/v1")!,
+            presetID: "openai"
+        )
+        let reopened = ProviderEditorViewModel(
+            center: environment.conversationCenter,
+            existing: existingProfile,
+            initialRole: .image,
+            catalog: catalog,
+            promptStore: promptStore
+        )
+        #expect(reopened.serviceOffers.allSatisfy { $0.role != .conversation })
+    }
+}#endif

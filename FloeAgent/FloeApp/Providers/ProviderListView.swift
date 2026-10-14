@@ -17,13 +17,11 @@ struct ProviderListView: View {
     @StateObject private var viewModel: ProviderListViewModel
     @State private var presentedEditor: ProviderEditorRoute?
     @State private var showsProviderTypePicker = false
-    @State private var showsCatalogAdd = false
-    /// Entry chosen in the catalog sheet; the editor is presented from the
-    /// sheet's onDismiss so the two sheets never overlap.
-    @State private var pendingCatalogSelection: ProviderCatalogEntry?
 
     /// Optional validated catalog plus refresh closure. Both stay nil for
-    /// call sites that only support manual provider setup.
+    /// call sites that only support manual provider setup. When present the
+    /// catalog search lives inside the editor's provider-field section; there
+    /// is deliberately no independent catalog page or top-level route.
     private let catalog: ProviderCatalogIndex?
     private let onRefreshCatalog: (() async -> Void)?
 
@@ -55,6 +53,9 @@ struct ProviderListView: View {
         .background(FloeTheme.readingSurface)
         .navigationTitle("more.providers")
         .toolbar {
+            // Single Add entry point: the catalog search is embedded in the
+            // editor's provider-field section, so there is no separate
+            // top-level "from catalog" route.
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     showsProviderTypePicker = true
@@ -65,26 +66,10 @@ struct ProviderListView: View {
                 .accessibilityIdentifier("providers.add")
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showsCatalogAdd = true
-                } label: {
-                    Label("providers.add_from_catalog", systemImage: "books.vertical")
-                }
-                .disabled(catalog == nil)
-                .accessibilityIdentifier("providers.add_from_catalog")
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-            }
         }
         .task { await viewModel.load() }
         .refreshable { await viewModel.load() }
         .confirmationDialog("providers.provider_list_view.add_model_provider", isPresented: $showsProviderTypePicker) {
-            if catalog != nil {
-                // Discovery lives in the same catalog sheet as the toolbar
-                // route; no second editor is created.
-                Button("providers.add_from_catalog") { showsCatalogAdd = true }
-                    .accessibilityIdentifier("providers.add_from_catalog.menu")
-            }
             Button("providers.provider_list_view.chat_model_provider") { presentedEditor = .new(.conversation) }
             Button("providers.provider_list_view.image_generation_editing_provider") { presentedEditor = .new(.image) }
             Button("providers.provider_list_view.video_generation_provider") { presentedEditor = .new(.video) }
@@ -100,33 +85,11 @@ struct ProviderListView: View {
                     center: viewModel.center,
                     existing: route.provider,
                     initialRole: route.role,
-                    initialCatalogEntry: route.catalogEntry
+                    catalog: catalog,
+                    onRefreshCatalog: onRefreshCatalog
                 )
             }
             .presentationSizing(.page)
-        }
-        .sheet(isPresented: $showsCatalogAdd, onDismiss: {
-            // Hop once so the editor sheet presents after the catalog sheet
-            // has fully finished dismissing.
-            Task { @MainActor in presentPendingCatalogSelection() }
-        }) {
-            if let catalog {
-                ProviderCatalogAddView(
-                    catalog: catalog,
-                    configuredPresetIDs: Set(
-                        viewModel.center.configuredProviders.compactMap(\.presetID)
-                    ),
-                    onRefresh: onRefreshCatalog,
-                    onSelect: { entry in
-                        pendingCatalogSelection = entry
-                        showsCatalogAdd = false
-                    }
-                )
-                // Page-sized presentation (same as the editor sheet) keeps
-                // search and filters visible instead of a compact sheet
-                // dominated by the keyboard.
-                .presentationSizing(.page)
-            }
         }
         .alert(
             "providers.delete_failed",
@@ -232,51 +195,6 @@ struct ProviderListView: View {
         .listStyle(.insetGrouped)
     }
 
-    // MARK: - Catalog selection
-
-    /// Presents the editor for the catalog entry chosen in the sheet. An
-    /// existing provider with the same presetID or normalized base-URL host
-    /// is edited instead, so saved credentials and models are never
-    /// duplicated or overwritten by a catalog add.
-    private func presentPendingCatalogSelection() {
-        guard let entry = pendingCatalogSelection else { return }
-        pendingCatalogSelection = nil
-        if let existing = existingProvider(for: entry) {
-            presentedEditor = .existing(
-                existing,
-                ProviderServiceRole.infer(
-                    from: viewModel.center.configuredModelsByProvider[existing.id] ?? []
-                )
-            )
-        } else {
-            presentedEditor = .newFromCatalog(entry, Self.serviceRole(for: entry))
-        }
-    }
-
-    private func existingProvider(for entry: ProviderCatalogEntry) -> ProviderProfile? {
-        if let match = viewModel.center.configuredProviders.first(where: {
-            $0.presetID == entry.presetID
-        }) {
-            return match
-        }
-        guard let host = Self.normalizedHost(entry.baseURL) else { return nil }
-        return viewModel.center.configuredProviders.first(where: {
-            Self.normalizedHost($0.baseURL) == host
-        })
-    }
-
-    private static func normalizedHost(_ url: URL?) -> String? {
-        guard var host = url?.host?.lowercased(), !host.isEmpty else { return nil }
-        while host.hasSuffix(".") { host.removeLast() }
-        return host
-    }
-
-    /// Google Gemini entries are image-only in Floe; every other catalog
-    /// entry starts as a conversation provider.
-    private static func serviceRole(for entry: ProviderCatalogEntry) -> ProviderServiceRole {
-        entry.kind == .googleGemini ? .image : .conversation
-    }
-
     private func providerButton(
         _ provider: ProviderProfile,
         role: ProviderServiceRole,
@@ -326,14 +244,11 @@ struct ProviderListView: View {
 private enum ProviderEditorRoute: Identifiable {
     case new(ProviderServiceRole)
     case existing(ProviderProfile, ProviderServiceRole)
-    case newFromCatalog(ProviderCatalogEntry, ProviderServiceRole)
 
     var id: String {
         switch self {
         case .new(let role): "new-\(role.rawValue)"
         case .existing(let provider, let role): "\(provider.id.uuidString)-\(role.rawValue)"
-        case .newFromCatalog(let entry, let role):
-            "catalog-\(entry.presetID)-\(role.rawValue)"
         }
     }
 
@@ -344,13 +259,8 @@ private enum ProviderEditorRoute: Identifiable {
 
     var role: ProviderServiceRole? {
         switch self {
-        case .new(let role), .existing(_, let role), .newFromCatalog(_, let role): role
+        case .new(let role), .existing(_, let role): role
         }
-    }
-
-    var catalogEntry: ProviderCatalogEntry? {
-        if case .newFromCatalog(let entry, _) = self { return entry }
-        return nil
     }
 }
 
