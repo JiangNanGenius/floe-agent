@@ -22,7 +22,63 @@ def image_name(value):
 
 def code(value):
     text = str(value)
-    return text if re.fullmatch(r"[A-Za-z0-9_(), .:+-]{1,120}", text) else "omitted"
+    return text if re.fullmatch(r"[A-Za-z0-9_(), .:+#-]{1,160}", text) else "omitted"
+
+
+def uuid_text(value):
+    # Canonical UUID only; anything unexpected becomes "unknown".
+    text = str(value)
+    if not re.fullmatch(
+        r"[0-9A-Fa-f]{32}"
+        r"|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}",
+        text,
+    ):
+        return "unknown"
+    plain = text.replace("-", "").upper()
+    return f"{plain[:8]}-{plain[8:12]}-{plain[12:16]}-{plain[16:20]}-{plain[20:32]}"
+
+
+def binary_images(log):
+    """Map load-address ranges to UUIDs and anonymized image categories.
+
+    Paths, tester text and anything else outside the fixed category vocabulary
+    stay inside this function; callers only see safe diagnostic identifiers.
+    """
+    images = []
+    in_section = False
+    for line in log.splitlines():
+        if line.startswith("Binary Images:"):
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        # Address rows first, regardless of indentation: legacy records may be
+        # unindented. Blank rows are harmless inside the section; the first
+        # non-blank row that is not an address row ends it.
+        match = re.match(r"\s*(0x[0-9a-fA-F]+)\s*-\s*(0x[0-9a-fA-F]+)\s+(\S.*)$", line)
+        if not match:
+            if line.strip():
+                in_section = False
+            continue
+        start = int(match.group(1), 16)
+        end = int(match.group(2), 16)
+        rest = match.group(3)
+        uuid_match = (re.search(r"[<(]([0-9A-Fa-f-]{32,36})[>)]", rest)
+                      or re.search(r"\b([0-9A-Fa-f]{32})\b", rest))
+        source = rest[: uuid_match.start()] if uuid_match else rest
+        if uuid_match:
+            tail = rest[uuid_match.end() :].strip()
+            if tail.startswith("/"):
+                source = tail  # Full path, including spaces in the bundle name.
+        images.append(
+            {
+                "start": start,
+                "end": end,
+                "uuid": uuid_text(uuid_match.group(1)) if uuid_match else "unknown",
+                "image": image_name(source),
+            }
+        )
+    return images
 
 
 def symbol_name(value):
@@ -69,15 +125,15 @@ def summarize(log):
                 image = images[image_index] if isinstance(image_index, int) and 0 <= image_index < len(images) else {}
                 offset = frame.get("imageOffset")
                 if isinstance(offset, int):
-                    uuid = image.get("uuid", "")
-                    uuid = uuid if re.fullmatch(r"[0-9A-Fa-f-]{32,36}", uuid) else "unknown"
+                    uuid = uuid_text(image.get("uuid", ""))
                     print(f"frame image={image_name(image.get('name', image.get('path', '')))} offset={offset} imageUUID={uuid} symbol={symbol_name(frame.get('symbol', ''))}")
         return
     # Older text reports: no comments, paths, exception reasons or raw symbols.
+    images = binary_images(log)
     in_crashed_thread = False
     emitted = 0
     for line in log.splitlines():
-        match = re.fullmatch(r"(Exception Type|Exception Codes|Termination Reason):\s*([A-Z0-9_(), .:+-]{1,120})", line)
+        match = re.fullmatch(r"(Exception Type|Exception Codes|Termination Reason):\s*([A-Za-z0-9_(), .:+#-]{1,160})", line)
         if match:
             print(match.group(1) + "=" + match.group(2))
         if re.match(r"Thread \d+ Crashed:", line):
@@ -86,9 +142,19 @@ def summarize(log):
         if in_crashed_thread and (not line.strip() or line.startswith("Thread ")):
             in_crashed_thread = False
         if in_crashed_thread and emitted < 48:
-            match = re.match(r"\s*\d+\s+(\S+)\s+(0x[0-9a-fA-F]+)\s*(.*)", line)
+            match = re.match(r"\s*\d+\s+(.+?)\s+(0x[0-9a-fA-F]+)\s*(.*)", line)
             if match:
-                print(f"frame image={image_name(match.group(1))} address={match.group(2)} symbol={symbol_name(match.group(3))}")
+                address = int(match.group(2), 16)
+                # Drop an optional "imageBase + imageOffset" column pair so the
+                # remaining text is the (already sanitized) symbol.
+                detail = re.sub(r"^0x[0-9a-fA-F]+\s*\+\s*(?:0x)?[0-9a-fA-F]+\s*", "", match.group(3))
+                image = next((item for item in images if item["start"] <= address <= item["end"]), None)
+                if image is not None:
+                    # Load-address-relative offset plus the image UUID are enough
+                    # to symbolicate against the matching dSYM without the slide.
+                    print(f"frame image={image['image']} offset={address - image['start']} imageUUID={image['uuid']} symbol={symbol_name(detail)}")
+                else:
+                    print(f"frame image={image_name(match.group(1))} address=0x{address:x} symbol={symbol_name(detail)}")
                 emitted += 1
 
 
