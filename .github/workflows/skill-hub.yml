@@ -28,7 +28,16 @@ jobs:
           python-version: '3.13'
       - run: python -m pip install cryptography==46.0.6
       - run: python -m unittest discover -s skill-hub -p 'test_*.py'
-      - run: python skill-hub/build.py --check
+      # Staged sources are allowed to be newer than the last signed feed; this
+      # gate validates them and the released feed independently without
+      # requiring a signature for the unpublished candidate.
+      - name: Verify staged skill sources and released feed
+        run: python skill-hub/build.py --check-staged
+      # After a publication dispatch the checked-out commit must satisfy the
+      # strict signed-candidate gate; ordinary pushes and PRs never reach it.
+      - name: Verify published commit strictly
+        if: ${{ needs.publish.outputs.commit != '' }}
+        run: python skill-hub/build.py --check
       - run: python -m unittest discover -s content-hub -p 'test_*.py'
       - run: python content-hub/build.py --check
       - name: Reject changes to published ZIP versions

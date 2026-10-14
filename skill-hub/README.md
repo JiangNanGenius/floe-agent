@@ -15,11 +15,33 @@ Custom instructions must use a distinct nonreserved skill ID.
 publication-only `release.json` (name, description, minimumAppVersion, bilingual
 releaseNotes). `release.json` is not included in the installable ZIP.
 
-`python3 skill-hub/build.py --check` verifies reproducible ZIP bytes, the signed
-catalog and generated Swift definitions without a private key. Requires Python
-3 and `cryptography`. Change a skill version before changing published content.
-ZIPs contain files only (no directory/link entries), sorted, timestamped 1980,
-stored without host-dependent compression. Never overwrite a published version.
+Two read-only verification gates share the same generator and require Python 3
+with `cryptography`; neither one needs a private key.
+
+* `python3 skill-hub/build.py --check-staged` is the push/PR gate. It validates
+  the staged `sources/`, the model contract and the generated app-bundled seed,
+  then independently verifies the checked-in **released** feed: the pinned trust
+  root, `catalog.sig` over the exact `catalog.json` bytes, and every referenced
+  archive's path/version/size/sha256/contentDigest. A staged version newer than
+  the released feed is reported as unpublished and does not fail this gate; it
+  never certifies that candidate as published or any pending model as ready.
+* `python3 skill-hub/build.py --check` is the strict publish gate. It rebuilds
+  the candidate, requires the checked-in signature to cover it, and requires
+  every checked-in artifact to match. Run it only after the publication
+  dispatch has legitimately signed the candidate; it fails while staged sources
+  are newer than the last signed feed.
+
+`sources/` tracks the next app-bundled copies, while `catalog.json`,
+`catalog.sig` and `packages/` describe the last remotely released feed. The
+generated `OfficialBundledSkills.generated.swift` seed follows `sources/`, so a
+staged source change also updates that seed without re-signing the feed.
+
+Change a skill version before changing published content: a released version's
+bytes and metadata are immutable, a staged source may never be older than the
+released version (rollback is an explicit release decision, not silent drift),
+and `--check-staged` rejects same-version byte or metadata changes. ZIPs contain
+files only (no directory/link entries), sorted, timestamped 1980, stored without
+host-dependent compression. Never overwrite a published version.
 
 Publication requires the `FLOE_SKILL_HUB_SIGNING_KEY` GitHub Actions secret. It is
 an Ed25519 private key and must never enter source, artifacts, logs, or a skill.
@@ -27,9 +49,12 @@ The builder validates it against `public-key.json`. The app pins that public key
 the catalog cannot supply or rotate trust roots. New roots require an app release.
 
 After pushing reviewed source changes to a trusted branch, dispatch the existing
-CI workflow on that branch with `publish_skill_hub=true`. The publisher signs and
-commits only generated catalog/ZIP/Swift artifacts on the selected branch. Then
-run normal CI on the resulting commit; a publisher run is NOT app/release CI.
+CI workflow on that branch with `publish_skill_hub=true` (or the Skill and Content
+Hubs workflow with `publish=true`). The publisher signs and commits only
+generated catalog/ZIP/Swift artifacts on the selected branch. Ordinary pushes
+and pull requests only run the read-only `--check-staged`/released-feed gates and
+never sign, publish or rewrite the feed. After a publisher run, run normal CI on
+the resulting commit; a publisher run is NOT app/release CI.
 
 发布需要 GitHub Actions 签名 Secret；更新审核只授予明确列出的权限。
 Skill 包不能分发原生库、运行时或动态安装 App 功能。最低 App 版本不满足时
