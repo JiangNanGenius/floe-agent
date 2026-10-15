@@ -784,6 +784,35 @@ class PublicTestFlightTests(unittest.TestCase):
         self.assertEqual([path for _, path, _ in fake.writes
                           if path.startswith('/v1/betaAppReviewDetails/')], [])
 
+    def test_inspect_treats_outer_whitespace_only_difference_as_matching(self):
+        for notes in (REVIEW_NOTES_TEXT + '\n',
+                      '  ' + REVIEW_NOTES_TEXT + ' \n\n',
+                      REVIEW_NOTES_TEXT.replace('\n', '\r\n')):
+            with self.subTest(tail=repr(notes[-8:])):
+                fake = FakeASC(detail=review_detail(notes=notes))
+                result = self.inspect(fake, review_notes_path=self.review_notes)
+                self.assertTrue(result['ok'], result['issues'])
+                self.assertFalse(result['reviewNotes']['pendingWrite'])
+                self.assertTrue(result['reviewNotes']['currentNotesMatchPrepared'])
+
+    def test_existing_whitespace_only_difference_skips_review_notes_patch(self):
+        for notes in (REVIEW_NOTES_TEXT + '\n',
+                      REVIEW_NOTES_TEXT.replace('\n', '\r\n')):
+            with self.subTest(tail=repr(notes[-8:])):
+                fake = FakeASC(detail=review_detail(notes=notes))
+                result = self.submit(fake)
+                self.assertTrue(result['submitted'])
+                self.assertNotIn('betaAppReviewDetails.notes', result['writes'])
+                self.assertEqual([path for _, path, _ in fake.writes
+                                  if path.startswith('/v1/betaAppReviewDetails/')], [])
+
+    def test_substantive_review_notes_difference_still_patches_and_reads_back(self):
+        fake = FakeASC(detail=review_detail(notes=REVIEW_NOTES_TEXT + ' Extra sentence.'))
+        result = self.submit(fake)
+        self.assertTrue(result['submitted'])
+        self.assertIn('betaAppReviewDetails.notes', result['writes'])
+        self.assertEqual(fake.detail['attributes']['notes'], REVIEW_NOTES_TEXT)
+
     def test_draft_and_placeholder_review_notes_are_rejected_before_any_call(self):
         for text in (
             'Status: draft, not submitted.\nFloe Agent review guidance.',

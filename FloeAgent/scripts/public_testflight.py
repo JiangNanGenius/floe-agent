@@ -388,20 +388,32 @@ def _review_notes_problems(text):
     return sorted(problems)
 
 
+def canonical_review_notes(text):
+    """Canonical product-text form of review notes: LF newlines, outer whitespace stripped.
+
+    Both the prepared file and an existing App Store Connect notes value are
+    compared in this form, so a web save that only differs in CRLF line endings
+    or outer/trailing whitespace is recognized as already matching and never
+    triggers a write. Any substantive text difference still counts as a
+    mismatch and keeps the fail-closed write path.
+    """
+    return (text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+
+
 def load_review_notes(path):
     """Load and validate the single prepared Beta App Review notes text.
 
     The file must be final product text: 1..4000 characters (Apple's documented
     maximum) with no draft banner, no unreplaced bracketed placeholder and no
     other obvious draft marker. Newlines are normalized to LF and the outer
-    whitespace is stripped so the value PATCHed can be compared byte-for-byte
-    with the readback.
+    whitespace is stripped so the value can be compared with the existing
+    App Store Connect notes in the same canonical form.
     """
     try:
         raw = Path(path).read_text()
     except (OSError, UnicodeDecodeError):
         raise ValueError('review notes file could not be read as UTF-8 text') from None
-    text = raw.replace('\r\n', '\n').replace('\r', '\n').strip()
+    text = canonical_review_notes(raw)
     if not text:
         raise ValueError('review notes must not be empty')
     if len(text) > MAX_REVIEW_NOTES:
@@ -696,7 +708,7 @@ def review_detail_summary(detail, prepared_notes=None):
     notes_match = None
     notes_pending = None
     if prepared_notes is not None:
-        notes_match = (attributes.get('notes') or '') == prepared_notes
+        notes_match = canonical_review_notes(attributes.get('notes')) == prepared_notes
         notes_pending = not notes_match
     return {
         'present': True,
