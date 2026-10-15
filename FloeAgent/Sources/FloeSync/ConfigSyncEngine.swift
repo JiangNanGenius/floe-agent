@@ -119,6 +119,31 @@ public actor ConfigSyncEngine {
         return model
     }
 
+    /// Explicit user decisions outrank capability metadata. When both devices
+    /// explicitly decided the same bit, keep the existing per-field timestamp
+    /// merge instead of making every device permanently win over the other.
+    static func preservingCapabilityDecisions(
+        merged: ModelProfile,
+        local: ModelProfile?,
+        remote: ModelProfile
+    ) throws -> ModelProfile {
+        guard merged.id == remote.id, local == nil || local?.id == merged.id else {
+            throw FloeError.invalidConfiguration("Model capability merge identity mismatch")
+        }
+        let localOwned = local?.explicitCapabilities ?? []
+        let remoteOwned = remote.explicitCapabilities ?? []
+        let localOnly = localOwned.subtracting(remoteOwned)
+        let remoteOnly = remoteOwned.subtracting(localOwned)
+        var result = merged
+        result.capabilities.subtract(localOnly.union(remoteOnly))
+        result.capabilities.formUnion((local?.capabilities ?? []).intersection(localOnly))
+        result.capabilities.formUnion(remote.capabilities.intersection(remoteOnly))
+        if local?.explicitCapabilities != nil || remote.explicitCapabilities != nil {
+            result.explicitCapabilities = localOwned.union(remoteOwned)
+        }
+        return result
+    }
+
     // MARK: - Sync control
 
     /// Pauses or resumes CloudKit traffic without discarding locally queued
@@ -207,11 +232,21 @@ public actor ConfigSyncEngine {
         )
     }
 
-    public func saveModel(_ model: ModelProfile, changedFields: Set<String>? = nil) async throws {
+    /// Persists a model and queues the sync write. `expected` forwards a
+    /// compare-and-swap expectation to the store: a reviewed editor writes
+    /// only when the persisted row still equals the snapshot it validated, so
+    /// an interleaved remote apply makes the save throw instead of being
+    /// silently overwritten. The enqueue happens only after the store write
+    /// actually committed.
+    public func saveModel(
+        _ model: ModelProfile,
+        changedFields: Set<String>? = nil,
+        expected: ModelProfile? = nil
+    ) async throws {
         guard let configurationStore else {
             throw FloeError.invalidConfiguration("ConfigSyncEngine requires a configuration store")
         }
-        try await configurationStore.saveModel(model)
+        try await configurationStore.saveModel(model, expected: expected)
         guard model.providerID != ProviderProfile.onDeviceProviderID else { return }
         try await enqueueSave(
             type: .modelProfile,
@@ -714,6 +749,7 @@ public actor ConfigSyncEngine {
             remoteTimestamps: remoteTimestamps
         )
 
+        var repairedCapabilityDecisions = false
         switch type {
         case .providerProfile:
             let provider: ProviderProfile
@@ -739,7 +775,14 @@ public actor ConfigSyncEngine {
         case .modelProfile:
             let model: ModelProfile
             do {
-                model = try Self.validatedRemoteModel(mergedPayload)
+                let merged = try Self.validatedRemoteModel(mergedPayload)
+                let remote = try Self.validatedRemoteModel(payload)
+                let local = try localPayload.map(Self.validatedRemoteModel)
+                model = try Self.preservingCapabilityDecisions(
+                    merged: merged, local: local, remote: remote
+                )
+                repairedCapabilityDecisions = model.capabilities != merged.capabilities
+                    || model.explicitCapabilities != merged.explicitCapabilities
             } catch {
                 FloeLogger(category: .sync).warning(
                     "rejected remote model profile \(record.recordID.recordName): \(error.localizedDescription)"
@@ -751,7 +794,7 @@ public actor ConfigSyncEngine {
             guard model.providerID != ProviderProfile.onDeviceProviderID else { return }
             guard try await configurationStore.provider(id: model.providerID) != nil else {
                 try await saveDeferredRemoteRecord(
-                    record: record, type: type, payload: mergedPayload,
+                    record: record, type: type, payload: try Self.encode(model),
                     localTimestamps: localTimestamps, remoteTimestamps: remoteTimestamps,
                     existing: existing
                 )
@@ -792,6 +835,14 @@ public actor ConfigSyncEngine {
         for (field, date) in remoteTimestamps where date > (mergedTimestamps[field] ?? .distantPast) {
             mergedTimestamps[field] = date
         }
+        if repairedCapabilityDecisions {
+            // Publish the protected value through the existing pending-save
+            // path so a metadata-only remote write cannot erase provenance on
+            // a fresh device. No second sync queue or unconditional echo.
+            let now = Date()
+            mergedTimestamps["capabilities"] = now
+            mergedTimestamps["explicitCapabilities"] = now
+        }
         let retainsLocalChanges = existing?.pendingAction == .save && localTimestamps.contains { field, date in
             date >= (remoteTimestamps[field] ?? .distantPast)
         }
@@ -802,7 +853,7 @@ public actor ConfigSyncEngine {
             cloudChangeTag: record.recordChangeTag,
             cloudSystemFields: Self.archiveSystemFields(record),
             deferredRemotePayload: nil,
-            pendingAction: retainsLocalChanges ? .save : nil,
+            pendingAction: retainsLocalChanges || repairedCapabilityDecisions ? .save : nil,
             updatedAt: record.modificationDate ?? Date()
         )
         try await metadataStore.save(metadata)
@@ -858,7 +909,19 @@ public actor ConfigSyncEngine {
         guard let metadataStore, let configurationStore else { return }
         for metadata in try await metadataStore.deferred(recordType: ConfigSyncRecordType.modelProfile.rawValue) {
             guard let payload = metadata.deferredRemotePayload else { continue }
-            let model = try JSONDecoder.floe.decode(ModelProfile.self, from: payload)
+            let remote = try Self.validatedRemoteModel(payload)
+            let local = try await configurationStore.model(id: remote.id)
+            var merged = remote
+            if metadata.pendingAction == .save, let local {
+                // A user may have edited the model while its provider was
+                // being restored. Do not replay a deferred snapshot over
+                // that newer, still-pending capability decision.
+                merged.capabilities = local.capabilities
+                merged.explicitCapabilities = local.explicitCapabilities
+            }
+            let model = try Self.preservingCapabilityDecisions(
+                merged: merged, local: local, remote: remote
+            )
             guard model.providerID != ProviderProfile.onDeviceProviderID,
                   try await configurationStore.provider(id: model.providerID) != nil else { continue }
             try await configurationStore.saveModel(model)

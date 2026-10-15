@@ -4,6 +4,88 @@ import FloeCore
 @testable import FloePersistence
 @testable import FloeSync
 
+@Suite("Model capability decision sync")
+struct ModelCapabilityDecisionSyncTests {
+    private func model() -> ModelProfile {
+        ModelProfile(
+            providerID: UUID(), remoteModelID: "test-model", displayName: "Test",
+            limits: ModelLimits(contextTokens: 8_192, maxOutputTokens: 1_024),
+            capabilities: [.text]
+        )
+    }
+
+    @Test("Newer unowned metadata cannot turn an explicitly disabled capability back on")
+    func metadataCannotReenable() throws {
+        var local = model()
+        local.explicitCapabilities = [.vision]
+        var remote = local
+        remote.explicitCapabilities = nil
+        remote.capabilities.insert(.vision)
+        let result = try ConfigSyncEngine.preservingCapabilityDecisions(
+            merged: remote, local: local, remote: remote
+        )
+        #expect(!result.capabilities.contains(.vision))
+        #expect(result.explicitCapabilities == [.vision])
+    }
+
+    @Test("Explicit choices from both devices retain the existing timestamp winner")
+    func explicitConflictConverges() throws {
+        var local = model()
+        local.explicitCapabilities = [.vision]
+        var remote = local
+        remote.capabilities.insert(.vision)
+        let remoteWon = try ConfigSyncEngine.preservingCapabilityDecisions(
+            merged: remote, local: local, remote: remote
+        )
+        #expect(remoteWon.capabilities.contains(.vision))
+        let localWon = try ConfigSyncEngine.preservingCapabilityDecisions(
+            merged: local, local: local, remote: remote
+        )
+        #expect(!localWon.capabilities.contains(.vision))
+        // An acknowledged result does not oscillate back to each device's
+        // previous value merely because each has a provenance mask.
+        let acknowledged = try ConfigSyncEngine.preservingCapabilityDecisions(
+            merged: remoteWon, local: remoteWon, remote: remoteWon
+        )
+        #expect(acknowledged == remoteWon)
+    }
+
+    @Test("Independent explicit choices survive while legacy and reviewed-empty remain distinct")
+    func independentChoices() throws {
+        var local = model()
+        local.explicitCapabilities = [.vision]
+        var remote = local
+        remote.explicitCapabilities = [.tools]
+        remote.capabilities.formUnion([.vision, .tools])
+        let result = try ConfigSyncEngine.preservingCapabilityDecisions(
+            merged: local, local: local, remote: remote
+        )
+        #expect(result.capabilities == [.text, .tools])
+        #expect(result.explicitCapabilities == [.vision, .tools])
+        var legacy = model()
+        let unchanged = try ConfigSyncEngine.preservingCapabilityDecisions(
+            merged: legacy, local: legacy, remote: legacy
+        )
+        #expect(unchanged.explicitCapabilities == nil)
+        legacy.explicitCapabilities = []
+        let reviewed = try ConfigSyncEngine.preservingCapabilityDecisions(
+            merged: legacy, local: nil, remote: legacy
+        )
+        #expect(reviewed.explicitCapabilities == [])
+    }
+
+    @Test("A mismatched model identity cannot transfer another model's choices")
+    func identityMismatch() throws {
+        let local = model()
+        let remote = model()
+        #expect(throws: (any Error).self) {
+            try ConfigSyncEngine.preservingCapabilityDecisions(
+                merged: remote, local: local, remote: remote
+            )
+        }
+    }
+}
+
 @Suite("Deferred configuration sync")
 struct DeferredConfigSyncTests {
     @Test("Auxiliary LLM preference waits for its model dependency and restores independently")

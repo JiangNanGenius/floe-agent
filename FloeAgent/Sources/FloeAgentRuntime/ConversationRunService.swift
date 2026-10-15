@@ -535,7 +535,15 @@ public actor ConversationRunService {
     /// Restores the exact original run without appending another user turn.
     /// Checkpoint messages already include their system/run context, so they
     /// are not seeded or injected a second time here.
-    public func resumePrepared(from checkpoint: AgentCheckpoint) async throws {
+    ///
+    /// `resumption` injects exactly ONE new user turn at the resumed
+    /// boundary — a dependency completion (background job result) or a user
+    /// message composed while the run waited. Its id is preserved, so a
+    /// retried resume with the same input cannot duplicate the message.
+    public func resumePrepared(
+        from checkpoint: AgentCheckpoint,
+        resumption: RuntimeSteerInput? = nil
+    ) async throws {
         logger.info("Run \(runID.uuidString) resuming from checkpoint")
         if conversationMode == .goal {
             guard await restoreGoalReservation(checkpointGoalID: checkpoint.goalID) else {
@@ -544,7 +552,17 @@ public actor ConversationRunService {
                 )
             }
         }
-        try await runtime.resume(from: checkpoint)
+        var restored = checkpoint
+        if let resumption, !restored.messages.contains(where: { $0.id == resumption.id }) {
+            restored.messages.append(ConversationMessage(
+                id: resumption.id,
+                role: "user",
+                content: resumption.content,
+                createdAt: resumption.createdAt,
+                images: resumption.images
+            ))
+        }
+        try await runtime.resume(from: restored)
     }
 
     /// Cancels the run. The runtime owns the terminal transition; persistence

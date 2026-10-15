@@ -109,6 +109,15 @@ an unknown submission is never automatically re-issued. 编辑绑定工程改变
 > [FLOE_CAD_AND_DRAWING_ASSISTANT.md](FLOE_CAD_AND_DRAWING_ASSISTANT.md),
 > not in the shipped 1.7.24 table below. 原生 `.floecad` 三维工作台尚未发布，
 > 真实状态见该文档。
+>
+> **2026-10-15 (unreleased working tree):** native drawing/assembly requests now require a
+> named operation (`payload.action` or the legacy `<kind>.<action>` op) and are refused with
+> a structured error when malformed — there is no silent read fallback; the authoritative
+> operation catalog is served on demand via `capabilities kind=drawing|assembly|script|mesh`,
+> and drawing PDF/SVG/DXF export needs `page_id` from `query kind=drawings`. The 2D table
+> below is unchanged. 原生绘图/装配请求现在必须显式指定操作，参数错误会结构化拒绝；完整
+> 目录按需通过 capabilities 获取；图纸导出需要 page_id。下方二维表不变。 See
+> [FLOE_CAD_AND_DRAWING_ASSISTANT.md](FLOE_CAD_AND_DRAWING_ASSISTANT.md#native-drawingassembly-discoverability-and-paged-capabilities--2026-10-15-unreleased-work).
 
 Registration: registered in the app's tool environment. Read-only actions need
 document read access; `propose/apply/save/export` need the CAD document grant and
@@ -387,13 +396,16 @@ physical-device qualification receipts
 `pages|nodes|connections|summaries|officeText|officeFields|capabilities`.
 `notes.edit` actions: `apply` (default), `propose`, `preview`, `applyProposal`;
 edit operations include rename/addPage/addText/updateText/moveText/deleteText,
-mind-map node/branch ops and `updateOfficeText`.
+mind-map node/branch ops and `updateOfficeText`. An unreleased working-tree
+addition, `notes.cover` (`read`/`set`/`restore`, §6.1), manages a document's
+explicit custom cover.
 
 | Capability | Tier | Tool / action |
 | --- | --- | --- |
 | per-text search position | implemented | `notes.search` — documentID, pageID/nodeID, elementID + UTF-16 matchOffset/matchLength; library tap and tool hit share one helper; flat PDF text without geometry scrolls to page and says precise highlight is unavailable |
 | bounded read | implemented | `notes.read` (pages/elements/text, map nodes/connections/summaries, Office text/fields) |
 | edit batch | implemented | `notes.edit` one undoable revision-checked batch, per-call idempotency |
+| custom cover | implemented (unreleased working tree; full-App acceptance pending) | `notes.cover` read/set/restore — the same deterministic command as the manual cover menu; content revision unchanged, cover-revision compare-and-swap |
 | propose/preview | implemented | `notes.edit action=propose|preview`, binds base revision + document-JSON SHA-256, origin persisted |
 | confirmed apply | implemented | `action=applyProposal` needs a single-use UI grant; write-ahead decision before commit, exact-once delivery to the origin conversation |
 | export PDF | implemented | `notes.export format=pdf`, selected pages or whole doc, reopen-verified page count |
@@ -406,6 +418,63 @@ mind-map node/branch ops and `updateOfficeText`.
 PDF annotation is never original-text editing, and `PDFKitGate`/read-only/
 encrypted protections are unchanged. PDF 批注不是原文编辑，`PDFKitGate`/只读/加密
 保护不变。
+
+### 6.1 Document cover — `notes.cover` (2026-10-16 unreleased working tree)
+
+A Notes document can carry an explicit custom cover instead of its generated
+preview. `notes.cover` runs the same deterministic command service as the manual
+cover menu (**Set Cover** / **Change Cover** from a photo or file, **Restore
+Automatic Cover**), so the manual and assistant paths cannot diverge. `read`
+needs the document selected for the task; `set`/`restore` need that task's
+document editing grant and re-check it atomically inside the commit. No argument
+can grant permission: `resourceID` must be an image already referenced by a
+document selected for the conversation, `path` must be a task-authorized
+workspace file (same guard as `notes.attachFile`), and the model cannot supply a
+confirmation or authorization value.
+
+- **Independent of content.** `set`/`restore` never change the document
+  `revision`, never enter the undo history, and leave Office/PDF/page content,
+  print settings and the text index untouched; the automatic cover stays available.
+  The previous cover asset is released only through the existing reference-guarded
+  collection.
+- **Two revisions guard one write.** `expectedRevision` is the content revision
+  from `notes.read`; `expectedCoverRevision` is the normalized cover revision from
+  `notes.cover read` (`0` when never customized). A stale baseline is refused
+  (`staleRevision` / `staleCoverRevision`) instead of overwriting a newer cover,
+  and repeating a settled `set`/`restore` reports `unchanged` (idempotent).
+- **Bounded, honest assets.** Images are validated/normalized to PNG/JPEG
+  (20 MiB, ≤20 000 px per side, ≤80 MP, orientation applied). SVG, corrupt,
+  oversized or unreadable input is refused with `notAnImage` and the previous
+  cover stays. `read` also returns a bounded `availableImageResources` list
+  (≤32) drawn only from the selected documents.
+- **Discoverable state.** `notes.read` summaries report `coverMode`,
+  `coverResourceID` and `coverRevision`. Failures return `ok=false` with status
+  `documentNotSelected`, `editingNotAuthorized`, `staleRevision`,
+  `staleCoverRevision`, `assetNotAuthorized`, `notAnImage`, `trashed` or
+  `rejected`. Archives keep the cover asset and remap it on import; an older app
+  version without cover support refuses such a `.floenote` archive instead of
+  importing it with dropped data.
+
+未发布工作树新增能力：手记文档可使用显式自定义封面替代自动预览。`notes.cover`
+与手动封面菜单（从照片/文件**设置封面**或**更换封面**、**恢复自动封面**）调用
+同一个确定性命令服务，两条路径不会分化。`read` 需要该任务已选择文档；
+`set`/`restore` 需要该任务的文档编辑授权，并在提交事务内原子复核。任何参数都
+不能授权：`resourceID` 必须已被本会话选中文档引用，`path` 必须是该任务已授权
+的工作区文件（与 `notes.attachFile` 同一守卫），模型无法提供确认/授权值。
+封面变更不改变内容修订、不进入撤销历史，也不改动 Office/PDF/页面内容、打印
+设置与文本索引；写入由内容修订与封面修订双重过期校验保护（过期报
+`staleRevision`/`staleCoverRevision`，重复的既定状态报 `unchanged`）；资源经
+有界校验/归一化为 PNG/JPEG，不可用图片报 `notAnImage` 并保留原封面；归档包含
+封面资源并在导入时重映射，不支持封面的旧版会拒绝而不是导入不完整。
+
+Examples (synthetic ids) / 示例（合成 ID）：
+
+```json
+{"documentID":"<notes document uuid>"}
+{"documentID":"<id>","action":"set","expectedRevision":3,"expectedCoverRevision":0,"resourceID":"<image id from read>"}
+{"documentID":"<id>","action":"set","expectedRevision":3,"expectedCoverRevision":0,"path":"covers/cover.png"}
+{"documentID":"<id>","action":"restore","expectedRevision":5,"expectedCoverRevision":2}
+```
 
 ## 7. `media.project` and image/video increments / 媒体工具与图像视频增量
 

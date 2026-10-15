@@ -21,10 +21,15 @@ struct HomeOverviewView: View {
     @State private var searchText = ""
     @State private var schedules: [TaskScheduleRecord] = []
     @State private var showingSchedule = false
+    @State private var editingSchedule: TaskScheduleRecord?
+    @State private var historySchedule: TaskScheduleRecord?
+    @State private var historyOccurrences: [TaskScheduleOccurrence] = []
+    @State private var pendingOccurrenceScheduleIDs: Set<UUID> = []
     @State private var batchStartingConversation: ConversationRecord?
     @State private var archivedTasks: [ConversationRecord] = []
-    @State private var selectedArchivedIDs: Set<UUID> = []
-    @State private var confirmingArchiveDeletion = false
+    @State private var presentsTaskManagement = false
+    @State private var managementFilter: ConversationBatchManagementView.Filter = .active
+    @State private var restoreFailure: String?
 
     init(center: ConversationCenter) {
         self.center = center
@@ -77,6 +82,11 @@ struct HomeOverviewView: View {
                     ForEach(schedules) { schedule in
                         VStack(alignment: .leading, spacing: 4) {
                             Label(schedule.title, systemImage: "calendar.badge.clock")
+                                .foregroundStyle(schedule.isEnabled ? .primary : .secondary)
+                            if !schedule.isEnabled {
+                                Text(scheduleText(zh: "已停用", en: "Disabled"))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                             if let expected = schedule.nextExpectedAt {
                                 Text(FloeL10n.l("home.home_overview_view.estimated", expected.formatted(date: .abbreviated, time: .shortened)))
                                     .font(.caption).foregroundStyle(.secondary)
@@ -85,12 +95,54 @@ struct HomeOverviewView: View {
                                 Text(FloeL10n.l("home.home_overview_view.last_actual", actual.formatted(date: .abbreviated, time: .shortened)))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
+                            if pendingOccurrenceScheduleIDs.contains(schedule.id) {
+                                Text(scheduleText(zh: "待执行（等待应用运行）", en: "Pending (waiting for the app to run)"))
+                                    .font(.caption).foregroundStyle(FloeTheme.pending)
+                            }
                         }
                         .contextMenu {
+                            Button {
+                                Task {
+                                    let store = SQLiteTaskScheduleStore(database: viewModel.environment.database)
+                                    _ = try? await store.runNow(id: schedule.id, at: Date())
+                                    await viewModel.environment.backgroundRunCoordinator.runDueSchedulesNow()
+                                    await load()
+                                }
+                            } label: { Label(scheduleText(zh: "立即运行", en: "Run now"), systemImage: "play.circle") }
+                            Button {
+                                Task {
+                                    let store = SQLiteTaskScheduleStore(database: viewModel.environment.database)
+                                    try? await store.setEnabled(id: schedule.id, enabled: !schedule.isEnabled, at: Date())
+                                    // The shared pass reconciles the insurance-reminder set: a
+                                    // disabled schedule must not keep a pre-registered reminder.
+                                    await viewModel.environment.backgroundRunCoordinator.runDueSchedulesNow()
+                                    await load()
+                                }
+                            } label: {
+                                Label(
+                                    schedule.isEnabled
+                                        ? scheduleText(zh: "停用", en: "Disable")
+                                        : scheduleText(zh: "启用", en: "Enable"),
+                                    systemImage: schedule.isEnabled ? "pause.circle" : "play.circle")
+                            }
+                            Button {
+                                editingSchedule = schedule
+                            } label: { Label("workspace.workspace_canvas_view.edit", systemImage: "pencil") }
+                            Button {
+                                Task {
+                                    historyOccurrences = (try? await SQLiteTaskScheduleStore(
+                                        database: viewModel.environment.database
+                                    ).occurrences(scheduleID: schedule.id, limit: 50)) ?? []
+                                    historySchedule = schedule
+                                }
+                            } label: { Label(scheduleText(zh: "历史", en: "History"), systemImage: "clock.arrow.circlepath") }
                             Button(role: .destructive) {
                                 Task {
                                     try? await SQLiteTaskScheduleStore(database: viewModel.environment.database)
                                         .delete(id: schedule.id)
+                                    // Drop the deleted schedule's insurance reminder through
+                                    // the same shared reconciliation pass.
+                                    await viewModel.environment.backgroundRunCoordinator.runDueSchedulesNow()
                                     await load()
                                 }
                             } label: { Label("home.home_overview_view.delete_schedule", systemImage: "trash") }
@@ -102,29 +154,28 @@ struct HomeOverviewView: View {
                 Section("settings.all_workspaces_files_view.archived") {
                     ForEach(archivedTasks) { conversation in
                         HStack {
-                            Image(systemName: selectedArchivedIDs.contains(conversation.id)
-                                  ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(FloeTheme.primary)
                             Text(conversation.title.isEmpty ? String(localized: "chat.untitled") : conversation.title)
                                 .lineLimit(1)
                             Spacer()
                             Button("canvas.drawingHistory.restore") {
-                                Task {
-                                    try? await center.restoreConversation(id: conversation.id)
-                                    await load()
-                                }
+                                Task { await restoreArchived(conversation) }
                             }
                             .buttonStyle(.borderless)
                         }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if selectedArchivedIDs.contains(conversation.id) {
-                                selectedArchivedIDs.remove(conversation.id)
-                            } else {
-                                selectedArchivedIDs.insert(conversation.id)
-                            }
-                        }
+                        .frame(minHeight: FloeTheme.minimumTarget)
                     }
+                    // One canonical management surface for the archive too:
+                    // selection, restore and delete happen in the same screen
+                    // the Task Center and Settings open.
+                    Button {
+                        openTaskManagement(.archived)
+                    } label: {
+                        Label(
+                            TaskManagementCopy.archivedRow(archivedTasks.count),
+                            systemImage: "archivebox"
+                        )
+                    }
+                    .accessibilityIdentifier("taskCenter.manageArchived")
                 }
             }
         }
@@ -141,6 +192,15 @@ struct HomeOverviewView: View {
         .navigationTitle("tab.workbench")
         .searchable(text: $searchText, prompt: "home.home_overview_view.search_tasks")
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    openTaskManagement(.active)
+                } label: {
+                    Label(FloeL10n.l("settings.data_management_view.manage"), systemImage: "checklist")
+                }
+                .disabled(viewModel.isLoading)
+                .accessibilityIdentifier("taskCenter.manage")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     showingSchedule = true
@@ -149,20 +209,6 @@ struct HomeOverviewView: View {
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("home.home_overview_view.schedule_task")
-            }
-            if !selectedArchivedIDs.isEmpty {
-                ToolbarItem(placement: .bottomBar) {
-                    Button("home.home_overview_view.restore_selection") {
-                        Task {
-                            for id in selectedArchivedIDs { try? await center.restoreConversation(id: id) }
-                            selectedArchivedIDs.removeAll()
-                            await load()
-                        }
-                    }
-                }
-                ToolbarItem(placement: .bottomBar) {
-                    Button("home.home_overview_view.delete_selection", role: .destructive) { confirmingArchiveDeletion = true }
-                }
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -180,20 +226,75 @@ struct HomeOverviewView: View {
         .sheet(item: $batchStartingConversation) { conversation in
             ConversationBatchManagementView(center: center, initialConversation: conversation)
         }
-        .sheet(isPresented: $showingSchedule) {
-            TaskScheduleSheet { await load() }
+        // The canonical management surface, shared with Settings > Data
+        // Management: selection, archive/restore and delete all run here
+        // through the existing lifecycle commands.
+        .sheet(isPresented: $presentsTaskManagement) {
+            ConversationBatchManagementView(center: center, initialFilter: managementFilter)
+                .id(managementFilter)
         }
-        .alert("home.home_overview_view.permanently_delete_archived_tasks", isPresented: $confirmingArchiveDeletion) {
-            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
-            Button("workspace.workspace_canvas_view.delete", role: .destructive) {
-                Task {
-                    for id in selectedArchivedIDs { try? await center.deleteConversation(id: id) }
-                    selectedArchivedIDs.removeAll()
-                    await load()
+        .sheet(isPresented: $showingSchedule) {
+            TaskScheduleSheet {
+                // A save must register its insurance reminder through the
+                // shared pass instead of waiting for an unrelated due pass.
+                await viewModel.environment.backgroundRunCoordinator.runDueSchedulesNow()
+                await load()
+            }
+        }
+        .sheet(item: $editingSchedule) { record in
+            TaskScheduleSheet(editing: record) {
+                await viewModel.environment.backgroundRunCoordinator.runDueSchedulesNow()
+                await load()
+            }
+        }
+        .sheet(item: $historySchedule) { schedule in
+            NavigationStack {
+                List {
+                    if historyOccurrences.isEmpty {
+                        Text(scheduleText(zh: "暂无执行历史", en: "No run history yet"))
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(historyOccurrences) { occurrence in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(occurrence.scheduledFor.formatted(date: .abbreviated, time: .shortened))
+                            Text(occurrenceStateLabel(occurrence.state))
+                                .font(.caption)
+                                .foregroundStyle(occurrence.state == .failed ? FloeTheme.destructive : .secondary)
+                            if let error = occurrence.errorText {
+                                Text(error).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                    }
+                }
+                .navigationTitle(schedule.title)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("workspace.workspace_canvas_view.cancel") { historySchedule = nil }
+                    }
                 }
             }
+        }
+        .alert("chat.conversation_list_view.action_failed", isPresented: Binding(
+            get: { restoreFailure != nil },
+            set: { if !$0 { restoreFailure = nil } }
+        )) {
+            Button("workspace.office_document_editor_view.ok", role: .cancel) { restoreFailure = nil }
         } message: {
-            Text("home.home_overview_view.the_selected_tasks_and_their_private")
+            Text(restoreFailure ?? "")
+        }
+    }
+
+    private func openTaskManagement(_ filter: ConversationBatchManagementView.Filter) {
+        managementFilter = filter
+        presentsTaskManagement = true
+    }
+
+    private func restoreArchived(_ conversation: ConversationRecord) async {
+        do {
+            try await center.restoreConversation(id: conversation.id)
+            await load()
+        } catch {
+            restoreFailure = ConversationTaskBulkService.failureText(for: error)
         }
     }
 
@@ -230,10 +331,30 @@ struct HomeOverviewView: View {
         filteredConversations.filter { viewModel.latestRunStates[$0.id] == "completed" }
     }
 
+    /// Inline bilingual fallback for strings whose central catalog entry has
+    /// not landed yet: a missing key must never render raw.
+    private func scheduleText(zh: String, en: String) -> String {
+        FloeL10n.isChinese ? zh : en
+    }
+
+    private func occurrenceStateLabel(_ state: TaskScheduleOccurrenceState) -> String {
+        switch state {
+        case .pending: scheduleText(zh: "待执行", en: "Pending")
+        case .claimed, .running: String(localized: "home.home_overview_view.running")
+        case .completed: scheduleText(zh: "已完成", en: "Completed")
+        case .failed: scheduleText(zh: "失败", en: "Failed")
+        case .cancelled: scheduleText(zh: "已取消", en: "Cancelled")
+        case .skipped: scheduleText(zh: "已跳过（合并）", en: "Skipped (coalesced)")
+        case .interrupted: scheduleText(zh: "已中断", en: "Interrupted")
+        }
+    }
+
     private func load() async {
         await viewModel.load()
-        schedules = (try? await SQLiteTaskScheduleStore(database: viewModel.environment.database)
-            .schedules().filter(\.isEnabled)) ?? []
+        let store = SQLiteTaskScheduleStore(database: viewModel.environment.database)
+        schedules = (try? await store.schedules()) ?? []
+        let pending = (try? await store.pendingOccurrences(limit: 200)) ?? []
+        pendingOccurrenceScheduleIDs = Set(pending.map(\.scheduleID))
         archivedTasks = ((try? await viewModel.environment.conversationStore
             .conversations(includeArchived: true)) ?? []).filter { $0.archivedAt != nil }
     }

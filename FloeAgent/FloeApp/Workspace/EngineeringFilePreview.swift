@@ -159,6 +159,11 @@ final class DrawingAssistantDecisionStore: @unchecked Sendable {
         var recordedAt: Date
         var delivered: Bool
         var phase: Phase
+        /// Trusted producer marker of the decision (`user` / `tool-automatic`),
+        /// persisted so a delivery retried after an app restart keeps its real
+        /// origin instead of falling back to the historical `user` default.
+        /// `nil` (older builds) reads as `user`.
+        var origin: String?
 
         // Persisted files from earlier builds have no `phase`; an old record
         // is a committed decision (its receipt fields were written with it).
@@ -173,11 +178,12 @@ final class DrawingAssistantDecisionStore: @unchecked Sendable {
             recordedAt = try container.decode(Date.self, forKey: .recordedAt)
             delivered = try container.decode(Bool.self, forKey: .delivered)
             phase = try container.decodeIfPresent(Phase.self, forKey: .phase) ?? .committed
+            origin = try container.decodeIfPresent(String.self, forKey: .origin)
         }
 
         init(id: String, conversationID: UUID, proposalID: UUID, decision: String,
              revision: Int64?, sha256: String?, recordedAt: Date, delivered: Bool,
-             phase: Phase) {
+             phase: Phase, origin: String?) {
             self.id = id
             self.conversationID = conversationID
             self.proposalID = proposalID
@@ -187,6 +193,7 @@ final class DrawingAssistantDecisionStore: @unchecked Sendable {
             self.recordedAt = recordedAt
             self.delivered = delivered
             self.phase = phase
+            self.origin = origin
         }
     }
 
@@ -233,13 +240,14 @@ final class DrawingAssistantDecisionStore: @unchecked Sendable {
         /// window; an apply records `.intent` first and upgrades the SAME
         /// record to `.committed` with the receipt after the center returns it.
         func record(conversationID: UUID, proposalID: UUID, decision: String,
-                    revision: Int64?, sha256: String?, phase: Phase = .committed) throws -> Decision {
+                    revision: Int64?, sha256: String?, phase: Phase = .committed,
+                    origin: ProposalDecisionNoticeProjection.DecisionOrigin = .user) throws -> Decision {
             guard isDurable else { throw StoreFailure() }
             let entry = Decision(
                 id: "\(conversationID.uuidString)|\(proposalID.uuidString)|\(decision)",
                 conversationID: conversationID, proposalID: proposalID, decision: decision,
                 revision: revision, sha256: sha256, recordedAt: Date(), delivered: false,
-                phase: phase)
+                phase: phase, origin: origin.rawValue)
             let url = fileURL
             try writeQueue.sync {
                 lock.lock(); defer { lock.unlock() }

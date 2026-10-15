@@ -28,6 +28,9 @@ struct ToolCallCardView: View {
     /// Approval decision/reason for this exact invocation, shown inside the
     /// expanded tool details rather than as a detached timeline footer.
     var approvalSummary: String? = nil
+    /// Concise proposal-decision record projected onto this call (automatic
+    /// apply path); shown as its own labeled line inside the details.
+    var decisionSummary: String? = nil
     /// Wall-clock duration when known.
     var duration: TimeInterval? = nil
     /// Digest-addressed files returned by the tool. Image artifacts render
@@ -111,7 +114,26 @@ struct ToolCallCardView: View {
             if let approvalSummary, !approvalSummary.isEmpty {
                 labeledEvidence(title: "tool.approval", text: approvalSummary)
             }
+            if let decisionSummary, !decisionSummary.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(decisionLabel)
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                    BoundedToolEvidence(text: decisionSummary)
+                        .font(FloeTheme.Typography.evidence)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
+    }
+
+    /// The decision line label. Prefers the catalog key the integration owner
+    /// registers, with an inline bilingual fallback so no raw dotted key can
+    /// render before registration.
+    private var decisionLabel: String {
+        ChatBilingualCatalog.localized(key: "tool.decision", en: "Decision", zh: "决定")
     }
 
     private func labeledEvidence(title: LocalizedStringKey, text: String) -> some View {
@@ -133,6 +155,7 @@ struct ToolCallCardView: View {
         (inputSummary?.isEmpty == false)
             || (resultSummary?.isEmpty == false)
             || (approvalSummary?.isEmpty == false)
+            || (decisionSummary?.isEmpty == false)
     }
 
     private var imageArtifacts: [ToolArtifactReference] {

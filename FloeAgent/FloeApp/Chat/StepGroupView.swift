@@ -26,6 +26,15 @@ struct StepGroupView: View {
     let hasError: Bool
     private let allPendingApprovals: [PendingApproval]
     private var pendingApprovals: [PendingApproval] { allPendingApprovals.filter { requestCallIDs.contains($0.toolCall.id) } }
+    /// Decision records projected onto this group's tool calls (see
+    /// `ToolDecisionAnnotation`). Empty for callers without decision
+    /// projection (e.g. the canvas surface).
+    private let decisions: [ToolDecisionAnnotation]
+    /// Durable delegated-child records, resolved per call AND per run: a raw
+    /// provider call id is not unique across runs, so a delegate card may only
+    /// match a child whose parent run is the run that rendered the call.
+    private let childRunRecords: [ChildRunRecord]
+    private let onOpenChild: ((ChildRunRecord?) -> Void)?
     let onResolveApproval: (PendingApproval, ApprovalDecision) -> Void
     @StateObject private var projection = StepGroupMetadata()
     private var payloads: [UUID: [String: String]] { projection.read(events).payloads }
@@ -40,6 +49,9 @@ struct StepGroupView: View {
         isLive: Bool,
         hasError: Bool,
         pendingApprovals: [PendingApproval] = [],
+        decisions: [ToolDecisionAnnotation] = [],
+        childRunRecords: [ChildRunRecord] = [],
+        onOpenChild: ((ChildRunRecord?) -> Void)? = nil,
         onResolveApproval: @escaping (PendingApproval, ApprovalDecision) -> Void = { _, _ in }
     ) {
         self.events = events
@@ -47,6 +59,9 @@ struct StepGroupView: View {
         self.isLive = isLive
         self.hasError = hasError
         self.allPendingApprovals = pendingApprovals
+        self.decisions = decisions
+        self.childRunRecords = childRunRecords
+        self.onOpenChild = onOpenChild
         self.onResolveApproval = onResolveApproval
         // The active/latest group is the user's only view into current tool
         // progress. Historical groups stay compact, while the latest group
@@ -90,7 +105,10 @@ struct StepGroupView: View {
     private var visibleEvents: [RunEventRecord] {
         if isExpanded { return displayedEvents }
         // A collapsed batch never hides a decision, current activity or error.
-        let urgent = Set((activeTools + failedTools).map(\.id))
+        var urgent = Set((activeTools + failedTools).map(\.id))
+        for event in displayedEvents where decisionSummary(for: event) != nil {
+            urgent.insert(event.id)
+        }
         return displayedEvents.filter { urgent.contains($0.id) || pendingApproval(for: $0) != nil }
     }
 
@@ -123,7 +141,11 @@ struct StepGroupView: View {
                             event: event, isLive: isLive, hasError: hasError, onRetry: nil,
                             approvalSummary: approvalSummary(for: event),
                             toolRequestStatus: requestStatus(for: event),
-                            toolRequestResultPayloadJSON: matchingResult(for: event)?.payloadJSON
+                            toolRequestResultPayloadJSON: matchingResult(for: event)?.payloadJSON,
+                            toolRequestIsWaiting: pendingApproval(for: event) != nil,
+                            decisionSummary: decisionSummary(for: event),
+                            childRun: childRun(for: event),
+                            onOpenChild: onOpenChild
                         )
                         .transition(isLive ? FloeTheme.stepTransition(reduceMotion: reduceMotion) : .identity)
                         if event.kind == .toolRequest, let pending = pendingApproval(for: event) {
@@ -173,6 +195,25 @@ struct StepGroupView: View {
     private func approvalSummary(for event: RunEventRecord) -> String? {
         guard let callID = callID(for: event) else { return nil }
         return approvalSummariesByCallID[callID]
+    }
+
+    /// The projected decision line for this call, matched by the same callID
+    /// vocabulary the approval summaries use, scoped to the run that owns the
+    /// call. Works for both the request row (which owns the disclosure) and a
+    /// detached result row. Every automatic decision correlated to this exact
+    /// call is shown (a later decision is never hidden by an earlier one).
+    private func decisionSummary(for event: RunEventRecord) -> String? {
+        let summaries = ThreadRunScopedResolution.decisionSummaries(
+            callID: callID(for: event), runID: event.runID, in: decisions)
+        return summaries.isEmpty ? nil : summaries.joined(separator: "\n")
+    }
+
+    /// The durable delegated-child record for this call, scoped to the run
+    /// that rendered the call: raw provider call ids repeat across runs, so an
+    /// unscoped callID lookup could open another run's transcript.
+    private func childRun(for event: RunEventRecord) -> ChildRunRecord? {
+        ThreadRunScopedResolution.child(
+            callID: callID(for: event), parentRunID: event.runID, in: childRunRecords)
     }
 
     private func pendingApproval(for event: RunEventRecord) -> PendingApproval? {

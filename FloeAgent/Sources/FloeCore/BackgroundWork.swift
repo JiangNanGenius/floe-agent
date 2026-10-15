@@ -18,6 +18,11 @@ public enum BackgroundWorkKind: String, Sendable, Codable, CaseIterable, Hashabl
     case linuxSession
     /// A managed long-running service (Node/Python) inside a Linux session.
     case linuxService
+    /// A scheduled task's insurance reminder (one pending local notification
+    /// per enabled schedule at its next expected fire time). The reminder is
+    /// never execution and never keeps the app alive; tapping it routes to the
+    /// schedule's actual pending/running task.
+    case schedule
 }
 
 /// Durable lifecycle state. "Terminal" means the owner will not produce
@@ -121,19 +126,28 @@ public struct BackgroundWorkDeepLink: Sendable, Codable, Hashable {
     public var runID: UUID?
     public var environmentID: String?
     public var serviceJobID: UUID?
+    /// Schedule identity for a `.schedule` reminder link.
+    public var scheduleID: UUID?
+    /// The logical occurrence the reminder was registered for (the stable
+    /// occurrence id), so a tap can address the exact pending instance.
+    public var occurrenceID: UUID?
 
     public init(
         kind: BackgroundWorkKind,
         conversationID: UUID? = nil,
         runID: UUID? = nil,
         environmentID: String? = nil,
-        serviceJobID: UUID? = nil
+        serviceJobID: UUID? = nil,
+        scheduleID: UUID? = nil,
+        occurrenceID: UUID? = nil
     ) {
         self.kind = kind
         self.conversationID = conversationID
         self.runID = runID
         self.environmentID = environmentID
         self.serviceJobID = serviceJobID
+        self.scheduleID = scheduleID
+        self.occurrenceID = occurrenceID
     }
 
     /// Notification `userInfo` payload. Keys are part of the deep-link
@@ -144,6 +158,8 @@ public struct BackgroundWorkDeepLink: Sendable, Codable, Hashable {
         if let runID { info["runID"] = runID.uuidString }
         if let environmentID { info["environmentID"] = environmentID }
         if let serviceJobID { info["serviceJobID"] = serviceJobID.uuidString }
+        if let scheduleID { info["scheduleID"] = scheduleID.uuidString }
+        if let occurrenceID { info["occurrenceID"] = occurrenceID.uuidString }
         return info
     }
 
@@ -164,7 +180,9 @@ public struct BackgroundWorkDeepLink: Sendable, Codable, Hashable {
             conversationID: (userInfo["conversationID"] as? String).flatMap(UUID.init(uuidString:)),
             runID: (userInfo["runID"] as? String).flatMap(UUID.init(uuidString:)),
             environmentID: userInfo["environmentID"] as? String,
-            serviceJobID: (userInfo["serviceJobID"] as? String).flatMap(UUID.init(uuidString:))
+            serviceJobID: (userInfo["serviceJobID"] as? String).flatMap(UUID.init(uuidString:)),
+            scheduleID: (userInfo["scheduleID"] as? String).flatMap(UUID.init(uuidString:)),
+            occurrenceID: (userInfo["occurrenceID"] as? String).flatMap(UUID.init(uuidString:))
         )
     }
 }
@@ -334,5 +352,118 @@ public actor BackgroundWorkRegistry {    public static let shared = BackgroundWo
         for continuation in continuations.values {
             continuation.yield(current)
         }
+    }
+}
+
+// MARK: - Schedule insurance reminders
+//
+// One pending local notification per enabled schedule, registered for its
+// NEXT expected fire time. This is insurance for the case where iOS never
+// wakes the app at all: the reminder pre-exists, so the user still learns a
+// scheduled task was due. It is never execution, never a wakeup claim and
+// never a keep-alive — the app runs the task only when the OS or the user
+// actually brings it up.
+//
+// The planner is pure and bounded so the app can reconcile the whole set
+// deterministically on save/enable/disable/delete and after every execution:
+// exactly one reminder per schedule, replaced in place by its stable logical
+// id, removed when the schedule is disabled, finishes, or has no future fire.
+
+/// The inputs the planner needs from one schedule. Deliberately plain values
+/// (FloeCore cannot depend on FloeModels).
+public struct ScheduleReminderCandidate: Sendable, Equatable {
+    public var scheduleID: UUID
+    public var title: String
+    public var isEnabled: Bool
+    /// The schedule's NEXT expected fire time; nil for event-armed
+    /// (after-success) schedules, which carry no clock reminder.
+    public var nextFireAt: Date?
+    /// Stable logical key of the occurrence this reminder anticipates
+    /// (used to build the occurrence identity in the notification payload).
+    public var occurrenceKey: String
+
+    public init(
+        scheduleID: UUID,
+        title: String,
+        isEnabled: Bool,
+        nextFireAt: Date?,
+        occurrenceKey: String
+    ) {
+        self.scheduleID = scheduleID
+        self.title = title
+        self.isEnabled = isEnabled
+        self.nextFireAt = nextFireAt
+        self.occurrenceKey = occurrenceKey
+    }
+}
+
+/// One reminder to register.
+public struct ScheduleReminderEntry: Sendable, Equatable {
+    public var scheduleID: UUID
+    public var title: String
+    public var fireAt: Date
+    public var occurrenceKey: String
+
+    public init(scheduleID: UUID, title: String, fireAt: Date, occurrenceKey: String) {
+        self.scheduleID = scheduleID
+        self.title = title
+        self.fireAt = fireAt
+        self.occurrenceKey = occurrenceKey
+    }
+}
+
+public struct ScheduleReminderPlan: Sendable, Equatable {
+    /// At most one entry per schedule (soonest first when capacity trims).
+    public var register: [ScheduleReminderEntry]
+    /// Schedules whose pending reminder must be removed (disabled, finished
+    /// or without a future fire).
+    public var removeScheduleIDs: [UUID]
+
+    public init(register: [ScheduleReminderEntry], removeScheduleIDs: [UUID]) {
+        self.register = register
+        self.removeScheduleIDs = removeScheduleIDs
+    }
+}
+
+public enum ScheduleReminderPlanner {
+    /// Bounded pending capacity: iOS keeps at most 64 pending local
+    /// notifications per app, shared with every other Floe notification, so
+    /// the insurance set is capped well below that.
+    public static let maximumPendingReminders = 32
+
+    /// Deterministic reconciliation. `now` is passed in so tests are stable.
+    /// A schedule with a fire time at or before `now` gets NO reminder (its
+    /// occurrence is already due and the ordinary execution pass owns it);
+    /// the soonest `maximumPendingReminders` future fires are kept.
+    public static func plan(
+        candidates: [ScheduleReminderCandidate],
+        now: Date
+    ) -> ScheduleReminderPlan {
+        var register: [ScheduleReminderEntry] = []
+        var remove: [UUID] = []
+        for candidate in candidates {
+            guard candidate.isEnabled,
+                  let fireAt = candidate.nextFireAt,
+                  fireAt > now else {
+                remove.append(candidate.scheduleID)
+                continue
+            }
+            register.append(ScheduleReminderEntry(
+                scheduleID: candidate.scheduleID,
+                title: candidate.title,
+                fireAt: fireAt,
+                occurrenceKey: candidate.occurrenceKey
+            ))
+        }
+        register.sort { ($0.fireAt, $0.scheduleID.uuidString) < ($1.fireAt, $1.scheduleID.uuidString) }
+        if register.count > maximumPendingReminders {
+            let overflow = register[maximumPendingReminders...]
+            remove.append(contentsOf: overflow.map(\.scheduleID))
+            register = Array(register.prefix(maximumPendingReminders))
+        }
+        return ScheduleReminderPlan(
+            register: register,
+            removeScheduleIDs: Array(Set(remove)).sorted { $0.uuidString < $1.uuidString }
+        )
     }
 }

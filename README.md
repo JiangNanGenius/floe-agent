@@ -13,7 +13,7 @@
   </p>
 </div>
 
-> **1.7.30 (271) hotfix:** provider-name compatibility and on-demand Bluetooth initialization passed local qualification. Apple confirmed VALID and internal availability; submitted to publictest1 and waiting for external review; see [current status](docs/CURRENT_STATUS.md) and [local evidence](docs/releases/testflight/BUILD_271_LOCAL_VERIFICATION.md).
+> **1.7.32 (273), internal only:** the temporary-chat, shared-subagent and repair round completed local qualification and internal Floe QA delivery on 2026-10-15. The next qualified build is authorized for public TestFlight; no external submission has started. See [current status](docs/CURRENT_STATUS.md) and the [task-lifecycle round record](docs/releases/repairs/FLOE_TASK_LIFECYCLE_20261015.md).
 
 [![Release](https://img.shields.io/github/v/release/JiangNanGenius/floe-agent?include_prereleases&label=release)](https://github.com/JiangNanGenius/floe-agent/releases)
 [![iOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-0A84FF)](FloeAgent/project.yml)
@@ -44,7 +44,7 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 
 [Detailed user manual](docs/USER_GUIDE.md) · [Website documentation](https://www.floe-agent.com/docs/en.html) · [Version status](docs/CURRENT_STATUS.md)
 
-Current source is **1.7.24 (265)**. Internal TestFlight, external review, GitHub IPA and source feeds have separate delivery states. Use [current status and verification dates](docs/CURRENT_STATUS.md) as the canonical reference; historical records do not guarantee availability today.
+Current source is **1.7.32 (273)**, delivered to the internal Floe QA group; the working branch carries the next round's unreleased changes. Internal TestFlight, external review, GitHub IPA and source feeds have separate delivery states. Use [current status and verification dates](docs/CURRENT_STATUS.md) as the canonical reference; historical records do not guarantee availability today.
 
 ### Creative and engineering workspaces
 
@@ -99,7 +99,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Current source is **1.7.24 (265)**. Internal TestFlight, external review, GitHub IPA and source feeds have separate delivery states. Use [current status and verification dates](docs/CURRENT_STATUS.md) as the canonical reference; historical records do not guarantee availability today.
+Current source is **1.7.32 (273)**, delivered to the internal Floe QA group; the working branch carries the next round's unreleased changes. Internal TestFlight, external review, GitHub IPA and source feeds have separate delivery states. Use [current status and verification dates](docs/CURRENT_STATUS.md) as the canonical reference; historical records do not guarantee availability today.
 
 ### Unsigned IPA
 

@@ -199,6 +199,9 @@ public actor EphemeralConversationStore: ConversationStore {
         try requireHosted(id)
         var updated = record
         updated.title = title
+        // An explicit user rename is MANUAL truth: promotion must carry it
+        // and the post-Keep ordinary auto-title must never overwrite it.
+        updated.titleOrigin = .manual
         updated.updatedAt = Date()
         try await saveConversation(updated)
     }

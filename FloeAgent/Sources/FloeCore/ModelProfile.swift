@@ -111,6 +111,17 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
     public var limits: ModelLimits
     public var pricing: PricingMetadata?
     public var capabilities: ModelCapabilities
+    /// Capability bits the USER explicitly decided (on or off) in the model
+    /// editor, plus bits applied through the reviewed catalog migration.
+    ///
+    /// Owning a bit here means refresh, discovery and sync must not change it:
+    /// a catalog/discovery union may repair unknown bits on legacy rows, but
+    /// an explicit decision is authoritative. `nil` means the record predates
+    /// provenance (legacy row); an empty set means "reviewed, nothing
+    /// explicitly decided".
+    ///
+    /// Optional so older CloudKit/config payloads decode unchanged.
+    public var explicitCapabilities: ModelCapabilities?
     /// Explicit product routing. Nil is retained for synced legacy records and
     /// is deterministically derived from capabilities by `effectiveUseSurfaces`.
     public var useSurfaces: ModelUseSurfaces?
@@ -136,7 +147,11 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
         useSurfaces: ModelUseSurfaces? = nil,
         reasoningEffort: ModelReasoningEffort? = nil,
         isEnabled: Bool = true,
-        isHiddenFromPrimaryPicker: Bool? = false
+        isHiddenFromPrimaryPicker: Bool? = false,
+        // Trailing for source compatibility with existing labeled call sites
+        // (the persistence codec appends it); the stored property stays
+        // grouped with `capabilities`.
+        explicitCapabilities: ModelCapabilities? = nil
     ) {
         self.id = id
         self.providerID = providerID
@@ -145,6 +160,7 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
         self.limits = limits
         self.pricing = pricing
         self.capabilities = capabilities
+        self.explicitCapabilities = explicitCapabilities
         self.useSurfaces = useSurfaces
         self.reasoningEffort = reasoningEffort
         self.isEnabled = isEnabled

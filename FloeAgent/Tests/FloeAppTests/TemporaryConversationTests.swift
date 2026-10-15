@@ -567,6 +567,36 @@ struct TemporaryConversationTests {
         }
     }
 
+    @Test("Temporary sends keep tools enabled through the read-only ceiling; ordinary mode selection is untouched")
+    func temporaryEffectiveModeKeepsToolsEnabled() async throws {
+        let fixture = try await makeFixture()
+        // A launchpad-direct temporary session (the only UI entry).
+        let id = try await fixture.center.startTemporarySession(initialDraft: "mode check")
+        defer { ComposerDraftStore.shared.clear(conversationID: id) }
+        let model = ThreadDetailViewModel(conversationID: id, center: fixture.center)
+        #expect(model.isTemporary)
+        // The forced chat-only mode is gone: the temporary run must reach the
+        // request pipeline with tools ENABLED so ConversationCenter's
+        // immutable read-only ceiling (TemporaryChatToolPolicy) is the
+        // authority that narrows the catalog. `.chat` would disable tools
+        // entirely and bypass that audited policy.
+        #expect(model.effectiveAgentMode == .agent)
+        #expect(model.effectiveAgentMode.toolsEnabled)
+        // Plan/goal (durable-record modes) can never be sent from a temporary
+        // view model, even if the stored selection is stale.
+        model.agentMode = .plan
+        #expect(model.effectiveAgentMode == .agent)
+        model.agentMode = .goal
+        #expect(model.effectiveAgentMode == .agent)
+        // Ordinary conversations keep the user's own selection exactly.
+        let ordinary = try await fixture.center.createConversation(title: nil)
+        let ordinaryModel = ThreadDetailViewModel(conversationID: ordinary.id, center: fixture.center)
+        ordinaryModel.selectAgentMode(.chat)
+        #expect(ordinaryModel.effectiveAgentMode == .chat)
+        ordinaryModel.selectAgentMode(.plan)
+        #expect(ordinaryModel.effectiveAgentMode == .plan)
+    }
+
     @Test("Ending a launchpad-direct session discards everything and lands on newTask with no restored row")
     func directSessionEndLandsOnNewTask() async throws {
         let fixture = try await makeFixture()

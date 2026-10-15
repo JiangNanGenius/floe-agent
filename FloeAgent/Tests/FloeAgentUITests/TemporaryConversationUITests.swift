@@ -12,8 +12,10 @@
 //     integration): hosts a fresh RAM-only thread, carries the typed draft,
 //     keeps attachment staging hidden while the normal voice entry stays
 //     available, and shows the compact badge menu (explanation + Keep +
-//     End) instead of the removed persistent banner.
-//  3. Fixture: populated saved chat → separate temporary session; leaving to
+//     End) instead of the removed persistent banner. The ordinary saved
+//     conversation's thread exposes NO temporary switch: the launchpad entry
+//     is the only way into a temporary chat.
+//  3. Fixture: launchpad entry next to a populated saved chat; leaving to
 //     New Task discards it; the saved history stays intact.
 //  4. Fixture (preset session, seeded in-RAM messages): explicit End
 //     discards everything and returns to the saved chat.
@@ -81,11 +83,23 @@ final class TemporaryConversationUITests: XCTestCase {
             .tap()
     }
 
+    /// Frame-based visibility. iOS 27 can raise "Activation point invalid"
+    /// when `isHittable` is queried on a drawer row whose frame the AX layer
+    /// has not settled, so the helper never asks for hittability.
+    private func rowIsVisible(_ app: XCUIApplication, _ row: XCUIElement) -> Bool {
+        guard row.exists else { return false }
+        let frame = row.frame
+        let screen = app.windows.firstMatch.frame
+        guard frame.width > 0, frame.height > 0,
+              frame.origin.x.isFinite, frame.origin.y.isFinite else { return false }
+        return screen.contains(CGPoint(x: frame.midX, y: frame.midY))
+    }
+
     private func openSidebarRow(_ app: XCUIApplication, identifier: String) {
         let row = app.descendants(matching: .any)[identifier].firstMatch
         // The compact sidebar drawer keeps its rows in the AX tree while the
         // drawer is closed (off-screen): existence alone is not visibility.
-        if !row.isHittable {
+        if !rowIsVisible(app, row) {
             let drawer = app.buttons["phone.sidebar.open"]
             if drawer.waitForExistence(timeout: 5) { drawer.tap() }
         }
@@ -97,17 +111,30 @@ final class TemporaryConversationUITests: XCTestCase {
         // Task) above the fold.
         let sidebar = app.collectionViews.firstMatch
         var scrolls = 0
-        while !row.isHittable, sidebar.exists, scrolls < 6 {
+        while !rowIsVisible(app, row), sidebar.exists, scrolls < 6 {
             sidebar.swipeUp()
             scrolls += 1
         }
         scrolls = 0
-        while !row.isHittable, sidebar.exists, scrolls < 8 {
+        while !rowIsVisible(app, row), sidebar.exists, scrolls < 8 {
             sidebar.swipeDown()
             scrolls += 1
         }
         XCTAssertTrue(row.waitForExistence(timeout: 8))
-        row.tap()
+        // Tap the verified on-screen center: the destination assertions still
+        // require the conversation to open for real.
+        let frame = row.frame
+        let screen = app.windows.firstMatch.frame
+        let candidate = CGPoint(x: frame.midX, y: frame.midY)
+        guard frame.width > 0, frame.height > 0,
+              frame.origin.x.isFinite, frame.origin.y.isFinite,
+              screen.contains(candidate) else {
+            XCTFail("sidebar row \(identifier) has no reachable activation point")
+            return
+        }
+        app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: candidate.x - screen.minX, dy: candidate.y - screen.minY))
+            .tap()
     }
 
     /// New Chat must open immediately with no creation-time selector.
@@ -154,15 +181,30 @@ final class TemporaryConversationUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["chat.temporary.hint"].firstMatch.waitForExistence(timeout: 8))
         XCTAssertTrue(app.descendants(matching: .any)["chat.temporary.keep"].firstMatch.exists)
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        attachment.name = "Temporary thread — badge, carried draft, voice available, no attachments"
+        attachment.name = "Temporary thread — badge menu with short lifecycle header"
         attachment.lifetime = .keepAlways
         add(attachment)
+        // The full lifecycle/tool/cloud/voice explanation stays readable
+        // behind the enabled About action (no clipped 3-line menu row).
+        let about = app.descendants(matching: .any)["chat.temporary.about"].firstMatch
+        XCTAssertTrue(about.waitForExistence(timeout: 8), "temporary About action")
+        about.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat.temporary.about.tools"].firstMatch
+            .waitForExistence(timeout: 8), "readable tool/cloud disclosure")
+        XCTAssertTrue(app.descendants(matching: .any)["chat.temporary.about.lifecycle"].firstMatch.exists)
+        let aboutShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        aboutShot.name = "Temporary chat — About sheet with full disclosures"
+        aboutShot.lifetime = .keepAlways
+        add(aboutShot)
+        app.buttons["chat.temporary.about.done"].firstMatch.tap()
     }
 
-    /// Fixture: toggling on a populated saved chat starts a SEPARATE session;
-    /// leaving to New Task discards it; the saved history stays intact.
-    /// iPad additionally keeps a real ordinary workspace inspector open
-    /// across the toggle: the temporary chat owns no workspace and must
+    /// Fixture: the launchpad entry hosts a SEPARATE ephemeral session next to
+    /// a populated saved chat; leaving to New Task discards it; the saved
+    /// history stays intact. The ordinary saved chat itself never offers a
+    /// temporary switch — the launchpad bubble entry is the only way in.
+    /// iPad additionally keeps a real ordinary workspace inspector open while
+    /// viewing the saved chat: the temporary chat owns no workspace and must
     /// never mount a resource pane bound to the ordinary conversation.
     /// The compact idiom presents the inspector as a drawer that covers the
     /// toolbar, so the pane assertion stays with the iPad projection where
@@ -176,6 +218,10 @@ final class TemporaryConversationUITests: XCTestCase {
         let savedMessage = app.staticTexts["合成历史消息-1"]
         XCTAssertTrue(savedMessage.waitForExistence(timeout: 8))
 
+        // The ordinary saved chat keeps NO temporary switch in its toolbar:
+        // its thread must never convert a populated saved conversation.
+        XCTAssertFalse(app.descendants(matching: .any)["chat.temporary.toggle"].firstMatch.exists)
+
         if isPad {
             // A real workspace inspector open in an ordinary conversation must
             // never be rebound to a temporary conversation's nonexistent workspace.
@@ -187,18 +233,19 @@ final class TemporaryConversationUITests: XCTestCase {
             XCTAssertTrue(app.descendants(matching: .any)["ipad.inspector.column"].firstMatch.waitForExistence(timeout: 8))
         }
 
-        let toggle = app.descendants(matching: .any)["chat.temporary.toggle"].firstMatch
+        // The launchpad entry hosts the ephemeral session. The saved chat is
+        // left first, so the ordinary workspace inspector unmounts with it.
+        openSidebarRow(app, identifier: "sidebar.workbench.new_task")
+        let toggle = app.descendants(matching: .any)["home.temporary.toggle"].firstMatch
         XCTAssertTrue(toggle.waitForExistence(timeout: 8))
         toggle.tap()
-        // A separate fresh temporary chat opens; the saved messages are not
-        // inside it and its badge is visible.
         let badge = app.descendants(matching: .any)["chat.temporary.badge"].firstMatch
         XCTAssertTrue(badge.waitForExistence(timeout: 8))
+        // The saved messages are not inside the ephemeral session.
         XCTAssertFalse(app.staticTexts["合成历史消息-1"].exists)
         if isPad {
             // The temporary identity owns no workspace/browser/terminal
-            // binding: the ordinary files inspector must not remain mounted
-            // for it.
+            // binding: no ordinary files inspector may remain mounted for it.
             XCTAssertFalse(app.descendants(matching: .any)["ipad.inspector.column"].firstMatch.exists)
         }
         // Capture readiness: wait until the toggle transition has settled and
@@ -214,7 +261,7 @@ final class TemporaryConversationUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 8), .completed,
                        "the inspector transition must settle before capture")
         let openAttachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        openAttachment.name = "Temporary chat after inspector toggle"
+        openAttachment.name = "Temporary chat after launchpad entry"
         openAttachment.lifetime = .keepAlways
         add(openAttachment)
 
@@ -226,6 +273,7 @@ final class TemporaryConversationUITests: XCTestCase {
         openSidebarRow(app, identifier: savedRow)
         XCTAssertTrue(app.staticTexts["合成历史消息-1"].waitForExistence(timeout: 8))
         XCTAssertFalse(app.descendants(matching: .any)["chat.temporary.badge"].firstMatch.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["chat.temporary.toggle"].firstMatch.exists)
     }
 
     /// Fixture (preset session with seeded in-RAM messages): explicit End

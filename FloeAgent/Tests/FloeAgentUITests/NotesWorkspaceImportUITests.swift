@@ -286,6 +286,17 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let cases: [CoverCase] = [
             .init(kind: "office", title: "封面验收-Word", allowed: officeSources),
             .init(kind: "office", title: "封面验收-Excel", allowed: officeSources),
+            // The 9x25 workbook cannot be represented by the system whole-page
+            // render at card size; the bounded labeled summary is its settled
+            // cover and no system request is started.
+            .init(kind: "office", title: "封面验收-Excel-宽表", allowed: ["officeContentSummary"]),
+            // The first tab is a hidden helper sheet: the bounded summary must
+            // show the second (visible) tab and never the hidden data.
+            .init(kind: "office", title: "封面验收-Excel-隐藏表", allowed: ["officeContentSummary"]),
+            // The visible sheet declares hidden rows/columns; the filtered
+            // bounded summary stays the settled cover so the system render
+            // cannot show the hidden cells.
+            .init(kind: "office", title: "封面验收-Excel-隐藏行列", allowed: ["officeContentSummary"]),
             .init(kind: "office", title: "封面验收-PPT", allowed: officeSources),
             .init(kind: "notebook", title: "封面验收 手写页", allowed: ["notePage"]),
             .init(kind: "mindMap", title: "封面验收 导图", allowed: ["mindMap"]),
@@ -297,6 +308,21 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         for cover in cases {
             let parsed = assertContentCover(app, cover: cover)
             if cover.title == "封面验收-Word" { firstWordRevision = parsed.revision }
+            if ["封面验收-Excel-宽表", "封面验收-Excel-隐藏表", "封面验收-Excel-隐藏行列"].contains(cover.title) {
+                // These cards must publish the visible summary badge and their
+                // real accessibility value (a hidden-workbook card must also
+                // report the tab-order fallback).
+                let card = revealCard(app, kind: cover.kind, title: cover.title)
+                let value = card.value as? String ?? ""
+                XCTAssertTrue(value.contains("officeContentSummary"),
+                              "\(cover.title) cover must be the bounded summary: \(value)")
+                XCTAssertTrue(value.contains("badge=summary"),
+                              "\(cover.title) summary must carry the summary badge: \(value)")
+                if cover.title == "封面验收-Excel-隐藏表" {
+                    XCTAssertTrue(value.contains("workbookEarlierSheet"),
+                                  "the hidden first tab must be reported as an earlier-sheet fallback: \(value)")
+                }
+            }
             capture("notes-cover-\(cover.kind)-\(cover.title)")
         }
         capture("notes-content-covers")
@@ -343,12 +369,60 @@ final class NotesWorkspaceImportUITests: XCTestCase {
 
         // Quit and relaunch: in-memory covers are gone, so every card must
         // regenerate from the persisted documents. The renamed Word document is
-        // kept (the fixture only seeds when its marker prefix is absent).
+        // kept; only the missing exact fixture ids are re-seeded (never a wipe,
+        // never an overwrite of an existing card).
         app.terminate()
         app = launchNotesWithOfficeCoverFixture(ipad: ipad)
         for cover in cases where cover.title != "封面验收-Word" { assertContentCover(app, cover: cover) }
         assertContentCover(app, cover: .init(kind: "office", title: renamedTitle, allowed: officeSources))
         capture("notes-content-covers-relaunch")
+    }
+
+    /// Focused VISIBLE-card evidence for the hidden-workbook fixtures. The
+    /// exact synthetic title is searched so only that card remains, the card
+    /// must be actually hittable in the real frame (a stale frame can survive
+    /// while the grid resorts), and the screenshot then proves the hidden-sheet
+    /// / hidden-row workbook card itself. The cover matrix above is the
+    /// behavioral gate; this is its pixel proof.
+    func testHiddenWorkbookCardsAreVisibleWithTheSummaryBadge() throws {
+        continueAfterFailure = false
+        let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true
+            || UIDevice.current.userInterfaceIdiom == .pad
+        let app = launchNotesWithOfficeCoverFixture(ipad: ipad)
+        defer { app.terminate() }
+
+        let search = app.textFields["notes.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 20), "the Notes search field must exist")
+        for title in ["封面验收-Excel-隐藏表", "封面验收-Excel-隐藏行列"] {
+            search.tap()
+            let existing = (search.value as? String) ?? ""
+            if !existing.isEmpty, existing != "搜索所有文档的名称与内容" {
+                search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count))
+            }
+            search.typeText(title + "\n")
+            let card = cardElement(app, kind: "office", title: title)
+            XCTAssertTrue(card.waitForExistence(timeout: 20),
+                          "\(title) must remain after its exact search")
+            let deadline = Date().addingTimeInterval(30)
+            while !(card.exists && card.isHittable) && Date() < deadline {
+                app.scrollViews.firstMatch.swipeUp()
+                Thread.sleep(forTimeInterval: 0.3)
+            }
+            XCTAssertTrue(card.isHittable, "\(title) must be visible for the pixel proof")
+            let value = card.value as? String ?? ""
+            XCTAssertTrue(card.identifier.contains("officeContentSummary"),
+                          "\(title) must settle as the bounded summary: \(card.identifier)")
+            XCTAssertTrue(value.contains("badge=summary"),
+                          "\(title) must carry the summary badge: \(value)")
+            Thread.sleep(forTimeInterval: 0.8)
+            capture("hidden-card-\(title)")
+            // Element-scoped proof: the card's own frame, so the PNG is the
+            // card (cover + title + badge) and never a scrolled grid.
+            let cardImage = XCTAttachment(screenshot: card.screenshot())
+            cardImage.name = "hidden-card-frame-\(title)"
+            cardImage.lifetime = .keepAlways
+            add(cardImage)
+        }
     }
 
     private struct CoverCase {
@@ -379,9 +453,33 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count))
         }
         field.typeText(newTitle)
+        // Commit the field and drop the software keyboard: with a zh-Hans IME
+        // the composing state can be pending here, and a still-visible keyboard
+        // can eat the confirmation tap.
+        field.typeText("\n")
         let save = app.buttons["notes.rename.save"]
         XCTAssertTrue(save.isHittable, "rename save must be tappable", file: file, line: line)
         save.tap()
+        // A zh-Hans software keyboard can swallow the first confirmation tap
+        // (observed on 2026-10-16: the sheet stayed open, a later gesture typed
+        // into the still-focused field, and the store never saw the rename).
+        // Confirm the sheet actually closed and retry the real save control;
+        // the caller still asserts the rename persisted with a newer revision.
+        if !waitUntil(timeout: 5, { !field.exists }) {
+            save.tap()
+            XCTAssertTrue(waitUntil(timeout: 15, { !field.exists }),
+                          "rename sheet must close after saving", file: file, line: line)
+        }
+    }
+
+    /// Synchronous bounded poll for UI interactions that must settle.
+    private func waitUntil(timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        return condition()
     }
 
     private func launchNotesWithOfficeCoverFixture(ipad: Bool, resetWord: Bool = false) -> XCUIApplication {

@@ -1310,6 +1310,8 @@ private enum CanvasLifecycleService {
             documentID: documentID,
             environment: environment
         )
+        // The document's media jobs/artifacts were removed with it.
+        StorageMutationHooks.invalidate(.mediaStoreChanged)
     }
 
     static func deleteProject(
@@ -1355,6 +1357,9 @@ private enum CanvasLifecycleService {
                     assetID: assetID, by: -1)
             }
         }
+        // The canvas project (media jobs, CAD packages and released assets)
+        // is gone: the shared storage snapshot is stale.
+        StorageMutationHooks.invalidate(.mediaStoreChanged)
     }
 
     private static func cancelAndDeleteMediaJobs(
@@ -12470,10 +12475,11 @@ private struct SharedCanvasAgentConversation: View {
                 isLatest: isLatest,
                 isLive: viewModel.isRunning && isLatest,
                 hasError: events.contains { $0.kind == .error },
-                pendingApprovals: viewModel.pendingApprovals
-            ) { approval, decision in
-                Task { await viewModel.resolve(approval, decision: decision) }
-            }
+                pendingApprovals: viewModel.pendingApprovals,
+                onResolveApproval: { approval, decision in
+                    Task { await viewModel.resolve(approval, decision: decision) }
+                }
+            )
         case .event(let event):
             ThreadEventView(
                 event: event,

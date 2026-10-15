@@ -335,3 +335,91 @@ struct GuestProcParserTests {
         #expect(GuestResourceDeltas.fraction(busyDelta: 0, totalDelta: 50) == 0)
     }
 }
+
+@Suite("FloeCore.ScheduleReminders")
+struct ScheduleReminderPlannerTests {
+
+    private func candidate(
+        id: UUID = UUID(),
+        title: String = "Daily",
+        enabled: Bool = true,
+        fireAt: Date?,
+        key: String = "day:2026-10-16"
+    ) -> ScheduleReminderCandidate {
+        ScheduleReminderCandidate(
+            scheduleID: id, title: title, isEnabled: enabled,
+            nextFireAt: fireAt, occurrenceKey: key)
+    }
+
+    @Test("One future reminder per enabled schedule; disabled/event-armed/due ones are removed")
+    func singleFutureReminderPerSchedule() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let future = now.addingTimeInterval(3_600)
+        let enabled = UUID()
+        let disabled = UUID()
+        let eventArmed = UUID()
+        let alreadyDue = UUID()
+        let plan = ScheduleReminderPlanner.plan(candidates: [
+            candidate(id: enabled, fireAt: future),
+            candidate(id: disabled, enabled: false, fireAt: future),
+            candidate(id: eventArmed, fireAt: nil, key: "afterSuccess"),
+            candidate(id: alreadyDue, fireAt: now.addingTimeInterval(-60)),
+        ], now: now)
+        #expect(plan.register.count == 1)
+        #expect(plan.register.first?.scheduleID == enabled)
+        #expect(plan.register.first?.fireAt == future)
+        #expect(Set(plan.removeScheduleIDs) == Set([disabled, eventArmed, alreadyDue]))
+    }
+
+    @Test("Re-planning the same schedule never duplicates its reminder (stable id, one entry)")
+    func replanIsIdempotent() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let scheduleID = UUID()
+        let first = ScheduleReminderPlanner.plan(candidates: [
+            candidate(id: scheduleID, fireAt: now.addingTimeInterval(60))
+        ], now: now)
+        let second = ScheduleReminderPlanner.plan(candidates: [
+            candidate(id: scheduleID, fireAt: now.addingTimeInterval(60))
+        ], now: now)
+        #expect(first.register.map(\.scheduleID) == second.register.map(\.scheduleID))
+        #expect(first.register.count == 1)
+        #expect(first.removeScheduleIDs.isEmpty)
+    }
+
+    @Test("Capacity is bounded and keeps the soonest reminders")
+    func boundedCapacity() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let candidates = (0..<(ScheduleReminderPlanner.maximumPendingReminders + 5)).map { index in
+            candidate(fireAt: now.addingTimeInterval(TimeInterval(60 * (index + 1))))
+        }
+        let plan = ScheduleReminderPlanner.plan(candidates: candidates, now: now)
+        #expect(plan.register.count == ScheduleReminderPlanner.maximumPendingReminders)
+        #expect(plan.removeScheduleIDs.count == 5)
+        // The soonest fire is first and never trimmed.
+        #expect(plan.register.first?.fireAt == now.addingTimeInterval(60))
+    }
+
+    @Test("A schedule reminder link round-trips its schedule and occurrence identity")
+    func reminderLinkPayload() {
+        let scheduleID = UUID()
+        let occurrenceID = UUID()
+        let link = BackgroundWorkDeepLink(
+            kind: .schedule, scheduleID: scheduleID, occurrenceID: occurrenceID)
+        #expect(link.userInfo["workKind"] == "schedule")
+        let parsed = BackgroundWorkDeepLink.parse(link.userInfo)
+        #expect(parsed?.kind == .schedule)
+        #expect(parsed?.scheduleID == scheduleID)
+        #expect(parsed?.occurrenceID == occurrenceID)
+        // A pending-schedule notice may carry the launched run as well.
+        let runID = UUID()
+        let conversationID = UUID()
+        let pending = BackgroundWorkDeepLink(
+            kind: .schedule, conversationID: conversationID, runID: runID,
+            scheduleID: scheduleID, occurrenceID: occurrenceID)
+        let reparsed = BackgroundWorkDeepLink.parse(pending.userInfo)
+        #expect(reparsed?.conversationID == conversationID)
+        #expect(reparsed?.runID == runID)
+        // Legacy links without a schedule id keep working.
+        #expect(BackgroundWorkDeepLink.parse(["workKind": "modelRun"])?.kind == .modelRun)
+    }
+}

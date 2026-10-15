@@ -8,6 +8,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloePersistence
+import FloeCore
 
 /// The More tab root list.
 struct MoreView: View {
@@ -63,10 +64,15 @@ private struct MoreDestinationRouter: View {
     }
 }
 
-/// Runs history: every run with honest state. Internal so the iPad router
-/// in FloeAgentApp can reach the same screen the iPhone More tab uses.
+/// Runs history: every run with honest, localized state. Each row names its
+/// OWNING TASK (conversation identity) so a run is never confused with the
+/// task it belongs to; bulk task management is one tap away and acts on task
+/// identities (the same canonical screen the Task Center opens). Internal so
+/// the iPad router in FloeAgentApp can reach the same screen the iPhone More
+/// tab uses.
 struct RunsHistoryView: View {
     let viewModel: MoreViewModel
+    @State private var presentsTaskManagement = false
 
     var body: some View {
         Group {
@@ -79,16 +85,22 @@ struct RunsHistoryView: View {
             } else {
                 List(viewModel.runs) { run in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(run.goal.isEmpty ? String(localized: "chat.untitled") : run.goal)
+                        Text(taskTitle(for: run))
                             .font(FloeTheme.Typography.body)
                             .lineLimit(1)
+                        if !run.goal.isEmpty {
+                            Text(run.goal)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                         HStack {
                             Text(
                                 run.startedAt,
                                 format: .dateTime.month(.abbreviated).day().hour().minute()
                             )
                             Text("·")
-                            Text(run.state)
+                            Text(RunStateLocalizer.title(for: run.state))
                         }
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.secondary)
@@ -98,8 +110,26 @@ struct RunsHistoryView: View {
             }
         }
         .navigationTitle("more.runs")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    presentsTaskManagement = true
+                } label: {
+                    Label(FloeL10n.l("settings.data_management_view.manage"), systemImage: "checklist")
+                }
+                .accessibilityIdentifier("runs.manageTasks")
+            }
+        }
+        .sheet(isPresented: $presentsTaskManagement) {
+            ConversationBatchManagementView(center: viewModel.center)
+        }
         .task { await viewModel.loadRuns() }
         .refreshable { await viewModel.loadRuns() }
+    }
+
+    private func taskTitle(for run: RunRecord) -> String {
+        let title = viewModel.center.conversations.first { $0.id == run.conversationID }?.title ?? ""
+        return title.isEmpty ? String(localized: "chat.untitled") : title
     }
 }
 

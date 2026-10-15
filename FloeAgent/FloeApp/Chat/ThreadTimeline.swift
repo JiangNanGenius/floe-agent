@@ -25,9 +25,273 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import FloeCore
 import FloeModels
 import FloePersistence
 import FloeAgentRuntime
+
+/// One compact decision record projected onto the tool invocation that
+/// produced the proposal. The durable decision message is never deleted or
+/// rewritten by this projection: the standalone row is replaced by this
+/// annotation inside the matching tool step, so the audit bytes stay in the
+/// transcript while the chat stream stops repeating one bubble per automatic
+/// apply.
+struct ToolDecisionAnnotation: Identifiable, Hashable {
+    /// The durable decision message id (deterministic per proposal+decision).
+    let id: UUID
+    /// The tool call this decision belongs to (the same callID vocabulary the
+    /// tool cards and approval summaries use).
+    let callID: String
+    /// The run that owns the correlated tool call. Raw provider call ids are
+    /// NOT unique across runs (the approval-card contract scopes by
+    /// `runID + callID` for the same reason), so a card only renders the
+    /// decision whose correlated call belongs to the SAME run. Nil only for
+    /// legacy/uncorrelated callers.
+    let runID: UUID?
+    let proposalID: UUID
+    /// The raw recorded decision vocabulary ("applied", "rejected", …).
+    let decision: String
+    /// Concise, decision-specific localized sentence.
+    let summary: String
+}
+
+/// Run-scoped resolution of delegated-child cards and decision annotations.
+///
+/// Raw provider tool-call ids are NOT unique across runs (the app's approval
+/// cards scope by `runID + callID` for exactly this reason), so an unscoped
+/// callID lookup can open another run's child transcript or decorate the
+/// wrong row with a decision. These pure helpers are the single rule every
+/// card site uses and are directly testable without a live view model.
+enum ThreadRunScopedResolution {
+    /// The child created by `callID` inside exactly `parentRunID`; within one
+    /// run the newest child wins when a provider repeats an id.
+    static func child(
+        callID: String?,
+        parentRunID: UUID,
+        in records: [ChildRunRecord]
+    ) -> ChildRunRecord? {
+        guard let callID, !callID.isEmpty else { return nil }
+        return records
+            .filter { $0.delegateCallID == callID && $0.parentRunID == parentRunID }
+            .max { $0.startedAt < $1.startedAt }
+    }
+
+    /// Decision summaries correlated to `callID` in exactly `runID`, in
+    /// annotation order, deduplicated. A legacy annotation without a run is
+    /// accepted only when no run-scoped annotation matches (historical
+    /// callers keep rendering; every automatic correlation carries its run).
+    static func decisionSummaries(
+        callID: String?,
+        runID: UUID,
+        in annotations: [ToolDecisionAnnotation]
+    ) -> [String] {
+        guard let callID, !callID.isEmpty else { return [] }
+        var matched = annotations.filter { $0.callID == callID && $0.runID == runID }
+        if matched.isEmpty {
+            matched = annotations.filter { $0.callID == callID && $0.runID == nil }
+        }
+        var seen = Set<String>()
+        return matched.map(\.summary).filter { seen.insert($0).inserted }
+    }
+}
+
+/// Catalog lookup with a bilingual source fallback, shared by the chat
+/// presentation helpers. Before the integration owner registers a new key in
+/// `Localizable.xcstrings`, the exact same EN/ZH sentence is shown inline
+/// instead of a raw dotted key; the catalog wins as soon as it exists (see
+/// `A/INTEGRATION.md` for the key list).
+enum ChatBilingualCatalog {
+    static func localized(key: String, en: String, zh: String) -> String {
+        let value = FloeL10n.l(key)
+        if value != key { return value }
+        return FloeL10n.isChinese ? zh : en
+    }
+}
+
+/// Presentation projection for `ProposalDecisionNoticeProjection` rows.
+///
+/// The generic "design decision recorded" sentence is only correct for an
+/// unknown decision vocabulary. Every known decision gets its own concise
+/// sentence, and a decision whose trusted producer marker is
+/// `tool-automatic` is correlated to the tool call that produced/applied its
+/// proposal (the persisted apply receipt carries the proposal id and the
+/// `runtime-authority` mode, which disambiguates propose vs apply when both
+/// are present), so it renders inside that step instead of as a separate chat
+/// bubble. Body/text deduplication is deliberately NOT used: two applies on
+/// different proposals are two legitimate records, and a `user` decision
+/// always keeps its own concise row.
+enum ProposalDecisionPresentation {
+
+    struct Notice: Identifiable, Equatable {
+        let id: UUID
+        let decision: String
+        let proposalID: UUID
+        let summary: String
+        /// The trusted producer marker (`user` / `tool-automatic`), parsed
+        /// from the event itself; historical rows default to `.user`.
+        let origin: ProposalDecisionNoticeProjection.DecisionOrigin
+        /// Non-nil when this decision is a tool-originated automatic decision
+        /// and the matching tool call is present in the loaded events.
+        let automaticCallID: String?
+        /// The run that owns the correlated tool call (`automaticCallID`).
+        /// Raw provider call ids repeat across runs, so both the annotation
+        /// and the standalone-row suppression stay scoped to this run.
+        let automaticRunID: UUID?
+        var annotation: ToolDecisionAnnotation? {
+            automaticCallID.map {
+                ToolDecisionAnnotation(
+                    id: id, callID: $0, runID: automaticRunID, proposalID: proposalID,
+                    decision: decision, summary: summary)
+            }
+        }
+    }
+
+    /// One validated notice for a durable message, or nil for every other row.
+    static func trustedNotice(for message: PersistedMessage) -> Notice? {
+        guard let event = ProposalDecisionNoticeProjection.trustedEvent(in: message) else {
+            return nil
+        }
+        return Notice(
+            id: message.id, decision: event.decision, proposalID: event.proposalID,
+            summary: summary(for: event.decision), origin: event.origin,
+            automaticCallID: nil, automaticRunID: nil)
+    }
+
+    /// Decision-specific concise summary for a queued/promoted steering row of
+    /// the same trusted decision event (a pending row carries no role, so the
+    /// deterministic derivation is the proof). Nil for every other row, which
+    /// then keeps the existing projection.
+    static func summary(for input: PendingUserInput) -> String? {
+        guard let event = ProposalDecisionNoticeProjection.derivedEvent(
+            id: input.id, conversationID: input.conversationID, content: input.content)
+        else { return nil }
+        return summary(for: event.decision)
+    }
+
+    /// All validated decision notices of the conversation, correlated with the
+    /// loaded events (correlation is additive: an uncorrelated notice keeps a
+    /// concise standalone row and is never hidden).
+    static func notices(
+        messages: [PersistedMessage],
+        events: [RunEventRecord]
+    ) -> [Notice] {
+        messages.compactMap { message in
+            guard let event = ProposalDecisionNoticeProjection.trustedEvent(in: message) else {
+                return nil
+            }
+            let correlation = event.origin == .toolAutomatic
+                ? applyCall(proposalID: event.proposalID, events: events)
+                : nil
+            return Notice(
+                id: message.id, decision: event.decision, proposalID: event.proposalID,
+                summary: summary(for: event.decision), origin: event.origin,
+                automaticCallID: correlation?.callID,
+                automaticRunID: correlation?.runID)
+        }
+    }
+
+    /// The tool call that produced (or applied) this proposal inside the
+    /// loaded events, WITH the run that owns it. The trusted `origin` marker
+    /// is the authority; the apply receipt (`runtime-authority`) is preferred
+    /// only to pick the right call when both the propose and apply calls
+    /// reference the proposal. Returns nil when no loaded event references the
+    /// proposal, in which case the notice keeps its standalone concise row
+    /// rather than disappearing. The run is carried because raw provider call
+    /// ids are not unique across runs.
+    private static func applyCall(
+        proposalID: UUID, events: [RunEventRecord]
+    ) -> (callID: String, runID: UUID)? {
+        let needle = proposalID.uuidString
+        var fallback: (callID: String, runID: UUID)?
+        for event in events.reversed()
+        where event.kind == .toolRequest || event.kind == .toolResult {
+            guard event.payloadJSON.contains(needle) else { continue }
+            guard let callID = callID(in: event.payloadJSON) else { continue }
+            // The apply receipt is preferred over the propose call; the marker
+            // may sit in the flat payload or (escaped) inside the summary, so
+            // both the raw and the nested shapes are matched.
+            if event.payloadJSON.contains("runtime-authority") {
+                return (callID, event.runID)
+            }
+            if fallback == nil { fallback = (callID, event.runID) }
+        }
+        return fallback
+    }
+
+    /// `callID` / `id` from one tool event payload.
+    ///
+    /// Production payloads are flat string maps, but a receipt-style nested
+    /// payload must not silently lose its correlation, so both shapes are
+    /// read. A payload with no usable call id returns nil (the notice then
+    /// keeps its standalone row instead of decorating the wrong step).
+    private static func callID(in payloadJSON: String) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(
+            with: Data(payloadJSON.utf8)) as? [String: Any] else { return nil }
+        for key in ["callID", "id"] {
+            if let value = object[key] as? String, !value.isEmpty { return value }
+        }
+        return nil
+    }
+
+    /// Decision-specific concise summary. The verb is classified from the
+    /// app-generated decision vocabulary; anything unknown keeps the existing
+    /// generic key, so a new producer value can never be misstated.
+    static func summary(for decision: String) -> String {
+        switch verb(for: decision) {
+        case .applied:
+            return localized(
+                key: "design.owner.decision_applied_note",
+                en: "Design decision recorded: the proposed change was applied. This task is not restarted automatically.",
+                zh: "已记录设计决定：提案修改已应用。本任务不会自动重启。")
+        case .rejected:
+            return localized(
+                key: "design.owner.decision_rejected_note",
+                en: "Design decision recorded: the proposal was rejected. This task is not restarted automatically.",
+                zh: "已记录设计决定：提案已被拒绝。本任务不会自动重启。")
+        case .failed:
+            return localized(
+                key: "design.owner.decision_failed_note",
+                en: "Design decision recorded: the proposed change was not applied. This task is not restarted automatically.",
+                zh: "已记录设计决定：提案修改未能应用。本任务不会自动重启。")
+        case .adopted:
+            return localized(
+                key: "design.owner.decision_adopted_note",
+                en: "Design decision recorded: the result was adopted. This task is not restarted automatically.",
+                zh: "已记录设计决定：结果已采纳。本任务不会自动重启。")
+        case .recorded:
+            return FloeL10n.l("design.owner.decision_recorded_note")
+        }
+    }
+
+    enum Verb: Equatable {
+        case applied
+        case rejected
+        case failed
+        case adopted
+        case recorded
+    }
+
+    static func verb(for decision: String) -> Verb {
+        let value = decision.lowercased()
+        if value.contains("adopt") { return .adopted }
+        if value.contains("reject") || value.contains("discard") || value.contains("declin") {
+            return .rejected
+        }
+        if value.contains("fail") || value.contains("interrupt")
+            || value.contains("invalidat") || value.contains("error") {
+            return .failed
+        }
+        if value.contains("appl") { return .applied }
+        return .recorded
+    }
+
+    /// Catalog lookup with a bilingual source fallback: before the integration
+    /// owner adds the key, the same exact sentence is shown inline instead of
+    /// a raw dotted key, and the catalog wins as soon as it exists.
+    private static func localized(key: String, en: String, zh: String) -> String {
+        ChatBilingualCatalog.localized(key: key, en: en, zh: zh)
+    }
+}
 
 /// One row of the unified thread timeline.
 enum ThreadTimelineItem: Identifiable, Hashable {
@@ -116,7 +380,12 @@ enum ThreadTimelineBuilder {
         liveStreamedText: String,
         liveReasoningText: String,
         pendingApprovals: [PendingApproval],
-        earlierEventRunIDs: Set<UUID> = []
+        earlierEventRunIDs: Set<UUID> = [],
+        // Decision notices that are projected INTO their tool step (see
+        // `ToolDecisionAnnotation`): their standalone row is replaced by the
+        // in-step decision line the caller renders. Never used for an
+        // uncorrelated/manual decision.
+        suppressedDecisionNoticeIDs: Set<UUID> = []
     ) -> [ThreadTimelineItem] {
         let payloadCache = PayloadCache()
         let sortedRuns = runs.sorted { $0.startedAt < $1.startedAt }
@@ -168,7 +437,16 @@ enum ThreadTimelineBuilder {
                 && $0.runID.map(represented.contains) != true
                 && !ConversationHistoryAssembler.isLegacyWorkspaceContextNotice($0)
         }
-        result += taskLevel.map { message -> ThreadTimelineItem in
+        result += taskLevel.compactMap { message -> ThreadTimelineItem? in
+            // A decision projected into its tool step does not repeat as a
+            // standalone row. The durable message itself is untouched.
+            guard !suppressedDecisionNoticeIDs.contains(message.id) else { return nil }
+            // A trusted proposal decision gets its decision-specific concise
+            // sentence (applied / rejected / failed / adopted); an unknown
+            // decision vocabulary keeps the existing generic summary.
+            if let notice = ProposalDecisionPresentation.trustedNotice(for: message) {
+                return .assistantMessage(text: notice.summary, idSuffix: message.id.uuidString)
+            }
             // The trusted internal notices (design-assistant confirmation and
             // structured proposal decision) are internal structured events.
             // Ordinary surfaces show the concise localized summary instead of

@@ -9,6 +9,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import FloeCore
+import FloeProviders
 import FloeSync
 import FloeSyncCore
 
@@ -78,6 +79,17 @@ final class ProviderListViewModel: ObservableObject {
     func modelCount(for providerID: UUID) -> Int {
         center.configuredModelsByProvider[providerID]?
             .filter(\.supportsChatAgentSurface).count ?? 0
+    }
+
+    /// Saved models whose verified catalog metadata adds capabilities. The
+    /// list is a REVIEW diff only: nothing changes until the user applies it
+    /// (explicit overrides are excluded from the proposals).
+    func capabilityProposals(catalog: ProviderCatalogIndex?) -> [ProviderCatalogCapabilityProposal] {
+        ProviderCatalogCapabilityMigration.proposals(
+            providers: center.configuredProviders,
+            modelsByProvider: center.configuredModelsByProvider,
+            catalog: catalog
+        )
     }
 
     func load() async {

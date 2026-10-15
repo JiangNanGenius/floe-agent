@@ -42,11 +42,36 @@ public actor ModelConfigurationStore {
         }
     }
 
-    public func saveModel(_ model: ModelProfile) async throws {
+    /// Save a model row (last-writer-wins by default).
+    ///
+    /// `expected` turns the write into a compare-and-swap: it must equal the
+    /// CURRENT persisted row (every persisted field) or the save throws and
+    /// nothing is written. Reviewed editors — the capability migration in
+    /// particular — pass the exact snapshot they validated, so a sync apply or
+    /// another editor landing in between is never silently overwritten; the
+    /// caller re-reads and reviews the new state again.
+    public func saveModel(_ model: ModelProfile, expected: ModelProfile? = nil) async throws {
         try ConfigurationCodec.validate(model)
         try await database.writer { db in
+            if let expected {
+                guard let current = try Self.storedModel(id: expected.id, in: db),
+                      current == expected else {
+                    throw FloeError.invalidConfiguration(
+                        "The model configuration changed since it was read; reload and review again.")
+                }
+            }
             _ = try ConfigurationCodec.write(model, to: db)
         }
+    }
+
+    /// The current persisted row for `id`, or nil when it does not exist.
+    private static func storedModel(id: UUID, in db: Database) throws -> ModelProfile? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT * FROM models WHERE id = ?",
+            arguments: [id.uuidString]
+        ) else { return nil }
+        return try ConfigurationCodec.model(from: row)
     }
 
     /// Result of a provider bundle save.
@@ -494,8 +519,9 @@ enum ConfigurationCodec {
                     id, provider_id, remote_model_id, display_name,
                     context_tokens, max_output_tokens, pricing_json,
                     capabilities, reasoning_effort, is_enabled,
-                    is_hidden_from_primary_picker, use_surfaces
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_hidden_from_primary_picker, use_surfaces,
+                    explicit_capabilities
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     provider_id = excluded.provider_id,
                     remote_model_id = excluded.remote_model_id,
@@ -507,7 +533,11 @@ enum ConfigurationCodec {
                     reasoning_effort = excluded.reasoning_effort,
                     is_enabled = excluded.is_enabled,
                     is_hidden_from_primary_picker = excluded.is_hidden_from_primary_picker,
-                    use_surfaces = excluded.use_surfaces
+                    use_surfaces = excluded.use_surfaces,
+                    -- NULL never clears an owned mask: only an explicit
+                    -- non-nil write (including a reviewed empty 0) updates it.
+                    explicit_capabilities = COALESCE(
+                        excluded.explicit_capabilities, models.explicit_capabilities)
                 """,
             arguments: [
                 canonical.id.uuidString, canonical.providerID.uuidString,
@@ -516,7 +546,10 @@ enum ConfigurationCodec {
                 pricingJSON, canonical.capabilities.rawValue,
                 canonical.reasoningEffort?.rawValue, canonical.isEnabled,
                 canonical.isHiddenFromPrimaryPicker ?? false,
-                canonical.useSurfaces?.rawValue
+                canonical.useSurfaces?.rawValue,
+                // nil → SQL NULL keeps the legacy "no provenance" state
+                // distinct from a reviewed empty mask (0).
+                canonical.explicitCapabilities?.rawValue
             ]
         )
         return canonical
@@ -551,7 +584,10 @@ enum ConfigurationCodec {
             useSurfaces: (row["use_surfaces"] as Int?).map(ModelUseSurfaces.init(rawValue:)),
             reasoningEffort: (row["reasoning_effort"] as String?).flatMap(ModelReasoningEffort.init(rawValue:)),
             isEnabled: row["is_enabled"],
-            isHiddenFromPrimaryPicker: row["is_hidden_from_primary_picker"]
+            isHiddenFromPrimaryPicker: row["is_hidden_from_primary_picker"],
+            // NULL → nil (legacy "no provenance"); 0 → empty reviewed mask.
+            explicitCapabilities: (row["explicit_capabilities"] as Int?)
+                .map(ModelCapabilities.init(rawValue:))
         )
     }
 

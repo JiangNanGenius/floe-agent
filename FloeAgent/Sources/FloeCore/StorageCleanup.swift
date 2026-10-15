@@ -282,11 +282,14 @@ public enum StorageCleanup {
         return true
     }
 
+    /// Shared sparse-aware measurement; the logical size is never substituted,
+    /// so a scratch estimate can never overstate what deleting actually frees.
     private static func allocatedBytes(of url: URL) -> Int64 {
-        guard let values = try? url.resourceValues(forKeys: [
-            .totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .fileSizeKey
-        ]) else { return 0 }
-        return Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? values.fileSize ?? 0)
+        let values = try? url.resourceValues(forKeys: [
+            .totalFileAllocatedSizeKey, .fileAllocatedSizeKey
+        ])
+        let measurement = StorageCensus.allocatedMeasurement(at: url, values: values)
+        return measurement.measured ? measurement.bytes : 0
     }
 
     /// Pre-flight estimate of *eligible* bytes. Requires an authority; busy or

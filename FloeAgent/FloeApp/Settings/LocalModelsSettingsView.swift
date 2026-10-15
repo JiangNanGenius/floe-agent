@@ -296,6 +296,8 @@ final class LocalModelsCenter: ObservableObject {
                 }
                 await self.refresh()
                 await self.onCatalogChanged?()
+                // A completed download is new model data on disk.
+                StorageMutationHooks.invalidate(.modelStoreChanged)
             }
             catch {
                 if self.pausedDownloads.contains(entry.id) || Task.isCancelled {
@@ -346,6 +348,8 @@ final class LocalModelsCenter: ObservableObject {
                 }
                 try await store.remove(id: entry.id)
                 await onCatalogChanged?()
+                // A removed model frees model-store bytes on disk.
+                StorageMutationHooks.invalidate(.modelStoreChanged)
             }
             catch {
                 let nsError = error as NSError

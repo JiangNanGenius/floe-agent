@@ -2,6 +2,7 @@
 import Foundation
 import CryptoKit
 import FloeCore
+import FloeExecution
 import FloeTools
 @preconcurrency import EventKit
 @preconcurrency import MapKit
@@ -772,6 +773,24 @@ struct AppleAutomationUpdateTool: AgentTool {
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData, .changesAgentBehavior]
     static let isSideEffecting = true
     let store: SQLiteTaskScheduleStore
+    /// The SAME trusted binding factory the `task.schedule` tool uses: a new
+    /// automation freezes the model/project/environment/permission of the
+    /// ACTUAL submitting run instead of leaving mutable nil bindings that a
+    /// later settings change could quietly redefine. A build without the
+    /// resolver refuses `create`.
+    let bindingResolver: TaskScheduleBindingResolver?
+    /// One real due pass after a successful create/enable, when the app can.
+    let onScheduleDue: (@Sendable () async -> Void)?
+
+    init(
+        store: SQLiteTaskScheduleStore,
+        bindingResolver: TaskScheduleBindingResolver? = nil,
+        onScheduleDue: (@Sendable () async -> Void)? = nil
+    ) {
+        self.store = store
+        self.bindingResolver = bindingResolver
+        self.onScheduleDue = onScheduleDue
+    }
     func validate(_ args: Arguments) throws {
         guard ["create", "update", "delete"].contains(args.action) else { throw FloeError.validationFailed("Unsupported automation action") }
         if args.action != "create", args.id.flatMap(UUID.init(uuidString:)) == nil { throw FloeError.validationFailed("A valid id is required") }
@@ -793,13 +812,27 @@ struct AppleAutomationUpdateTool: AgentTool {
             let prompt = args.prompt!.trimmingCharacters(in: .whitespacesAndNewlines)
             let date = try AppleToolOutput.date(args.scheduledAt) ?? Date().addingTimeInterval(300)
             let cadence = args.cadence.flatMap(TaskScheduleCadence.init(rawValue:)) ?? .once
+            // Trusted creation-time bindings from the ACTUAL submitting run
+            // (same factory as `task.schedule`). Never nil-by-default: a
+            // schedule created now must not silently follow a later model or
+            // permission change.
+            guard let resolver = bindingResolver,
+                  let binding = await resolver(context) else {
+                throw FloeError.validationFailed(
+                    "Scheduled automations require the app's trusted binding resolver; no automation was created.")
+            }
             record = TaskScheduleRecord(
                 title: args.title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? String(prompt.prefix(40)),
                 prompt: prompt,
+                workspaceID: binding.workspaceID,
                 cadence: cadence,
                 scheduledAt: date,
                 weekday: cadence == .weekly ? Calendar.current.component(.weekday, from: date) : nil,
-                isEnabled: args.enabled ?? true
+                isEnabled: args.enabled ?? true,
+                anchorTimezone: binding.anchorTimezone ?? TimeZone.current.identifier,
+                modelID: binding.modelID,
+                environmentID: binding.environmentID,
+                permissionJSON: binding.permissionJSON
             )
         }
         if let title = args.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { record.title = title }
@@ -817,6 +850,9 @@ struct AppleAutomationUpdateTool: AgentTool {
         try await store.save(record)
         if record.isEnabled, let next = record.nextExpectedAt {
             await BackgroundPolicyRegistry.shared.scheduleRefresh(earliest: next)
+        }
+        if record.isEnabled, record.nextExpectedAt != nil {
+            await onScheduleDue?()
         }
         return AppleToolOutput.make("status=ok action=\(args.action) id=\(record.id.uuidString) next=\(AppleToolOutput.iso(record.nextExpectedAt)) bestEffort=true")
     }
@@ -1013,7 +1049,12 @@ struct AppleCameraCaptureTool: AgentTool {
     }
 }
 
-func registerAppleSystemTools(database: DatabaseManager, registry: ToolRunnerRegistry = .shared) {
+func registerAppleSystemTools(
+    database: DatabaseManager,
+    registry: ToolRunnerRegistry = .shared,
+    scheduleBindingResolver: TaskScheduleBindingResolver? = nil,
+    onScheduleDue: (@Sendable () async -> Void)? = nil
+) {
     ToolCatalog.register(AppleCalendarListTool.self); registry.register(AppleCalendarListTool())
     ToolCatalog.register(AppleCalendarUpdateTool.self); registry.register(AppleCalendarUpdateTool())
     ToolCatalog.register(AppleReminderListTool.self); registry.register(AppleReminderListTool())
@@ -1028,7 +1069,11 @@ func registerAppleSystemTools(database: DatabaseManager, registry: ToolRunnerReg
     ToolCatalog.register(AppleCurrentLocationTool.self); registry.register(AppleCurrentLocationTool())
     let automationStore = SQLiteTaskScheduleStore(database: database)
     ToolCatalog.register(AppleAutomationListTool.self); registry.register(AppleAutomationListTool(store: automationStore))
-    ToolCatalog.register(AppleAutomationUpdateTool.self); registry.register(AppleAutomationUpdateTool(store: automationStore))
+    ToolCatalog.register(AppleAutomationUpdateTool.self)
+    registry.register(AppleAutomationUpdateTool(
+        store: automationStore,
+        bindingResolver: scheduleBindingResolver,
+        onScheduleDue: onScheduleDue))
     ToolCatalog.register(AppleClipboardWriteTool.self); registry.register(AppleClipboardWriteTool())
     ToolCatalog.register(AppleClipboardReadTool.self); registry.register(AppleClipboardReadTool())
     ToolCatalog.register(AppleShortcutsRunTool.self); registry.register(AppleShortcutsRunTool())

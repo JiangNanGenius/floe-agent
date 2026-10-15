@@ -13,9 +13,16 @@ Outputs (relative to the repository root):
   FloeAgent/FloeApp/Resources/ProviderCatalog.json   bundled resource
   content-hub/providers/SOURCE.json                  provenance record
 
-Only provider names, model identifiers and public documentation URLs are
-copied. API keys, user auth data and upstream JS SDK content are never read
-into or written by this script.
+Only provider names, model identifiers, public documentation URLs and
+non-secret per-model capability metadata (input/output modalities plus the
+tool-call/attachment/reasoning booleans) are copied. API keys, user auth data
+and upstream JS SDK content are never read into or written by this script.
+
+The emitted `modelMetadata` map is deliberately narrow: it lets the app give a
+NEWLY created model truthful capability defaults (for example image input ->
+vision) without ever rewriting a saved model, and it never claims audio/video
+wire support. `serviceOffers` stays the only place a non-chat product role is
+declared (for example Google Gemini's OpenAI-compatible chat route).
 
 Modes:
   python3 content-hub/providers/import_models_dev.py                fetch + write
@@ -59,6 +66,12 @@ COMMITS_URL = "https://api.github.com/repos/sst/models.dev/commits?per_page=1"
 USER_AGENT = "floe-agent-provider-catalog/1.0"
 TIMEOUT_SECONDS = 120
 MAX_MODELS_PER_PROVIDER = 50
+# Service-offer model lists are a curated subset, not the provider's whole
+# catalog: keep them well below the app-side 100-identifier bound.
+MAX_OFFER_MODELS = 25
+# Modality tokens the app understands in per-model metadata. Unknown tokens
+# are dropped here so a catalog can never carry an unimplemented capability.
+KNOWN_MODALITIES = ("text", "image", "audio", "video", "pdf")
 
 OUTPUT_PATH = REPO_ROOT / "FloeAgent" / "FloeApp" / "Resources" / "ProviderCatalog.json"
 # Published copy fetched by the app at an immutable commit for catalog
@@ -90,7 +103,11 @@ CURATED = [
     ),
     dict(
         # Floe's googleGemini preset is image-only (native generateContent),
-        # so only image-output models are listed for search.
+        # so only image-output models are listed for the main search list.
+        # The declared conversation offer is the documented OpenAI-compatible
+        # route (v1beta/openai, Bearer API key): a DIFFERENT endpoint/auth
+        # shape from the native image route, so the resolver reports it as a
+        # separate connection instead of sharing the image credential.
         presetID="google", upstream=["google"], name="Google Gemini Images",
         aliases=["Google", "谷歌", "Gemini", "Google AI"],
         kind="googleGemini", defaultProtocol="openai-chat-completions",
@@ -98,6 +115,15 @@ CURATED = [
         domains=["generativelanguage.googleapis.com"],
         authStyle="apiKeyHeader", availability="available", unsupportedReason=None,
         toolNameCompatibility=False, modelFilter="output_image",
+        serviceOffers=[
+            dict(
+                role="conversation",
+                baseURL="https://generativelanguage.googleapis.com/v1beta/openai",
+                authStyle="bearer",
+                protocols=["openai-chat-completions"],
+                modelFilter="output_text_tool",
+            ),
+        ],
     ),
     dict(
         presetID="alibaba", upstream=["alibaba", "alibaba-cn"],
@@ -307,13 +333,19 @@ def model_recency(model):
 def matches_filter(model, mode):
     if mode is None:
         return True
+    modalities = (model or {}).get("modalities") or {}
+    output = modalities.get("output") or []
     if mode == "output_image":
-        modalities = (model or {}).get("modalities") or {}
-        return "image" in (modalities.get("output") or [])
+        return "image" in output
+    if mode == "output_text_tool":
+        # Chat-capable inference models: text output AND upstream tool_call.
+        # This excludes embedding and audio-only models without guessing.
+        return "text" in output and (model or {}).get("tool_call") is True
     raise CatalogError(f"unknown model filter: {mode}")
 
 
-def entry_models(config, document):
+def collect_models(config, document):
+    """Merged {identifier: upstream model} across every upstream id."""
     models = {}
     for upstream_id in config["upstream"]:
         provider = document.get(upstream_id)
@@ -327,21 +359,84 @@ def entry_models(config, document):
             if len(identifier.encode("utf-8")) > 256:
                 continue
             models[identifier] = model or {}
-    selected = []
-    for identifier in sorted(models):
-        if matches_filter(models[identifier], config["modelFilter"]):
-            selected.append(identifier)
-    return cap_models(selected, models)
+    return models
 
 
-def cap_models(identifiers, models):
-    if len(identifiers) <= MAX_MODELS_PER_PROVIDER:
+def selected_models(config, document, mode, limit):
+    models = collect_models(config, document)
+    selected = [
+        identifier for identifier in sorted(models)
+        if matches_filter(models[identifier], mode)
+    ]
+    return cap_models(selected, models, limit)
+
+
+def entry_models(config, document):
+    return selected_models(config, document, config["modelFilter"], MAX_MODELS_PER_PROVIDER)
+
+
+def entry_service_offers(config, document):
+    specs = config.get("serviceOffers") or []
+    if not specs:
+        return None
+    offers = []
+    for spec in specs:
+        models = selected_models(config, document, spec["modelFilter"], MAX_OFFER_MODELS)
+        offer = {"role": spec["role"], "models": models}
+        for key in ("baseURL", "authStyle", "protocols", "note"):
+            if spec.get(key) is not None:
+                offer[key] = spec[key]
+        offers.append(offer)
+    return offers or None
+
+
+def model_metadata(model):
+    """Narrow, non-secret capability facts for one upstream model entry."""
+    if not isinstance(model, dict):
+        return None
+    modalities = model.get("modalities") or {}
+    metadata = {}
+    for key, upstream_key in (("input", "input"), ("output", "output")):
+        values = modalities.get(upstream_key) or []
+        normalized = sorted({
+            str(value) for value in values if str(value) in KNOWN_MODALITIES
+        })
+        if normalized:
+            metadata[key] = normalized
+    for field, upstream_key in (
+        ("toolCall", "tool_call"),
+        ("attachment", "attachment"),
+        ("reasoning", "reasoning"),
+    ):
+        value = model.get(upstream_key)
+        if isinstance(value, bool):
+            metadata[field] = value
+    return metadata or None
+
+
+def entry_model_metadata(config, document, identifiers):
+    """Per-model metadata for exactly the identifiers this entry declares."""
+    if config["availability"] != "available":
+        # Unsupported entries are never offered for adding; skip their
+        # metadata so the document stays small.
+        return None
+    models = collect_models(config, document)
+    metadata = {}
+    for identifier in sorted(set(identifiers)):
+        facts = model_metadata(models.get(identifier))
+        if facts:
+            metadata[identifier] = facts
+    return metadata or None
+
+
+def cap_models(identifiers, models, limit):
+    if len(identifiers) <= limit:
         return identifiers
     identifiers = sorted(
         identifiers,
         key=lambda item: (model_recency(models.get(item) or {}), item),
         reverse=True,
-    )[:MAX_MODELS_PER_PROVIDER]
+    )[:limit]
     return sorted(identifiers)
 
 
@@ -351,7 +446,12 @@ def build_provider(config, document):
         raise CatalogError(
             f"{config['presetID']}: upstream provider(s) missing from document: {missing}"
         )
-    return {
+    models = entry_models(config, document)
+    offers = entry_service_offers(config, document)
+    referenced = list(models)
+    for offer in offers or []:
+        referenced.extend(offer["models"])
+    provider = {
         "presetID": config["presetID"],
         "name": config["name"],
         "aliases": sorted(config["aliases"]),
@@ -359,7 +459,7 @@ def build_provider(config, document):
         "defaultProtocol": config["defaultProtocol"],
         "baseURL": config["baseURL"],
         "domains": sorted(config["domains"]),
-        "models": entry_models(config, document),
+        "models": models,
         "availability": config["availability"],
         "unsupportedReason": config["unsupportedReason"],
         "upstreamID": config["upstream"][0],
@@ -367,6 +467,12 @@ def build_provider(config, document):
         "authStyle": config["authStyle"],
         "toolNameCompatibility": config["toolNameCompatibility"],
     }
+    metadata = entry_model_metadata(config, document, referenced)
+    if metadata:
+        provider["modelMetadata"] = metadata
+    if offers:
+        provider["serviceOffers"] = offers
+    return provider
 
 
 def build_document(document, raw, fetched_at):
@@ -414,6 +520,12 @@ def make_source_record(raw, document, fetched_at):
         "availableCount": available,
         "unsupportedCount": unsupported,
         "modelEntryCount": sum(len(p["models"]) for p in document["providers"]),
+        "modelMetadataEntryCount": sum(
+            len(p.get("modelMetadata") or {}) for p in document["providers"]
+        ),
+        "serviceOfferCount": sum(
+            len(p.get("serviceOffers") or []) for p in document["providers"]
+        ),
         "generatedBy": "content-hub/providers/import_models_dev.py",
         "attributionNotes": [
             "Provider names, model identifiers and documentation links are derived from the open models.dev catalog (MIT).",

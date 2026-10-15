@@ -257,6 +257,41 @@ struct OfficeOutputValidationTests {
         }
     }
 
+    @Test("Writer-style row/cell properties do not inflate the verified table shape")
+    func writerTableShapeWithProperties() throws {
+        // Real Writer exports carry property elements inside every row and
+        // cell (`<w:trPr>`, `<w:tcPr>`, `<w:trHeight>`); the verified shape
+        // must still read 2x3, not 4x12.
+        let styles = #"<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>"#
+        let plain = #"<w:p><w:r><w:t>Alpha</w:t></w:r></w:p>"#
+        func cell(_ value: String) -> String {
+            "<w:tc><w:tcPr><w:tcW w:w=\"1000\" w:type=\"dxa\"/></w:tcPr>"
+                + "<w:p><w:r><w:t>\(value)</w:t></w:r></w:p></w:tc>"
+        }
+        let writerTable = "<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/></w:tblPr>"
+            + "<w:tblGrid><w:gridCol w:w=\"1000\"/><w:gridCol w:w=\"1000\"/><w:gridCol w:w=\"1000\"/></w:tblGrid>"
+            + "<w:tr><w:trPr><w:trHeight w:val=\"240\"/></w:trPr>" + cell("a") + cell("b") + cell("c") + "</w:tr>"
+            + "<w:tr><w:trPr><w:trHeight w:val=\"240\"/></w:trPr>" + cell("d") + cell("e") + cell("f") + "</w:tr>"
+            + "</w:tbl>"
+            + "<w:p><w:r><w:t>After the table</w:t></w:r></w:p>"
+        let withTable = try OfficeOutputSnapshot.capture(
+            url: try wordPackage(paragraphs: plain, styles: styles, tables: writerTable))
+        let shapes = withTable.tableShapes()
+        #expect(shapes.count == 1)
+        #expect(shapes.first?.rows == 2, "row properties must not count as rows")
+        #expect(shapes.first?.columns == 3, "cell properties must not count as cells")
+
+        // The verification delta passes for the real shape and still fails a
+        // stale baseline.
+        let empty = try OfficeOutputSnapshot.capture(url: try wordPackage(paragraphs: plain, styles: styles))
+        try OfficeOutputValidator.verify(before: empty, after: withTable,
+                                         expectations: [.wordTableShape(rows: 2, columns: 3)])
+        #expect(throws: OfficeOutputValidationError.self) {
+            try OfficeOutputValidator.verify(before: withTable, after: withTable,
+                                             expectations: [.wordTableShape(rows: 2, columns: 3)])
+        }
+    }
+
     @Test("Excel number format verifies the addressed cell, not any cell")
     func excelCellFormat() throws {
         let styles = #"<numFmts count="1"><numFmt numFmtId="164" formatCode="0.00%"/></numFmts><cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="164"/></cellXfs>"#

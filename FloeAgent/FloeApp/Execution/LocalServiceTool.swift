@@ -96,6 +96,26 @@ private final class ServiceProbeDelegate: NSObject, URLSessionTaskDelegate, @unc
     }
 }
 
+/// Late-binding relay for the service-readiness callback.
+///
+/// `LocalServiceTool` is registered while building the tool catalog, before
+/// the `BackgroundJobService` exists. The app constructs the tool with a
+/// closure that forwards into this box and installs the real handler
+/// (`resolveServiceReady` + same-run resume) once the service is created.
+final class LocalServiceReadyRelay: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: (@Sendable (UUID) async -> Void)?
+
+    func install(_ handler: @escaping @Sendable (UUID) async -> Void) {
+        lock.withLock { self.handler = handler }
+    }
+
+    func announce(_ jobID: UUID) async {
+        let handler = lock.withLock { self.handler }
+        await handler?(jobID)
+    }
+}
+
 /// Runs only inside a durable job. The registry keeps its environment lease
 /// until this runner observes native shutdown, including slow cancellation.
 struct LocalServiceTool: AgentTool {
@@ -116,6 +136,20 @@ struct LocalServiceTool: AgentTool {
     static let riskLabels: Set<RiskLabel> = [.executesLocalCode, .readsFiles, .writesFiles, .deletesFiles, .networkAccess]
     static let isSideEffecting = true
     let store: BackgroundJobStore
+    /// Called exactly ONCE, the first time this runner observes a verified
+    /// ready HTTP service (nil → previewURL). The app binds it to the durable
+    /// dependency edge + same-run resume, so a run parked on the service
+    /// continues on readiness instead of waiting for a user message. Never
+    /// called for a terminal/unavailable service (the service keeps running).
+    let onServiceReady: (@Sendable (UUID) async -> Void)?
+
+    init(
+        store: BackgroundJobStore,
+        onServiceReady: (@Sendable (UUID) async -> Void)? = nil
+    ) {
+        self.store = store
+        self.onServiceReady = onServiceReady
+    }
 
     private static func responds(_ session: URLSession, request: URLRequest) async -> Bool {
         do {
@@ -209,7 +243,8 @@ struct LocalServiceTool: AgentTool {
             endpoint: endpoint,
             probe: probe,
             context: context,
-            store: store
+            store: store,
+            onServiceReady: onServiceReady
         )
     }
 
@@ -229,7 +264,8 @@ struct LocalServiceTool: AgentTool {
         endpoint: URL,
         probe: URLSession,
         context: ToolContext,
-        store: BackgroundJobStore
+        store: BackgroundJobStore,
+        onServiceReady: (@Sendable (UUID) async -> Void)?
     ) async throws -> ToolExecutionOutput {
         // The log must live inside the environment layer so the guest and the
         // host read the same 9p file.
@@ -268,6 +304,7 @@ struct LocalServiceTool: AgentTool {
         }
         var stopRequested = false
         var stopSent = false
+        var announcedReady = false
         var probeRequest = URLRequest(url: endpoint); probeRequest.httpMethod = "HEAD"
         while true {
             if context.cancellation.isCancelled { stopRequested = true }
@@ -290,6 +327,13 @@ struct LocalServiceTool: AgentTool {
             } else if snapshot.state == "running", await responds(probe, request: probeRequest) {
                 snapshot.previewURL = endpoint.absoluteString
                 BrowserURLPolicy.authorizeService(endpoint, owner: jobID, conversationID: conversationID)
+                // First verified readiness: announce once so the app can
+                // settle the durable dependency edge and resume a parked run
+                // in the SAME run. The service itself keeps running.
+                if !announcedReady {
+                    announcedReady = true
+                    await onServiceReady?(jobID)
+                }
             } else {
                 snapshot.previewURL = nil; BrowserURLPolicy.revokeService(owner: jobID)
             }

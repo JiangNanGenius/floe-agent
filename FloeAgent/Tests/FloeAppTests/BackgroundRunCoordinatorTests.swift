@@ -13,6 +13,7 @@ import UserNotifications
 import FloeCore
 import FloeExecution
 import FloeModels
+import FloePersistence
 @testable import FloeApp
 
 @Suite("FloeApp.BackgroundRunCoordinator")
@@ -374,6 +375,57 @@ struct BackgroundRunCoordinatorTests {
 
         center.dismiss(id: center.banner?.id)
         #expect(center.banner == nil)
+    }
+
+    @Test("A pass drains Run-now and after-success instances, not only calendar ones")
+    func pendingNonCalendarOccurrencesAreDrained() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let coordinator = environment.backgroundRunCoordinator
+
+        // Run now: a manual instance whose calendar occurrence is unrelated.
+        let scheduled = TaskScheduleRecord(
+            title: "Daily", prompt: "report", cadence: .daily,
+            scheduledAt: Date().addingTimeInterval(6 * 3_600))
+        try await store.save(scheduled)
+        let manual = try #require(try await store.runNow(id: scheduled.id, at: Date()))
+        #expect(manual.state == .pending)
+
+        // After success: a successful upstream completion enqueues the one
+        // instance the calendar can never derive.
+        let afterSuccess = TaskScheduleRecord(
+            title: "Follow-up", prompt: "publish", cadence: .afterSuccess,
+            scheduledAt: Date(), upstreamRunID: UUID())
+        try await store.save(afterSuccess)
+        let afterSuccessUpstream = try #require(afterSuccess.upstreamRunID)
+        let upstreamOccurrence = try #require(try await store.recordRunCompletion(
+            runID: afterSuccessUpstream,
+            succeeded: true, cancelled: false, summary: "done", at: Date()).first)
+
+        // A stale upstream instance on a schedule edited away from
+        // after-success must be settled, never launched.
+        var stale = TaskScheduleRecord(
+            title: "Stale", prompt: "go", cadence: .afterSuccess,
+            scheduledAt: Date(), upstreamRunID: UUID())
+        try await store.save(stale)
+        stale.cadence = .daily
+        try await store.save(stale)
+        let staleKey = "upstream:\(UUID().uuidString)"
+        let staleOccurrence = TaskScheduleOccurrence(
+            id: TaskScheduleOccurrence.stableID(scheduleID: stale.id, dedupeKey: staleKey),
+            scheduleID: stale.id, scheduledFor: Date(), dedupeKey: staleKey)
+        _ = try await store.enqueueOccurrence(staleOccurrence)
+
+        await coordinator.runDueSchedulesNow()
+
+        // Every non-calendar instance left the pending state: no model is
+        // configured in this preview environment, so the launch revalidation
+        // records the honest failure instead of leaving it pending forever.
+        #expect(try await store.occurrence(id: manual.id)?.state != .pending)
+        #expect(try await store.occurrence(id: upstreamOccurrence)?.state != .pending)
+        let settledStale = try #require(try await store.occurrence(id: staleOccurrence.id))
+        #expect(settledStale.state == .skipped)
     }
 }
 

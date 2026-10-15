@@ -126,7 +126,10 @@ final class FloePlatformServices: @unchecked Sendable {
         guard let registry = lock.withLock({ registry }) else { return }
         let canonical = root.resolvingSymlinksInPath().standardizedFileURL
         let owner = FloeDigest.sha256Hex(Data(canonical.path.utf8))
-        _ = try await registry.ensureProjectContainer(workspaceID: owner, workspaceRootPath: canonical.path)
+        let created = try await registry.ensureProjectContainer(workspaceID: owner, workspaceRootPath: canonical.path)
+        // A new/adopted project environment changes real on-disk data.
+        StorageMutationHooks.invalidate(.environmentChanged)
+        _ = created
     }
 
     func environmentReports() async throws -> [EnvironmentReport] {
@@ -233,6 +236,8 @@ final class FloePlatformServices: @unchecked Sendable {
         try await managementService().deleteEnvironment(id: id)
         // A deleted environment has no future VM to restore: forget its rules.
         await LinuxPortForwardCenter.shared.forget(environmentID: id)
+        // The container's files are gone: the cached snapshot is stale.
+        StorageMutationHooks.invalidate(.environmentChanged)
     }
     func saveEnvironmentTemplate(id: String, name: String) async throws { try await managementService().saveEnvironmentTemplate(id: id, name: name) }
 
@@ -721,6 +726,8 @@ final class FloePlatformServices: @unchecked Sendable {
             await runtime.rollbackEnvironment(creation.record.id)
             throw error
         }
+        // A pinned environment materialized template data on disk.
+        StorageMutationHooks.invalidate(.environmentChanged)
         return creation
     }
 

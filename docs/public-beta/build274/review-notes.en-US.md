@@ -1,0 +1,17 @@
+Floe Agent 1.7.33 (Build 274), bundle org.floeagent.ios, is an iPad-first workspace with iPhone support.
+
+No Floe account or demo login is required. Files, Notes, Canvas, reading and manual media/drawing editing can be reviewed without an AI provider. Optional cloud AI uses a tester-supplied provider key; no provider credit is included. No purchase or Linux environment download is required for the manual review below.
+
+Suggested review using synthetic files:
+1. Start a temporary chat from the New Task launchpad. It reuses the normal chat surface with configured, authorized read-only tools. Switching away from it cancels and discards the session; Keep saves it as a normal task without resending requests.
+2. Run a multi-turn task with a configured provider, inspect tool activity and a waiting state that names the background work it is waiting on, then stop it. Expand a completed background job and read its output page by page.
+3. Open a background subagent's record while it runs and after it finishes; the inspector shows its durable transcript and tool results.
+4. Import short videos, arrange the main track, trim clips, adjust captions/music, preview and export. Narrow layouts use drawers; full screen preserves the editing session.
+5. Open a supported two-dimensional DWG or DXF drawing. Use the existing drawing editor to select objects, draw or modify supported geometry, inspect layers, measure, save a copy and reopen it. Unsupported objects or formats show capability limits. Three-dimensional drawings remain view-only. PDF/PNG exports are presentation copies, distinct from editable drawing files.
+6. In Notes, open or create a note. Use its context menu to set a custom cover from a photo or file, and restore the automatic cover afterwards. A workbook note prefers the first sheet with visible content; hidden rows or columns keep a bounded summary cover.
+7. Open a plain text or document file in the reader, switch the manual encoding (UTF-8, UTF-16 LE/BE, GB18030) if the text looks wrong, close the reader and confirm the original editor still shows the unchanged file.
+8. In Task Center, select several tasks and archive or delete them; a partial failure lists each result and can be retried. Restored tasks can be archived or deleted again according to their current state.
+9. Open Settings, Storage: the app's own usage is shown as a numeric total with matching category details, and Shared Files is a separate section. The cleanup section only lists task-owned candidates and never deletes user data.
+10. In Settings, Providers, review per-model capabilities and the plain extra-use summary. Optional provider configuration can be tested and saved as separate actions. No credentials are included with the app or required for the manual steps above.
+
+Please use synthetic content and redact credentials and private information from feedback. This beta does not claim universal DWG/Office compatibility, professional HDR mastering, or engineering certification. On-device background work may be suspended by iOS. Optional provider results and physical-device performance remain subject to testing; component and Simulator results do not replace real-device acceptance.

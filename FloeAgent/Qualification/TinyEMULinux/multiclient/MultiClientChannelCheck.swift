@@ -403,6 +403,25 @@ final class Report: @unchecked Sendable {
     }
 }
 
+// MARK: - work roots
+
+/// The guest-visible work root and its host/physical counterpart. For the
+/// host-process runner the two are the same directory. For the real-guest
+/// bridge (`mc_guest_bridge.c`) the guest root lives under the guest's /floe
+/// 9p share (e.g. `/floe/mc-work`) while the host root is the exported
+/// directory the harness must use for its own FileManager/Data checks.
+struct WorkRoots {
+    let guest: URL
+    let host: URL
+
+    /// Per-scenario directory pair (guest path for commands, host path for
+    /// the harness's own file operations).
+    func scenario(_ name: String) -> (guest: URL, host: URL) {
+        (guest.appendingPathComponent(name, isDirectory: true),
+         host.appendingPathComponent(name, isDirectory: true))
+    }
+}
+
 // MARK: - checks
 
 @main
@@ -410,31 +429,37 @@ struct MultiClientCheck {
     static func main() async {
         let arguments = CommandLine.arguments
         guard arguments.count >= 4 else {
-            FileHandle.standardError.write(Data("usage: multiclient-check <floe-exec> <work dir> <json out>\n".utf8))
+            FileHandle.standardError.write(Data("usage: multiclient-check <floe-exec> <work dir> <json out> [host work dir]\n".utf8))
             exit(2)
         }
         let runnerPath = arguments[1]
         let workRoot = URL(fileURLWithPath: arguments[2], isDirectory: true)
         let jsonOut = URL(fileURLWithPath: arguments[3])
+        // Optional host path for a real-guest work root; defaults to the work
+        // dir itself (host-process runner, unchanged behavior).
+        let hostRoot = arguments.count >= 5
+            ? URL(fileURLWithPath: arguments[4], isDirectory: true)
+            : workRoot
+        let roots = WorkRoots(guest: workRoot, host: hostRoot)
         let report = Report()
         do {
-            try FileManager.default.createDirectory(at: workRoot, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: hostRoot, withIntermediateDirectories: true)
         } catch {
             FileHandle.standardError.write(Data("cannot create work dir: \(error)\n".utf8))
             exit(2)
         }
 
         report.note("runner: \(runnerPath)")
-        report.note("work: \(workRoot.path)")
+        report.note("work: \(workRoot.path) (host: \(hostRoot.path))")
 
-        await overlapScenario(report: report, runnerPath: runnerPath, workRoot: workRoot)
-        await duplicateCallerIDScenario(report: report, runnerPath: runnerPath, workRoot: workRoot)
-        await identityScenario(report: report, runnerPath: runnerPath, workRoot: workRoot)
-        await cancelScenario(report: report, runnerPath: runnerPath, workRoot: workRoot)
-        await invalidDestinationScenario(report: report, runnerPath: runnerPath, workRoot: workRoot)
-        await stopWhileActiveScenario(report: report, runnerPath: runnerPath, workRoot: workRoot)
-        await sharedPathScenario(report: report, runnerPath: runnerPath, workRoot: workRoot)
-        await ptySessionScenario(report: report, runnerPath: runnerPath, workRoot: workRoot)
+        await overlapScenario(report: report, runnerPath: runnerPath, roots: roots)
+        await duplicateCallerIDScenario(report: report, runnerPath: runnerPath, roots: roots)
+        await identityScenario(report: report, runnerPath: runnerPath, roots: roots)
+        await cancelScenario(report: report, runnerPath: runnerPath, roots: roots)
+        await invalidDestinationScenario(report: report, runnerPath: runnerPath, roots: roots)
+        await stopWhileActiveScenario(report: report, runnerPath: runnerPath, roots: roots)
+        await sharedPathScenario(report: report, runnerPath: runnerPath, roots: roots)
+        await ptySessionScenario(report: report, runnerPath: runnerPath, roots: roots)
 
         let payload = report.json(scenarioCount: 8)
         do {
@@ -458,10 +483,10 @@ struct MultiClientCheck {
     /// neither output nor cancellation can collide. The commands are also
     /// byte-identical and use a mutual barrier, so a wrong "unique identity"
     /// assumption is visible as crossed markers or a serialized run.
-    static func duplicateCallerIDScenario(report: Report, runnerPath: String, workRoot: URL) async {
-        let dir = workRoot.appendingPathComponent("duplicate-ids", isDirectory: true)
-        try? FileManager.default.removeItem(at: dir)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    static func duplicateCallerIDScenario(report: Report, runnerPath: String, roots: WorkRoots) async {
+        let (dir, hdir) = roots.scenario("duplicate-ids")
+        try? FileManager.default.removeItem(at: hdir)
+        try? FileManager.default.createDirectory(at: hdir, withIntermediateDirectories: true)
         let console: RunnerConsole
         do { console = try RunnerConsole(runnerPath: runnerPath) } catch {
             report.record(scenario: "duplicate_caller_ids_do_not_collide", passed: false, details: ["error": "\(error)"])
@@ -551,10 +576,10 @@ struct MultiClientCheck {
     /// Each client drops its own start file and only prints its success marker
     /// after ALL THREE exist; a serialized console cannot pass because the
     /// first client expires into a distinct NO_OVERLAP marker and exit 7.
-    static func overlapScenario(report: Report, runnerPath: String, workRoot: URL) async {
-        let dir = workRoot.appendingPathComponent("overlap", isDirectory: true)
-        try? FileManager.default.removeItem(at: dir)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    static func overlapScenario(report: Report, runnerPath: String, roots: WorkRoots) async {
+        let (dir, hdir) = roots.scenario("overlap")
+        try? FileManager.default.removeItem(at: hdir)
+        try? FileManager.default.createDirectory(at: hdir, withIntermediateDirectories: true)
         let console: RunnerConsole
         do { console = try RunnerConsole(runnerPath: runnerPath) } catch {
             report.record(scenario: "overlap_parent_two_children", passed: false, details: ["error": "\(error)"])
@@ -657,12 +682,14 @@ struct MultiClientCheck {
 
     /// Identity/cwd/stdout/stderr/exit separation across three concurrent
     /// clients, plus environment non-leakage to a later client.
-    static func identityScenario(report: Report, runnerPath: String, workRoot: URL) async {
-        let base = workRoot.appendingPathComponent("identity", isDirectory: true)
+    static func identityScenario(report: Report, runnerPath: String, roots: WorkRoots) async {
+        let (base, hbase) = roots.scenario("identity")
         let dirA = base.appendingPathComponent("alpha", isDirectory: true)
         let dirB = base.appendingPathComponent("beta", isDirectory: true)
         let dirC = base.appendingPathComponent("gamma", isDirectory: true)
-        for directory in [dirA, dirB, dirC] {
+        for directory in [hbase.appendingPathComponent("alpha", isDirectory: true),
+                          hbase.appendingPathComponent("beta", isDirectory: true),
+                          hbase.appendingPathComponent("gamma", isDirectory: true)] {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         let console: RunnerConsole
@@ -735,9 +762,9 @@ struct MultiClientCheck {
 
     /// One long-running client is cancelled; the two other clients must finish
     /// with their own output, and the console must stay usable afterwards.
-    static func cancelScenario(report: Report, runnerPath: String, workRoot: URL) async {
-        let dir = workRoot.appendingPathComponent("cancel", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    static func cancelScenario(report: Report, runnerPath: String, roots: WorkRoots) async {
+        let (dir, hdir) = roots.scenario("cancel")
+        try? FileManager.default.createDirectory(at: hdir, withIntermediateDirectories: true)
         let console: RunnerConsole
         do { console = try RunnerConsole(runnerPath: runnerPath) } catch {
             report.record(scenario: "cancel_one_others_finish", passed: false, details: ["error": "\(error)"])
@@ -803,9 +830,9 @@ struct MultiClientCheck {
 
     /// A missing cwd and a missing binary fail only their own client and never
     /// poison the channel for the others.
-    static func invalidDestinationScenario(report: Report, runnerPath: String, workRoot: URL) async {
-        let dir = workRoot.appendingPathComponent("invalid", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    static func invalidDestinationScenario(report: Report, runnerPath: String, roots: WorkRoots) async {
+        let (dir, hdir) = roots.scenario("invalid")
+        try? FileManager.default.createDirectory(at: hdir, withIntermediateDirectories: true)
         let console: RunnerConsole
         do { console = try RunnerConsole(runnerPath: runnerPath) } catch {
             report.record(scenario: "invalid_destination_isolated", passed: false, details: ["error": "\(error)"])
@@ -846,9 +873,9 @@ struct MultiClientCheck {
     /// Closing the shared console while clients are active: every active
     /// client must resolve with an honest failure (never a fake success) and
     /// the harness must not hang.
-    static func stopWhileActiveScenario(report: Report, runnerPath: String, workRoot: URL) async {
-        let dir = workRoot.appendingPathComponent("stop", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    static func stopWhileActiveScenario(report: Report, runnerPath: String, roots: WorkRoots) async {
+        let (dir, hdir) = roots.scenario("stop")
+        try? FileManager.default.createDirectory(at: hdir, withIntermediateDirectories: true)
         let console: RunnerConsole
         do { console = try RunnerConsole(runnerPath: runnerPath) } catch {
             report.record(scenario: "stop_while_active_honest", passed: false, details: ["error": "\(error)"])
@@ -908,11 +935,12 @@ struct MultiClientCheck {
     /// outcome. The VM layer runs real processes; coordination of same-target
     /// writes is the runtime mutation lease's responsibility, so this check
     /// records what the layer actually does instead of claiming coordination.
-    static func sharedPathScenario(report: Report, runnerPath: String, workRoot: URL) async {
-        let dir = workRoot.appendingPathComponent("shared", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    static func sharedPathScenario(report: Report, runnerPath: String, roots: WorkRoots) async {
+        let (dir, hdir) = roots.scenario("shared")
+        try? FileManager.default.createDirectory(at: hdir, withIntermediateDirectories: true)
         let target = dir.appendingPathComponent("contended.txt")
-        try? FileManager.default.removeItem(at: target)
+        let hostTarget = hdir.appendingPathComponent("contended.txt")
+        try? FileManager.default.removeItem(at: hostTarget)
         let console: RunnerConsole
         do { console = try RunnerConsole(runnerPath: runnerPath) } catch {
             report.record(scenario: "shared_path_physical_semantics", passed: false, details: ["error": "\(error)"])
@@ -931,7 +959,7 @@ struct MultiClientCheck {
         async let clientB = runClient(channel, token: "writer-b", command: writer("B"), cwd: dir.path, timeout: 30)
         let (outcomeA, outcomeB) = await (clientA, clientB)
         let outcomes = [outcomeA, outcomeB]
-        let finalData = (try? Data(contentsOf: target)) ?? Data()
+        let finalData = (try? Data(contentsOf: hostTarget)) ?? Data()
         let uniqueBytes = Set(finalData)
         let classification: String
         switch (finalData.count, uniqueBytes) {
@@ -949,6 +977,7 @@ struct MultiClientCheck {
         }
         report.record(scenario: "shared_path_physical_semantics", passed: ok, details: [
             "target": target.path,
+            "hostTarget": hostTarget.path,
             "finalBytes": finalData.count,
             "classification": classification,
             "note": "unsynchronized writers at the VM layer; same-target coordination is enforced by the runtime mutation lease (FloeTools MutationLeaseCoordinator), not by the guest console",
@@ -959,9 +988,9 @@ struct MultiClientCheck {
     }
 
     /// Two concurrent PTY sessions with per-token input and output.
-    static func ptySessionScenario(report: Report, runnerPath: String, workRoot: URL) async {
-        let dir = workRoot.appendingPathComponent("pty", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    static func ptySessionScenario(report: Report, runnerPath: String, roots: WorkRoots) async {
+        let (dir, hdir) = roots.scenario("pty")
+        try? FileManager.default.createDirectory(at: hdir, withIntermediateDirectories: true)
         let console: RunnerConsole
         do { console = try RunnerConsole(runnerPath: runnerPath) } catch {
             report.record(scenario: "concurrent_pty_sessions", passed: false, details: ["error": "\(error)"])

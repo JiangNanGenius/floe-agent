@@ -19,9 +19,29 @@ public enum NativeToolCapabilityStatus: Sendable, Equatable {
 }
 
 /// Merges a provider's latest model catalog without discarding capabilities.
-/// Existing local identity, limits and user-facing names remain stable, while
-/// provider-advertised capability bits repair records created by older clients.
+/// Existing local identity, limits and user-facing names remain stable.
+///
+/// Two enforcement rules, not comments:
+///
+///   1. **No silent vision migration.** An existing row (with or without
+///      provenance) may only be repaired with the legacy endpoint-reported
+///      bits in `legacyRepairableCapabilities` ([.text, .tools]). `.vision`
+///      decides which model sees the user's images, so it reaches an existing
+///      row only through the user-reviewed catalog migration — even when a
+///      catalog-backed discovery payload starts carrying it for new models.
+///   2. **Explicit decisions win.** A bit recorded in
+///      `ModelProfile.explicitCapabilities` (an editor toggle, or a bit applied
+///      through the reviewed migration) is never added or re-enabled by a
+///      refresh, and never removed by it either.
+///
+/// New rows (no local counterpart) are returned as discovered, so metadata-
+/// driven defaults for freshly created models are unaffected.
 public enum ModelCatalogMerger {
+
+    /// Capability bits a discovery refresh may union into an existing row that
+    /// has no recorded provenance. Deliberately excludes `.vision`.
+    public static let legacyRepairableCapabilities: ModelCapabilities = [.text, .tools]
+
     public static func merge(
         existing: [ModelProfile],
         discovered: [ModelProfile]
@@ -33,7 +53,10 @@ public enum ModelCatalogMerger {
         for var remote in discovered {
             remote.capabilities.insert(.text)
             if var local = byRemoteID[remote.remoteModelID] {
-                local.capabilities.formUnion(remote.capabilities)
+                let repairable = remote.capabilities
+                    .intersection(Self.legacyRepairableCapabilities)
+                    .subtracting(local.explicitCapabilities ?? [])
+                local.capabilities.formUnion(repairable)
                 local.isEnabled = local.isEnabled && remote.isEnabled
                 byRemoteID[remote.remoteModelID] = local
             } else {

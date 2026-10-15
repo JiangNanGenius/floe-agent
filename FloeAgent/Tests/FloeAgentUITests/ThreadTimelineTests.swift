@@ -1415,8 +1415,8 @@ struct ThreadTimelineTests {
         #expect(try await environment.runningInputStore.pending(
             conversationID: conversation.id).isEmpty)
 
-        // The timeline projects one concise localized summary row and never
-        // leaks the internal template or the proposal identity.
+        // The timeline projects one concise decision-specific summary row and
+        // never leaks the internal template or the proposal identity.
         let items = ThreadTimelineBuilder.buildConversation(
             messages: messages, runs: [], eventsByRun: [:],
             liveRunID: nil, isRunning: false,
@@ -1426,8 +1426,9 @@ struct ThreadTimelineTests {
                idSuffix == notice.id.uuidString { return text }
             return nil
         }
-        #expect(projected == [FloeL10n.l("design.owner.decision_recorded_note")])
+        #expect(projected == [ProposalDecisionPresentation.summary(for: "design-candidate-adopted")])
         let summary = try #require(projected.first)
+        #expect(summary != FloeL10n.l("design.owner.decision_recorded_note"))
         #expect(summary != notice.content)
         #expect(!summary.contains(proposalID.uuidString))
         #expect(!summary.contains("Drawing Assistant user decision"))
@@ -1526,6 +1527,361 @@ struct ThreadTimelineTests {
             executionMode: ProposalDecisionNoticeProjection.deliveryExecutionMode)
         #expect(ProposalDecisionNoticeProjection.userFacingSummary(for: dedicated)
             == FloeL10n.l("design.owner.decision_recorded_note"))
+    }
+
+    @Test("Every known proposal-decision vocabulary gets its own concise sentence; unknown values keep the generic note")
+    func proposalDecisionSummariesAreVerbSpecific() {
+        #expect(ProposalDecisionPresentation.verb(for: "applied") == .applied)
+        #expect(ProposalDecisionPresentation.verb(for: "failed to apply") == .failed)
+        #expect(ProposalDecisionPresentation.verb(for: "rejected") == .rejected)
+        #expect(ProposalDecisionPresentation.verb(for: "design-candidate-adopted") == .adopted)
+        #expect(ProposalDecisionPresentation.verb(for: "design-candidate-rejected") == .rejected)
+        #expect(ProposalDecisionPresentation.verb(for: "invalidated by a manual change") == .failed)
+        #expect(ProposalDecisionPresentation.verb(for: "apply interrupted; outcome unknown") == .failed)
+        #expect(ProposalDecisionPresentation.verb(for: "some-future-decision") == .recorded)
+
+        let generic = FloeL10n.l("design.owner.decision_recorded_note")
+        let summaries = [
+            ProposalDecisionPresentation.summary(for: "applied"),
+            ProposalDecisionPresentation.summary(for: "rejected"),
+            ProposalDecisionPresentation.summary(for: "failed to apply"),
+            ProposalDecisionPresentation.summary(for: "design-candidate-adopted"),
+        ]
+        for summary in summaries {
+            #expect(!summary.isEmpty)
+            #expect(summary != generic)
+            #expect(!summary.contains("design.owner"))
+        }
+        #expect(Set(summaries).count == summaries.count)
+        #expect(ProposalDecisionPresentation.summary(for: "some-future-decision") == generic)
+    }
+
+    @MainActor @Test("A tool-automatic decision projects onto its tool step; a user decision keeps a concise row")
+    func automaticDecisionProjectsIntoItsToolStep() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let center = environment.conversationCenter
+        let conversation = try await center.createConversation(title: "Decision projection")
+        let automaticProposal = UUID()
+        let manualProposal = UUID()
+        let sha256 = String(repeating: "9f8e7d6c5b4a", count: 3)
+        // The trusted producer marker is the authority: the automatic entry
+        // writes `tool-automatic`, the manual/default entry keeps the
+        // byte-exact historical content (historical rows decode as .user).
+        try await center.recordAutomaticProposalDecision(
+            conversationID: conversation.id, proposalID: automaticProposal,
+            decision: "applied", revision: 7, sha256: sha256)
+        try await center.recordProposalDecision(
+            conversationID: conversation.id, proposalID: manualProposal,
+            decision: "applied", revision: 7, sha256: sha256)
+        let messages = try await environment.conversationStore.messages(
+            conversationID: conversation.id)
+        let automaticNotice = try #require(messages.first {
+            $0.id == ConversationCenter.proposalDecisionID(
+                conversationID: conversation.id, proposalID: automaticProposal,
+                decision: "applied")
+        })
+        let manualNotice = try #require(messages.first {
+            $0.id == ConversationCenter.proposalDecisionID(
+                conversationID: conversation.id, proposalID: manualProposal,
+                decision: "applied")
+        })
+        #expect(ProposalDecisionNoticeProjection.trustedEvent(in: automaticNotice)?.origin
+            == .toolAutomatic)
+        #expect(ProposalDecisionNoticeProjection.trustedEvent(in: manualNotice)?.origin
+            == .user)
+
+        let runID = UUID()
+        // The real persisted automatic apply receipt: the proposal UUID plus
+        // the runtime-authority mode written by the tool apply path.
+        let automaticApply = RunEventRecord(
+            runID: runID, sequence: 1, kind: .toolResult,
+            payloadJSON: #"{"tool":"cad.document","id":"call-apply","status":"ok","summary":"applied","mode":"runtime-authority","receipt":{"proposal_id":"\#(automaticProposal.uuidString)"}}"#)
+        // A propose-only transcript (no apply receipt) still correlates the
+        // trusted automatic decision to its call — and an event of the USER
+        // decision's proposal must never suppress the user's row.
+        let automaticPropose = RunEventRecord(
+            runID: runID, sequence: 1, kind: .toolResult,
+            payloadJSON: #"{"tool":"cad.document","id":"call-propose","status":"ok","summary":"proposed","proposal":{"id":"\#(automaticProposal.uuidString)"}}"#)
+        let manualApply = RunEventRecord(
+            runID: runID, sequence: 2, kind: .toolResult,
+            payloadJSON: #"{"tool":"cad.document","id":"call-manual","status":"ok","summary":"applied","mode":"interactive-grant","receipt":{"proposal_id":"\#(manualProposal.uuidString)"}}"#)
+
+        let automatic = try #require(
+            ProposalDecisionPresentation.notices(
+                messages: messages, events: [automaticApply, manualApply])
+                .first { $0.id == automaticNotice.id })
+        #expect(automatic.origin == .toolAutomatic)
+        #expect(automatic.automaticCallID == "call-apply")
+        let annotation = try #require(automatic.annotation)
+        #expect(annotation.callID == "call-apply")
+        #expect(annotation.proposalID == automaticProposal)
+        #expect(annotation.summary == ProposalDecisionPresentation.summary(for: "applied"))
+
+        // A user decision is never suppressed, even though its own apply
+        // receipt is present in the transcript.
+        let manual = try #require(
+            ProposalDecisionPresentation.notices(
+                messages: messages, events: [manualApply, automaticApply])
+                .first { $0.id == manualNotice.id })
+        #expect(manual.origin == .user)
+        #expect(manual.automaticCallID == nil)
+        #expect(manual.annotation == nil)
+
+        // A propose-only transcript still correlates via the trusted marker.
+        let proposeOnly = try #require(
+            ProposalDecisionPresentation.notices(
+                messages: messages, events: [automaticPropose])
+                .first { $0.id == automaticNotice.id })
+        #expect(proposeOnly.automaticCallID == "call-propose")
+
+        // The projected notice no longer repeats as a standalone row; the
+        // durable message bytes themselves are untouched (asserted above).
+        let suppressedItems = ThreadTimelineBuilder.buildConversation(
+            messages: messages, runs: [], eventsByRun: [runID: [automaticApply, manualApply]],
+            liveRunID: nil, isRunning: false,
+            liveStreamedText: "", liveReasoningText: "", pendingApprovals: [],
+            suppressedDecisionNoticeIDs: [automaticNotice.id])
+        #expect(!suppressedItems.contains {
+            if case .assistantMessage(_, let idSuffix) = $0 {
+                return idSuffix == automaticNotice.id.uuidString
+            }
+            return false
+        })
+        // The user decision stays as its own row with the decision-specific
+        // sentence and no internal template/proposal identity.
+        let row = try #require(suppressedItems.compactMap { item -> String? in
+            if case .assistantMessage(let text, let idSuffix) = item,
+               idSuffix == manualNotice.id.uuidString { return text }
+            return nil
+        }.first)
+        #expect(row == ProposalDecisionPresentation.summary(for: "applied"))
+        #expect(row != FloeL10n.l("design.owner.decision_recorded_note"))
+        #expect(!row.contains(manualProposal.uuidString))
+        #expect(!row.contains("Drawing Assistant user decision"))
+    }
+
+    @Test("Delegate card status maps durable child states to work/wait/done/failure/cancel")
+    func delegateCardStatusMapping() {
+        #expect(DelegateCallStatus(childState: .registered, isWaiting: false) == .working)
+        #expect(DelegateCallStatus(childState: .registered, isWaiting: true) == .waiting)
+        #expect(DelegateCallStatus(childState: .running, isWaiting: false) == .working)
+        #expect(DelegateCallStatus(childState: .completed, isWaiting: false) == .done)
+        for state: ChildRunState in [.partial, .budgetExhausted, .providerError, .toolError, .interrupted] {
+            #expect(DelegateCallStatus(childState: state, isWaiting: false) == .failed)
+        }
+        #expect(DelegateCallStatus(childState: .cancelled, isWaiting: false) == .cancelled)
+
+        // The persisted result token remains the fallback for legacy rows
+        // without a durable child record.
+        #expect(DelegateCallStatus(summary: "status=ok iterationsUsed=2", failed: false) == .done)
+        #expect(DelegateCallStatus(summary: "status=partial iterationsUsed=6", failed: false) == .failed)
+        #expect(DelegateCallStatus(summary: "status=budgetExhausted", failed: false) == .failed)
+        #expect(DelegateCallStatus(summary: "status=cancelled", failed: false) == .cancelled)
+        #expect(DelegateCallStatus(summary: "status=providerError", failed: false) == .failed)
+        #expect(DelegateCallStatus(summary: "status=toolError", failed: false) == .failed)
+        #expect(DelegateCallStatus(summary: "no status token", failed: true) == .failed)
+        #expect(DelegateCallStatus(summary: "no status token", failed: false) == .done)
+    }
+
+    @MainActor @Test("A durable child run maps its delegate callID and pages its transcript cursor")
+    func childRunDelegationMapping() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let store = SQLiteChildRunStore(database: environment.database)
+        let conversationID = UUID()
+        let parentRunID = UUID()
+        let record = ChildRunRecord(
+            id: UUID(), parentRunID: parentRunID, rootRunID: parentRunID,
+            conversationID: conversationID, childIndex: 0, kind: "explore",
+            taskSummary: "检查构建脚本", state: .running,
+            delegateCallID: "call-delegate-1")
+        _ = try await store.register(record)
+
+        let children = try await store.children(conversationID: conversationID)
+        #expect(children.map(\.id) == [record.id])
+        // The callID → child mapping the delegate card and inspector both use.
+        #expect(children.first?.delegateCallID == "call-delegate-1")
+        #expect(children.first.flatMap {
+            DelegateCallStatus(childState: $0.state, isWaiting: false)
+        } == .working)
+
+        try await store.appendEntry(
+            id: record.id, kind: .message,
+            payloadJSON: #"{"role":"assistant","text":"first"}"#)
+        try await store.appendEntry(
+            id: record.id, kind: .toolRequest,
+            payloadJSON: #"{"tool":"workspace.readFile","callID":"c1","arguments":"{}"}"#)
+        let page = try await store.entries(childRunID: record.id, afterSequence: 0, limit: 10)
+        #expect(page.entries.map(\.kind) == [.message, .toolRequest])
+        #expect(page.nextSequence == nil)
+        // The cursor is exclusive: continuing after the last read sequence
+        // returns only later appends.
+        let empty = try await store.entries(
+            childRunID: record.id,
+            afterSequence: page.entries.last?.sequence ?? 0,
+            limit: 10)
+        #expect(empty.entries.isEmpty)
+        try await store.appendEntry(
+            id: record.id, kind: .result,
+            payloadJSON: #"{"status":"completed","iterationsUsed":1,"findings":"done"}"#)
+        let appended = try await store.entries(
+            childRunID: record.id,
+            afterSequence: page.entries.last?.sequence ?? 0,
+            limit: 10)
+        #expect(appended.entries.map(\.kind) == [.result])
+    }
+
+    @Test("Delegate cards resolve children by parent run + callID, never by a repeated callID alone")
+    func delegateCardResolutionIsRunScoped() {
+        let callID = "call-delegate-shared"
+        let runA = UUID(), runB = UUID()
+        let older = ChildRunRecord(
+            id: UUID(), parentRunID: runA, rootRunID: runA, conversationID: UUID(),
+            childIndex: 0, kind: "explore", taskSummary: "A", state: .completed,
+            startedAt: Date(timeIntervalSince1970: 100), delegateCallID: callID)
+        let newer = ChildRunRecord(
+            id: UUID(), parentRunID: runB, rootRunID: runB, conversationID: UUID(),
+            childIndex: 1, kind: "execute", taskSummary: "B", state: .running,
+            startedAt: Date(timeIntervalSince1970: 200), delegateCallID: callID)
+        // Order with the OLDER record last: a dictionary/last-write-wins or an
+        // unscoped `first` match would resolve the wrong child.
+        let records = [newer, older]
+
+        #expect(ThreadRunScopedResolution.child(
+            callID: callID, parentRunID: runA, in: records)?.id == older.id)
+        #expect(ThreadRunScopedResolution.child(
+            callID: callID, parentRunID: runB, in: records)?.id == newer.id)
+        // A run that never called the tool resolves nobody (the UI then falls
+        // back to the child list) instead of another run's child.
+        #expect(ThreadRunScopedResolution.child(
+            callID: callID, parentRunID: UUID(), in: records) == nil)
+        #expect(ThreadRunScopedResolution.child(
+            callID: "", parentRunID: runA, in: records) == nil)
+    }
+
+    @MainActor @Test("A repeated callID across runs keeps both automatic decisions on their own run's step")
+    func automaticDecisionsAreRunScoped() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let center = environment.conversationCenter
+        let conversation = try await center.createConversation(title: "Run-scoped decisions")
+        let firstProposal = UUID()
+        let secondProposal = UUID()
+        let sha256 = String(repeating: "ab12cd34ef56", count: 3)
+        try await center.recordAutomaticProposalDecision(
+            conversationID: conversation.id, proposalID: firstProposal,
+            decision: "applied", revision: 1, sha256: sha256)
+        try await center.recordAutomaticProposalDecision(
+            conversationID: conversation.id, proposalID: secondProposal,
+            decision: "applied", revision: 2, sha256: sha256)
+        let runA = UUID(), runB = UUID()
+        // The SAME provider-supplied call id appears in two different runs.
+        let eventA = RunEventRecord(
+            runID: runA, sequence: 1, kind: .toolResult,
+            payloadJSON: #"{"tool":"cad.document","id":"call-shared","status":"ok","mode":"runtime-authority","receipt":{"proposal_id":"\#(firstProposal.uuidString)"}}"#)
+        let eventB = RunEventRecord(
+            runID: runB, sequence: 1, kind: .toolResult,
+            payloadJSON: #"{"tool":"cad.document","id":"call-shared","status":"ok","mode":"runtime-authority","receipt":{"proposal_id":"\#(secondProposal.uuidString)"}}"#)
+        let messages = try await environment.conversationStore.messages(
+            conversationID: conversation.id)
+        let notices = ProposalDecisionPresentation.notices(
+            messages: messages, events: [eventA, eventB])
+        let noticeA = try #require(notices.first {
+            $0.proposalID == firstProposal
+        })
+        let noticeB = try #require(notices.first {
+            $0.proposalID == secondProposal
+        })
+        #expect(noticeA.automaticCallID == "call-shared")
+        #expect(noticeB.automaticCallID == "call-shared")
+        #expect(noticeA.automaticRunID == runA)
+        #expect(noticeB.automaticRunID == runB)
+
+        let annotations = notices.compactMap(\.annotation)
+        let onA = ThreadRunScopedResolution.decisionSummaries(
+            callID: "call-shared", runID: runA, in: annotations)
+        let onB = ThreadRunScopedResolution.decisionSummaries(
+            callID: "call-shared", runID: runB, in: annotations)
+        #expect(onA == [ProposalDecisionPresentation.summary(for: "applied")])
+        #expect(onB == [ProposalDecisionPresentation.summary(for: "applied")])
+        // Neither decision was dropped by the projection: both durable rows
+        // remain in the transcript.
+        #expect(messages.contains {
+            $0.id == ConversationCenter.proposalDecisionID(
+                conversationID: conversation.id, proposalID: firstProposal,
+                decision: "applied")
+        })
+        #expect(messages.contains {
+            $0.id == ConversationCenter.proposalDecisionID(
+                conversationID: conversation.id, proposalID: secondProposal,
+                decision: "applied")
+        })
+    }
+
+    @MainActor @Test("Launch reconciliation marks orphaned delegated children interrupted")
+    func launchReconcilesOrphanedChildren() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let store = SQLiteChildRunStore(database: environment.database)
+        let childID = UUID()
+        let parentRunID = UUID()
+        _ = try await store.register(ChildRunRecord(
+            id: childID, parentRunID: parentRunID, rootRunID: parentRunID,
+            conversationID: UUID(), childIndex: 0, kind: "explore",
+            taskSummary: "orphaned by process death", state: .running,
+            delegateCallID: "call-orphan"))
+        try await environment.bootstrap()
+        let after = try #require(try await store.child(id: childID))
+        #expect(after.state == .interrupted)
+    }
+
+    @MainActor @Test("Retry refuses to resume a run waiting for required background work")
+    func retryRefusesAwaitingDependency() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let center = environment.conversationCenter
+        let conversation = try await center.createConversation(title: "Parked task")
+        let runID = UUID()
+        let conversationID = conversation.id
+        try await environment.runStore.saveRun(RunRecord(
+            id: runID, conversationID: conversationID, state: "checkpointed",
+            goal: "wait for the export job", startedAt: Date()))
+        try await environment.checkpointStore.save(AgentCheckpoint(
+            runID: runID, conversationID: conversationID,
+            state: .checkpointed(AgentState.CheckpointRef(
+                createdAt: Date(),
+                reason: "\(FloeAgentRuntime.dependencyWaitReasonPrefix):job-id")),
+            messages: [], createdAt: Date()))
+        #expect(await center.isAwaitingDependency(runID: runID, conversationID: conversationID))
+        // Continue/retry must not start a provider turn without the awaited
+        // work; the durable run stays parked and resumes through the
+        // dependency-completion path (or an explicit user message).
+        await #expect(throws: (any Error).self) {
+            _ = try await center.retry(runID: runID, startOrigin: .explicitUserAction)
+        }
+        #expect(try await environment.runStore.run(id: runID)?.state == "checkpointed")
+    }
+    @Test("A 12-line child result under 8 KiB stays expandable; a one-line short result needs no control")
+    func childResultEvidenceExpansion() {
+        // 12 explicit lines, well under the old 8192-character gate: the jobs
+        // evidence clamp (six lines) must offer the expand affordance so the
+        // whole result is readable.
+        let twelveLines = (1...12).map { "line \($0)" }.joined(separator: "\n")
+        #expect(twelveLines.count < 8_192)
+        #expect(FloeBoundedEvidencePolicy.clampedContentMayBeHidden(
+            twelveLines, lineBound: 6))
+        // A long wrapped single paragraph is also expandable.
+        #expect(FloeBoundedEvidencePolicy.clampedContentMayBeHidden(
+            String(repeating: "wrapped evidence ", count: 20), lineBound: 6))
+        // The child transcript clamps at twelve lines: a 13-line finding must
+        // stay expandable too.
+        let thirteenLines = (1...13).map { "line \($0)" }.joined(separator: "\n")
+        #expect(FloeBoundedEvidencePolicy.clampedContentMayBeHidden(
+            thirteenLines, lineBound: 12))
+        // A short single-line result fits the clamp; no control is needed.
+        #expect(!FloeBoundedEvidencePolicy.clampedContentMayBeHidden("done", lineBound: 12))
+        #expect(!FloeBoundedEvidencePolicy.clampedContentMayBeHidden("done", lineBound: 6))
     }
 
     @Test("A historical queued decision is retirable only with derived identity and a durable mirror")

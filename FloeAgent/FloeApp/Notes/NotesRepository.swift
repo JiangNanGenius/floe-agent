@@ -46,6 +46,11 @@ actor NotesRepository {
         return value
     }
 
+    /// Test/qualification seam: point the shared repository at an isolated
+    /// Notes store (pass nil to clear). Used by the NativeNotes cover tests so
+    /// tool-level checks never read or write the real Notes library.
+    func setStoreOverride(_ value: NotesStore?) { instance = value }
+
     /// Per-conversation confined scratch for the document assistant. Staged
     /// inputs and generated outputs (charts, converted files) live only here;
     /// the run uses this root as its workspace root so the workspace ceiling

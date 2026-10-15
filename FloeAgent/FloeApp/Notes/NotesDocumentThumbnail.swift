@@ -29,6 +29,10 @@ enum NotesDocumentCoverSource: String, Sendable, CaseIterable {
     /// A real render of an engineering drawing through the bundled viewer
     /// (single bounded offscreen WebKit host), never a generic icon.
     case engineeringPreview = "engineeringPreview"
+    /// The user's explicit cover image. It has priority over every automatic
+    /// renderer for the document; the stored asset is an immutable Notes image
+    /// resource and the automatic cover stays available through "restore".
+    case customCover = "customCover"
     /// No content cover is available for this document. The card shows the
     /// explicit unsupported placeholder; nothing is faked.
     case unsupported = "unsupported"
@@ -37,7 +41,7 @@ enum NotesDocumentCoverSource: String, Sendable, CaseIterable {
 
     var hasContent: Bool {
         switch self {
-        case .quickLookThumbnail, .officeContentSummary, .notePage, .mindMap, .engineeringPreview: true
+        case .quickLookThumbnail, .officeContentSummary, .notePage, .mindMap, .engineeringPreview, .customCover: true
         case .unsupported, .none: false
         }
     }
@@ -63,6 +67,33 @@ struct NotesDocumentCoverDiagnostics: Sendable, Equatable {
         case sizeLimit
         case inspect
         case render
+        /// The bounded native workbook summary is the settled cover on
+        /// purpose: the worksheet's whole referenced extent does not fit the
+        /// bounded preview window, so the system page render could only fit
+        /// the entire workbook at once. No system request was started.
+        case workbookWholeSheetFit
+        /// The bounded native workbook summary is the settled cover on
+        /// purpose: the chosen worksheet is not the first worksheet part, and
+        /// the system page renderer targets an earlier (often empty) sheet.
+        /// No system request was started.
+        case workbookEarlierSheet
+        /// The workbook is fully understood and no visible sheet exposes
+        /// visible text (hidden helper sheets are not content). The card shows
+        /// the explicit empty-workbook placeholder and no system request was
+        /// started, because a system render could only be a blank page.
+        case workbookEmpty
+        /// The package does not expose consistent workbook preview metadata
+        /// (missing/corrupt workbook part or relationships). The bounded
+        /// summary never guesses a sheet, so the existing system preview is
+        /// used instead.
+        case workbookMetadataUnavailable
+        /// A visible, non-empty sheet hides rows or columns beyond the bounded
+        /// analysis, so hidden cells cannot be excluded reliably. The summary
+        /// defers to the system preview rather than risking hidden content.
+        case workbookVisibilityUnsupported
+        /// The inspected cell list was truncated before every sheet was read,
+        /// so no sheet's content is complete and no emptiness can be proven.
+        case workbookFieldsIncomplete
     }
 
     var quickLookAttempts: Int = 0
@@ -113,6 +144,15 @@ struct NotesDocumentCoverOutcome: Sendable {
     /// A fixed, content-free renderer stage for UI test evidence. Product UI
     /// continues to show the localized `diagnosis` instead.
     var engineeringFailure: String? = nil
+}
+
+/// The rendered native content summary plus the bounded workbook layout plan
+/// it was drawn from (`nil` for Word/PowerPoint, which have no windowed
+/// plan). The plan lets the settled-source policy decide whether the system
+/// page render may replace this summary.
+struct NotesOfficeContentSummary: Sendable {
+    let image: UIImage
+    let workbookPlan: WorkbookCoverPlan?
 }
 
 /// Bounded in-memory cache for Notes grid thumbnails.
@@ -235,21 +275,25 @@ struct NotesDocumentThumbnail: View {
     /// unlabelled summary instead of trusting the source string alone.
     private var accessibilityCoverValue: String {
         guard ProcessInfo.processInfo.arguments.contains("-ui-testing") else { return source.rawValue }
-        let badge = source == .officeContentSummary ? "; badge=summary" : ""
+        let badge = source == .officeContentSummary ? "; badge=summary" : source == .customCover ? "; badge=custom" : ""
         let engineering = engineeringFailure.map { "; engineering=\($0)" } ?? ""
         guard let diagnostics else { return source.rawValue + badge + engineering }
         return "\(source.rawValue)\(badge); \(diagnostics.summary)"
     }
 
-    /// Document identity + immutable resource + revision; never reuse a stale key.
+    /// Document identity + immutable resource + revision + cover token; never
+    /// reuse a stale key. The cover token carries the cover-specific version
+    /// (see `NoteDocument.coverCacheToken`), so setting, replacing or restoring
+    /// a cover invalidates exactly this document's cached cover even when the
+    /// text-only content revision did not move.
     private var thumbnailKey: String {
         switch document.kind {
         case .office:
-            "\(document.id.uuidString):office:\(document.officeResourceID?.uuidString ?? "none"):\(document.revision)"
+            "\(document.id.uuidString):office:\(document.officeResourceID?.uuidString ?? "none"):\(document.revision):\(document.coverCacheToken)"
         case .engineering:
-            "\(document.id.uuidString):engineering:\(document.engineeringResourceID?.uuidString ?? "none"):\(document.revision)"
+            "\(document.id.uuidString):engineering:\(document.engineeringResourceID?.uuidString ?? "none"):\(document.revision):\(document.coverCacheToken)"
         default:
-            "\(document.id.uuidString):note:\(document.revision)"
+            "\(document.id.uuidString):note:\(document.revision):\(document.coverCacheToken)"
         }
     }
 
@@ -935,6 +979,14 @@ enum NotesDocumentCoverService {
             return .init(image: nil, source: .unsupported,
                          diagnosis: String(localized: "notes.cover.error.storeUnavailable", defaultValue: "Notes storage is not ready"))
         }
+        // The explicit user cover wins over every automatic renderer, for every
+        // document kind, on every surface and after every reopen. The original
+        // automatic renderer is retained and is reached again as soon as the
+        // cover command restores it (see NotesDocumentCoverSource.customCover).
+        if let coverResourceID = document.coverResourceID {
+            return await customCover(resourceID: coverResourceID, store: store, size: size,
+                                     maximumSourceBytes: maximumSourceBytes)
+        }
         switch document.kind {
         case .office:
             return await officeCover(document: document, store: store, size: size,
@@ -946,6 +998,51 @@ enum NotesDocumentCoverService {
             return mindMapCover(document: document, size: size)
         case .engineering:
             return await engineeringCover(document: document, store: store, size: size, maximumSourceBytes: maximumSourceBytes)
+        }
+    }
+
+    // MARK: - Custom cover
+
+    /// One bounded render of the explicit cover asset.
+    ///
+    /// The asset is an immutable Notes image resource: its bytes are read
+    /// through `store.resourceURL` and decoded through the existing
+    /// `NoteFileImporter.images` bounded ImageIO path (orientation-normalized,
+    /// at most 2048 px), so no parallel image pipeline exists. The decoded
+    /// image is drawn aspect-fit into the same card canvas every other cover
+    /// uses; it is never cropped or otherwise edited. A missing, oversized or
+    /// undecodable asset is an explicit `.unsupported` state with a diagnosis,
+    /// never a fabricated image.
+    private static func customCover(resourceID: UUID, store: NotesStore, size: CGSize,
+                                    maximumSourceBytes: Int) async -> NotesDocumentCoverOutcome {
+        do {
+            let url = try await store.resourceURL(resourceID)
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true, let byteCount = values.fileSize,
+                  byteCount <= maximumSourceBytes else {
+                return .init(image: nil, source: .unsupported,
+                             diagnosis: String(localized: "notes.cover.custom.unreadable",
+                                               defaultValue: "The cover image is too large or unreadable"))
+            }
+            let decodedImages = try await NoteFileImporter.images(resourceIDs: [resourceID], store: store)
+            guard let decoded = decodedImages[resourceID], let image = UIImage(data: decoded) else {
+                return .init(image: nil, source: .unsupported,
+                             diagnosis: String(localized: "notes.cover.custom.unreadable",
+                                               defaultValue: "The cover image is too large or unreadable"))
+            }
+            let rendered = UIGraphicsImageRenderer(size: size).image { _ in
+                let scale = min(size.width / max(image.size.width, 1), size.height / max(image.size.height, 1))
+                let drawSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+                image.draw(in: CGRect(x: (size.width - drawSize.width) / 2, y: (size.height - drawSize.height) / 2,
+                                      width: drawSize.width, height: drawSize.height))
+            }
+            return .init(image: rendered, source: .customCover, diagnosis: "custom cover")
+        } catch is CancellationError {
+            return .init(image: nil, source: .none, diagnosis: "cancelled")
+        } catch {
+            return .init(image: nil, source: .unsupported,
+                         diagnosis: String(localized: "notes.cover.custom.unavailable",
+                                           defaultValue: "The cover image is unavailable"))
         }
     }
 
@@ -1070,24 +1167,49 @@ enum NotesDocumentCoverService {
                                                   request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil,
                                                   emitFirstPaint: @escaping @MainActor (NotesDocumentCoverOutcome) -> Void) async -> NotesDocumentCoverOutcome {
         // Phase 1: bounded native OOXML summary in its own gated scope. Only
-        // the rendered image crosses this boundary; the staged copy and the
-        // parsed snapshot are gone before any Quick Look wait starts.
+        // the rendered image and the workbook plan cross this boundary; the
+        // staged copy and the parsed snapshot are gone before any Quick Look
+        // wait starts.
         let summary: UIImage?
+        let workbookPlan: WorkbookCoverPlan?
         let summaryFailureStage: NotesDocumentCoverDiagnostics.FallbackStage
         switch await renderProgressiveSummary(source: source, fileExtension: fileExtension, size: size) {
         case .cancelled:
             return .init(image: nil, source: .none, diagnosis: "cancelled")
-        case .summary(let image):
-            summary = image
+        case .summary(let rendered):
+            summary = rendered.image
+            workbookPlan = rendered.workbookPlan
             summaryFailureStage = .quickLook
         case .unavailable(let stage):
             summary = nil
+            workbookPlan = nil
             summaryFailureStage = stage
+        case .emptyWorkbook:
+            // A workbook with no visible content must not publish a blank
+            // grid, and a system request could only produce a blank page, so
+            // the explicit placeholder is the settled cover.
+            var diagnostics = NotesDocumentCoverDiagnostics()
+            diagnostics.fallbackStage = .workbookEmpty
+            return .init(image: nil, source: .unsupported,
+                         diagnosis: String(localized: "notes.cover.workbook.empty",
+                                           defaultValue: "This workbook has no visible cell content"),
+                         diagnostics: diagnostics)
         }
         if Task.isCancelled { return .init(image: nil, source: .none, diagnosis: "cancelled") }
         if let summary {
             emitFirstPaint(.init(image: summary, source: .officeContentSummary,
                                  diagnosis: "native content summary", diagnostics: nil))
+        }
+        // A workbook the system page renderer could only draw as one whole
+        // used-extent page — or from an earlier, different sheet — keeps this
+        // bounded, labeled summary as its settled cover and never spends the
+        // shared host slot on that render. That page is exactly the unreadable
+        // "tiny cells" cover the bounded summary exists to replace.
+        if let summary, let workbookPlan, workbookPlan.prefersBoundedSummaryOverSystemRender {
+            var diagnostics = NotesDocumentCoverDiagnostics()
+            diagnostics.fallbackStage = workbookPlan.isFirstWorksheet ? .workbookWholeSheetFit : .workbookEarlierSheet
+            return .init(image: summary, source: .officeContentSummary,
+                         diagnosis: "native content summary", diagnostics: diagnostics)
         }
 
         // Phase 2: the unchanged bounded Quick Look request, now under the
@@ -1156,11 +1278,23 @@ enum NotesDocumentCoverService {
                      diagnostics: diagnostics)
     }
 
-    /// The outcome of the isolated summary phase. `.summary` carries only the
-    /// rendered image; the snapshot and the staged copy never leave the phase.
+    /// The rendered summary that crosses the phase boundary.
+    private struct RenderedProgressiveSummary {
+        let image: UIImage
+        /// Non-nil only for a `.workbook` summary; the settled-source policy
+        /// reads it after the first paint.
+        let workbookPlan: WorkbookCoverPlan?
+    }
+
+    /// The outcome of the isolated summary phase. `.summary` carries the
+    /// rendered image plus, for a workbook, the bounded layout plan; the
+    /// snapshot and the staged copy never leave the phase. `.emptyWorkbook` is
+    /// the proven "no visible content" state: the caller publishes the
+    /// explicit placeholder and does not start a system request.
     private enum ProgressiveSummaryResult {
-        case summary(UIImage)
+        case summary(RenderedProgressiveSummary)
         case unavailable(NotesDocumentCoverDiagnostics.FallbackStage)
+        case emptyWorkbook
         case cancelled
     }
 
@@ -1196,13 +1330,34 @@ enum NotesDocumentCoverService {
             try? OfficeDocumentService.inspect(url: staged)
         }.value
         if Task.isCancelled { return .cancelled }
-        guard let snapshot, !snapshot.fields.isEmpty else { return .unavailable(.inspect) }
-        let summary: UIImage? = await Task.detached(priority: .utility) {
-            contentSummary(snapshot: snapshot, kind: kind, size: size)
+        guard let snapshot else { return .unavailable(.inspect) }
+        // A workbook's bounded summary is only honest with authoritative,
+        // complete tab/visibility metadata. Every failure is its own explicit
+        // state — never a guessed first sheet and never a synthetic grid.
+        if kind == .workbook {
+            switch workbookSummaryDecision(for: snapshot) {
+            case .plan:
+                break
+            case .emptyVisibleWorkbook:
+                return .emptyWorkbook
+            case .metadataRequired:
+                return .unavailable(.workbookMetadataUnavailable)
+            case .hiddenFilteringUnavailable:
+                return .unavailable(.workbookVisibilityUnsupported)
+            case .fieldListIncomplete:
+                return .unavailable(.workbookFieldsIncomplete)
+            }
+        }
+        guard !snapshot.fields.isEmpty else { return .unavailable(.inspect) }
+        // Drawing is a pure, bounded render; keep it off the main actor as
+        // well so a card never blocks scrolling. The workbook plan is derived
+        // in the same pass and crosses the phase boundary as a value.
+        let rendered: NotesOfficeContentSummary? = await Task.detached(priority: .utility) {
+            NotesDocumentCoverService.renderSummary(snapshot: snapshot, kind: kind, size: size)
         }.value
         if Task.isCancelled { return .cancelled }
-        guard let summary else { return .unavailable(.render) }
-        return .summary(summary)
+        guard let rendered else { return .unavailable(.render) }
+        return .summary(.init(image: rendered.image, workbookPlan: rendered.workbookPlan))
     }
 
     /// Original Quick Look-first path for legacy/binary/OpenDocument formats
@@ -1537,14 +1692,31 @@ enum NotesDocumentCoverService {
     // MARK: - Native OOXML content summary
 
     /// Renders a bounded, clearly-labeled content summary from the document's
-    /// own parsed text/cells. This is deliberately not a replica of the Office
-    /// layout; the card marks it as a summary.
-    nonisolated static func contentSummary(snapshot: OfficeDocumentSnapshot, kind: OfficeDocumentKind,
-                               size: CGSize) -> UIImage? {
+    /// own parsed text/cells, and returns the bounded workbook layout plan the
+    /// cover was drawn from (nil for Word/PowerPoint). This is deliberately
+    /// not a replica of the Office layout; the card marks it as a summary.
+    ///
+    /// It returns nil — never a header-only image — when the document exposes
+    /// no addressable text/cell with visible content, and, for a workbook,
+    /// when no worksheet has a visible cell: an empty grid must not be
+    /// published as document content.
+    nonisolated static func renderSummary(snapshot: OfficeDocumentSnapshot, kind: OfficeDocumentKind,
+                                          size: CGSize) -> NotesOfficeContentSummary? {
         let fields = Array(snapshot.fields.prefix(maximumSummaryFields))
-        guard !fields.isEmpty else { return nil }
+        let workbookPlan: WorkbookCoverPlan?
+        switch kind {
+        case .workbook:
+            // The plan is the workbook content proof: it exists only when the
+            // workbook's own tab/visibility metadata is authoritative and a
+            // visible worksheet exposes an addressable cell with visible text.
+            guard case .plan(let plan) = workbookSummaryDecision(for: snapshot) else { return nil }
+            workbookPlan = plan
+        case .word, .presentation:
+            guard fields.contains(where: { !WorkbookCoverPlanner.isBlank($0.text) }) else { return nil }
+            workbookPlan = nil
+        }
         let renderer = UIGraphicsImageRenderer(size: size)
-        return renderer.image { context in
+        let image = renderer.image { context in
             UIColor.white.setFill()
             context.fill(CGRect(origin: .zero, size: size))
             let accent = UIColor(red: 0.145, green: 0.388, blue: 0.922, alpha: 1)
@@ -1566,9 +1738,44 @@ enum NotesDocumentCoverService {
                 drawParagraphs(fields, origin: CGPoint(x: 14, y: 38), width: size.width - 28,
                                height: size.height - 48)
             case .workbook:
-                drawGrid(fields, bounds: CGRect(x: 10, y: 34, width: size.width - 20, height: size.height - 44))
+                if let workbookPlan {
+                    drawGrid(workbookPlan, bounds: CGRect(x: 10, y: 34, width: size.width - 20, height: size.height - 44))
+                }
             }
         }
+        return NotesOfficeContentSummary(image: image, workbookPlan: workbookPlan)
+    }
+
+    /// The image-only entry point used by tests and by the legacy
+    /// Quick Look-first fallback; it is exactly `renderSummary(...)?.image`.
+    nonisolated static func contentSummary(snapshot: OfficeDocumentSnapshot, kind: OfficeDocumentKind,
+                                           size: CGSize) -> UIImage? {
+        renderSummary(snapshot: snapshot, kind: kind, size: size)?.image
+    }
+
+    /// The bounded decision for one inspected workbook snapshot, derived from
+    /// the read-only preview metadata (`xl/workbook.xml` tab order, names and
+    /// visibility plus each worksheet's hidden row/column layout) and the
+    /// inspected cells. No metadata means no summary: the caller keeps the
+    /// existing native preview instead of guessing a sheet.
+    nonisolated static func workbookSummaryDecision(for snapshot: OfficeDocumentSnapshot) -> WorkbookCoverPlanDecision {
+        guard snapshot.kind == .workbook else { return .metadataRequired }
+        guard let preview = snapshot.workbookPreview else { return .metadataRequired }
+        let sheets = preview.sheets.map { sheet in
+            WorkbookCoverSheet(
+                name: sheet.name,
+                section: sheet.section,
+                isVisible: sheet.isVisible,
+                hiddenRows: Set(sheet.hiddenRows),
+                hiddenColumnSpans: sheet.hiddenColumnSpans.map { $0.first...$0.last },
+                hiddenLayoutTruncated: sheet.hiddenRowsTruncated || sheet.hiddenColumnsTruncated
+            )
+        }
+        let fields = snapshot.fields.map {
+            WorkbookCoverField(section: $0.section, label: $0.label, text: $0.text)
+        }
+        return WorkbookCoverPlanner.decide(fields: fields, sheets: sheets,
+                                           fieldsComplete: !preview.fieldsTruncated)
     }
 
     private nonisolated static func drawParagraphs(_ fields: [OfficeEditableField], origin: CGPoint, width: CGFloat, height: CGFloat) {
@@ -1592,37 +1799,16 @@ enum NotesDocumentCoverService {
         }
     }
 
-    /// Excel cells are keyed by reference (A1, B2...). Render the first sheet's
-    /// cells on a light grid, tinting the first row so the cover visibly comes
-    /// from the workbook data rather than a generic glyph.
-    private nonisolated static func drawGrid(_ fields: [OfficeEditableField], bounds: CGRect) {
-        let sheet = fields.first?.section ?? ""
-        let cells = fields.filter { $0.section == sheet }.prefix(60)
-        var parsed: [(column: Int, row: Int, text: String)] = []
-        for cell in cells {
-            let reference = cell.label.uppercased()
-            var column = 0
-            var row = 0
-            var readingColumn = true
-            for scalar in reference.unicodeScalars {
-                if readingColumn, scalar.value >= 65, scalar.value <= 90 {
-                    column = column * 26 + Int(scalar.value - 64)
-                } else if scalar.value >= 48, scalar.value <= 57 {
-                    readingColumn = false
-                    row = row * 10 + Int(scalar.value - 48)
-                } else {
-                    readingColumn = true
-                }
-            }
-            guard column > 0, row > 0 else { continue }
-            parsed.append((column - 1, row - 1, cell.text))
-        }
-        guard let maximumColumn = parsed.map(\.column).max(), let maximumRow = parsed.map(\.row).max() else { return }
-        let columns = min(maximumColumn + 1, 5)
-        let rows = min(maximumRow + 1, 10)
-        guard columns > 0, rows > 0 else { return }
-        let cellWidth = bounds.width / CGFloat(columns)
-        let cellHeight = min(bounds.height / CGFloat(rows), 24)
+    /// Workbook cells are addressed by reference (A1, B2...). Render the
+    /// planned window of the chosen worksheet on a light grid, tinting the
+    /// first drawn row so the cover visibly comes from the workbook data
+    /// rather than a generic glyph. The plan already chose the worksheet and
+    /// the window (see `WorkbookCoverPlanner`); this function only draws it,
+    /// with positions relative to the window's top-left.
+    private nonisolated static func drawGrid(_ plan: WorkbookCoverPlan, bounds: CGRect) {
+        guard plan.columns > 0, plan.rows > 0, !plan.cells.isEmpty else { return }
+        let cellWidth = bounds.width / CGFloat(plan.columns)
+        let cellHeight = min(bounds.height / CGFloat(plan.rows), 24)
         let border = UIColor(white: 0.85, alpha: 1)
         let accent = UIColor(red: 0.145, green: 0.388, blue: 0.922, alpha: 1)
         let headerAttributes: [NSAttributedString.Key: Any] = [
@@ -1633,7 +1819,8 @@ enum NotesDocumentCoverService {
             .font: UIFont.systemFont(ofSize: 10),
             .foregroundColor: UIColor.black
         ]
-        for cell in parsed where cell.column < columns && cell.row < rows {
+        for cell in plan.cells where cell.column >= 0 && cell.column < plan.columns
+            && cell.row >= 0 && cell.row < plan.rows {
             let rect = CGRect(x: bounds.minX + CGFloat(cell.column) * cellWidth,
                               y: bounds.minY + CGFloat(cell.row) * cellHeight,
                               width: cellWidth, height: cellHeight)
@@ -1672,7 +1859,16 @@ enum NotesOfficeThumbnailFixture {
                                              title: "Reset cover fixture", edits: [.rename("\(marker)-Word")]))
             try? await session.reload()
         }
-        guard !existing.contains(where: { $0.title.hasPrefix(marker) }) else { return }
+        // Seed only the EXACT fixture documents this install is missing. An
+        // upgraded install already has the older fixtures and must gain just
+        // the new card; no user document or existing fixture is ever deleted
+        // or overwritten.
+        let existingTitles = Set(existing.map(\.title))
+        func missing(_ title: String) -> Bool { !existingTitles.contains(title) }
+        guard [ "\(marker)-Word", "\(marker)-Excel", "\(marker)-Excel-宽表",
+                "\(marker)-Excel-隐藏表", "\(marker)-Excel-隐藏行列",
+                "\(marker)-PPT", "\(marker) 手写页", "\(marker) 导图",
+                "\(marker)-图纸", "\(marker)-图纸-DWG", "\(marker)-自定义封面" ].contains(where: missing) else { return }
 
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("notes-cover-fixture-\(UUID().uuidString)", isDirectory: true)
@@ -1680,7 +1876,8 @@ enum NotesOfficeThumbnailFixture {
         defer { try? FileManager.default.removeItem(at: root) }
 
         var drafts: [NoteDocument] = []
-        func importOffice(_ fileName: String, build: (URL) throws -> Void) async {
+        func importOffice(_ fileName: String, title: String, build: (URL) throws -> Void) async {
+            guard missing(title) else { return }
             let url = root.appendingPathComponent(fileName)
             do {
                 try build(url)
@@ -1688,14 +1885,14 @@ enum NotesOfficeThumbnailFixture {
             } catch {}
         }
 
-        await importOffice("\(marker)-Word.docx") { url in
+        await importOffice("\(marker)-Word.docx", title: "\(marker)-Word") { url in
             try OfficeDocumentBuilder.createWord(at: url, title: "\(marker) Word 商务周报", paragraphs: [
                 "第一段：真实 DOCX 内容封面验收。",
                 "Second paragraph: real DOCX content cover.",
                 "第三段：缩略图应来自这个包，而不是通用文件图标。"
             ])
         }
-        await importOffice("\(marker)-Excel.xlsx") { url in
+        await importOffice("\(marker)-Excel.xlsx", title: "\(marker)-Excel") { url in
             try OfficeDocumentBuilder.createWorkbook(at: url, sheets: [.init(name: "封面", rows: [
                 ["季度", "收入", "成本"],
                 ["Q1", "120", "80"],
@@ -1703,26 +1900,105 @@ enum NotesOfficeThumbnailFixture {
                 ["Q3", "168", "101"]
             ])])
         }
-        await importOffice("\(marker)-PPT.pptx") { url in
+        // A wide/tall workbook whose whole used extent cannot fit the bounded
+        // summary window. The system page render would fit all 9 columns and
+        // 25 rows into one page (unreadable at card size), so this card must
+        // settle on the bounded, labeled summary. It is the visual acceptance
+        // fixture for the Excel cover policy.
+        await importOffice("\(marker)-Excel-宽表.xlsx", title: "\(marker)-Excel-宽表") { url in
+            let header = (1...9).map { "列\($0)" }
+            let body = (1...24).map { row in (1...9).map { "R\(row)C\($0)" } }
+            try OfficeDocumentBuilder.createWorkbook(at: url, sheets: [
+                .init(name: "宽表", rows: [header] + body),
+                .init(name: "汇总", rows: [["合计", "1000"]])
+            ])
+        }
+
+        // A workbook whose first tab is a hidden helper sheet. The bounded
+        // summary must select the first visible sheet by the workbook's own
+        // tab order (never the hidden sheet's data) and keep it as the settled
+        // cover with the "Summary" badge.
+        await importOffice("\(marker)-Excel-隐藏表.xlsx", title: "\(marker)-Excel-隐藏表") { url in
+            try OfficeDocumentBuilder.createWorkbook(at: url, sheets: [
+                .init(name: "内部", rows: [["内部编号", "仅内部"], ["H-01", "机密 200"]],
+                      visibility: .hidden),
+                .init(name: "季度数据", rows: [
+                    ["季度", "收入", "成本"],
+                    ["Q1", "120", "80"],
+                    ["Q2", "150", "96"]
+                ])
+            ])
+        }
+        // A visible sheet with a hidden helper row and a hidden helper column:
+        // neither hidden cell may appear in the summary window.
+        await importOffice("\(marker)-Excel-隐藏行列.xlsx", title: "\(marker)-Excel-隐藏行列") { url in
+            try OfficeDocumentBuilder.createWorkbook(at: url, sheets: [
+                .init(name: "可见数据", rows: [
+                    ["项目", "数量", "备注", "隐藏列"],
+                    ["公开行", "12", "-", "机密列"],
+                    ["机密行", "999", "密钥", "机密格"]
+                ], hiddenRows: [3], hiddenColumns: [4])
+            ])
+        }
+        await importOffice("\(marker)-PPT.pptx", title: "\(marker)-PPT") { url in
             try OfficeDocumentBuilder.createPresentation(at: url, title: "\(marker) 产品路线图", slides: [
                 .init(title: "\(marker) 产品路线图", bullets: ["里程碑一", "Milestone 2"]),
                 .init(title: "风险", bullets: ["合成内容", "No sensitive data"])
             ])
         }
 
-        var note = NoteDocument(kind: .notebook, notebookID: nil, title: "\(marker) 手写页")
-        note.pages[0].elements = [NoteElement(frame: .init(x: 60, y: 80, width: 620, height: 200),
-                                              text: "真实手记页封面验收\nHandwritten cover", fontSize: 32)]
-        drafts.append(note)
-
-        var map = NoteDocument(kind: .mindMap, notebookID: nil, title: "\(marker) 导图")
-        if let rootID = map.nodes.first?.id {
-            map.nodes.append(MindMapNode(parentID: rootID, title: "分支 A", order: 0))
-            map.nodes.append(MindMapNode(parentID: rootID, title: "分支 B", order: 1))
+        if missing("\(marker) 手写页") {
+            var note = NoteDocument(kind: .notebook, notebookID: nil, title: "\(marker) 手写页")
+            note.pages[0].elements = [NoteElement(frame: .init(x: 60, y: 80, width: 620, height: 200),
+                                                  text: "真实手记页封面验收\nHandwritten cover", fontSize: 32)]
+            drafts.append(note)
         }
-        drafts.append(map)
 
-        if let sample = Bundle.main.url(forResource: "EngineeringViewers", withExtension: nil)?
+        // A notebook with a real explicit cover: the card must publish
+        // `.customCover` (accessibility value contains `badge=custom`), and the
+        // context menu's "restore automatic" must return it to the notebook
+        // page render (`.notePage`) without touching the document content.
+        if missing("\(marker)-自定义封面") {
+            let coverURL = root.appendingPathComponent("\(marker)-自定义封面.png")
+            let coverImage = UIGraphicsImageRenderer(size: CGSize(width: 480, height: 640)).image { context in
+                UIColor(red: 0.96, green: 0.62, blue: 0.04, alpha: 1).setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 480, height: 640))
+                UIColor.white.setFill()
+                context.fill(CGRect(x: 36, y: 232, width: 408, height: 176))
+                let title = "自定义封面\nCustom Cover"
+                let attributes: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.boldSystemFont(ofSize: 44),
+                    .foregroundColor: UIColor.black
+                ]
+                (title as NSString).draw(in: CGRect(x: 56, y: 258, width: 368, height: 130),
+                                         withAttributes: attributes)
+            }
+            if let data = coverImage.pngData(), (try? data.write(to: coverURL, options: .atomic)) != nil {
+                var note = NoteDocument(kind: .notebook, notebookID: nil, title: "\(marker)-自定义封面")
+                note.pages[0].elements = [NoteElement(frame: .init(x: 60, y: 80, width: 620, height: 200),
+                                                      text: "自动封面内容\nAutomatic cover", fontSize: 32)]
+                if let created = try? await store.create(note),
+                   let resource = try? await store.importResource(from: coverURL, mediaType: "image/png") {
+                    // A freshly created document has no cover yet.
+                    _ = try? await store.applyCoverCommand(.useResource(resource),
+                                                           documentID: created.id,
+                                                           expectedRevision: created.revision,
+                                                           expectedCoverRevision: 0)
+                }
+            }
+        }
+
+        if missing("\(marker) 导图") {
+            var map = NoteDocument(kind: .mindMap, notebookID: nil, title: "\(marker) 导图")
+            if let rootID = map.nodes.first?.id {
+                map.nodes.append(MindMapNode(parentID: rootID, title: "分支 A", order: 0))
+                map.nodes.append(MindMapNode(parentID: rootID, title: "分支 B", order: 1))
+            }
+            drafts.append(map)
+        }
+
+        if missing("\(marker)-图纸"),
+           let sample = Bundle.main.url(forResource: "EngineeringViewers", withExtension: nil)?
             .appendingPathComponent("sample-plate.dxf") {
             let destination = root.appendingPathComponent("\(marker)-图纸.dxf")
             if (try? Data(contentsOf: sample).write(to: destination, options: .atomic)) != nil,
@@ -1730,7 +2006,8 @@ enum NotesOfficeThumbnailFixture {
                 drafts.append(draft)
             }
         }
-        if let sample = Bundle.main.url(forResource: "EngineeringViewers", withExtension: nil)?
+        if missing("\(marker)-图纸-DWG"),
+           let sample = Bundle.main.url(forResource: "EngineeringViewers", withExtension: nil)?
             .appendingPathComponent("sample-editable.dwg") {
             let destination = root.appendingPathComponent("\(marker)-图纸-DWG.dwg")
             if (try? Data(contentsOf: sample).write(to: destination, options: .atomic)) != nil,

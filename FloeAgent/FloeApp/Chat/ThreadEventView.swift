@@ -12,6 +12,8 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeModels
+import FloePersistence
+import FloeAgentRuntime
 
 import FloeCore
 /// Renders a single persisted run event by kind.
@@ -33,6 +35,18 @@ struct ThreadEventView: View {
     /// Final payload for the same call ID. This lets one expandable invocation
     /// own its arguments, approval, output, artifacts, and duration.
     var toolRequestResultPayloadJSON: String? = nil
+    /// True while this call is the one a human approval card is waiting on.
+    var toolRequestIsWaiting: Bool = false
+    /// Concise decision record projected onto this call (see
+    /// `ToolDecisionAnnotation`).
+    var decisionSummary: String? = nil
+    /// The durable delegated-child record for this call, when the parent
+    /// relation maps the delegate call id to a child run.
+    var childRun: ChildRunRecord? = nil
+    /// Opens the durable child detail/inspector; supplied only by a host that
+    /// owns the navigation (the delegate card's "View" action). The optional
+    /// record is the specific child when known, nil for the inspector list.
+    var onOpenChild: ((ChildRunRecord?) -> Void)? = nil
 
     @State private var isExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -46,7 +60,55 @@ struct ThreadEventView: View {
         return ConversationCenter.decodePayload(toolRequestResultPayloadJSON)
     }
 
+    /// True for the main-run delegation tool. The child identity itself is
+    /// durable (persisted by the lifecycle owner); this row only renders the
+    /// honest status derived from the persisted call/result.
+    private var isDelegateCall: Bool {
+        (payload["tool"] ?? "") == DelegateTool.name
+    }
+
+    /// Decoded delegate arguments (persisted `input` is the redacted JSON
+    /// prefix of the call). Never trusted for anything but display.
+    private var delegateArguments: [String: Any] {
+        guard let input = payload["input"], let data = input.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return object
+    }
+
+    /// The subtask title the card leads with: the real `task` argument when
+    /// present, else the redacted input itself, else the tool name.
+    private var delegateTaskTitle: String {
+        if let task = delegateArguments["task"] as? String {
+            let trimmed = task.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return String(trimmed.prefix(500)) }
+        }
+        let raw = (payload["input"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.isEmpty ? (payload["tool"] ?? "delegate") : String(raw.prefix(500))
+    }
+
+    private var delegateKindHint: String? {
+        guard let type = delegateArguments["type"] as? String, !type.isEmpty else { return nil }
+        return type
+    }
+
     var body: some View {
+        if isDelegateCall {
+            // A delegate row must NOT be combined into one accessibility
+            // element: the card owns a real "View subagents" button, and
+            // combining made the row container inherit that button's
+            // identifier and swallow its hit target (taps never reached the
+            // action). Delegate rows keep their children as separate
+            // elements; every other row keeps the historical combine.
+            rowBody
+        } else {
+            rowBody
+                .accessibilityElement(children: .combine)
+        }
+    }
+
+    private var rowBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             if showsHeader {
                 header
@@ -54,7 +116,6 @@ struct ThreadEventView: View {
             content
         }
         .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Header: kind chip + timestamp + fold control
@@ -110,28 +171,58 @@ struct ThreadEventView: View {
             ReasoningBlockView(text: payload["text"] ?? "", isStreaming: false)
 
         case .toolRequest:
-            ToolCallCardView(
-                name: payload["tool"] ?? event.kind.rawValue,
-                status: toolRequestStatus ?? payload["status"] ?? "pending",
-                inputSummary: payload["input"] ?? payload["summary"],
-                resultSummary: toolRequestResultPayload["summary"],
-                approvalSummary: approvalSummary,
-                duration: duration(from: toolRequestResultPayload),
-                artifacts: artifacts(from: toolRequestResultPayload)
-            )
+            if isDelegateCall {
+                DelegateChildCallCard(
+                    title: delegateTaskTitle,
+                    kindHint: delegateKindHint,
+                    startedAt: childRun?.startedAt ?? event.createdAt,
+                    isWaiting: toolRequestIsWaiting,
+                    isLive: isLive,
+                    childRun: childRun,
+                    resultSummary: toolRequestResultPayload["summary"],
+                    resultFailed: ["failed", "error"].contains(toolRequestResultPayload["status"] ?? ""),
+                    onOpen: onOpenChild
+                )
+            } else {
+                ToolCallCardView(
+                    name: payload["tool"] ?? event.kind.rawValue,
+                    status: toolRequestStatus ?? payload["status"] ?? "pending",
+                    inputSummary: payload["input"] ?? payload["summary"],
+                    resultSummary: toolRequestResultPayload["summary"],
+                    approvalSummary: approvalSummary,
+                    decisionSummary: decisionSummary,
+                    duration: duration(from: toolRequestResultPayload),
+                    artifacts: artifacts(from: toolRequestResultPayload)
+                )
+            }
 
         case .toolResult:
             let status = payload["status"] ?? "ok"
-            ToolCallCardView(
-                name: payload["tool"]
-                    ?? String(localized: "tool.result"),
-                status: status,
-                inputSummary: payload["input"],
-                resultSummary: payload["summary"],
-                approvalSummary: approvalSummary,
-                duration: duration(from: payload),
-                artifacts: artifacts(from: payload)
-            )
+            if isDelegateCall {
+                DelegateChildCallCard(
+                    title: delegateTaskTitle,
+                    kindHint: delegateKindHint,
+                    startedAt: childRun?.startedAt ?? event.createdAt,
+                    isWaiting: false,
+                    isLive: false,
+                    childRun: childRun,
+                    resultSummary: payload["summary"],
+                    resultFailed: ["failed", "error"].contains(status),
+                    onOpen: onOpenChild
+                )
+            } else {
+                ToolCallCardView(
+                    name: payload["tool"]
+                        ?? String(localized: "tool.result"),
+                    status: status,
+                    inputSummary: payload["input"],
+                    resultSummary: payload["summary"],
+                    approvalSummary: approvalSummary,
+                    decisionSummary: decisionSummary,
+                    duration: duration(from: payload),
+                    artifacts: artifacts(from: payload)
+                )
+            }
 
         case .approval:
             if let outcome = payload["outcome"] {
@@ -315,6 +406,258 @@ struct ThreadEventView: View {
         case .status: "thread.kind.status"
         case .notice: "thread.kind.notice"
         }
+    }
+}
+
+/// Compact card for one `delegate` tool call: the real subtask title, start
+/// time, honest status (working / waiting for approval / done / failed /
+/// cancelled) derived only from the persisted call+result, and a "View"
+/// action into the durable child-agents inspector. No percentage and no raw
+/// internal reasoning is ever shown; the child transcript itself lives in the
+/// inspector.
+struct DelegateChildCallCard: View {
+    let title: String
+    let kindHint: String?
+    let startedAt: Date
+    let isWaiting: Bool
+    let isLive: Bool
+    /// The durable delegated-child record (lifecycle owner's store). When
+    /// present it is the authority for the card's state; the persisted tool
+    /// result is the fallback for older rows without a child record.
+    let childRun: ChildRunRecord?
+    let resultSummary: String?
+    let resultFailed: Bool
+    let onOpen: ((ChildRunRecord?) -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: status.systemImage)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(status.color)
+                    .frame(width: 26, height: 26)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(displayTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                    HStack(spacing: 8) {
+                        Text(status.title)
+                            .foregroundStyle(status.color)
+                        Text(startedAt, style: .time)
+                            .foregroundStyle(.secondary)
+                        if let kindHint = Self.userFacingKind(kindHint) {
+                            Text(kindHint)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let childRun, childRun.iterationCount > 0 {
+                            // Labeled rounds, never a bare digit on the card.
+                            Text("\(FloeL10n.l("workbench.task_inspector_views.iterations")) \(childRun.iterationCount)")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                    .font(.caption)
+                }
+                Spacer(minLength: 4)
+            }
+            if let resultSummary = Self.userFacingSummary(resultSummary), !resultSummary.isEmpty {
+                BoundedDelegateSummary(text: resultSummary)
+            }
+            if let onOpen {
+                Button {
+                    onOpen(childRun)
+                } label: {
+                    Label(openTitle, systemImage: "person.2")
+                }
+                .font(FloeTheme.Typography.metadata)
+                .frame(minHeight: FloeTheme.minimumTarget, alignment: .leading)
+                .accessibilityIdentifier("thread.delegate.viewChild.action")
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(FloeTheme.stepSurface, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(
+            FloeTheme.separator.opacity(0.45), lineWidth: 0.5))
+        // No container-level accessibility element or named action: either one
+        // turned the whole card into a synthetic button that absorbed the
+        // inner View action's identifier and hit target, so tapping "View
+        // subagents" never opened the child. The inner button below is the
+        // single actionable element and the only owner of its identifier.
+    }
+
+    private var displayTitle: String {
+        if let summary = childRun?.taskSummary.trimmingCharacters(in: .whitespacesAndNewlines),
+           !summary.isEmpty {
+            return summary
+        }
+        return title
+    }
+
+    private var openTitle: String {
+        ChatBilingualCatalog.localized(
+            key: "chat.delegate_card.view_child_agents", en: "View subagents", zh: "查看子代理")
+    }
+
+    /// Human words for the delegate kind; raw enum tokens never reach the
+    /// card (the inspector keeps the exact record).
+    static func userFacingKind(_ raw: String?) -> String? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        switch raw.lowercased() {
+        case "explore":
+            return ChatBilingualCatalog.localized(
+                key: "chat.delegate_card.kind.explore", en: "Local check", zh: "本地检查")
+        case "research":
+            return ChatBilingualCatalog.localized(
+                key: "chat.delegate_card.kind.research", en: "Research", zh: "调研")
+        case "execute":
+            return ChatBilingualCatalog.localized(
+                key: "chat.delegate_card.kind.execute", en: "Execution", zh: "执行")
+        default:
+            return raw.count <= 24 ? raw : nil
+        }
+    }
+
+    /// The persisted delegate result is a machine summary
+    /// (`status=ok iterationsUsed=3 findings=…`). The card shows the human
+    /// part only (the findings text, without its machine key); the raw bytes
+    /// stay in the transcript and the inspector, so no evidence is lost.
+    static func userFacingSummary(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        var pieces: [String] = []
+        for token in raw.split(separator: " ", omittingEmptySubsequences: true) {
+            let value = String(token)
+            if value.hasPrefix("findings=") {
+                let text = String(value.dropFirst("findings=".count))
+                if !text.isEmpty { pieces.append(text) }
+                continue
+            }
+            if ["status=", "iterationsUsed=", "budget=", "digest=", "callID="]
+                .contains(where: { value.hasPrefix($0) }) {
+                continue
+            }
+            pieces.append(value)
+        }
+        let text = pieces.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    private var status: DelegateCallStatus {
+        if let childRun {
+            return DelegateCallStatus(childState: childRun.state, isWaiting: isWaiting)
+        }
+        if let resultSummary {
+            return DelegateCallStatus(summary: resultSummary, failed: resultFailed)
+        }
+        if isWaiting { return .waiting }
+        return isLive ? .working : .cancelled
+    }
+}
+
+/// Honest lifecycle mapping for a delegate card. The durable child state is
+/// preferred when the record exists; otherwise the `status=` token written by
+/// `DelegateTool.render` (`ok`, `partial`, `budgetExhausted`, `cancelled`,
+/// `providerError`, `toolError`) is used, falling back to the persisted tool
+/// result status.
+enum DelegateCallStatus: Equatable {
+    case working
+    case waiting
+    case done
+    case failed
+    case cancelled
+
+    init(childState: ChildRunState, isWaiting: Bool) {
+        switch childState {
+        case .registered: self = isWaiting ? .waiting : .working
+        case .running: self = .working
+        case .completed: self = .done
+        case .partial, .budgetExhausted, .providerError, .toolError, .interrupted:
+            self = .failed
+        case .cancelled: self = .cancelled
+        }
+    }
+
+    init(summary: String, failed: Bool) {
+        if let token = Self.statusToken(in: summary) {
+            switch token {
+            case "ok": self = .done
+            case "cancelled", "canceled": self = .cancelled
+            case "partial", "budgetexhausted", "budget_exhausted": self = .failed
+            default: self = .failed
+            }
+            return
+        }
+        self = failed ? .failed : .done
+    }
+
+    static func statusToken(in summary: String) -> String? {
+        for token in summary.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }) {
+            if token.hasPrefix("status=") {
+                return String(token.dropFirst("status=".count)).lowercased()
+            }
+        }
+        return nil
+    }
+
+    var title: String {
+        switch self {
+        case .working:
+            ChatBilingualCatalog.localized(
+                key: "chat.delegate_card.working", en: "Working", zh: "进行中")
+        case .waiting:
+            ChatBilingualCatalog.localized(
+                key: "chat.delegate_card.waiting", en: "Waiting", zh: "等待中")
+        case .done:
+            ChatBilingualCatalog.localized(
+                key: "chat.delegate_card.done", en: "Done", zh: "已完成")
+        case .failed:
+            ChatBilingualCatalog.localized(
+                key: "chat.delegate_card.failed", en: "Failed", zh: "失败")
+        case .cancelled:
+            ChatBilingualCatalog.localized(
+                key: "chat.delegate_card.cancelled", en: "Cancelled", zh: "已取消")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .working: "person.crop.circle.badge.clock"
+        case .waiting: "hourglass"
+        case .done: "checkmark.circle"
+        case .failed: "xmark.octagon"
+        case .cancelled: "stop.circle"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .working: FloeTheme.primary
+        case .waiting: FloeTheme.pending
+        case .done: FloeTheme.success
+        case .failed, .cancelled: FloeTheme.destructive
+        }
+    }
+}
+
+/// Bounded child-result preview: the full transcript is in the inspector, so
+/// the card only shows a readable prefix and never claims to be complete.
+private struct BoundedDelegateSummary: View {
+    let text: String
+
+    var body: some View {
+        let limit = 1_200
+        let end = text.index(text.startIndex, offsetBy: limit, limitedBy: text.endIndex) ?? text.endIndex
+        Text(String(text[..<end]))
+            .font(FloeTheme.Typography.evidence)
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .lineLimit(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

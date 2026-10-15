@@ -22,70 +22,235 @@ import FloeTools
 import FloeTinyEMU
 
 /// Console output sink reachable from the C callback. The AsyncStream
-/// continuation is thread-safe; the stream is bounded so a guest that floods
+/// continuation is thread-safe; every buffer is bounded so a guest that floods
 /// the console cannot grow host memory without bound.
 ///
-/// Bounded WITHOUT silent loss: the stream keeps the OLDEST chunks
-/// (`.bufferingOldest`), and a chunk that no longer fits is refused with an
-/// explicit `.dropped` result. Silently dropping console bytes (the previous
-/// `.bufferingNewest` policy) tears frame boundaries for whichever token is
-/// printing; a torn frame can poison the shared environment channel and stop
-/// a VM that other clients (parent task and its children) are still using.
-/// On overflow the console therefore fails closed: it records the overflow and
-/// finishes the stream, so the router observes EOF and every in-flight command
-/// reports an honest console failure instead of a corrupted success.
+/// Byte prefixes, not callback chunks: the engine (and the OpenSBI HTIF
+/// console it prints its banner through) can deliver ONE byte per callback,
+/// so a chunk-count bound used to overflow on an ordinary cold boot whenever
+/// the consumer was briefly descheduled — failing the console closed and
+/// breaking the very handshake the boot was for. Instead, callbacks append
+/// into a byte buffer and every delivery carries the whole pending PREFIX, so
+/// the number of buffered elements is tiny even while thousands of 1-byte
+/// writes arrive.
+///
+/// Controlled backpressure WITHOUT silent loss: when the bounded element
+/// buffer is full the emulator thread waits (in short slices, abortable at
+/// stop) for the consumer to drain, instead of skipping bytes. Silently
+/// dropping console bytes tears frame boundaries for whichever token is
+/// printing, and a torn frame can poison the shared environment channel that
+/// other clients (parent task and its children) are still using. Only a
+/// genuinely stuck consumer (no drain within `backpressureDeadline`) or a
+/// backlog past `maxPendingBytes` fails the console closed: it records the
+/// overflow and finishes the stream, so the router observes EOF and every
+/// in-flight command reports an honest console failure instead of a corrupted
+/// success.
 final class TinyEMUConsoleSink: @unchecked Sendable {
+    /// Element slots in the bounded stream (see `append`). Elements are byte
+    /// prefixes, so this bounds the number of in-flight deliveries, and
+    /// `maxElementBytes` × this is the worst-case buffered stream memory.
+    static let elementBufferLimit = 32
+    /// Largest single delivered element. A larger backlog is delivered in
+    /// slices so one element can never approach `maxPendingBytes`.
+    static let maxElementBytes = 256 * 1024
+    /// Hard cap on bytes accepted but not yet delivered. Past it the console
+    /// fails closed exactly like the previous chunk overflow, just with a
+    /// byte budget large enough for any real boot or command output.
+    static let maxPendingBytes = 8 * 1024 * 1024
+    /// Wait quantum while the consumer drains; abort is polled every slice.
+    static let backpressureSlice: TimeInterval = 0.01
+
     private let continuation: AsyncStream<Data>.Continuation
     private let lock = NSLock()
+    private var pending = Data()
+    private var delivering = false
     private var finished = false
+    private var aborted = false
     private var refusedChunks = 0
+    private var deliveredBytes = 0
+    /// True while the CURRENT stall's activation was logged; guards the
+    /// matching "cleared" line so a per-byte park/resume cycle is not chatty.
+    private var backpressureLogged = false
+    /// Last time an activation was logged (throttles repeated windows).
+    private var backpressureLastLog: Date?
+    /// How long the emulator thread may be held back waiting for the consumer
+    /// to drain before the console fails closed. Internal so focused checks
+    /// can shorten it; production keeps the 30 s bound.
+    var backpressureDeadline: TimeInterval = 30
 
     init(continuation: AsyncStream<Data>.Continuation) {
         self.continuation = continuation
     }
 
-    /// Chunks the bounded buffer refused (console overflow). Nonzero means the
-    /// console was failed closed; the machine reports this for diagnostics.
+    /// Times the bounded buffer refused to make progress (console overflow).
+    /// Nonzero means the console was failed closed; the machine reports this
+    /// for diagnostics.
     var overflowedChunks: Int {
         lock.lock()
         defer { lock.unlock() }
         return refusedChunks
     }
 
-    func append(_ data: Data) {
+    /// Bytes accepted and delivered to the stream (diagnostics/tests).
+    var deliveredByteCount: Int {
         lock.lock()
-        let isFinished = finished
+        defer { lock.unlock() }
+        return deliveredBytes
+    }
+
+    /// Bytes accepted but not yet delivered (diagnostics/tests).
+    var pendingByteCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return pending.count
+    }
+
+    func append(_ data: Data) {
+        guard !data.isEmpty else { return }
+        lock.lock()
+        guard !finished, !aborted else {
+            lock.unlock()
+            return
+        }
+        pending.append(data)
+        if pending.count > Self.maxPendingBytes {
+            refusedChunks += 1
+            finished = true
+            let backlog = pending.count
+            pending.removeAll(keepingCapacity: false)
+            lock.unlock()
+            FloeLogger(category: .tools).error(
+                "TinyEMU console output backlog exceeded \(Self.maxPendingBytes) bytes while the consumer was not draining (backlog \(backlog) bytes); failing the console closed instead of silently dropping bytes that frame guest commands"
+            )
+            continuation.finish()
+            return
+        }
+        if delivering {
+            lock.unlock()
+            return
+        }
+        delivering = true
         lock.unlock()
-        guard !isFinished else { return }
-        switch continuation.yield(data) {
-        case .enqueued:
-            break
-        case .dropped:
-            recordOverflow()
-            finish()
-        case .terminated:
-            finish()
-        @unknown default:
-            break
+        deliver()
+    }
+
+    /// Drains pending byte prefixes into the bounded stream. Runs on the
+    /// emulator thread that produced the bytes (`delivering` keeps it the only
+    /// runner), so a full stream parks that producer — real backpressure on
+    /// the guest console — and never skips bytes.
+    private func deliver() {
+        var stallDeadline: Date?
+        while true {
+            lock.lock()
+            if finished || aborted || pending.isEmpty {
+                delivering = false
+                lock.unlock()
+                return
+            }
+            let element = Data(pending.prefix(Self.maxElementBytes))
+            lock.unlock()
+
+            switch continuation.yield(element) {
+            case .enqueued:
+                lock.lock()
+                // Remove exactly the delivered prefix: concurrent appends only
+                // append to the tail, so byte order is preserved. `min` keeps
+                // a concurrent abort (which discards the outgoing boot's
+                // backlog) from trapping on removeFirst.
+                let removeCount = min(element.count, pending.count)
+                pending.removeFirst(removeCount)
+                deliveredBytes += removeCount
+                lock.unlock()
+                if stallDeadline != nil {
+                    stallDeadline = nil
+                    if backpressureLogged {
+                        backpressureLogged = false
+                        FloeLogger(category: .tools).info(
+                            "TinyEMU console backpressure cleared; the consumer resumed draining"
+                        )
+                    }
+                }
+            case .terminated:
+                lock.lock()
+                finished = true
+                delivering = false
+                lock.unlock()
+                return
+            case .dropped:
+                let now = Date()
+                if stallDeadline == nil {
+                    stallDeadline = now.addingTimeInterval(backpressureDeadline)
+                    // Byte-at-a-time firmware output parks and resumes per byte;
+                    // log at most one active/cleared pair per window instead of
+                    // thousands of lines during a boot.
+                    let lastLog = backpressureLastLog
+                    if lastLog == nil || now.timeIntervalSince(lastLog!) > 30 {
+                        backpressureLogged = true
+                        backpressureLastLog = now
+                        lock.lock()
+                        let backlog = pending.count
+                        lock.unlock()
+                        FloeLogger(category: .tools).info(
+                            "TinyEMU console backpressure active: \(backlog) bytes buffered while the consumer catches up"
+                        )
+                    }
+                }
+                if now >= stallDeadline! {
+                    lock.lock()
+                    refusedChunks += 1
+                    finished = true
+                    delivering = false
+                    let backlog = pending.count
+                    pending.removeAll(keepingCapacity: false)
+                    lock.unlock()
+                    FloeLogger(category: .tools).error(
+                        "TinyEMU console consumer did not drain \(backlog) buffered bytes within \(Int(backpressureDeadline))s; failing the console closed instead of silently dropping bytes that frame guest commands"
+                    )
+                    continuation.finish()
+                    return
+                }
+                Thread.sleep(forTimeInterval: Self.backpressureSlice)
+            @unknown default:
+                lock.lock()
+                delivering = false
+                lock.unlock()
+                return
+            }
         }
     }
 
-    private func recordOverflow() {
+    /// Releases a parked producer without failing the console: the machine
+    /// calls this when a stop begins, so the emulator thread leaves the
+    /// callback promptly (the bytes belong to the boot that is ending) and
+    /// `stop()` keeps its bounded run-loop exit.
+    func abortWait() {
         lock.lock()
-        let count = refusedChunks
-        refusedChunks += 1
+        aborted = true
+        let hadPending = !pending.isEmpty
+        pending.removeAll(keepingCapacity: false)
         lock.unlock()
-        if count == 0 {
-            FloeLogger(category: .tools).error(
-                "TinyEMU console output buffer overflowed (bounded oldest-first console); failing the console closed instead of silently dropping bytes that frame guest commands"
+        if hadPending {
+            FloeLogger(category: .tools).info(
+                "TinyEMU console stopped; undelivered console bytes from the outgoing boot were discarded"
             )
         }
+    }
+
+    /// Re-arms the sink for the next `start()` on the same console stream
+    /// (the persistent-disk runner upgrade stops and restarts the VM while
+    /// the router keeps reading).
+    func resumeAfterStop() {
+        lock.lock()
+        aborted = false
+        lock.unlock()
     }
 
     func finish() {
         lock.lock()
         let wasFinished = finished
         finished = true
+        aborted = true
+        pending.removeAll(keepingCapacity: false)
         lock.unlock()
         guard !wasFinished else { return }
         continuation.finish()
@@ -101,7 +266,6 @@ private final class TinyEMUVMHandle: @unchecked Sendable {
 /// One running TinyEMU guest. `start()` creates the VM and its run thread;
 /// `stop()` requests the run loop to end, waits for it, then destroys the VM.
 public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked Sendable {
-    public static let consoleChunkLimit = 256
     /// How long `stop()` waits for the run loop to leave its last slice
     /// before refusing to destroy the VM. Internal so focused lifecycle
     /// checks can shorten it; production keeps the 10 s bound.
@@ -196,10 +360,12 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         // count must fail here even if the pool was bypassed.
         self.vcpuCount = try releasePolicy.resolve(requestedVCPUs: descriptor.vcpus)
         var continuation: AsyncStream<Data>.Continuation!
-        // Oldest-first: an overflow is REPORTED through the yield result (the
-        // sink fails the console closed) instead of silently skipping console
-        // bytes, which would tear an arbitrary token's framing.
-        self.consoleStream = AsyncStream(bufferingPolicy: .bufferingOldest(Self.consoleChunkLimit)) {
+        // Oldest-first element slots. Each element is a whole byte prefix (see
+        // TinyEMUConsoleSink.append), so this bounds how many deliveries can be
+        // in flight while thousands of 1-byte firmware writes are coalesced
+        // into them; a full buffer parks the producer instead of skipping
+        // bytes, and only a genuinely stuck consumer fails the console closed.
+        self.consoleStream = AsyncStream(bufferingPolicy: .bufferingOldest(TinyEMUConsoleSink.elementBufferLimit)) {
             continuation = $0
         }
         self.sink = TinyEMUConsoleSink(continuation: continuation)
@@ -212,8 +378,9 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     }
 
     /// Console overflow diagnostics for the lifecycle owner and the focused
-    /// regressions: nonzero means the bounded console refused chunks and
-    /// failed the console closed instead of silently dropping bytes.
+    /// regressions: nonzero means the bounded console refused to make progress
+    /// (stuck consumer or a backlog past the byte cap) and failed the console
+    /// closed instead of silently dropping bytes.
     var consoleOverflowCount: Int { sink.overflowedChunks }
 
     /// Sets the RAM used by the next `start()`. Only meaningful between a
@@ -352,9 +519,13 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         self.stopRequested = false
         // Reset the whole lifecycle: a restarted machine must never let a
         // later stop() observe the previous run's exit flag and destroy a VM
-        // whose run thread is still executing.
+        // whose run thread is still executing. The console sink is re-armed in
+        // the same step: a stop aborted a parked producer and dropped the
+        // outgoing boot's undelivered bytes, and the same stream keeps serving
+        // the new boot (persistent-disk runner upgrade).
         self.exited = false
         self.running = true
+        self.sink.resumeAfterStop()
         thread.start()
     }
 
@@ -513,6 +684,11 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     }
 
     private func beginStop() -> Thread? {
+        // Unpark a producer that is waiting on the bounded console first:
+        // the emulator thread must leave the console callback promptly so
+        // `stop()` keeps its bounded run-loop exit, and the bytes belong to
+        // the boot that is ending (a restart re-arms the sink).
+        sink.abortWait()
         lock.lock()
         defer { lock.unlock() }
         stopRequested = true

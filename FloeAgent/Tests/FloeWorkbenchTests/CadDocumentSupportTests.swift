@@ -179,7 +179,209 @@ struct NativeCADPolicyTests {
     }
 }
 
+// MARK: - Authoritative workbench service operation catalog
+
+@Suite("Workbench service operation catalog")
+struct CadServiceOperationCatalogTests {
+
+    /// The exact drawing action vocabulary of the real `CADDrawingService`
+    /// router (and the mutate/read split of `CADServiceOperations`). Locked
+    /// here; the App-level closure test and the cross-source parity check
+    /// re-verify it against the engine.
+    private static let drawingActions = ["standardSheet", "addPage", "updatePage", "removePage",
+                                         "pages", "project", "dimensions", "export"]
+    private static let drawingMutating: Set<String> = ["standardSheet", "addPage", "updatePage", "removePage"]
+    private static let assemblyActions = ["addInstance", "addConstraint", "removeInstance",
+                                          "setTransform", "setVisible", "removeConstraint",
+                                          "suppressConstraint", "solve", "sourceUpdate", "clear",
+                                          "report", "instances", "dof", "interference"]
+    private static let assemblyMutating: Set<String> = ["addInstance", "addConstraint", "removeInstance",
+                                                        "setTransform", "setVisible", "removeConstraint",
+                                                        "suppressConstraint", "solve", "sourceUpdate", "clear"]
+
+    @Test("table mirrors the engine routers and separates mutating from read-only")
+    func tableIntegrity() throws {
+        #expect(CadServiceOperationCatalog.kinds == ["assembly", "drawing", "script", "mesh"])
+        var seen = Set<String>()
+        for operation in CadServiceOperationCatalog.operations {
+            let key = "\(operation.kind).\(operation.action)"
+            #expect(seen.insert(key).inserted, "duplicate operation \(key)")
+            #expect(operation.op == key)
+            #expect(!operation.summary.isEmpty, "\(key) needs a summary")
+            #expect(!operation.examples.isEmpty, "\(key) needs a runnable example")
+            #expect(operation.proposeExample.contains(operation.op))
+            // Examples must be JSON objects so the model can copy them.
+            for example in operation.examples {
+                let object = try? JSONSerialization.jsonObject(with: Data(example.utf8)) as? [String: Any]
+                #expect(object != nil, "\(key) example must be a JSON object: \(example)")
+            }
+        }
+        #expect(CadServiceOperationCatalog.actionNames(forKind: "drawing") == Self.drawingActions)
+        #expect(CadServiceOperationCatalog.actionNames(forKind: "assembly") == Self.assemblyActions)
+        for action in Self.drawingActions {
+            #expect(CadServiceOperationCatalog.isMutating(kind: "drawing", action: action)
+                    == Self.drawingMutating.contains(action), "drawing.\(action) mutate classification")
+        }
+        for action in Self.assemblyActions {
+            #expect(CadServiceOperationCatalog.isMutating(kind: "assembly", action: action)
+                    == Self.assemblyMutating.contains(action), "assembly.\(action) mutate classification")
+        }
+        // The two reported model guesses are NOT aliases; they are refused.
+        #expect(CadServiceOperationCatalog.normalizedAction(kind: "drawing", raw: "createPage") == nil)
+        #expect(CadServiceOperationCatalog.suggestion(for: "drawing.createPage") == "addPage")
+    }
+
+    @Test("resolution accepts the canonical action and the documented legacy op forms")
+    func resolutionAcceptsDocumentedForms() throws {
+        let canonical = try CadServiceOperationCatalog.resolve(
+            kind: "drawing", payload: ["action": "addPage", "kind": "front"])
+        #expect(canonical.operation.action == "addPage")
+        #expect(canonical.operation.mutating)
+        #expect(canonical.arguments["kind"] as? String == "front")
+        #expect(canonical.arguments["action"] == nil)
+
+        let prefixedOp = try CadServiceOperationCatalog.resolve(
+            kind: "drawing", payload: ["op": "drawing.addPage", "kind": "top"])
+        #expect(prefixedOp.operation.action == "addPage")
+
+        let bareOp = try CadServiceOperationCatalog.resolve(
+            kind: "assembly", payload: ["op": "addInstance", "bodyID": "B"])
+        #expect(bareOp.operation.action == "addInstance")
+
+        let prefixedAction = try CadServiceOperationCatalog.resolve(
+            kind: "assembly", payload: ["action": "assembly.report"])
+        #expect(prefixedAction.operation.action == "report")
+        #expect(prefixedAction.operation.mutating == false)
+
+        // A documented legacy alias normalizes explicitly.
+        let alias = try CadServiceOperationCatalog.resolve(kind: "drawing",
+                                                           payload: ["op": "drawing.sheet"])
+        #expect(alias.operation.action == "standardSheet")
+
+        // The propose-shaped envelope flattens `args` into the arguments.
+        let nested = try CadServiceOperationCatalog.resolve(
+            kind: "drawing", payload: ["op": "drawing.addPage",
+                                       "args": ["kind": "iso", "scale": 0.5]])
+        #expect(nested.arguments["kind"] as? String == "iso")
+        #expect((nested.arguments["scale"] as? NSNumber)?.doubleValue == 0.5)
+
+        // A matching action + op pair is accepted once.
+        let both = try CadServiceOperationCatalog.resolve(
+            kind: "drawing", payload: ["action": "pages", "op": "drawing.pages"])
+        #expect(both.operation.action == "pages")
+    }
+
+    @Test("a malformed request is refused — never defaulted to a read")
+    func malformedRequestsAreRefused() throws {
+        // Missing action: the exact old silent-default case.
+        do {
+            _ = try CadServiceOperationCatalog.resolve(kind: "drawing", payload: [:])
+            Issue.record("an empty payload must not resolve")
+        } catch let failure as CadServiceOperationCatalog.ResolutionFailure {
+            #expect(failure.code == "missing_action")
+            #expect(failure.message.contains("addPage"))
+            #expect(failure.message.contains("standardSheet"))
+            #expect(failure.message.contains("never defaulted"))
+        }
+        // The reported model guess.
+        do {
+            _ = try CadServiceOperationCatalog.resolve(kind: "drawing",
+                                                       payload: ["op": "drawing.createPage"])
+            Issue.record("an unknown op must not resolve")
+        } catch let failure as CadServiceOperationCatalog.ResolutionFailure {
+            #expect(failure.code == "unknown_op")
+            #expect(failure.message.contains("createPage"))
+            #expect(failure.message.contains("Did you mean 'addPage'?"))
+        }
+        // Unknown action, wrong kind prefix, conflicting selectors, bad types.
+        for (kind, payload, code) in [
+            ("assembly", ["action": "explode"], "unknown_action"),
+            ("drawing", ["op": "assembly.addInstance"], "unknown_op"),
+            ("drawing", ["action": "pages", "op": "drawing.addPage"], "conflicting_selector"),
+            ("drawing", ["action": 7], "bad_action"),
+            ("drawing", ["action": "pages", "args": "nope"], "bad_args"),
+            ("drawing", ["action": "pages", "offset": 1, "args": ["offset": 2]], "conflicting_args"),
+        ] as [(String, [String: Any], String)] {
+            do {
+                _ = try CadServiceOperationCatalog.resolve(kind: kind, payload: payload)
+                Issue.record("payload \(payload) must be refused")
+            } catch let failure as CadServiceOperationCatalog.ResolutionFailure {
+                #expect(failure.code == code, "expected \(code) for \(payload), got \(failure.code)")
+            }
+        }
+        // An unknown KIND is refused too.
+        do {
+            _ = try CadServiceOperationCatalog.resolve(kind: "sketch", payload: ["action": "create"])
+            Issue.record("an unknown service kind must be refused")
+        } catch let failure as CadServiceOperationCatalog.ResolutionFailure {
+            #expect(failure.code == "unknown_kind")
+        }
+    }
+
+    @Test("capabilities serves a compact summary and a bounded per-kind page")
+    func capabilitiesPaging() throws {
+        let summary = try CadServiceOperationCatalog.capabilitiesJSON()
+        let kinds = try #require(summary["kinds"] as? [String: Any])
+        #expect(kinds.count == 4)
+        #expect(kinds["drawing"] as? Int == 8, "the compact summary carries counts only")
+        #expect(summary["detail"] == nil)
+        #expect((summary["detail_hint"] as? String)?.contains("kind=") == true)
+
+        let full = CadServiceOperationCatalog.summaryJSON(compact: false)
+        let fullKinds = try #require(full["kinds"] as? [String: Any])
+        let drawing = try #require(fullKinds["drawing"] as? [String: Any])
+        #expect((drawing["mutating"] as? [String])?.contains("addPage") == true)
+        #expect((drawing["read_only"] as? [String])?.contains("pages") == true)
+
+        let page = try CadServiceOperationCatalog.capabilitiesJSON(detailKind: "drawing",
+                                                                   offset: 0, limit: 3)
+        let detail = try #require(page["detail"] as? [String: Any])
+        #expect(detail["total"] as? Int == 8)
+        #expect(detail["next_offset"] as? Int == 3)
+        let operations = try #require(detail["operations"] as? [[String: Any]])
+        #expect(operations.count == 3)
+        let first = try #require(operations.first)
+        #expect(first["action"] as? String == "standardSheet")
+        #expect((first["args"] as? [[String: Any]])?.isEmpty == false)
+        #expect((first["examples"] as? [String])?.isEmpty == false)
+
+        let last = try CadServiceOperationCatalog.capabilitiesJSON(detailKind: "drawing",
+                                                                   offset: 6, limit: 3)
+        let lastDetail = try #require(last["detail"] as? [String: Any])
+        #expect(lastDetail["next_offset"] is NSNull)
+        #expect((lastDetail["operations"] as? [[String: Any]])?.count == 2)
+
+        do {
+            _ = try CadServiceOperationCatalog.capabilitiesJSON(detailKind: "unknown")
+            Issue.record("an unknown detail kind must be refused")
+        } catch let failure as CadServiceOperationCatalog.ResolutionFailure {
+            #expect(failure.code == "unknown_kind")
+        }
+
+        // A plain merge keeps a host-provided catalog untouched; a detail
+        // merge replaces the (potentially huge) engine reply with the
+        // catalog-focused page and stays inside the model-visible budget.
+        let merged = CadServiceOperationCatalog.mergingCapabilities(
+            into: #"{"ok":true,"service_operations":{"kinds":{"drawing":{}}}}"#,
+            detailKind: nil, offset: 0, limit: nil)
+        let mergedObject = try #require((try? JSONSerialization.jsonObject(with: Data(merged.utf8))) as? [String: Any])
+        let existing = try #require(mergedObject["service_operations"] as? [String: Any])
+        #expect(existing["detail_hint"] == nil, "a host-provided catalog must not be overwritten")
+
+        let bigEngineReply = #"{"ok":true,"padding":"\#(String(repeating: "x", count: 3700))"}"#
+        let detailReply = CadServiceOperationCatalog.mergingCapabilities(
+            into: bigEngineReply, detailKind: "drawing", offset: 0, limit: 8)
+        #expect(detailReply.utf8.count <= CadServiceOperationCatalog.modelSummaryBudget)
+        let detailObject = try #require((try? JSONSerialization.jsonObject(with: Data(detailReply.utf8))) as? [String: Any])
+        let serviceDetail = try #require((detailObject["service_operations"] as? [String: Any])?["detail"] as? [String: Any])
+        #expect(serviceDetail["kind"] as? String == "drawing")
+        #expect((serviceDetail["operations"] as? [[String: Any]])?.isEmpty == false,
+                "the page shrinks to what fits instead of truncating the JSON")
+    }
+}
+
 @Suite("Native CAD capability matrix")
+
 struct NativeCADCapabilityMatrixTests {
     @Test("creation describes the native package; exchange rows state view/edit/export separately")
     func rowsAreExplicit() throws {

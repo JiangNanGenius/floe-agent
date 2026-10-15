@@ -47,6 +47,7 @@ targets:
       - ../../FloeApp/Notes/NotesLinkedMindMaps.swift
       - ../../FloeApp/Notes/NotesAgentTools.swift
       - ../../FloeApp/Notes/NotesDocumentThumbnail.swift
+      - ../../FloeApp/Notes/NotesWorkbookCoverPlan.swift
       - ../../FloeApp/Notes/NotesEngineeringCoverRenderer.swift
       - ../../FloeApp/Notes/NotesEngineeringView.swift
       - ../../FloeApp/Canvas/CanvasGeometry.swift

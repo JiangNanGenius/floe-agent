@@ -250,6 +250,32 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
     /// Optional so archives written before this kind still decode.
     public var engineeringResourceID: UUID?
     public var engineeringFileName: String?
+    /// Explicit user cover for this document, independent of the document's own
+    /// bytes. It is a document-bound immutable Notes resource (registered in the
+    /// same store as every other resource), never an external path, and it has
+    /// priority over every automatic cover renderer. Optional so documents and
+    /// archives written before custom covers decode with no cover.
+    public var coverResourceID: UUID?
+    /// Monotonic cover version, independent of the content `revision`. It
+    /// changes on every set/restore so a cover cache key invalidates without
+    /// depending on the content revision. Nil means "never customized" for
+    /// documents written before custom covers; because clearing keeps a bumped
+    /// version, a restored automatic cover can never collide with the old key.
+    public var coverRevision: Int?
+    /// The effective cover: an explicit custom resource or the automatic
+    /// renderer. This is the single priority decision every cover surface reads.
+    public var coverMode: NoteCoverMode {
+        coverResourceID.map(NoteCoverMode.custom) ?? .automatic
+    }
+    /// The cover version normalized for compare-and-swap: a document written
+    /// before custom covers has no version and is treated as version 0, so the
+    /// first cover edit is still a compare against a known baseline.
+    public var normalizedCoverRevision: Int { coverRevision ?? 0 }
+    /// Cache-key fragment that changes on exactly the cover state changes.
+    /// It carries a cover-specific version, not the content revision.
+    public var coverCacheToken: String {
+        "\(coverResourceID?.uuidString ?? "auto")@\(normalizedCoverRevision)"
+    }
     public init(id: UUID = UUID(), kind: Kind = .notebook, notebookID: UUID? = nil, title: String) {
         self.id = id; self.kind = kind; self.notebookID = notebookID; self.title = title; self.revision = 0
         self.pages = kind == .notebook ? [NotePage()] : []
@@ -261,7 +287,7 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
         Set(pages.flatMap { page in
             [page.backgroundResourceID, page.drawingResourceID].compactMap { $0 }
             + page.elements.compactMap(\.resourceID)
-        } + nodes.compactMap(\.imageResourceID) + nodes.flatMap { ($0.attachments ?? []).map(\.resourceID) } + [officeResourceID, engineeringResourceID].compactMap { $0 })
+        } + nodes.compactMap(\.imageResourceID) + nodes.flatMap { ($0.attachments ?? []).map(\.resourceID) } + [officeResourceID, engineeringResourceID, coverResourceID].compactMap { $0 })
     }
     public var searchableText: String {
         ([title] + tags + ((officeTextResourceID == officeResourceID ? officeExtractedText : nil).map { [$0] } ?? []) + (engineeringFileName.map { [$0] } ?? []) + pages.compactMap(\.extractedText) + pages.compactMap(\.indexedVisualText) + pages.flatMap { $0.elements.map(\.text) }
@@ -287,6 +313,10 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
     public func validate() throws {
         guard schemaVersion == 1, revision >= 0, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_document_version_or_title_is"))
+        }
+        guard coverRevision == nil || coverRevision! >= 0 else {
+            throw NoteError.invalidDocument(String(localized: "notes.note_models.invalid_cover_version",
+                                                   defaultValue: "The document cover version is invalid"))
         }
         guard Set(pages.map(\.id)).count == pages.count,
               Set(nodes.map(\.id)).count == nodes.count,

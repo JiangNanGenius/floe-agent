@@ -198,6 +198,11 @@ final class ProviderEditorViewModel: ObservableObject {
     /// saved in the same bundle transaction as the primary role.
     private var additionalRoleModels: [ProviderServiceRole: [ModelProfile]] = [:]
     private var declinedServiceRoles: Set<ProviderServiceRole> = []
+    /// Verified catalog identifiers staged for a distinct-connection offer
+    /// opened as its own editor (for example the Google Gemini
+    /// OpenAI-compatible conversation route). Catalog-declared only: nothing
+    /// is invented locally.
+    private let serviceOfferSeedModels: [String]
 
     /// The provider ID (stable across edit; new when adding).
     let providerID: UUID
@@ -209,12 +214,14 @@ final class ProviderEditorViewModel: ObservableObject {
         catalogEntry: ProviderCatalogEntry? = nil,
         catalog: ProviderCatalogIndex? = nil,
         promptStore: ProviderServiceOfferPromptStore = .shared,
-        serviceOfferEndpointOverride: URL? = nil
+        serviceOfferEndpointOverride: URL? = nil,
+        serviceOfferSeedModels: [String] = []
     ) {
         self.center = center
         self.existing = existing
         self.catalog = catalog
         self.promptStore = promptStore
+        self.serviceOfferSeedModels = serviceOfferSeedModels
         let existingModels = existing.flatMap { center.configuredModelsByProvider[$0.id] } ?? []
         self.serviceRole = initialRole ?? ProviderServiceRole.infer(from: existingModels)
         if let existing {
@@ -608,18 +615,63 @@ final class ProviderEditorViewModel: ObservableObject {
             }
         var known = Set(models.map(\.remoteModelID))
         for model in discovered where known.insert(model.remoteModelID).inserted {
-            models.append(Self.normalizedRoleModel(model, role: role, providerID: providerID))
+            var normalized = Self.normalizedRoleModel(model, role: role, providerID: providerID)
+            if role == .conversation {
+                // Catalog-declared conversation models use the same
+                // metadata-driven defaults as discovery and manual entry.
+                normalized.capabilities = defaultCapabilities(
+                    forRemoteID: normalized.remoteModelID,
+                    role: .conversation
+                )
+            }
+            models.append(normalized)
         }
         return models
     }
 
     /// The catalog entry this editor is anchored to: the stored presetID for
-    /// an existing provider, or the identity applied from the picker.
+    /// an existing provider, or the identity applied from the picker. Hidden
+    /// presets stay resolvable so a saved provider can still be edited.
     private func resolvedCatalogEntry() -> ProviderCatalogEntry? {
         // catalogPresetID is seeded from the stored presetID and updated by
         // catalog selection, so it is the current catalog identity.
         guard let presetID = catalogPresetID, let catalog else { return nil }
-        return catalog.all.first { $0.presetID == presetID }
+        return catalog.entry(presetID: presetID)
+    }
+
+    /// Verified catalog metadata for one remote model identifier, when the
+    /// entry anchored to this editor declares it.
+    func catalogModelMetadata(for remoteID: String) -> ProviderCatalogModelMetadata? {
+        resolvedCatalogEntry()?.modelMetadata?[remoteID]
+    }
+
+    /// True when the catalog verifies image input for this model AND the
+    /// staged/saved row actually carries the `.vision` bit: the badge states
+    /// what the run will really send, never a provider-wide guess.
+    func catalogVerifiedImageInput(for model: ModelProfile) -> Bool {
+        model.capabilities.contains(.vision)
+            && ProviderCatalogCapabilityResolver.supportsImageInput(
+                catalogModelMetadata(for: model.remoteModelID)
+            )
+    }
+
+    /// Capability defaults for a NEWLY created model row. Discovery and the
+    /// manual fallback use this same pure resolver: verified catalog metadata
+    /// when present, the legacy protocol default otherwise. Existing rows are
+    /// never rewritten here — only the user-reviewed migration can do that.
+    private func defaultCapabilities(
+        forRemoteID remoteID: String,
+        role: ProviderServiceRole
+    ) -> ModelCapabilities {
+        switch role {
+        case .conversation:
+            return ProviderCatalogCapabilityResolver.capabilities(
+                for: catalogModelMetadata(for: remoteID),
+                base: ModelCapabilities.defaultTextModel(for: selectedProtocol)
+            )
+        case .image, .video:
+            return role.defaultCapabilities
+        }
     }
 
     /// Catalog entry exposed to the view for the "configure separately" flow
@@ -692,9 +744,19 @@ final class ProviderEditorViewModel: ObservableObject {
         )
     }
 
-    /// Loads the current secret-sync state for an existing provider.
+    /// Loads the current secret-sync state for an existing provider, or
+    /// stages a distinct-connection offer's verified catalog identifiers for
+    /// a new one.
     func load() async {
         guard existing != nil else {
+            // A distinct-connection offer (separate endpoint/auth) carries its
+            // verified catalog identifiers into this editor so the new
+            // settings row is immediately usable without local guessing.
+            if serviceRole == .conversation {
+                for remoteID in serviceOfferSeedModels {
+                    addManualModel(remoteID: remoteID, displayName: remoteID)
+                }
+            }
             defaultModelID = center.modelPreferences.defaultAgentModelID
             return
         }
@@ -963,6 +1025,7 @@ final class ProviderEditorViewModel: ObservableObject {
 
     func updateModel(_ model: ModelProfile) {
         guard let index = candidateModels.firstIndex(where: { $0.id == model.id }) else { return }
+        let previous = candidateModels[index]
         var normalized = model
         if serviceRole == .conversation {
             normalized.capabilities.insert(.text)
@@ -973,6 +1036,19 @@ final class ProviderEditorViewModel: ObservableObject {
             normalized.capabilities.remove(.approval)
             normalized.isHiddenFromPrimaryPicker = true
             normalized.useSurfaces = serviceRole.defaultUseSurfaces
+        }
+        // Record exactly the user-editable bits this save changed, so refresh,
+        // discovery and sync can never silently re-enable a disabled bit (or
+        // silently disable an enabled one). Forced role bits (.text/.approval)
+        // are not user decisions and stay out of the mask.
+        let userEditable: ModelCapabilities = [
+            .vision, .tools, .imageGeneration, .imageEditing, .videoGeneration
+        ]
+        let changed = normalized.capabilities
+            .symmetricDifference(previous.capabilities)
+            .intersection(userEditable)
+        if !changed.isEmpty {
+            normalized.explicitCapabilities = (previous.explicitCapabilities ?? []).union(changed)
         }
         candidateModels[index] = normalized
         nativeToolStatusByModelID[normalized.id] = NativeToolCapabilityProbe.initialStatus(for: normalized)
@@ -995,14 +1071,26 @@ final class ProviderEditorViewModel: ObservableObject {
     }
 
     private func mergeDiscovered(_ discovered: [ModelProfile]) {
+        let knownRemoteIDs = Set(candidateModels.map(\.remoteModelID))
         let normalized = discovered.map { discoveredModel in
             var model = discoveredModel
             if serviceRole != .conversation {
                 model.capabilities = serviceRole.defaultCapabilities
                 model.isHiddenFromPrimaryPicker = true
                 model.useSurfaces = serviceRole.defaultUseSurfaces
-            } else if model.useSurfaces == nil {
-                model.useSurfaces = serviceRole.defaultUseSurfaces
+            } else {
+                // New rows get metadata-driven defaults. Existing rows keep
+                // their stored capabilities exactly: the merger can only add
+                // bits the user has not explicitly decided.
+                if !knownRemoteIDs.contains(model.remoteModelID) {
+                    model.capabilities = defaultCapabilities(
+                        forRemoteID: model.remoteModelID,
+                        role: .conversation
+                    )
+                }
+                if model.useSurfaces == nil {
+                    model.useSurfaces = serviceRole.defaultUseSurfaces
+                }
             }
             return model
         }
@@ -1021,9 +1109,7 @@ final class ProviderEditorViewModel: ObservableObject {
             remoteModelID: trimmed,
             displayName: displayName.isEmpty ? trimmed : displayName,
             limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192),
-            capabilities: serviceRole == .conversation
-                ? ModelCapabilities.defaultTextModel(for: selectedProtocol)
-                : serviceRole.defaultCapabilities,
+            capabilities: defaultCapabilities(forRemoteID: trimmed, role: serviceRole),
             useSurfaces: serviceRole.defaultUseSurfaces,
             isHiddenFromPrimaryPicker: serviceRole == .conversation ? false : true
         )

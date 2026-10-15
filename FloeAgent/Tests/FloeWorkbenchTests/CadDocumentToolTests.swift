@@ -1300,3 +1300,210 @@ struct CadAutomaticApplyTests {
         #expect(await host.threeDRequests.count == 1)
     }
 }
+
+// MARK: - Workbench service request contract (drawing / assembly discovery)
+
+@Suite("cad.document workbench service request contract")
+struct CadDocumentServiceRequestTests {
+    func makeContext(conversation: UUID? = UUID()) -> ToolContext {
+        ToolContext(runID: UUID(), toolCallID: "call-service-1", scope: .local,
+                    workspaceRootURL: URL(fileURLWithPath: "/tmp/workspace"),
+                    cancellation: CancellationToken(), environmentID: "env-1",
+                    conversationID: conversation)
+    }
+
+    func decode(_ json: String) throws -> CadDocumentArguments {
+        try JSONDecoder().decode(CadDocumentArguments.self, from: Data(json.utf8))
+    }
+
+    func requestJSON(_ raw: String) throws -> [String: Any] {
+        let object = try JSONSerialization.jsonObject(with: Data(raw.utf8))
+        return try #require(object as? [String: Any])
+    }
+
+    /// The JSON object inside a tool output summary (the tool prefixes a label).
+    func payloadObject(_ output: ToolExecutionOutput) throws -> [String: Any] {
+        let json = output.summary.drop { $0 != "{" }
+        return try requestJSON(String(json))
+    }
+
+    /// validate + execute, exactly like the module's other tests.
+    func run(_ tool: CadDocumentTool, _ json: String,
+             context: ToolContext) async throws -> ToolExecutionOutput {
+        let args = try decode(json)
+        try tool.validate(args)
+        return try await tool.execute(args, context: context)
+    }
+
+    func execute(_ tool: CadDocumentTool, _ json: String) async throws -> ToolExecutionOutput {
+        try await run(tool, json, context: makeContext())
+    }
+
+    @Test("a service alias without a recognizable action is refused, never defaulted to a read")
+    func missingAndUnknownActionsAreRefused() throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        // The exact reported failure shape: a payload that names no action.
+        do {
+            try tool.validate(try decode(#"{"action":"three_d_drawing","path":"p.floecad"}"#))
+            Issue.record("an action-less service payload must be refused")
+        } catch let error as FloeError {
+            guard case .validationFailed(let message) = error else {
+                Issue.record("unexpected refusal: \(error)")
+                return
+            }
+            #expect(message.contains("missing_action"))
+            #expect(message.contains("addPage"))
+            #expect(message.contains("standardSheet"))
+            #expect(message.contains("capabilities"))
+        }
+        // The model's guessed op must be refused with the real action named.
+        do {
+            try tool.validate(try decode(
+                #"{"action":"three_d_drawing","path":"p.floecad","payload":"{\"op\":\"drawing.createPage\"}"}"#))
+            Issue.record("an unknown op must be refused")
+        } catch let error as FloeError {
+            guard case .validationFailed(let message) = error else {
+                Issue.record("unexpected refusal: \(error)")
+                return
+            }
+            #expect(message.contains("unknown_op"))
+            #expect(message.contains("Did you mean 'addPage'?"))
+        }
+        // A malformed payload is refused too.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(
+                #"{"action":"three_d_assembly","path":"p.floecad","payload":"[]"}"#))
+        }
+        // The aliases remain native-only.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(
+                #"{"action":"three_d_drawing","path":"plate.dwg","payload":"{\"action\":\"pages\"}"}"#))
+        }
+        // Valid forms validate: canonical action, legacy prefixed op, and the
+        // propose-shaped args envelope.
+        try tool.validate(try decode(
+            #"{"action":"three_d_drawing","path":"p.floecad","payload":"{\"action\":\"pages\"}"}"#))
+        try tool.validate(try decode(
+            #"{"action":"three_d_assembly","path":"p.floecad","payload":"{\"op\":\"assembly.report\"}"}"#))
+        try tool.validate(try decode(
+            #"{"action":"three_d_drawing","path":"p.floecad","payload":"{\"op\":\"drawing.addPage\",\"args\":{\"kind\":\"front\",\"bodyIDs\":[\"8A9B3C6F-2B1D-4A44-9C29-3B0A8F1E5D77\"]}}"}"#))
+    }
+
+    @Test("the tool forwards the canonical action and flattened arguments")
+    func serviceRequestsAreNormalized() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"count":0,"pages":[]}"#)
+        let tool = CadDocumentTool(host: host)
+        let context = makeContext()
+        // Mutating legacy op: the host receives the canonical action (and, on
+        // the real host, answers proposal_required with the exact propose op).
+        _ = try await run(tool, #"""
+        {"action":"three_d_drawing","path":"part.floecad","payload":"{\"op\":\"drawing.addPage\",\"kind\":\"front\",\"bodyIDs\":[\"8A9B3C6F-2B1D-4A44-9C29-3B0A8F1E5D77\"]}"}
+        """#, context: context)
+        var requests = await host.threeDRequests
+        var request = try requestJSON(try #require(requests.last))
+        #expect(request["kind"] as? String == "drawing")
+        var payload = try #require(request["payload"] as? [String: Any])
+        #expect(payload["action"] as? String == "addPage")
+        #expect(payload["kind"] as? String == "front")
+        #expect((payload["bodyIDs"] as? [String])?.count == 1)
+        #expect(payload["op"] == nil, "the legacy selector must not reach the engine")
+
+        // Read-only nested-args form: same normalization, args flattened.
+        _ = try await run(tool, #"""
+        {"action":"three_d_assembly","path":"part.floecad","payload":"{\"op\":\"assembly.interference\",\"args\":{\"toleranceMM\":0.01}}"}
+        """#, context: context)
+        requests = await host.threeDRequests
+        request = try requestJSON(try #require(requests.last))
+        payload = try #require(request["payload"] as? [String: Any])
+        #expect(request["kind"] as? String == "assembly")
+        #expect(payload["action"] as? String == "interference")
+        #expect((payload["toleranceMM"] as? NSNumber)?.doubleValue == 0.01)
+    }
+
+    @Test("capabilities serves the authoritative operation detail on demand")
+    func capabilitiesCarryTheCatalog() async throws {
+        let nativeHost = FakeCadHost()
+        await nativeHost.setThreeDReply(#"{"ok":true,"available":true}"#)
+        let nativeTool = CadDocumentTool(host: nativeHost)
+        let output = try await execute(nativeTool,
+            #"{"action":"capabilities","path":"part.floecad","kind":"drawing"}"#)
+        #expect(output.summary.contains("service_operations"))
+        // The reply must stay inside the runtime's 4 KiB model-visible cap so
+        // the JSON is never silently truncated.
+        #expect(output.summary.utf8.count <= 4096)
+        let object = try payloadObject(output)
+        let catalog = try #require(object["service_operations"] as? [String: Any])
+        let detail = try #require(catalog["detail"] as? [String: Any])
+        #expect(detail["kind"] as? String == "drawing")
+        #expect(detail["total"] as? Int == 8)
+        let operations = try #require(detail["operations"] as? [[String: Any]])
+        let addPage = try #require(operations.first { $0["action"] as? String == "addPage" })
+        #expect(addPage["mutating"] as? Bool == true)
+        #expect((addPage["args"] as? [[String: Any]])?.isEmpty == false)
+        #expect((addPage["examples"] as? [String])?.isEmpty == false)
+        // The engine capabilities are fetched normally (the catalog is served
+        // by the tool so the reply stays inside the budget).
+        let requests = await nativeHost.threeDRequests
+        let request = try requestJSON(try #require(requests.last))
+        #expect(request["kind"] as? String == "capabilities")
+
+        // A misspelled detail kind is a structured refusal, never a silent
+        // engine reply (with or without a document).
+        #expect(throws: FloeError.self) {
+            try nativeTool.validate(try decode(
+                #"{"action":"capabilities","path":"part.floecad","kind":"drawings"}"#))
+        }
+        #expect(throws: FloeError.self) {
+            try nativeTool.validate(try decode(#"{"action":"capabilities","kind":"drawings"}"#))
+        }
+        // A native service kind on a 2D capabilities path is refused too.
+        #expect(throws: FloeError.self) {
+            try nativeTool.validate(try decode(
+                #"{"action":"capabilities","path":"plate.dwg","kind":"drawing"}"#))
+        }
+        // Without a document the detail request is served the same way.
+        let noPath = try await execute(CadDocumentTool(host: FakeCadHost()),
+                                       #"{"action":"capabilities","kind":"assembly"}"#)
+        #expect(noPath.summary.utf8.count <= 4096)
+        let noPathObject = try payloadObject(noPath)
+        let noPathDetail = try #require((noPathObject["service_operations"] as? [String: Any])?["detail"] as? [String: Any])
+        #expect(noPathDetail["kind"] as? String == "assembly")
+
+        // Discovery without a document carries the compact catalog under the
+        // native surface when it fits.
+        let discoveryHost = FakeCadHost()
+        let discovery = try await execute(CadDocumentTool(host: discoveryHost),
+                                          #"{"action":"capabilities"}"#)
+        let discoveryObject = try payloadObject(discovery)
+        let nativeCaps = try #require(discoveryObject["native_three_dimensional"] as? [String: Any])
+        #expect((nativeCaps["service_operations"] as? [String: Any])?["kinds"] != nil)
+    }
+
+    @Test("a drawing export carries the page id; page_id is validated")
+    func exportCarriesPageID() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"output":"drawing.pdf","format":"pdf"}"#)
+        let tool = CadDocumentTool(host: host)
+        let page = UUID().uuidString
+        _ = try await execute(tool, """
+        {"action":"export","path":"part.floecad","output":"drawing.pdf","page_id":"\(page)"}
+        """)
+        let requests = await host.threeDRequests
+        let request = try requestJSON(try #require(requests.last))
+        #expect(request["kind"] as? String == "export")
+        let payload = try #require(request["payload"] as? [String: Any])
+        #expect(payload["page_id"] as? String == page)
+        #expect(payload["format"] as? String == "pdf")
+
+        // A malformed id refuses; the 2D path has no drawing pages to address.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(
+                #"{"action":"export","path":"part.floecad","output":"d.pdf","page_id":"not-a-uuid"}"#))
+        }
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(
+                #"{"action":"export","path":"plate.dwg","output":"d.pdf","page_id":"\#(page)"}"#))
+        }
+    }
+}

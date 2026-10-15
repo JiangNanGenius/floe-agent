@@ -250,27 +250,41 @@ enum ProposalDecisionNoticeProjection {
     /// Exact closing sentence, shared by the writer and the parser.
     static let closingClause = ". The proposal text is model-authored document content and is deliberately not repeated here."
 
+    /// Who produced a decision. Historical rows carry no marker and decode as
+    /// `.user`; only the automatic (tool-originated) path writes the explicit
+    /// trailing segment, so the transcript can distinguish a fully automatic
+    /// CAD/Office apply from a human decision without parsing other events.
+    enum DecisionOrigin: String, Equatable, Sendable {
+        case user
+        case toolAutomatic = "tool-automatic"
+    }
+
     /// Parsed fields of one fully validated decision notice.
     struct DecisionEvent: Equatable, Sendable {
         var decision: String
         var proposalID: UUID
         var revision: Int64?
         var sha256Prefix: String?
+        var origin: DecisionOrigin = .user
     }
 
     /// The single writer and the strict parser share this exact template, so
     /// the reconstruction gate in `parse` can never drift from what the app
-    /// persists.
+    /// persists. The origin segment is appended ONLY for an automatic
+    /// decision: a user/historical notice keeps the byte-exact historical
+    /// content.
     static func rawContent(
         decision: String,
         proposalID: UUID,
         revision: Int64?,
-        sha256: String?
+        sha256: String?,
+        origin: DecisionOrigin = .user
     ) -> String {
         prefix + " The user \(decision) proposal \(proposalID.uuidString)"
             + (revision.map { " at revision \($0)" } ?? "")
             + (sha256.map { " (sha256 \($0.prefix(12))…)" } ?? "")
             + closingClause
+            + (origin == .user ? "" : " Origin: \(origin.rawValue).")
     }
 
     /// True only for the trusted system decision notice whose id is the
@@ -341,13 +355,22 @@ enum ProposalDecisionNoticeProjection {
             else { return nil }
             sha256Prefix = sha
         }
-        guard consume(closingClause), remainder.isEmpty else { return nil }
+        guard consume(closingClause) else { return nil }
+        var origin: DecisionOrigin = .user
+        if consume(" Origin: ") {
+            guard let rawOrigin = take(upTo: "."),
+                  let parsed = DecisionOrigin(rawValue: rawOrigin)
+            else { return nil }
+            origin = parsed
+        }
+        guard remainder.isEmpty else { return nil }
         let event = DecisionEvent(
             decision: decision, proposalID: proposalID,
-            revision: revision, sha256Prefix: sha256Prefix)
+            revision: revision, sha256Prefix: sha256Prefix, origin: origin)
         guard rawContent(
             decision: event.decision, proposalID: event.proposalID,
-            revision: event.revision, sha256: event.sha256Prefix) == content
+            revision: event.revision, sha256: event.sha256Prefix,
+            origin: event.origin) == content
         else { return nil }
         return event
     }
@@ -1099,6 +1122,12 @@ final class ConversationCenter: ObservableObject {
         let runningInputStore: EphemeralRunningInputStore
     }
     private var temporaryRunOrigins: [UUID: TemporaryRunOrigin] = [:]
+
+    /// One automatic reasoning-effort decision per run: the configured
+    /// auxiliary model selects the level once at fresh-round ingress and the
+    /// choice is frozen (RAM + durable run event); resume/retry reuse it
+    /// without resubmitting a helper request.
+    private let automaticReasoningEffortCoordinator = AutomaticReasoningEffortCoordinator()
 
     /// Deterministic test seams for the launch pipeline. Each hook fires at
     /// one suspension point so tests can interleave End/Keep with a send
@@ -1861,6 +1890,7 @@ final class ConversationCenter: ObservableObject {
         await session.runningInputStore.close()
         // RAM-only personal-query snapshots never outlive their session.
         await PersonalToolCursorStore.shared.revoke(fallbackRunIDs: temporaryRunIDs)
+        await automaticReasoningEffortCoordinator.cancelAndForget(runIDs: temporaryRunIDs)
         // The RAM draft never enters the durable bucket; make sure no stale
         // durable entry survives either.
         ComposerDraftStore.shared.setTemporaryDraftExcluded(id, false)
@@ -1981,6 +2011,10 @@ final class ConversationCenter: ObservableObject {
         // never matched by a run identity.
         await PersonalToolCursorStore.shared.revoke(fallbackRunIDs: temporaryRunIDs)
 
+        // A destroyed session's automatic-effort classifier is session-owned
+        // work: cancel it and drop its RAM decision so a late helper can never
+        // touch a replacement session or another round.
+        await automaticReasoningEffortCoordinator.cancelAndForget(runIDs: Set(ownedRunIDs))
         // ---- Cancellation dispatch: still before any keep settlement. ----
         // The explicit service cancel is what closes the run service's own
         // unstructured runtime work; task cancellation alone does not.
@@ -2131,6 +2165,12 @@ final class ConversationCenter: ObservableObject {
     /// callback).
     private(set) var lastPromotedConversationID: UUID?
 
+    /// Conversations whose post-Keep ordinary auto-title was already
+    /// scheduled. Keeps a retried/duplicated Keep from issuing a second
+    /// provider call; the durable `.autoPending` predicate remains the
+    /// authority against a user rename.
+    private var promotedAutoTitleScheduled: Set<UUID> = []
+
     /// True while the exact session incarnation that started the operation is
     /// still the active temporary session. Every Keep success/catch mutation
     /// checks it before touching session state, drafts or navigation.
@@ -2248,6 +2288,17 @@ final class ConversationCenter: ObservableObject {
             promotionContext = nil
             temporarySession = nil
             lastPromotedConversationID = conversationID
+            // ORDINARY auto-title EXACTLY ONCE after a durable Keep: the
+            // promotion already committed the instant first-message fallback
+            // (never an empty title), and this one ordinary generation
+            // replaces it. The durable `title_origin == 'autoPending'`
+            // predicate is the final guard, so a user rename is never
+            // overwritten; the in-flight set keeps a retried Keep from
+            // issuing a second provider call.
+            schedulePromotedAutoTitle(
+                conversationID: conversationID,
+                messages: context.conversationSnapshot.messages,
+                preferredModelID: session.preferredModelID)
             // Migrate the un-sent RAM composer draft into the durable bucket
             // (Keep adopts current records); End still drops it.
             ComposerDraftStore.shared.moveEphemeralEntryToDurable(for: conversationID)
@@ -2361,6 +2412,31 @@ final class ConversationCenter: ObservableObject {
 
     /// Promotion title: local, instant, content-derived from the first user
     /// message; the ordinary automatic-title flow may replace it later.
+    /// One-shot ordinary title generation after a successful Keep. Exactly
+    /// once per promoted conversation: `generateAndApplyTitle` itself refuses
+    /// anything but `.autoPending`, so a manual rename (which the promotion
+    /// carries as `.manual`) and a repeat call both fail closed.
+    private func schedulePromotedAutoTitle(
+        conversationID: UUID,
+        messages: [PersistedMessage],
+        preferredModelID: UUID?
+    ) {
+        guard promotedAutoTitleScheduled.insert(conversationID).inserted else { return }
+        guard let first = messages.first(where: { $0.role == "user" }) else { return }
+        let goal = String(first.content.prefix(2_000))
+        guard !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let pair = providerAndModel(modelID: preferredModelID)
+            ?? generalAuxiliaryProviderAndModel()
+        guard let (provider, model) = pair else { return }
+        Task { [weak self] in
+            await self?.generateAndApplyTitle(
+                conversationID: conversationID,
+                goal: goal,
+                provider: provider,
+                model: model)
+        }
+    }
+
     private static func temporaryPromotedTitle(messages: [PersistedMessage]) -> String {
         guard let first = messages.first(where: { $0.role == "user" }) else {
             return ""
@@ -2481,6 +2557,64 @@ final class ConversationCenter: ObservableObject {
         )
     }
 
+    /// The durable outstanding-dependency projection consulted at a run's
+    /// terminal boundary. Self-healing by design: a dependency whose job is
+    /// already terminal (or whose long-lived service is verifiably ready) is
+    /// resolved on the spot and excluded, so a lost completion callback — an
+    /// app relaunch between the job ending and its notification, for example —
+    /// can never park a run forever. An edge whose job record is gone
+    /// resolves honestly as interrupted (the outcome is unknown), never as a
+    /// silent success.
+    nonisolated static func outstandingRunDependencies(
+        runID: UUID,
+        dependencies: SQLiteRunDependencyStore,
+        jobs: BackgroundJobService?
+    ) async -> [RunDependencyLabel] {
+        guard let pending = try? await dependencies.pending(runID: runID), !pending.isEmpty else {
+            return []
+        }
+        var labels: [RunDependencyLabel] = []
+        for dependency in pending {
+            guard let jobs, let job = try? await jobs.job(id: dependency.jobID) else {
+                _ = try? await dependencies.resolve(
+                    jobID: dependency.jobID, state: .interrupted,
+                    note: "The owning job record is gone; its outcome is unknown.")
+                continue
+            }
+            if job.state.isTerminal {
+                _ = try? await dependencies.resolve(
+                    jobID: dependency.jobID,
+                    state: BackgroundJobService.dependencyState(for: job.state),
+                    note: job.lastError ?? "job \(job.state.rawValue)")
+                continue
+            }
+            // A long-lived service resolves on READINESS, not termination: it
+            // keeps running in the background after this wait ends.
+            if dependency.kind == "service", serviceProgressIsReady(job.progressJSON) {
+                _ = try? await dependencies.resolve(
+                    jobID: dependency.jobID, state: .resolved,
+                    note: "Service is verifiably ready and keeps running in the background.")
+                continue
+            }
+            labels.append(RunDependencyLabel(
+                identifier: job.id.uuidString,
+                kind: dependency.kind,
+                label: job.targetTool))
+        }
+        return labels
+    }
+
+    /// True when a long-lived local service's own progress document reports a
+    /// non-empty previewURL — the only verified readiness signal (HTTP
+    /// answered). Never derived from elapsed time or a claimed state.
+    nonisolated static func serviceProgressIsReady(_ progressJSON: Data?) -> Bool {
+        guard let progressJSON,
+              let object = try? JSONSerialization.jsonObject(with: progressJSON) as? [String: Any]
+        else { return false }
+        if let preview = object["previewURL"] as? String, !preview.isEmpty { return true }
+        return false
+    }
+
     /// True when the resolved run environment routes local shell execution
     /// into a local Linux guest: the same backend predicate the guest
     /// provider applies when it owns an environment
@@ -2499,6 +2633,84 @@ final class ConversationCenter: ObservableObject {
         return record.executionBackend == .linuxVM && record.state != .deleting
     }
 
+    /// Resolves the run's effective model for the automatic reasoning-effort
+    /// contract: one bounded auxiliary-model decision per fresh round, frozen
+    /// on the run, reused by resume/retry (re-clamped for a re-selected
+    /// target); manual selections and models whose protocol cannot transmit
+    /// an effort value pass through unchanged. `ingress` is `.freshRound`
+    /// only for the deferred launch of a new round.
+    private func resolvedAutomaticReasoningEffortModel(
+        runID: UUID,
+        provider: ProviderProfile,
+        model: ModelProfile,
+        goal: String,
+        attachments: [AttachmentRef],
+        isTemporary: Bool,
+        ingress: AutomaticReasoningEffortIngress,
+        runStore: any RunStore
+    ) async -> ModelProfile {
+        guard model.effectiveReasoningEffort == .automatic,
+              AutomaticReasoningEffortSupport.supportsVariableEffort(
+                  provider: provider, model: model) else { return model }
+        let classifier = automaticReasoningEffortClassifier(
+            targetProvider: provider,
+            targetModel: model,
+            isTemporary: isTemporary
+        )
+        let input = AutomaticReasoningEffortInputBuilder.build(
+            goal: goal, attachments: attachments)
+        let seedReader: AutomaticReasoningEffortCoordinator.SeedReader = { runID in
+            guard let events = try? await runStore.events(
+                runID: runID, afterSequence: 0, limit: 32) else { return nil }
+            return AutomaticReasoningEffortDecision.find(in: events)
+        }
+        let recorder: AutomaticReasoningEffortCoordinator.Recorder = { runID, decision in
+            // Invisible `.status` record (no state/reason key, so the timeline
+            // never renders a classifier row). Carries no input text.
+            _ = try? await runStore.appendEvent(
+                runID: runID,
+                kind: .status,
+                payloadJSON: decision.payloadJSON()
+            )
+        }
+        return await automaticReasoningEffortCoordinator.resolvedModel(
+            runID: runID,
+            provider: provider,
+            model: model,
+            boundedInput: input,
+            classifier: classifier,
+            ingress: ingress,
+            seedReader: seedReader,
+            recorder: recorder
+        )
+    }
+
+    /// The existing configured auxiliary text model, used once per fresh
+    /// round. No parallel route, credential store or provider is introduced;
+    /// an unconfigured helper returns nil and the coordinator falls back to
+    /// the provider's own supported default.
+    private func automaticReasoningEffortClassifier(
+        targetProvider: ProviderProfile,
+        targetModel: ModelProfile,
+        isTemporary: Bool
+    ) -> (any AutomaticReasoningEffortClassifying)? {
+        guard let (provider, model) = generalAuxiliaryProviderAndModel() else { return nil }
+        // Never queue a second generation onto the same resident on-device
+        // model that is about to serve the run itself.
+        if provider.kind == .local,
+           provider.id == targetProvider.id,
+           model.id == targetModel.id {
+            return nil
+        }
+        return AutomaticReasoningEffortAuxiliaryClassifier(
+            provider: provider,
+            model: model,
+            credentials: resolveCredentials(for: provider),
+            adapter: providerAdapter(for: provider),
+            ephemeralTransport: isTemporary
+        )
+    }
+
     func runService(
         for conversationID: UUID,
         provider: ProviderProfile,
@@ -2515,17 +2727,55 @@ final class ConversationCenter: ObservableObject {
         /// racing the pipeline can never switch a started run between the
         /// temporary and ordinary configurations.
         temporaryAuthority: Bool? = nil,
+        /// Trusted explicit execution-environment binding (a scheduled task's
+        /// frozen record). Revalidated against the registry and used as the
+        /// run's actual environment identity instead of resolving a new one.
+        environmentBindingOverride: String? = nil,
         conversationHistory: [ConversationMessage] = [],
         currentUserImages: [ConversationImagePart] = [],
-        currentUserAttachments: [AttachmentRef] = []
+        currentUserAttachments: [AttachmentRef] = [],
+        /// Automatic reasoning-effort ingress. `.freshRound` is passed ONLY
+        /// by the deferred launch pipeline of a newly launched round — the
+        /// single place the one auxiliary decision may be requested.
+        /// Resume/retry/recovery re-enter with `.continuation` (the default)
+        /// and reuse the frozen choice, re-clamped for a re-selected target,
+        /// without a new request.
+        automaticReasoningEffortIngress: AutomaticReasoningEffortIngress = .continuation
     ) async -> ConversationRunService {
         // Temporary conversations run through the SAME runtime with RAM-only
         // stores, no workspace lease, no personalization/memory recall, and a
-        // strict web-only tool ceiling — never a parallel runtime.
+        // strict read-only tool ceiling — never a parallel runtime.
         let isTemporary = temporaryAuthority ?? isTemporaryConversation(conversationID)
+        // Canonical temporary execution configuration. Sending `.chat` used
+        // to set `toolsEnabled == false`, which produced a model request with
+        // ZERO tool schemas and silently bypassed the audited read-only
+        // ceiling (`TemporaryChatToolPolicy` never reached the wire). A
+        // temporary run therefore always launches as `.agent` semantics
+        // (conversationMode `.chat`: no plan drafts, no goal records) WITH
+        // tools enabled; the descriptor-derived ceiling and
+        // `temporaryReadOnly` are what actually bound the run. This is
+        // enforced here — at the service that builds the real request — not
+        // in the UI.
+        let effectiveExecutionMode: AgentExecutionMode = isTemporary ? .agent : executionMode
         let conversationStore = self.conversationStore(for: conversationID)
         let runStore = self.runStore(for: conversationID)
         let runningInputStore = self.runningInputStore(for: conversationID)
+        // Automatic reasoning effort: at most one auxiliary-model decision per
+        // fresh round, frozen on this run's model profile; resume/retry reuse
+        // the frozen abstract choice (re-clamped for a re-selected target)
+        // and never submit a second request. Manual selections and protocols
+        // that cannot transmit an effort value pass through before any helper
+        // route is considered.
+        let model = await resolvedAutomaticReasoningEffortModel(
+            runID: runID,
+            provider: provider,
+            model: model,
+            goal: memoryQuery,
+            attachments: currentUserAttachments,
+            isTemporary: isTemporary,
+            ingress: automaticReasoningEffortIngress,
+            runStore: runStore
+        )
         let conversationHistory = isTemporary
             ? conversationHistory
             : (try? await environment.intelligenceStore.applyingCompactions(conversationHistory, conversationID: conversationID)) ?? conversationHistory
@@ -2789,7 +3039,19 @@ final class ConversationCenter: ObservableObject {
         // runs without a task root never bind (no first-project fallback) and
         // nil keeps the execution layer's existing resolution.
         let runExecutionEnvironmentID: String?
-        if isTemporary {
+        if let environmentBindingOverride {
+            // Explicit, TRUSTED binding from a scheduled task's frozen
+            // record: revalidated against the real registry (exists and is
+            // not deleting) and used as-is. It reaches the launched run and
+            // every child; it is never derived from model text and never
+            // falls back silently — an unavailable override yields nil (the
+            // execution layer's own resolution) rather than a wrong guest.
+            if await environment.environmentRegistry.record(id: environmentBindingOverride) != nil {
+                runExecutionEnvironmentID = environmentBindingOverride
+            } else {
+                runExecutionEnvironmentID = nil
+            }
+        } else if isTemporary {
             runExecutionEnvironmentID = nil
         } else if runSurface == .canvas {
             runExecutionEnvironmentID = nil
@@ -2821,11 +3083,16 @@ final class ConversationCenter: ObservableObject {
         // inside the store but never mint authority, and a missing key or an
         // invalid project id fails closed.
         let serviceStorePaths = environment.workbenchCenter.typedServiceStorePaths
+        // Sendable handles for the terminal-boundary dependency projection:
+        // both are actors, so the @Sendable configuration closure can consult
+        // the durable truth without capturing the app environment.
+        let runDependencyStore = SQLiteRunDependencyStore(database: environment.database)
+        let jobServiceForRun = environment.backgroundJobService
         let configuration = FloeAgentRuntime.Configuration(
             conversationID: conversationID,
             provider: provider,
             model: model,
-            conversationMode: executionMode.conversationMode,
+            conversationMode: effectiveExecutionMode.conversationMode,
             activeSkillIDs: skills.skillIDs,
             relatedSkillIDsByTool: skills.relatedSkillIDsByTool,
             allowedToolNames: allowedToolNames,
@@ -2834,7 +3101,7 @@ final class ConversationCenter: ObservableObject {
             workspaceRootURL: runWorkspaceRoot,
             canvasStagedDocument: canvasStagedDocument,
             allowedWorkspacePaths: taskPolicy.filePaths,
-            toolsEnabled: executionMode.toolsEnabled,
+            toolsEnabled: effectiveExecutionMode.toolsEnabled,
             // Use the runtime's unbounded default. Progress/timeout guards,
             // rather than an arbitrary lifetime call count, stop stuck tasks.
             verifyFinalAnswer: environment.settingsCenter.verifyFinalAnswer,
@@ -2874,7 +3141,17 @@ final class ConversationCenter: ObservableObject {
             localLinuxGuestEnvironment: runLocalLinuxGuest,
             // Service-owned store roots for the typed mutable-target
             // contract (media project records); see the local above.
-            serviceStorePaths: serviceStorePaths
+            serviceStorePaths: serviceStorePaths,
+            // Required background work keeps this run nonterminal until it
+            // resolves. The projection reads durable dependency rows (never
+            // a live in-memory job shadow store) and self-heals a dependency
+            // whose completion callback was lost.
+            outstandingDependencies: {
+                await Self.outstandingRunDependencies(
+                    runID: runID,
+                    dependencies: runDependencyStore,
+                    jobs: jobServiceForRun)
+            }
         )
         await environment.subagentRunnerRegistry.register(
             SubagentRunner(
@@ -2882,7 +3159,19 @@ final class ConversationCenter: ObservableObject {
                 model: model,
                 adapter: providerAdapter(for: provider, ownerRunID: runID),
                 credentials: credentials,
-                executor: catalogExecutor
+                executor: catalogExecutor,
+                // Durable child identity + transcript: written before the
+                // child's first turn and after every iteration, so the child
+                // panel can open a child conversation's tool history/result
+                // and survive UI close / app relaunch.
+                childRunStore: SQLiteChildRunStore(database: environment.database),
+                onChildStateChange: { [weak self] _ in
+                    await MainActor.run {
+                        // The durable store is the authority; republishing the
+                        // session makes the child panel re-read it.
+                        self?.publishSession(conversationID)
+                    }
+                }
             ),
             for: runID
         )
@@ -3158,12 +3447,13 @@ final class ConversationCenter: ObservableObject {
     /// proposal text is included, so nothing untrusted can read as an
     /// instruction.
     func recordProposalDecision(conversationID: UUID, proposalID: UUID,
-                                decision: String, revision: Int64?, sha256: String?) async throws {
+                                decision: String, revision: Int64?, sha256: String?,
+                                origin: ProposalDecisionNoticeProjection.DecisionOrigin = .user) async throws {
         let stableID = Self.proposalDecisionID(conversationID: conversationID,
                                                proposalID: proposalID, decision: decision)
         let content = ProposalDecisionNoticeProjection.rawContent(
             decision: decision, proposalID: proposalID,
-            revision: revision, sha256: sha256)
+            revision: revision, sha256: sha256, origin: origin)
         // 1) Durable transcript mirror: idempotent upsert by the stable id.
         //    THROWS when persistence fails — the caller keeps the decision
         //    pending for reconcile instead of claiming a delivery that did
@@ -3196,6 +3486,23 @@ final class ConversationCenter: ObservableObject {
             try? await environment.runningInputStore.cancel(id: stableID)
             throw error
         }
+    }
+
+    /// Records a decision produced by Floe itself (a fully automatic apply
+    /// with no user interaction) with the explicit `tool-automatic` origin.
+    /// Producer-side call sites (the CAD native apply delivery and the
+    /// Office/engineering automatic apply adapters) should prefer this entry;
+    /// manual UI confirmations keep `recordProposalDecision`'s default
+    /// `.user`. Both write the SAME immutable event id for the same
+    /// decision, so a replayed automatic decision upserts instead of
+    /// duplicating a bubble.
+    func recordAutomaticProposalDecision(conversationID: UUID, proposalID: UUID,
+                                         decision: String, revision: Int64?,
+                                         sha256: String?) async throws {
+        try await recordProposalDecision(
+            conversationID: conversationID, proposalID: proposalID,
+            decision: decision, revision: revision, sha256: sha256,
+            origin: .toolAutomatic)
     }
 
     /// Deterministic UUID (v5-style SHA-256) for a proposal decision event.
@@ -3384,6 +3691,16 @@ final class ConversationCenter: ObservableObject {
         if launchIsTemporary, !attachments.isEmpty {
             throw FloeError.validationFailed("Temporary chat only accepts text")
         }
+        // A durable run parked waiting on required background work is NOT
+        // finished. A send while it waits resumes the SAME run with the new
+        // message instead of creating a second run; this holds regardless of
+        // how the UI decided to send.
+        if !launchIsTemporary, !isGoalContinuation,
+           let waiting = await awaitingDependencyRun(conversationID: conversationID) {
+            FloeLogger(category: .app).info(
+                "startRunResumesAwaitingDependency conversation=\(conversationID.uuidString) run=\(waiting.id.uuidString)")
+            return try await resumeRunWithInput(waiting, content: trimmed, attachments: attachments)
+        }
         let launchToken = launchFence.issue(scope: conversationID)
 
         beginLaunch()
@@ -3519,6 +3836,13 @@ final class ConversationCenter: ObservableObject {
         executionMode: AgentExecutionMode = .agent,
         initialPolicy: DraftTaskPolicy? = nil,
         newConversationID: UUID? = nil,
+        /// Predetermined run identity (a scheduled occurrence's stable launch
+        /// identity). A retry after a crash between the durable run's commit
+        /// and the occurrence binding reuses the SAME identity instead of
+        /// creating an invisible second run.
+        newRunID: UUID? = nil,
+        /// Trusted explicit environment binding frozen on the schedule.
+        executionEnvironmentID: String? = nil,
         designLaunchBinding: DesignLaunchBinding? = nil,
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationTask {
@@ -3538,7 +3862,7 @@ final class ConversationCenter: ObservableObject {
             ingress.captures,
             owner: workspaceID.map(CredentialOwner.workspace) ?? .vault
         )
-        let runID = UUID()
+        let runID = newRunID ?? UUID()
         let prepared = try await prepareRunLaunch(RunLaunchRequest(
             newConversationID: newConversationID,
             conversationTitle: title,
@@ -3632,7 +3956,8 @@ final class ConversationCenter: ObservableObject {
             model: model,
             executionMode: executionMode,
             shouldGenerateTitle: true,
-            startOrigin: startOrigin
+            startOrigin: startOrigin,
+            executionEnvironmentID: executionEnvironmentID
         )
         // Register the in-process owner before yielding to any reload or
         // launch-recovery work. This closes the final race between durable
@@ -4306,6 +4631,72 @@ final class ConversationCenter: ObservableObject {
         runServices[runID] != nil
     }
 
+    /// True when the durable run is parked waiting on required background
+    /// work: state `checkpointed` whose checkpoint reason carries the stable
+    /// `awaiting.finite.job` marker. Such a run is NOT finished — new input
+    /// (a dependency completion or a user message) resumes it in place.
+    func isAwaitingDependency(runID: UUID, conversationID: UUID) async -> Bool {
+        guard let record = try? await runStore(for: conversationID).run(id: runID),
+              record.state == "checkpointed" else { return false }
+        // Temporary runs never park on dependencies; they also have no
+        // durable checkpoint store, so the load simply misses.
+        guard let checkpoint = try? await environment.checkpointStore.load(runID: runID),
+              case .checkpointed(let reference) = checkpoint.state else { return false }
+        return (reference.reason ?? "").hasPrefix(FloeAgentRuntime.dependencyWaitReasonPrefix)
+    }
+
+    /// The newest parked-awaiting-dependency run of a conversation, if any.
+    func awaitingDependencyRun(conversationID: UUID) async -> RunRecord? {
+        guard let runs = try? await runStore(for: conversationID)
+            .runs(conversationID: conversationID) else { return nil }
+        for record in runs where record.state == "checkpointed" {
+            if await isAwaitingDependency(runID: record.id, conversationID: conversationID) {
+                return record
+            }
+        }
+        return nil
+    }
+
+    /// Resumes a parked run in place with one new user turn. The message is
+    /// persisted to the conversation (visible timeline) AND injected as the
+    /// resumed run's newest user turn, so the SAME run continues with it.
+    private func resumeRunWithInput(
+        _ record: RunRecord,
+        content: String,
+        attachments: [AttachmentRef]
+    ) async throws -> StartedConversationRun {
+        let resolvedPair: (ProviderProfile, ModelProfile)
+        if let modelID = record.modelID, let resolved = providerAndModel(modelID: modelID) {
+            resolvedPair = resolved
+        } else {
+            resolvedPair = try await resolveProviderAndModel()
+        }
+        let messageID = UUID()
+        let createdAt = Date()
+        try await conversationStore(for: record.conversationID).appendMessage(PersistedMessage(
+            id: messageID,
+            conversationID: record.conversationID,
+            role: "user",
+            content: content,
+            createdAt: createdAt,
+            parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: content)],
+            runID: record.id
+        ))
+        return try await resumeExistingRun(
+            record,
+            provider: resolvedPair.0,
+            model: resolvedPair.1,
+            startOrigin: .explicitUserAction,
+            resumption: RuntimeSteerInput(
+                id: messageID,
+                content: content,
+                images: ConversationHistoryAssembler.inlineImages(attachments),
+                attachments: attachments,
+                createdAt: createdAt
+            )
+        )
+    }
+
     /// Atomic queued -> promoting -> steerPending/consumed transition. The
     /// row is removed from queue semantics only after this exact runtime
     /// confirms acceptance; rejection restores it to queued.
@@ -4318,6 +4709,27 @@ final class ConversationCenter: ObservableObject {
             throw FloeError.validationFailed("The queued message changed before it could be guided")
         }
         guard let service = runServices[expectedRunID], service.conversationID == input.conversationID else {
+            // A durably parked run waiting on required background work is NOT
+            // finished. New input for it resumes the SAME run with that input
+            // — never a parallel/new run — and the running-input row is
+            // consumed with the resumption. This covers both a dependency
+            // completion delivered by the job callback and a user message
+            // composed while the run waited.
+            if let record = try? await runStore(for: input.conversationID).run(id: expectedRunID),
+               await isAwaitingDependency(runID: expectedRunID, conversationID: input.conversationID) {
+                do {
+                    let started = try await resumeRunWithInput(
+                        record, content: input.content, attachments: input.attachments)
+                    try await store.markConsumed(id: inputID, runID: started.runID)
+                    FloeLogger(category: .app).info(
+                        "steerTargetAwaitingDependencyResumed conversation=\(input.conversationID.uuidString) run=\(started.runID.uuidString) input=\(input.id.uuidString)")
+                    publishSession(input.conversationID)
+                    return
+                } catch {
+                    try? await store.restoreQueued(id: inputID)
+                    throw error
+                }
+            }
             try? await store.restoreQueued(id: inputID)
             FloeLogger(category: .app).info(
                 "steerTargetEndedQueued conversation=\(input.conversationID.uuidString) expectedRun=\(expectedRunID.uuidString) input=\(input.id.uuidString)"
@@ -4383,6 +4795,20 @@ final class ConversationCenter: ObservableObject {
                 try? await inputStore.restoreQueued(id: input.id)
                 publishSession(conversationID)
                 return
+            }
+            // A parked-awaiting-dependency run owns the queued follow-up: it
+            // resumes in place with this message instead of a new run.
+            if let waiting = await awaitingDependencyRun(conversationID: conversationID) {
+                do {
+                    let started = try await resumeRunWithInput(
+                        waiting, content: input.content, attachments: input.attachments)
+                    try await inputStore.markConsumed(id: input.id, runID: started.runID)
+                } catch {
+                    try? await inputStore.restoreQueued(id: input.id)
+                    publishSession(conversationID)
+                    return
+                }
+                continue
             }
             do {
                 let started = try await startRun(
@@ -4567,7 +4993,10 @@ final class ConversationCenter: ObservableObject {
         executionMode: AgentExecutionMode,
         runSurface: AgentRunSurface = .ordinary,
         shouldGenerateTitle: Bool,
-        startOrigin: ContinuedProcessingStartOrigin
+        startOrigin: ContinuedProcessingStartOrigin,
+        /// Trusted explicit environment binding (scheduled task record); nil
+        /// keeps the standard session-container resolution.
+        executionEnvironmentID: String? = nil
     ) -> StartedConversationRun {
         let runID = prepared.run.id
         let conversationID = prepared.conversation.id
@@ -4754,13 +5183,43 @@ final class ConversationCenter: ObservableObject {
                 // while the adopted stores forward; subsequent NEW ordinary
                 // turns derive their own fresh identity.
                 temporaryAuthority: isTemporary,
+                environmentBindingOverride: executionEnvironmentID,
                 conversationHistory: recoveredToolEvidence
                     + (isTemporary ? [] : self.designBindingContext(conversationID: conversationID))
                     + assembled.filter { $0.id != prepared.userMessage.id }
                     + visual.context,
                 currentUserImages: visual.images,
-                currentUserAttachments: prepared.attachments
+                currentUserAttachments: prepared.attachments,
+                // This is a newly launched round: the only ingress allowed to
+                // submit the one bounded auxiliary decision.
+                automaticReasoningEffortIngress: .freshRound
             )
+            // The automatic-effort decision above can suspend the launch for
+            // up to its bounded deadline. Re-validate the whole launch
+            // authority AFTER that await: a Stop (task cancellation), an
+            // End/Keep or a Delete/clear that raced it must fail the launch
+            // closed through the existing failure path instead of assigning
+            // and starting the main run.
+            guard !Task.isCancelled,
+                  self.launchFence.isValid(launchToken),
+                  !self.isClearingHistory,
+                  !self.deletingConversationIDs.contains(conversationID) else {
+                let error = FloeError.validationFailed(
+                    "Conversation history was cleared during launch"
+                )
+                await self.finishDeferredLaunchFailure(
+                    runID: runID,
+                    conversationID: conversationID,
+                    error: error
+                )
+                if usesResidentLocalModel {
+                    await self.environment.localModelRuntime.releaseForTask(
+                        taskID: runID,
+                        reason: "launchCancelled"
+                    )
+                }
+                return .failure(error)
+            }
             self.runServices[runID] = service
             FloeLogger(category: .runtime).info(
                 "deferredRunServiceReady run=\(runID.uuidString) conversation=\(conversationID.uuidString) provider=\(provider.id.uuidString) model=\(model.id.uuidString)"
@@ -4807,6 +5266,7 @@ final class ConversationCenter: ObservableObject {
             recoverable: true
         ))
         clearFrozenTemporaryRun(runID: runID)
+        await automaticReasoningEffortCoordinator.cancelAndForget(runID: runID)
         publishSession(conversationID)
         environment.backgroundRunCoordinator.didFinish(
             runID: runID,
@@ -5444,6 +5904,11 @@ final class ConversationCenter: ObservableObject {
         // attachment preprocessing into a live service between the UI tap
         // and this actor hop; choosing only one side leaves that race alive.
         runTasks[runID]?.cancel()
+        // A pending automatic-effort classifier is stopped promptly instead
+        // of holding this launch open until its deadline. An already frozen
+        // decision is kept: a deliberate same-round Continue reuses it
+        // without a new request.
+        await automaticReasoningEffortCoordinator.cancelPending(runID: runID)
         if let service = runServices[runID] {
             await service.cancel()
         }
@@ -5656,6 +6121,13 @@ final class ConversationCenter: ObservableObject {
         for runID in taskRunIDs where runServices[runID] == nil {
             runTasks[runID]?.cancel()
         }
+        // Deletion FORGETS the runs' automatic-effort state and cancels any
+        // pending classifier BEFORE the launch tasks are awaited: a deleted
+        // run neither waits out the decision deadline nor lets a late helper
+        // result resurrect a decision for a run that no longer exists.
+        await automaticReasoningEffortCoordinator.cancelAndForget(
+            runIDs: durableRunIDs.union(services.map(\.runID)).union(taskRunIDs)
+        )
         let tasks = taskRunIDs.compactMap { runTasks[$0] }
         for task in tasks {
             _ = await task.value
@@ -5737,6 +6209,14 @@ final class ConversationCenter: ObservableObject {
         guard let record else {
             throw FloeError.notFound("run \(runID.uuidString)")
         }
+        // Continue must not bypass the dependency wait: a run parked on
+        // required background work is not finished, and resuming it here
+        // would start a provider turn without the awaited result. A user
+        // message intentionally still resumes it through `startRun`.
+        if await isAwaitingDependency(runID: record.id, conversationID: record.conversationID) {
+            throw FloeError.validationFailed(
+                FloeL10n.l("chat.thread_detail_view_model.waiting_for_background_work_continue"))
+        }
         let resolvedPair: (ProviderProfile, ModelProfile)
         if let modelID = record.modelID,
            let resolved = providerAndModel(modelID: modelID) {
@@ -5768,7 +6248,12 @@ final class ConversationCenter: ObservableObject {
         _ record: RunRecord,
         provider: ProviderProfile,
         model: ModelProfile,
-        startOrigin: ContinuedProcessingStartOrigin
+        startOrigin: ContinuedProcessingStartOrigin,
+        /// Optional single resumption turn (dependency completion or a user
+        /// message composed while the run waited). Injected into the resumed
+        /// runtime at the exact checkpoint boundary so the SAME run continues
+        /// with it; nil keeps the historical plain resume.
+        resumption: RuntimeSteerInput? = nil
     ) async throws -> StartedConversationRun {
         let isTemporary = isTemporaryConversation(record.conversationID)
         let routedRunStore = self.runStore(for: record.conversationID)
@@ -5879,7 +6364,12 @@ final class ConversationCenter: ObservableObject {
             workspaceID: environment.workspaceCenter.workspaceID(for: record.conversationID),
             memoryQuery: record.goal,
             conversationHistory: history + resumedVisual.context,
-            currentUserImages: resumedVisual.images
+            currentUserImages: resumedVisual.images,
+            // Resume/retry is the SAME round: reuse the frozen abstract
+            // choice (re-clamped for a re-selected model) and never submit a
+            // second auxiliary request, even when the round started manual/
+            // unsupported or the model changed inside the original run.
+            automaticReasoningEffortIngress: .continuation
         )
         try await routedRunStore.updateRunState(id: record.id, state: "preparing", endedAt: nil)
         _ = try? await routedRunStore.appendEvent(
@@ -5904,9 +6394,12 @@ final class ConversationCenter: ObservableObject {
             }
             do {
                 if let checkpoint {
-                    try await service.resumePrepared(from: checkpoint)
+                    try await service.resumePrepared(from: checkpoint, resumption: resumption)
                 } else {
-                    try await service.startPrepared(goal: record.goal)
+                    // No checkpoint to replay (legacy/temporary fallback): the
+                    // resumption's own content becomes the resumed goal so the
+                    // same run continues with the new input.
+                    try await service.startPrepared(goal: resumption?.content ?? record.goal)
                 }
                 return await self.finishResumedService(
                     service,
@@ -6513,10 +7006,20 @@ final class ConversationCenter: ObservableObject {
         await reload()
     }
 
-    /// Persists a model and refreshes the cached lists.
-    func saveModel(_ model: ModelProfile) async throws {
-        try await environment.configurationSync.saveModel(model)
+    /// Persists a model and refreshes the cached lists. `expected` forwards a
+    /// compare-and-swap expectation: reviewed editors that pass the exact
+    /// snapshot they validated can never silently overwrite a row changed in
+    /// between by sync or another editor (the save throws instead).
+    func saveModel(_ model: ModelProfile, expected: ModelProfile? = nil) async throws {
+        try await environment.configurationSync.saveModel(model, expected: expected)
         await reload()
+    }
+
+    /// Fresh STORE read of one model row (never the cached projection). A
+    /// reviewed editor re-reads the current row immediately before saving and
+    /// uses it as the CAS expectation.
+    func storedModel(id: UUID) async -> ModelProfile? {
+        try? await environment.configurationStore.model(id: id)
     }
 
     /// Verifies via a fresh store read that the provider and every selected
@@ -7012,7 +7515,10 @@ final class ConversationCenter: ObservableObject {
         safetyNet.cancel()
     }
 
-    static func decodePayload(_ json: String) -> [String: String] {
+    /// Pure JSON decode of a persisted payload object. `nonisolated` so the
+    /// presentation projections (timeline, step groups, inspector) can parse
+    /// durable payloads off the main actor without hopping.
+    nonisolated static func decodePayload(_ json: String) -> [String: String] {
         guard let data = json.data(using: .utf8),
               let object = try? JSONDecoder().decode([String: String].self, from: data) else {
             return [:]

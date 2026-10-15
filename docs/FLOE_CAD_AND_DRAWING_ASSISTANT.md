@@ -984,3 +984,68 @@ ground plane. Exact argument names (unknown fields are refused by the kernel):
 媒体及 CAD 并发相关 **113 项 Swift Testing／13 套件通过**。运行时与宿主对暂存文档使用同一
 规范目标。以上属于模拟器 App 加脚本供应商证据，不代表真实模型、任意第三方图纸兼容或实机
 性能；模块类型检查、私有策略桩测试和 App 证据分别记录。
+
+---
+
+## Native drawing/assembly discoverability and paged capabilities — 2026-10-15 (unreleased work)
+
+Status: **implemented and component-verified in the working tree; not compiled into an App,
+not versioned and not released.** Branch `codex/temporary-subagent-perf-20261015`
+(baseline `923b1e48`). This section supersedes the earlier gap where a native
+`three_d_drawing` / `three_d_assembly` payload without a recognizable action was silently
+downgraded to a read-only default instead of reporting the contract.
+
+### What changed
+
+- **One authoritative operation catalog.** `CadServiceOperationCatalog`
+  (`FloeAgent/Sources/FloeWorkbench/CadDocumentSupport.swift`) describes all 38
+  workbench-service operations — drawing 8, assembly 14, script 6, mesh 10 — each with its
+  kind, `action`, legacy `<kind>.<action>` op spelling, mutate flag, exact typed arguments
+  and runnable examples. The catalog is locked item-by-item against the engine routers
+  (`CADDrawingService` / `CADAssemblyService` / `CADScriptService` / `CADMeshService`) and the
+  `CADServiceOperations` mutating-action sets.
+- **Explicit request contract.** A native service request must name exactly one operation via
+  `payload.action` (for example `drawing.addPage`) or the documented legacy `payload.op`
+  (`"<kind>.<action>"`, or a bare action through the documented alias map); arguments sit
+  beside the selector or in `payload.args`. A missing action, unknown op, mismatched kind
+  prefix, conflicting selector or conflicting argument is refused with a structured error
+  that lists the known operations and points at capabilities discovery — the previous silent
+  read fallback (`defaultReadAction`) is deleted. `drawing.createPage` is answered with
+  `Did you mean 'addPage'?`.
+- **Discover, then act.** `capabilities` keeps a small every-turn summary and serves the full
+  catalog on demand with `kind=drawing|assembly|script|mesh`, paged inside the runtime's
+  model-visible result budget; the detail text deliberately lives in `capabilities`, not in
+  the every-turn schema.
+- **Same authority, no new gate.** Mutating operations still run through propose → apply with
+  the task's own authorization (the 273 runtime-authority path); there is no new grant gate
+  and no model-supplied confirmation shortcut. Drawing PDF/SVG/DXF export additionally
+  requires `page_id` from a `query kind=drawings` reply; the 2D engine path is unchanged.
+- **Decision origin.** CAD decision notices carry the trusted origin (runtime-authority
+  automatic apply vs. CAD-UI confirmation); the wiring point that delivers the automatic
+  origin lives in the App environment and is part of the integration step.
+
+### Verification executed in this lane (component scope)
+
+| Check | Result |
+| --- | --- |
+| `FloeWorkbench` Swift 6 strict-concurrency module typecheck | exit 0, 0 errors (pre-existing warnings only) |
+| Standalone logic harness driving the real catalog/tool against a recording fake host | **74 / 74 checks** (engine action/mutate parity, every refusal branch, capabilities budget guard, tool normalization, export `page_id`) |
+| Independent Python source-parity checks (engine router vs. catalog, mutate sets, host/tool wiring, origin threading) | **66 / 66 checks** |
+| Tool schema | parses; `page_id` and the named-operation contract are advertised; schema grew 9797 → 10600 bytes (+8%) because the detail text stays in `capabilities` |
+
+Not run here (integration gate): whole-App build, Simulator, the new
+`FloeAppTests/NativeCADDrawingAssemblyClosureTests` suite (drawing page → projection →
+export real PDF/SVG/DXF bytes; assembly instance/transform/constraint/DOF/interference with
+save/reopen; malformed-request refusals; decision-origin recorder), and the engine's own
+`FloeCADKit` suites. These contract checks are **not** independent geometry acceptance and
+do not claim third-party drawing compatibility.
+
+### 中文摘要
+
+本轮（未发布）为原生绘图/装配建立了唯一权威操作目录（共 38 项：drawing 8 / assembly 14 /
+script 6 / mesh 10），请求必须显式指定操作，缺 action/未知 op/冲突参数会得到结构化拒绝与
+已知操作列表，不再静默降级为只读；完整目录改由 `capabilities kind=…` 按需分页提供，避免
+每轮 schema 膨胀；修改操作仍走 propose → apply 与任务自身授权，无新增授权门；图纸
+PDF/SVG/DXF 导出需要 drawings 查询返回的 `page_id`。本线已执行：Swift 6 严格并发模块类型
+检查 0 错误、逻辑 harness 74/74、独立 Python 源校验 66/66；整 App、模拟器与新 App 闭环
+用例属集成门槛，尚未执行。以上是契约校验，不代表真实几何验收或第三方图纸兼容。

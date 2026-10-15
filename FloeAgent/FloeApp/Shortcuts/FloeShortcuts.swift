@@ -8,6 +8,7 @@
 import AppIntents
 import Foundation
 import FloeCore
+import FloeExecution
 import FloeModels
 import FloePersistence
 
@@ -88,12 +89,24 @@ final class FloeShortcutsRuntime {
             throw FloeError.validationFailed("Task must not be empty")
         }
         let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The SAME trusted creation-time factory as the model-facing
+        // `task.schedule`/`apple.automation.update` tools: the schedule freezes
+        // the current default model and approval policy instead of leaving nil
+        // bindings that a later settings change could silently redefine.
+        guard let binding = environment.appDefaultTaskScheduleBinding() else {
+            throw FloeError.invalidConfiguration("No default Floe model is configured")
+        }
         let record = TaskScheduleRecord(
             title: cleanTitle?.isEmpty == false ? cleanTitle! : String(cleanPrompt.prefix(40)),
             prompt: cleanPrompt,
+            workspaceID: binding.workspaceID,
             cadence: cadence.taskCadence,
             scheduledAt: date,
-            weekday: cadence == .weekly ? Calendar.current.component(.weekday, from: date) : nil
+            weekday: cadence == .weekly ? Calendar.current.component(.weekday, from: date) : nil,
+            anchorTimezone: binding.anchorTimezone,
+            modelID: binding.modelID,
+            environmentID: binding.environmentID,
+            permissionJSON: binding.permissionJSON
         )
         try await SQLiteTaskScheduleStore(database: environment.database).save(record)
         BackgroundPolicyRegistry.shared.scheduleRefresh(earliest: date)

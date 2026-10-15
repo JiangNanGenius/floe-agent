@@ -25,11 +25,16 @@
 // (ff35c07a) passes the real cloud S0–S4 dual-hart correctness contract
 // (boot, /proc/cpuinfo=2 on the reworked SMP pair, fork/exec, parallel 9P;
 // runs 36004192418 / 36009075837) and the production gate now admits two
-// harts. The equal-work S5 benchmark on the same runs is still SLOWER on two
-// harts (median ratio 0.876 < 1.10), so dual is a correct but not faster
-// shape: the UI states that truthfully, an untyped request still resolves to
-// one hart, and the missing decision was explicitly taken by the user for
-// on-device testing. This is NOT a licence to claim a speedup.
+// harts. The equal-work S5 benchmark on THOSE runs measured dual as slower
+// (median ratio 0.876 < 1.10); that is an OLD, DATED measurement of that
+// engine revision, not a statement about the shipped engine. The current
+// frozen engine's host re-measurements (2026-10-15/16, E-lane, pinned image
+// on an M5 Pro host) show the cloud S5 contract at 1.47x and a local 1-vs-3
+// equal-work speedup of 2.689x; neither number is a device claim. The release
+// position is unchanged: an untyped request still resolves to one hart, an
+// explicit 2-core request is honored only when the manifest proves SMP, and
+// no automatic CPU increase happens. This is NOT a licence to claim a
+// speedup.
 //
 // What remains a real gate: the second hart is admitted only when the
 // verified image manifest proves SMP (its kernel/firmware are the reworked

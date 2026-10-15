@@ -1,7 +1,13 @@
-<!-- docs-updated: 2026-10-12 -->
+<!-- docs-updated: 2026-10-16 -->
 # 当前版本与验证状态 / Current release and verification status
 
-文档更新时间 / Document updated: 2026-10-12. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
+文档更新时间 / Document updated: 2026-10-16. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
+
+## 1.7.32（273）内部交付；工作分支为未发布候选 / Internal delivery; working branch is unreleased
+
+- `project.yml` 声明 **1.7.32 (273)**。2026-10-15 由冻结源码 `29937dc025267bacd89434cc092b3906c99b93ee`（标签 `v1.7.32`）完成本地 Xcode 27 归档，复用本地产物签名上传（未重编 App），独立回读 Apple `VALID`、未过期、现有内部 Floe QA 组 `IN_BETA_TESTING`；**未提交 publictest1、未外审、未对外发布**。详见[发布说明](releases/notes/RELEASE_NOTES_1.7.32_BUILD_273.md)与[273 修复记录](releases/repairs/FLOE_273_TEMPORARY_SUBAGENT_REPAIR.md)。Build 273 is the current internal Floe QA build; no external submission or publication was performed.
+- 工作分支 `codex/temporary-subagent-perf-20261015`（基线 `923b1e48`）包含下一轮的**未发布**改动：任务生命周期 UI（临时会话入口收敛、决定回执去重、子代理检查器）、后台/子运行闭环与调度扩展、逐模型能力元数据与一次性复查、CAD 绘图/装配可发现契约。当前仅为**已实现/组件级验证**，完整 App 编译、模拟器验收、版本冻结、上传和公测全部未开始；不得据此宣称任何新修复已交付。详见[任务生命周期回合记录](releases/repairs/FLOE_TASK_LIFECYCLE_20261015.md)。The working branch carries implemented, component-verified changes; full-App acceptance, versioning and upload have not started.
+- 本轮授权：新版本在完成 G/主协调质量门后**可提交现有 publictest1 公测**；1.7.28（269）仍仅内部，不提升。更早记录（271 等）为本页历史，实际审核/到期状态以 App Store Connect/TestFlight 为准。Earlier records below remain historical; check App Store Connect for live review and expiry state.
 
 ## 1.7.30（271）紧急修复：内部可用，已送 publictest1 等待审核 / Internal available; external review pending
 

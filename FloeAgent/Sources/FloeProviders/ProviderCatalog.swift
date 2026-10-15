@@ -56,6 +56,12 @@ public struct ProviderCatalogEntry: Codable, Sendable, Equatable, Hashable, Iden
     /// multi-service metadata existed decode as `nil`, and the app only offers
     /// a role when a shipped adapter can actually execute it.
     public var serviceOffers: [ProviderCatalogServiceOffer]?
+    /// Optional upstream per-model metadata keyed by remote model identifier
+    /// (the same strings that appear in `models` or in a declared service
+    /// offer). Descriptive only — never credentials, never an override of a
+    /// locally saved user setting. Backward compatible: absent means "no
+    /// verified metadata" and the caller keeps the legacy protocol default.
+    public var modelMetadata: [String: ProviderCatalogModelMetadata]?
 
     public var id: String { presetID }
 
@@ -73,7 +79,8 @@ public struct ProviderCatalogEntry: Codable, Sendable, Equatable, Hashable, Iden
         upstreamID: String,
         authStyle: String,
         toolNameCompatibility: Bool = false,
-        serviceOffers: [ProviderCatalogServiceOffer]? = nil
+        serviceOffers: [ProviderCatalogServiceOffer]? = nil,
+        modelMetadata: [String: ProviderCatalogModelMetadata]? = nil
     ) {
         self.presetID = presetID
         self.name = name
@@ -89,6 +96,37 @@ public struct ProviderCatalogEntry: Codable, Sendable, Equatable, Hashable, Iden
         self.authStyle = authStyle
         self.toolNameCompatibility = toolNameCompatibility
         self.serviceOffers = serviceOffers
+        self.modelMetadata = modelMetadata
+    }
+}
+
+/// Optional upstream per-model metadata carried by a catalog entry.
+///
+/// `input`/`output` are upstream-declared modality tokens
+/// (`text`, `image`, `audio`, `video`, `pdf`). The app maps only a verified
+/// image-input inference model to the existing `.vision` capability; audio and
+/// video are kept as data because no wire implementation exists for them yet.
+/// `toolCall`/`attachment`/`reasoning` describe upstream flags; absence means
+/// "upstream did not say", never "false".
+public struct ProviderCatalogModelMetadata: Codable, Sendable, Equatable, Hashable {
+    public var input: [String]?
+    public var output: [String]?
+    public var toolCall: Bool?
+    public var attachment: Bool?
+    public var reasoning: Bool?
+
+    public init(
+        input: [String]? = nil,
+        output: [String]? = nil,
+        toolCall: Bool? = nil,
+        attachment: Bool? = nil,
+        reasoning: Bool? = nil
+    ) {
+        self.input = input
+        self.output = output
+        self.toolCall = toolCall
+        self.attachment = attachment
+        self.reasoning = reasoning
     }
 }
 
@@ -144,6 +182,33 @@ public struct ProviderCatalogIndex: Sendable {
     public let document: ProviderCatalogDocument
     /// Every entry in document order.
     public let all: [ProviderCatalogEntry]
+
+    /// Preset ids that are never offered for adding a provider: these entries
+    /// describe real public providers that need OAuth, deployment-scoped
+    /// endpoints or nonstandard signing, so a Floe adapter cannot execute
+    /// them. The policy lives here, in code, and is deliberately independent
+    /// of `availability` so a newer signed catalog (bundled or installed)
+    /// cannot flip them back into the picker. The entries themselves stay in
+    /// `all` because saved providers may still reference them: editing an
+    /// existing account keeps working.
+    public static let hiddenPresetIDs: Set<String> = [
+        "github-copilot",
+        "azure",
+        "amazon-bedrock",
+        "google-vertex"
+    ]
+
+    /// Number of catalog entries the supplier picker can actually offer
+    /// (every entry except the hidden presets). Used for honest footer counts.
+    public var offeredProviderCount: Int {
+        all.count - all.filter { Self.hiddenPresetIDs.contains($0.presetID) }.count
+    }
+
+    /// Catalog entry for a saved provider's stable preset identity, including
+    /// hidden presets so existing configurations remain editable.
+    public func entry(presetID: String) -> ProviderCatalogEntry? {
+        all.first { $0.presetID == presetID }
+    }
 
     private let records: [Record]
 
@@ -274,6 +339,7 @@ public struct ProviderCatalogIndex: Sendable {
             }
         }
         try validateServiceOffers(entry.serviceOffers, presetID: presetID)
+        try validateModelMetadata(entry.modelMetadata, entry: entry)
         switch entry.availability {
         case .available:
             guard entry.unsupportedReason == nil else {
@@ -417,6 +483,66 @@ public struct ProviderCatalogIndex: Sendable {
         }
     }
 
+    /// Modality tokens the app understands in per-model metadata. Unknown
+    /// tokens are rejected instead of silently ignored so a future catalog
+    /// cannot smuggle unimplemented capabilities into the app.
+    public static let knownModelModalities: Set<String> = [
+        "text", "image", "audio", "video", "pdf"
+    ]
+
+    /// Validates optional per-model metadata. Keys must be identifiers the
+    /// entry actually declares (in `models` or in a service offer), modality
+    /// arrays are bounded, unique and drawn from the known set, flags are
+    /// booleans by decoding, and an entry must carry at least one fact.
+    private static func validateModelMetadata(
+        _ metadata: [String: ProviderCatalogModelMetadata]?,
+        entry: ProviderCatalogEntry
+    ) throws {
+        guard let metadata, !metadata.isEmpty else { return }
+        let presetID = entry.presetID
+        guard metadata.count <= 200 else {
+            throw ProviderCatalogValidationError("\(presetID): more than 200 model metadata entries")
+        }
+        var declared = Set(entry.models)
+        for offer in entry.serviceOffers ?? [] {
+            declared.formUnion(offer.models)
+        }
+        for (modelID, value) in metadata {
+            guard declared.contains(modelID) else {
+                throw ProviderCatalogValidationError(
+                    "\(presetID): model metadata for undeclared model \(modelID)"
+                )
+            }
+            for (label, modalities) in [("input", value.input), ("output", value.output)] {
+                guard let modalities else { continue }
+                guard (1...knownModelModalities.count).contains(modalities.count) else {
+                    throw ProviderCatalogValidationError(
+                        "\(presetID): \(label) modalities for \(modelID) must be 1...\(knownModelModalities.count) entries"
+                    )
+                }
+                var seen = Set<String>()
+                for modality in modalities {
+                    guard knownModelModalities.contains(modality) else {
+                        throw ProviderCatalogValidationError(
+                            "\(presetID): unknown \(label) modality \(modality) for \(modelID)"
+                        )
+                    }
+                    guard seen.insert(modality).inserted else {
+                        throw ProviderCatalogValidationError(
+                            "\(presetID): duplicate \(label) modality \(modality) for \(modelID)"
+                        )
+                    }
+                }
+            }
+            guard value.input != nil || value.output != nil || value.toolCall != nil
+                    || value.attachment != nil || value.reasoning != nil else {
+                throw ProviderCatalogValidationError(
+                    "\(presetID): empty model metadata for \(modelID)"
+                )
+            }
+        }
+    }
+
     private static func validateBaseURL(
         _ url: URL?,
         presetID: String,
@@ -488,6 +614,10 @@ public struct ProviderCatalogIndex: Sendable {
     ///
     /// An empty query returns every entry the filter accepts in stable
     /// document order with configured presets moved to the front.
+    ///
+    /// `hiddenPresetIDs` entries are never returned, for any filter and
+    /// whatever availability the document claims; they remain reachable
+    /// through `entry(presetID:)` for editing saved providers.
     public func search(
         query: String,
         filter: ProviderCatalogFilter,
@@ -544,6 +674,9 @@ public struct ProviderCatalogIndex: Sendable {
         filter: ProviderCatalogFilter,
         configuredPresetIDs: Set<String>
     ) -> Bool {
+        // Hidden presets are never offered for adding, for every filter and
+        // regardless of the availability a catalog document claims.
+        guard !Self.hiddenPresetIDs.contains(record.entry.presetID) else { return false }
         switch filter {
         case .all:
             return true

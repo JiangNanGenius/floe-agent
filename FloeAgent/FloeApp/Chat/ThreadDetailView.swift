@@ -32,6 +32,11 @@ struct ThreadComposerInput: Identifiable {
 
 /// The canonical thread: messages + run events for one conversation.
 struct ThreadDetailView: View {
+    /// Identity of a delegated child opened from a delegate card.
+    private struct PresentedChildRun: Identifiable {
+        let id: UUID
+    }
+
     @StateObject private var viewModel: ThreadDetailViewModel
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var designEntryState: DesignEntryStateCenter
@@ -40,6 +45,9 @@ struct ThreadDetailView: View {
     @State private var editingPendingInput: PendingUserInput?
     @State private var showingGoalBuilder = false
     @State private var showingPermissionsSheet = false
+    /// Full temporary-chat explanation (lifecycle, tools/cloud, voice) opened
+    /// from the compact badge menu's About action.
+    @State private var showsTemporaryAbout = false
     @State private var showingUsageDetails = false
     /// Last usage snapshot handed to the popover. Retained until the next
     /// open so a dismissal never collapses the presented content to an empty
@@ -54,6 +62,10 @@ struct ThreadDetailView: View {
     @State private var showsChecklist = false
     @State private var consumedInputID: UUID?
     @State private var refreshingMediaJobs = false
+    /// The delegated child opened from a delegate card's "View" action. The
+    /// sheet renders the same durable transcript view the child-agents
+    /// inspector pushes (one source of truth, no second registry).
+    @State private var presentedChild: PresentedChildRun?
     /// Natural-language design page for this conversation's frozen launch
     /// binding (same conversation/run/workspace; embedded + fullscreen).
     /// Presented from the APP ROOT (AppRouter): a sheet anchored here would
@@ -144,6 +156,14 @@ struct ThreadDetailView: View {
 
             .sheet(item: $structuredExport) { file in
                 TaskExportShareSheet(url: file.url, lease: file.lease)
+            }
+            .sheet(item: $presentedChild) { child in
+                NavigationStack {
+                    ChildAgentDetailView(childRunID: child.id)
+                }
+            }
+            .sheet(isPresented: $showsTemporaryAbout) {
+                TemporaryChatAboutSheet()
             }
             .sheet(item: $editingPendingInput) { input in
                 PendingInputEditor(input: input) { text in
@@ -498,7 +518,10 @@ struct ThreadDetailView: View {
                     $0.state == "failed" || $0.state == "interrupted"
                 } == true
                     ? { Task { await viewModel.retry() } }
-                    : nil
+                    : nil,
+                decisionSummary: decisionSummary(for: event),
+                childRun: childRun(for: event),
+                onOpenChild: { openChild($0) }
             )
 
         case .stepGroup(let events, let isLatest):
@@ -507,10 +530,14 @@ struct ThreadDetailView: View {
                 isLatest: isLatest,
                 isLive: viewModel.isRunning && events.contains { $0.runID == viewModel.selectedRunID },
                 hasError: events.contains { $0.kind == .error },
-                pendingApprovals: viewModel.pendingApprovals
-            ) { approval, decision in
-                Task { await viewModel.resolve(approval, decision: decision) }
-            }
+                pendingApprovals: viewModel.pendingApprovals,
+                decisions: viewModel.decisionAnnotations,
+                childRunRecords: viewModel.childRunRecords,
+                onOpenChild: { openChild($0) },
+                onResolveApproval: { approval, decision in
+                    Task { await viewModel.resolve(approval, decision: decision) }
+                }
+            )
 
         case .terminal(let event):
             TerminalEventRow(event: event)
@@ -555,7 +582,7 @@ struct ThreadDetailView: View {
             // The trusted design confirmation exports as the same concise
             // localized summary the conversation shows, never the internal
             // target/grant payload. Every other message stays verbatim.
-            lines.append(InternalNoticeProjection.userFacingSummary(for: message) ?? message.content)
+            lines.append(exportSummary(for: message) ?? message.content)
             lines.append("")
         }
         return lines.joined(separator: "\n")
@@ -569,11 +596,57 @@ struct ThreadDetailView: View {
         let body = messages
             .map { message -> String in
                 let role = message.role == "user" ? FloeL10n.l("hosts.user") : FloeL10n.l("chat.thread_detail_view.assistant")
-                let content = InternalNoticeProjection.userFacingSummary(for: message) ?? message.content
+                let content = exportSummary(for: message) ?? message.content
                 return "\(role): \(content)"
             }
             .joined(separator: "\n\n")
         return "\(title)\n\n\(body)"
+    }
+
+    /// One export line for a message: the decision-specific concise sentence
+    /// for a validated proposal decision, the existing concise notice summary
+    /// for other trusted internal notices, nil (verbatim) otherwise.
+    private func exportSummary(for message: PersistedMessage) -> String? {
+        if let notice = ProposalDecisionPresentation.trustedNotice(for: message) {
+            return notice.summary
+        }
+        return InternalNoticeProjection.userFacingSummary(for: message)
+    }
+
+    /// The compact decision line shown inside the matching tool step, when
+    /// this event's call carries a projected automatic decision. Scoped to the
+    /// event's OWN run: raw provider call ids repeat across runs, so a notice
+    /// correlated to another run's call must never decorate this row.
+    private func decisionSummary(for event: RunEventRecord) -> String? {
+        let payload = ConversationCenter.decodePayload(event.payloadJSON)
+        let callID = payload["callID"] ?? payload["id"] ?? ""
+        let summaries = ThreadRunScopedResolution.decisionSummaries(
+            callID: callID, runID: event.runID, in: viewModel.decisionAnnotations)
+        return summaries.isEmpty ? nil : summaries.joined(separator: "\n")
+    }
+
+    /// The durable delegated-child record for this event's call, when the
+    /// persisted relation maps the delegate call id to a child run OF THIS
+    /// RUN. Run scoping is required: call ids are provider-supplied and repeat
+    /// across runs, and the deep link must open the child this call created.
+    private func childRun(for event: RunEventRecord) -> ChildRunRecord? {
+        let payload = ConversationCenter.decodePayload(event.payloadJSON)
+        let callID = payload["callID"] ?? payload["id"] ?? ""
+        return ThreadRunScopedResolution.child(
+            callID: callID, parentRunID: event.runID, in: viewModel.childRunRecords)
+    }
+
+    /// Opens the delegated child's durable transcript when the specific child
+    /// is known; otherwise falls back to the child-agents inspector list for
+    /// this conversation. Both render the same `ChildAgentDetailView` over the
+    /// lifecycle owner's store — one UI source of truth.
+    private func openChild(_ childRun: ChildRunRecord?) {
+        if let childRun {
+            presentedChild = PresentedChildRun(id: childRun.id)
+        } else {
+            router.inspectorRoute = AppRouter.InspectorRoute(
+                content: .childAgents, conversationID: viewModel.conversationID)
+        }
     }
 
     @ToolbarContentBuilder
@@ -694,7 +767,16 @@ struct ThreadDetailView: View {
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            if let state = viewModel.liveStateName {
+            if viewModel.selectedRunWaitingForJobs {
+                // A run parked for outstanding background jobs is WAITING, not
+                // finished: the durable `checkpointed` reason says so.
+                Text(ChatBilingualCatalog.localized(
+                    key: "state.waiting_for_background_work",
+                    en: "Waiting for background work", zh: "等待后台作业"))
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(FloeTheme.pending)
+                    .accessibilityIdentifier("thread.run_state.awaitingDependency")
+            } else if let state = viewModel.liveStateName {
                 Text(RunStateLocalizer.title(for: state))
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(RunStateLocalizer.color(for: state))
@@ -704,26 +786,31 @@ struct ThreadDetailView: View {
         }
     }
 
-    // MARK: - Temporary chat (top-header entry + action menu)
+    // MARK: - Temporary chat (active state + Keep/End)
 
-    /// Compact top-header entry for the ephemeral chat mode. Toggling an
-    /// empty conversation converts it in place; a populated one starts a
-    /// separate fresh temporary chat. While active, the same slot shows the
-    /// tinted badge as a menu that carries the concise explanation plus the
-    /// Keep and End actions — no persistent banner takes chat space.
+    /// Active temporary session: a compact top-header badge menu carrying the
+    /// concise explanation plus the Keep and End actions — no persistent
+    /// banner takes chat space. Starting a temporary chat belongs to the New
+    /// Task launchpad entry ONLY (`home.temporary.toggle`); an ordinary saved
+    /// chat never shows a temporary switch here, so a saved conversation can
+    /// never be converted implicitly from its own thread.
     @ToolbarContentBuilder
     private var temporaryToolbarItems: some ToolbarContent {
         if viewModel.isTemporary {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    // Concise state explanation (the previous banner text)
-                    // plus the voice-processing disclosure: temporary voice
-                    // input reuses the normal Apple speech service, which may
-                    // process audio online, and Floe keeps no recording.
-                    Text("chat.temporary.banner")
+                    // A SHORT lifecycle header that fits the native menu's
+                    // disabled-item clamp; the full lifecycle, tool/cloud and
+                    // voice details stay readable behind the enabled About
+                    // action below (a 3-line menu row clipped the long text).
+                    Text("chat.temporary.header")
                         .accessibilityIdentifier("chat.temporary.hint")
-                    Text("chat.temporary.voiceNote")
-                        .accessibilityIdentifier("chat.temporary.voice.note")
+                    Button {
+                        showsTemporaryAbout = true
+                    } label: {
+                        Label("chat.temporary.about", systemImage: "info.circle")
+                    }
+                    .accessibilityIdentifier("chat.temporary.about")
                     Button {
                         Task { await viewModel.keepTemporaryChat() }
                     } label: {
@@ -765,26 +852,6 @@ struct ThreadDetailView: View {
                 .accessibilityLabel("chat.temporary.badge")
                 .accessibilityIdentifier("chat.temporary.badge")
                 .help(String(localized: "chat.temporary.banner"))
-            }
-        } else {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Task {
-                        if let target = await viewModel.toggleTemporaryChat() {
-                            router.openConversation(target.id)
-                        }
-                    }
-                } label: {
-                    Label("chat.temporary.toggle", systemImage: "bubble.left")
-                        .foregroundStyle(Color.secondary)
-                        .symbolVariant(.none)
-                        .labelStyle(.iconOnly)
-                }
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("chat.temporary.toggle")
-                .accessibilityIdentifier("chat.temporary.toggle")
-                .accessibilityHint("chat.temporary.toggle.hint")
-                .help(String(localized: "chat.temporary.toggle.hint"))
             }
         }
     }
@@ -1221,9 +1288,13 @@ private struct PendingInputQueueView: View {
 
     /// A trusted internal notice steer (design-assistant confirmation or
     /// structured proposal decision) shows the concise localized summary
-    /// instead of the raw grant/target/identity payload. Every other input is
+    /// instead of the raw grant/target/identity payload. A validated proposal
+    /// decision uses its decision-specific sentence. Every other input is
     /// untouched.
     private func displayText(for input: PendingUserInput) -> String {
+        if let decisionSummary = ProposalDecisionPresentation.summary(for: input) {
+            return decisionSummary
+        }
         if let summary = InternalNoticeProjection.userFacingSummary(for: input) {
             return summary
         }
@@ -1464,5 +1535,43 @@ private struct TaskExportShareSheet: UIViewControllerRepresentable {
         return controller
     }
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+/// Full readable temporary-chat explanation opened from the badge menu.
+///
+/// The native menu row itself only fits a short lifecycle header; every
+/// disclosure (immediate discard semantics, the read-only tool ceiling and
+/// the provider's own processing policy, the voice-processing note) stays
+/// fully readable here instead of being clipped or removed.
+struct TemporaryChatAboutSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("chat.temporary.banner")
+                        .accessibilityIdentifier("chat.temporary.about.lifecycle")
+                    Text("chat.temporary.about.tools")
+                        .accessibilityIdentifier("chat.temporary.about.tools")
+                    Text("chat.temporary.voiceNote")
+                        .accessibilityIdentifier("chat.temporary.voice.note")
+                }
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+            }
+            .navigationTitle("chat.temporary.about.title")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(String(localized: "providers.save.done")) { dismiss() }
+                        .frame(minHeight: FloeTheme.minimumTarget)
+                        .accessibilityIdentifier("chat.temporary.about.done")
+                }
+            }
+        }
+    }
 }
 #endif

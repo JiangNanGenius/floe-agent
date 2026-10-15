@@ -138,7 +138,7 @@ struct ProviderCatalogPicker: View {
 
     private func catalogFooter(_ catalog: ProviderCatalogIndex) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(FloeL10n.l("providers.catalog.provider_count", catalog.all.count))
+            Text(FloeL10n.l("providers.catalog.provider_count", catalog.offeredProviderCount))
             Text(FloeL10n.l("providers.catalog.document_hash", shortDocumentSHA256(catalog)))
             Text(FloeL10n.l("providers.catalog.fetched_at", catalog.document.source.fetchedAt))
         }
@@ -290,8 +290,9 @@ struct ProviderCatalogPicker: View {
 
     // MARK: - Labels
 
-    /// Media roles a shipped adapter can really serve for this entry, so the
-    /// row shows actual capability instead of a model-name guess.
+    /// Product-role tokens a shipped adapter can really serve for this entry,
+    /// so the row states actual capability ("text", "images", "video")
+    /// instead of a model-name guess or a provider-wide vision claim.
     private func serviceRoleLabels(_ entry: ProviderCatalogEntry) -> [String] {
         ProviderServiceOfferResolver.resolvedOffers(
             for: entry.kind,
@@ -303,9 +304,9 @@ struct ProviderCatalogPicker: View {
         .filter(\.isUsable)
         .map {
             switch $0.role {
-            case .conversation: FloeL10n.l("providers.provider_service_role.chat_model")
-            case .image: FloeL10n.l("providers.provider_service_role.image_generation_and_editing")
-            case .video: FloeL10n.l("providers.provider_service_role.video_generation_extra")
+            case .conversation: FloeL10n.l("providers.catalog.support_token.text")
+            case .image: FloeL10n.l("providers.catalog.support_token.images")
+            case .video: FloeL10n.l("providers.catalog.support_token.video")
             }
         }
     }

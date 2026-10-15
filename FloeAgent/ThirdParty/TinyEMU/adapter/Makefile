@@ -65,7 +65,8 @@ OBJS := $(addprefix $(BUILD)/,$(addsuffix .o,$(CORE_OBJS))) \
 TARGETS := $(BUILD)/libfloevm.a
 ifneq ($(HOST_DIR),)
 TARGETS += $(BUILD)/floe_vm_host $(BUILD)/lifecycle_test \
-           $(BUILD)/two_vm_test $(BUILD)/containment_test
+           $(BUILD)/two_vm_test $(BUILD)/containment_test \
+           $(BUILD)/mc_guest_bridge
 endif
 
 all: $(TARGETS)
@@ -169,6 +170,16 @@ $(BUILD)/containment_test.o: $(HOST_DIR)/containment_test.c $(BUILD)/.prepared
 	$(CC) -I$(BUILD) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/containment_test: $(BUILD)/containment_test.o $(BUILD)/fs_disk.o $(BUILD)/cutils.o
+	$(CC) -o $@ $^ $(LIBS)
+
+# Real-guest multiclient bridge: boots the pinned guest image (runner as
+# PID 1) and exposes its serial console on stdin/stdout so the multiclient
+# Swift harness can drive the REAL guest runner over the same framed
+# channel it uses against a host process.
+$(BUILD)/mc_guest_bridge.o: $(HOST_DIR)/multiclient/mc_guest_bridge.c $(ADAPTER)floe_vm.h | $(BUILD)/.dir
+	$(CC) $(CFLAGS) -I$(ADAPTER) -c -o $@ $<
+
+$(BUILD)/mc_guest_bridge: $(BUILD)/mc_guest_bridge.o $(BUILD)/libfloevm.a
 	$(CC) -o $@ $^ $(LIBS)
 
 clean:

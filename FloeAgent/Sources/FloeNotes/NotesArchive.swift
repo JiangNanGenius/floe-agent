@@ -31,6 +31,11 @@ public enum NotesArchive {
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".notes-\(UUID().uuidString).partial")
         defer { try? FileManager.default.removeItem(at: temporary) }
         let snapshot = try await store.archiveSnapshot(document.id, expectedRevision: document.revision)
+        // The authoritative snapshot document — not the caller's possibly stale
+        // copy — builds the manifest: a cover change does not move the content
+        // revision, so the stored body is the only source that always matches
+        // the exported resource list (including the cover resource).
+        let root = snapshot[0]
         let allResources = snapshot.reduce(into: Set<UUID>()) { $0.formUnion($1.resourceIDs) }
         let linkedSnapshot = Array(snapshot.dropFirst())
         var inputs: [(UUID, URL)] = []
@@ -56,7 +61,7 @@ public enum NotesArchive {
                 }
                 resources.append(resource)
             }
-            let manifest = try JSONEncoder().encode(Manifest(document: document, linkedDocuments: linkedSnapshot, resources: resources))
+            let manifest = try JSONEncoder().encode(Manifest(document: root, linkedDocuments: linkedSnapshot, resources: resources))
             guard manifest.count <= maximumManifest else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_archive.the_note_structure_is_too_large")) }
             try archive.addEntry(with: "manifest.json", type: .file, uncompressedSize: Int64(manifest.count), compressionMethod: .deflate) { position, size in
                 manifest.subdata(in: Int(position)..<(Int(position) + size))
@@ -158,6 +163,10 @@ public enum NotesArchive {
             document.id = documentIDs[original.id]!; document.notebookID = notebookID; document.deletedAt = nil
             document.officeResourceID = document.officeResourceID.flatMap { ids[$0] }
             document.engineeringResourceID = document.engineeringResourceID.flatMap { ids[$0] }
+            // The explicit cover is a referenced resource like any other; an
+            // unremapped id would make the imported document reference a
+            // nonexistent resource.
+            document.coverResourceID = document.coverResourceID.flatMap { ids[$0] }
             if var links = document.linkedMindMaps {
                 for index in links.indices { links[index].documentID = documentIDs[links[index].documentID]! }
                 document.linkedMindMaps = links

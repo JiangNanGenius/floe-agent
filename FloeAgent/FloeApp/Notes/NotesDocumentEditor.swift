@@ -59,6 +59,9 @@ struct NotesDocumentEditor: View {
     @State private var focusNotice: String?
     @State private var pendingProposals: [NoteProposal] = []
     @State private var acceptingProposalID: UUID?
+    /// Reading mode for text notes: this document's own text, opened
+    /// read-only. The editor, undo stack and drafts are untouched.
+    @State private var isReadingModePresented = false
     @EnvironmentObject private var environment: AppEnvironment
     @AppStorage(NotesPencilArcPlacement.preferenceKey) private var pencilArcPlacement: NotesPencilArcPlacement = .above
     @AppStorage("notes.fingerDrawing.enabled") private var fingerDrawing = false
@@ -396,6 +399,9 @@ struct NotesDocumentEditor: View {
                     }
             }.presentationDetents([.medium, .large])
         }
+        .fullScreenCover(isPresented: $isReadingModePresented) {
+            TextReaderView(source: TextReaderSource.notes(document: document))
+        }
         .sheet(isPresented: $showText) {
             NavigationStack {
                 TextEditor(text: $textDraft).padding().navigationTitle("notes.notes_document_editor.text")
@@ -704,6 +710,18 @@ struct NotesDocumentEditor: View {
                     .accessibilityIdentifier("notes.linkedMaps")
             }
             if document.kind == .notebook {
+                if document.pages.contains(where: { page in
+                    page.elements.contains { $0.kind == .text && !$0.text.isEmpty }
+                }) {
+                    Button {
+                        isReadingModePresented = true
+                    } label: {
+                        Label(ReaderText.t("阅读模式", "Reading Mode"), systemImage: "book")
+                    }
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityLabel(ReaderText.t("阅读模式", "Reading Mode"))
+                    .accessibilityIdentifier("notes.reader.open")
+                }
                 Button("notes.notes_document_editor.page_2", systemImage: "rectangle.stack") { showPages = true }
                     .frame(minWidth: 44, minHeight: 44)
             } else if document.kind == .mindMap {

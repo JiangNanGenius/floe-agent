@@ -128,9 +128,22 @@ let package = Package(
         ),
         // MARK: - Cross-platform targets (buildable on macOS host without iOS SDK)
 
+        // Narrow C shim over the SDK's own public `fcntl(F_LOG2PHYS_EXT)`
+        // primitive: Swift cannot call the variadic C `fcntl`, so the packed
+        // `struct log2phys` in/out is assembled here. No vendored code, no
+        // private API and no entitlement; FloeCore is the only consumer
+        // (Settings → Data Management measured storage accounting).
+        .target(
+            name: "CFloeExtentShim",
+            dependencies: [],
+            path: "Sources/CFloeExtentShim",
+            publicHeadersPath: "include"
+        ),
+
         .target(
             name: "FloeCore",
             dependencies: [
+                "CFloeExtentShim",
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeCore",
@@ -602,7 +615,7 @@ let package = Package(
 
         .testTarget(
             name: "FloeProvidersTests",
-            dependencies: ["FloeProviders", "FloeTestSupport"],
+            dependencies: ["FloeProviders", "FloeTestSupport", "FloeTools"],
             path: "Tests/FloeProvidersTests",
             resources: [.process("Fixtures")],
             swiftSettings: [

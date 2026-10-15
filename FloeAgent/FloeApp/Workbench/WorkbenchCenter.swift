@@ -1306,6 +1306,8 @@ final class WorkbenchCenter: ObservableObject {
                 try? await self.candidateStore.append(projectID: frozenProjectID, candidates: delivered)
                 // Delivered candidates retire the request record.
                 try? self.imageRequestStore.remove(projectID: frozenProjectID, recordID: record.id)
+                // Generated media is new on-disk data for the shared snapshot.
+                StorageMutationHooks.invalidate(.mediaStoreChanged)
                 if self.project?.id == frozenProjectID {
                     self.candidates = await self.candidateStore.load(projectID: frozenProjectID)
                     self.imageRequests = self.imageRequestStore.load(projectID: frozenProjectID)

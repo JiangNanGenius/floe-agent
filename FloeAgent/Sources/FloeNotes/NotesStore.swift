@@ -324,6 +324,10 @@ public actor NotesStore {
             var value = try decoder.decode(NoteDocument.self, from: data)
             // History restores content, never rewinds the monotonically increasing revision.
             value.revision = current.revision + 1; value.updatedAt = Date()
+            // An explicit cover is presentation metadata, not content: it is
+            // never rewound by an undo/redo of the document's content.
+            value.coverResourceID = current.coverResourceID
+            value.coverRevision = current.coverRevision
             try validateResources(value, db: db)
             try persist(value, cursor: redo ? cursor + 1 : cursor - 1, db: db)
             return value
@@ -340,6 +344,143 @@ public actor NotesStore {
             try persist(value, cursor: cursor, db: db)
             return value
         }
+    }
+
+    /// Deterministic custom-cover mutation. Not a content edit: the content
+    /// revision, undo history and every other document field are untouched.
+    ///
+    /// Validation happens in one transaction: the document exists and is not in
+    /// Trash, the caller's expected content revision matches, and a
+    /// `useResource` asset is a registered resource in one of the two stored
+    /// cover formats (`image/png` / `image/jpeg`, produced by
+    /// `NotesCoverImageProcessor`; any other format must be normalized first).
+    /// Because a cover change deliberately does not move the content revision,
+    /// the write is also compare-and-swap bound to the cover version:
+    /// `expectedCoverRevision` must equal the current normalized cover revision
+    /// (`nil` old cover == 0) or the mutation is a conflict. Two cover edits
+    /// with the same content baseline therefore cannot both succeed and the
+    /// second can never silently overwrite the first. Re-running the exact same
+    /// command against the settled cover state stays an idempotent no-op (safe
+    /// retries never bump the version).
+    ///
+    /// When `authorizedConversationID` is present (the assistant path), the
+    /// editing scope is re-read inside this same write transaction — a native
+    /// revoke that lands while an async image import is in flight still wins at
+    /// commit, exactly like `apply(_:authorizedConversationID:)`.
+    ///
+    /// The body is updated by merging only the cover keys into the exact stored
+    /// JSON, so unknown or future document metadata written by another build is
+    /// preserved instead of being dropped by a full re-encode. The previous
+    /// cover is journaled for deferred collection; `collectDeletedResources()`
+    /// still removes it only when no current document, undo/redo history or edit
+    /// receipt references it, so an undo that can still restore it keeps the
+    /// bytes.
+    @discardableResult
+    public func applyCoverCommand(_ command: NoteCoverCommand, documentID: UUID, expectedRevision: Int,
+                                  expectedCoverRevision: Int,
+                                  authorizedConversationID: UUID? = nil) throws -> NoteDocument {
+        guard expectedRevision >= 0, expectedCoverRevision >= 0 else {
+            throw NoteError.invalidOperation(String(localized: "notes.cover.error.invalidBaseline",
+                                                    defaultValue: "The cover baseline is invalid"))
+        }
+        let changed = try database.write { db -> NoteDocument? in
+            guard let raw = try Data.fetchOne(db, sql: "SELECT body FROM documents WHERE id=?", arguments: [documentID.uuidString]) else {
+                throw NoteError.notFound
+            }
+            // Same atomic scope recheck the edit path uses: the grant must still
+            // exist in this exact transaction.
+            if let conversation = authorizedConversationID {
+                guard try Bool.fetchOne(db, sql: "SELECT can_edit FROM assistant_scopes WHERE conversation_id=? AND document_id=?", arguments: [conversation.uuidString, documentID.uuidString]) == true else {
+                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.this_conversation_is_no_longer_authorized"))
+                }
+            }
+            let value = try decoder.decode(NoteDocument.self, from: raw)
+            try value.validate()
+            guard value.deletedAt == nil else {
+                throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.restore_the_content_from_trash_first"))
+            }
+            let resolved: UUID?
+            switch command {
+            case .restoreAutomatic:
+                resolved = nil
+            case .useResource(let resourceID):
+                let mediaType = try String.fetchOne(db, sql: "SELECT media_type FROM resources WHERE id=?", arguments: [resourceID.uuidString])
+                guard NoteCoverAssetPolicy.acceptsStoredAsset(mediaType: mediaType) else {
+                    throw NoteError.invalidOperation(String(localized: "notes.cover.error.invalidAsset",
+                                                            defaultValue: "This image can't be used as a cover"))
+                }
+                resolved = resourceID
+            }
+            // Idempotent retry of the settled state: no write, no version bump.
+            guard value.coverResourceID != resolved else { return nil }
+            guard value.revision == expectedRevision else { throw NoteError.conflict }
+            // Compare-and-swap on the cover version. The content revision did
+            // not move, so this is the only guard that stops a second cover
+            // edit (manual or assistant) from overwriting a newer cover.
+            guard value.normalizedCoverRevision == expectedCoverRevision else { throw NoteError.conflict }
+            var object = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any] ?? [:]
+            if let resolved { object["coverResourceID"] = resolved.uuidString } else { object.removeValue(forKey: "coverResourceID") }
+            // The version keeps increasing after a restore too, so the
+            // automatic-cover cache key can never collide with the custom key.
+            object["coverRevision"] = value.normalizedCoverRevision + 1
+            object["updatedAt"] = Date().timeIntervalSinceReferenceDate
+            let body = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            let updated = try decoder.decode(NoteDocument.self, from: body)
+            try updated.validate()
+            try db.execute(sql: "UPDATE documents SET updated=?, body=? WHERE id=?",
+                           arguments: [updated.updatedAt.timeIntervalSince1970, body, documentID.uuidString])
+            try updateReferencesAndSearch(updated, db: db)
+            if let previous = value.coverResourceID, previous != resolved {
+                try db.execute(sql: "INSERT OR IGNORE INTO resource_collection VALUES(?)", arguments: [previous.uuidString])
+            }
+            return updated
+        }
+        guard let changed else { return try document(documentID) }
+        publishChange()
+        return changed
+    }
+
+    /// Discard a resource this task imported but never committed to any
+    /// document (for example a cover image whose cover command then conflicted,
+    /// was cancelled or was rejected).
+    ///
+    /// This reuses the existing collection journal and the exact reference
+    /// guard: the resource is only journaled and removed when no current
+    /// document, undo/redo history or edit receipt references it and no live
+    /// store lease pins it. A content-addressed import that happens to be
+    /// referenced (the same bytes already used elsewhere) is left untouched and
+    /// reported as retained, so this can never delete a referenced asset.
+    /// Returns true when the resource was removed.
+    @discardableResult
+    public func discardUnreferencedResource(_ id: UUID) throws -> Bool {
+        var removed = false
+        try database.write { db in
+            guard try String.fetchOne(db, sql: "SELECT hash FROM resources WHERE id=?", arguments: [id.uuidString]) != nil else { return }
+            var retained = Set<UUID>()
+            for body in try Data.fetchAll(db, sql: "SELECT body FROM documents UNION ALL SELECT before FROM history UNION ALL SELECT after FROM history UNION ALL SELECT body FROM edit_receipts") {
+                retained.formUnion(try decoder.decode(NoteDocument.self, from: body).resourceIDs)
+            }
+            guard !retained.contains(id) else { return }
+            try db.execute(sql: "INSERT OR IGNORE INTO resource_collection VALUES(?)", arguments: [id.uuidString])
+            // The failed import owns the only pin on this resource; release it
+            // so the bytes can be removed now. A pin held by another live store
+            // instance still blocks deletion (the journal entry stays for the
+            // next collection pass).
+            resourceLease.unpin([id], root: resources)
+            try resourceLease.withRetained(root: resources) { leased in
+                guard !leased.contains(id) else { return }
+                guard let hash = try String.fetchOne(db, sql: "SELECT hash FROM resources WHERE id=?", arguments: [id.uuidString]),
+                      hash.count == 64, hash.allSatisfy({ $0.isHexDigit }) else { throw NoteError.resourceUnavailable }
+                let url = resources.appendingPathComponent(hash)
+                if FileManager.default.fileExists(atPath: url.path) || (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+                    try FileManager.default.removeItem(at: url)
+                }
+                try db.execute(sql: "DELETE FROM resources WHERE id=?", arguments: [id.uuidString])
+                try db.execute(sql: "DELETE FROM resource_collection WHERE resource_id=?", arguments: [id.uuidString])
+                removed = true
+            }
+        }
+        return removed
     }
 
     /// User-confirmed removal from Trash only. Linked maps remain independent.
@@ -497,6 +638,14 @@ public actor NotesStore {
         guard url.resolvingSymlinksInPath().deletingLastPathComponent() == resources.resolvingSymlinksInPath(),
               (try url.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else { throw NoteError.resourceUnavailable }
         return url
+    }
+
+    /// The recorded media type of one registered resource, or nil when it does
+    /// not exist. Read-only metadata; the caller decides how to classify it.
+    /// Used by the cover surfaces to accept only image assets without relying
+    /// on a file name or an external path.
+    public func resourceMediaType(_ id: UUID) throws -> String? {
+        try database.read { try String.fetchOne($0, sql: "SELECT media_type FROM resources WHERE id=?", arguments: [id.uuidString]) }
     }
 
     /// Ephemeral navigation metadata, never document content or a permission grant.
@@ -660,6 +809,16 @@ private final class NoteResourceLease: @unchecked Sendable {
         let key = root.resolvingSymlinksInPath().path
         Self.registry.lock.lock(); defer { Self.registry.lock.unlock() }
         Self.registry.roots[key, default: [:]][id, default: []].formUnion(ids)
+    }
+    /// Releases this store instance's own pin on specific resources. Used only
+    /// by `discardUnreferencedResource` after it has proven nothing references
+    /// them: the import that created them is the pin owner and has failed, so
+    /// no reader can legitimately hold those bytes. Other live store instances'
+    /// pins are untouched and still block deletion.
+    func unpin(_ resourceIDs: Set<UUID>, root: URL) {
+        let key = root.resolvingSymlinksInPath().path
+        Self.registry.lock.lock(); defer { Self.registry.lock.unlock() }
+        Self.registry.roots[key]?[id]?.subtract(resourceIDs)
     }
     func withRetained<T>(root: URL, _ body: (Set<UUID>) throws -> T) rethrows -> T {
         let key = root.resolvingSymlinksInPath().path

@@ -720,20 +720,58 @@ enum OfficeXMLScan {
     }
 
     /// Paragraph tables: rows per table and the widest row's cell count.
+    ///
+    /// Writer's DOCX export writes element PROPERTIES inside each row/cell
+    /// (`<w:trPr>`, `<w:tcPr>`, `<w:trHeight>`), so a naive substring count of
+    /// `<w:tr`/`<w:tc` double-counts rows and cells — a real 2x3 table was
+    /// read as 4x12 and failed a correct engine edit. Rows and cells are
+    /// therefore counted by exact element name (`<w:tr>`/`<w:tr ...`,
+    /// `<w:tc>`/`<w:tc ...`), and each table ends at its closing tag so
+    /// following content is never scanned as part of it.
     static func wordTables(in xml: String) -> [OfficeTableShape] {
         let tables = xml.components(separatedBy: "<w:tbl>").dropFirst()
-        return tables.map { table in
-            let rows = table.components(separatedBy: "<w:tr ").dropFirst()
-                + table.components(separatedBy: "<w:tr>").dropFirst()
-            let rowCount = max(count(of: "<w:tr", in: table), 1)
+        return tables.map { remainder in
+            let table = remainder.components(separatedBy: "</w:tbl>").first ?? remainder
+            let rows = elementSlices(name: "w:tr", in: table)
+            let rowCount = max(rows.count, 1)
             var columns = 0
             for row in rows {
-                let cells = count(of: "<w:tc", in: row)
-                columns = max(columns, cells)
+                columns = max(columns, countElements(named: "w:tc", in: row))
             }
-            if columns == 0 { columns = count(of: "<w:tc", in: table) / max(rowCount, 1) }
+            if columns == 0 { columns = countElements(named: "w:tc", in: table) / rowCount }
             return OfficeTableShape(rows: rowCount, columns: columns)
         }
+    }
+
+    /// Occurrences of an exact XML element start: the next character after the
+    /// name must close the tag or start its attribute list, so `<w:trPr>` is
+    /// never counted as a `<w:tr>`.
+    static func countElements(named name: String, in source: String) -> Int {
+        elementRanges(name: name, in: source).count
+    }
+
+    /// Slices from every `<name>`/`<name ...>` start to the next such start,
+    /// bounded by the source; used to count cells per row.
+    static func elementSlices(name: String, in source: String) -> [String] {
+        let ranges = elementRanges(name: name, in: source)
+        return ranges.enumerated().map { index, range in
+            let end = index + 1 < ranges.count ? ranges[index + 1].lowerBound : source.endIndex
+            return String(source[range.lowerBound..<end])
+        }
+    }
+
+    private static func elementRanges(name: String, in source: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var search = source.startIndex..<source.endIndex
+        let needle = "<" + name
+        while let range = source.range(of: needle, range: search) {
+            let after = range.upperBound
+            if after == source.endIndex || source[after] == ">" || source[after].isWhitespace {
+                ranges.append(range)
+            }
+            search = after..<source.endIndex
+        }
+        return ranges
     }
 
     static func wordStyleNames(in stylesXML: String) -> [String: String] {

@@ -33,7 +33,8 @@ struct ProviderEditorView: View {
         initialCatalogEntry: ProviderCatalogEntry? = nil,
         catalog: ProviderCatalogIndex? = nil,
         onRefreshCatalog: (() async -> Void)? = nil,
-        serviceOfferEndpointOverride: URL? = nil
+        serviceOfferEndpointOverride: URL? = nil,
+        serviceOfferSeedModels: [String] = []
     ) {
         _viewModel = StateObject(
             wrappedValue: ProviderEditorViewModel(
@@ -42,7 +43,8 @@ struct ProviderEditorView: View {
                 initialRole: initialRole,
                 catalogEntry: initialCatalogEntry,
                 catalog: catalog,
-                serviceOfferEndpointOverride: serviceOfferEndpointOverride
+                serviceOfferEndpointOverride: serviceOfferEndpointOverride,
+                serviceOfferSeedModels: serviceOfferSeedModels
             )
         )
         self.catalog = catalog
@@ -165,7 +167,8 @@ struct ProviderEditorView: View {
                     initialCatalogEntry: route.entry,
                     catalog: catalog,
                     onRefreshCatalog: onRefreshCatalog,
-                    serviceOfferEndpointOverride: route.endpoint
+                    serviceOfferEndpointOverride: route.endpoint,
+                    serviceOfferSeedModels: route.models
                 )
             }
             .presentationSizing(.page)
@@ -328,7 +331,8 @@ struct ProviderEditorView: View {
                         separateOfferRoute = SeparateOfferRoute(
                             entry: entry,
                             role: offer.role,
-                            endpoint: offer.endpoint
+                            endpoint: offer.endpoint,
+                            models: offer.models
                         )
                     }
                     .frame(minHeight: FloeTheme.minimumTarget)
@@ -606,6 +610,14 @@ struct ProviderEditorView: View {
                             .foregroundStyle(.secondary)
                             .accessibilityLabel(Text("model.hidden_from_primary_picker.badge"))
                     }
+                    // Per-model image input, verified by catalog metadata and
+                    // actually carried by the saved row: never a provider-wide
+                    // vision claim.
+                    if viewModel.catalogVerifiedImageInput(for: model) {
+                        Image(systemName: "photo")
+                            .foregroundStyle(FloeTheme.primary)
+                            .accessibilityLabel(Text("model.capability.vision"))
+                    }
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tertiary)
@@ -667,6 +679,9 @@ private struct SeparateOfferRoute: Identifiable {
     let entry: ProviderCatalogEntry
     let role: ProviderServiceRole
     let endpoint: URL?
+    /// Verified catalog identifiers pre-staged in the separate editor so the
+    /// new connection is usable without local guessing.
+    let models: [String]
 
     var id: String { "\(entry.presetID)-\(role.rawValue)" }
 }

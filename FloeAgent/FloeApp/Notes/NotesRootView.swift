@@ -31,6 +31,8 @@ struct NotesRootView: View {
         let value: String
     }
     @State private var coverSources: [UUID: CoverState] = [:]
+    /// The document whose cover dialog is presented (from the context menu).
+    @State private var coverTarget: NoteDocument?
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     private enum SectionFilter: String, CaseIterable {
@@ -189,6 +191,7 @@ struct NotesRootView: View {
                 await session.open()
                 #if DEBUG
                 await NotesOfficeThumbnailFixture.seedIfRequested(session: session)
+                await NotesAIActualOutputFixture.seedIfRequested(session: session)
                 await OfficeWorkspaceStageFixture.seedIfRequested(environment: environment)
                 // Real-engine cloud simulator qualification fixture (office-floe-simulator).
                 await OfficeRealEngineQualificationFixture.seedIfRequested(session: session)
@@ -202,6 +205,11 @@ struct NotesRootView: View {
         // with the landscape iPad keyboard taking most of the vertical space.
         let showsCovers = grid && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return libraryContent(showsCovers: showsCovers)
+            .notesCoverPicker(target: $coverTarget, store: session.store) { _ in
+                Task { try? await session.reload() }
+            } onError: { message in
+                session.errorMessage = message
+            }
     }
 
     private func libraryContent(showsCovers: Bool) -> some View {
@@ -309,6 +317,7 @@ struct NotesRootView: View {
                             Button("notes.notes_root_view.delete_permanently", systemImage: "trash", role: .destructive) { deleting = document }
                         } else {
                             Button("notes.notes_root_view.re_index_body_text", systemImage: "text.magnifyingglass") { session.rebuildSearchIndex(documentID: document.id) }
+                            Button(document.coverResourceID == nil ? "notes.cover.menu.set" : "notes.cover.menu.change", systemImage: "photo") { coverTarget = document }
                             Button("workspace.file_tree_view.rename", systemImage: "pencil") { renaming = .init(id: document.id, title: document.title, notebook: false, document: document) }
                             Button(document.isFavorite ? "notes.notes_root_view.remove_from_favorites" : "notes.notes_root_view.favorites", systemImage: "star") {
                                 session.apply([.favorite(!document.isFavorite)], title: FloeL10n.l("notes.notes_root_view.favorites"), base: document)

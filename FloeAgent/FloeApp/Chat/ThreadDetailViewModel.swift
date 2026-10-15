@@ -205,6 +205,40 @@ final class ThreadDetailViewModel: ObservableObject {
     /// reach the durable draft store until the user edits it again.
     private(set) var temporaryDraftHandoffPending = false
 
+    // MARK: - Delegated children (durable projection)
+
+    /// Durable delegated-child records for this conversation, read from the
+    /// lifecycle owner's store. This is a read-only projection for the
+    /// in-thread delegate cards; the child-agents inspector reads the SAME
+    /// store, so there is exactly one source of truth.
+    @Published private(set) var childRunRecords: [ChildRunRecord] = []
+    private var childRunPollTask: Task<Void, Never>?
+    private var lastChildRunRefresh: ContinuousClock.Instant?
+
+    /// Delegated child record created by `delegateCallID` inside exactly
+    /// `parentRunID`.
+    ///
+    /// Raw provider call ids are NOT unique across runs (the app's approval
+    /// cards scope by `runID + callID` for the same reason), so a delegate
+    /// card may only resolve a child whose parent run is the run that rendered
+    /// the call; within one run the newest child wins when a provider repeats
+    /// an id.
+    func childRun(delegateCallID: String, parentRunID: UUID) -> ChildRunRecord? {
+        ThreadRunScopedResolution.child(
+            callID: delegateCallID, parentRunID: parentRunID, in: childRunRecords)
+    }
+
+    /// True when the selected run is durably parked because required
+    /// background jobs are still outstanding. `checkpointed` alone is not
+    /// proof: the run's own terminal status event carries the exact reason
+    /// (`awaiting.finite.job:<ids>`), so this never guesses.
+    var selectedRunWaitingForJobs: Bool {
+        guard selectedRun?.state == "checkpointed",
+              let status = events.last(where: { $0.kind == .status }) else { return false }
+        let reason = ConversationCenter.decodePayload(status.payloadJSON)["reason"] ?? ""
+        return reason.hasPrefix(FloeAgentRuntime.dependencyWaitReasonPrefix)
+    }
+
     /// Available projects disappear in temporary mode (no workspace binding).
     var availableProjects: [ComposerProject] {
         guard !isTemporary else { return [] }
@@ -357,6 +391,11 @@ final class ThreadDetailViewModel: ObservableObject {
 
     var canContinue: Bool {
         guard !isRunning, let state = selectedRun?.state else { return false }
+        // A run parked on required background work is NOT finished: Continue
+        // must not resume it without the dependency (a user message still
+        // steers/resumes it intentionally). It becomes continuable again if
+        // the dependency settles to a terminal failure.
+        if selectedRunWaitingForJobs { return false }
         return !center.hasLiveOwner(runID: selectedRun?.id)
             && ["failed", "interrupted", "checkpointed"].contains(state)
     }
@@ -550,6 +589,8 @@ final class ThreadDetailViewModel: ObservableObject {
             }
             stage = "latestRunDetails"
             try await loadSelectedRunDetails()
+            await refreshChildRuns(force: true)
+            startChildRunPollingIfNeeded()
             startSessionUpdates()
             startLiveUpdates()
         } catch is CancellationError {
@@ -738,6 +779,7 @@ final class ThreadDetailViewModel: ObservableObject {
     }
     private var cachedTimelineKey: TimelineKey?
     private var cachedTimeline: [ThreadTimelineItem] = []
+    private var cachedDecisionAnnotations: [ToolDecisionAnnotation] = []
     private(set) var timelineBuildCount = 0
     private var cachedTimelineIDs: [String] = []
     var timelineIDs: [String] { _ = timeline; return cachedTimelineIDs }
@@ -752,6 +794,21 @@ final class ThreadDetailViewModel: ObservableObject {
         if cachedTimelineKey == key { return cachedTimeline }
         let visibleRunIDs = Set(messages.compactMap(\.runID))
             .union(selectedRunID.map { [$0] } ?? [])
+        // Decision notices are projected from the same revision as the
+        // timeline: a validated automatic tool decision becomes an annotation
+        // on its tool step (standalone row suppressed), while an
+        // uncorrelated/manual decision keeps its concise standalone row.
+        // Correlation is restricted to the runs this projection actually
+        // renders, so a notice can never be suppressed by an event whose step
+        // is not on screen.
+        let notices = ProposalDecisionPresentation.notices(
+            messages: messages,
+            events: eventsByRun
+                .filter { visibleRunIDs.contains($0.key) }
+                .values
+                .flatMap { $0 }
+        )
+        cachedDecisionAnnotations = notices.compactMap(\.annotation)
         cachedTimeline = ThreadTimelineBuilder.buildConversation(
             messages: messages,
             runs: runs.filter { visibleRunIDs.contains($0.id) },
@@ -761,13 +818,20 @@ final class ThreadDetailViewModel: ObservableObject {
             liveStreamedText: liveStreamedText,
             liveReasoningText: liveReasoningText,
             pendingApprovals: pendingApprovals,
-            earlierEventRunIDs: earlierEventRunIDs
+            earlierEventRunIDs: earlierEventRunIDs,
+            suppressedDecisionNoticeIDs: Set(
+                notices.filter { $0.automaticCallID != nil }.map(\.id))
         )
         cachedTimelineKey = key
         cachedTimelineIDs = cachedTimeline.map(\.id)
         timelineBuildCount += 1
         return cachedTimeline
     }
+
+    /// Decision records projected onto their tool calls for the current
+    /// timeline revision. Filled by `timeline`, so a view that reads it from
+    /// a rendered timeline row sees exactly that revision.
+    var decisionAnnotations: [ToolDecisionAnnotation] { cachedDecisionAnnotations }
 
     /// The live tail stays mounted while the run is active OR while the
     /// animator drains a terminal remainder — the final bubble never
@@ -788,7 +852,10 @@ final class ThreadDetailViewModel: ObservableObject {
     ) async {
         let goal = (goalOverride ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         reconcilePlanComposerMode()
-        // Temporary conversations always send plain chat turns.
+        // Temporary conversations send the ordinary agent turn: tools stay
+        // enabled and the immutable read-only ceiling in ConversationCenter
+        // (TemporaryChatToolPolicy + descriptor projection) is the authority
+        // that decides what the model may call.
         let executionMode = effectiveAgentMode
         guard !isConversationMissing, !goal.isEmpty,
               let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return }
@@ -968,8 +1035,11 @@ final class ThreadDetailViewModel: ObservableObject {
         }
     }
 
-    /// Toggles temporary mode for this conversation. Empty conversations
-    /// convert in place; populated ones spawn a separate session. Returns the
+    /// Toggles temporary mode for this conversation. The New Task launchpad
+    /// (`home.temporary.toggle`) is the ONLY UI entry that starts a temporary
+    /// chat; this programmatic toggle remains for an explicit in-thread
+    /// conversion (empty conversations convert in place, populated ones spawn
+    /// a separate session) and for the lifecycle tests. Returns the
     /// navigation target when the visible conversation changes.
     @discardableResult
     func toggleTemporaryChat() async -> TemporaryNavigation? {
@@ -1087,10 +1157,15 @@ final class ThreadDetailViewModel: ObservableObject {
         }
     }
 
-    /// The composer may only send plain chat turns while temporary: plan and
-    /// goal modes need durable records this mode never writes.
+    /// The mode a temporary conversation actually sends with. It must keep
+    /// tools ENABLED: forcing `.chat` disabled tool execution entirely, which
+    /// silently contradicted the audited read-only ceiling the temporary
+    /// request is supposed to enforce. A temporary chat therefore runs the
+    /// ordinary `.agent` turn (never plan/goal, whose durable records a
+    /// temporary session never writes) and the immutable ceiling in
+    /// ConversationCenter narrows the catalog to verified reads.
     var effectiveAgentMode: AgentExecutionMode {
-        isTemporary ? .chat : agentMode
+        isTemporary ? .agent : agentMode
     }
 
     /// Draft-store write gate for the composer: after a temporary toggle-off,
@@ -1418,6 +1493,46 @@ final class ThreadDetailViewModel: ObservableObject {
         } catch { actionError = error.localizedDescription }
     }
 
+    // MARK: - Delegated child refresh
+
+    /// Refresh the durable child records behind the delegate cards. Throttled
+    /// because the session push stream can tick many times per second; the
+    /// bounded `childRunPollTask` below covers live states in between.
+    private func refreshChildRuns(force: Bool = false) async {
+        let now = ContinuousClock.now
+        if !force, let last = lastChildRunRefresh, now - last < .seconds(1) { return }
+        lastChildRunRefresh = now
+        do {
+            childRunRecords = try await SQLiteChildRunStore(database: center.environment.database)
+                .children(conversationID: conversationID)
+        } catch {
+            // Presentation projection only: keep the previous records rather
+            // than blanking the cards on a transient read failure. The
+            // inspector reports its own load errors explicitly.
+        }
+    }
+
+    /// Bounded visible-thread polling while any loaded child is non-terminal,
+    /// so a card never keeps showing "working" after the child finished (or
+    /// "done" while it is still running when no change hook fires). Stops as
+    /// soon as every child is terminal and when the thread view is left.
+    private func startChildRunPollingIfNeeded() {
+        guard childRunPollTask == nil else { return }
+        guard childRunRecords.contains(where: { !$0.state.isTerminal }) else { return }
+        childRunPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                try? await Task.sleep(for: .seconds(2))
+                if Task.isCancelled { return }
+                await self.refreshChildRuns(force: true)
+                if !self.childRunRecords.contains(where: { !$0.state.isTerminal }) {
+                    self.childRunPollTask = nil
+                    return
+                }
+            }
+        }
+    }
+
     // MARK: - Live push stream
 
     private func startSessionUpdates() {
@@ -1457,6 +1572,8 @@ final class ThreadDetailViewModel: ObservableObject {
                 self.activeGoal = snapshot.activeGoal
                 self.taskPolicy = snapshot.taskPolicy
                 self.pendingInputs = snapshot.pendingInputs
+                await self.refreshChildRuns()
+                self.startChildRunPollingIfNeeded()
                 let serviceBecameAvailable = self.selectedRunID.flatMap {
                     center.service(for: $0) != nil && self.observedServiceRunID != $0
                 } ?? false
@@ -1647,6 +1764,8 @@ final class ThreadDetailViewModel: ObservableObject {
         observedServiceRunID = nil
         sessionEventTask?.cancel()
         sessionEventTask = nil
+        childRunPollTask?.cancel()
+        childRunPollTask = nil
         // Leaving the thread stops the animation immediately; the partial
         // display is discarded with the live tail, persisted rows reload
         // from the store on the next open.

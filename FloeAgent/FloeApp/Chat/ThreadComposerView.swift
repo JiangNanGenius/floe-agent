@@ -187,11 +187,13 @@ struct ThreadComposerView: View {
     var embedded: Bool = false
     var documentAssistant: Bool = false
     /// Temporary (ephemeral) conversation: no-attachment composer —
-    /// attachment staging, plan/goal modes, workspace binding and permission
-    /// chips are hidden.
+    /// attachment staging, workspace binding and permission chips are hidden.
+    /// The mode picker is hidden because a temporary run always sends the
+    /// ordinary `.agent` turn (tools ENABLED) and must never select
+    /// plan/goal, whose durable records the session never writes; the
+    /// immutable read-only ceiling in ConversationCenter narrows the catalog.
     /// Voice input stays available (normal Apple speech service, transcript
-    /// lands only in the RAM draft); the service enforces the read-only
-    /// tool ceiling anyway.
+    /// lands only in the RAM draft).
     var temporary: Bool = false
     /// False after a temporary toggle-off handed an ephemeral draft back:
     /// edits stay in the binding (and in RAM) until the user re-arms
@@ -1048,6 +1050,9 @@ struct ThreadComposerView: View {
                     targetPicker
                 }
                 if !documentAssistant, !temporary { modePicker }
+                // A temporary composer hides the mode picker: its sends are
+                // always the ordinary `.agent` turn under the immutable
+                // read-only ceiling, never plan/goal/chat-only.
                 if !documentAssistant, isRunning, let runningInputMode {
                     Menu {
                         Button {

@@ -386,3 +386,43 @@ I/O (not line-only), real signal delivery (guest `kill` via console input
 is only shell-level), capability reporting, and backend/environment
 routing. Those are phase 2B concerns — this task intentionally does not
 change app defaults or remove existing fallbacks.
+
+## Update 2026-10-16 (E lane): the shipped engine supersedes the 2026-10-02 notes
+
+The sections above are kept as history. Current `HEAD` (`923b1e48`, the source
+of build 273 / v1.7.32) ships the arm/drain SMP fast stores (commits
+`4bc8d806` and `231249ab` are HEAD ancestors), and the cloud re-run
+36953899923 measured the equal-work S5 ratio at 1.47x — so "dual is
+S5-slower" no longer describes the shipped engine, and the earlier 0.876x
+number must not be repeated as current. Fresh host evidence on the frozen
+engine + pinned SMP3 image (2026-10-16, Apple M5 Pro):
+
+- equal work (three identical `dd` workers, guest `/proc/uptime` window),
+  medians over 3 runs each: 1.21 s (1 hart) / 0.68 s (2 harts) / 0.45 s
+  (3 harts) → **2.689x 1-vs-3**, no 2-hart regression (gate
+  `tests/smp3_workload_check.py` PASS; workload
+  `bench/workload-equal-work-3.txt`);
+- `smp_host_test --triple` (vcpu=3 create, `host_threads=3`, harts 0/1/2 all
+  retiring, 9p IO, 3x stop+flush) → `SMP_HOST_OK (29 checks)`;
+- the fixed single-threaded `bench/guest_bench.py` is ~3–4% slower with 2–3
+  harts than with 1 (medians 33.57 s / 33.28 s vs 32.38 s) because only one
+  guest thread runs — within the 5% bound, but it is real and reproducible;
+- all numbers are host numbers on the pinned image; no iPad numbers exist
+  here for these runs.
+
+The S1–S5 contract and its gates are unchanged; this update only corrects
+what the shipped engine and the current measurements actually are.
+
+## Real-guest multiclient harness (2026-10-16, E lane)
+
+`multiclient/mc_guest_bridge.c` exposes a real TinyEMU guest console on
+stdin/stdout (the pinned image's own `/usr/local/bin/floe-exec` as PID 1), so
+`multiclient_guest_check.sh` drives the production `LinuxGuestCommandChannel`
+against the actual guest instead of a host process. Result on the pinned
+image: **8/8 scenarios pass**, including `overlap_parent_two_children`
+(completion spread 0.12 s, wall 0.98 s), `duplicate_caller_ids_do_not_collide`
+(guest PIDs), `cancel_one_others_finish` (the cancelled client reports
+`cancelled`; the parent and the second child exit 0 with their own output) and
+`concurrent_pty_sessions`. This is host evidence driving the real guest; the
+App-level parent+2-delegate run remains a later integration step. The
+host-process variant of the same harness still passes 8/8.

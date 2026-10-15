@@ -30,6 +30,23 @@ public struct ApprovalDecisionReceipt: Sendable, Hashable {
     public init(callID: String) { self.callID = callID }
 }
 
+/// One outstanding durable dependency that keeps this run nonterminal: a
+/// required finite background job (or a long-lived service being waited on
+/// for readiness). The runtime never resolves dependencies itself — it only
+/// parks honestly instead of completing a run whose required work is still
+/// outstanding. `identifier` is the durable dependency id (the job UUID).
+public struct RunDependencyLabel: Sendable, Hashable {
+    public var identifier: String
+    public var kind: String
+    public var label: String
+
+    public init(identifier: String, kind: String, label: String) {
+        self.identifier = identifier
+        self.kind = kind
+        self.label = label
+    }
+}
+
 /// Sink observing state transitions and normalized events. Implemented by
 /// the UI layer (iOS) and by tests.
 public protocol AgentEventSink: Sendable {
@@ -445,6 +462,14 @@ public actor FloeAgentRuntime {
         /// never mint authority, and an absent key fails closed to the
         /// existing policy.
         public var serviceStorePaths: [String: String]
+        /// Outstanding required dependencies of this run, consulted exactly
+        /// at the terminal boundary: when it returns a non-empty list the run
+        /// does NOT complete. It persists a recovery checkpoint and parks as
+        /// `checkpointed` with the stable `awaiting.finite.job` reason, and
+        /// the dependency's completion is delivered back into the SAME run.
+        /// A closure (rather than stored state) keeps this durable truth in
+        /// the persistence layer instead of a live in-memory shadow store.
+        public var outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])?
 
         public init(
             conversationID: UUID = UUID(),
@@ -480,7 +505,8 @@ public actor FloeAgentRuntime {
             environmentID: String? = nil,
             environmentLifecycleWait: TimeInterval = 30,
             localLinuxGuestEnvironment: Bool = false,
-            serviceStorePaths: [String: String] = [:]
+            serviceStorePaths: [String: String] = [:],
+            outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])? = nil
         ) {
             self.conversationID = conversationID
             self.provider = provider
@@ -519,6 +545,7 @@ public actor FloeAgentRuntime {
             self.environmentLifecycleWait = max(0, environmentLifecycleWait)
             self.localLinuxGuestEnvironment = localLinuxGuestEnvironment
             self.serviceStorePaths = serviceStorePaths
+            self.outstandingDependencies = outstandingDependencies
         }
     }
 
@@ -2742,6 +2769,17 @@ public actor FloeAgentRuntime {
                !didVerifyFinalAnswer,
                !streamText.isEmpty {
                 await beginFinalAnswerVerification(stopReason: stopReason)
+                return
+            }
+            // Required background work keeps this run NONTERMINAL: the turn's
+            // answer is sealed and flushed, a recovery checkpoint is written,
+            // and the durable run state parks as `checkpointed` with the
+            // stable `awaiting.finite.job` marker instead of falsely
+            // completing. The dependency's completion resumes this SAME run,
+            // and a user message sent while waiting does too. The provider
+            // request is fully released at this point.
+            if let dependencies = await outstandingDependencies(), !dependencies.isEmpty {
+                await enterDependencyWait(dependencies, stopReason: stopReason)
                 return
             }
             if didVerifyFinalAnswer, isFinalizingWithoutTools {
@@ -4976,6 +5014,51 @@ public actor FloeAgentRuntime {
             message: message,
             isRecoverable: recoverable
         )))
+    }
+
+    /// Stable machine-readable marker embedded in the checkpoint reason of a
+    /// run parked because required background work is outstanding. The app
+    /// matches on this prefix to route a dependency completion or a waiting
+    /// user message back into the SAME run instead of launching a new one.
+    public nonisolated static let dependencyWaitReasonPrefix = "awaiting.finite.job"
+
+    /// Non-empty when required dependencies are outstanding. Nil keeps the
+    /// historical immediate completion for runs without a dependency source.
+    private func outstandingDependencies() async -> [RunDependencyLabel]? {
+        guard let provider = configuration.outstandingDependencies else { return nil }
+        let labels = await provider()
+        return labels.isEmpty ? nil : labels
+    }
+
+    /// Parks the run honestly instead of completing it: seals the visible
+    /// answer, writes a recovery checkpoint and transitions to
+    /// `checkpointed` with the awaiting-dependency reason. No provider
+    /// request remains in flight and no terminal completion is published.
+    private func enterDependencyWait(
+        _ labels: [RunDependencyLabel],
+        stopReason: AgentEvent.StopReason
+    ) async {
+        // Flush the answer through the same completion channel the ordinary
+        // terminal path uses, so the durable transcript keeps the model's
+        // final text even though the run stays nonterminal.
+        await emit(.completed(.init(stopReason: stopReason)))
+        if !streamText.isEmpty {
+            messages.append(ConversationMessage(
+                role: "assistant", content: streamText, reasoningContent: responseReasoning))
+        }
+        await releaseRunAuthorities()
+        do {
+            try await writeCheckpoint()
+        } catch {
+            await failRun(
+                message: "Unable to persist the waiting state for outstanding background work: \(error.localizedDescription)",
+                recoverable: true
+            )
+            return
+        }
+        let reason = Self.dependencyWaitReasonPrefix + ":"
+            + labels.map(\.identifier).joined(separator: ",")
+        await transition(to: .checkpointed(AgentState.CheckpointRef(reason: reason)))
     }
 
     /// Revokes and purges this run's runtime-issued operation authorities.

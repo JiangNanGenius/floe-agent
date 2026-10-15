@@ -17,6 +17,12 @@ struct ProviderListView: View {
     @StateObject private var viewModel: ProviderListViewModel
     @State private var presentedEditor: ProviderEditorRoute?
     @State private var showsProviderTypePicker = false
+    /// Reviewed capability updates from verified catalog metadata. Empty
+    /// until a saved model's metadata adds a capability it does not carry.
+    @State private var capabilityProposals: [ProviderCatalogCapabilityProposal] = []
+    @State private var showsCapabilityReview = false
+    @State private var isApplyingCapabilityUpdates = false
+    @State private var capabilityMigrationError: String?
 
     /// Optional validated catalog plus refresh closure. Both stay nil for
     /// call sites that only support manual provider setup. When present the
@@ -67,8 +73,14 @@ struct ProviderListView: View {
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             }
         }
-        .task { await viewModel.load() }
-        .refreshable { await viewModel.load() }
+        .task {
+            await viewModel.load()
+            refreshCapabilityProposals()
+        }
+        .refreshable {
+            await viewModel.load()
+            refreshCapabilityProposals()
+        }
         .confirmationDialog("providers.provider_list_view.add_model_provider", isPresented: $showsProviderTypePicker) {
             Button("providers.provider_list_view.chat_model_provider") { presentedEditor = .new(.conversation) }
             Button("providers.provider_list_view.image_generation_editing_provider") { presentedEditor = .new(.image) }
@@ -77,8 +89,19 @@ struct ProviderListView: View {
         } message: {
             Text("providers.provider_list_view.choose_a_use_first_then_configure")
         }
+        .sheet(isPresented: $showsCapabilityReview) {
+            ProviderCapabilityMigrationView(
+                proposals: capabilityProposals,
+                isApplying: isApplyingCapabilityUpdates,
+                errorMessage: capabilityMigrationError,
+                onApply: { applyCapabilityUpdates() }
+            )
+        }
         .sheet(item: $presentedEditor, onDismiss: {
-            Task { await viewModel.load() }
+            Task {
+                await viewModel.load()
+                refreshCapabilityProposals()
+            }
         }) { route in
             NavigationStack {
                 ProviderEditorView(
@@ -169,12 +192,34 @@ struct ProviderListView: View {
                 }
             }
 
+            if catalog != nil, !capabilityProposals.isEmpty {
+                Section {
+                    Button {
+                        capabilityMigrationError = nil
+                        showsCapabilityReview = true
+                    } label: {
+                        Label(
+                            FloeL10n.l(
+                                "providers.capability_migration.review",
+                                capabilityProposals.count
+                            ),
+                            systemImage: "sparkles"
+                        )
+                    }
+                    .frame(minHeight: FloeTheme.minimumTarget)
+                    .accessibilityIdentifier("providers.capability_migration.review")
+                } footer: {
+                    Text("providers.capability_migration.footer")
+                }
+            }
+
             if let catalog, onRefreshCatalog != nil {
                 Section {
                     Button {
                         Task {
                             await onRefreshCatalog?()
                             await viewModel.load()
+                            refreshCapabilityProposals()
                         }
                     } label: {
                         Label("providers.catalog.refresh", systemImage: "arrow.clockwise")
@@ -187,12 +232,63 @@ struct ProviderListView: View {
                     Text(FloeL10n.l(
                         "providers.catalog.official_footer",
                         catalog.document.source.project,
-                        catalog.all.count
+                        catalog.offeredProviderCount
                     ))
                 }
             }
         }
         .listStyle(.insetGrouped)
+    }
+
+    /// Recomputes the reviewed-migration diff from the current store state.
+    /// Pure and side-effect free; an empty list hides the section entirely.
+    private func refreshCapabilityProposals() {
+        capabilityProposals = viewModel.capabilityProposals(catalog: catalog)
+        if capabilityProposals.isEmpty, !isApplyingCapabilityUpdates {
+            showsCapabilityReview = false
+        }
+    }
+
+    /// Applies the confirmed batch through the existing per-model save path:
+    /// provider identity, credentials, default model and every unrelated
+    /// field stay untouched. A partial failure is reported honestly and the
+    /// remaining rows are re-read from the store.
+    private func applyCapabilityUpdates() {
+        guard !isApplyingCapabilityUpdates else { return }
+        isApplyingCapabilityUpdates = true
+        capabilityMigrationError = nil
+        Task {
+            var failures: [String] = []
+            for proposal in capabilityProposals {
+                // Re-read the CURRENT stored row (never the cached
+                // projection): the review is bound to the exact model and
+                // capability snapshot the sheet showed, and that same
+                // snapshot is the compare-and-swap expectation for the save —
+                // an interleaved sync/editor write can never be silently
+                // overwritten.
+                guard let model = await viewModel.center.storedModel(id: proposal.modelID),
+                      ProviderCatalogCapabilityMigration.matches(proposal, current: model) else {
+                    failures.append(FloeL10n.l("providers.capability_migration.changed", proposal.displayName))
+                    continue
+                }
+                do {
+                    try await viewModel.center.saveModel(
+                        ProviderCatalogCapabilityMigration.applying(proposal, to: model),
+                        expected: model)
+                } catch {
+                    failures.append(SecretRedactor.redact(error.localizedDescription))
+                }
+            }
+            await viewModel.load()
+            refreshCapabilityProposals()
+            isApplyingCapabilityUpdates = false
+            if failures.isEmpty {
+                capabilityMigrationError = nil
+                showsCapabilityReview = false
+            } else {
+                capabilityMigrationError = failures.joined(separator: " ")
+            }
+        }
     }
 
     private func providerButton(

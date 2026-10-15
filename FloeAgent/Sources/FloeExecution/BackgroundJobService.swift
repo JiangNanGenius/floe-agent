@@ -48,6 +48,19 @@ public actor BackgroundJobService {
     /// export actions are admitted.
     public static let supportedTargets: Set<String> = NativeJobActionPolicy.default.supportedTargetNames
 
+    /// Writes the full (bounded) job output to a spooled artifact BEFORE any
+    /// summary truncation and returns its absolute path + exact byte count.
+    /// Implementations bound the artifact size and never throw content away
+    /// silently.
+    public typealias OutputSpooler = @Sendable (UUID, String) async throws -> (path: String, bytes: Int)
+    /// Records a durable parent-run dependency edge for a required job.
+    /// `(jobID, runID, conversationID, kind)` where kind is `job` or
+    /// `service`.
+    public typealias DependencyRegistrar = @Sendable (UUID, UUID, UUID, String) async -> Void
+    /// Resolves a dependency edge exactly once with its honest terminal
+    /// outcome.
+    public typealias DependencyResolver = @Sendable (UUID, RunDependencyState, String?) async -> Void
+
     private let store: BackgroundJobStore
     private let registry: ToolRunnerRegistry
     private let policy: NativeJobActionPolicy
@@ -57,6 +70,13 @@ public actor BackgroundJobService {
     /// input, and post a local notification. Kept outside this module so the
     /// SPM target stays platform-independent.
     private let onTerminal: @Sendable (BackgroundJob) async -> Void
+    /// Full-output spool (nil keeps summary-only behavior for callers/tests
+    /// that do not provide one).
+    private let outputSpooler: OutputSpooler?
+    /// Durable dependency edges that keep a parent run nonterminal while a
+    /// required finite job is outstanding.
+    private let registerDependency: DependencyRegistrar?
+    private let resolveDependency: DependencyResolver?
     /// App-injected owner for download jobs backed by a background URLSession.
     /// Returning true transfers persistence/completion ownership to the handler.
     private let downloadHandler: (@Sendable (BackgroundJob, BackgroundJobDownloadContext) async throws -> Bool)?
@@ -80,7 +100,10 @@ public actor BackgroundJobService {
         onTerminal: @escaping @Sendable (BackgroundJob) async -> Void = { _ in },
         downloadHandler: (@Sendable (BackgroundJob, BackgroundJobDownloadContext) async throws -> Bool)? = nil,
         downloadCancelHandler: (@Sendable (UUID) async -> Void)? = nil,
-        downloadTaskLiveness: (@Sendable (UUID) async -> Bool)? = nil
+        downloadTaskLiveness: (@Sendable (UUID) async -> Bool)? = nil,
+        outputSpooler: OutputSpooler? = nil,
+        registerDependency: DependencyRegistrar? = nil,
+        resolveDependency: DependencyResolver? = nil
     ) {
         self.store = store
         self.registry = registry
@@ -90,6 +113,9 @@ public actor BackgroundJobService {
         self.downloadHandler = downloadHandler
         self.downloadCancelHandler = downloadCancelHandler
         self.downloadTaskLiveness = downloadTaskLiveness
+        self.outputSpooler = outputSpooler
+        self.registerDependency = registerDependency
+        self.resolveDependency = resolveDependency
     }
 
     /// Validates and persists the job, then starts it. Retried tool calls
@@ -122,7 +148,12 @@ public actor BackgroundJobService {
         approvalGrantID: UUID? = nil,
         runtimeAuthority: RuntimeTaskAuthority? = nil,
         runtimeAuthorityBinding: RuntimeAuthorityBinding? = nil,
-        submissionSource: NativeJobSubmissionSource = .nativeService
+        submissionSource: NativeJobSubmissionSource = .nativeService,
+        /// Required (default) work keeps the submitting run nonterminal until
+        /// the job reaches a terminal state (finite jobs) or a long-lived
+        /// service is verifiably ready. `false` is an explicit fire-and-forget
+        /// submission: the run may finish and the job continues independently.
+        waitForCompletion: Bool = true
     ) async throws -> BackgroundJob {
         let action = policy.action(in: payloadJSON)
         let adapter = adapters[targetTool].flatMap { $0.handles(action: action) ? $0 : nil }
@@ -295,6 +326,17 @@ public actor BackgroundJobService {
             // Idempotent replay of an earlier submit.
             return persisted
         }
+        // Durable dependency edge FIRST: it exists before any executor can
+        // observe the job as pending, so a crash between submit and launch
+        // leaves a reconcilable edge instead of a lost wait.
+        if waitForCompletion, let registerDependency {
+            await registerDependency(
+                persisted.id,
+                persisted.runID,
+                persisted.conversationID,
+                persisted.targetTool == "exec.localService" ? "service" : "job"
+            )
+        }
         if persisted.kind == .download, let downloadHandler {
             do {
                 let context = BackgroundJobDownloadContext(
@@ -331,12 +373,17 @@ public actor BackgroundJobService {
         progressRecorders[job.id] = recorder
         let registry = self.registry
         let store = self.store
+        let outputSpooler = self.outputSpooler
         runningTasks[job.id] = Task.detached(priority: .utility) { [weak self] in
             var finalState: BackgroundJobState
             var summary: String?
             var digest: String?
             var errorText: String?
             var resultPath: String?
+            /// Full, un-truncated processor output captured BEFORE the
+            /// summary bound: spooled to a durable artifact so the complete
+            /// result survives even when the summary is clipped.
+            var fullOutput: String?
             do {
                 _ = try await store.transition(id: job.id, to: .running)
                 await recorder.record(NativeJobProgress(stage: .running, note: "processor started"))
@@ -354,6 +401,7 @@ public actor BackgroundJobService {
                         }
                         resultPath = artifact
                     }
+                    fullOutput = outcome.summary
                     summary = NativeJobTextLimits.bounded(outcome.summary)
                     digest = outcome.digest ?? FloeDigest.sha256Hex(Data(outcome.summary.utf8))
                     if token.isCancelled {
@@ -386,6 +434,7 @@ public actor BackgroundJobService {
                         }
                     )
                     let output = try await runner.execute(argumentsJSON: job.payloadJSON, context: context)
+                    fullOutput = output.summary
                     summary = NativeJobTextLimits.bounded(output.summary)
                     digest = output.fullOutputSHA256
                     if token.isCancelled {
@@ -427,6 +476,14 @@ public actor BackgroundJobService {
                     errorText = NativeJobTextLimits.bounded(String(describing: error))
                 }
             }
+            // Spool the FULL output before settling: a consumer paging
+            // `jobs.result` reads this artifact, never a re-derived summary.
+            var outputPath: String?
+            var outputBytes: Int?
+            if let fullOutput, let outputSpooler, let spooled = try? await outputSpooler(job.id, fullOutput) {
+                outputPath = spooled.path
+                outputBytes = spooled.bytes
+            }
             await recorder.record(NativeJobProgress(stage: .finalizing, note: "settling terminal state"))
             await recorder.finish()
             do {
@@ -434,10 +491,14 @@ public actor BackgroundJobService {
                 let finalDigest = digest
                 let finalError = errorText
                 let finalPath = resultPath
+                let finalOutputPath = outputPath
+                let finalOutputBytes = outputBytes
                 let terminal = try await store.transition(id: job.id, to: finalState) { job in
                     job.resultSummary = finalSummary
                     job.resultDigest = finalDigest
                     job.resultPath = finalPath
+                    job.outputPath = finalOutputPath
+                    job.outputBytes = finalOutputBytes
                     job.lastError = finalError
                 }
                 await self?.jobDidFinish(terminal)
@@ -533,23 +594,55 @@ public actor BackgroundJobService {
             if let reconcile,
                let resolved = await reconcile(job), resolved.isTerminal,
                job.state.canTransition(to: resolved) {
-                if (try? await store.transition(id: job.id, to: resolved) {
-                    $0.lastError = "Reconciled after relaunch: \(resolved.rawValue)"
-                }) != nil {
+                if let reconciled = try? await store.transition(
+                    id: job.id, to: resolved,
+                    mutate: { job in job.lastError = "Reconciled after relaunch: \(resolved.rawValue)" }
+                ) {
                     count += 1
+                    if let resolveDependency {
+                        await resolveDependency(
+                            reconciled.id,
+                            Self.dependencyState(for: reconciled.state),
+                            "Reconciled after relaunch: \(resolved.rawValue)"
+                        )
+                    }
                     continue
                 }
             }
-            if (try? await store.transition(id: job.id, to: .interrupted) {
-                $0.lastError = "Process exited before the job finished. The outcome is UNKNOWN: inspect the workspace/output first (read-only) before resubmitting; do not blindly rerun."
-            }) != nil { count += 1 }
+            if let interrupted = try? await store.transition(
+                id: job.id, to: .interrupted,
+                mutate: { job in
+                    job.lastError = "Process exited before the job finished. The outcome is UNKNOWN: inspect the workspace/output first (read-only) before resubmitting; do not blindly rerun."
+                }
+            ) {
+                count += 1
+                if let resolveDependency {
+                    await resolveDependency(
+                        interrupted.id,
+                        .interrupted,
+                        "The process exited before this job finished; its outcome is UNKNOWN. Inspect existing outputs read-only before resubmitting."
+                    )
+                }
+            }
         }
         for job in active where job.kind == .download {
             let alive = await downloadTaskLiveness?(job.id) ?? false
             guard !alive else { continue }
-            if (try? await store.transition(id: job.id, to: .interrupted) {
-                $0.lastError = "Download was interrupted by relaunch and its system task is gone; resubmit with jobs.submit"
-            }) != nil { count += 1 }
+            if let interrupted = try? await store.transition(
+                id: job.id, to: .interrupted,
+                mutate: { job in
+                    job.lastError = "Download was interrupted by relaunch and its system task is gone; resubmit with jobs.submit"
+                }
+            ) {
+                count += 1
+                if let resolveDependency {
+                    await resolveDependency(
+                        interrupted.id,
+                        .interrupted,
+                        "The download was interrupted by relaunch; resubmit with an explicit new jobs.submit."
+                    )
+                }
+            }
         }
         return count
     }
@@ -574,6 +667,11 @@ public actor BackgroundJobService {
         cancellations[job.id] = nil
         preparedOperations[job.id] = nil
         progressRecorders[job.id] = nil
+        if let resolveDependency {
+            let state = Self.dependencyState(for: job.state)
+            let note = job.lastError ?? "job \(job.state.rawValue)"
+            Task { await resolveDependency(job.id, state, note) }
+        }
         Task { await onTerminal(job) }
     }
 
@@ -582,5 +680,34 @@ public actor BackgroundJobService {
         cancellations[id] = nil
         preparedOperations[id] = nil
         progressRecorders[id] = nil
+        if let resolveDependency {
+            Task { [store] in
+                guard let job = try? await store.job(id: id) else { return }
+                let state = Self.dependencyState(for: job.state)
+                await resolveDependency(id, state, job.lastError ?? "job \(job.state.rawValue)")
+            }
+        }
+    }
+
+    /// Resolves a long-lived service dependency once the service is
+    /// verifiably READY (its own readiness probe answered), leaving the job
+    /// running. Matching is idempotent: the first resolution wins and a later
+    /// terminal state does not overwrite it.
+    public func resolveServiceReady(id: UUID, note: String) async {
+        guard let resolveDependency else { return }
+        guard let job = try? await store.job(id: id), job.targetTool == "exec.localService" else { return }
+        await resolveDependency(id, .resolved, note)
+    }
+
+    /// Maps a job's terminal/nonterminal state to the durable dependency
+    /// state (shared by the service and the app-side terminal projection).
+    public static func dependencyState(for state: BackgroundJobState) -> RunDependencyState {
+        switch state {
+        case .completed: .resolved
+        case .failed: .failed
+        case .cancelled: .cancelled
+        case .interrupted: .interrupted
+        case .queued, .running: .pending
+        }
     }
 }

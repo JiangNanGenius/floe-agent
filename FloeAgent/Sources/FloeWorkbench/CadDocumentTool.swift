@@ -660,6 +660,10 @@ public struct CadDocumentArguments: Decodable, Sendable {
     /// present the automatic path binds it into the runtime authority and the
     /// host refuses a proposal drafted against a different revision.
     public var revision: Int64?
+    /// `export`: optional drawing page id for the native PDF/SVG/DXF drawing
+    /// exports (`query` with kind `drawings` lists the page ids). Kept as the
+    /// raw string so the approved-call digest re-derives byte-identically.
+    public var pageID: String?
 
     enum CodingKeys: String, CodingKey {
         case action, path, summary, operations, kind, points, handles, tolerance, scope, layer, text, offset, limit, output, op, args, payload, revision
@@ -672,6 +676,7 @@ public struct CadDocumentArguments: Decodable, Sendable {
         case format = "format"
         case unitScale = "unit_scale"
         case name = "name"
+        case pageID = "page_id"
     }
 
     public init(from decoder: Decoder) throws {
@@ -710,6 +715,7 @@ public struct CadDocumentArguments: Decodable, Sendable {
         format = try container.decodeIfPresent(String.self, forKey: .format)
         unitScale = try container.decodeIfPresent(Double.self, forKey: .unitScale)
         name = try container.decodeIfPresent(String.self, forKey: .name)
+        pageID = try container.decodeIfPresent(String.self, forKey: .pageID)
         // The revision pin is lenient about its JSON spelling; a value that is
         // neither a number nor a numeric string stays absent, which only ever
         // makes the automatic binding refuse (it never widens authority).
@@ -800,7 +806,7 @@ public struct CadDocumentTool: AgentTool {
         "revision": { "type": "integer", "minimum": 0, "description": "apply: optional base revision pin. When present it is bound into the approved call and the host refuses a proposal drafted against a different revision." },
         "request_id": { "type": "string", "description": "Optional caller idempotency key; defaults to the tool call id." },
         "task_id": { "type": "string", "description": "Durable native task id (status reports one task; cancel requires it)." },
-        "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|variables|assembly|drawings|detail|snapshot. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind)." },
+        "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|variables|assembly|drawings|detail|snapshot. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind). capabilities: pass drawing|assembly|script|mesh to get that service's exact operations with arguments and examples." },
         "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "measure points: 2D distance exactly 2, angle exactly 3, area 3+; snap point (first row). Native distance exactly 2 [x,y,z] rows." },
         "handles": { "type": "array", "items": { "type": "string" }, "description": "2D entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+. Native: one handle per action, body:<uuid> / face:<uuid>:<index> / edge:<uuid>:<index>; body, mesh and bounds accept body:<uuid> (a bare body UUID is also accepted); bounds takes one or more body handles." },
         "tolerance": { "type": "number", "description": "snap/check tolerance in drawing units; native interference tolerance in mm." },
@@ -809,10 +815,11 @@ public struct CadDocumentTool: AgentTool {
         "text": { "type": "string", "description": "2D query filter: text content contains." },
         "offset": { "type": "integer", "minimum": 0, "description": "query pagination offset." },
         "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "query pagination size." },
-        "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step, stl, obj, 3mf, glb, usdz, pdf, svg, dxf; the path must stay inside the workspace." },
+        "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step, stl, obj, 3mf, glb, usdz, pdf, svg, dxf; the path must stay inside the workspace. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings)." },
+        "page_id": { "type": "string", "format": "uuid", "description": "export: the native drawing page id for pdf/svg/dxf exports, exactly as query with kind=drawings returned it." },
         "op": { "type": "string", "description": "Native typed operation name. Native propose requires it; native measure may use it to name the measurement kind. Exact vocabulary (also reported by capabilities as operation_names): sketch.create, sketch.addEntities, feature.extrude, feature.revolve, feature.pattern, feature.mirror, feature.transform, feature.boolean, feature.fillet, feature.chamfer, feature.shell, feature.sweep, feature.loft, feature.pushPull, feature.moveFace, feature.scaleFace, feature.rotateFace, feature.deleteFace, feature.replaceFace, feature.draftFace, body.setMaterial, item.setHidden." },
         "args": { "type": "string", "description": "JSON object string with the typed operation's arguments. Required for native propose (and the three_d_measure/three_d_propose aliases). Units are mm and degrees. RUNNABLE CONTRACT (exact argument names): sketch.create {name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]} defaults to the ground plane and returns sketchID; sketch.addEntities {sketchID, entities:[{kind:\"line\",a:[x,y],b:[x,y]} | {kind:\"circle\",center:[x,y],radius} | {kind:\"arc\",center:[x,y],radius,startAngle,endAngle} | {kind:\"spline\",points:[[x,y],...],closed?} | {kind:\"rect\",min:[x,y],max:[x,y]} | {kind:\"polygon\",center:[x,y],radius,sides,rotation?} | {kind:\"ellipse\",center:[x,y],radiusX,radiusY,rotation?}], construction?:[indexes]}; feature.extrude {sketchID, seedPoint:[x,y] (a point INSIDE the closed profile), distance (mm, non-zero; optional only with end), symmetric?, taperDegrees? (|t|<89, 0 = straight), end?:\"throughAll\"|\"upToNext\"|\"blind\", boolean?:\"newBody\"|\"union\"|\"subtract\"|\"intersect\", booleanTargets?:[bodyID]}. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"seedPoint\":[40,20],\"distance\":10}. Ops that act on an existing body take {bodyID} plus their own fields (feature.boolean {kind,targetBodyID,toolBodyIDs}, feature.fillet/chamfer {bodyID,isFillet,amount,edges}, feature.shell {bodyID,thickness,openFaces}, feature.pattern {bodyID,kind,count,...}); measure accepts op to name the kind (body|distance|bounds|dof|interference|mesh|rebuild)." },
-        "payload": { "type": "string", "description": "JSON object string for native assembly/drawing/script/mesh actions (three_d_assembly, three_d_drawing) and for native query/export requests. Never contains file paths other than the guarded output/import fields above." }
+        "payload": { "type": "string", "description": "JSON object string for the native workbench services (three_d_assembly / three_d_drawing). It MUST name one operation via payload.action or the legacy payload.op \"<kind>.<action>\" (for example \"drawing.addPage\"); without a recognizable action the call is REFUSED, never defaulted to a read. Mutating actions run via propose op \"drawing.addPage\"/\"assembly.addInstance\" then apply; read-only ones run directly. Arguments sit beside the selector or in payload.args; capabilities kind=drawing|assembly|script|mesh lists exact args/examples. Never contains file paths other than the guarded output/import fields above." }
       }
     }
     """#
@@ -835,8 +842,14 @@ public struct CadDocumentTool: AgentTool {
     public func validate(_ args: CadDocumentArguments) throws {
         if args.action == .capabilities, args.path == nil {
             // Engine capability discovery without a document stays on the 2D
-            // engine; a `.floecad` path routes to the native kernel instead
-            // (never through the 2D DWG/DXF loader).
+            // engine; a `kind` still has to name a real workbench service.
+            if let raw = args.kind?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
+               !CadServiceOperationCatalog.isKnownKind(raw) {
+                throw FloeError.validationFailed(
+                    "capabilities kind must be one of "
+                        + CadServiceOperationCatalog.kinds.joined(separator: "|")
+                        + " (got '\(raw)'); omit kind for the engine matrix.")
+            }
             return
         }
         guard let path = args.path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty,
@@ -846,7 +859,21 @@ public struct CadDocumentTool: AgentTool {
         let native = Self.isNativeRepresentation(path)
         switch args.action {
         case .capabilities:
-            break
+            // `kind` here selects the native workbench-service detail page;
+            // a typo or a 2D path must not silently ignore it.
+            if let raw = args.kind?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+                guard CadServiceOperationCatalog.isKnownKind(raw) else {
+                    throw FloeError.validationFailed(
+                        "capabilities kind must be one of "
+                            + CadServiceOperationCatalog.kinds.joined(separator: "|")
+                            + " (got '\(raw)'); omit kind for the engine matrix.")
+                }
+                guard native else {
+                    throw FloeError.validationFailed(
+                        "capabilities kind=\(raw) describes the native .floecad workbench services; "
+                            + "omit kind for the 2D engine matrix.")
+                }
+            }
         case .create:
             // Create targets a NEW native package through the host factory.
             // The file name is sanitized/unique-ified by the host; the tool
@@ -895,7 +922,17 @@ public struct CadDocumentTool: AgentTool {
                 throw FloeError.validationFailed("unit_scale must be a positive finite number")
             }
         case .read, .save, .export:
-            break
+            if let raw = args.pageID {
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, UUID(uuidString: trimmed) != nil else {
+                    throw FloeError.validationFailed(
+                        "page_id must be a drawing page UUID from query kind=drawings")
+                }
+                guard native else {
+                    throw FloeError.validationFailed(
+                        "page_id addresses a native .floecad drawing page; the 2D engine exports the drawing itself")
+                }
+            }
         case .status:
             if let task = args.taskID, task.isEmpty {
                 throw FloeError.validationFailed("task_id must not be empty")
@@ -976,8 +1013,23 @@ public struct CadDocumentTool: AgentTool {
             if let tolerance = args.tolerance, !(tolerance.isFinite && tolerance > 0) {
                 throw FloeError.validationFailed("tolerance must be positive")
             }
-        case .threeDSnapshot, .threeDAssembly, .threeDDrawing:
+        case .threeDSnapshot:
             break
+        case .threeDAssembly, .threeDDrawing:
+            // The workbench service aliases are PAYLOAD calls. The payload MUST
+            // name exactly one operation (`payload.action`, or the documented
+            // legacy `payload.op` spelling); an absent or unrecognized action
+            // is a structured refusal, never a silent read default (`pages` /
+            // `report`). Mutating operations stay reachable only through
+            // propose → apply, exactly as before.
+            guard native else {
+                throw FloeError.validationFailed(
+                    "\(args.action.rawValue) serves the native .floecad workbench services; "
+                        + "a DWG/DXF drawing uses read/query/measure/propose/export without the three_d_* aliases.")
+            }
+            let serviceKind = args.action == .threeDAssembly ? "assembly" : "drawing"
+            let payload = try Self.servicePayloadObject(args)
+            _ = try Self.resolveService(kind: serviceKind, payload: payload)
         case .threeDMeasure, .threeDPropose:
             guard let op = args.op, !op.isEmpty else {
                 throw FloeError.validationFailed("\(args.action.rawValue) requires op")
@@ -1082,22 +1134,30 @@ public struct CadDocumentTool: AgentTool {
 
     /// Build the native request envelope. `args.args`/`args.payload` are JSON
     /// object strings; anything else is refused before it reaches the kernel.
-    static func threeDRequestJSON(kind: String, args: CadDocumentArguments) throws -> String {
+    /// `servicePayload` replaces the payload with the catalog-normalized
+    /// service request (canonical `action` + flattened arguments) used by the
+    /// `three_d_assembly`/`three_d_drawing` aliases.
+    static func threeDRequestJSON(kind: String, args: CadDocumentArguments,
+                                  servicePayload: [String: Any]? = nil) throws -> String {
         var object: [String: Any] = ["kind": kind]
-        if let op = args.op { object["op"] = op }
-        if let raw = args.args {
-            guard let data = raw.data(using: .utf8),
-                  let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                throw FloeError.validationFailed("cad.document args must be a JSON object string.")
+        if let servicePayload {
+            object["payload"] = servicePayload
+        } else {
+            if let op = args.op { object["op"] = op }
+            if let raw = args.args {
+                guard let data = raw.data(using: .utf8),
+                      let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                    throw FloeError.validationFailed("cad.document args must be a JSON object string.")
+                }
+                object["args"] = parsed
             }
-            object["args"] = parsed
-        }
-        if let raw = args.payload {
-            guard let data = raw.data(using: .utf8),
-                  let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                throw FloeError.validationFailed("cad.document payload must be a JSON object string.")
+            if let raw = args.payload {
+                guard let data = raw.data(using: .utf8),
+                      let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                    throw FloeError.validationFailed("cad.document payload must be a JSON object string.")
+                }
+                object["payload"] = parsed
             }
-            object["payload"] = parsed
         }
         if let summary = args.summary { object["summary"] = summary }
         if let proposalID = args.proposalID { object["proposal_id"] = proposalID.uuidString }
@@ -1109,6 +1169,31 @@ public struct CadDocumentTool: AgentTool {
             throw FloeError.validationFailed("cad.document request could not be encoded.")
         }
         return text
+    }
+
+    /// The decoded `payload` object of one workbench service alias call. An
+    /// absent/blank payload is an empty object (the catalog then refuses the
+    /// missing action); a malformed one is refused here.
+    static func servicePayloadObject(_ args: CadDocumentArguments) throws -> [String: Any] {
+        guard let raw = args.payload,
+              !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [:] }
+        guard let data = raw.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw FloeError.validationFailed("cad.document payload must be a JSON object string.")
+        }
+        return object
+    }
+
+    /// Resolves one workbench service payload through the authoritative
+    /// catalog; a resolution failure becomes the tool's structured validation
+    /// error (code + the known actions + where to read the args/examples).
+    static func resolveService(kind: String, payload: [String: Any])
+        throws -> (operation: CadServiceOperationCatalog.Operation, arguments: [String: Any]) {
+        do {
+            return try CadServiceOperationCatalog.resolve(kind: kind, payload: payload)
+        } catch let failure as CadServiceOperationCatalog.ResolutionFailure {
+            throw FloeError.validationFailed("\(failure.code): \(failure.message)")
+        }
     }
 
     // MARK: - Runtime-approved-call binding (automatic apply)
@@ -1156,6 +1241,7 @@ public struct CadDocumentTool: AgentTool {
         if let unitScale = args.unitScale { object["unit_scale"] = unitScale }
         if let name = args.name { object["name"] = name }
         if let revision = args.revision { object["revision"] = revision }
+        if let pageID = args.pageID { object["page_id"] = pageID }
         guard JSONSerialization.isValidJSONObject(object) else {
             throw FloeError.validationFailed("cad.document approved arguments could not be canonicalized")
         }
@@ -1272,12 +1358,40 @@ public struct CadDocumentTool: AgentTool {
 
         switch args.action {
         case .capabilities:
+            // The authoritative workbench-service catalog (action names,
+            // effects, exact arguments and runnable examples) is served HERE on
+            // demand and stays out of the every-turn schema: asking with a
+            // `kind` returns that service's bounded page of detail. The reply
+            // is kept inside the runtime's 4 KiB model-visible summary cap so
+            // the JSON is never silently truncated.
+            let rawDetailKind = args.kind?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let detailKind = (rawDetailKind?.isEmpty ?? true) ? nil : rawDetailKind
+            if let detailKind, !CadServiceOperationCatalog.isKnownKind(detailKind) {
+                throw FloeError.validationFailed(
+                    "capabilities kind must be one of "
+                        + CadServiceOperationCatalog.kinds.joined(separator: "|")
+                        + " (got '\(detailKind)'); omit kind for the engine matrix.")
+            }
+            let detailOffset = max(0, args.offset ?? 0)
+            let detailLimit = args.limit.map { min(CadServiceOperationCatalog.maximumPageSize, max(1, $0)) }
             if native {
-                let reply = try await host.threeDAction(
-                    documentID: args.path!, requestJSON: #"{"kind":"capabilities"}"#, access: access)
-                return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(reply)", 24_000))
+                let reply = try await host.threeDAction(documentID: args.path!,
+                                                        requestJSON: #"{"kind":"capabilities"}"#,
+                                                        access: access)
+                let merged = CadServiceOperationCatalog.mergingCapabilities(
+                    into: reply, detailKind: detailKind, offset: detailOffset, limit: detailLimit)
+                return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(merged)", 24_000))
             }
             if args.path == nil {
+                // A `kind` asks for one native service's exact operation
+                // contract, which is served by the catalog itself (the 2D /
+                // native engine matrices would blow the 4 KiB model budget).
+                if let detailKind {
+                    let merged = CadServiceOperationCatalog.mergingCapabilities(
+                        into: #"{"ok":true}"#, detailKind: detailKind,
+                        offset: detailOffset, limit: detailLimit)
+                    return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(merged)", 24_000))
+                }
                 // Discovery without a document reports BOTH engines: the 2D
                 // DWG/DXF surface and the native package/3D surface, each with
                 // its own format matrix. A 2D-only limitation must never read
@@ -1289,10 +1403,11 @@ public struct CadDocumentTool: AgentTool {
                 } catch {
                     twoD = ["available": false, "error": error.localizedDescription]
                 }
-                let nativeCaps: Any
+                var nativeCaps: [String: Any]
                 do {
                     let json = try await host.nativeCapabilities(access: access)
-                    nativeCaps = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) ?? ["raw": json]
+                    nativeCaps = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+                        ?? ["raw": json]
                 } catch let error as FloeError {
                     if case .notFound(let what) = error, what == "native_cad_kernel" {
                         nativeCaps = ["available": false]
@@ -1300,12 +1415,22 @@ public struct CadDocumentTool: AgentTool {
                         throw error
                     }
                 }
-                let merged: [String: Any] = [
+                if nativeCaps["service_operations"] == nil {
+                    nativeCaps["service_operations"] = CadServiceOperationCatalog.summaryJSON(compact: true)
+                }
+                var merged: [String: Any] = [
                     "two_dimensional": twoD,
                     "native_three_dimensional": nativeCaps,
                 ]
-                let data = try JSONSerialization.data(withJSONObject: merged, options: [.sortedKeys, .withoutEscapingSlashes])
-                let text = String(data: data, encoding: .utf8) ?? "{}"
+                var text = jsonString(merged)
+                if text.utf8.count > CadServiceOperationCatalog.modelSummaryBudget {
+                    // The engine matrices already approach the 4 KiB cap:
+                    // dropping the catalog keeps the JSON parseable (the detail
+                    // request above is the reliable way to read it).
+                    nativeCaps["service_operations"] = nil
+                    merged["native_three_dimensional"] = nativeCaps
+                    text = jsonString(merged)
+                }
                 return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(text)", 32_000))
             }
             let caps = try await host.capabilities(access: access)
@@ -1596,8 +1721,14 @@ public struct CadDocumentTool: AgentTool {
         case .export:
             if native {
                 let output = args.output ?? Self.defaultNativeExportPath(for: args.path!)
-                let payload: [String: Any] = ["output": output,
+                var payload: [String: Any] = ["output": output,
                                               "format": (output as NSString).pathExtension.lowercased()]
+                // PDF/SVG/DXF exports are DRAWING-page exports: the page id the
+                // model read from `query` kind=drawings selects the page (the
+                // engine refuses `page_required` without one).
+                if let raw = args.pageID?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+                    payload["page_id"] = raw
+                }
                 let request = try jsonString(["kind": "export", "payload": payload])
                 let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                         access: access)
@@ -1631,6 +1762,27 @@ public struct CadDocumentTool: AgentTool {
             }
             if (kind == "propose" || kind == "measure"), args.op == nil {
                 throw FloeError.validationFailed("cad.document \(kind) requires op.")
+            }
+            if kind == "assembly" || kind == "drawing" {
+                // Resolve the one named operation through the authoritative
+                // catalog and forward the CANONICAL action plus its flattened
+                // arguments. A missing/unknown action throws here (and again in
+                // validate) instead of reaching the bridge, which would have
+                // silently defaulted to a read.
+                guard native else {
+                    throw FloeError.validationFailed(
+                        "\(args.action.rawValue) serves native .floecad workbench services; "
+                            + "a DWG/DXF drawing uses read/query/measure/propose/export.")
+                }
+                let payload = try Self.servicePayloadObject(args)
+                let resolved = try Self.resolveService(kind: kind, payload: payload)
+                var servicePayload = resolved.arguments
+                servicePayload["action"] = resolved.operation.action
+                let request = try Self.threeDRequestJSON(kind: kind, args: args,
+                                                         servicePayload: servicePayload)
+                let reply = try await host.threeDAction(documentID: args.path!,
+                                                        requestJSON: request, access: access)
+                return ToolExecutionOutput(digesting: bounded("cad.document \(kind): \(reply)", 48_000))
             }
             let request = try Self.threeDRequestJSON(kind: kind, args: args)
             let reply = try await host.threeDAction(documentID: args.path!,

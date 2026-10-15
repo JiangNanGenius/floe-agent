@@ -53,6 +53,14 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
     public var resultSummary: String?
     public var resultDigest: String?
     public var resultPath: String?
+    /// Absolute path of the FULL bounded output artifact spooled before the
+    /// summary was truncated, when the owning service could spill it. The
+    /// path is Floe-owned bookkeeping (Application Support), never a secret
+    /// store; `jobs.result` pages through it.
+    public var outputPath: String?
+    /// Exact byte size of the spooled output, so a paging caller can bound
+    /// its reads without opening the file.
+    public var outputBytes: Int?
     public var lastError: String?
     public var workspaceRootPath: String?
     public var environmentID: String?
@@ -74,6 +82,8 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
         resultSummary: String? = nil,
         resultDigest: String? = nil,
         resultPath: String? = nil,
+        outputPath: String? = nil,
+        outputBytes: Int? = nil,
         lastError: String? = nil,
         workspaceRootPath: String? = nil,
         environmentID: String? = nil,
@@ -94,6 +104,8 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
         self.resultSummary = resultSummary
         self.resultDigest = resultDigest
         self.resultPath = resultPath
+        self.outputPath = outputPath
+        self.outputBytes = outputBytes
         self.lastError = lastError
         self.workspaceRootPath = workspaceRootPath
         self.environmentID = environmentID
@@ -123,21 +135,25 @@ public actor BackgroundJobStore {
                 INSERT INTO background_jobs (
                     id, conversation_id, run_id, tool_call_id, kind, target_tool,
                     payload_json, state, progress_json, result_summary,
-                    result_digest, result_path, last_error,
+                    result_digest, result_path, output_path, output_bytes, last_error,
                     workspace_root_path, environment_id, retry_count,
                     created_at, updated_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     state=excluded.state, progress_json=excluded.progress_json,
                     result_summary=excluded.result_summary, result_digest=excluded.result_digest,
-                    result_path=excluded.result_path, last_error=excluded.last_error,
+                    result_path=excluded.result_path,
+                    output_path=COALESCE(excluded.output_path, background_jobs.output_path),
+                    output_bytes=COALESCE(excluded.output_bytes, background_jobs.output_bytes),
+                    last_error=excluded.last_error,
                     retry_count=excluded.retry_count,
                     updated_at=excluded.updated_at, completed_at=excluded.completed_at
                 """, arguments: [
                     job.id.uuidString, job.conversationID.uuidString, job.runID.uuidString,
                     job.toolCallID, job.kind.rawValue, job.targetTool, job.payloadJSON,
                     job.state.rawValue, job.progressJSON, job.resultSummary, job.resultDigest,
-                    job.resultPath, job.lastError, job.workspaceRootPath, job.environmentID, job.retryCount,
+                    job.resultPath, job.outputPath, job.outputBytes, job.lastError,
+                    job.workspaceRootPath, job.environmentID, job.retryCount,
                     job.createdAt, job.updatedAt, job.completedAt
                 ])
         }
@@ -173,9 +189,9 @@ public actor BackgroundJobStore {
             if state.isTerminal { job.completedAt = job.completedAt ?? Date() }
             try db.execute(sql: """
                 UPDATE background_jobs SET state=?,progress_json=?,result_summary=?,result_digest=?,
-                    result_path=?,last_error=?,retry_count=?,updated_at=?,completed_at=? WHERE id=?
+                    result_path=?,output_path=?,output_bytes=?,last_error=?,retry_count=?,updated_at=?,completed_at=? WHERE id=?
                 """, arguments: [job.state.rawValue, job.progressJSON, job.resultSummary, job.resultDigest,
-                    job.resultPath, job.lastError, job.retryCount, job.updatedAt, job.completedAt, id.uuidString])
+                    job.resultPath, job.outputPath, job.outputBytes, job.lastError, job.retryCount, job.updatedAt, job.completedAt, id.uuidString])
             return job
         }
     }
@@ -221,6 +237,17 @@ public actor BackgroundJobStore {
         }
     }
 
+    /// Jobs submitted by ONE run, newest first. Used by the dependency gate
+    /// and by run-scoped result retrieval; never a cross-task lookup.
+    public func jobs(runID: UUID, limit: Int = 50) async throws -> [BackgroundJob] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM background_jobs WHERE run_id = ?
+                ORDER BY created_at DESC LIMIT ?
+                """, arguments: [runID.uuidString, max(1, min(limit, 200))]).map { try Self.decode($0) }
+        }
+    }
+
     public func jobs(conversationID: UUID, limit: Int = 24) async throws -> [BackgroundJob] {
         try await database.reader { db in
             try Row.fetchAll(db, sql: """
@@ -262,7 +289,9 @@ public actor BackgroundJobStore {
             targetTool: row["target_tool"], payloadJSON: row["payload_json"],
             state: state, progressJSON: row["progress_json"],
             resultSummary: row["result_summary"], resultDigest: row["result_digest"],
-            resultPath: row["result_path"], lastError: row["last_error"],
+            resultPath: row["result_path"],
+            outputPath: row["output_path"], outputBytes: row["output_bytes"],
+            lastError: row["last_error"],
             workspaceRootPath: row["workspace_root_path"], environmentID: row["environment_id"], retryCount: row["retry_count"],
             createdAt: row["created_at"], updatedAt: row["updated_at"],
             completedAt: row["completed_at"]

@@ -312,7 +312,9 @@ extension TaskNotificationDecision {
     public static func hasSafeListFallback(kind: BackgroundWorkKind) -> Bool {
         switch kind {
         case .linuxSession, .linuxService: true
-        case .modelRun: false
+        // A schedule reminder's safe fallback is the app itself (Home shows
+        // the schedule list); there is no separate list route to open.
+        case .modelRun, .schedule: false
         }
     }
 }

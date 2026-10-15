@@ -2,6 +2,8 @@
 
 ## Current source summary / 当前实现概览 · 2026-10-09
 
+**更新 2026-10-16 / Updated 2026-10-16:** current internal build is **1.7.32 (273)**; the working branch carries the next round's unreleased changes. See [CURRENT_STATUS](CURRENT_STATUS.md) and the [task-lifecycle round record](releases/repairs/FLOE_TASK_LIFECYCLE_20261015.md). The matrix below keeps its original dates and scope. 当前内部构建为 **1.7.32（273）**，工作分支为未发布的下一轮改动；下方矩阵保留原始日期与适用范围，不自动延伸到新版本。
+
 1.7.24 (265) includes native 2D CAD and Drawing Assistant, shared Office commands, Notes search/proposals/export, Canvas child-project backups, media editing and Linux-backed development. The [creative capability table](FLOE_1_7_24_CREATIVE_TOOLS.md) records supported formats and the distinction between package-level tests, engine dispatch and physical-device acceptance.
 
 当前发布统一见 [CURRENT_STATUS](CURRENT_STATUS.md)。下面 Build 249 及更早记录是阶段性快照，不是当前候选清单；保留失败与未验收事实，不能因新版本存在就自动改成通过。The older build records below remain historical and do not become passing merely because newer source exists.

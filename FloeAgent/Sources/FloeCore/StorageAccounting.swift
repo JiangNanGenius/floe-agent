@@ -29,7 +29,7 @@ import Glibc
 ///   cannot be measured from `stat`; clone-backed roots are counted in full and
 ///   the report is flagged as an upper estimate. Nothing is subtracted for
 ///   sharing that cannot be measured.
-public struct StorageSize: Sendable, Equatable {
+public struct StorageSize: Sendable, Equatable, Codable {
     /// Apparent file length in bytes (sparse disks report their full capacity).
     public var logicalBytes: Int64
     /// Host-allocated bytes; 0 when the allocated measurement was unavailable.
@@ -63,10 +63,18 @@ public struct StorageFileIdentity: Hashable, Sendable {
     }
 }
 
+/// APFS clone streams are scoped to a volume: the same clone-id on two devices
+/// is NOT the same data stream. Grouping therefore always carries the volume
+/// identity next to the clone-id (the same device the inode dedup uses).
+struct CloneStreamKey: Hashable, Sendable {
+    let device: UInt64
+    let cloneID: UInt64
+}
+
 /// Diagnostics collected during a scan. Paths, names and contents are never
 /// retained; only category, count, size, timing and error counters, so this is
 /// safe to log and export.
-public struct StorageScanDiagnostics: Sendable, Equatable {
+public struct StorageScanDiagnostics: Sendable, Equatable, Codable {
     public var regularFileCount: Int
     public var directoryCount: Int
     public var symbolicLinkCount: Int
@@ -83,6 +91,31 @@ public struct StorageScanDiagnostics: Sendable, Equatable {
     /// Files whose allocated size could not be measured; logical size is never
     /// substituted for allocated.
     public var allocatedUnavailableCount: Int
+    /// Distinct files whose ALLOCATED BYTES were removed from the totals
+    /// because they are pure APFS clones of a stream already counted on the
+    /// same volume (same device + clone-id, SHARES_ALL_BLOCKS). The files
+    /// themselves are still counted in their category's file count; only the
+    /// physically shared bytes are deduplicated. This is an exact, measured
+    /// dedup — not an estimate.
+    public var dedupedCloneFileCount: Int
+    /// Allocated bytes removed by the full-clone-stream dedup above.
+    public var dedupedCloneBytes: Int64
+    /// Files for which measured clone attributes were collected.
+    public var cloneAttributeFileCount: Int
+    /// Per-file clone-attribute queries that failed transiently; when > 0 the
+    /// aggregate exclusive lower bound is withheld (it would be incomplete).
+    public var cloneAttributeFailureCount: Int
+    /// Whether measured clone attributes were collected at all.
+    public var cloneAttributeSupport: StorageCloneAttributeSupport
+    /// Sum of measured private bytes (bytes not trapped in a clone/snapshot
+    /// and freed immediately on delete). A measured lower bound; never
+    /// presented as a total.
+    public var measuredPrivateBytes: Int64
+    /// Whether the measured physical-extent basis was collected in this scan.
+    public var extentBasis: StorageExtentBasisState
+    /// First failure that withheld the extent basis. Aggregate token only —
+    /// never a path, offset or file name.
+    public var extentUnavailableReason: StorageExtentProbeFailure?
     /// Wall-clock duration of the scan.
     public var duration: TimeInterval
     /// Stable label identifying which census produced these metrics.
@@ -99,6 +132,14 @@ public struct StorageScanDiagnostics: Sendable, Equatable {
         errorCount: Int = 0,
         identityUnavailableCount: Int = 0,
         allocatedUnavailableCount: Int = 0,
+        dedupedCloneFileCount: Int = 0,
+        dedupedCloneBytes: Int64 = 0,
+        cloneAttributeFileCount: Int = 0,
+        cloneAttributeFailureCount: Int = 0,
+        cloneAttributeSupport: StorageCloneAttributeSupport = .notRequested,
+        measuredPrivateBytes: Int64 = 0,
+        extentBasis: StorageExtentBasisState = .notRequested,
+        extentUnavailableReason: StorageExtentProbeFailure? = nil,
         duration: TimeInterval = 0,
         metricLabel: String = "",
         completedAt: Date = Date()
@@ -111,6 +152,14 @@ public struct StorageScanDiagnostics: Sendable, Equatable {
         self.errorCount = errorCount
         self.identityUnavailableCount = identityUnavailableCount
         self.allocatedUnavailableCount = allocatedUnavailableCount
+        self.dedupedCloneFileCount = dedupedCloneFileCount
+        self.dedupedCloneBytes = dedupedCloneBytes
+        self.cloneAttributeFileCount = cloneAttributeFileCount
+        self.cloneAttributeFailureCount = cloneAttributeFailureCount
+        self.cloneAttributeSupport = cloneAttributeSupport
+        self.measuredPrivateBytes = measuredPrivateBytes
+        self.extentBasis = extentBasis
+        self.extentUnavailableReason = extentUnavailableReason
         self.duration = duration
         self.metricLabel = metricLabel
         self.completedAt = completedAt
@@ -125,8 +174,8 @@ public struct StorageScanDiagnostics: Sendable, Equatable {
 
 /// A root to include in a mutually-exclusive census. Nested/overlapping roots
 /// are resolved to the most specific (deepest) match.
-public struct StorageCensusRoot: Sendable {
-    public enum Attribution: Sendable, Equatable {
+public struct StorageCensusRoot: Sendable, Equatable {
+    public enum Attribution: Sendable, Equatable, Codable {
         /// Counted and reported as its own category.
         case category
         /// Counted in full and reported separately, but flagged as *potentially
@@ -159,7 +208,7 @@ public struct StorageCensusRoot: Sendable {
 }
 
 /// Per-root result. Byte values are unique to this bucket after identity dedup.
-public struct StorageCensusBucket: Sendable, Equatable, Identifiable {
+public struct StorageCensusBucket: Sendable, Equatable, Identifiable, Codable {
     public let id: String
     public let attribution: StorageCensusRoot.Attribution
     public let exists: Bool
@@ -168,6 +217,18 @@ public struct StorageCensusBucket: Sendable, Equatable, Identifiable {
     /// Bytes in this root already claimed by another identity (hard link / root
     /// overlap). Not added to the total; reported for transparency.
     public var sharedSize: StorageSize
+    /// Bytes dropped from `size` because they are pure APFS clones of a stream
+    /// already counted (exact measured dedup of full-clone families).
+    public var dedupedCloneSize: StorageSize
+    /// True when this root is known to hold APFS CoW clones (root flag) or the
+    /// per-file extended flags report actual block sharing. Its allocated bytes
+    /// may share physical blocks and are an upper estimate (counted in full,
+    /// never silently subtracted).
+    public var isCloneCapable: Bool
+    /// Sum of measured private bytes for files in this bucket (exclusive,
+    /// snapshot-aware). Only meaningful when the scan's clone attribute
+    /// support is `.supported`.
+    public var measuredPrivateBytes: Int64
 
     public init(
         id: String,
@@ -175,7 +236,10 @@ public struct StorageCensusBucket: Sendable, Equatable, Identifiable {
         exists: Bool,
         size: StorageSize = .zero,
         fileCount: Int = 0,
-        sharedSize: StorageSize = .zero
+        sharedSize: StorageSize = .zero,
+        dedupedCloneSize: StorageSize = .zero,
+        isCloneCapable: Bool = false,
+        measuredPrivateBytes: Int64 = 0
     ) {
         self.id = id
         self.attribution = attribution
@@ -183,11 +247,14 @@ public struct StorageCensusBucket: Sendable, Equatable, Identifiable {
         self.size = size
         self.fileCount = fileCount
         self.sharedSize = sharedSize
+        self.dedupedCloneSize = dedupedCloneSize
+        self.isCloneCapable = isCloneCapable
+        self.measuredPrivateBytes = measuredPrivateBytes
     }
 }
 
 /// Result of a single mutually-exclusive categorized snapshot.
-public struct StorageCensusReport: Sendable, Equatable {
+public struct StorageCensusReport: Sendable, Equatable, Codable {
     public var buckets: [StorageCensusBucket]
     public var diagnostics: StorageScanDiagnostics
     /// Size of files inside `parentURL` but outside every supplied root.
@@ -196,6 +263,16 @@ public struct StorageCensusReport: Sendable, Equatable {
     /// True when clone-backed roots were walked; allocated bytes are an upper
     /// estimate rather than an exact figure.
     public var isSharedAllocationEstimate: Bool
+    /// Measured union of the physical blocks referenced by the counted files
+    /// (public `fcntl(F_LOG2PHYS_EXT)` extents), present only when every
+    /// measured file — including the optional bundle root — answered
+    /// coherently. Nil keeps the accepted allocated basis; a partial union is
+    /// never published or subtracted.
+    public var extentUnion: StorageExtentUnionSummary? = nil
+
+    /// True when the report's numeric totals may switch to the measured
+    /// extent basis.
+    public var hasMeasuredExtentBasis: Bool { extentUnion != nil }
 
     public var totalAllocatedBytes: Int64 {
         buckets.reduce(Int64(0)) { $0 + $1.size.allocatedBytes }
@@ -205,6 +282,35 @@ public struct StorageCensusReport: Sendable, Equatable {
     public var totalLogicalBytes: Int64 {
         buckets.reduce(Int64(0)) { $0 + $1.size.logicalBytes }
             + unattributedSize.logicalBytes
+    }
+
+    /// Allocated bytes in buckets that are clone-capable (declared root or
+    /// actual per-file sharing flags). Counted in full in the totals; may share
+    /// APFS clone blocks, so they are an explicit non-additive figure — never
+    /// subtracted, never relabelled as exclusive.
+    public var cloneCapableAllocatedBytes: Int64 {
+        buckets.reduce(Int64(0)) { $0 + ($1.isCloneCapable ? $1.size.allocatedBytes : 0) }
+    }
+
+    /// Allocated bytes removed by the exact full-clone-stream dedup (same
+    /// clone-id with SHARES_ALL_BLOCKS). Measured, not an estimate.
+    public var dedupedCloneBytes: Int64 { diagnostics.dedupedCloneBytes }
+
+    /// Measured lower bound of the physical footprint of the counted files:
+    /// the sum of private bytes (blocks not trapped in a clone or snapshot,
+    /// freed immediately on delete). Nil when the extended query was not
+    /// available for the whole scan or any per-file query failed — a partial
+    /// sum must never be shown as a bound.
+    public var measuredExclusiveLowerBoundBytes: Int64? {
+        guard diagnostics.cloneAttributeSupport == .supported,
+              diagnostics.cloneAttributeFailureCount == 0 else { return nil }
+        return diagnostics.measuredPrivateBytes
+    }
+
+    /// True when any actual clone/block-sharing was measured or declared.
+    public var hasCloneSharing: Bool {
+        isSharedAllocationEstimate || dedupedCloneBytes > 0
+            || buckets.contains { $0.isCloneCapable }
     }
 
     public func bucket(_ id: String) -> StorageCensusBucket? {
@@ -230,6 +336,25 @@ public struct StorageCensus: Sendable {
     /// Called periodically with the number of regular files scanned so the UI
     /// can show measured progress instead of a synthetic animation.
     public let onProgress: (@Sendable (Int) -> Void)?
+    /// Measured APFS clone/private attributes via public-SDK getattrlist.
+    /// `nil` disables the measurement (legacy callers/tests); when it returns
+    /// `.unsupported` the scan falls back to declared root clone flags.
+    public let cloneAttributeProvider: (@Sendable (String) -> StorageCloneAttributeResult)?
+    /// Volume identity used to group clone streams (device id). Production
+    /// reads it from the same `StorageFileIdentity` used for inode dedup; the
+    /// seam lets focused tests model two volumes that reuse a clone-id.
+    public let cloneStreamVolumeProvider: (@Sendable (String) -> UInt64?)?
+    /// Optional measured physical-extent probe (public `fcntl F_LOG2PHYS_EXT`).
+    /// `nil` disables the extent basis and keeps the allocated basis exactly
+    /// as before (legacy callers/tests).
+    public let extentProbe: StorageExtentProbe?
+    /// Optional read-only app-bundle root measured into the SAME union as the
+    /// data roots, so a clone between the app bundle and the data container is
+    /// counted once instead of as raw bundle bytes plus union data. It is not
+    /// a census bucket and never changes the allocated totals.
+    public let bundleMeasurementURL: URL?
+    /// Bounds for the extent pass (calls, intervals, wall clock).
+    public let extentBudget: StorageExtentBudget
 
     private static let resourceKeys: Set<URLResourceKey> = [
         .isRegularFileKey,
@@ -245,13 +370,23 @@ public struct StorageCensus: Sendable {
         parentURL: URL? = nil,
         metricLabel: String = "storage.census",
         isCancelled: @escaping @Sendable () -> Bool = { false },
-        onProgress: (@Sendable (Int) -> Void)? = nil
+        onProgress: (@Sendable (Int) -> Void)? = nil,
+        cloneAttributeProvider: (@Sendable (String) -> StorageCloneAttributeResult)? = StorageCloneAttributesReader.read,
+        cloneStreamVolumeProvider: (@Sendable (String) -> UInt64?)? = nil,
+        extentProbe: StorageExtentProbe? = nil,
+        bundleMeasurementURL: URL? = nil,
+        extentBudget: StorageExtentBudget = .default
     ) {
         self.roots = roots
         self.parentURL = parentURL?.standardizedFileURL.resolvingSymlinksInPath()
         self.metricLabel = metricLabel
         self.isCancelled = isCancelled
         self.onProgress = onProgress
+        self.cloneAttributeProvider = cloneAttributeProvider
+        self.cloneStreamVolumeProvider = cloneStreamVolumeProvider
+        self.extentProbe = extentProbe
+        self.bundleMeasurementURL = bundleMeasurementURL?.standardizedFileURL
+        self.extentBudget = extentBudget
     }
 
     /// Exact on-disk identity (device + inode) via Foundation attributes.
@@ -343,7 +478,12 @@ public struct StorageCensus: Sendable {
         var buckets: [StorageCensusBucket] = []
         for root in roots {
             let exists = manager.fileExists(atPath: root.url.path)
-            buckets.append(StorageCensusBucket(id: root.id, attribution: root.attribution, exists: exists))
+            buckets.append(StorageCensusBucket(
+                id: root.id,
+                attribution: root.attribution,
+                exists: exists,
+                isCloneCapable: root.potentiallyCloned
+            ))
         }
 
         func prefix(_ url: URL) -> String {
@@ -373,6 +513,62 @@ public struct StorageCensus: Sendable {
         // Claiming happens for *every* counted file, so a hard link cannot be
         // counted once as a category and again in the parent remainder.
         var claimedIdentity: [StorageFileIdentity: Int] = [:]
+
+        // Measured APFS clone/private accounting (public-SDK getattrlist).
+        // `cloneMeasurementActive` flips off permanently when the volume
+        // rejects the query, so an unsupported filesystem costs one syscall.
+        var cloneMeasurementActive = cloneAttributeProvider != nil
+        var cloneSharingDetected = false
+        // Clone streams are grouped by (volume identity, clone-id), never by
+        // clone-id alone: clone ids are scoped to the volume, so the same id on
+        // two different devices is NOT the same data stream and must not be
+        // deduplicated. The device comes from the file identity already
+        // computed for inode dedup; when it is unavailable the stream cannot be
+        // claimed across files, so no exact dedup happens for that file.
+        var claimedCloneStreams: Set<CloneStreamKey> = []
+        var measuredPrivateBytes: Int64 = 0
+        var cloneAttributeFileCount = 0
+        var cloneAttributeFailureCount = 0
+        var dedupedCloneBytes: Int64 = 0
+        var dedupedCloneFileCount = 0
+
+        // Measured physical-extent union (public fcntl F_LOG2PHYS_EXT). The
+        // union is all-or-nothing: any per-file failure, unsupported volume,
+        // anomalous mapping or budget overflow withholds it for the WHOLE
+        // snapshot, so the accepted allocated basis is kept unchanged and no
+        // partial union is ever subtracted.
+        var extentUnionBuilder = StorageExtentUnionBuilder(maxIntervals: extentBudget.maxIntervals)
+        var extentFailure: StorageExtentProbeFailure?
+        var extentMeasuredFileCount = 0
+        var extentTotalCalls = 0
+        var extentBundleRequested = false
+        let extentPassStart = Date()
+
+        func degradeExtentBasis(_ failure: StorageExtentProbeFailure) {
+            if extentFailure == nil { extentFailure = failure }
+        }
+
+        /// Snapshot-level bounds for the NEXT file's walk. The reader enforces
+        /// them inside its per-offset loop, so one large fragmented file can
+        /// never exceed the global call/time budget before the per-file cap.
+        func extentRemainingBudget() -> StorageExtentRemainingBudget {
+            StorageExtentRemainingBudget(
+                maxCalls: max(0, extentBudget.maxTotalCalls - extentTotalCalls),
+                deadline: extentPassStart.addingTimeInterval(extentBudget.maxDuration)
+            )
+        }
+
+        func extentBudgetAllowsAnotherCall() -> Bool {
+            if Date().timeIntervalSince(extentPassStart) > extentBudget.maxDuration {
+                degradeExtentBasis(.budgetExceeded)
+                return false
+            }
+            if extentTotalCalls >= extentBudget.maxTotalCalls {
+                degradeExtentBasis(.budgetExceeded)
+                return false
+            }
+            return true
+        }
 
         for tree in trees {
             if isCancelled() { throw StorageCensusError.cancelled }
@@ -437,8 +633,10 @@ public struct StorageCensus: Sendable {
                 guard let attributionIndex else { continue }
 
                 // Identity dedup across every bucket *and* the unattributed
-                // remainder: claim before attributing.
-                if let identity = Self.fileIdentity(at: itemURL) {
+                // remainder: claim before attributing. The same identity also
+                // carries the volume the clone-stream key is grouped by.
+                let identity = Self.fileIdentity(at: itemURL)
+                if let identity {
                     if let firstIndex = claimedIdentity[identity] {
                         diagnostics.dedupedFileCount += 1
                         if let idx {
@@ -465,6 +663,96 @@ public struct StorageCensus: Sendable {
                     diagnostics.identityUnavailableCount += 1
                 }
 
+                // Measured clone/private attributes. Zero-length files cannot
+                // share blocks, so skip the syscall for them.
+                var dedupedCloneStream = false
+                if cloneMeasurementActive, logical > 0, let cloneAttributeProvider {
+                    switch cloneAttributeProvider(path) {
+                    case .attributes(let attributes):
+                        cloneAttributeFileCount += 1
+                        measuredPrivateBytes += attributes.privateBytes
+                        if attributionIndex >= 0 {
+                            buckets[attributionIndex].measuredPrivateBytes += attributes.privateBytes
+                        }
+                        if attributes.mayShareBlocks {
+                            cloneSharingDetected = true
+                            if attributionIndex >= 0 {
+                                buckets[attributionIndex].isCloneCapable = true
+                            }
+                        }
+                        if attributes.sharesAllBlocks, attributes.cloneID != 0,
+                           let volumeIdentity = cloneStreamVolumeProvider?(path) ?? identity?.device {
+                            let streamKey = CloneStreamKey(
+                                device: volumeIdentity, cloneID: attributes.cloneID
+                            )
+                            if claimedCloneStreams.contains(streamKey) {
+                                // Exact dedup of a pure clone family on ONE
+                                // volume: the stream was already counted once.
+                                dedupedCloneStream = true
+                                dedupedCloneFileCount += 1
+                                dedupedCloneBytes += size.allocatedBytes
+                                if attributionIndex >= 0 {
+                                    buckets[attributionIndex].dedupedCloneSize =
+                                        buckets[attributionIndex].dedupedCloneSize + size
+                                }
+                                cloneSharingDetected = true
+                            } else {
+                                claimedCloneStreams.insert(streamKey)
+                            }
+                        }
+                    case .unsupported:
+                        cloneMeasurementActive = false
+                    case .unavailable:
+                        cloneAttributeFailureCount += 1
+                    }
+                }
+
+                // Measured physical extents for every counted regular file,
+                // including zero-length ones: a zero-length inode that still
+                // holds allocated blocks (resource fork) must fail the basis
+                // instead of being silently omitted from the union. Pure
+                // full-clone duplicates are skipped because their runs are
+                // identical to the stream already claimed, so the union is
+                // unchanged. Hard links never reach this point twice (identity
+                // dedup above), and even if identity were unavailable the
+                // union would still deduplicate their identical runs by
+                // physical overlap — the allocated basis and the extent basis
+                // each count every block once and neither subtracts the other.
+                if let extentProbe, !dedupedCloneStream, extentFailure == nil,
+                   extentBudgetAllowsAnotherCall() {
+                    switch extentProbe.read(
+                        path, identity?.device, identity?.inode,
+                        extentRemainingBudget(), isCancelled
+                    ) {
+                    case .measured(let measurement):
+                        extentMeasuredFileCount += 1
+                        extentTotalCalls += measurement.callCount
+                        if !extentUnionBuilder.add(
+                            runs: measurement.runs, owner: Int32(attributionIndex)
+                        ) {
+                            degradeExtentBasis(.budgetExceeded)
+                        }
+                    case .unsupported:
+                        degradeExtentBasis(.unsupportedFilesystem)
+                    case .failed(.cancelled):
+                        throw StorageCensusError.cancelled
+                    case .failed(let failure):
+                        degradeExtentBasis(failure)
+                    }
+                }
+                if dedupedCloneStream {
+                    // The BYTES are physically shared with an already counted
+                    // stream and are not added again. The FILE is a distinct
+                    // identity (different inode) and still counts as a scanned
+                    // file in its category; the UI labels this column "files".
+                    if attributionIndex >= 0 {
+                        buckets[attributionIndex].fileCount += 1
+                    } else {
+                        unattributedCount += 1
+                    }
+                    continue
+                }
+
                 if attributionIndex >= 0 {
                     buckets[attributionIndex].size = buckets[attributionIndex].size + size
                     buckets[attributionIndex].fileCount += 1
@@ -476,6 +764,113 @@ public struct StorageCensus: Sendable {
             diagnostics.errorCount += errorCounter.value
         }
 
+        // Optional app-bundle measurement into the SAME union. The bundle
+        // lives outside every data root, so a resource cloned from the bundle
+        // into Documents would otherwise be counted twice once the installer
+        // figure is added to a data-only union. Only runs while the basis is
+        // still coherent; any unreadable bundle entry withholds the union
+        // instead of publishing a known-double-counted total.
+        if let extentProbe, extentFailure == nil, let bundleMeasurementURL {
+            extentBundleRequested = true
+            if isCancelled() { throw StorageCensusError.cancelled }
+            if !manager.fileExists(atPath: bundleMeasurementURL.path) {
+                degradeExtentBasis(.bundleUnreadable)
+            } else {
+                let bundleErrorCounter = ErrorCounter()
+                if let bundleEnumerator = manager.enumerator(
+                    at: bundleMeasurementURL,
+                    includingPropertiesForKeys: Array(Self.resourceKeys),
+                    options: [],
+                    errorHandler: { _, _ in
+                        bundleErrorCounter.increment()
+                        return true
+                    }
+                ) {
+                    for case let itemURL as URL in bundleEnumerator {
+                        if isCancelled() { throw StorageCensusError.cancelled }
+                        guard extentFailure == nil else { break }
+                        guard let values = try? itemURL.resourceValues(forKeys: Self.resourceKeys) else {
+                            degradeExtentBasis(.bundleUnreadable)
+                            break
+                        }
+                        if values.isSymbolicLink == true || values.isDirectory == true { continue }
+                        guard values.isRegularFile == true else { continue }
+                        // Zero-length entries are probed too: an inode that
+                        // still holds allocated blocks must fail the basis
+                        // rather than be silently omitted.
+                        guard extentBudgetAllowsAnotherCall() else { break }
+                        switch extentProbe.read(
+                            itemURL.standardizedFileURL.path, nil, nil,
+                            extentRemainingBudget(), isCancelled
+                        ) {
+                        case .measured(let measurement):
+                            extentMeasuredFileCount += 1
+                            extentTotalCalls += measurement.callCount
+                            if !extentUnionBuilder.add(
+                                runs: measurement.runs, owner: StorageExtentOwner.bundle
+                            ) {
+                                degradeExtentBasis(.budgetExceeded)
+                            }
+                        case .unsupported:
+                            degradeExtentBasis(.unsupportedFilesystem)
+                        case .failed(.cancelled):
+                            throw StorageCensusError.cancelled
+                        case .failed(let failure):
+                            degradeExtentBasis(failure)
+                        }
+                    }
+                    if bundleErrorCounter.value > 0 {
+                        degradeExtentBasis(.bundleUnreadable)
+                    }
+                } else {
+                    degradeExtentBasis(.bundleUnreadable)
+                }
+            }
+        }
+
+        // Publish the union only when every measured file answered
+        // coherently; otherwise the accepted allocated basis is retained and
+        // the reason is kept as an internal aggregate flag.
+        var extentSummary: StorageExtentUnionSummary?
+        if extentProbe == nil {
+            diagnostics.extentBasis = .notRequested
+        } else if let extentFailure {
+            diagnostics.extentBasis = .unavailable
+            diagnostics.extentUnavailableReason = extentFailure
+        } else {
+            let union = extentUnionBuilder.finalize()
+            var categoryBytes: [String: Int64] = [:]
+            var unattributedExtentBytes: Int64 = 0
+            var bundleExtentBytes: Int64? = extentBundleRequested ? 0 : nil
+            for (owner, bytes) in union.bytesByOwner where bytes > 0 {
+                if owner >= 0, Int(owner) < buckets.count {
+                    categoryBytes[buckets[Int(owner)].id] = bytes
+                } else if owner == StorageExtentOwner.unattributed {
+                    unattributedExtentBytes += bytes
+                } else if owner == StorageExtentOwner.bundle {
+                    bundleExtentBytes = (bundleExtentBytes ?? 0) + bytes
+                }
+            }
+            diagnostics.extentBasis = .available
+            extentSummary = StorageExtentUnionSummary(
+                totalBytes: union.totalBytes,
+                bundleBytes: bundleExtentBytes,
+                unattributedBytes: unattributedExtentBytes,
+                categoryBytes: categoryBytes,
+                measuredFileCount: extentMeasuredFileCount,
+                callCount: extentTotalCalls,
+                intervalCount: union.intervalCount
+            )
+        }
+
+        diagnostics.dedupedCloneFileCount = dedupedCloneFileCount
+        diagnostics.dedupedCloneBytes = dedupedCloneBytes
+        diagnostics.cloneAttributeFileCount = cloneAttributeFileCount
+        diagnostics.cloneAttributeFailureCount = cloneAttributeFailureCount
+        diagnostics.cloneAttributeSupport = cloneAttributeProvider == nil
+            ? .notRequested
+            : (cloneMeasurementActive ? .supported : .unavailable)
+        diagnostics.measuredPrivateBytes = measuredPrivateBytes
         diagnostics.duration = Date().timeIntervalSince(started)
         diagnostics.completedAt = Date()
         onProgress?(diagnostics.regularFileCount)
@@ -485,6 +880,9 @@ public struct StorageCensus: Sendable {
             unattributedSize: unattributed,
             unattributedCount: unattributedCount,
             isSharedAllocationEstimate: cloneLikeBucket
+                || cloneSharingDetected
+                || dedupedCloneBytes > 0,
+            extentUnion: extentSummary
         )
     }
 }

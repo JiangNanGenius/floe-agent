@@ -4,13 +4,31 @@ import Foundation
 import Crypto
 import ZIPFoundation
 
+/// One workbook sheet to build. The visibility and hidden layout fields are
+/// optional so every earlier payload (including model tool arguments) decodes
+/// unchanged and produces byte-identical packages when they are absent.
 public struct OfficeWorkbookSheet: Codable, Sendable, Equatable {
     public var name: String
     public var rows: [[String]]
+    /// Tab visibility; `nil` (or `.visible`) writes no `state` attribute.
+    public var visibility: OfficeSheetVisibility?
+    /// 1-based row numbers written as `hidden="1"`.
+    public var hiddenRows: [Int]?
+    /// 1-based column indexes written as hidden `<col>` spans.
+    public var hiddenColumns: [Int]?
 
-    public init(name: String, rows: [[String]]) {
+    public init(
+        name: String,
+        rows: [[String]],
+        visibility: OfficeSheetVisibility? = nil,
+        hiddenRows: [Int]? = nil,
+        hiddenColumns: [Int]? = nil
+    ) {
         self.name = name
         self.rows = rows
+        self.visibility = visibility
+        self.hiddenRows = hiddenRows
+        self.hiddenColumns = hiddenColumns
     }
 }
 
@@ -514,7 +532,8 @@ public enum OfficeDocumentBuilder {
             ("rId1", officeRelationship + "/officeDocument", "xl/workbook.xml")
         ])).utf8)
         entries["xl/workbook.xml"] = Data((xmlHeader + #"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets>"# + sheets.enumerated().map { index, sheet in
-            #"<sheet name="\#(XMLText.escapeAttribute(normalizedSheetName(sheet.name, index: index)))" sheetId="\#(index + 1)" r:id="rId\#(index + 1)"/>"#
+            let state = sheet.visibility.flatMap { $0 == .visible ? nil : #" state="\#($0.rawValue)""# } ?? ""
+            return #"<sheet name="\#(XMLText.escapeAttribute(normalizedSheetName(sheet.name, index: index)))" sheetId="\#(index + 1)"\#(state) r:id="rId\#(index + 1)"/>"#
         }.joined() + "</sheets><calcPr calcId=\"191029\" fullCalcOnLoad=\"1\"/></workbook>").utf8)
         entries["xl/_rels/workbook.xml.rels"] = Data((xmlHeader + relationships(
             sheets.indices.map { ("rId\($0 + 1)", officeRelationship + "/worksheet", "worksheets/sheet\($0 + 1).xml") }
@@ -522,7 +541,7 @@ public enum OfficeDocumentBuilder {
         )).utf8)
         entries["xl/styles.xml"] = Data((xmlHeader + workbookStyles).utf8)
         for (index, sheet) in sheets.enumerated() {
-            entries["xl/worksheets/sheet\(index + 1).xml"] = Data((xmlHeader + worksheetXML(sheet.rows)).utf8)
+            entries["xl/worksheets/sheet\(index + 1).xml"] = Data((xmlHeader + worksheetXML(sheet)).utf8)
         }
         return entries
     }
@@ -548,8 +567,16 @@ public enum OfficeDocumentBuilder {
         return String((cleaned.isEmpty ? "Sheet\(index + 1)" : cleaned).prefix(31))
     }
 
-    private static func worksheetXML(_ rows: [[String]]) -> String {
-        let rowXML = rows.prefix(10_000).enumerated().map { rowIndex, row in
+    private static func worksheetXML(_ sheet: OfficeWorkbookSheet) -> String {
+        let hiddenRows = Set(sheet.hiddenRows ?? [])
+        // A `<cols>` block is schema-ordered between `sheetFormatPr` and
+        // `sheetData`; it is emitted only when the sheet hides columns, so a
+        // sheet without hidden layout keeps its exact earlier bytes.
+        let hiddenColumns = Set((sheet.hiddenColumns ?? []).filter { $0 > 0 }).sorted()
+        let columnsXML = hiddenColumns.isEmpty ? "" : "<cols>" + hiddenColumns.map { column in
+            #"<col min="\#(column)" max="\#(column)" width="9.140625" customWidth="1" hidden="1"/>"#
+        }.joined() + "</cols>"
+        let rowXML = sheet.rows.prefix(10_000).enumerated().map { rowIndex, row in
             let cells = row.prefix(256).enumerated().map { columnIndex, value in
                 let ref = columnName(columnIndex) + String(rowIndex + 1)
                 if value.hasPrefix("=") {
@@ -560,9 +587,10 @@ public enum OfficeDocumentBuilder {
                 }
                 return #"<c r="\#(ref)" t="inlineStr"><is><t xml:space="preserve">\#(XMLText.escape(value))</t></is></c>"#
             }.joined()
-            return #"<row r="\#(rowIndex + 1)">\#(cells)</row>"#
+            let hidden = hiddenRows.contains(rowIndex + 1) ? #" hidden="1""# : ""
+            return #"<row r="\#(rowIndex + 1)"\#(hidden)>\#(cells)</row>"#
         }.joined()
-        return #"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><sheetData>\#(rowXML)</sheetData></worksheet>"#
+        return #"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/>\#(columnsXML)<sheetData>\#(rowXML)</sheetData></worksheet>"#
     }
 
     private static func columnName(_ zeroBased: Int) -> String {

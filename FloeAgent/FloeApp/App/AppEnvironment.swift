@@ -209,11 +209,23 @@ final class AppEnvironment: ObservableObject {
     /// durable runtime-input ingress the 2D path uses; reconciliation of
     /// interrupted applies and undelivered decisions runs at bootstrap.
     private lazy var _cadDocumentCenter: CadDocumentCenter = {
-        let center = CadDocumentCenter { [weak self] conversationID, proposalID, decision, revision, sha256 in
+        // The FINAL argument is the trusted origin marker of the decision: an
+        // automatic runtime-authority apply records `tool-automatic` (so the
+        // chat surface projects the receipt onto the tool step), a human
+        // CAD-UI confirmation records `user`. Without the origin-aware wiring
+        // both paths would fall back to the historical `user` default.
+        let center = CadDocumentCenter { [weak self] conversationID, proposalID, decision, revision, sha256, origin in
             guard let self else { return }
-            try await self.conversationCenter.recordProposalDecision(
-                conversationID: conversationID, proposalID: proposalID, decision: decision,
-                revision: revision, sha256: sha256)
+            switch origin {
+            case .toolAutomatic:
+                try await self.conversationCenter.recordAutomaticProposalDecision(
+                    conversationID: conversationID, proposalID: proposalID, decision: decision,
+                    revision: revision, sha256: sha256)
+            case .user:
+                try await self.conversationCenter.recordProposalDecision(
+                    conversationID: conversationID, proposalID: proposalID, decision: decision,
+                    revision: revision, sha256: sha256)
+            }
         }
         return center
     }()
@@ -856,6 +868,40 @@ final class AppEnvironment: ObservableObject {
         ))
     }
 
+    /// First verified readiness of a long-lived local service (its own HTTP
+    /// probe answered): resolve the durable dependency edge (the service keeps
+    /// running) and, when the submitting run is actually parked on it, resume
+    /// that SAME run with the readiness fact. A run that is still working only
+    /// gets its edge settled, so it will not park at its terminal boundary.
+    private func handleBackgroundServiceReady(jobID: UUID) async {
+        guard let service = backgroundJobService,
+              let job = try? await service.job(id: jobID) else { return }
+        await service.resolveServiceReady(
+            id: jobID,
+            note: "Service is verifiably ready and keeps running in the background.")
+        guard await conversationCenter.isAwaitingDependency(
+            runID: job.runID, conversationID: job.conversationID) else { return }
+        let content = "[Floe background service \(jobID.uuidString)] \(job.targetTool) is ready and keeps running. "
+            + "Use jobs.status to inspect it; the previewURL appears once HTTP responds. "
+            + "Do not resubmit the same payload."
+        do {
+            try await conversationCenter.submitRunningInput(
+                content: content,
+                in: job.conversationID,
+                expectedRunID: job.runID,
+                mode: .steer,
+                selectedModelID: nil,
+                workspaceID: nil,
+                executionMode: .agent,
+                attachments: []
+            )
+        } catch {
+            FloeLogger(category: .app).info(
+                "backgroundService ready steer failed jobID=\(jobID.uuidString) error=\(error.localizedDescription)"
+            )
+        }
+    }
+
     /// Registers every tool the agent can see, in one place and in a
     /// deterministic order. This is the single source of truth for the
     /// model's tool catalog.
@@ -1037,8 +1083,19 @@ final class AppEnvironment: ObservableObject {
         // confirmation grant and saved-package verification.
         registerOfficeEditTools(center: officeCommandCenter)
         // Public Apple-framework integrations. Device-local settings filter
-        // these descriptors before each provider request.
-        registerAppleSystemTools(database: database)
+        // these descriptors before each provider request. The automation
+        // editor freezes the SAME trusted bindings as `task.schedule` and can
+        // trigger one real due pass, so both creation paths behave identically.
+        registerAppleSystemTools(
+            database: database,
+            scheduleBindingResolver: { [weak self] context in
+                await self?.taskScheduleBinding(for: context)
+            },
+            onScheduleDue: { [weak self] in
+                guard let self else { return }
+                await self.backgroundRunCoordinator.runDueSchedulesNow()
+            }
+        )
         // Independent credential-card management over the shared vault.
         registerCredentialManageTool(vault: credentialVault, store: credentialStore)
         // Execution tools (JS, local Python, SSH, HTTP, LAN scan, OCR, barcode).
@@ -1203,7 +1260,15 @@ final class AppEnvironment: ObservableObject {
             _ = await MediaModelCatalogService.shared.catalog()
         }
         ToolCatalog.register(LocalServiceTool.self)
-        var localServiceRunner = AnyAgentTool(LocalServiceTool(store: BackgroundJobStore(database: database)))
+        // Late-binding readiness relay: the tool must exist before the job
+        // service (the service resolves the durable dependency edge later).
+        let localServiceReadyRelay = LocalServiceReadyRelay()
+        var localServiceRunner = AnyAgentTool(LocalServiceTool(
+            store: BackgroundJobStore(database: database),
+            onServiceReady: { [relay = localServiceReadyRelay] jobID in
+                await relay.announce(jobID)
+            }
+        ))
         // jobs.submit rejects a missing entry script or working directory
         // synchronously, before the durable job record exists.
         localServiceRunner.preflightSubmission = { payload, workspaceRoot in
@@ -1247,7 +1312,30 @@ final class AppEnvironment: ObservableObject {
         )
         if let backgroundJobService {
             registerLocalServiceCommand(service: backgroundJobService, store: BackgroundJobStore(database: database))
+            // First verified readiness of a long-lived service settles its
+            // durable dependency edge and resumes a parked submitting run in
+            // the SAME run; the service itself is never terminated here.
+            localServiceReadyRelay.install { [weak self] jobID in
+                await self?.handleBackgroundServiceReady(jobID: jobID)
+            }
         }
+        // Scheduled tasks (task.schedule). The tool operates the SAME durable
+        // `SQLiteTaskScheduleStore` the Home sheet and the background
+        // coordinator use (no second manager). Bindings are frozen at creation
+        // from the ACTUAL submitting run (see `taskScheduleBinding(for:)`),
+        // never from model arguments; without the resolver the tool refuses
+        // `create` rather than freezing empty bindings. `onScheduleDue` runs
+        // one real due pass after runNow/enable when the app can.
+        registerTaskScheduleTools(
+            database: database,
+            onScheduleDue: { [weak self] in
+                guard let self else { return }
+                await self.backgroundRunCoordinator.runDueSchedulesNow()
+            },
+            bindingResolver: { [weak self] context in
+                await self?.taskScheduleBinding(for: context)
+            }
+        )
         // Browser automation.
         registerBrowserTools(center: browserCenter)
         ToolCatalog.register(LinuxPortTool.self)
@@ -1357,6 +1445,66 @@ final class AppEnvironment: ObservableObject {
         // Activation only discovers JSON schemas and registers namespaced
         // runners; no server code is downloaded or executed by the app.
         mcpSettingsCenter.activate()
+    }
+
+    /// Trusted frozen bindings for a model-created scheduled task.
+    ///
+    /// The model can never choose the model/project/environment/permission of
+    /// a scheduled task: everything is derived from the ACTUAL submitting run
+    /// (its durable run record, its conversation's workspace link and its
+    /// saved task policy) plus the run's explicit environment binding. A
+    /// missing binding is `nil` (the record's creation-time resolution), never
+    /// an invented value; a resolver failure refuses `create` in the tool.
+    /// The permission ceiling is revalidated again at execution.
+    private func taskScheduleBinding(for context: ToolContext) async -> TaskScheduleBinding? {
+        guard let run = try? await runStore.run(id: context.runID) else { return nil }
+        let conversationID = context.conversationID ?? run.conversationID
+        let workspaceStore = SQLiteWorkspaceStore(database: database)
+        let workspaceID = (try? await workspaceStore.workspaceID(conversationID: conversationID)) ?? nil
+        let permissionJSON: String?
+        if let policy = try? await workspaceStore.taskPolicy(conversationID: conversationID) {
+            // Freeze exactly the policy the task really runs under (approval
+            // mode / recovery / notifications); the execution boundary
+            // re-checks it and never widens it.
+            let draft = DraftTaskPolicy(
+                approvalMode: policy.resolvedApprovalMode,
+                recoveryPolicy: policy.recoveryPolicy,
+                notificationPolicy: policy.notificationPolicy)
+            permissionJSON = (try? JSONEncoder().encode(draft))
+                .map { String(decoding: $0, as: UTF8.self) }
+        } else {
+            permissionJSON = nil
+        }
+        return TaskScheduleBinding(
+            workspaceID: workspaceID,
+            environmentID: context.environmentID,
+            modelID: run.modelID,
+            permissionJSON: permissionJSON,
+            anchorTimezone: TimeZone.current.identifier)
+    }
+
+    /// Creation-time bindings for an APP-initiated schedule with no run
+    /// context (Shortcuts). Freezes the CURRENT default agent model and the
+    /// current default approval policy, so a schedule created now cannot
+    /// silently follow a later settings change; no environment is bound here
+    /// (it is resolved from the task workspace at execution and revalidated).
+    /// Returns nil when no default model resolves — the caller refuses
+    /// creation instead of freezing an empty binding.
+    func appDefaultTaskScheduleBinding() -> TaskScheduleBinding? {
+        guard let defaultModelID = conversationCenter.modelPreferences.defaultAgentModelID,
+              conversationCenter.providerAndModel(modelID: defaultModelID) != nil else {
+            return nil
+        }
+        let approvalMode = TaskApprovalMode(
+            rawValue: settingsCenter.defaultAgentMode.taskApprovalModeName) ?? .ask
+        let permissionJSON = (try? JSONEncoder().encode(DraftTaskPolicy(approvalMode: approvalMode)))
+            .map { String(decoding: $0, as: UTF8.self) }
+        return TaskScheduleBinding(
+            workspaceID: nil,
+            environmentID: nil,
+            modelID: defaultModelID,
+            permissionJSON: permissionJSON,
+            anchorTimezone: TimeZone.current.identifier)
     }
 
     /// Builds the remote-Python service against the shared host store.
@@ -1527,6 +1675,10 @@ final class AppEnvironment: ObservableObject {
             if let backgroundJobService {
                 _ = try? await backgroundJobService.reconcileInterruptedOnLaunch()
             }
+            // Delegated children left registered/running by a dead process are
+            // marked interrupted too; otherwise the child panel would show a
+            // live "working" child forever and keep its 2 s poll alive.
+            _ = try? await SQLiteChildRunStore(database: database).reconcileInterruptedOnLaunch()
             // Native CAD proposals interrupted mid-apply and decision
             // deliveries that never reached the originating task reconcile
             // from durable records (never from ordering alone).
@@ -1573,6 +1725,34 @@ final class AppEnvironment: ObservableObject {
                     let fixture = ConversationRecord(id: fixtureID, title: "批量选择测试", createdAt: Date(), updatedAt: Date())
                     try await conversationStore.saveConversation(fixture)
                     _ = try await SQLiteWorkspaceStore(database: database).ensureWorkspace(conversationID: fixtureID, title: fixture.title)
+                }
+            }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains("--ui-test-task-management-fixture") {
+                // OWNED synthetic tasks for the bulk task-management UI
+                // acceptance. Fixed identities, idempotent: a missing task is
+                // created, an archived one is made active again (each run
+                // starts from the same active slice). No real user
+                // conversation is ever read, changed or deleted.
+                let fixtures: [(id: UUID, title: String)] = [
+                    (UUID(uuidString: "A1D4A0F2-6F2E-4E7A-9C31-0B7C51E6A001")!, "任务管理测试-A"),
+                    (UUID(uuidString: "A1D4A0F2-6F2E-4E7A-9C31-0B7C51E6A002")!, "任务管理测试-B"),
+                    (UUID(uuidString: "A1D4A0F2-6F2E-4E7A-9C31-0B7C51E6A003")!, "任务管理测试-C")
+                ]
+                for fixture in fixtures {
+                    if let existing = try await conversationStore.conversation(id: fixture.id) {
+                        if existing.archivedAt != nil {
+                            try await conversationStore.setArchived(id: fixture.id, archived: false)
+                        }
+                    } else {
+                        let record = ConversationRecord(
+                            id: fixture.id, title: fixture.title,
+                            createdAt: Date(), updatedAt: Date()
+                        )
+                        try await conversationStore.saveConversation(record)
+                        _ = try await SQLiteWorkspaceStore(database: database)
+                            .ensureWorkspace(conversationID: fixture.id, title: fixture.title)
+                    }
                 }
             }
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
@@ -1718,6 +1898,13 @@ final class AppEnvironment: ObservableObject {
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains(TemporaryChatUITestFixture.launchArgument) {
                 await TemporaryChatUITestFixture.seedIfRequested(environment: self)
+            }
+            // Task-lifecycle GUI acceptance: ONE synthetic saved conversation
+            // with a durable child, a real tool pair and a spooled job output
+            // for the delegate card / inspector / retained-output viewer.
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains(TaskLifecycleUITestFixture.launchArgument) {
+                await TaskLifecycleUITestFixture.seedIfRequested(environment: self)
             }
             #endif
             #if !targetEnvironment(simulator)

@@ -33,7 +33,7 @@ struct NoteCapabilityMatrixTests {
 
         let implementedTools = Set(snapshot.capabilities.filter { $0.tier == .implemented }.compactMap(\.tool))
         #expect(implementedTools == [
-            "notes.search", "notes.read", "notes.edit", "notes.export", "notes.attachFile", "notes.stageAttachment"
+            "notes.search", "notes.read", "notes.edit", "notes.cover", "notes.export", "notes.attachFile", "notes.stageAttachment"
         ])
         let delegatedTools = Set(snapshot.capabilities.filter { $0.tier == .delegated }.compactMap(\.tool))
         #expect(delegatedTools == [

@@ -34,10 +34,24 @@ actor CadDocumentCenter: CadDocumentHost {
 
     /// Delivers one structured proposal decision to the originating
     /// conversation through the durable runtime-input ingress
-    /// (`ConversationCenter.recordProposalDecision`). Wired by AppEnvironment;
-    /// nil in tests (decisions stay durable-but-undelivered, which the tests
-    /// assert on).
-    typealias NativeDecisionDeliverer = @Sendable (UUID, UUID, String, Int64?, String?) async throws -> Void
+    /// (`ConversationCenter.recordProposalDecision` /
+    /// `recordAutomaticProposalDecision`). The FINAL argument is the trusted
+    /// origin marker: an automatic runtime-authority apply passes
+    /// `.toolAutomatic` (so the chat surface projects the receipt onto the tool
+    /// step instead of rendering a user decision again), a human CAD-UI
+    /// confirmation passes `.user`. Wired by AppEnvironment; nil in tests
+    /// (decisions stay durable-but-undelivered, which the tests assert on).
+    typealias NativeDecisionDeliverer = @Sendable (
+        UUID, UUID, String, Int64?, String?,
+        ProposalDecisionNoticeProjection.DecisionOrigin
+    ) async throws -> Void
+
+    /// The pre-origin 5-argument deliverer shape, kept source-compatible for
+    /// callers that have not adopted the origin marker yet. An automatic
+    /// decision delivered through this legacy shape falls back to the
+    /// conversation layer's historical `.user` default (one extra visible row),
+    /// so central wiring should pass the origin-aware parameter instead.
+    typealias LegacyNativeDecisionDeliverer = @Sendable (UUID, UUID, String, Int64?, String?) async throws -> Void
 
     private let nativeProposals: NativeCADProposalStore
     private let decisionDeliverer: NativeDecisionDeliverer?
@@ -48,6 +62,20 @@ actor CadDocumentCenter: CadDocumentHost {
             fileURL: nativeProposalStoreFileURL ?? NativeCADProposalStore.defaultFileURL()
                 ?? URL(fileURLWithPath: "/dev/null"))
         self.decisionDeliverer = decisionDeliverer
+    }
+
+    /// Source-compatible initializer for the pre-origin 5-argument wiring; the
+    /// origin marker is dropped (automatic decisions then render as user
+    /// decisions, exactly the old behavior). Prefer the origin-aware one.
+    /// The deliverer must escape because the stored origin-aware closure
+    /// captures it.
+    init(nativeProposalStoreFileURL: URL? = nil,
+         legacyDecisionDeliverer: @escaping LegacyNativeDecisionDeliverer) {
+        self.init(nativeProposalStoreFileURL: nativeProposalStoreFileURL,
+                  decisionDeliverer: { conversationID, proposalID, decision, revision, sha256, _ in
+                      try await legacyDecisionDeliverer(conversationID, proposalID, decision,
+                                                        revision, sha256)
+                  })
     }
 
     // MARK: - Native FloeCAD (3D) actions
@@ -136,35 +164,79 @@ actor CadDocumentCenter: CadDocumentHost {
                 return try await nativeTaskStatus(request, resolved: resolved, access: access)
             case "cancel":
                 return try await nativeTaskCancel(request, resolved: resolved, access: access)
+            case "capabilities":
+                // Engine capability discovery plus the authoritative workbench
+                // service catalog: the request may ask for one kind's bounded
+                // page of arguments/examples (detail_kind) without any of that
+                // detail living in the every-turn tool schema.
+                let reply = try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
+                let detailKind = (request["detail_kind"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let offset = max(0, (request["offset"] as? Int) ?? (request["offset"] as? NSNumber)?.intValue ?? 0)
+                let limit = (request["limit"] as? Int) ?? (request["limit"] as? NSNumber)?.intValue
+                return CadServiceOperationCatalog.mergingCapabilities(
+                    into: reply,
+                    detailKind: (detailKind?.isEmpty ?? true) ? nil : detailKind,
+                    offset: offset, limit: limit)
             case "assembly", "drawing", "script", "mesh":
-                // Read-only service actions run directly; MUTATING ones share the
-                // geometry proposal transaction (propose on a throwaway copy, user
-                // grant, apply). A model can never mutate through a payload call.
+                // A service request MUST name exactly one operation through the
+                // authoritative catalog (`payload.action`, or the documented
+                // legacy `payload.op` spelling). A payload with no recognizable
+                // action is a structured refusal — the silent read default
+                // (`pages` / `report`) is gone. Mutating operations stay
+                // unreachable through a payload call: they share the geometry
+                // proposal transaction (propose on a throwaway copy, apply).
                 let payload = request["payload"] as? [String: Any] ?? [:]
-                let action = (payload["action"] as? String) ?? Self.defaultReadAction(for: kind)
-                if CADServiceOperations.isMutating(kind: kind, action: action) {
+                let serviceRequest: (operation: CadServiceOperationCatalog.Operation,
+                                     arguments: [String: Any])
+                do {
+                    serviceRequest = try CadServiceOperationCatalog.resolve(kind: kind, payload: payload)
+                } catch let failure as CadServiceOperationCatalog.ResolutionFailure {
+                    return Self.encodeNativeJSON([
+                        "ok": false,
+                        "error": failure.code,
+                        "message": failure.message,
+                        "known_actions": CadServiceOperationCatalog.actionNames(forKind: kind),
+                    ])
+                }
+                if serviceRequest.operation.mutating {
                     return Self.encodeNativeJSON([
                         "ok": false,
                         "error": "proposal_required",
-                        "message": "\(kind).\(action) mutates the document and is not callable directly. "
-                            + "Draft it with propose using op \"\(kind).\(action)\" and apply it after the "
-                            + "user confirms in the CAD UI.",
+                        "message": "\(kind).\(serviceRequest.operation.action) mutates the document and is not "
+                            + "callable directly. Draft it with propose using op \"\(serviceRequest.operation.op)\" "
+                            + "and apply it after the user confirms in the CAD UI.",
+                        "propose": ["op": serviceRequest.operation.op,
+                                    "args": serviceRequest.arguments],
                     ])
                 }
-                // Read-only native jobs are registered durably (status/cancel) and
-                // run through the bridge; the reply carries the task id.
+                // Forward the CANONICAL action plus its flattened arguments;
+                // the engine never sees a legacy selector spelling.
+                var normalized = request
+                var normalizedPayload = serviceRequest.arguments
+                normalizedPayload["action"] = serviceRequest.operation.action
+                normalized["payload"] = normalizedPayload
+                normalized["op"] = nil
+                // Read-only native jobs are registered durably (status/cancel)
+                // and run through the bridge; the reply carries the task id.
                 return try await nativeLongOperation(resolved: resolved, url: url,
-                                                     requestJSON: requestJSON, kind: kind, access: access)
+                                                     requestJSON: Self.encodeNativeJSON(normalized),
+                                                     kind: kind, access: access)
             default:
                 return try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
             }
         }
     }
 
-    /// Kernel capabilities without an open document (host requirement).
+    /// Kernel capabilities without an open document (host requirement). The
+    /// authoritative workbench-service catalog is attached here too, so any
+    /// caller of the host (the tool included) sees the same action/argument
+    /// contract; a reply that already carries it is left untouched.
     func nativeCapabilities(access: CadDocumentAccess) async throws -> String {
         try await authorizeAccess(access: access)
-        return try await FloeCAD3DBridge.shared.globalCapabilitiesJSON()
+        let reply = try await FloeCAD3DBridge.shared.globalCapabilitiesJSON()
+        return CadServiceOperationCatalog.mergingCapabilities(into: reply, detailKind: nil,
+                                                              offset: 0, limit: nil)
     }
 
     // MARK: - Native package creation (host factory)
@@ -189,16 +261,6 @@ actor CadDocumentCenter: CadDocumentHost {
 
     private static func creationGateKey(root: URL) -> String {
         "create:\(root.standardizedFileURL.resolvingSymlinksInPath().path)"
-    }
-
-    /// The default payload action for each service kind is its report action.
-    private static func defaultReadAction(for kind: String) -> String {
-        switch kind {
-        case "assembly": return "report"
-        case "drawing": return "pages"
-        case "script": return "list"
-        default: return "boundary"
-        }
     }
 
     // MARK: - Native durable tasks (status / cancel)
@@ -652,6 +714,18 @@ actor CadDocumentCenter: CadDocumentHost {
             case .runtimeAuthority: return "runtime-authority"
             }
         }
+
+        /// The trusted producer marker of the decision notice this apply
+        /// produces: an automatic (runtime-authority) apply is `toolAutomatic`,
+        /// a human CAD-UI confirmation is `user`. The conversation layer
+        /// persists exactly this marker so the chat surface never renders an
+        /// automatic receipt as a user decision.
+        var decisionOrigin: ProposalDecisionNoticeProjection.DecisionOrigin {
+            switch self {
+            case .interactiveGrant: return .user
+            case .runtimeAuthority: return .toolAutomatic
+            }
+        }
     }
 
     /// Tool-facing apply: validate request shape, receipt replay, then the
@@ -915,7 +989,8 @@ actor CadDocumentCenter: CadDocumentHost {
                 if let grantID { _ = await self.grants.commitReservation(grantID: grantID) }
                 await self.recordNativeApplySuccess(proposalID: proposalID, receipt: receipt,
                                                     requestID: requestID, canonicalPath: gateKey,
-                                                    recordedAccess: recordedAccess)
+                                                    recordedAccess: recordedAccess,
+                                                    origin: authorization.decisionOrigin)
                 return (receipt, false)
             } catch {
                 if let grantID { await self.grants.releaseReservation(grantID: grantID) }
@@ -926,7 +1001,8 @@ actor CadDocumentCenter: CadDocumentHost {
                     proposalID, note: error.localizedDescription)
                 self.recordNativeDecision(proposalID: proposalID,
                                           decision: "failed to apply",
-                                          revision: nil, sha256: nil)
+                                          revision: nil, sha256: nil,
+                                          origin: authorization.decisionOrigin)
                 throw error
             }
         }
@@ -978,7 +1054,8 @@ actor CadDocumentCenter: CadDocumentHost {
     /// the originating task's adoption notice.
     private func recordNativeApplySuccess(proposalID: UUID, receipt: CADApplyReceipt,
                                           requestID: String, canonicalPath: String,
-                                          recordedAccess: CadDocumentAccess) async {
+                                          recordedAccess: CadDocumentAccess,
+                                          origin: ProposalDecisionNoticeProjection.DecisionOrigin) async {
         let receiptRecord = NativeCADProposalStore.ReceiptRecord(
             revision: receipt.revision, contentSHA256: receipt.contentSHA256,
             message: receipt.message, requestID: requestID, appliedAt: Date())
@@ -1005,7 +1082,8 @@ actor CadDocumentCenter: CadDocumentHost {
         nativeProposalContexts[proposalID] = nil
         recordNativeDecision(proposalID: proposalID, decision: "applied",
                              revision: Int64(receipt.revision),
-                             sha256: receipt.contentSHA256)
+                             sha256: receipt.contentSHA256,
+                             origin: origin)
     }
 
     private static func encodeNativeReceipt(_ receipt: CADApplyReceipt, replay: Bool,
@@ -1094,16 +1172,22 @@ actor CadDocumentCenter: CadDocumentHost {
 
     /// Structured decision to the originating task, recorded BEFORE any
     /// delivery attempt and retried until acknowledged (the shared 2D
-    /// decision outbox; delivery is idempotent by stable id).
+    /// decision outbox; delivery is idempotent by stable id). `origin` is the
+    /// trusted producer marker: `.toolAutomatic` for a fully automatic
+    /// runtime-authority apply, `.user` for a human CAD-UI confirmation and
+    /// for every historical/system notice (matching the projection default).
+    /// The marker is persisted IN the durable decision record, so a delivery
+    /// retried after an app restart keeps its real origin.
     private func recordNativeDecision(proposalID: UUID, decision: String,
-                                      revision: Int64?, sha256: String?) {
+                                      revision: Int64?, sha256: String?,
+                                      origin: ProposalDecisionNoticeProjection.DecisionOrigin = .user) {
         guard let stored = nativeProposals.record(for: proposalID),
               let conversation = stored.access.originatingConversationID else { return }
         let durable: DrawingAssistantDecisionStore.Decision?
         do {
             durable = try DrawingAssistantDecisionStore.shared.record(
                 conversationID: conversation, proposalID: proposalID, decision: decision,
-                revision: revision, sha256: sha256, phase: .committed)
+                revision: revision, sha256: sha256, phase: .committed, origin: origin)
         } catch {
             durable = nil
         }
@@ -1111,7 +1195,7 @@ actor CadDocumentCenter: CadDocumentHost {
         Task {
             do {
                 try await deliverer(durable.conversationID, durable.proposalID,
-                                    durable.decision, durable.revision, durable.sha256)
+                                    durable.decision, durable.revision, durable.sha256, origin)
                 try? DrawingAssistantDecisionStore.shared.markDelivered(id: durable.id)
             } catch {
                 // Stays pending in the durable store; retried on the next
@@ -1121,15 +1205,19 @@ actor CadDocumentCenter: CadDocumentHost {
     }
 
     /// Retries any native decision whose durable delivery never acknowledged
-    /// (restart after commit, transient ingress failure).
+    /// (restart after commit, transient ingress failure). The origin is the
+    /// one persisted with the decision, so a restored (post-restart) decision
+    /// delivers with its real producer marker.
     func flushNativeProposalDecisions() async {
         guard decisionDeliverer != nil else { return }
         let pending = DrawingAssistantDecisionStore.shared.pendingDeliveries()
         for decision in pending {
             guard let deliverer = decisionDeliverer else { return }
+            let origin = decision.origin
+                .flatMap(ProposalDecisionNoticeProjection.DecisionOrigin.init(rawValue:)) ?? .user
             do {
                 try await deliverer(decision.conversationID, decision.proposalID,
-                                    decision.decision, decision.revision, decision.sha256)
+                                    decision.decision, decision.revision, decision.sha256, origin)
                 try? DrawingAssistantDecisionStore.shared.markDelivered(id: decision.id)
             } catch { break }
         }

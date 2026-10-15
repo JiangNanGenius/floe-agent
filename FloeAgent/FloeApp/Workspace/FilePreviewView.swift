@@ -53,6 +53,9 @@ struct FilePreviewView: View {
     @State private var quickLookURL: URL?
     @State private var previewError: String?
     @State private var mediaEditorSource: URL?
+    /// Reading mode: a read-only alternate view of this same original file
+    /// (never an editor, and never a conversion of the original bytes).
+    @State private var isReadingModePresented = false
     /// Archive tree browser for this preview's archive (bounded extraction).
     @State private var isArchiveBrowserPresented = false
     @State private var imageEditRequest: WorkspaceImageEditRequest?
@@ -202,6 +205,9 @@ struct FilePreviewView: View {
             NavigationStack {
                 ArchiveBrowserView(relativePath: relativePath, center: center)
             }
+        }
+        .fullScreenCover(isPresented: $isReadingModePresented) {
+            TextReaderView(source: readingSource)
         }
         .fullScreenCover(isPresented: $isOfficeEditorPresented, onDismiss: {
             // The standalone editor owns its own save/exit flow; releasing the
@@ -364,6 +370,49 @@ struct FilePreviewView: View {
         WorkbenchCenter.Owner(kind: engineeringConversationID == nil ? .workspace : .chat,
                               id: engineeringConversationID,
                               environmentID: nil)
+    }
+
+    /// Reading mode opens the same original file read-only. Local files are
+    /// streamed by the reader through the existing guard-resolved URL; cloud
+    /// and network text goes through the existing bounded remote reader and
+    /// is marked as a staged snapshot. Task-private workspace files are
+    /// readable but their reading position is not persisted.
+    private var readingSource: TextReaderSource {
+        let path = relativePath
+        let remote = center.isCloudWorkspacePath(path) || center.isNetworkWorkspacePath(path)
+        let persistsPosition = center.currentWorkspace?.kind != .privateTask
+        return TextReaderSource(
+            kind: .workspaceFile,
+            ownerID: center.currentWorkspace?.id.uuidString ?? "workspace",
+            documentKey: path,
+            displayName: fileName,
+            format: WorkspaceFileType.pathExtension(for: path),
+            markdown: isMarkdown,
+            isRemoteSnapshot: remote,
+            persistsPosition: persistsPosition,
+            hasNonTextContent: false,
+            limits: ReaderLimits(),
+            makeBytes: { [center] in
+                if remote {
+                    let data = try await center.readRemotePreview(relativePath: path)
+                    return TextReaderBytes(
+                        source: ReaderDataByteSource(data: data),
+                        fingerprint: TextReaderSource.dataFingerprint(data)
+                    )
+                }
+                guard let service = center.fileService else {
+                    throw ReaderError.sourceUnavailable("workspace unavailable")
+                }
+                let url = try service.guardResolver.resolve(path)
+                let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+                let mtime = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+                return TextReaderBytes(
+                    source: try ReaderFileByteSource(url: url),
+                    fingerprint: TextReaderSource.fileFingerprint(url: url, byteLength: size, mtime: mtime)
+                )
+            }
+        )
     }
 
     private func engineeringView(_ package: EngineeringPreviewPackage, editing: Bool = false) -> some View {
@@ -673,6 +722,23 @@ struct FilePreviewView: View {
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityIdentifier("file.preview.html")
+            }
+            // Reading mode for text documents: the same original file opened
+            // read-only with bounded windows. The edit entries above/below are
+            // unchanged, and an over-limit file that the bounded preview
+            // cannot show is still readable here.
+            if isTextual {
+                Button {
+                    isReadingModePresented = true
+                } label: {
+                    Label(
+                        OfficeInkText.t("阅读模式", "Reading Mode"),
+                        systemImage: "book"
+                    )
+                }
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityLabel(OfficeInkText.t("阅读模式", "Reading Mode"))
+                .accessibilityIdentifier("file.preview.readingMode")
             }
             // Explicit share of the *current* file: the visible document is
             // resolved through the guard (local) or snapshotted (cloud/network)

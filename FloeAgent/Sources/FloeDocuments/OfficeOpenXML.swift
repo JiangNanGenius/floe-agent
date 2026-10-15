@@ -32,25 +32,135 @@ public struct OfficeEditableField: Identifiable, Codable, Sendable, Equatable {
     }
 }
 
+/// Tab visibility of one workbook sheet, exactly the three values
+/// `xl/workbook.xml` declares. `visible` is the default when the attribute is
+/// absent; it is not the only state a sheet can carry.
+public enum OfficeSheetVisibility: String, Codable, Sendable, CaseIterable, Equatable {
+    case visible
+    case hidden
+    case veryHidden
+}
+
+/// One hidden column span as a worksheet's `<cols>` element declares it:
+/// 1-based and inclusive, exactly the OOXML `min`/`max` attributes. Spans are
+/// kept as spans (never expanded) so a whole-sheet hidden column costs one
+/// entry.
+public struct OfficeWorkbookColumnSpan: Codable, Sendable, Equatable, Hashable {
+    public var first: Int
+    public var last: Int
+
+    public init(first: Int, last: Int) {
+        self.first = first
+        self.last = last
+    }
+
+    public func contains(_ column: Int) -> Bool {
+        column >= first && column <= last
+    }
+}
+
+/// Read-only preview metadata for one workbook sheet, in the workbook's own
+/// tab order. It never carries cell content; `section` is the same stable key
+/// `OfficeDocumentSnapshot.fields` already uses for the worksheet part, so
+/// existing field identifiers and sections are unchanged.
+public struct OfficeWorkbookSheetPreview: Codable, Sendable, Equatable {
+    /// The tab's display name from `xl/workbook.xml`.
+    public var name: String
+    /// The tab's visibility state (`visible` when the attribute is absent).
+    public var visibility: OfficeSheetVisibility
+    /// The resolved worksheet part path, e.g. `xl/worksheets/sheet2.xml`.
+    public var target: String
+    /// The stable section key for `target` in the snapshot's fields
+    /// (`"Sheet 2"`), derived from the part path exactly as `inspect` does.
+    public var section: String
+    /// 1-based hidden row numbers declared by the worksheet, ascending and
+    /// deduplicated. Bounded; see `hiddenRowsTruncated`.
+    public var hiddenRows: [Int]
+    /// 1-based hidden column spans declared by the worksheet's `<cols>`.
+    /// Bounded; see `hiddenColumnsTruncated`.
+    public var hiddenColumnSpans: [OfficeWorkbookColumnSpan]
+    /// True when the worksheet declared more hidden rows than the bounded
+    /// analysis keeps, or a hidden row could not be located. The row list is
+    /// then incomplete and the bounded summary must not filter with it.
+    public var hiddenRowsTruncated: Bool
+    /// True when the worksheet declared more hidden column spans than the
+    /// bounded analysis keeps, or a hidden span was malformed. The span list
+    /// is then incomplete and the bounded summary must not filter with it.
+    public var hiddenColumnsTruncated: Bool
+
+    public init(
+        name: String,
+        visibility: OfficeSheetVisibility,
+        target: String,
+        section: String,
+        hiddenRows: [Int] = [],
+        hiddenColumnSpans: [OfficeWorkbookColumnSpan] = [],
+        hiddenRowsTruncated: Bool = false,
+        hiddenColumnsTruncated: Bool = false
+    ) {
+        self.name = name
+        self.visibility = visibility
+        self.target = target
+        self.section = section
+        self.hiddenRows = hiddenRows
+        self.hiddenColumnSpans = hiddenColumnSpans
+        self.hiddenRowsTruncated = hiddenRowsTruncated
+        self.hiddenColumnsTruncated = hiddenColumnsTruncated
+    }
+
+    public var isVisible: Bool { visibility == .visible }
+}
+
+/// Backward-compatible, read-only workbook preview metadata.
+///
+/// It is present only when the package resolves consistently: `xl/workbook.xml`
+/// declares its sheets with resolvable worksheet relationships and every
+/// worksheet part the inspector reads is referenced by exactly one sheet. A
+/// missing, duplicated or unsupported relationship leaves this `nil`, and a
+/// caller must then keep the existing native preview instead of guessing a
+/// sheet. It is optional on `OfficeDocumentSnapshot`, so every older caller
+/// and every Codable fixture without it still decodes unchanged.
+public struct OfficeWorkbookPreviewMetadata: Codable, Sendable, Equatable {
+    /// Sheets in the workbook's actual tab order. This is the order of the
+    /// `<sheet>` elements, which is not necessarily the worksheet part number
+    /// (a tab may reference `sheet3.xml` before `sheet1.xml`).
+    public var sheets: [OfficeWorkbookSheetPreview]
+    /// True when `inspect` kept fewer fields than the package declares, so no
+    /// worksheet's cell list is complete and no emptiness can be proven.
+    public var fieldsTruncated: Bool
+
+    public init(sheets: [OfficeWorkbookSheetPreview], fieldsTruncated: Bool = false) {
+        self.sheets = sheets
+        self.fieldsTruncated = fieldsTruncated
+    }
+}
+
 public struct OfficeDocumentSnapshot: Codable, Sendable, Equatable {
     public var kind: OfficeDocumentKind
     public var fields: [OfficeEditableField]
     public var packageEntries: Int
     public var packageBytes: Int64
     public var sha256: String?
+    /// Read-only workbook tab/visibility preview metadata. `nil` for Word and
+    /// PowerPoint, and for a workbook whose metadata cannot be resolved
+    /// consistently. Optional so existing callers and old Codable fixtures
+    /// remain compatible.
+    public var workbookPreview: OfficeWorkbookPreviewMetadata?
 
     public init(
         kind: OfficeDocumentKind,
         fields: [OfficeEditableField],
         packageEntries: Int,
         packageBytes: Int64,
-        sha256: String? = nil
+        sha256: String? = nil,
+        workbookPreview: OfficeWorkbookPreviewMetadata? = nil
     ) {
         self.kind = kind
         self.fields = fields
         self.packageEntries = packageEntries
         self.packageBytes = packageBytes
         self.sha256 = sha256
+        self.workbookPreview = workbookPreview
     }
 }
 
@@ -109,6 +219,7 @@ public enum OfficeDocumentService {
         let sourceDigest = try digest(url)
         let package = try OfficeArchive(url: url, maximumEntries: maximumEntries)
         var fields: [OfficeEditableField] = []
+        var workbookPreview: OfficeWorkbookPreviewMetadata?
         switch kind {
         case .word:
             let members = package.paths.filter {
@@ -161,6 +272,14 @@ public enum OfficeDocumentService {
             guard !members.isEmpty else {
                 throw OfficeDocumentError.missingEntry("xl/worksheets/sheet1.xml")
             }
+            // The tab metadata is best-effort and never throws: a package whose
+            // workbook part or relationships do not resolve keeps its fields
+            // unchanged and simply carries no preview metadata, so every
+            // existing reader/edit path behaves exactly as before.
+            let shape = XLSXWorkbookPreviewReader.sheets(
+                package: package, worksheetMembers: members, limit: maximumXMLBytes
+            )
+            var hiddenByMember: [String: XLSXHiddenLayout] = [:]
             for member in members {
                 let xml = try package.xml(path: member, limit: maximumXMLBytes)
                 fields.append(contentsOf: XLSXCellCodec.fields(
@@ -169,6 +288,25 @@ public enum OfficeDocumentService {
                     sharedStrings: shared,
                     section: "Sheet \(OfficePathOrder.trailingNumber(member) ?? 0)"
                 ))
+                hiddenByMember[member] = XLSXCellCodec.hiddenLayout(source: xml)
+            }
+            workbookPreview = shape.map { sheets in
+                OfficeWorkbookPreviewMetadata(
+                    sheets: sheets.map { sheet in
+                        let hidden = hiddenByMember[sheet.target] ?? XLSXHiddenLayout()
+                        return OfficeWorkbookSheetPreview(
+                            name: sheet.name,
+                            visibility: sheet.visibility,
+                            target: sheet.target,
+                            section: sheet.section,
+                            hiddenRows: hidden.rows,
+                            hiddenColumnSpans: hidden.columnSpans,
+                            hiddenRowsTruncated: hidden.rowsTruncated,
+                            hiddenColumnsTruncated: hidden.columnsTruncated
+                        )
+                    },
+                    fieldsTruncated: fields.count > maximumFields
+                )
             }
         }
         if fields.count > maximumFields {
@@ -180,7 +318,8 @@ public enum OfficeDocumentService {
             fields: fields,
             packageEntries: package.paths.count,
             packageBytes: Int64(values.fileSize ?? 0),
-            sha256: sourceDigest
+            sha256: sourceDigest,
+            workbookPreview: workbookPreview
         )
     }
 
@@ -376,6 +515,73 @@ private enum OfficePathOrder {
     }
 }
 
+/// Read-only resolver for the workbook's own tab list.
+///
+/// It returns `nil` — never a partial or guessed order — unless every check
+/// below holds:
+///  * `xl/workbook.xml` and `xl/_rels/workbook.xml.rels` exist and parse;
+///  * every `<sheet>` has a name, a relationship id that resolves to a
+///    worksheet part this inspector reads, and a known visibility state;
+///  * no worksheet part is referenced twice, and every worksheet part the
+///    inspector reads is referenced exactly once.
+///
+/// That strictness is the point: a corrupt relationship must make the caller
+/// fall back to the existing native preview, never to "sheet 1 by file name".
+private enum XLSXWorkbookPreviewReader {
+    struct SheetShape: Equatable {
+        var name: String
+        var visibility: OfficeSheetVisibility
+        var target: String
+        var section: String
+    }
+
+    static func sheets(package: OfficeArchive, worksheetMembers: [String], limit: UInt32) -> [SheetShape]? {
+        guard package.paths.contains("xl/workbook.xml"),
+              package.paths.contains("xl/_rels/workbook.xml.rels"),
+              let workbookXML = try? package.xml(path: "xl/workbook.xml", limit: limit),
+              let relsXML = try? package.xml(path: "xl/_rels/workbook.xml.rels", limit: limit) else {
+            return nil
+        }
+        var targetsByID: [String: String] = [:]
+        for range in XMLTextCodec.elementRanges(relsXML, tag: "Relationship") {
+            let block = String(relsXML[range])
+            guard let id = XMLText.attribute("Id", inOpeningElement: block),
+                  let type = XMLText.attribute("Type", inOpeningElement: block),
+                  let target = XMLText.attribute("Target", inOpeningElement: block) else {
+                return nil
+            }
+            // Only worksheet relationships matter here; styles/theme and other
+            // package relationships are ignored rather than mistrusted.
+            guard type.hasSuffix("/worksheet") else { continue }
+            guard targetsByID[id] == nil else { return nil }
+            let resolved = target.hasPrefix("/") ? String(target.dropFirst()) : "xl/" + target
+            targetsByID[id] = resolved
+        }
+        var shapes: [SheetShape] = []
+        var referenced = Set<String>()
+        for range in XMLTextCodec.elementRanges(workbookXML, tag: "sheet") {
+            let block = String(workbookXML[range])
+            guard let name = XMLText.attribute("name", inOpeningElement: block),
+                  let relationship = XMLText.attribute("r:id", inOpeningElement: block),
+                  let target = targetsByID[relationship] else { return nil }
+            let state = XMLText.attribute("state", inOpeningElement: block)
+                ?? OfficeSheetVisibility.visible.rawValue
+            guard let visibility = OfficeSheetVisibility(rawValue: state) else { return nil }
+            guard worksheetMembers.contains(target) else { return nil }
+            guard !referenced.contains(target) else { return nil }
+            referenced.insert(target)
+            shapes.append(SheetShape(
+                name: name,
+                visibility: visibility,
+                target: target,
+                section: "Sheet \(OfficePathOrder.trailingNumber(target) ?? 0)"
+            ))
+        }
+        guard !shapes.isEmpty, referenced.count == worksheetMembers.count else { return nil }
+        return shapes
+    }
+}
+
 private enum XMLTextCodec {
     static func fields(
         source: String,
@@ -520,7 +726,25 @@ enum OOXMLCellDecoder {
     }
 }
 
+/// Bounded hidden row/column layout for one worksheet, parsed from the
+/// worksheet's own `<row hidden="…">` and `<col hidden="…">` declarations.
+/// `rowsTruncated`/`columnsTruncated` mean the list is incomplete and must not
+/// be used to filter cell content.
+struct XLSXHiddenLayout: Equatable {
+    var rows: [Int] = []
+    var columnSpans: [OfficeWorkbookColumnSpan] = []
+    var rowsTruncated = false
+    var columnsTruncated = false
+
+    init() {}
+}
+
 private enum XLSXCellCodec {
+    /// Bounds for the hidden layout analysis. A worksheet that exceeds either
+    /// bound is reported truncated instead of being partially filtered.
+    static let maximumHiddenRows = 1_024
+    static let maximumHiddenColumnSpans = 128
+
     static func fields(
         source: String,
         entry: String,
@@ -544,6 +768,61 @@ private enum XLSXCellCodec {
             return OfficeEditableField(
                 id: "\(entry)|c|\(reference)", section: section, label: reference, text: value
             )
+        }
+    }
+
+    /// The bounded hidden row/column layout of one worksheet. Detection is a
+    /// bounded scan of the worksheet's own `<row>` and `<col>` elements; a
+    /// worksheet with more hidden entries than the bound, or a malformed
+    /// hidden declaration, is reported as truncated instead of silently
+    /// filtered with incomplete knowledge.
+    static func hiddenLayout(source: String) -> XLSXHiddenLayout {
+        var layout = XLSXHiddenLayout()
+        for range in XMLTextCodec.elementRanges(source, tag: "row") {
+            let block = String(source[range])
+            let hidden = isHidden(block)
+            if hidden == nil { layout.rowsTruncated = true; continue }
+            guard hidden == true else { continue }
+            guard let row = XMLText.attribute("r", inOpeningElement: block).flatMap(Int.init), row > 0 else {
+                layout.rowsTruncated = true
+                continue
+            }
+            guard layout.rows.count < maximumHiddenRows else {
+                layout.rowsTruncated = true
+                break
+            }
+            layout.rows.append(row)
+        }
+        layout.rows = Array(Set(layout.rows)).sorted()
+        for range in XMLTextCodec.elementRanges(source, tag: "col") {
+            let block = String(source[range])
+            let hidden = isHidden(block)
+            if hidden == nil { layout.columnsTruncated = true; continue }
+            guard hidden == true else { continue }
+            guard let first = XMLText.attribute("min", inOpeningElement: block).flatMap(Int.init),
+                  let last = XMLText.attribute("max", inOpeningElement: block).flatMap(Int.init),
+                  first > 0, last >= first else {
+                layout.columnsTruncated = true
+                continue
+            }
+            guard layout.columnSpans.count < maximumHiddenColumnSpans else {
+                layout.columnsTruncated = true
+                break
+            }
+            layout.columnSpans.append(OfficeWorkbookColumnSpan(first: first, last: last))
+        }
+        return layout
+    }
+
+    /// OOXML booleans are `1`/`true` and `0`/`false`. Anything else is not a
+    /// visibility value this reader can trust, so it reports `nil` and the
+    /// caller marks the layout truncated rather than guessing.
+    private static func isHidden(_ block: String) -> Bool? {
+        guard let value = XMLText.attribute("hidden", inOpeningElement: block) else { return false }
+        switch value.lowercased() {
+        case "1", "true": return true
+        case "0", "false": return false
+        default: return nil
         }
     }
 

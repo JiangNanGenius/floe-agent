@@ -9,7 +9,8 @@
  * What this proves at the C-host/API layer (engine-internal adversarial
  * LR/SC/AMO tests live in FloeTinyEMUTests, job A):
  *   1. capability probes: floe_vm_max_vcpu_count()/floe_vm_smp_capable()
- *      match the contract and vcpu_count=3 is rejected by floe_vm_create;
+ *      match the contract and vcpu_count above FLOE_VM_MAX_VCPU is rejected
+ *      by floe_vm_create;
  *   2. dual-hart boot of a REAL guest: one host thread per hart actually
  *      executes guest code — shown by FloeVMStats.host_threads == 2 and by
  *      per-hart retired-instruction counters BOTH advancing (not by nproc);
@@ -20,7 +21,11 @@
  *   5. stop+flush: floe_vm_destroy joins every hart thread mid-slice,
  *      repeatedly, without deadlock, before the disk handles close;
  *   6. single-hart control (vcpu_count=1): legacy behavior — no hart
- *      threads, only hart 0 retires instructions.
+ *      threads, only hart 0 retires instructions;
+ *   7. --triple (opt-in, requires a guest whose kernel+firmware really use
+ *      three harts, e.g. the pinned production image): the same real-guest
+ *      boot with host_threads == 3 and per-hart counters advancing on
+ *      harts 0, 1 AND 2, plus vcpu=3 stop+flush destroy cycles.
  * Whether the parked hart shows up as WFI-powered-down is recorded as
  * informational evidence (it depends on the guest firmware park loop).
  *
@@ -35,7 +40,11 @@
  *
  * Usage:
  *   smp_host_test --bios F --kernel F --disk F [--share tag=dir] [--net]
- *                 [--ram MB] --summary OUT.json --transcript OUT.txt
+ *                 [--ram MB] [--cmdline S] [--triple]
+ *                 --summary OUT.json --transcript OUT.txt
+ * --cmdline overrides the kernel command line (use e.g.
+ * "console=hvc0 root=/dev/vda rw init=/bin/sh" for a guest image whose own
+ * init would not give the scripted console a shell).
  * Exit: 0 = all checks passed; 1 = a check failed (see summary).
  */
 
@@ -62,7 +71,8 @@ typedef struct {
     volatile int stop;
     int samples;
     int saw_host_threads2;
-    uint64_t max_insns0, max_insns1;
+    int saw_host_threads3;
+    uint64_t max_insns0, max_insns1, max_insns2;
     double first_hart1_insn_t;   /* when hart 1 first retired an insn */
     int hart1_powered_down_last;
 } Sampler;
@@ -79,6 +89,19 @@ static double now_s(void)
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
+/* Rolling window for the runtime-assembled marker search. It is reset per
+ * boot phase: a later phase must not match a marker still sitting in the
+ * previous phase's window (that made the triple phase "see" the dual phase's
+ * marker on its first console bytes and skip the real run). */
+static char marker_window[1024];
+static int marker_window_len;
+
+static void reset_marker_window(void)
+{
+    marker_window_len = 0;
+    marker_window[0] = 0;
+}
+
 static void on_console(void *opaque, const uint8_t *data, int len)
 {
     (void)opaque;
@@ -89,18 +112,16 @@ static void on_console(void *opaque, const uint8_t *data, int len)
     fwrite(data, 1, len, stdout);
     fflush(stdout);
     if (marker[0] && !marker_seen) {
-        static char tail[1024];
-        static int tail_len;
         char window[2049];
-        int wl = tail_len + len;
+        int wl = marker_window_len + len;
         if (wl > 2048) wl = 2048;
-        memcpy(window, tail, tail_len);
-        memcpy(window + tail_len, data, wl - tail_len);
+        memcpy(window, marker_window, marker_window_len);
+        memcpy(window + marker_window_len, data, wl - marker_window_len);
         window[wl] = 0;
         if (strstr(window, marker))
             marker_seen = 1;
-        tail_len = wl < 1024 ? wl : 1024;
-        memcpy(tail, window + (wl - tail_len), tail_len);
+        marker_window_len = wl < 1024 ? wl : 1024;
+        memcpy(marker_window, window + (wl - marker_window_len), marker_window_len);
     }
 }
 
@@ -116,12 +137,16 @@ static void *sampler_main(void *arg)
             s->samples++;
             if (st.host_threads == 2)
                 s->saw_host_threads2 = 1;
+            if (st.host_threads == 3)
+                s->saw_host_threads3 = 1;
             if (st.hart_insns[0] > s->max_insns0)
                 s->max_insns0 = st.hart_insns[0];
             if (st.hart_insns[1] > 0 && s->max_insns1 == 0)
                 s->first_hart1_insn_t = t - test_start;
             if (st.hart_insns[1] > s->max_insns1)
                 s->max_insns1 = st.hart_insns[1];
+            if (st.hart_insns[2] > s->max_insns2)
+                s->max_insns2 = st.hart_insns[2];
             s->hart1_powered_down_last = st.hart_powered_down[1];
         }
         usleep(20 * 1000);
@@ -147,11 +172,12 @@ int main(int argc, char **argv)
 {
     const char *summary_path = NULL, *transcript_path = NULL;
     const char *share_tag = NULL, *share_dir = NULL;
-    int ram_mb = 128, net = 0, i;
+    int ram_mb = 128, net = 0, triple = 0, i;
     double dual_max_s = 180.0;
     double start, el;
     pthread_t sampler_thr;
     Sampler sampler;
+    Sampler triple_stats;
     FloeVMConfig cfg;
     FloeVM *vm;
     FILE *summary;
@@ -187,13 +213,15 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--summary") && i + 1 < argc) summary_path = argv[++i];
         else if (!strcmp(argv[i], "--transcript") && i + 1 < argc) transcript_path = argv[++i];
         else if (!strcmp(argv[i], "--dual-max-s") && i + 1 < argc) dual_max_s = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--cmdline") && i + 1 < argc) cfg.cmdline = argv[++i];
+        else if (!strcmp(argv[i], "--triple")) triple = 1;
         else { fprintf(stderr, "smp_host_test: unknown arg %s\n", argv[i]); return 1; }
     }
     if (!cfg.bios_path || !cfg.kernel_path || !cfg.disk_path ||
         !summary_path || !transcript_path) {
         fprintf(stderr, "usage: smp_host_test --bios F --kernel F --disk F "
                 "[--share tag=dir] [--net] [--ram MB] [--dual-max-s N] "
-                "--summary OUT.json --transcript OUT.txt\n");
+                "[--cmdline S] [--triple] --summary OUT.json --transcript OUT.txt\n");
         return 1;
     }
     if (share_tag) {
@@ -226,6 +254,7 @@ int main(int argc, char **argv)
 
     /* ---- 2. dual-hart real guest boot -------------------------------- */
     memset(&sampler, 0, sizeof(sampler));
+    memset(&triple_stats, 0, sizeof(triple_stats));
     cfg.vcpu_count = 2;
     transcript = fopen(transcript_path, "w");
     if (!transcript) { perror(transcript_path); return 1; }
@@ -248,6 +277,7 @@ int main(int argc, char **argv)
 
     cmd_next = 0;
     marker_seen = 0;
+    reset_marker_window();
     while ((el = now_s() - start) < dual_max_s) {
         while (cmd_next < cmd_count && cmds[cmd_next].at_s <= el) {
             /* host-side honesty gate: our own marker literal must not be
@@ -323,6 +353,90 @@ int main(int argc, char **argv)
     fclose(transcript);
     transcript = NULL;
 
+    /* ---- 3b. triple-hart real guest boot (opt-in) -------------------- */
+    if (triple) {
+        FloeVMConfig c3 = cfg;
+        FloeVM *v3;
+        double t3, triple_s = 0;
+        char triple_transcript[1024];
+
+        c3.vcpu_count = 3;
+        snprintf(triple_transcript, sizeof(triple_transcript), "%s.triple", transcript_path);
+        transcript = fopen(triple_transcript, "w");
+        if (!transcript) { perror(triple_transcript); return 1; }
+        t3 = now_s();
+        v3 = floe_vm_create(&c3, on_console, NULL);
+        check(v3 != NULL, "triple-hart floe_vm_create (vcpu_count=3)");
+        if (v3) {
+            triple_stats.vm = v3;
+            triple_stats.stop = 0;
+            if (pthread_create(&sampler_thr, NULL, sampler_main, &triple_stats) != 0) {
+                fprintf(stderr, "smp_host_test: cannot create triple sampler thread\n");
+                return 1;
+            }
+            cmd_next = 0;
+            marker_seen = 0;
+            reset_marker_window();
+            while ((el = now_s() - t3) < dual_max_s) {
+                while (cmd_next < cmd_count && cmds[cmd_next].at_s <= el) {
+                    if (strstr(cmds[cmd_next].text, MARKER)) {
+                        fprintf(stderr, "smp_host_test: marker literal in input line\n");
+                        return 1;
+                    }
+                    floe_vm_console_input(v3, (const uint8_t *)cmds[cmd_next].text,
+                                          strlen(cmds[cmd_next].text));
+                    floe_vm_console_input(v3, (const uint8_t *)"\n", 1);
+                    cmd_next++;
+                }
+                if (floe_vm_run_slice(v3, 10) == 1) {
+                    printf("note: guest requested poweroff before the triple marker\n");
+                    break;
+                }
+                if (marker_seen)
+                    break;
+            }
+            check(marker_seen, "runtime-assembled guest marker observed (triple-hart)");
+            check(triple_stats.saw_host_threads3,
+                  "stats report host_threads=3 (one host thread per hart)");
+            check(triple_stats.max_insns0 > 0, "hart 0 retired instructions (triple-hart)");
+            check(triple_stats.max_insns1 > 0, "hart 1 retired instructions (triple-hart)");
+            check(triple_stats.max_insns2 > 0,
+                  "hart 2 retired instructions (third thread ACTUALLY executed guest code)");
+            triple_stats.stop = 1;
+            pthread_join(sampler_thr, NULL);
+            if (share_dir) {
+                char path[1024];
+                FILE *probe;
+                snprintf(path, sizeof(path), "%s/floe_smp_io.txt", share_dir);
+                probe = fopen(path, "r");
+                check(probe != NULL, "9p share: triple-hart guest wrote floe_smp_io.txt");
+                if (probe)
+                    fclose(probe);
+            }
+            floe_vm_destroy(v3);
+        }
+        /* stop+flush at vcpu=3: destroy mid-slice repeatedly */
+        for (i = 0; i < 3; i++) {
+            FloeVMConfig c3b = cfg;
+            FloeVM *v3b;
+            double t0;
+            c3b.vcpu_count = 3;
+            v3b = floe_vm_create(&c3b, on_console, NULL);
+            if (!v3b) { check(0, "triple stop+flush create cycle"); break; }
+            floe_vm_run_slice(v3b, 10);
+            floe_vm_run_slice(v3b, 10);
+            t0 = now_s();
+            floe_vm_destroy(v3b);
+            triple_s += now_s() - t0;
+            check(1, "triple stop+flush destroy returned cleanly (join before close)");
+        }
+        printf("triple stop+flush: 3 destroy cycles in %.3fs total\n", triple_s);
+        fclose(transcript);
+        transcript = NULL;
+        printf("note: triple hart2_powered_down last sample = %d (informational)\n",
+               triple_stats.hart1_powered_down_last);
+    }
+
     /* ---- 4. single-hart control -------------------------------------- */
     {
         FloeVMConfig c1 = cfg;
@@ -365,6 +479,15 @@ out:
         "    \"marker_seen\": %d\n"
         "  },\n"
         "  \"stop_flush_destroy_cycles\": 3,\n"
+        "  \"triple\": {\n"
+        "    \"enabled\": %d,\n"
+        "    \"stats_samples\": %d,\n"
+        "    \"saw_host_threads3\": %d,\n"
+        "    \"hart0_max_insns\": %llu,\n"
+        "    \"hart1_max_insns\": %llu,\n"
+        "    \"hart2_max_insns\": %llu,\n"
+        "    \"marker_seen\": %d\n"
+        "  },\n"
         "  \"checks\": %d,\n"
         "  \"failures\": %d,\n"
         "  \"note\": \"markers are runtime-assembled by the guest; the pinned "
@@ -377,6 +500,11 @@ out:
         (unsigned long long)sampler.max_insns0,
         (unsigned long long)sampler.max_insns1,
         sampler.first_hart1_insn_t, (int)marker_seen,
+        triple, triple_stats.samples, triple_stats.saw_host_threads3,
+        (unsigned long long)triple_stats.max_insns0,
+        (unsigned long long)triple_stats.max_insns1,
+        (unsigned long long)triple_stats.max_insns2,
+        (int)marker_seen,
         checks, failures);
     fclose(summary);
 

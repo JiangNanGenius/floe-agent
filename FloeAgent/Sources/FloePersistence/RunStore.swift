@@ -105,6 +105,30 @@ public extension RunStore {
     }
 }
 
+/// One recent run, identified for binding an after-success schedule to a
+/// CONCRETE upstream run.
+public struct RecentRunSummary: Sendable, Hashable, Identifiable {
+    public var id: UUID
+    public var conversationID: UUID
+    public var conversationTitle: String
+    public var state: String
+    public var startedAt: Date
+
+    public init(
+        id: UUID,
+        conversationID: UUID,
+        conversationTitle: String,
+        state: String,
+        startedAt: Date
+    ) {
+        self.id = id
+        self.conversationID = conversationID
+        self.conversationTitle = conversationTitle
+        self.state = state
+        self.startedAt = startedAt
+    }
+}
+
 /// Aggregated token/cost usage across all runs.
 public struct UsageStatistics: Sendable, Codable, Hashable {
     public var totalInputTokens: Int
@@ -299,6 +323,31 @@ public actor SQLiteRunStore: RunStore {
                 sql: "SELECT * FROM runs WHERE conversation_id = ? ORDER BY started_at DESC, id",
                 arguments: [conversationID.uuidString]
             ).map(Self.run(from:))
+        }
+    }
+
+    /// Recent runs across conversations with their owning conversation's
+    /// title, for selecting the CONCRETE upstream run an after-success
+    /// schedule is bound to. Bounded and read-only.
+    public func recentRunSummaries(limit: Int = 20) async throws -> [RecentRunSummary] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT r.id AS id, r.conversation_id AS conversation_id,
+                       COALESCE(c.title, '') AS title, r.state AS state,
+                       r.started_at AS started_at
+                FROM runs r
+                LEFT JOIN conversations c ON c.id = r.conversation_id
+                ORDER BY r.started_at DESC, r.id DESC
+                LIMIT ?
+                """, arguments: [max(1, min(limit, 100))]).map { row in
+                RecentRunSummary(
+                    id: UUID(uuidString: row["id"]) ?? UUID(),
+                    conversationID: UUID(uuidString: row["conversation_id"]) ?? UUID(),
+                    conversationTitle: row["title"],
+                    state: row["state"],
+                    startedAt: (try? PersistenceCodec.decodeDate(row["started_at"])) ?? Date()
+                )
+            }
         }
     }
 

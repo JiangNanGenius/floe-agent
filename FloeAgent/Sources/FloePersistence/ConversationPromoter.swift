@@ -245,8 +245,8 @@ public actor ConversationPromoter {
             // 1. Conversation.
             try db.execute(
                 sql: """
-                    INSERT INTO conversations (id, title, created_at, updated_at, purpose)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO conversations (id, title, created_at, updated_at, purpose, title_origin)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         title = excluded.title,
                         updated_at = excluded.updated_at
@@ -256,7 +256,13 @@ public actor ConversationPromoter {
                     conversation.title,
                     PersistenceCodec.encode(conversation.createdAt),
                     PersistenceCodec.encode(conversation.updatedAt),
-                    conversation.purpose.rawValue
+                    conversation.purpose.rawValue,
+                    // The promoted title's origin rides the same atomic
+                    // transaction: a manual rename stays manual (the ordinary
+                    // auto-title will never overwrite it) and an un-titled
+                    // promotion stays autoPending for exactly one post-Keep
+                    // ordinary title generation.
+                    conversation.titleOrigin.rawValue
                 ]
             )
 

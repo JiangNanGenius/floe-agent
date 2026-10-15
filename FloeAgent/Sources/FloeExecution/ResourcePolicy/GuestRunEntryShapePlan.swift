@@ -33,12 +33,16 @@
 //  * Dual-core is delivered ONLY when the released policy, the verified image
 //    manifest's SMP proof and a shape-aware dispatch path all allow it. Since
 //    2026-09-27 `production` qualifies two harts (cloud S0–S4 correctness:
-//    runs 36004192418 / 36009075837) but the equal-work S5 benchmark is still
-//    slower on two harts (0.876×). The plan therefore exposes dual as a real
-//    choice and the UI states the measured slowdown; it never claims a
-//    speedup. The verified image proof is what guarantees the second hart
-//    runs the reworked CONFIG_SMP kernel/firmware pair, so this is not a
-//    bare vCPU-count change.
+//    runs 36004192418 / 36009075837) but the equal-work S5 benchmark on THOSE
+//    DATED runs measured dual as slower (0.876×). That number describes that
+//    engine revision; the current frozen engine's host re-measurements
+//    (2026-10-15/16, E-lane, pinned image on an M5 Pro host) show the cloud
+//    S5 contract at 1.47x and a local 1-vs-3 equal-work speedup of 2.689x
+//    (host numbers, not a device claim). The plan therefore exposes dual as a
+//    real choice; the honest copy keeps the dated measured slowdown and never
+//    claims a speedup or increases CPU automatically. The verified image
+//    proof is what guarantees the second hart runs the reworked CONFIG_SMP
+//    kernel/firmware pair, so this is not a bare vCPU-count change.
 //
 // Pool alignment (RuntimeVMPool.admit): a release/image gate refusal under
 // `.strict` throws `releaseShapeUnsupported`/`smpUnsupportedByImage`; under
@@ -141,12 +145,16 @@ public struct GuestRunEntryShapeOption: Sendable, Equatable, Identifiable {
 /// The resolved run-entry shape decision.
 public struct GuestRunEntryShapePlan: Sendable, Equatable {
     /// Measured equal-work result behind the honest dual-core copy: the
-    /// current engine passes the S0–S4 correctness contract, but the
-    /// equal-work S5 benchmark on the verified SMP pair is SLOWER on two
-    /// harts (cloud run 36009075837 medians 1.69 s on one hart vs 1.93 s on
-    /// two; ratio 0.876× < 1.10×). The run entry may offer dual, but no UI or
-    /// test may present it as a speedup. Replace only with a newer measured
-    /// ratio from a completed cloud S5 rerun.
+    /// engine revision behind cloud run 36009075837 passed the S0–S4
+    /// correctness contract, but the equal-work S5 benchmark on the verified
+    /// SMP pair was SLOWER on two harts (medians 1.69 s on one hart vs 1.93 s
+    /// on two; ratio 0.876× < 1.10×). This is a DATED cloud measurement of
+    /// that revision, not a statement about the shipped engine: the current
+    /// frozen engine re-measured on the host (E-lane 2026-10-15/16) shows
+    /// 1.47x for the cloud S5 contract and 2.689x for local 1-vs-3 equal work
+    /// — host numbers, never a device claim. The run entry may offer dual, but
+    /// no UI or test may present it as a speedup; replace only with a newer
+    /// measured ratio from a completed cloud S5 rerun.
     public static let dualCoreMeasuredEqualWorkSpeedup = 0.876
     /// The user's current selection this plan resolved.
     public let selection: GuestRunEntryShapeSelection

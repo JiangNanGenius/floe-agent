@@ -249,6 +249,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var linuxCommandCounts: [String: Int] = [:]
     /// Durable terminal-event outbox: the first-authorization race queues an
     /// event instead of dropping it.
+    /// True after the one-time launch reconciliation of schedule occurrences
+    /// (claimed/running rows left by a dead process are marked interrupted; a
+    /// never-launched one-shot is re-armed).
+    private var didReconcileScheduleOccurrences = false
+    /// Schedules with a registered insurance reminder right now (diagnostic
+    /// only; the system's pending set remains the authority).
+    private var scheduleReminderScheduleIDs: Set<UUID> = []
     private var notificationOutbox = TaskNotificationOutbox()
     private var notificationAuthorization: NotificationAuthorizationState = .notDetermined
     private var linuxPortCenter: LinuxPortForwardCenter { .shared }
@@ -959,6 +966,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     func didFinish(runID: UUID, succeeded: Bool, message: String?) {
+        // Durable schedule-completion bridge BEFORE the work record is torn
+        // down: a scheduled run's real terminal state settles its occurrence,
+        // and only a SUCCESSFUL upstream run enqueues after-success work.
+        Task { [weak self] in
+            await self?.recordScheduleRunCompletion(
+                runID: runID, succeeded: succeeded, message: message)
+        }
         finishRun(
             runID: runID,
             outcome: succeeded ? .succeeded : .failed,
@@ -969,6 +983,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// The user (or the system) cancelled the run. The work record and the
     /// durable notification both report cancellation instead of a failure.
     func didCancel(runID: UUID, message: String?) {
+        Task { [weak self] in
+            await self?.recordScheduleRunCompletion(
+                runID: runID, succeeded: false, message: message, cancelled: true)
+        }
         finishRun(runID: runID, outcome: .cancelled, message: message)
     }
 
@@ -3133,34 +3151,409 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
     }
 
+    /// Runs one schedule pass immediately (an explicit user/agent "run now"
+    /// or an upstream-success trigger). Same claim semantics as any wakeup.
+    func runDueSchedulesNow() async {
+        await runDueSchedules()
+    }
+
+    /// One schedule pass. Execution instances are claimed ATOMICALLY before a
+    /// task is launched, so foreground/background/notification wakeups can
+    /// never launch the same logical occurrence twice; a crash between claim
+    /// and launch is reconciled honestly by `reconcileInterruptedOccurrences`.
+    /// Missed fire times coalesce to the most recent due occurrence (earlier
+    /// ones are recorded as explicit `skipped` history), daily/weekly times
+    /// stay anchored to the schedule's calendar timezone, and an
+    /// after-success trigger fires only from a recorded SUCCESSFUL upstream
+    /// run.
     private func runDueSchedules() async {
         let store = SQLiteTaskScheduleStore(database: environment.database)
-        guard let due = try? await store.due(at: Date()) else { return }
-        let center = environment.conversationCenter
-        if let (provider, model) = center.providerAndModel(
-            modelID: center.modelPreferences.defaultAgentModelID
-        ) {
-            for schedule in due where !Task.isCancelled {
-                do {
-                    _ = try await center.startTask(
-                        goal: schedule.prompt,
-                        title: schedule.title,
-                        provider: provider,
-                        model: model,
-                        workspaceID: schedule.workspaceID,
-                        startOrigin: .scheduledTask
-                    )
-                    try await store.markStarted(id: schedule.id, at: Date())
-                } catch {
-                    continue
+        let now = Date()
+        if !didReconcileScheduleOccurrences {
+            didReconcileScheduleOccurrences = true
+            _ = try? await store.reconcileInterruptedOccurrences(at: now)
+        }
+        // Drain NON-calendar durable pending instances first. `runNow` creates
+        // a `manual:<uuid>` instance and a successful upstream run creates an
+        // `upstream:<runID>` instance; neither is re-derived from the calendar,
+        // so without this drain they stay pending forever (Run now appears to
+        // do nothing; after-success chains never fire). Calendar instances keep
+        // their materialize/coalesce policy in the loop below.
+        await drainPendingOccurrences(store: store, now: now)
+        guard let schedules = try? await store.schedules() else { return }
+        for schedule in schedules where schedule.isEnabled && !Task.isCancelled {
+            let due = TaskSchedulePlanner.dueFireTimes(record: schedule, now: now)
+            guard !due.isEmpty else { continue }
+            // Materialize every logical instance (idempotent by stable id).
+            for fireTime in due {
+                let key = TaskSchedulePlanner.dedupeKey(for: fireTime, record: schedule)
+                let occurrence = TaskScheduleOccurrence(
+                    id: TaskScheduleOccurrence.stableID(scheduleID: schedule.id, dedupeKey: key),
+                    scheduleID: schedule.id,
+                    scheduledFor: fireTime,
+                    dedupeKey: key)
+                _ = try? await store.enqueueOccurrence(occurrence)
+            }
+            // Default catch-up policy: execute the MOST RECENT due instance;
+            // older missed ones become explicit skipped history. The instance
+            // is CLAIMED before it is settled: `finishOccurrence` only settles
+            // claimed/running rows (so a concurrent claim can never be
+            // overwritten by a skip), and the claim also guarantees nothing
+            // else can launch a coalesced instance.
+            for fireTime in due.dropLast() {
+                let key = TaskSchedulePlanner.dedupeKey(for: fireTime, record: schedule)
+                let id = TaskScheduleOccurrence.stableID(scheduleID: schedule.id, dedupeKey: key)
+                if let existing = try? await store.occurrence(id: id), existing.state == .pending,
+                   (try? await store.claimOccurrence(id: id, at: now)) == true {
+                    try? await store.finishOccurrence(
+                        id: id, state: .skipped,
+                        summary: "Coalesced into the most recent due occurrence", errorText: nil,
+                        at: now)
                 }
             }
+            let key = TaskSchedulePlanner.dedupeKey(for: due[due.count - 1], record: schedule)
+            let occurrenceID = TaskScheduleOccurrence.stableID(scheduleID: schedule.id, dedupeKey: key)
+            guard let occurrence = try? await store.occurrence(id: occurrenceID),
+                  occurrence.state == .pending else { continue }
+            await executeScheduleOccurrence(
+                occurrence, schedule: schedule, store: store, now: now)
         }
+        // Insurance reminder set follows the same pass: one pending reminder
+        // per enabled schedule at its next expected fire, removed for
+        // disabled/finished/event-armed schedules and bounded by capacity.
+        await reconcileScheduleReminders(now: now)
+        // Future schedules never pin the VM or PiP: the only effect of a
+        // pending schedule is a best-effort BG refresh request.
         let allSchedules = (try? await store.schedules()) ?? []
         if let next = allSchedules.filter(\.isEnabled).compactMap(\.nextExpectedAt).min() {
-            let earliest = max(next, Date().addingTimeInterval(due.isEmpty ? 60 : 15 * 60))
+            let earliest = max(next, Date().addingTimeInterval(60))
             BackgroundPolicyRegistry.shared.scheduleRefresh(earliest: earliest)
         }
+    }
+
+    /// Claims and executes durable PENDING instances that the calendar loop
+    /// does not re-derive: `manual:<uuid>` (Run now) and `upstream:<runID>`
+    /// (a successful upstream completion). Each is claimed atomically inside
+    /// `executeScheduleOccurrence`, so overlapping foreground/background passes
+    /// cannot double-launch, and its launch identity stays the predetermined
+    /// stable id. An instance whose schedule was deleted or disabled, or whose
+    /// after-success binding was edited away, is settled honestly instead of
+    /// launching.
+    private func drainPendingOccurrences(store: SQLiteTaskScheduleStore, now: Date) async {
+        guard let pending = try? await store.pendingOccurrences(limit: 200) else { return }
+        for occurrence in pending where !Task.isCancelled {
+            let isManual = occurrence.dedupeKey.hasPrefix("manual:")
+            let isUpstream = occurrence.dedupeKey.hasPrefix("upstream:")
+            guard isManual || isUpstream else { continue }
+            // Settling a pending instance requires claiming it first:
+            // `finishOccurrence` only settles claimed/running rows, and the
+            // claim also prevents a concurrent pass from launching it after
+            // this decision.
+            func settle(_ state: TaskScheduleOccurrenceState, _ summary: String) async {
+                guard (try? await store.claimOccurrence(id: occurrence.id, at: now)) == true else { return }
+                try? await store.finishOccurrence(
+                    id: occurrence.id, state: state, summary: summary, errorText: nil, at: now)
+            }
+            guard let schedule = try? await store.schedule(id: occurrence.scheduleID) else {
+                await settle(.cancelled, "The schedule was deleted before this instance ran")
+                continue
+            }
+            guard schedule.isEnabled else {
+                await settle(.cancelled, "The schedule was disabled before this instance ran")
+                continue
+            }
+            if isUpstream, schedule.cadence != .afterSuccess {
+                // The schedule no longer follows an upstream run (its binding
+                // was edited away): a stale instance must not launch.
+                await settle(.skipped, "The schedule no longer follows an upstream run")
+                continue
+            }
+            await executeScheduleOccurrence(
+                occurrence, schedule: schedule, store: store, now: now)
+        }
+    }
+
+    /// Atomic claim → revalidate → launch → bind. The launch identity is
+    /// PREDETERMINED from the logical occurrence, so a crash between the
+    /// durable run's commit and the occurrence binding is reconciled by
+    /// binding the existing run instead of re-launching (no duplicate,
+    /// invisible task). An explicit binding that can no longer be satisfied
+    /// fails the occurrence with its reason; nothing falls back silently.
+    private func executeScheduleOccurrence(
+        _ occurrence: TaskScheduleOccurrence,
+        schedule: TaskScheduleRecord,
+        store: SQLiteTaskScheduleStore,
+        now: Date
+    ) async {
+        guard (try? await store.claimOccurrence(id: occurrence.id, at: now)) == true else { return }
+        // Revalidate the FROZEN binding after the claim: a disabled schedule
+        // must not launch.
+        guard let fresh = try? await store.schedule(id: schedule.id), fresh.isEnabled else {
+            try? await store.finishOccurrence(
+                id: occurrence.id, state: .cancelled, summary: nil,
+                errorText: "The schedule was disabled before this occurrence launched", at: Date())
+            return
+        }
+        // The bound environment must really exist and not be deleting; it is
+        // then passed to the launched task (never only checked here).
+        if let environmentID = fresh.environmentID {
+            let record = await environment.environmentRegistry.record(id: environmentID)
+            guard let record, record.state != .deleting else {
+                try? await store.finishOccurrence(
+                    id: occurrence.id, state: .failed, summary: nil,
+                    errorText: "The bound execution environment is unavailable; nothing was launched.",
+                    at: Date())
+                postSchedulePendingNotification(schedule: fresh, occurrence: occurrence)
+                return
+            }
+        }
+        let center = environment.conversationCenter
+        // An EXPLICIT model binding that no longer resolves (deleted or
+        // disabled) fails honestly. Only an intentionally unbound record
+        // (created with the creation-time default) resolves the current
+        // default — never a silent fallback for a missing bound model.
+        let resolved: (ProviderProfile, ModelProfile)?
+        if let modelID = fresh.modelID {
+            resolved = center.providerAndModel(modelID: modelID)
+        } else {
+            resolved = center.providerAndModel(modelID: center.modelPreferences.defaultAgentModelID)
+        }
+        guard let resolved else {
+            try? await store.finishOccurrence(
+                id: occurrence.id, state: .failed, summary: nil,
+                errorText: fresh.modelID == nil
+                    ? "No provider/model is available for this scheduled task"
+                    : "The model bound to this schedule is no longer available or is disabled; nothing was launched.",
+                at: Date())
+            postSchedulePendingNotification(schedule: fresh, occurrence: occurrence)
+            return
+        }
+        var policy: DraftTaskPolicy?
+        if let json = fresh.permissionJSON,
+           let decoded = try? JSONDecoder().decode(DraftTaskPolicy.self, from: Data(json.utf8)) {
+            policy = decoded
+        }
+        // Predetermined launch identity: a retry after a crash between commit
+        // and binding converges on the SAME durable run.
+        let conversationID = TaskScheduleOccurrence.stableID(
+            scheduleID: fresh.id, dedupeKey: "conversation:\(occurrence.id.uuidString)")
+        let runID = TaskScheduleOccurrence.stableID(
+            scheduleID: fresh.id, dedupeKey: "run:\(occurrence.id.uuidString)")
+        if let existing = try? await environment.runStore.run(id: runID) {
+            let bound = (try? await store.markOccurrenceRunning(
+                id: occurrence.id, runID: runID,
+                conversationID: existing.conversationID, at: Date())) == true
+            if bound { try? await store.markStarted(id: fresh.id, at: Date()) }
+            return
+        }
+        do {
+            let started = try await center.startTask(
+                goal: fresh.prompt,
+                title: fresh.title,
+                provider: resolved.0,
+                model: resolved.1,
+                workspaceID: fresh.workspaceID,
+                executionMode: .agent,
+                initialPolicy: policy,
+                newConversationID: conversationID,
+                newRunID: runID,
+                executionEnvironmentID: fresh.environmentID,
+                startOrigin: .scheduledTask
+            )
+            let bound = (try? await store.markOccurrenceRunning(
+                id: occurrence.id,
+                runID: started.run.runID,
+                conversationID: started.conversationID,
+                at: Date())) == true
+            guard bound else {
+                // Another executor moved this instance first (or the ledger
+                // changed under us): never claim a launch that was not
+                // recorded. The started task continues as an ordinary run.
+                try? await store.finishOccurrence(
+                    id: occurrence.id, state: .failed, summary: nil,
+                    errorText: "The occurrence was already claimed by another executor; the launch was not bound.",
+                    at: Date())
+                return
+            }
+            try? await store.markStarted(id: fresh.id, at: Date())
+        } catch {
+            // A failure AFTER the durable launch committed leaves the
+            // predetermined run behind: bind it instead of reporting a clean
+            // failure (the task may still be running). Only a failure with no
+            // durable run is reported as failed.
+            if let existing = try? await environment.runStore.run(id: runID) {
+                let bound = (try? await store.markOccurrenceRunning(
+                    id: occurrence.id, runID: runID,
+                    conversationID: existing.conversationID, at: Date())) == true
+                if bound {
+                    try? await store.markStarted(id: fresh.id, at: Date())
+                    return
+                }
+            }
+            try? await store.finishOccurrence(
+                id: occurrence.id, state: .failed, summary: nil,
+                errorText: String(error.localizedDescription.prefix(1_024)), at: Date())
+        }
+    }
+
+    /// One pending-schedule notification per logical occurrence. A
+    /// notification is informational only: it never keeps the app alive and
+    /// is never scheduled repeatedly.
+    private func postSchedulePendingNotification(
+        schedule: TaskScheduleRecord,
+        occurrence: TaskScheduleOccurrence
+    ) {
+        guard notificationAuthorization.canPresentAlert else { return }
+        let content = UNMutableNotificationContent()
+        // Inline bilingual fallback: these keys may not have reached the
+        // central catalog yet, and a raw key must never reach a notification.
+        content.title = FloeL10n.isChinese ? "定时任务待执行" : "Scheduled task pending"
+        content.body = FloeL10n.isChinese
+            ? "\(schedule.title) 已到执行时间，但尚未运行。打开 Floe 立即执行。"
+            : "\(schedule.title) is due but Floe has not run it yet. Open Floe to run it."
+        // The payload carries the real identity; the conversation key is
+        // OMITTED (never an empty string) when no task was launched, so the
+        // tap path can distinguish "route to the pending run" from "no run".
+        var payload: [String: String] = [
+            "workKind": BackgroundWorkKind.schedule.rawValue,
+            "scheduleID": schedule.id.uuidString,
+            "occurrenceID": occurrence.id.uuidString
+        ]
+        if let conversationID = occurrence.conversationID {
+            payload["conversationID"] = conversationID.uuidString
+        }
+        if let runID = occurrence.runID {
+            payload["runID"] = runID.uuidString
+        }
+        content.userInfo = payload
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "schedule.pending.\(occurrence.id.uuidString)",
+            content: content,
+            trigger: nil
+        ))
+    }
+
+    /// Stable identifier of a schedule's ONE insurance reminder.
+    static func scheduleReminderIdentifier(scheduleID: UUID) -> String {
+        "schedule.reminder.\(scheduleID.uuidString)"
+    }
+
+    /// Resolves a schedule reminder link to the CONCRETE run it should open:
+    /// the occurrence the reminder named, or the schedule's newest
+    /// claimed/running occurrence, and only when the owning conversation is
+    /// still present. Nil means there is nothing real to open.
+    private func resolveScheduleRunLink(
+        _ link: BackgroundWorkDeepLink
+    ) async -> BackgroundWorkDeepLink? {
+        guard let scheduleID = link.scheduleID else { return nil }
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        func concrete(_ occurrence: TaskScheduleOccurrence) -> BackgroundWorkDeepLink? {
+            guard let runID = occurrence.runID,
+                  let conversationID = occurrence.conversationID,
+                  environment.conversationCenter.conversations.contains(where: { $0.id == conversationID })
+            else { return nil }
+            return BackgroundWorkDeepLink(
+                kind: .modelRun, conversationID: conversationID, runID: runID)
+        }
+        if let occurrenceID = link.occurrenceID,
+           let occurrence = try? await store.occurrence(id: occurrenceID),
+           let resolved = concrete(occurrence) {
+            return resolved
+        }
+        let occurrences = (try? await store.occurrences(scheduleID: scheduleID, limit: 10)) ?? []
+        for occurrence in occurrences where occurrence.state == .claimed || occurrence.state == .running {
+            if let resolved = concrete(occurrence) { return resolved }
+        }
+        return nil
+    }
+
+    /// Reconciles the insurance reminder set with the durable schedules:
+    /// exactly one future reminder per enabled schedule (the next expected
+    /// fire), removed when disabled/finished/event-armed or beyond the
+    /// bounded capacity. Called on save/enable/disable/delete (through the
+    /// ordinary due pass) and after every execution, before and after launch.
+    private func reconcileScheduleReminders(now: Date = Date()) async {
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let schedules = (try? await store.schedules()) ?? []
+        let candidates = schedules.map { record in
+            let key: String
+            if let next = record.nextExpectedAt {
+                key = TaskSchedulePlanner.dedupeKey(for: next, record: record)
+            } else {
+                key = record.cadence == .afterSuccess ? "afterSuccess" : "once"
+            }
+            return ScheduleReminderCandidate(
+                scheduleID: record.id,
+                title: record.title,
+                isEnabled: record.isEnabled,
+                nextFireAt: record.nextExpectedAt,
+                occurrenceKey: key
+            )
+        }
+        let plan = ScheduleReminderPlanner.plan(candidates: candidates, now: now)
+        let desired = Dictionary(
+            uniqueKeysWithValues: plan.register.map { ($0.scheduleID, $0) })
+
+        // Remove pending reminders that are no longer wanted (disabled,
+        // finished, event-armed or trimmed by capacity). Read the actual
+        // pending set so a reminder from a previous process lifetime is
+        // covered too.
+        let pending = await UNUserNotificationCenter.current().pendingNotificationRequests()
+        for request in pending where request.identifier.hasPrefix("schedule.reminder.") {
+            guard let scheduleID = UUID(
+                uuidString: String(request.identifier.dropFirst("schedule.reminder.".count))
+            ), desired[scheduleID] == nil else { continue }
+            UNUserNotificationCenter.current().removePendingNotificationRequests(
+                withIdentifiers: [request.identifier])
+        }
+        // Routed/consumed reminders must not be replayed from Notification
+        // Center after they were superseded.
+        if !plan.removeScheduleIDs.isEmpty {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(
+                withIdentifiers: plan.removeScheduleIDs.map(Self.scheduleReminderIdentifier))
+        }
+        guard notificationAuthorization.canPresentAlert else { return }
+        for entry in plan.register {
+            let content = UNMutableNotificationContent()
+            content.title = FloeL10n.isChinese ? "定时任务提醒" : "Scheduled task reminder"
+            content.body = FloeL10n.isChinese
+                ? "\(entry.title) 即将到执行时间。iOS 可能不会唤醒应用；打开 Floe 以确保执行。"
+                : "\(entry.title) is due soon. iOS may not wake the app; open Floe to make sure it runs."
+            content.userInfo = BackgroundWorkDeepLink(
+                kind: .schedule,
+                scheduleID: entry.scheduleID,
+                occurrenceID: TaskScheduleOccurrence.stableID(
+                    scheduleID: entry.scheduleID, dedupeKey: entry.occurrenceKey)
+            ).userInfo
+            let components = Calendar.current.dateComponents(
+                [.year, .month, .day, .hour, .minute, .second], from: entry.fireAt)
+            let request = UNNotificationRequest(
+                identifier: Self.scheduleReminderIdentifier(scheduleID: entry.scheduleID),
+                content: content,
+                trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+            )
+            try? await UNUserNotificationCenter.current().add(request)
+        }
+        scheduleReminderScheduleIDs = Set(plan.register.map(\.scheduleID))
+    }
+
+    /// Durable completion bridge: a scheduled run's REAL terminal state
+    /// settles its occurrence, and ONLY a successful upstream run enqueues
+    /// the schedules bound to it (one logical instance per upstream run).
+    private func recordScheduleRunCompletion(
+        runID: UUID,
+        succeeded: Bool,
+        message: String?,
+        cancelled: Bool = false
+    ) async {
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let enqueued = (try? await store.recordRunCompletion(
+            runID: runID, succeeded: succeeded, cancelled: cancelled,
+            summary: message, at: Date())) ?? []
+        guard !enqueued.isEmpty else { return }
+        // An upstream success fired after-success schedules: run the same
+        // pass so they start now rather than waiting for the next wakeup.
+        await runDueSchedules()
     }
 
     /// The system's completion-handler selector, implemented directly.
@@ -3263,7 +3656,22 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // A foreground launch reloads the task list before this check so
             // a just-restored conversation is not mistaken for a deleted one.
             await self.environment.conversationCenter.reload()
-            let target = await self.resolveDeepLinkTarget(link)
+            // A schedule reminder routes to its ACTUAL pending/running task.
+            // The tap itself is a real user action: give the due occurrence
+            // one execution chance before concluding there is nothing to
+            // open. Never a false destination.
+            var effectiveLink = link
+            if effectiveLink.kind == .schedule {
+                if let resolved = await self.resolveScheduleRunLink(effectiveLink) {
+                    effectiveLink = resolved
+                } else {
+                    await self.runDueSchedulesNow()
+                    if let resolved = await self.resolveScheduleRunLink(effectiveLink) {
+                        effectiveLink = resolved
+                    }
+                }
+            }
+            let target = await self.resolveDeepLinkTarget(effectiveLink)
             await MainActor.run {
                 // A newer tap supersedes this in-flight check: navigating
                 // now would race the newer route.
@@ -3276,7 +3684,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 }
                 self.finishNotificationRoute(
                     key: key,
-                    link: link,
+                    link: effectiveLink,
                     identifier: identifier,
                     target: target,
                     generation: generation
@@ -3305,6 +3713,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             let exists = environment.conversationCenter.conversations
                 .contains { $0.id == conversationID }
             return exists ? .exists : .missing
+        case .schedule:
+            // Reached only when no concrete run could be resolved (the link
+            // is normally rewritten to .modelRun first); there is no separate
+            // schedule destination to promise.
+            return .unknown
         case .linuxSession, .linuxService:
             // No environment id: the family-level link opens the environment
             // list, which always exists. Nothing about a stopped/deleted
@@ -3469,6 +3882,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let title: String
         let body: String
         switch link.kind {
+        case .schedule:
+            title = String(localized: "notification.unreachable.task.title")
+            body = FloeL10n.isChinese
+                ? "该定时任务当前没有运行中的任务。打开 Floe 查看它的计划与历史。"
+                : "The scheduled task is not running right now. Open Floe to see its schedule and history."
         case .modelRun:
             title = String(localized: "notification.unreachable.task.title")
             body = String(localized: "notification.unreachable.task.body")
@@ -3508,6 +3926,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// (kind + ids) decides where it goes; nothing is inferred from titles.
     nonisolated static func route(deepLink: BackgroundWorkDeepLink, userInfo: [AnyHashable: Any] = [:]) {
         switch deepLink.kind {
+        case .schedule:
+            // No separate destination: a schedule reminder is always resolved
+            // to its concrete run first; an unresolved one opens the app,
+            // which is already on Home.
+            return
         case .modelRun:
             guard let conversationID = deepLink.conversationID else { return }
             NotificationCenter.default.post(

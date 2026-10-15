@@ -270,10 +270,20 @@ public actor SQLiteConversationStore: ConversationStore {
         }
     }
 
+    /// Deletes the conversation and, in the SAME writer transaction, every
+    /// lifecycle row the conversation owns (child transcripts, run
+    /// relations, run dependencies and its background-job records). Spooled
+    /// full-output artifacts are removed only AFTER the transaction commits,
+    /// so a rollback never destroys evidence. Calls must have cancelled the
+    /// conversation's own live work first; this method never cancels another
+    /// consumer's work.
     public func deleteConversation(id: UUID) async throws {
-        try await database.writer { db in
+        let spoolPaths = try await database.writer { db -> [String] in
+            let paths = try RunLifecycleRetention.deleteOwnedRecords(db: db, conversationID: id)
             try db.execute(sql: "DELETE FROM conversations WHERE id = ?", arguments: [id.uuidString])
+            return paths
         }
+        RunLifecycleRetention.removeSpoolArtifacts(spoolPaths)
     }
 
     /// One transaction: verify the target row is a plain blank ordinary
@@ -338,6 +348,12 @@ public actor SQLiteConversationStore: ConversationStore {
                 ("background_jobs", "conversation_id = ?"),
                 ("conversation_discovery", "conversation_id = ?"),
                 ("media_generation_jobs", "owner_kind = 'conversation' AND owner_id = ?"),
+                // Lifecycle tables from schema v46: a conversation with
+                // delegated children or outstanding dependencies is NOT
+                // "verified empty" and must never be removed by the
+                // temporary-chat in-place conversion.
+                ("child_runs", "conversation_id = ?"),
+                ("run_dependencies", "conversation_id = ?"),
             ]
             for probe in probes {
                 let exists = try Int.fetchOne(

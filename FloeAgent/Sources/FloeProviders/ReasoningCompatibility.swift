@@ -195,4 +195,89 @@ enum ReasoningCompatibility {
         return "max"
     }
 
+    // MARK: - Automatic effort decision support
+
+    /// True when the selected wire protocol would actually transmit an effort
+    /// value for this provider/model family. The probe uses the same mapping
+    /// the adapters use, so families whose fields are all omitted (unknown
+    /// custom endpoints, media endpoints, on-device engines) report false and
+    /// keep today's "automatic" behavior without an extra request.
+    static func supportsVariableReasoningEffort(
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) -> Bool {
+        guard provider.kind != .local else { return false }
+        var probe = model
+        probe.reasoningEffort = .high
+        switch provider.wireProtocol {
+        case .openAIResponses:
+            return responsesEffort(provider: provider, model: probe) != nil
+        case .openAIChatCompletions:
+            let options = chatOptions(provider: provider, model: probe)
+            return options.reasoningEffort != nil
+                || options.thinkingType != nil
+                || options.enableThinking != nil
+        case .anthropicMessages:
+            let options = anthropicOptions(provider: provider, model: probe)
+            return options.effort != nil || options.thinkingType != nil
+        }
+    }
+
+    /// Freezes the level whose wire value the endpoint will actually use.
+    /// Mirrors `chatOptions` precedence (DeepSeek, Ark, DashScope, OpenAI
+    /// family, Anthropic family) so a stored decision never claims a tier the
+    /// endpoint does not have.
+    static func clampAutomaticReasoningEffort(
+        _ effort: ModelReasoningEffort,
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) -> ModelReasoningEffort {
+        let traits = provider.traits(model: model)
+        if traits.isDeepSeek {
+            // No native medium tier: `medium` is only a compatibility alias
+            // that lands as `high`.
+            return effort == .medium ? .high : effort
+        }
+        if provider.kind == .volcengineArk {
+            // `maximum` is sent as `high`.
+            return effort == .maximum ? .high : effort
+        }
+        if provider.kind == .alibabaStudio || traits.isDashScope {
+            return effort
+        }
+        if traits.isOpenAIReasoningFamily {
+            // `maximum` is only a distinct xhigh tier where the model
+            // actually accepts it; otherwise it is sent as `high`.
+            if effort == .maximum,
+               openAIEffort(effort, modelID: model.remoteModelID) != "xhigh" {
+                return .high
+            }
+            return effort
+        }
+        if traits.isAnthropicFamily, supportsAnthropicEffort(model.remoteModelID) {
+            if effort == .maximum,
+               anthropicEffort(effort, modelID: model.remoteModelID) != "max" {
+                return .high
+            }
+            return effort
+        }
+        return effort
+    }
+
+    /// The exact effort token the selected protocol transmits for this model,
+    /// or nil when the mapping omits every reasoning field. Policy-independent:
+    /// ordinary runs use `.modelDefault`.
+    static func wireEffortValue(provider: ProviderProfile, model: ModelProfile) -> String? {
+        guard model.effectiveReasoningEffort != .automatic else { return nil }
+        switch provider.wireProtocol {
+        case .openAIResponses:
+            return responsesEffort(provider: provider, model: model)
+        case .openAIChatCompletions:
+            let options = chatOptions(provider: provider, model: model)
+            return options.reasoningEffort ?? options.thinkingType
+        case .anthropicMessages:
+            return anthropicOptions(provider: provider, model: model).effort
+        }
+    }
+
 }

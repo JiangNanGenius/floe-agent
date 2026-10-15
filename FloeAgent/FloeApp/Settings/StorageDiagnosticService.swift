@@ -8,6 +8,12 @@
 // exact freeable total. The physical-device discrepancy between Floe's numbers
 // and iOS Storage is not assumed to have a single proven cause; these metrics
 // are honest diagnostics, not a claim that the two must match.
+//
+// Build 273 follow-up: this service is now a thin MainActor facade over ONE
+// shared `StorageSnapshotCenter` in FloeCore. The page renders the last valid
+// snapshot immediately (persisted across launches), re-scans only when the
+// snapshot is stale/invalidated or the user explicitly refreshes, and never
+// clears the last good totals on failure.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -18,7 +24,9 @@ struct StorageCategoryDiagnostic: Identifiable, Sendable {
     let id: String
     let name: String
     let systemImage: String
-    /// Host-allocated bytes (sparse-aware). This is the number iOS Storage uses.
+    /// Host-allocated bytes (sparse-aware) on the report's active basis: the
+    /// measured extent union when it was collected, otherwise the allocated
+    /// size with identity + full-clone dedup. The two are never mixed.
     let allocatedBytes: Int64
     /// Apparent/logical bytes. For VM disks this is the *configured guest
     /// capacity*, not the host cost.
@@ -26,7 +34,7 @@ struct StorageCategoryDiagnostic: Identifiable, Sendable {
     let fileCount: Int
     /// When true, the allocated figure may include APFS clone blocks that are
     /// shared with other data and is therefore an upper estimate.
-    let isSharedEstimate: Bool
+    let isCloneCapable: Bool
 
     var showsLogicalCapacity: Bool { logicalBytes > allocatedBytes + Self.capacityDeltaThreshold }
     private static let capacityDeltaThreshold: Int64 = 16 * 1024 * 1024
@@ -41,210 +49,245 @@ let vmDiskMixedCategoryIDs: Set<String> = ["environments", "linuxDisks"]
 /// Full snapshot consumed by Settings → Data Management. Carries only
 /// category/count/size/error metrics — never file paths, names or contents.
 struct StorageDiagnosticReport: Sendable {
+    /// Installer bytes on the report's active basis: the installed bundle's
+    /// owned share of the measured union when available, otherwise the raw
+    /// allocated bundle size.
     let bundleBytes: Int64
     let categories: [StorageCategoryDiagnostic]
     let unattributed: StorageCategoryDiagnostic?
+    /// User-data bytes on the SAME active basis as ``bundleBytes``: the data
+    /// side of the union when available, otherwise the allocated total.
     let totalAllocatedBytes: Int64
     let totalLogicalBytes: Int64
     let isSharedAllocationEstimate: Bool
+    /// Allocated bytes in clone-capable buckets (counted in full; may share
+    /// APFS clone blocks, so an explicit non-additive estimate).
+    let cloneCapableAllocatedBytes: Int64
+    /// Bytes removed by the exact full-clone-stream dedup (same clone-id,
+    /// SHARES_ALL_BLOCKS). Measured, not estimated.
+    let dedupedCloneBytes: Int64
+    /// Measured lower bound of the physical footprint (sum of APFS private
+    /// bytes); nil when the extended query was unavailable or incomplete.
+    let measuredExclusiveLowerBoundBytes: Int64?
+    /// Whether measured clone attributes were collected in this scan.
+    let cloneAttributeSupport: StorageCloneAttributeSupport
     let scanErrorCount: Int
     let changedOrVanishedCount: Int
+    let allocatedUnavailableCount: Int
+    let identityUnavailableCount: Int
     let scanDuration: TimeInterval
     let metricLabel: String
-    /// When the scan finished (from the census, not the render pass).
+    /// When the census finished (from the census, not the render pass).
     let generatedAt: Date
     /// Regular files visited (measured progress figure).
     let filesScanned: Int
+    /// The active measurement basis for the numeric rows.
+    let totalBasis: StorageTotalBasis
+    /// Whether the extent probe could be collected (internal diagnostic).
+    let extentBasis: StorageExtentBasisState
+    /// Aggregate reason when the extent basis was withheld; never a path.
+    let extentUnavailableReason: StorageExtentProbeFailure?
 
-    /// Backwards-compatible rollup for the existing overview rows.
+    /// Overview total on the ACTIVE basis: the measured extent union when it
+    /// was collected, otherwise installer + allocated. Never a mix, and the
+    /// category rows sum to `totalAllocatedBytes` on either basis.
     var combinedBytes: Int64 { bundleBytes + totalAllocatedBytes }
     var dataBytes: Int64 { totalAllocatedBytes }
+    /// Some measurement was unavailable; the UI must label the figures as
+    /// partial instead of presenting them as exact.
+    var isPartial: Bool {
+        scanErrorCount > 0 || allocatedUnavailableCount > 0 || identityUnavailableCount > 0
+    }
+    /// True when file figures may share APFS clone blocks and must not be
+    /// presented as the app's accounted footprint. On the measured-extent
+    /// basis the sharing is already resolved in the totals; the flag stays
+    /// true while clone-capable file capacities remain listed separately.
+    var hasSharedEstimates: Bool {
+        isSharedAllocationEstimate || cloneCapableAllocatedBytes > 0
+    }
 }
 
-/// Static description of the on-disk roots Floe owns. Centralizing this lets the
-/// Linux manager, model catalog and asset stores reuse the same census instead
-/// of each walking a container and mis-reading sparse/clone sizes.
-enum FloeStorageLayout {
-    static func applicationSupportRoot() -> URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+/// Result of one `StorageDiagnosticService.refresh` call, for the view to
+/// decide whether dependent estimates (cleanup preview) need recomputing.
+enum StorageRefreshRunResult: Equatable {
+    case servedFromCache
+    case scanned
+    case failed
+    case cancelled
+    case superseded
+}
+
+/// Mutation hooks for the shared storage snapshot, callable from any isolation
+/// domain (the environment service, model store and workbench are not all
+/// MainActor). Hooking the ACTUAL data-changing call sites — not just exposing
+/// the enum — is what keeps the cached numbers honest between scans.
+enum StorageMutationHooks {
+    static func invalidate(_ reason: StorageMutationReason) {
+        Task { @MainActor in
+            StorageDiagnosticService.shared.invalidate(reason)
+        }
     }
-    static func floeAgentRoot() -> URL? {
-        applicationSupportRoot()?.appendingPathComponent("FloeAgent", isDirectory: true)
-    }
-    /// Runtime v2 lives in a *sibling* of FloeAgent (`<App Support>/Floe/...`).
-    static func runtimeV2Root() -> URL? {
-        applicationSupportRoot()?
-            .appendingPathComponent("Floe", isDirectory: true)
-            .appendingPathComponent("Runtime", isDirectory: true)
-            .appendingPathComponent("v2", isDirectory: true)
-    }
-    static func libraryRoot() -> URL? {
-        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
-    }
-    static func documentsRoot() -> URL? {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-    }
-    static func cachesRoot() -> URL? {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-    }
-    static var temporaryRoot: URL { FileManager.default.temporaryDirectory }
 }
 
 @MainActor
 final class StorageDiagnosticService: ObservableObject {
+    /// One shared snapshot/cache for every storage surface. Reusing the same
+    /// instance is what makes reopening the page instant and prevents parallel
+    /// scanners.
+    static let shared = StorageDiagnosticService()
+
     @Published private(set) var report: StorageDiagnosticReport?
     @Published private(set) var isScanning = false
     /// Measured progress: regular files visited so far by the running census.
     @Published private(set) var filesScanned = 0
     @Published private(set) var wasCancelled = false
-    /// True when the last scan failed for a reason other than cancellation, so
-    /// the UI can say so instead of presenting a silent zero state.
+    /// True when the last refresh attempt failed for a reason other than
+    /// cancellation, so the UI can say so instead of presenting a silent zero
+    /// state. A previously valid report is kept either way.
     @Published private(set) var scanFailed = false
+    /// True while the rendered report came from the shared cache without a
+    /// fresh scan in this appearance.
+    @Published private(set) var servedFromCache = false
+    /// True when the last refresh kept a cached report after a failure.
+    @Published private(set) var lastRefreshFailedWhileShowingCached = false
 
-    private var currentTask: Task<StorageDiagnosticReport?, Never>?
+    private let center: StorageSnapshotCenter
+    private var progressTask: Task<Void, Never>?
 
-    func cancel() {
-        currentTask?.cancel()
+    convenience init() {
+        self.init(center: Self.makeDefaultCenter())
     }
 
+    init(center: StorageSnapshotCenter) {
+        self.center = center
+        // Show the last valid totals immediately: hydrate the persisted
+        // snapshot synchronously (small JSON) before the first render pass.
+        center.hydrateIfNeeded()
+        if let cached = center.cachedSnapshot() {
+            report = Self.makeReport(from: cached)
+            filesScanned = cached.census.diagnostics.regularFileCount
+            servedFromCache = true
+        }
+    }
+
+    // MARK: - Refresh
+
+    /// Renders the shared snapshot and re-scans only when the refresh policy
+    /// requires it (no snapshot, stale, invalidated by a mutation, or an
+    /// explicit user refresh). Concurrent callers join the single in-flight
+    /// scan instead of starting a parallel one.
     @discardableResult
-    func scan() async -> StorageDiagnosticReport? {
-        guard !isScanning else { return report }
+    func refresh(explicit: Bool = false) async -> StorageRefreshRunResult {
+        center.hydrateIfNeeded()
+        guard center.willScan(explicit: explicit) else {
+            if let cached = center.cachedSnapshot() {
+                report = Self.makeReport(from: cached)
+                servedFromCache = true
+            }
+            return .servedFromCache
+        }
+
         isScanning = true
-        wasCancelled = false
-        scanFailed = false
-        filesScanned = 0
+        servedFromCache = false
+        lastRefreshFailedWhileShowingCached = false
+        startProgressPolling()
         defer {
+            stopProgressPolling()
             isScanning = false
         }
 
-        let progress = ProgressCounter()
-        let task = Task.detached(priority: .utility) { () -> StorageDiagnosticReport? in
-            defer { progress.finish() }
-            let census = StorageCensus(
-                roots: Self.roots(),
-                parentURL: Self.parentRoot(),
-                metricLabel: "storage.data_management.v2",
-                isCancelled: { Task.isCancelled },
-                onProgress: { count in progress.update(count) }
-            )
-            do {
-                let result = try census.run()
-                return Self.makeReport(from: result)
-            } catch {
-                return nil
+        let outcome = await center.refresh(explicit: explicit)
+        switch outcome {
+        case .served(let snapshot, let fromCache):
+            report = Self.makeReport(from: snapshot)
+            servedFromCache = fromCache
+            scanFailed = false
+            wasCancelled = false
+            lastRefreshFailedWhileShowingCached = false
+            filesScanned = snapshot.census.diagnostics.regularFileCount
+            return fromCache ? .servedFromCache : .scanned
+        case .cancelled(let kept):
+            wasCancelled = true
+            if let kept { report = Self.makeReport(from: kept) }
+            return .cancelled
+        case .failed(let kept):
+            scanFailed = true
+            if let kept {
+                report = Self.makeReport(from: kept)
+                lastRefreshFailedWhileShowingCached = true
             }
+            return .failed
+        case .superseded(let kept):
+            if let kept { report = Self.makeReport(from: kept) }
+            return .superseded
         }
-        currentTask = task
-        // Publish measured progress while the census runs (real file count,
-        // not a synthetic heartbeat). Caller cancellation propagates to the
-        // detached census through the cancellation handler; the polling loop
-        // exits immediately instead of sleeping again.
-        let result = await withTaskCancellationHandler {
-            while !progress.isFinished {
-                if task.isCancelled || Task.isCancelled { break }
-                let count = progress.value
-                if count != filesScanned { filesScanned = count }
+    }
+
+    /// User-visible stop for the in-flight scan. The last valid snapshot is
+    /// never cleared.
+    func cancel() {
+        center.cancelInFlight()
+    }
+
+    /// A real mutation happened (cleanup finished, environment/model/media
+    /// data changed): mark the snapshot stale so the next automatic refresh
+    /// scans once, while still rendering the kept totals immediately.
+    func invalidate(_ reason: StorageMutationReason) {
+        center.invalidate(reason: reason)
+    }
+
+    // MARK: - Progress
+
+    private func startProgressPolling() {
+        progressTask?.cancel()
+        progressTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let count = self.center.scannedFiles
+                if count != self.filesScanned { self.filesScanned = count }
                 try? await Task.sleep(nanoseconds: 200_000_000)
             }
-            filesScanned = progress.value
-            return await task.value
-        } onCancel: {
-            task.cancel()
-        }
-        if result == nil {
-            // Judge cancellation on the detached task that actually ran the
-            // census, never on the caller's task.
-            if task.isCancelled { wasCancelled = true } else { scanFailed = true }
-        }
-        if let result { report = result }
-        return result
-    }
-
-    /// Thread-safe counter for the census progress callback.
-    private final class ProgressCounter: @unchecked Sendable {
-        private let lock = NSLock()
-        private var count = 0
-        private var finished = false
-
-        func update(_ value: Int) {
-            lock.lock(); count = max(count, value); lock.unlock()
-        }
-
-        func finish() {
-            lock.lock(); finished = true; lock.unlock()
-        }
-
-        var value: Int {
-            lock.lock(); defer { lock.unlock() }; return count
-        }
-
-        var isFinished: Bool {
-            lock.lock(); defer { lock.unlock() }; return finished
         }
     }
 
-    // MARK: - Root / category mapping
-
-    nonisolated private static func parentRoot() -> URL? {
-        // Library is the single mutually-exclusive parent: it contains both
-        // Application Support/FloeAgent and Caches. Documents/ and tmp/ are
-        // walked separately because they are not under Library.
-        FloeStorageLayout.libraryRoot()
+    private func stopProgressPolling() {
+        progressTask?.cancel()
+        progressTask = nil
     }
 
-    nonisolated private static func roots() -> [StorageCensusRoot] {
-        let support = FloeStorageLayout.floeAgentRoot()
-        func app(_ component: String) -> URL? {
-            support?.appendingPathComponent(component, isDirectory: true)
-        }
-        var roots: [StorageCensusRoot] = []
-        func add(_ id: String, _ url: URL?,
-                 attribution: StorageCensusRoot.Attribution = .category,
-                 hidden: Bool = true,
-                 potentiallyCloned: Bool = false) {
-            guard let url else { return }
-            roots.append(StorageCensusRoot(
-                id: id, url: url, attribution: attribution,
-                includeHiddenFiles: hidden, potentiallyCloned: potentiallyCloned
-            ))
-        }
+    // MARK: - Composition
 
-        // Most-specific roots first; the census attributes a file to the deepest
-        // match and dedups hard links/overlaps by file identity.
-        add("models", app("LocalModels"))
-        add("workspaces", app("PrivateTasks"))
-        add("fonts", app("Fonts"))
-        add("attachments", app("Attachments"))
-        add("generated", app("GeneratedImages"))
-        add("browser", app("BrowserArtifacts"))
-        add("checkpoints", app("Checkpoints"))
-        add("materials", app("Materials"))
-        add("canvases", app("Canvases"))
-        add("mediaProjects", app("MediaProjects"))
-        add("cad", app("CanvasCAD"))
-        // Container layers contain sparse per-environment disks.
-        add("environments", app("Environments"))
-        // Legacy TinyEMU disks (nested under writable layers; deduped by identity).
-        add("linuxDisks", app("LinuxGuest"))
-        // Runtime v2 content-addressed blobs are CoW-cloned across images. They
-        // are counted in full (clones can hold unique blocks) but the total is
-        // flagged as an upper estimate.
-        add("runtimeV2", FloeStorageLayout.runtimeV2Root(),
-            attribution: .shared, potentiallyCloned: true)
-        // Everything else left under FloeAgent.
-        add("floeOther", support)
-
-        // Standalone roots outside Application Support but inside the Library
-        // parent walk; listed so they get their own bucket labels.
-        add("library", FloeStorageLayout.libraryRoot())
-        add("documents", FloeStorageLayout.documentsRoot())
-        add("caches", FloeStorageLayout.cachesRoot())
-        add("temporary", FloeStorageLayout.temporaryRoot)
-        return roots
+    nonisolated static func makeDefaultCenter() -> StorageSnapshotCenter {
+        let base = FloeStorageBase.standard
+        let storeDirectory = FloeStorageLayout.floeAgentRoot(in: base)?
+            .appendingPathComponent("StorageDiagnostics", isDirectory: true)
+        let request = FloeStorageLayout.request(
+            in: base,
+            metricLabel: FloeStorageLayout.dataManagementMetricLabel,
+            contextFingerprint: appBuildFingerprint(),
+            // The installer and user data are measured into ONE union, so a
+            // resource cloned from the bundle into the container is counted
+            // once instead of as raw bundle bytes plus union data.
+            bundleURL: Bundle.main.bundleURL
+        )
+        return StorageSnapshotCenter(
+            store: storeDirectory.map { StorageSnapshotStore(directory: $0) },
+            request: request,
+            bundleBytesProvider: { StorageDiagnosticService.bundleAllocatedBytes() }
+        )
     }
 
-    nonisolated private static func makeReport(from result: StorageCensusReport) -> StorageDiagnosticReport {
+    /// Version/build identity: an app update invalidates the persisted
+    /// snapshot (same reason an upgraded device must not keep serving numbers
+    /// computed by an older build's accounting).
+    nonisolated static func appBuildFingerprint() -> String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "-"
+        let build = info?["CFBundleVersion"] as? String ?? "-"
+        return "\(version).\(build)"
+    }
+
+    nonisolated private static func makeReport(from snapshot: StorageSnapshot) -> StorageDiagnosticReport {
         let names: [String: (String, String)] = [
             "models": (FloeL10n.l("localmodels.title"), "cpu"),
             "workspaces": (FloeL10n.l("settings.data_management_view.private_workspace"), "folder.badge.gearshape"),
@@ -270,8 +313,8 @@ final class StorageDiagnosticService: ObservableObject {
         // Pure arithmetic lives in FloeCore and is unit-tested; every measured
         // bucket is listed exactly once so categories reconcile with the total.
         let report = StorageReportBuilder.build(
-            census: result,
-            bundleBytes: Self.bundleAllocatedBytes()
+            census: snapshot.census,
+            bundleBytes: snapshot.bundleBytes
         )
 
         let categories = report.categories.map { category in
@@ -280,10 +323,10 @@ final class StorageDiagnosticService: ObservableObject {
                 id: category.id,
                 name: meta.0,
                 systemImage: meta.1,
-                allocatedBytes: category.allocatedBytes,
+                allocatedBytes: category.basisBytes,
                 logicalBytes: category.logicalBytes,
                 fileCount: category.fileCount,
-                isSharedEstimate: category.isSharedEstimate
+                isCloneCapable: category.isCloneCapable
             )
         }
 
@@ -292,26 +335,35 @@ final class StorageDiagnosticService: ObservableObject {
                 id: other.id,
                 name: FloeL10n.l("settings.data_management_view.other_application_data"),
                 systemImage: "ellipsis.circle",
-                allocatedBytes: other.allocatedBytes,
+                allocatedBytes: other.basisBytes,
                 logicalBytes: other.logicalBytes,
                 fileCount: other.fileCount,
-                isSharedEstimate: false
+                isCloneCapable: false
             )
         }
 
         return StorageDiagnosticReport(
-            bundleBytes: report.bundleBytes,
+            bundleBytes: report.totals.bundleBytes,
             categories: categories,
             unattributed: unattributed,
-            totalAllocatedBytes: report.totalAllocatedBytes,
+            totalAllocatedBytes: report.totals.dataBytes,
             totalLogicalBytes: report.totalLogicalBytes,
             isSharedAllocationEstimate: report.isSharedAllocationEstimate,
+            cloneCapableAllocatedBytes: report.cloneCapableAllocatedBytes,
+            dedupedCloneBytes: report.dedupedCloneBytes,
+            measuredExclusiveLowerBoundBytes: report.measuredExclusiveLowerBoundBytes,
+            cloneAttributeSupport: report.cloneAttributeSupport,
             scanErrorCount: report.scanErrorCount,
             changedOrVanishedCount: report.changedOrVanishedCount,
+            allocatedUnavailableCount: report.allocatedUnavailableCount,
+            identityUnavailableCount: report.identityUnavailableCount,
             scanDuration: report.scanDuration,
             metricLabel: report.metricLabel,
             generatedAt: report.generatedAt,
-            filesScanned: report.filesScanned
+            filesScanned: report.filesScanned,
+            totalBasis: report.totals.basis,
+            extentBasis: snapshot.census.diagnostics.extentBasis,
+            extentUnavailableReason: snapshot.census.diagnostics.extentUnavailableReason
         )
     }
 

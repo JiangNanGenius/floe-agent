@@ -1,0 +1,13 @@
+# Equal-work SMP workload for the 1/2/3-hart comparison (local qualification).
+#
+# Three IDENTICAL `dd if=/dev/zero of=/dev/null bs=64k count=6000` workers run
+# in ONE guest shell command; the DONE marker is assembled at runtime by the
+# same command only after `wait` returned, and the work window is measured in
+# the guest from /proc/uptime around the workers. An idle guest therefore
+# cannot produce DONE, and a serialized run still completes the same work but
+# with a proportionally longer window (that is the measured signal).
+#
+# Used by FloeAgent/Qualification/TinyEMULinux/tests/smp3_workload_check.py
+# and the E-lane host runs (Local/Private/task-lifecycle-20261015/E).
+@12 mount -t proc proc /proc
+@18 sh -c 't0=$(cut -d" " -f1 /proc/uptime); printf "FLOE_SMP3WL_T0 %s\n" "$t0"; (dd if=/dev/zero of=/dev/null bs=64k count=6000 2>/tmp/floe-dd0.log; printf "FLOE_SMP3WL_W%s\n" 1) & (dd if=/dev/zero of=/dev/null bs=64k count=6000 2>/tmp/floe-dd1.log; printf "FLOE_SMP3WL_W%s\n" 2) & (dd if=/dev/zero of=/dev/null bs=64k count=6000 2>/tmp/floe-dd2.log; printf "FLOE_SMP3WL_W%s\n" 3) & wait; t1=$(cut -d" " -f1 /proc/uptime); printf "FLOE_SMP3WL_T1 %s\n" "$t1"; cat /tmp/floe-dd0.log /tmp/floe-dd1.log /tmp/floe-dd2.log; printf "FLOE_SMP3%s\n" PERF_DONE'

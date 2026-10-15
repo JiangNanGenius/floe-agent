@@ -33,6 +33,12 @@
 #   FLOE_MC_SCRATCH   scratch dir (default: mktemp -d under $TMPDIR)
 #   FLOE_MC_KEEP      1 = keep the scratch dir (artifacts stay)
 #   FLOE_MC_JSON      explicit JSON result path (default: <scratch>/multiclient-result.json)
+#   FLOE_MC_RUNNER    runner binary override: a real-guest console bridge
+#                     (mc_guest_bridge) instead of the host floe-exec build
+#   FLOE_MC_GUEST_WORK_ROOT guest-visible work root for FLOE_MC_RUNNER
+#                     (e.g. /floe/mc-work); requires FLOE_MC_HOST_WORK_ROOT
+#   FLOE_MC_HOST_WORK_ROOT  host directory backing that guest root (the 9p
+#                     share exported to the bridge)
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -100,6 +106,13 @@ swiftc -O -swift-version 6 -parse-as-library -o "$scratch/multiclient-check" \
   "$here/MultiClientChannelCheck.swift" "$scratch/GuestChannelModule.swift"
 
 echo "==> running the multi-client checks against the real runner"
-"$scratch/multiclient-check" "$scratch/floe-exec" "$scratch/mc-work" "$json_out"
+runner="${FLOE_MC_RUNNER:-$scratch/floe-exec}"
+guest_work="${FLOE_MC_GUEST_WORK_ROOT:-}"
+host_work="${FLOE_MC_HOST_WORK_ROOT:-}"
+if [ -n "$guest_work" ] && [ -n "$host_work" ]; then
+  "$scratch/multiclient-check" "$runner" "$guest_work" "$json_out" "$host_work"
+else
+  "$scratch/multiclient-check" "$runner" "$scratch/mc-work" "$json_out"
+fi
 
 echo "==> multi-client host check passed; JSON: $json_out"

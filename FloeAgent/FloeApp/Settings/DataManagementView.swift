@@ -10,7 +10,9 @@ import FloePersistence
 struct DataManagementView: View {
     let environment: AppEnvironment
     let conversationCenter: ConversationCenter
-    @StateObject private var storage = StorageDiagnosticService()
+    // One shared snapshot/cache for the whole app: reopening this page renders
+    // the last valid totals immediately instead of re-scanning.
+    @ObservedObject private var storage = StorageDiagnosticService.shared
     @State private var isCleaning = false
     @State private var confirmsCleanup = false
     @State private var cleanupOutcome: StorageCleanupPlanResult?
@@ -24,6 +26,8 @@ struct DataManagementView: View {
     @State private var isReleasingCloudSpace = false
     @State private var orphanedAssetCount = 0
     @State private var orphanedAssetBytes: Int64 = 0
+    /// File-based capacities are non-additive; keep them expandable.
+    @State private var showsFileCapacityDetails = false
 
     private struct CreativeStorageSummary {
         let local: Int64
@@ -37,6 +41,13 @@ struct DataManagementView: View {
         Form {
             Section {
                 if let report = storage.report {
+                    // The App total is the SAME snapshot's mutually-exclusive
+                    // category sum (installer + Floe-managed file categories),
+                    // so the overview number always reconciles with the
+                    // expanded details below. Shared/clone-capable data stays a
+                    // separate section and is already part of this total once —
+                    // it is never added again. Device-wide capacity is not
+                    // shown on this page.
                     StorageUsageRow(
                         title: FloeL10n.l("settings.data_management_view.floe_total_usage"),
                         icon: "internaldrive",
@@ -45,7 +56,11 @@ struct DataManagementView: View {
                     )
                     StorageUsageRow(title: FloeL10n.l("settings.data_management_view.app_installer"), icon: "shippingbox", bytes: report.bundleBytes)
                     StorageUsageRow(title: FloeL10n.l("settings.data_management_view.user_data"), icon: "externaldrive", bytes: report.totalAllocatedBytes)
-                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.safe_to_clean"), icon: "sparkles", bytes: cleanupEstimateBytes)
+                    StorageUsageRow(
+                        title: FloeL10n.l("settings.data_management_view.cleanup_candidate_capacity"),
+                        icon: "sparkles",
+                        bytes: cleanupEstimateBytes
+                    )
                 } else {
                     HStack {
                         ProgressView()
@@ -68,69 +83,73 @@ struct DataManagementView: View {
                 if let report = storage.report {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(FloeL10n.l(
-                            "settings.data_management_view.scanned_at",
-                            Self.scanTimestampFormatter.string(from: report.generatedAt),
-                            report.filesScanned,
-                            String(format: "%.1f", report.scanDuration)
+                            "settings.data_management_view.updated_at",
+                            Self.scanTimestampFormatter.string(from: report.generatedAt)
                         )).font(.caption2).foregroundStyle(.secondary)
-                        if report.isSharedAllocationEstimate {
-                            Text("settings.data_management_view.shared_allocation_note")
+                        if storage.isScanning {
+                            Text("settings.data_management_view.refreshing")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if storage.lastRefreshFailedWhileShowingCached {
+                            Text(FloeL10n.l(
+                                "settings.data_management_view.refresh_failed_showing_last",
+                                Self.scanTimestampFormatter.string(from: report.generatedAt)
+                            )).font(.caption2).foregroundStyle(.secondary)
                         }
                     }
                 }
             }
 
+            if let report = storage.report, report.hasSharedEstimates {
+                // A dedicated section for Floe's SHARED/cloneable data (VM
+                // runtime images, environments, shared project resources),
+                // separate from Floe's own usage and the cleanup scope. The
+                // ordinary page shows only the plain section name and the
+                // measured file capacity of what the census identified as
+                // sharing capable: never the whole Floe file total, never the
+                // device capacity, and no technical footnotes (the lower-bound
+                // and per-root details stay available in the opened details).
+                Section {
+                    StorageUsageRow(
+                        title: FloeL10n.l("settings.data_management_view.shared_file_capacity"),
+                        icon: "doc.on.doc",
+                        bytes: report.cloneCapableAllocatedBytes
+                    )
+                } header: {
+                    Text("settings.data_management_view.shared_files")
+                }
+            }
+
             if let report = storage.report {
                 Section {
-                    ForEach(report.categories) { category in
-                        VStack(alignment: .leading, spacing: 2) {
-                            StorageUsageRow(
-                                title: category.name,
-                                icon: category.systemImage,
-                                bytes: category.allocatedBytes
-                            )
-                            if category.showsLogicalCapacity {
-                                let allocatedText = ByteCountFormatter.string(
-                                    fromByteCount: category.allocatedBytes, countStyle: .file
-                                )
-                                let apparentText = ByteCountFormatter.string(
-                                    fromByteCount: category.logicalBytes, countStyle: .file
-                                )
-                                let caption = FloeL10n.l(
-                                    "settings.data_management_view.host_allocated", allocatedText
-                                ) + " · " + FloeL10n.l(
-                                    "settings.data_management_view.apparent_file_size", apparentText
-                                )
-                                Text(caption).font(.caption2).foregroundStyle(.secondary)
-                                if vmDiskMixedCategoryIDs.contains(category.id) {
-                                    // The logical figure here is the sum of
-                                    // apparent file lengths (disk images plus
-                                    // other files) — it is NOT the configured
-                                    // guest capacity, and guest use is only
-                                    // measurable inside the running guest.
-                                    Text("settings.data_management_view.vm_disk_capacity_note")
-                                        .font(.caption2).foregroundStyle(.tertiary)
-                                }
-                            } else if category.isSharedEstimate {
-                                Text("settings.data_management_view.shared_allocation_note")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                            }
-                            Text(FloeL10n.l("settings.data_management_view.files_count", category.fileCount))
-                                .font(.caption2).foregroundStyle(.tertiary)
+                    if report.hasSharedEstimates {
+                        // The file categories are the same snapshot's measured
+                        // per-category capacities; they sum to the App total
+                        // shown above (shared/clone-capable data is counted
+                        // once there and listed again only as its own
+                        // non-additive section). They stay one tap away.
+                        DisclosureGroup(isExpanded: $showsFileCapacityDetails) {
+                            fileCapacityDetails(report, showsTotal: true)
+                        } label: {
+                            Text("settings.data_management_view.file_capacity_details")
                         }
-                    }
-                    if let other = report.unattributed {
-                        StorageUsageRow(title: other.name, icon: other.systemImage, bytes: other.allocatedBytes)
+                    } else {
+                        fileCapacityDetails(report, showsTotal: false)
                     }
                 } header: {
                     Text("settings.data_management_view.data_categories")
                 }
-                if report.scanErrorCount > 0 || report.changedOrVanishedCount > 0 {
+                if report.scanErrorCount > 0 || report.changedOrVanishedCount > 0 || report.isPartial {
                     Section {
-                        Text(FloeL10n.l("settings.data_management_view.partial_scan_warning",
-                                       report.scanErrorCount, report.changedOrVanishedCount))
-                            .font(.caption2).foregroundStyle(.secondary)
+                        if report.scanErrorCount > 0 || report.changedOrVanishedCount > 0 {
+                            Text(FloeL10n.l("settings.data_management_view.partial_scan_warning",
+                                           report.scanErrorCount, report.changedOrVanishedCount))
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if report.allocatedUnavailableCount > 0 || report.identityUnavailableCount > 0 {
+                            Text("settings.data_management_view.partial_measurement_warning")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -166,16 +185,23 @@ struct DataManagementView: View {
             }
 
             Section {
+                // The SAME canonical management surface the Task Center
+                // opens — one store, one lifecycle path. The row is titled
+                // "Manage tasks", so it starts on the ACTIVE task slice like
+                // the Task Center's 管理 entry; the archived slice is one
+                // segmented switch away (only an entry titled
+                // "Manage archived tasks" defaults to the archive).
                 NavigationLink {
-                    ArchivedConversationsView(
+                    ConversationBatchManagementView(
                         center: conversationCenter,
-                        showsDoneButton: false
+                        initialFilter: .active,
+                        presentation: .pushed
                     )
                 } label: {
                     ManagementRow(
-                        title: FloeL10n.l("chat.conversation_list_view.archive"),
-                        detail: FloeL10n.l("settings.data_management_view.restore_delete_individually_delete_in_bulk"),
-                        icon: "archivebox"
+                        title: TaskManagementCopy.manageTasks,
+                        detail: TaskManagementCopy.manageTasksDetail,
+                        icon: "checklist"
                     )
                 }
 
@@ -194,38 +220,37 @@ struct DataManagementView: View {
 
             Section {
                 ForEach(cleanupPlan.candidates) { candidate in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(candidate.title)
-                        Text(candidate.purpose).font(.caption).foregroundStyle(.secondary)
-                        Text(candidate.retentionReason).font(.caption2).foregroundStyle(.secondary)
-                        if cleanupBusyCandidateIDs.contains(candidate.id) {
-                            Text("settings.data_management_view.cleanup_owner_busy")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        } else {
-                            Text(FloeL10n.l("settings.data_management_view.cleanup_eligible_bytes",
-                                            ByteCountFormatter.string(
-                                                fromByteCount: cleanupPerCandidateBytes[candidate.id] ?? 0,
-                                                countStyle: .file
-                                            )))
-                                .font(.caption2).foregroundStyle(.tertiary)
+                    if cleanupBusyCandidateIDs.contains(candidate.id) {
+                        Text("settings.data_management_view.cleanup_owner_busy")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    } else {
+                        Text(FloeL10n.l("settings.data_management_view.cleanup_eligible_bytes",
+                                        ByteCountFormatter.string(
+                                            fromByteCount: cleanupPerCandidateBytes[candidate.id] ?? 0,
+                                            countStyle: .file
+                                        )))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                // The registered retain list is internal ownership detail: it
+                // stays one tap away in the opened details instead of turning
+                // the ordinary cleanup surface into a registry dump.
+                if !cleanupPlan.retained.isEmpty {
+                    DisclosureGroup {
+                        ForEach(cleanupPlan.retained) { item in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title)
+                                Text(item.retentionReason).font(.caption2).foregroundStyle(.secondary)
+                            }
                         }
+                    } label: {
+                        Text("settings.data_management_view.cleanup_retained_details")
                     }
                 }
             } header: {
                 Text("settings.data_management_view.cleanup_plan_header")
             } footer: {
                 Text("settings.data_management_view.cleanup_confirm_detail")
-            }
-
-            Section {
-                ForEach(cleanupPlan.retained) { item in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(item.title)
-                        Text(item.retentionReason).font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            } header: {
-                Text("settings.data_management_view.cleanup_retained_header")
             }
 
             Section {
@@ -275,11 +300,11 @@ struct DataManagementView: View {
             }
         }
         .navigationTitle(FloeL10n.l("settings.data_management_view.data_management"))
-        .refreshable { await reload() }
+        .refreshable { await reload(.user) }
         .task {
             importCanvasSyncPreferenceFromCloud()
             NSUbiquitousKeyValueStore.default.synchronize()
-            await reload()
+            await reload(.appear)
         }
         .onReceive(NotificationCenter.default.publisher(
             for: NSUbiquitousKeyValueStore.didChangeExternallyNotification
@@ -298,7 +323,49 @@ struct DataManagementView: View {
         }
     }
 
-    private func reload() async {
+    private enum ReloadTrigger {
+        /// Page appearance/tab switch: render the shared snapshot; scan only
+        /// when the refresh policy says it is stale or invalidated.
+        case appear
+        /// Explicit user refresh (pull to refresh): always re-scan.
+        case user
+    }
+
+    /// File-based capacity rows. The total counts shared APFS clone blocks in
+    /// full; it is a file measure shown one tap away in the opened details,
+    /// distinct from the app footprint at the top of the page. The scan
+    /// timestamp/duration/file-count diagnostics stay in the explicitly
+    /// exported diagnostic report, not in this ordinary list.
+    @ViewBuilder
+    private func fileCapacityDetails(_ report: StorageDiagnosticReport, showsTotal: Bool) -> some View {
+        if showsTotal {
+            StorageUsageRow(
+                title: FloeL10n.l("settings.data_management_view.file_capacity_total"),
+                icon: "internaldrive",
+                bytes: report.combinedBytes
+            )
+        }
+        ForEach(report.categories) { category in
+            VStack(alignment: .leading, spacing: 2) {
+                StorageUsageRow(
+                    title: category.name,
+                    icon: category.systemImage,
+                    bytes: category.allocatedBytes
+                )
+                // Ordinary view: the category name, its measured capacity and
+                // the useful item count only. The allocated-vs-apparent
+                // comparison and the VM-capacity wording are engineering
+                // detail: they stay in the diagnostic export, never here.
+                Text(FloeL10n.l("settings.data_management_view.files_count", category.fileCount))
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        if let other = report.unattributed {
+            StorageUsageRow(title: other.name, icon: other.systemImage, bytes: other.allocatedBytes)
+        }
+    }
+
+    private func reload(_ trigger: ReloadTrigger) async {
         importCanvasSyncPreferenceFromCloud()
         if let value = try? await environment.creativeAssetStore.storageSummary() {
             creativeStorage = CreativeStorageSummary(
@@ -312,8 +379,12 @@ struct DataManagementView: View {
             orphanedAssetBytes = orphans.reduce(0) { $0 + $1.byteCount }
         }
         cleanupPlan = FloeStorageCleanupRegistry.plan()
-        await storage.scan()
-        await refreshCleanupEstimate(authority: AppStorageCleanupAuthority(environment: environment))
+        let result = await storage.refresh(explicit: trigger == .user)
+        // The cleanup preview walks scratch roots; only recompute it when the
+        // storage pass actually scanned, not on every cache-served reopen.
+        if result == .scanned || trigger == .user {
+            await refreshCleanupEstimate(authority: AppStorageCleanupAuthority(environment: environment))
+        }
     }
 
     private func clean() async {
@@ -342,8 +413,11 @@ struct DataManagementView: View {
             measured.volumeAvailableCapacityChangeBytes = volumeAfter - volumeBefore
         }
         cleanupOutcome = measured
+        // Cleanup removed real files: invalidate the shared snapshot and take
+        // one explicit refresh so the totals reflect the post-cleanup state.
+        storage.invalidate(.cleanupCompleted)
+        await storage.refresh(explicit: true)
         await refreshCleanupEstimate(authority: authority)
-        await storage.scan()
     }
 
     private func refreshCleanupEstimate(authority: AppStorageCleanupAuthority) async {
@@ -365,7 +439,10 @@ struct DataManagementView: View {
         guard !isReleasingCloudSpace else { return }
         isReleasingCloudSpace = true
         await environment.canvasCloudAssetService.releasePending()
-        await reload()
+        // Releasing cloud space removes local assets: mark the snapshot stale
+        // so the next pass scans once instead of serving pre-release totals.
+        storage.invalidate(.other("canvasCloudRelease"))
+        await reload(.appear)
         isReleasingCloudSpace = false
     }
 
@@ -611,6 +688,8 @@ struct FontManagementView: View {
             let record = try await store.install(from: url)
             remoteURL = ""
             successMessage = FloeL10n.l("settings.data_management_view.installed_available_in_all_floe_workspaces", record.displayName)
+            // Fonts live under a scanned root: the shared snapshot is stale.
+            StorageDiagnosticService.shared.invalidate(.other("fontStore"))
             await reload()
         } catch {
             errorMessage = error.localizedDescription
@@ -625,6 +704,7 @@ struct FontManagementView: View {
         do {
             let record = try await store.importFont(from: url)
             successMessage = FloeL10n.l("settings.data_management_view.imported_available_in_all_floe_workspaces", record.displayName)
+            StorageDiagnosticService.shared.invalidate(.other("fontStore"))
             await reload()
         } catch {
             errorMessage = error.localizedDescription
@@ -635,6 +715,7 @@ struct FontManagementView: View {
         do {
             try await store.remove(id: record.id)
             successMessage = FloeL10n.l("settings.data_management_view.removed", record.displayName)
+            StorageDiagnosticService.shared.invalidate(.other("fontStore"))
             await reload()
         } catch {
             errorMessage = error.localizedDescription

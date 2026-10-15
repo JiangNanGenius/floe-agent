@@ -15,6 +15,7 @@
 import Foundation
 import FloeCore
 import FloeModels
+import FloePersistence
 import FloeProviders
 import FloeTools
 
@@ -169,19 +170,31 @@ public struct SubagentRunner: Sendable {
     private let adapter: any ProviderAdapter
     private let credentials: ProviderCredentials
     private let executor: any ToolExecutor
+    /// Durable child identity/transcript persistence. Nil keeps the
+    /// historical in-memory-only child (focused unit tests and legacy
+    /// callers); production wires the SQLite store so the child survives
+    /// process death, UI close and app relaunch.
+    private let childRunStore: (any ChildRunStoring)?
+    /// Durable-child-change observer (the app refreshes the child panel from
+    /// the store). Never a permission channel: it cannot authorize anything.
+    private let onChildStateChange: (@Sendable (ChildRunSnapshot) async -> Void)?
 
     public init(
         provider: ProviderProfile,
         model: ModelProfile,
         adapter: any ProviderAdapter,
         credentials: ProviderCredentials,
-        executor: any ToolExecutor
+        executor: any ToolExecutor,
+        childRunStore: (any ChildRunStoring)? = nil,
+        onChildStateChange: (@Sendable (ChildRunSnapshot) async -> Void)? = nil
     ) {
         self.provider = provider
         self.model = model
         self.adapter = adapter
         self.credentials = credentials
         self.executor = executor
+        self.childRunStore = childRunStore
+        self.onChildStateChange = onChildStateChange
     }
 
     /// Legacy plain-text entry point: renders the structured outcome into the
@@ -206,32 +219,195 @@ public struct SubagentRunner: Sendable {
         guard let childBudget = context.childBudget else {
             throw FloeError.validationFailed("Subagent budget is unavailable")
         }
+        let persistence: ChildRunPersistence?
+        do {
+            persistence = try await beginChildRun(request: request, context: context)
+        } catch {
+            // PRODUCTION persistence is mandatory: a child whose durable
+            // record could not be created is NOT started. Silently proceeding
+            // would leave the parent's transcript implying a child run whose
+            // identity never existed.
+            await childBudget.finish()
+            return SubagentOutcome(
+                status: .toolError,
+                iterationsUsed: 0,
+                findings: "The delegated child was not started: \(error.localizedDescription)")
+        }
         do {
             let outcome = try await runLoop(
-                request, context: context, childBudget: childBudget
+                request, context: context, childBudget: childBudget, persistence: persistence
             )
             await childBudget.finish()
+            await persistence?.finish(outcome)
             return outcome
         } catch let termination as Termination {
             await childBudget.finish()
-            return Self.terminatedOutcome(termination, request: request)
+            let outcome = Self.terminatedOutcome(termination, request: request)
+            await persistence?.finish(outcome)
+            return outcome
         } catch {
             await childBudget.finish()
             // Defensive: runLoop classifies every expected failure into a
             // Termination. An error reaching here is an unclassified harness
             // failure, never a success.
-            return SubagentOutcome(
+            let outcome = SubagentOutcome(
                 status: .toolError,
                 iterationsUsed: 0,
                 findings: "Subagent stopped by a harness guard: \(error.localizedDescription)"
             )
+            await persistence?.finish(outcome)
+            return outcome
+        }
+    }
+
+    /// Registers the durable child identity BEFORE the first provider turn:
+    /// owner/root/conversation binding, the child index and the parent
+    /// relation all exist before any model request.
+    ///
+    /// A wired store is MANDATORY: a registration failure throws and the child
+    /// is not started (the caller reports the honest tool error), because a
+    /// child that ran without its durable identity would look like a record
+    /// that exists while its transcript can never be reopened. Without a store
+    /// (legacy/test wiring) nil keeps the historical behavior.
+    private func beginChildRun(
+        request: SubagentRequest,
+        context: ToolContext
+    ) async throws -> ChildRunPersistence? {
+        guard let childRunStore else { return nil }
+        let identity = context.childExecution?.identity
+        let childID = identity?.childID ?? UUID()
+        let parentRunID = identity?.parentRunID ?? request.runID
+        let rootRunID = identity?.rootTaskID ?? parentRunID
+        let conversationID = context.conversationID ?? rootRunID
+        let record = ChildRunRecord(
+            id: childID,
+            parentRunID: parentRunID,
+            rootRunID: rootRunID,
+            conversationID: conversationID,
+            childIndex: 0,
+            kind: request.kind.rawValue,
+            taskSummary: String(request.task.prefix(2_000)),
+            state: .registered,
+            startedAt: identity?.startedAt ?? Date(),
+            // The provider tool-call id of the `delegate` call that created
+            // this child. Persisted on the relation so the tool card can map
+            // callID → child run and open the SPECIFIC transcript.
+            delegateCallID: identity?.delegateCallID
+        )
+        do {
+            let durable = try await childRunStore.register(record)
+            await onChildStateChange?(ChildRunSnapshot(
+                id: durable.id,
+                parentRunID: durable.parentRunID,
+                taskSummary: durable.taskSummary,
+                state: .preparing,
+                iterationCount: 0
+            ))
+            return ChildRunPersistence(
+                store: childRunStore,
+                record: durable,
+                observer: onChildStateChange
+            )
+        } catch {
+            throw FloeError.storageCorrupted(
+                "The delegated child's durable record could not be created; the child was not started: \(error.localizedDescription)")
+        }
+    }
+
+    /// Strict JSON for one durable transcript payload. Values are already
+    /// bounded by the caller; this only guarantees valid JSON escaping.
+    static func jsonPayload(_ object: [String: Any]) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return "{}"
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Per-child persistence helper. Every write is best-effort: a transient
+    /// store error must not change the child's actual outcome or authority.
+    private struct ChildRunPersistence: Sendable {
+        let store: any ChildRunStoring
+        let record: ChildRunRecord
+        let observer: (@Sendable (ChildRunSnapshot) async -> Void)?
+
+        func transition(_ state: ChildRunState, iterations: Int?) async {
+            try? await store.transition(id: record.id, state: state, iterationCount: iterations, endedAt: nil)
+            await notify(state: state, iterations: iterations ?? record.iterationCount, result: nil)
+        }
+
+        func append(_ kind: ChildRunEntryKind, _ payload: String) async {
+            try? await store.appendEntry(id: record.id, kind: kind, payloadJSON: payload)
+        }
+
+        func finish(_ outcome: SubagentOutcome) async {
+            let state: ChildRunState = switch outcome.status {
+            case .completed: .completed
+            case .partial: .partial
+            case .budgetExhausted: .budgetExhausted
+            case .cancelled: .cancelled
+            case .providerError: .providerError
+            case .toolError: .toolError
+            }
+            try? await store.finish(
+                id: record.id,
+                state: state,
+                iterationCount: outcome.iterationsUsed,
+                resultSummary: outcome.findings,
+                errorText: outcome.status == .completed ? nil : outcome.unfinished.joined(separator: "; "),
+                digest: FloeDigest.sha256Hex(Data(outcome.findings.utf8))
+            )
+            try? await store.appendEntry(
+                id: record.id,
+                kind: .result,
+                payloadJSON: Self.resultPayload(outcome)
+            )
+            await notify(state: state, iterations: outcome.iterationsUsed, result: outcome.findings)
+        }
+
+        private func notify(state: ChildRunState, iterations: Int, result: String?) async {
+            guard let observer else { return }
+            await observer(ChildRunSnapshot(
+                id: record.id,
+                parentRunID: record.parentRunID,
+                taskSummary: record.taskSummary,
+                state: Self.harnessState(state),
+                iterationCount: iterations
+            ))
+        }
+
+        private static func harnessState(_ state: ChildRunState) -> HarnessState {
+            switch state {
+            case .registered: .preparing
+            case .running: .executingTool
+            case .completed: .completed
+            case .partial, .budgetExhausted: .completed
+            case .cancelled: .cancelled
+            case .providerError, .toolError: .failed
+            case .interrupted: .interrupted
+            }
+        }
+
+        private static func resultPayload(_ outcome: SubagentOutcome) -> String {
+            let object: [String: Any] = [
+                "status": outcome.status.rawValue,
+                "iterationsUsed": outcome.iterationsUsed,
+                "findings": String(outcome.findings.prefix(8 * 1024)),
+                "evidence": Array(outcome.evidence.prefix(24)),
+                "unfinished": Array(outcome.unfinished.prefix(24)),
+                "truncated": outcome.truncated
+            ]
+            guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+                return "{\"status\":\"\(outcome.status.rawValue)\"}"
+            }
+            return String(decoding: data, as: UTF8.self)
         }
     }
 
     private func runLoop(
         _ request: SubagentRequest,
         context: ToolContext,
-        childBudget: ChildBudgetContext
+        childBudget: ChildBudgetContext,
+        persistence: ChildRunPersistence?
     ) async throws -> SubagentOutcome {
         let iterationCeiling = min(request.maxIterations, childBudget.maximumIterations)
         let hardCeiling = max(1, min(iterationCeiling, 20))
@@ -345,6 +521,10 @@ public struct SubagentRunner: Sendable {
                     )
                 }
                 iterationsUsed += 1
+                // Durable progress: the child's real iteration count advances
+                // in the store, so an interrupted child is inspectable with
+                // the iterations it actually consumed.
+                await persistence?.transition(.running, iterations: iterationsUsed)
                 // Capture the settled pair fed back into this request BEFORE
                 // it is cleared below: this exact pair (call + REAL result +
                 // reasoning) is archived into the bounded replay history when
@@ -496,6 +676,34 @@ public struct SubagentRunner: Sendable {
                             callID: call.id, status: .failed,
                             outputSummary: "Missing execution result", outputDigest: ""
                         ))
+                    }
+                    // Persist the real per-iteration transcript: the
+                    // assistant step, each requested call and each REAL tool
+                    // result (denied/failed/cancelled included). Tool output
+                    // is bounded by the store; nothing is rewritten as ok.
+                    if let persistence {
+                        if !text.isEmpty {
+                            await persistence.append(.message, Self.jsonPayload([
+                                "role": "assistant",
+                                "text": String(text.prefix(8 * 1024))
+                            ]))
+                        }
+                        for call in calls {
+                            await persistence.append(.toolRequest, Self.jsonPayload([
+                                "tool": call.toolName,
+                                "callID": call.id,
+                                "arguments": String(decoding: call.argumentsJSON.prefix(4 * 1024), as: UTF8.self)
+                            ]))
+                        }
+                        for item in executed {
+                            await persistence.append(.toolResult, Self.jsonPayload([
+                                "tool": item.call.toolName,
+                                "callID": item.call.id,
+                                "status": item.result.status.rawValue,
+                                "digest": item.result.outputDigest,
+                                "output": String(item.result.outputSummary.prefix(2 * 1024))
+                            ]))
+                        }
                     }
                     pendingSettled = executed
                     for item in executed {
