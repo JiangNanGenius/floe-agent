@@ -76,12 +76,32 @@ def same_pin(actual, expected):
     return canonical(actual) == canonical(expected)
 
 
+def app_pin_matches(committed, declared):
+    """Compare an Xcode package declaration with its committed lock pin.
+
+    XcodeGen expresses an exact version or a revision, never both, so a
+    revision-only declaration cannot repeat the semver display value that
+    `resolved_pins` keeps together with its revision. The repository and the
+    immutable revision must still match exactly; the committed state (including
+    the display version) stays the authority for the distribution inventory.
+    A missing committed pin or any other revision never matches.
+    """
+    if committed is None or declared is None:
+        return committed == declared
+    if committed.get("state", {}).get("revision") != declared.get("state", {}).get("revision"):
+        return False
+    return same_pin(
+        {**committed, "state": {}},
+        {**declared, "state": {}},
+    )
+
+
 def verify_resolution(current, committed, app_only):
     expected = {p["identity"]: p for p in committed}
     actual = {p["identity"]: p for p in current}
     app = {p["identity"]: p for p in app_only}
     for identity, pin in app.items():
-        if not same_pin(expected.get(identity), pin):
+        if not app_pin_matches(expected.get(identity), pin):
             raise ValueError(f"Xcode app pin differs from committed lock: {identity}")
     for identity, pin in actual.items():
         if not same_pin(expected.get(identity), pin):
@@ -91,4 +111,9 @@ def verify_resolution(current, committed, app_only):
             raise ValueError(f"Committed host dependency missing: {identity}")
     # Include application-only dependencies in the distribution inventory even
     # when swift package resolve removes them from the host lock representation.
-    return sorted({**actual, **app}.values(), key=lambda p: p["identity"])
+    # A declaration never replaces committed state; it only adds a package the
+    # lock does not carry at all.
+    merged = dict(actual)
+    for identity, pin in app.items():
+        merged.setdefault(identity, expected.get(identity, pin))
+    return sorted(merged.values(), key=lambda p: p["identity"])

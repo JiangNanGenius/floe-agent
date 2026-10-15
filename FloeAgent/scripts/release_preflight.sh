@@ -35,6 +35,16 @@ if ! python3 scripts/audit_native_runtime_free.py --project; then
     exit 1
 fi
 
+# Every remote Xcode package in project.yml must be an immutable revision that
+# matches the committed host lock. This is the cheap read-only half of
+# license_inventory.sh --check (no package checkouts needed), so a mutable or
+# drifted declaration stops the release before any expensive App archive
+# instead of only surfacing after packaging.
+if ! python3 -B scripts/check_application_pins.py; then
+    echo "error: Xcode application pins failed the immutable-revision check before build" >&2
+    exit 1
+fi
+
 # The native Office framework is a separately compiled, pinned dependency.
 # Fail before bootstrapping/building the App if its source changed without a
 # matching rebuilt artifact. This is the same read-only check as bootstrap.

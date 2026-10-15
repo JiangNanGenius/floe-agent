@@ -3614,8 +3614,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
 			requirement = {
-				kind = exactVersion;
-				version = 0.9.20;
+				kind = revision;
+				revision = 22787ffb59de99e5dc1fbfe80b19c97a904ad48d;
 			};
 		};
 		9098A8EFD52D6CAF3DD83F20 /* XCRemoteSwiftPackageReference "WhisperKit" */ = {

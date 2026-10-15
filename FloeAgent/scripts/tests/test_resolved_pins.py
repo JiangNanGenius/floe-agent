@@ -5,10 +5,42 @@ import subprocess
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from resolved_pins import resolved_pins, application_pins, verify_resolution, same_pin
+from resolved_pins import (
+    resolved_pins,
+    application_pins,
+    app_pin_matches,
+    verify_resolution,
+    same_pin,
+)
 
 
 class ResolvedPinsTests(unittest.TestCase):
+    def test_revision_only_app_pin_keeps_committed_display_state(self):
+        # XcodeGen cannot express a semver next to a revision, so a revision-only
+        # app declaration is the immutable form. The repository and revision must
+        # match the committed lock exactly, the declaration must not smuggle in
+        # another revision, and the committed state (with its display version)
+        # stays in the distribution inventory.
+        pin = {
+            "identity": "zipfoundation",
+            "location": "https://github.com/weichsel/ZIPFoundation.git",
+            "state": {"revision": "2" * 40, "version": "0.9.20"},
+        }
+        declared = {**pin, "state": {"revision": "2" * 40}}
+        self.assertTrue(app_pin_matches(pin, declared))
+        self.assertEqual(verify_resolution([], [pin], [declared]), [pin])
+        self.assertEqual(verify_resolution([pin], [pin], [declared]), [pin])
+        for changed in (
+            {**declared, "state": {"revision": "3" * 40}},
+            {**declared, "identity": "other"},
+            {**declared, "location": "https://github.com/other/ZIPFoundation.git"},
+        ):
+            self.assertFalse(app_pin_matches(pin, changed))
+            with self.assertRaises(ValueError):
+                verify_resolution([], [pin], [changed])
+        self.assertFalse(app_pin_matches(None, declared))
+        self.assertFalse(app_pin_matches(pin, None))
+
     def test_github_git_suffix_does_not_change_a_pin(self):
         pin = {"identity": "swift-system", "location": "https://github.com/apple/swift-system.git",
                "state": {"revision": "a" * 40, "version": "1.8.0"}}

@@ -42,9 +42,12 @@ packages:
     # (Package.resolved: 0.9.20 / 22787ffb59de99e5dc1fbfe80b19c97a904ad48d).
     # Declared here only so the FloeAppTests bundle can import the module for
     # the two Office automatic-execution suites; no dependency, version or
-    # lock change.
+    # lock change. The revision form is the immutable declaration
+    # resolved_pins.application_pins requires; XcodeGen cannot express the
+    # display version next to a revision, so Package.resolved stays its
+    # authority.
     url: https://github.com/weichsel/ZIPFoundation.git
-    exactVersion: 0.9.20
+    revision: 22787ffb59de99e5dc1fbfe80b19c97a904ad48d
 
 targets:
   FloeAgent:
