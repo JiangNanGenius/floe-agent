@@ -94,6 +94,9 @@ class PortablePreflightFixtureTests(unittest.TestCase):
         app = root / 'FloeAgent'
         for name in ('project.yml', 'scripts/release_preflight.sh',
                      'scripts/validate_localization_catalog.py',
+                     'scripts/check_application_pins.py',
+                     'scripts/resolved_pins.py',
+                     'Package.resolved',
                      'FloeAgent.xcodeproj/project.pbxproj', 'FloeScreenShare/Info.plist',
                      'FloeApp/Resources/Localizable.xcstrings'):
             target = app / name
