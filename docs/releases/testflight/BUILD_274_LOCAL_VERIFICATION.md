@@ -19,7 +19,7 @@ Exact-source local archive, minimum cloud signing/upload and the independent App
 
 - [Run 38805969523](https://github.com/JiangNanGenius/floe-agent/actions/runs/38805969523) verified provenance/tag/source, installed the existing distribution certificate and profiles, re-signed the supplied App, re-created the IPA and uploaded it: `No errors uploading archive` at 21:04:06Z. `app_rebuilt=False`.
 - Retained workflow artifacts: `testflight-1.7.33-build274` (753,109,427 B), `local-v1.7.33-provenance-symbols`, `local-v1.7.33-apple-internal`.
-- Downloaded signed IPA verified locally: 756,363,682 B, sha256 `2d54b5ad9a6d1b1b1f44d3b67bd8a612850e04b7c2a20c2861a19a474efa68f7`; `org.floeagent.ios` 1.7.33 (274), SDK iphoneos27.0, DTXcodeBuild 27A266a, binary UUID matches provenance, `codesign --verify --deep --strict` valid and satisfying its Designated Requirement, `beta-reports-active=true`, `get-task-allow=false`, TeamIdentifier QYL72C43K6, CloudKit environment Production.
+- Downloaded signed IPA verified locally: 756,363,682 B, sha256 `2d54b5ad9a6d1b1b1f44d3b67bd8a612850e04b7c2a20c2861a19a474efa68f7`; `org.floeagent.ios` 1.7.33 (274), SDK iphoneos27.0, DTXcodeBuild 27A266a, binary UUID matches provenance, `codesign --verify --deep --strict` valid and satisfying its Designated Requirement, `beta-reports-active=true`, `get-task-allow=false`, and distribution entitlements checked.
 
 ## Apple state (read back independently)
 
@@ -46,3 +46,8 @@ Exact-source local archive, minimum cloud signing/upload and the independent App
 
 - Removed after exports: implementation scratch caches (`task-lifecycle-B` 6,137,340 KB, `923b1e48` 560,892 KB, finalized App-test DerivedData 6,487,544 KB; internal free +12,032 MiB), duplicate obsolete archives for 269/270/271/272 with their recovery paths retained (external free +7,020 MiB), and after signing the local `release-274` cache + temporary signed-IPA extraction (internal +5,655 MiB) and `Local/Scratch/build274-transfer` (external +2,592 MiB).
 - Retained: `Local/Artifacts/build274` (current deliverable), `build273` (necessary rollback), `build272` xcarchive symbols + signed IPA, `build271` xcarchive crash symbols, `build269` dSYM evidence + provenance, `build270` provenance, `qualification273`, and `task-lifecycle-app/SourcePackages` (pinned graph for the identified next use). FloeMiniCheck was shut down after the primary's second lease return; other tasks' simulators were not touched.
+
+## Repository closure
+
+- The delivery, documentation and release-helper changes are merged and pushed to `main`. The task branch was removed after verifying it was merged and no other worktree occupied it. Unrelated worktrees and untracked user files were preserved.
+- The release tag still resolves to `0de810f08639315ba38ff82607e2da1fcf596f26`; follow-up documentation and release-helper commits do not change the shipped App or require another upload. No scheduled follow-up was restored. External approval remains pending Apple.
