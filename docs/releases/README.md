@@ -4,14 +4,14 @@
 
 | 目录 | 内容 | 数量 |
 | --- | --- | ---: |
-| [notes/](notes/) | 双语发布说明与逐 Build 改动 | 115 |
-| [testflight/](testflight/) | TestFlight 交付记录及中英文测试说明 JSON | 137 |
-| [verification/](verification/) | 历史发布核验与代码审计 | 9 |
+| [notes/](notes/) | 双语发布说明与逐 Build 改动 | 116 |
+| [testflight/](testflight/) | TestFlight 交付记录及中英文测试说明 JSON | 138 |
+| [verification/](verification/) | 历史发布核验与代码审计 | 10 |
 | [beta/](beta/) | 早期 1.7 beta 候选记录 | 13 |
 | [builds/](builds/) | 专项构建记录 | 2 |
-| [repairs/](repairs/) | 按 Build／版本编号的修复与反馈记录 | 24 |
+| [repairs/](repairs/) | 按 Build／版本编号的修复与反馈记录 | 25 |
 
-当前内部构建：[Build 255 交付记录](testflight/TESTFLIGHT_1.7.14_BETA.md)、[Build 255 发布说明](notes/RELEASE_NOTES_1.7.14_BUILD_255.md)、[双语测试说明](testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_255.json)。当前正式 GitHub Release 的档案：[Build 241 发布说明](notes/RELEASE_NOTES_1.7.0_BUILD_241.md)、[历史 TestFlight 记录](testflight/TESTFLIGHT_1.7.0_BETA.md)。
+当前交付：[1.7.33 (274) 本地核验与交付记录](testflight/BUILD_274_LOCAL_VERIFICATION.md)、[1.7.33 (274) 发布说明](notes/RELEASE_NOTES_1.7.33_BUILD_274.md)、[双语测试说明](testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_274.json)；内部 Floe QA 可用，已提交 publictest1 等待 Apple 审核，审核通过是后续独立状态。当前正式 GitHub Release 的档案：[Build 241 发布说明](notes/RELEASE_NOTES_1.7.0_BUILD_241.md)、[历史 TestFlight 记录](testflight/TESTFLIGHT_1.7.0_BETA.md)。
 
 [历史版本导览](HISTORY.md)保留此前文档索引中的逐版状态与原始结论。`docs/evidence/`、`docs/qualification/` 和 `docs/validation/` 继续保存对应证据，不与说明文件混放。
 

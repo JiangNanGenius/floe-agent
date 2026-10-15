@@ -1,5 +1,13 @@
 # Floe 1.7 TestFlight delivery
 
+## Latest: 1.7.33 (274) — internal available; publictest1 submitted, waiting for Apple review
+
+2026-10-15 21:04–21:30 UTC: immutable `v1.7.33` source `0de810f08639315ba38ff82607e2da1fcf596f26` completed the local Xcode 27.0 (27A266a) Release archive (`CODE_SIGNING_ALLOWED=NO`, six jobs) and the minimum cloud signing/upload step without rebuilding the App ([run 38805969523](https://github.com/JiangNanGenius/floe-agent/actions/runs/38805969523)). Apple confirmed `VALID`, unexpired, `APP_STORE_ELIGIBLE` and the existing Floe QA group `IN_BETA_TESTING` — internal installation is available. The signed IPA was downloaded and independently validated (sha256 `2d54b5ad…`, `codesign --verify --deep --strict` valid, versions/SDK/UUID matching the retained archive).
+
+Build 274 was then added once to the existing external group `publictest1` and submitted for Beta App Review once through the App Store Connect web session ([independent GET-only readback 38810115700](https://github.com/JiangNanGenius/floe-agent/actions/runs/38810115700), 21:28Z: `WAITING_FOR_BETA_REVIEW`, one `pending_review` submission, group attached, issues empty). External approval is not claimed. The API submission path stayed fail-closed: its single attempt stopped at the first app-level metadata write with Apple `HTTP 403 FORBIDDEN_ERROR` and made no partial writes; the release helper now compares existing review notes in canonical form (packaging commit `ba3f5c71`) so a whitespace-only difference no longer attempts that write. Build 269 remains internal-only.
+
+[Local verification, hashes and delivery record](BUILD_274_LOCAL_VERIFICATION.md) · [Release notes](../notes/RELEASE_NOTES_1.7.33_BUILD_274.md) · [中文测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_274.json).
+
 ## Latest hotfix: 1.7.30 (271) — internal available; publictest1 review pending
 
 2026-10-12 05:48 UTC: immutable `v1.7.30` source `bdb79bf8751ba67676e2a57e6916fd6ca8d6d151` completed local Xcode 27 full App builds, 43 focused tests, iPad/iPhone save/relaunch verification and a complete real-provider/model request after restart. The retained local archive and symbols were reused by [signing/upload 38208178806](https://github.com/JiangNanGenius/floe-agent/actions/runs/38208178806), with no cloud App rebuild or full test matrix. Apple confirmed `VALID`, unexpired and Floe QA `IN_BETA_TESTING`.

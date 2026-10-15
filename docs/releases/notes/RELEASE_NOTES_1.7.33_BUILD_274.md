@@ -2,6 +2,10 @@
 
 Release candidate. Source freeze, archive, TestFlight upload, Apple processing and review states are recorded separately from the qualification results below.
 
+交付记录（2026-10-15）：冻结源码 `0de810f08639315ba38ff82607e2da1fcf596f26`（标签 `v1.7.33`）；本地 Xcode 27.0（27A266a）Release 归档后复用已核验产物完成最小云端签名上传（未重编 App，运行 `38805969523`）；Apple 构建 `320f0efa…` 为 `VALID`、未过期、现有内部 Floe QA 组 `IN_BETA_TESTING`，内部可安装；随后一次性加入现有 `publictest1` 并只提交一次 Beta 审核，只读回读（运行 `38810115700`）为 `WAITING_FOR_BETA_REVIEW`、唯一 `pending_review`。外部审核通过是后续独立状态。API 送审在 App 级元数据写入处保持失败关闭（`HTTP 403`，无部分写入）；发布助手的审核备注比较已按规范化文本修复（打包提交 `ba3f5c71`），App 源码与标签未变。
+
+Delivery record (2026-10-15): frozen source `0de810f08639315ba38ff82607e2da1fcf596f26` (tag `v1.7.33`); after the local Xcode 27.0 (27A266a) Release archive, the verified artifact was signed and uploaded through the minimum cloud step without rebuilding the App (run `38805969523`); Apple build `320f0efa…` is `VALID`, unexpired and `IN_BETA_TESTING` in the existing internal Floe QA group — internal installation available. Build 274 was then added once to the existing `publictest1` and submitted for Beta App Review once; readback (run `38810115700`) shows `WAITING_FOR_BETA_REVIEW` with one `pending_review`. External approval is a later, separate state. The API submission path stayed fail-closed at the app-level metadata write (`HTTP 403`, no partial writes); the release helper's review-notes comparison is fixed in packaging commit `ba3f5c71`, with App source and tag unchanged.
+
 ## 简体中文
 
 - 临时会话入口收敛到“新建任务”启动台，会话内不再出现临时开关；只读工具上限真正作用于模型请求，切到其他会话或真正离开会取消并销毁，保留为正式会话不重复发送请求。

@@ -8,6 +8,13 @@ working changes (no version bump, no commit, no tag, no App build, no upload, no
 started). Build 273 remains the previously delivered internal Floe QA build, and Build 269 stays
 internal-only. The next qualified build is authorized for public TestFlight.
 
+## Delivery (2026-10-15, recorded after the round closed)
+
+- Frozen tag `v1.7.33` at `0de810f08639315ba38ff82607e2da1fcf596f26`; local Xcode 27.0 (27A266a) Release archive (`CODE_SIGNING_ALLOWED=NO`), minimum cloud signing/upload without an App rebuild ([run 38805969523](https://github.com/JiangNanGenius/floe-agent/actions/runs/38805969523)).
+- Apple build `320f0efa…`: `VALID`, unexpired, `APP_STORE_ELIGIBLE`, existing Floe QA `IN_BETA_TESTING` (independent GET-only [38808283515](https://github.com/JiangNanGenius/floe-agent/actions/runs/38808283515)) — internal installation available. Signed IPA independently validated (sha256 `2d54b5ad…`).
+- Build 274 added once to the existing `publictest1` group and submitted for Beta App Review once via App Store Connect; [readback 38810115700](https://github.com/JiangNanGenius/floe-agent/actions/runs/38810115700) confirms `WAITING_FOR_BETA_REVIEW`, one `pending_review`, group attached, issues empty. External approval is pending and not claimed.
+- The release helper's review-notes comparison was fixed in a separate packaging commit `ba3f5c71` (canonical LF/outer-whitespace comparison, focused tests added); App source and the immutable tag are unchanged. All original failures, the API 403 record and the physical-device limitations in the body below remain valid.
+
 This page records the round in the same honesty terms as the qualification notes: what was
 implemented, what was actually executed, and what remains for the final integration/release
 owner. It is not a release note and does not predict a version number.

@@ -5,7 +5,7 @@
 ## 当前阅读入口 / Start here
 
 - [完整中文使用手册](USER_GUIDE.zh-CN.md) / [English user manual](USER_GUIDE.md)：20 章操作步骤、排障与数据保护。
-- [任务生命周期回合记录（未发布）](releases/repairs/FLOE_TASK_LIFECYCLE_20261015.md)：临时会话入口收敛、后台/子运行闭环、调度、逐模型能力元数据与 CAD 可发现契约的实际状态与验证边界；1.7.32（273）仍为当前内部构建。
+- [1.7.33（274）本地核验与交付记录](releases/testflight/BUILD_274_LOCAL_VERIFICATION.md)：本地 Xcode 27 归档、最小云端签名上传、Apple 内部可用与 publictest1 已送审的实际状态；[任务生命周期回合记录](releases/repairs/FLOE_TASK_LIFECYCLE_20261015.md)保留实现范围与验证边界。
 - [版本与验证状态](CURRENT_STATUS.md)：已记录交付、当前候选和待验收边界。
 - [官网中文版](https://www.floe-agent.com/docs/zh.html) / [Website English manual](https://www.floe-agent.com/docs/en.html)：与仓库手册同源。
 - [文档更新清单](DOCUMENTATION_REFRESH_20261009.md)：本次覆盖范围；[旧版手册](history/USER_GUIDE.zh-CN.pre-20261005.md)保留旧截图和记录。
@@ -49,7 +49,7 @@
 
 ## 发布档案（只追加、不回改）
 
-逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。1.7.32（273）为当前内部交付（[发布说明](releases/notes/RELEASE_NOTES_1.7.32_BUILD_273.md)、[273 修复记录](releases/repairs/FLOE_273_TEMPORARY_SUBAGENT_REPAIR.md)）；本轮未发布改动记录于[任务生命周期回合记录](releases/repairs/FLOE_TASK_LIFECYCLE_20261015.md)。本轮尚无新版本号或发布说明，冻结后由发布负责人补齐。
+逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。1.7.33（274）为当前交付（[发布说明](releases/notes/RELEASE_NOTES_1.7.33_BUILD_274.md)、[本地核验与交付记录](releases/testflight/BUILD_274_LOCAL_VERIFICATION.md)），内部 Floe QA 可用且已提交 publictest1 等待审核；1.7.32（273）保留为回滚记录。
 
 ## 历史研究（结论以现行代码为准）
 
