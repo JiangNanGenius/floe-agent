@@ -1,12 +1,17 @@
 # Floe 1.7.32 (273) — temporary chat, CAD, subagents, crashes and Linux-guest repairs
 
-Status: **local qualification complete; device archive and internal delivery pending.**
+Status: **local qualification complete; exact-source device archive built and delivered to internal Floe QA (2026-10-15).**
 The arm64 Simulator App compiled with Xcode 27. `project.yml` and its generated
 project declare **1.7.32 (273)**. The final focused App run passed 15 XCTest cases
 and 113 Swift Testing cases in 13 suites. Earlier component, real-guest and UI
 proofs are recorded at their actual source stage below; this is not a claim that
-the entire historical matrix was rerun on one final binary. No candidate device
-archive, upload or internal availability is claimed in this pre-delivery note.
+the entire historical matrix was rerun on one final binary. The candidate device
+archive was built from the frozen source `29937dc025267bacd89434cc092b3906c99b93ee`
+(tag `v1.7.32`), signed/uploaded through the repository local-artifact workflow
+without an App rebuild, and independently read back as Apple build
+`f0b719ad-c418-4c50-bba0-48ab45aa4147` `VALID`, unexpired, `IN_BETA_TESTING` in the
+existing internal Floe QA group. No external beta, production or content publication
+was performed.
 
 This note records user-visible changes from the temporary-chat / full-subagent / crash /
 Linux-guest performance round, together with the honest validation matrix: what was
@@ -119,21 +124,31 @@ source-level optimization was pursued.
 | Default-review document flow | One Human/ASK runtime through real PDF edit/export and media capabilities/read/propose/apply/readback/export, with custom service-owned store root; repository destination negative case | 2 App cases passed (0.340 s), no per-edit approval in the ordinary flow; repository output still waits | passed (Simulator App); scripted provider |
 | CAD additions | Real Runtime/tool/host apply, Unicode names, 2D Worker edits, staged Canvas scope, continuous 3D loop, measurement, STEP/STL/GLB binary checks and reimport | 11 App XCTest cases passed (2.901 s); 10 concurrency cases passed (7.574 s) | passed (Simulator App); default-review policy additions pending |
 | Final policy/tool integration | Actual runtime parent/child policy, all typed targets, Office tool/executor and real export host, media store/parity, remote automatic-route diagnostics | 113 Swift Testing cases / 13 suites passed (8.628 s), plus 15 XCTest cases (4.335 s), zero skipped | passed (Simulator App); earlier five assertion issues retained and fixture corrections recorded |
-| Apple state | GET-only discover run 38677174783 (2026-10-15T03:37:26Z) | latest 1.7.31/272 `VALID`; no 273 upload existed then | no candidate uploaded |
+| Apple state | GET-only discover run 38677174783 (2026-10-15T03:37:26Z) | latest 1.7.31/272 `VALID`; no 273 upload existed then | pre-delivery candidate state |
+| Apple state (delivered) | Independent GET-only `verify-testflight` run 38717806031 (2026-10-15T10:06:16Z) | build `f0b719ad-c418-4c50-bba0-48ab45aa4147` `VALID`, unexpired, one group `Floe QA` (internal), `IN_BETA_TESTING`, unexpected groups 0 | internal Floe QA availability confirmed |
 
-## 6. Delivery gates (implementation qualification complete)
+## 6. Delivery gates (implementation qualification complete; internal delivery completed)
 
-1. **Source freeze and reconciliation** — commit/push only this round's owned
-   source, preserve unrelated changes, and bind the immutable release tag and device
-   artifact to that exact source. The final local qualification records the five
-   earlier fixture assertion issues and their corrections; no business guard was
-   weakened to obtain a pass.
-2. **Local device artifact** — archive with Xcode 27, verify app/extension versions
-   and the actual expanded final TinyEMU Release optimization flags; immediately retain
-   the recoverable archive, app, symbols and hashes before signing.
-3. **Internal distribution** — sign/upload the existing artifact, then independently
-   confirm Apple `VALID`, unexpired and available to existing Floe QA. Device archive,
-   upload and internal availability remain separate gates.
+1. **Source freeze and reconciliation** — completed: the round's 94 owned files were staged
+   explicitly from the primary's source whitelist, every hash re-verified, committed as
+   `29937dc025267bacd89434cc092b3906c99b93ee` and pushed with the annotated tag `v1.7.32`;
+   protected untracked files were left untouched. The final local qualification records the five
+   earlier fixture assertion issues and their corrections; no business guard was weakened to
+   obtain a pass.
+2. **Local device artifact** — completed: Xcode 27.0 (27A266a) Release iphoneos arm64 archive
+   with `CODE_SIGNING_ALLOWED=NO` from the frozen tag; app + extension `1.7.32 (273)`; the new
+   FloeTinyEMU Release response file ends `-fno-modules -O2` (last optimization flag); the
+   archive, raw app, all ten dSYMs and hashes were retained before signing
+   (`Local/Artifacts/build273/`, transport sha256 `0fc1e741…`).
+3. **Internal distribution** — completed: the existing artifact was signed/uploaded by
+   `release-unsigned-ipa.yml` local-artifact route (run 38715266826, `app_rebuilt=false`), and
+   independent GET verification confirmed Apple `VALID`, unexpired and available to existing
+   Floe QA. Device archive, upload and internal availability remained separate gates.
+
+Known open gate (not a delivery blocker, owner decision): `scripts/license_inventory.sh --check`
+fails on this frozen source because the new test-only `ZIPFoundation` Xcode package is declared
+with `exactVersion` while the checker requires an immutable `revision:`. The App does not link
+that package; the fix belongs in the next round's `project.yml` (the frozen tag is not edited).
 
 Real provider/model and physical-device testing remain **not performed in this
 round**. Scripted-provider tests do not establish real-LLM decisions or device
@@ -151,8 +166,9 @@ limits are not a claim of physical-device acceptance.
   free-space gain and is not quoted as exact.
 - The earlier archived build's compiler invocation is not reconstructible from retained
   logs (response files were removed), so the `-Os` comparison rests on the fixed benchmark
-  above; the older `-Os` log is historical context only. The actual next App archive must
-  verify that the engine was compiled with the new Release flag.
+  above; the older `-Os` log is historical context only. The 273 App archive satisfied the
+  follow-up: its retained FloeTinyEMU Release response file ends `-DXcode -fno-modules -O2`,
+  so the engine shipped with the new Release flag (last optimization flag wins).
 - After all module builds finished, the repository lock was restored byte-for-byte to
   the baseline schema-1, 32-pin file; the App workspace lock remains unchanged.
 - Standalone host tests do not prove App/UI behavior. Actual App/UI tests are listed

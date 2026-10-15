@@ -1,6 +1,10 @@
 # Floe 1.7.32 (273) — Temporary chat, CAD and shared Linux execution
 
-Internal Floe QA candidate. App qualification, upload, Apple processing and availability are recorded separately; this note does not claim delivery.
+Internal Floe QA candidate. App qualification, upload, Apple processing and availability are recorded separately.
+
+Delivery record (2026-10-15): internal Floe QA only. Frozen source `29937dc025267bacd89434cc092b3906c99b93ee` (tag `v1.7.32`); local Xcode 27.0 (27A266a) Release archive with `CODE_SIGNING_ALLOWED=NO`; transport sha256 `0fc1e741…`; signed and uploaded through the repository local-artifact workflow without rebuilding the App (run `38715266826`), then independently read back from Apple: build `f0b719ad-c418-4c50-bba0-48ab45aa4147`, `VALID`, unexpired, `IN_BETA_TESTING` in the existing internal Floe QA group. The qualification limits below still stand.
+
+交付记录（2026-10-15，仅内部 Floe QA）：冻结源码 `29937dc025267bacd89434cc092b3906c99b93ee`（标签 `v1.7.32`），本地 Xcode 27.0（27A266a）Release 归档（`CODE_SIGNING_ALLOWED=NO`），传输包 sha256 `0fc1e741…`；通过仓库的“本地制品”流程签名并上传，应用未重新构建（运行 `38715266826`）；随后独立读取 Apple 状态：构建 `f0b719ad-c418-4c50-bba0-48ab45aa4147`，`VALID`、未过期、现有内部 Floe QA 组 `IN_BETA_TESTING`。下方验证边界仍然有效。
 
 ## 简体中文
 
