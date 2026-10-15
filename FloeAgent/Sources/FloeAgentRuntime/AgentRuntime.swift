@@ -406,6 +406,45 @@ public actor FloeAgentRuntime {
         /// retrieval (web.fetch/web.search) is public-only; tools with a
         /// LAN/diagnostic opt-in must refuse it for these runs.
         public var publicWebOnly: Bool
+        /// True for a temporary (ephemeral) chat run. The canonical
+        /// dispatcher re-validates every main-run and delegated-child call
+        /// against `TemporaryChatToolPolicy` before any effect, and offered
+        /// schemas are the policy's read-only projections. Set once by the
+        /// caller (the same flag that narrowed `allowedToolNames`); never
+        /// model-minted and never changed mid-run.
+        public var temporaryReadOnly: Bool
+        /// Explicit execution environment identity for this run and every
+        /// child it delegates to. Frozen from the app's resolved task
+        /// environment; the runtime never infers it from the first project or
+        /// any UI-global state. `nil` means "the execution layer's own
+        /// resolution", never "pick a default".
+        public var environmentID: String?
+        /// Bounded wait for an unsafe environment lifecycle operation
+        /// (start/stop/restart/repair) while other clients of the same
+        /// environment are still executing. On exhaustion the operation fails
+        /// with the real active-consumer list instead of tearing the backend
+        /// down under another client.
+        public var environmentLifecycleWait: TimeInterval
+        /// True when `environmentID` resolves to a local Linux guest: the
+        /// app sets it from the real environment record
+        /// (`executionBackend == .linuxVM`, not deleting) — the same backend
+        /// predicate the guest route applies for `exec.shell`. It may be a
+        /// shared/project guest, so this does NOT assert ownership,
+        /// disposability or data protection; ownership is enforced separately
+        /// by the execution coordinator. Never inferred from model arguments
+        /// or a model-supplied environment label; false keeps the native host
+        /// and every unknown environment on the existing approval policy.
+        public var localLinuxGuestEnvironment: Bool
+        /// Trusted service-owned store roots keyed by the typed contract's
+        /// store keys (today `TypedMutationContract.mediaProjectStoreKey` →
+        /// the app-owned MediaProjectStore directory, supplied by the app).
+        /// They let the canonical resolver pin service-owned mutable targets
+        /// (the `media.project` record) for lease coordination, the
+        /// runtime-authority canonical target and the approval classification.
+        /// Model arguments only ADDRESS records inside these stores; they
+        /// never mint authority, and an absent key fails closed to the
+        /// existing policy.
+        public var serviceStorePaths: [String: String]
 
         public init(
             conversationID: UUID = UUID(),
@@ -436,7 +475,12 @@ public actor FloeAgentRuntime {
             providerRetryJitterRatio: Double = 0.2,
             unknownOutcomeReconciler: (any UnknownOutcomeReconciler)? = nil,
             ephemeralTransport: Bool = false,
-            publicWebOnly: Bool = false
+            publicWebOnly: Bool = false,
+            temporaryReadOnly: Bool = false,
+            environmentID: String? = nil,
+            environmentLifecycleWait: TimeInterval = 30,
+            localLinuxGuestEnvironment: Bool = false,
+            serviceStorePaths: [String: String] = [:]
         ) {
             self.conversationID = conversationID
             self.provider = provider
@@ -470,6 +514,11 @@ public actor FloeAgentRuntime {
             self.unknownOutcomeReconciler = unknownOutcomeReconciler
             self.ephemeralTransport = ephemeralTransport
             self.publicWebOnly = publicWebOnly
+            self.temporaryReadOnly = temporaryReadOnly
+            self.environmentID = environmentID
+            self.environmentLifecycleWait = max(0, environmentLifecycleWait)
+            self.localLinuxGuestEnvironment = localLinuxGuestEnvironment
+            self.serviceStorePaths = serviceStorePaths
         }
     }
 
@@ -501,6 +550,16 @@ public actor FloeAgentRuntime {
     private let peerBus: SubagentPeerBus
     /// Serializes canonical mutation targets across concurrent children.
     private let mutationLeases = MutationLeaseCoordinator()
+    /// Coordinates several clients of one root task (the parent run and its
+    /// delegated children) on a shared execution backend: short-lived
+    /// consumer tickets for in-flight calls and an exclusive, active-consumer
+    /// aware ticket for genuinely unsafe environment lifecycle operations.
+    private let environmentCoordinator = SharedEnvironmentCoordinator()
+    /// Frozen identity of the descriptors this run actually offers, computed
+    /// once on first use. Permission/catalog identity is frozen separately
+    /// from per-turn schemas: delegated children discover against exactly the
+    /// parent's real ceiling, never a wider raw registry.
+    private var cachedRuntimeCatalogNames: Set<String>?
     /// Serializes human approval escalations. The parent resolves calls
     /// serially, but concurrent children can reach the policy at the same
     /// time; an approval card must never be re-targeted by a second
@@ -1358,7 +1417,12 @@ public actor FloeAgentRuntime {
             userRequests: Self.approvalUserRequests(from: messages),
             hostAndPathScope: waiting.toolCall.scope,
             preapprovedPythonScriptSHA256: configuration.preapprovedPythonScriptSHA256,
-            preapprovedPythonPackages: configuration.preapprovedPythonPackages
+            preapprovedPythonPackages: configuration.preapprovedPythonPackages,
+            trustedContext: Self.trustedExecutionContext(
+                call: waiting.toolCall,
+                descriptor: descriptor,
+                configuration: configuration
+            )
         )
         let decision: ApprovalDecision
         do {
@@ -1412,6 +1476,262 @@ public actor FloeAgentRuntime {
         pendingSteers.remove(at: index)
         acceptedSteerIDs.remove(id)
         return true
+    }
+
+    // MARK: - Frozen catalog identity & temporary read-only policy
+
+    /// The descriptors this run actually offers: plan-mode restriction,
+    /// child-only removal, the model's auxiliary-vision pruning, the user's
+    /// effective name ceiling, the on-device curated ceiling and — for a
+    /// temporary chat run — the read-only policy projection. Computed from
+    /// immutable run configuration only, so it doubles as the frozen catalog
+    /// identity children discover and dispatch against.
+    private func runtimeVisibleCatalogDescriptors() -> [ToolCatalog.Descriptor] {
+        var descriptors: [ToolCatalog.Descriptor]
+        if configuration.conversationMode == .plan {
+            descriptors = PlanToolPolicy().allowedDescriptors(from: executor.allDescriptors)
+        } else {
+            descriptors = executor.allDescriptors
+        }
+        // Child-only sibling collaboration tools exist solely for delegated
+        // children; the main run must never see them (discovery included).
+        descriptors.removeAll { $0.executionBoundary == .childOnly }
+        if configuration.model.capabilities.contains(.vision) {
+            // A multimodal model receives the current image bytes directly.
+            // Do not offer auxiliary inspection/OCR escape hatches that make
+            // capable models avoid looking at the supplied image. Preflight
+            // fallback evidence is prepared by the app before this boundary
+            // when an on-device vision projector cannot load.
+            descriptors.removeAll { $0.name == "image.inspect" }
+        }
+        if let allowed = configuration.allowedToolNames {
+            descriptors.removeAll { !allowed.contains($0.name) }
+        }
+        // On-device runs are bounded by the curated ceiling. Apply it to this
+        // run's catalog before any discovery so hidden tools (shell, code
+        // execution, Linux provisioning and environment lifecycle) can never
+        // be reintroduced through a discovery guess, tools.list/search or
+        // remembered state. Cloud runs keep their full catalog.
+        if configuration.provider.kind == .local {
+            descriptors.removeAll {
+                !LocalModelToolPolicy.curatedCeilingNames.contains($0.name)
+            }
+        }
+        if configuration.temporaryReadOnly {
+            // Presentation projection only: the base descriptors (and their
+            // authorization identities) stay untouched for execution.
+            descriptors = descriptors.compactMap {
+                TemporaryChatToolPolicy.readOnlyDescriptor($0)
+            }
+        }
+        return descriptors
+    }
+
+    /// Frozen name identity of the run's real catalog, computed once.
+    ///
+    /// Child-only collaboration tools (`delegate.peers`, `delegate.message`)
+    /// are part of the identity even though the main-run catalog never shows
+    /// them: they are offered exclusively to delegated children, and the
+    /// child dispatcher still enforces the boundary and the parent ceiling.
+    private func runtimeVisibleCatalogNameSet() -> Set<String> {
+        if let cachedRuntimeCatalogNames { return cachedRuntimeCatalogNames }
+        var names = Set(runtimeVisibleCatalogDescriptors().map(\.name))
+        for descriptor in executor.allDescriptors
+        where descriptor.executionBoundary == .childOnly {
+            if let allowed = configuration.allowedToolNames,
+               !allowed.contains(descriptor.name) { continue }
+            if configuration.temporaryReadOnly,
+               TemporaryChatToolPolicy.readOnlyDescriptor(descriptor) == nil { continue }
+            names.insert(descriptor.name)
+        }
+        cachedRuntimeCatalogNames = names
+        return names
+    }
+
+    /// Canonical, execution-time check of the temporary read-only policy for
+    /// one exact call. Returns nil only when the policy explicitly allows
+    /// this descriptor+arguments pair; every other case fails closed with the
+    /// policy's own reason. `descriptor` is the ORIGINAL catalog descriptor
+    /// (never a projected copy), so the decision is bound to the real
+    /// authorization identity.
+    private func temporaryReadOnlyDenial(
+        descriptor: ToolCatalog.Descriptor,
+        arguments: Data
+    ) -> String? {
+        guard configuration.temporaryReadOnly else { return nil }
+        if let reason = TemporaryChatToolPolicy.denialReason(
+            descriptor: descriptor,
+            arguments: arguments
+        ) {
+            return reason
+        }
+        // Defense in depth: a callable name must still be inside the frozen
+        // catalog identity of this run. A wrapper that rebuilt a context can
+        // never smuggle a name the run never offered.
+        guard runtimeVisibleCatalogNameSet().contains(descriptor.name) else {
+            return "The '\(descriptor.name)' tool is not part of this temporary chat's offered capability set."
+        }
+        return nil
+    }
+
+    /// Action-aware effective classification for approval metadata inside a
+    /// temporary run. Only called AFTER `temporaryReadOnlyDenial` accepted the
+    /// exact descriptor+arguments pair as a safe read action: the policy's
+    /// trusted projection then supplies the effective classification (for an
+    /// enumerated mixed tool, the narrowed read action). A real write action
+    /// is denied before this point, the base descriptor still owns the
+    /// authorization identity/grant binding, and the registry descriptor is
+    /// never replaced. Outside temporary runs this is the identity function.
+    private func actionAwareApprovalDescriptor(
+        for call: ToolCall,
+        descriptor: ToolCatalog.Descriptor
+    ) -> ToolCatalog.Descriptor {
+        guard configuration.temporaryReadOnly else { return descriptor }
+        guard TemporaryChatToolPolicy.denialReason(
+            descriptor: descriptor,
+            arguments: call.argumentsJSON
+        ) == nil else {
+            return descriptor
+        }
+        var effective = TemporaryChatToolPolicy.readOnlyDescriptor(descriptor) ?? descriptor
+        // The policy verified THIS exact action as a read; approval metadata
+        // must not keep imposing the base tool's write classification, or a
+        // verified read (for example media.models action=list) would demand a
+        // write-only approval. A real write action never reaches here — it was
+        // denied above — and the BASE descriptor still owns the authorization
+        // identity, grant binding and argument validation.
+        effective.isSideEffecting = false
+        effective.effect = .readOnly
+        return effective
+    }
+
+    /// True when this call changes one environment's lifecycle and must
+    /// serialize with active consumers of the same environment.
+    static let environmentLifecycleToolNames: Set<String> = [        "environment.startLinux",
+        "environment.stopLinux",
+        "environment.softRestartLinux",
+        "environment.hardRestartLinux",
+        "environment.repairLinux",
+    ]
+
+    /// Runtime-issued stable identity of the client that owns a call: the
+    /// main run or one delegated child. Execution layers scope session
+    /// ownership and cancellation to this value.
+    private func clientSessionID(for identity: ChildExecutionIdentity?) -> String {
+        guard let identity else { return "run:\(runID.uuidString)" }
+        return "child:\(identity.childID.uuidString)"
+    }
+
+    /// Runtime-internal correlation key for per-client bookkeeping
+    /// (lifecycle, idempotency). Provider call ids and idempotency keys are
+    /// only unique inside ONE provider conversation; the parent run and its
+    /// children converse separately, so identical model-emitted identifiers
+    /// must never share one lifecycle/idempotency slot. The main run keeps
+    /// its raw provider id (provider history and checkpoints match it); a
+    /// delegated child's entries are scoped by its trusted child identity.
+    private func runtimeCallKey(
+        _ callID: String,
+        identity: ChildExecutionIdentity?
+    ) -> String {
+        guard let identity else { return callID }
+        return "child:\(identity.childID.uuidString):\(callID)"
+    }
+
+    /// Acquires the canonical mutation lease for a MAIN-run mutating call.
+    /// Child calls already hold their own lease in `executeChildCall`; the
+    /// delegation envelope is excluded because its real mutations happen in
+    /// the child and are leased per call there. Returns nil when the call is
+    /// not a main-run workspace mutation.
+    private func acquireMainRunMutationLease(
+        call: ToolCall,
+        descriptor: ToolCatalog.Descriptor,
+        childExecution: ChildExecutionIdentity?
+    ) async throws -> MutationLeaseToken? {
+        guard childExecution == nil else { return nil }
+        guard descriptor.effect == .mutating else { return nil }
+        guard call.toolName != DelegateTool.name else { return nil }
+        // Environment lifecycle is serialized by the environment coordinator
+        // with active-consumer awareness, not by the workspace lock: holding a
+        // workspace-wide lease across a VM restart would block unrelated work
+        // for the operation's whole duration.
+        guard !Self.environmentLifecycleToolNames.contains(call.toolName) else { return nil }
+        let keys = MutationTargetResolver.resolve(
+            for: call,
+            descriptor: descriptor,
+            workspaceRootURL: configuration.workspaceRootURL,
+            serviceStorePaths: configuration.serviceStorePaths,
+            stagedDocument: configuration.canvasStagedDocument
+        ).keys
+        guard !keys.isEmpty else { return nil }
+        return try await mutationLeases.acquire(
+            keys: keys,
+            owner: "main:\(call.id)"
+        )
+    }
+
+    /// Runs one main-run or child call under this runtime's environment
+    /// coordination. Lifecycle operations take the exclusive, active-consumer
+    /// aware ticket; ordinary calls register a short-lived consumer ticket so
+    /// an unsafe lifecycle operation can see them. Never a lifetime lock.
+    private func withEnvironmentCoordination<T>(
+        environmentID: String?,
+        call: ToolCall,
+        childExecution: ChildExecutionIdentity?,
+        cancellation: CancellationToken,
+        _ body: () async throws -> T
+    ) async throws -> T {
+        guard let environmentID, !environmentID.isEmpty else {
+            return try await body()
+        }
+        // The delegation envelope itself never touches the execution backend:
+        // its real calls happen INSIDE the child, and every one of them
+        // registers its own consumer/lifecycle ticket when it dispatches. A
+        // consumer ticket for the envelope would instead be held for the
+        // child's WHOLE lifetime — far longer than any single call — and the
+        // child's own start/stop/restart/repair would then see its ancestor as
+        // an active consumer and refuse a legitimate lifecycle operation as
+        // "busy" until the bounded wait expired. Delegation is excluded from
+        // consumer registration for the same reason it is excluded from the
+        // workspace mutation lease (acquireMainRunMutationLease): the envelope
+        // is not a client of the shared backend. Coordination itself stays
+        // intact — every real main-run or child call still registers.
+        if call.toolName == DelegateTool.name {
+            return try await body()
+        }
+        let label = "\(call.toolName) [\(clientSessionID(for: childExecution))]"
+        if Self.environmentLifecycleToolNames.contains(call.toolName) {
+            let ticket = try await environmentCoordinator.acquireLifecycle(
+                environmentID: environmentID,
+                label: label,
+                timeout: configuration.environmentLifecycleWait,
+                cancellation: cancellation
+            )
+            do {
+                let result = try await body()
+                await environmentCoordinator.releaseLifecycle(ticket)
+                return result
+            } catch {
+                await environmentCoordinator.releaseLifecycle(ticket)
+                throw error
+            }
+        }
+        // Consumer admission is coordinated: a late call must not dispatch
+        // into an environment a lifecycle operation currently owns. Ordinary
+        // consumers stay concurrent with each other.
+        let ticket = try await environmentCoordinator.acquireConsumer(
+            environmentID: environmentID,
+            label: label,
+            timeout: configuration.environmentLifecycleWait,
+            cancellation: cancellation
+        )
+        do {
+            let result = try await body()
+            await environmentCoordinator.endConsumer(ticket)
+            return result
+        } catch {
+            await environmentCoordinator.endConsumer(ticket)
+            throw error
+        }
     }
 
     // MARK: Core loop
@@ -1560,44 +1880,14 @@ public actor FloeAgentRuntime {
         let supportsTools = configuration.toolsEnabled
             && configuration.model.capabilities.contains(.tools)
             && !isFinalizingWithoutTools
-        var catalogDescriptors: [ToolCatalog.Descriptor]
-        if configuration.conversationMode == .plan {
-            catalogDescriptors = PlanToolPolicy().allowedDescriptors(from: executor.allDescriptors)
-        } else {
-            catalogDescriptors = executor.allDescriptors
-        }
-        // Child-only sibling collaboration tools exist solely for delegated
-        // children; the main run must never see them (discovery included).
-        catalogDescriptors.removeAll { $0.executionBoundary == .childOnly }
-        if configuration.model.capabilities.contains(.vision) {
-            // A multimodal model receives the current image bytes directly.
-            // Do not offer auxiliary inspection/OCR escape hatches that make
-            // capable models avoid looking at the supplied image. Preflight
-            // fallback evidence is prepared by the app before this boundary
-            // when an on-device vision projector cannot load.
-            // OCR remains useful for dense text/screenshots and can reduce
-            // token usage even for a multimodal model. Only semantic image
-            // inspection is redundant with direct vision.
-            let auxiliaryVisionTools: Set<String> = ["image.inspect"]
-            catalogDescriptors.removeAll { auxiliaryVisionTools.contains($0.name) }
-        }
-        let effectiveAllowedNames: Set<String>? = {
-            configuration.allowedToolNames
-        }()
-        if let effectiveAllowedNames {
-            catalogDescriptors.removeAll { !effectiveAllowedNames.contains($0.name) }
-        }
-        // On-device runs are bounded by the curated ceiling. Apply it to this
-        // run's catalog before any discovery so hidden tools (shell, code
-        // execution, Linux provisioning and environment lifecycle) can never
-        // be reintroduced through a discovery guess, tools.list/search or
-        // remembered state. Cloud runs keep their full catalog.
+        // The run's real catalog identity: plan/ceiling/curation/projection
+        // applied once. This is FROZEN separately from the per-turn schema
+        // subset; delegated children discover and dispatch against exactly
+        // this set.
+        var catalogDescriptors = runtimeVisibleCatalogDescriptors()
+        // On-device runs keep their curated discovery behavior; the frozen
+        // identity above already carries the curated ceiling.
         let isLocalProvider = configuration.provider.kind == .local
-        if isLocalProvider {
-            catalogDescriptors.removeAll {
-                !LocalModelToolPolicy.curatedCeilingNames.contains($0.name)
-            }
-        }
         discoverableDescriptors = catalogDescriptors
         let userTask = messages.last(where: { $0.role == "user" })?.content ?? ""
         // Eviction notices only make sense for schemas the model actually saw
@@ -1923,6 +2213,18 @@ public actor FloeAgentRuntime {
         pendingToolCalls.removeAll(keepingCapacity: false)
         responseReasoning = ""
 
+        // The compose/checkpoint sequence above suspends (sink callbacks,
+        // durable writes). A cancel or pause that won during those suspensions
+        // must never open a new provider request: the run is already parked or
+        // terminal, and a provider stream that never yields would otherwise
+        // keep this loop alive with no owner of its terminal transition.
+        switch state {
+        case .cancelling, .paused, .checkpointed, .completed, .failed:
+            return
+        default:
+            break
+        }
+
         providerPayloadBytes = 0
         modelRequestStartedAt = Date()
         firstModelActivityAt = nil
@@ -1996,6 +2298,18 @@ public actor FloeAgentRuntime {
                 await self.emit(.error(normalized))
                 await self.handleProviderFailure(normalized)
             }
+        }
+        // Final boundary: creating the consumer task and this check are not
+        // separated by any suspension, so a cancel that already owns the
+        // terminal transition is caught here and its stream is torn down
+        // instead of parking the loop on a stream nobody will finish.
+        switch state {
+        case .cancelling, .paused, .checkpointed, .completed, .failed:
+            streamTask?.cancel()
+            streamTask = nil
+            return
+        default:
+            break
         }
         if let activeStreamTask = streamTask {
             await withTaskCancellationHandler {
@@ -2602,6 +2916,59 @@ public actor FloeAgentRuntime {
         case budgetExhausted
     }
 
+    /// Runtime-resolved trusted facts for one call, derived ONLY from this
+    /// run's frozen configuration and the compiled descriptor:
+    /// - the typed mutable-target contract resolves the call's REAL mutable
+    ///   targets (PDF `outputPath`, office apply/export `output`, media
+    ///   project store record, video/audio/image outputs); read-only inputs
+    ///   are never listed, so a read of repository content is not a
+    ///   repository write;
+    /// - the Canvas staged document (when authorized for this run) pins a
+    ///   staged `cad.document` target to the staged draft root, mirroring the
+    ///   tool side;
+    /// - when any required target cannot be pinned, the whole extent is
+    ///   unresolved (workspace wildcard) and recorded as such, so a carve-out
+    ///   can never pretend an unresolved batch/redirect target was resolved;
+    /// - the environment class comes from the app-resolved guest binding for
+    ///   the frozen `environmentID`; a host-scoped call is remote regardless.
+    private static func trustedExecutionContext(
+        call: ToolCall,
+        descriptor: ToolCatalog.Descriptor,
+        configuration: Configuration
+    ) -> TrustedExecutionContext {
+        let resolution = MutationTargetResolver.resolve(
+            for: call,
+            descriptor: descriptor,
+            workspaceRootURL: configuration.workspaceRootURL,
+            serviceStorePaths: configuration.serviceStorePaths,
+            stagedDocument: configuration.canvasStagedDocument
+        )
+        let mutableTargets = resolution.mutableTargets
+            .map(\.path)
+            .reduce(into: (set: Set<String>(), ordered: [String]())) { partial, path in
+                if partial.set.insert(path).inserted { partial.ordered.append(path) }
+            }
+            .ordered
+            .sorted()
+        let workspaceRoot = configuration.workspaceRootURL?
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        let environmentClass: ApprovalEnvironmentClass = {
+            if case .local = call.scope {
+                return configuration.localLinuxGuestEnvironment ? .localLinuxVM : .localNative
+            }
+            return .remote
+        }()
+        return TrustedExecutionContext(
+            environmentClass: environmentClass,
+            mutableTargetPaths: mutableTargets,
+            hasUnresolvedExtent: resolution.hasUnresolvedExtent,
+            typedContractCovered: resolution.contractCovered,
+            workspaceRootPath: workspaceRoot
+        )
+    }
+
     /// Resolves a single tool call through the budget, catalog, catastrophic
     /// gate and approval policy. Approval escalation blocks here (the runtime
     /// waits for the human decision), so this phase must always run serially —
@@ -2636,6 +3003,17 @@ public actor FloeAgentRuntime {
                 decision: "deny:skill-capability"
             )
         }
+        // Temporary (ephemeral) chat runs re-validate the read-only policy at
+        // this canonical resolution boundary — the same path the parent run
+        // and every delegated child call use — for the descriptor AND the
+        // concrete arguments. A wrapper, alias, batch or child cannot widen
+        // the descriptor-derived ceiling this way.
+        if let reason = temporaryReadOnlyDenial(descriptor: descriptor, arguments: call.argumentsJSON) {
+            return .denied(
+                reason: "Denied: \(reason)",
+                decision: "deny:temporary-readonly"
+            )
+        }
         let statefulRouteGoal = messages.last(where: { $0.role == "user" })?.content ?? ""
         if let reason = executionLedger.statefulToolDenialReason(
             for: call.toolName,
@@ -2653,15 +3031,28 @@ public actor FloeAgentRuntime {
                 decision: "deny:missing-remote-scope"
             )
         }
+        // Action-aware effective classification for a VERIFIED read action in
+        // a temporary run: A's policy decided this exact descriptor+arguments
+        // pair is a safe read above, so the trusted projection (narrowed
+        // schema/classification) is what approval metadata uses. The BASE
+        // descriptor keeps its authorization identity, grant binding and
+        // argument validation; a real write action never reaches this point
+        // (it was denied above), and nothing is replaced in the registry.
+        let approvalDescriptor = actionAwareApprovalDescriptor(for: call, descriptor: descriptor)
         let action = ProposedAction(
             toolCall: call,
-            riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
+            riskLabels: Set(approvalDescriptor.riskLabels.map(\.rawValue)),
             userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
             recentContext: Self.approvalContext(from: messages),
             userRequests: Self.approvalUserRequests(from: messages),
             hostAndPathScope: call.scope,
             preapprovedPythonScriptSHA256: configuration.preapprovedPythonScriptSHA256,
-            preapprovedPythonPackages: configuration.preapprovedPythonPackages
+            preapprovedPythonPackages: configuration.preapprovedPythonPackages,
+            trustedContext: Self.trustedExecutionContext(
+                call: call,
+                descriptor: approvalDescriptor,
+                configuration: configuration
+            )
         )
         // Catastrophic gate runs before every policy.
         if let gate, let command = extractCommandString(from: call) {
@@ -2693,7 +3084,7 @@ public actor FloeAgentRuntime {
         let decision: ApprovalDecision
         let requiresModelReview = (policy as? any ApprovalReviewRouting)?
             .requiresModelReview(action) ?? (policy.policyName == "approval-model")
-        if !descriptor.isSideEffecting, !requiresModelReview {
+        if !approvalDescriptor.isSideEffecting, !requiresModelReview {
             decision = .allow(scope: Self.approvalScope(for: call), expiresAt: nil)
         } else {
             if requiresModelReview {
@@ -2869,7 +3260,8 @@ public actor FloeAgentRuntime {
         call: ToolCall,
         grant: ApprovalGrant,
         emitTransition: Bool = true,
-        childExecution: ChildExecutionIdentity? = nil
+        childExecution: ChildExecutionIdentity? = nil,
+        delegatedContext: ToolContext? = nil
     ) async -> ToolResult {
         guard let descriptor = executor.descriptor(named: call.toolName),
               !grant.isExpired(),
@@ -2884,12 +3276,59 @@ public actor FloeAgentRuntime {
                 outputSummary: "Approval scope does not permit this tool call",
                 outputDigest: ""
             )
-            await audit(toolCall: call, result: result, decision: "deny:scope-mismatch-or-expired")
+            await audit(
+                toolCall: call, result: result,
+                decision: "deny:scope-mismatch-or-expired",
+                activatesDiscovery: childExecution == nil
+            )
             return result
         }
 
+        // Child execution state: a delegated call carries the trusted context
+        // the runtime itself built for that child (SubagentRunner passes it
+        // through the canonical dispatcher). Authority stays with the parent:
+        // the approval grant, descriptor identity, ceiling and policy checks
+        // above/below are unchanged. What the child context legitimately owns
+        // is its per-client state — skill provenance, cancellation scope,
+        // environment binding and client session identity.
+        let delegated = childExecution == nil ? nil : delegatedContext
+        // Explicit environment binding: a child may never retarget execution
+        // to a different environment than the run is bound to.
+        if let delegated,
+           let boundEnvironment = configuration.environmentID,
+           let requestedEnvironment = delegated.environmentID,
+           requestedEnvironment != boundEnvironment {
+            let result = ToolResult(
+                callID: call.id,
+                status: .denied,
+                outputSummary: "Denied: the delegated call requested environment '"
+                    + requestedEnvironment + "' but this run is bound to '" + boundEnvironment + "'.",
+                outputDigest: ""
+            )
+            await audit(
+                toolCall: call, result: result,
+                decision: "deny:child-environment-binding",
+                activatesDiscovery: false
+            )
+            return result
+        }
+        let effectiveEnvironmentID = delegated?.environmentID ?? configuration.environmentID
+        let effectiveCancellation = delegated?.cancellation ?? cancellationToken
+        let effectiveSkillIDs = delegated?.activeSkillIDs ?? configuration.activeSkillIDs
+        // The client identity is RUNTIME-issued from the trusted child
+        // identity (or the main run), never taken from a passed context: a
+        // child context inherits other parent fields for convenience, and
+        // session ownership must not be spoofable that way.
+        let effectiveClientSessionID = clientSessionID(for: childExecution)
+
         // Idempotency: never re-execute a key already executed in this run.
-        if !call.idempotencyKey.isEmpty, executedIdempotencyKeys.contains(call.idempotencyKey) {
+        // The booking is client-scoped: provider idempotency keys are only
+        // meaningful inside one provider conversation, so a child reusing a
+        // parent key must never be silently skipped as "already executed".
+        let idempotencyKey = call.idempotencyKey.isEmpty
+            ? ""
+            : runtimeCallKey(call.idempotencyKey, identity: childExecution)
+        if !idempotencyKey.isEmpty, executedIdempotencyKeys.contains(idempotencyKey) {
             return ToolResult(
                 callID: call.id,
                 status: .ok,
@@ -2904,6 +3343,7 @@ public actor FloeAgentRuntime {
 
         setToolLifecycle(
             call: call,
+            identity: childExecution,
             phase: .dispatched,
             authorizationIdentity: descriptor.authorizationIdentity,
             isSideEffecting: descriptor.isSideEffecting
@@ -2984,7 +3424,8 @@ public actor FloeAgentRuntime {
                 canonicalTarget: RuntimeAuthorityDigest.canonicalTarget(
                     for: call,
                     descriptor: descriptor,
-                    workspaceRootURL: configuration.workspaceRootURL
+                    workspaceRootURL: configuration.workspaceRootURL,
+                    stagedDocument: configuration.canvasStagedDocument
                 ),
                 toolName: call.toolName,
                 operation: Self.runtimeAuthorityOperation(for: call),
@@ -3002,19 +3443,50 @@ public actor FloeAgentRuntime {
             toolIdempotencyKey: call.idempotencyKey,
             approvalGrantID: grant.id,
             scope: call.scope,
-            activeSkillIDs: configuration.activeSkillIDs,
+            activeSkillIDs: effectiveSkillIDs,
             allowedToolNames: configuration.allowedToolNames,
             publicWebOnly: configuration.publicWebOnly,
             workspaceRootURL: configuration.workspaceRootURL,
             canvasStagedDocument: configuration.canvasStagedDocument,
             allowedWorkspacePaths: configuration.allowedWorkspacePaths,
-            cancellation: cancellationToken,
+            cancellation: effectiveCancellation,
             childBudget: childBudget,
+            environmentID: effectiveEnvironmentID,
             conversationID: configuration.conversationID,
             childExecution: handoff,
             runtimeAuthority: runtimeAuthority,
-            callOrigin: makeCallOrigin(for: call, handoff: handoff)
+            callOrigin: makeCallOrigin(for: call, handoff: handoff),
+            temporaryReadOnly: configuration.temporaryReadOnly,
+            clientSessionID: effectiveClientSessionID,
+            frozenEffectiveCatalogNames: runtimeVisibleCatalogNameSet()
         )
+        // Parent + children on one workspace: a MAIN-run mutation takes the
+        // same canonical target lease a child call takes, so concurrent
+        // parent/child writes to one file (or an unknown-extent shell write)
+        // serialize instead of interleaving. Child calls already hold their
+        // lease from `executeChildCall`; acquiring again here would be a
+        // nested double acquire, so this path is main-run only.
+        let mutationLease: MutationLeaseToken?
+        do {
+            mutationLease = try await acquireMainRunMutationLease(
+                call: call,
+                descriptor: descriptor,
+                childExecution: childExecution
+            )
+        } catch {
+            let result = ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: error.localizedDescription,
+                outputDigest: ""
+            )
+            await audit(
+                toolCall: call, result: result,
+                decision: "deny:mutation-lease",
+                activatesDiscovery: childExecution == nil
+            )
+            return result
+        }
         // Monotonic per-call execution origin: the executor for THIS call is
         // about to run. The boundary observation is delivered CONCURRENTLY
         // with execution rather than awaited before it, so the service
@@ -3026,10 +3498,29 @@ public actor FloeAgentRuntime {
         }()
         let result: ToolResult
         do {
-            result = try await executor.execute(
-                call,
-                expectedAuthorizationIdentity: grant.scope.toolAuthorizationIdentity,
-                context: context
+            result = try await withEnvironmentCoordination(
+                environmentID: effectiveEnvironmentID,
+                call: call,
+                childExecution: childExecution,
+                cancellation: effectiveCancellation
+            ) {
+                try await executor.execute(
+                    call,
+                    expectedAuthorizationIdentity: grant.scope.toolAuthorizationIdentity,
+                    context: context
+                )
+            }
+        } catch let busy as EnvironmentBusyError {
+            result = ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: busy.message,
+                outputDigest: ""
+            )
+            await audit(
+                toolCall: call, result: result,
+                decision: "deny:environment-busy",
+                activatesDiscovery: childExecution == nil
             )
         } catch let error as FloeError where error == .cancelled {
             result = ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
@@ -3043,6 +3534,9 @@ public actor FloeAgentRuntime {
                 outputDigest: ""
             )
         }
+        if let mutationLease {
+            await mutationLeases.release(mutationLease)
+        }
 
         // Per-call execution end boundary, stamped the moment the executor
         // for THIS call returned, independent of when the batch settles.
@@ -3055,9 +3549,13 @@ public actor FloeAgentRuntime {
 
         // Audit lands before the result flows back — cancellation must
         // never silently drop it.
-        await audit(toolCall: call, result: result, decision: "allow:\(grant.policyName)")
-        if !call.idempotencyKey.isEmpty {
-            executedIdempotencyKeys.insert(call.idempotencyKey)
+        await audit(
+            toolCall: call, result: result,
+            decision: "allow:\(grant.policyName)",
+            activatesDiscovery: childExecution == nil
+        )
+        if !idempotencyKey.isEmpty {
+            executedIdempotencyKeys.insert(idempotencyKey)
         }
         return result
     }
@@ -3193,6 +3691,25 @@ public actor FloeAgentRuntime {
                 decision: "deny:child-ceiling"
             )
         }
+        // Frozen catalog identity: a child dispatches against exactly the
+        // descriptor set the main run really offers. A stale/forged child
+        // context cannot reach a tool the run never offered (on-device
+        // curated ceiling, plan-mode set, temporary read-only projection).
+        if let frozen = childContext.frozenEffectiveCatalogNames,
+           !frozen.contains(call.toolName) {
+            return await childDenied(
+                call,
+                reason: "Tool '\(call.toolName)' is not part of this task's offered catalog",
+                decision: "deny:child-catalog-identity"
+            )
+        }
+        if let reason = temporaryReadOnlyDenial(descriptor: descriptor, arguments: call.argumentsJSON) {
+            return await childDenied(
+                call,
+                reason: "Denied: \(reason)",
+                decision: "deny:child-temporary-readonly"
+            )
+        }
         let resolution = await resolveToolCall(call, chargeParentBudget: false)
         switch resolution {
         case .approved(let grant):
@@ -3200,9 +3717,13 @@ public actor FloeAgentRuntime {
             // The child's result settles in the CHILD's provider history, not
             // in the parent's batch. Mark this lifecycle boundary committed so
             // a later parent checkpoint never reports it as an orphaned open
-            // boundary (the child's own subagent loop replays it).
+            // boundary (the child's own subagent loop replays it). The entry
+            // is scoped by the trusted child identity, so an identical
+            // provider call id in the parent or a sibling can never collide
+            // with it.
             setToolLifecycle(
                 call: call,
+                identity: identity,
                 phase: .resultCommitted,
                 authorizationIdentity: descriptor.authorizationIdentity,
                 isSideEffecting: descriptor.isSideEffecting
@@ -3232,17 +3753,26 @@ public actor FloeAgentRuntime {
         childContext: ToolContext
     ) async -> ToolResult {
         let descriptor = executor.descriptor(named: call.toolName)
-        let keys = MutationTargetResolver.keys(
-            for: call,
-            descriptor: descriptor,
-            workspaceRootURL: configuration.workspaceRootURL ?? childContext.workspaceRootURL
-        )
+        // Environment lifecycle operations are serialized by the environment
+        // coordinator with active-consumer awareness; a workspace-wide lease
+        // here would block them for the whole duration of an unrelated shell
+        // command and they do not write the workspace.
+        let keys = Self.environmentLifecycleToolNames.contains(call.toolName)
+            ? []
+            : MutationTargetResolver.resolve(
+                for: call,
+                descriptor: descriptor,
+                workspaceRootURL: configuration.workspaceRootURL ?? childContext.workspaceRootURL,
+                serviceStorePaths: configuration.serviceStorePaths,
+                stagedDocument: configuration.canvasStagedDocument
+            ).keys
         guard !keys.isEmpty else {
             return await executeResolved(
                 call: call,
                 grant: grant,
                 emitTransition: false,
-                childExecution: identity
+                childExecution: identity,
+                delegatedContext: childContext
             )
         }
         let owner = "child:\(identity.childID.uuidString.prefix(8)):\(call.toolName)"
@@ -3252,7 +3782,8 @@ public actor FloeAgentRuntime {
                 call: call,
                 grant: grant,
                 emitTransition: false,
-                childExecution: identity
+                childExecution: identity,
+                delegatedContext: childContext
             )
             await mutationLeases.release(lease)
             return result
@@ -3267,7 +3798,11 @@ public actor FloeAgentRuntime {
 
     private func childDenied(_ call: ToolCall, reason: String, decision: String) async -> ToolResult {
         let result = ToolResult(callID: call.id, status: .denied, outputSummary: reason, outputDigest: "")
-        _ = await audit(toolCall: call, result: result, decision: decision)
+        _ = await audit(
+            toolCall: call, result: result,
+            decision: decision,
+            activatesDiscovery: false
+        )
         return result
     }
 
@@ -3942,9 +4477,13 @@ public actor FloeAgentRuntime {
                 allowedWorkspacePaths: configuration.allowedWorkspacePaths,
                 cancellation: cancellationToken,
                 childBudget: childBudget,
+                environmentID: configuration.environmentID,
                 conversationID: configuration.conversationID,
                 childExecution: handoff,
-                callOrigin: makeCallOrigin(for: call, handoff: handoff)
+                callOrigin: makeCallOrigin(for: call, handoff: handoff),
+                temporaryReadOnly: configuration.temporaryReadOnly,
+                clientSessionID: clientSessionID(for: nil),
+                frozenEffectiveCatalogNames: runtimeVisibleCatalogNameSet()
             )
             toRun.append((call, grant, context))
         }
@@ -3988,6 +4527,7 @@ public actor FloeAgentRuntime {
 
         let executor = self.executor
         let sink = self.sink
+        let environmentID = configuration.environmentID
         let results = await withTaskGroup(
             of: (String, ToolResult).self,
             returning: [String: ToolResult].self
@@ -4006,10 +4546,24 @@ public actor FloeAgentRuntime {
                     }()
                     let result: ToolResult
                     do {
-                        result = try await executor.execute(
-                            call,
-                            expectedAuthorizationIdentity: grant.scope.toolAuthorizationIdentity,
-                            context: context
+                        result = try await self.withEnvironmentCoordination(
+                            environmentID: environmentID,
+                            call: call,
+                            childExecution: nil,
+                            cancellation: context.cancellation
+                        ) {
+                            try await executor.execute(
+                                call,
+                                expectedAuthorizationIdentity: grant.scope.toolAuthorizationIdentity,
+                                context: context
+                            )
+                        }
+                    } catch let busy as EnvironmentBusyError {
+                        result = ToolResult(
+                            callID: call.id,
+                            status: .failed,
+                            outputSummary: busy.message,
+                            outputDigest: ""
                         )
                     } catch {
                         result = ToolResult(
@@ -4583,21 +5137,23 @@ public actor FloeAgentRuntime {
 
     private func setToolLifecycle(
         call: ToolCall,
+        identity: ChildExecutionIdentity? = nil,
         phase: AgentToolLifecyclePhase,
         authorizationIdentity: String? = nil,
         isSideEffecting: Bool? = nil
     ) {
-        let prior = toolLifecycleByCallID[call.id]
+        let key = runtimeCallKey(call.id, identity: identity)
+        let prior = toolLifecycleByCallID[key]
         if let prior {
             guard prior.toolName == call.toolName else {
                 logger.error(
-                    "toolLifecycleIdentityMismatch run=\(runID.uuidString) call=\(call.id) expected=\(prior.toolName) actual=\(call.toolName)"
+                    "toolLifecycleIdentityMismatch run=\(runID.uuidString) call=\(key) expected=\(prior.toolName) actual=\(call.toolName)"
                 )
                 return
             }
             guard Self.lifecycleOrder(phase) >= Self.lifecycleOrder(prior.phase) else {
                 logger.error(
-                    "toolLifecyclePhaseRegression run=\(runID.uuidString) call=\(call.id) from=\(prior.phase.rawValue) to=\(phase.rawValue)"
+                    "toolLifecyclePhaseRegression run=\(runID.uuidString) call=\(key) from=\(prior.phase.rawValue) to=\(phase.rawValue)"
                 )
                 return
             }
@@ -4605,20 +5161,20 @@ public actor FloeAgentRuntime {
                let authorizationIdentity,
                priorIdentity != authorizationIdentity {
                 logger.error(
-                    "toolLifecycleAuthorizationChanged run=\(runID.uuidString) call=\(call.id)"
+                    "toolLifecycleAuthorizationChanged run=\(runID.uuidString) call=\(key)"
                 )
                 return
             }
             if let priorContext = prior.executorContextFingerprint,
                priorContext != executorContextFingerprint(for: call) {
                 logger.error(
-                    "toolLifecycleExecutorContextChanged run=\(runID.uuidString) call=\(call.id)"
+                    "toolLifecycleExecutorContextChanged run=\(runID.uuidString) call=\(key)"
                 )
                 return
             }
         }
-        toolLifecycleByCallID[call.id] = AgentToolLifecycleEntry(
-            callID: call.id,
+        toolLifecycleByCallID[key] = AgentToolLifecycleEntry(
+            callID: key,
             toolName: call.toolName,
             authorizationIdentity: authorizationIdentity ?? prior?.authorizationIdentity,
             executorContextFingerprint: prior?.executorContextFingerprint
@@ -4795,8 +5351,19 @@ public actor FloeAgentRuntime {
     /// result: a missing sink or a failed record means nothing is durable
     /// yet, and the caller must not emit a card-retirement receipt.
     @discardableResult
-    private func audit(toolCall: ToolCall, result: ToolResult, decision: String) async -> Bool {
-        activateReadTools(toolCall: toolCall, result: result)
+    private func audit(
+        toolCall: ToolCall,
+        result: ToolResult,
+        decision: String,
+        activatesDiscovery: Bool = true
+    ) async -> Bool {
+        // Parent discovery activation is MAIN-RUN bookkeeping. A delegated
+        // child's skill.read must never mutate the parent's discovery state or
+        // persist it: the child has its own versioned ChildToolDiscovery
+        // state, and the parent only sees what it discovered itself.
+        if activatesDiscovery {
+            activateReadTools(toolCall: toolCall, result: result)
+        }
         guard let auditSink else { return false }
         let entry = AuditEntry(
             sequence: 0, // recomputed by the chain actor

@@ -153,17 +153,29 @@ struct OfficeAutomaticExecutionTests {
                             ownerKind: "chat", ownerID: UUID(), conversationID: UUID())
     }
 
-    private func authorization(runID: UUID, taskID: UUID) -> (OfficeAutomaticAuthorization,
-                                                              RuntimeAuthorityBinding) {
+    /// The authorization binding for one test document. The executor enforces
+    /// that the consumed authorization is bound to the stored proposal's
+    /// document, so every fixture carries the REAL runtime-minted identity
+    /// (`file:<canonical document>`) instead of a placeholder.
+    private func authorization(runID: UUID, taskID: UUID, document: String, root: URL)
+        -> (OfficeAutomaticAuthorization, RuntimeAuthorityBinding) {
         let binding = RuntimeAuthorityBinding(
             runID: runID, taskID: taskID, environmentBinding: "task:\(taskID.uuidString)|ws:x",
-            canonicalTarget: "workspace:x", toolName: "document.office.edit",
+            canonicalTarget: "file:" + Self.canonicalDocumentPath(document, root: root),
+            toolName: "document.office.edit",
             operation: "apply", operationID: "call-1", idempotencyKey: "key-1",
             baseRevision: nil, payloadDigest: String(repeating: "a", count: 64))
         let proof = OfficeAutomaticAuthorization(runID: runID, taskID: taskID,
                                                  operationID: "call-1", idempotencyKey: "key-1",
                                                  approvalGrantID: UUID(), binding: binding)
         return (proof, binding)
+    }
+
+    /// Canonical document path exactly as the executor resolves it.
+    static func canonicalDocumentPath(_ document: String, root: URL) -> String {
+        root.standardizedFileURL.resolvingSymlinksInPath()
+            .appendingPathComponent(document)
+            .resolvingSymlinksInPath().path
     }
 
     // MARK: - Tests
@@ -188,7 +200,7 @@ struct OfficeAutomaticExecutionTests {
         }
         let executor = OfficeAutomaticExecutor(factory: factory)
         let runID = UUID(), taskID = UUID()
-        let (proof, _) = authorization(runID: runID, taskID: taskID)
+        let (proof, _) = authorization(runID: runID, taskID: taskID, document: "report.xlsx", root: root)
         let receipt = try await executor.execute(
             proposal: try proposal(for: "report.xlsx", baseSHA256: sourceSHA,
                                    commands: [.excelInsertRows(count: 2, at: "A1")]),
@@ -227,7 +239,7 @@ struct OfficeAutomaticExecutionTests {
         let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: source)
         let factory = FakeServiceSessionFactory { _ in }
         let executor = OfficeAutomaticExecutor(factory: factory)
-        let (proof, _) = authorization(runID: UUID(), taskID: UUID())
+        let (proof, _) = authorization(runID: UUID(), taskID: UUID(), document: "doc.xlsx", root: root)
         await #expect(throws: OfficeAutomaticExecutionError.self) {
             try await executor.execute(
                 proposal: try self.proposal(for: "doc.xlsx", baseSHA256: sourceSHA,
@@ -250,7 +262,7 @@ struct OfficeAutomaticExecutionTests {
         // The fake engine "recalculates" but saves the same stale cache.
         let factory = FakeServiceSessionFactory { _ in }
         let executor = OfficeAutomaticExecutor(factory: factory)
-        let (proof, _) = authorization(runID: UUID(), taskID: UUID())
+        let (proof, _) = authorization(runID: UUID(), taskID: UUID(), document: "calc.xlsx", root: root)
         await #expect(throws: OfficeAutomaticExecutionError.self) {
             try await executor.execute(
                 proposal: try self.proposal(for: "calc.xlsx", baseSHA256: sourceSHA,
@@ -280,7 +292,7 @@ struct OfficeAutomaticExecutionTests {
             }
         }
         let executor = OfficeAutomaticExecutor(factory: factory)
-        let (proof, _) = authorization(runID: UUID(), taskID: UUID())
+        let (proof, _) = authorization(runID: UUID(), taskID: UUID(), document: "calc.xlsx", root: root)
         let receipt = try await executor.execute(
             proposal: try proposal(for: "calc.xlsx", baseSHA256: sourceSHA,
                                    commands: [.excelRecalculate]),
@@ -303,7 +315,7 @@ struct OfficeAutomaticExecutionTests {
         try Data("existing user file".utf8).write(to: output)
         let factory = FakeServiceSessionFactory { _ in }
         let executor = OfficeAutomaticExecutor(factory: factory)
-        let (proof, _) = authorization(runID: UUID(), taskID: UUID())
+        let (proof, _) = authorization(runID: UUID(), taskID: UUID(), document: "report.xlsx", root: root)
         await #expect(throws: OfficeAutomaticExecutionError.self) {
             try await executor.execute(
                 proposal: try self.proposal(for: "report.xlsx", baseSHA256: sourceSHA,
@@ -331,7 +343,7 @@ struct OfficeAutomaticExecutionTests {
             }
         }
         let executor = OfficeAutomaticExecutor(factory: factory)
-        let (proof, _) = authorization(runID: UUID(), taskID: UUID())
+        let (proof, _) = authorization(runID: UUID(), taskID: UUID(), document: "report.xlsx", root: root)
         let request = try proposal(for: "report.xlsx", baseSHA256: sourceSHA,
                                    commands: [.excelInsertRows(count: 1, at: "A1")])
         let first = try await executor.execute(proposal: request, authorization: proof,
@@ -358,7 +370,7 @@ struct OfficeAutomaticExecutionTests {
                                                unavailableReason: "read-only protected"),
             plan: { _ in })
         let executor = OfficeAutomaticExecutor(factory: factory)
-        let (proof, _) = authorization(runID: UUID(), taskID: UUID())
+        let (proof, _) = authorization(runID: UUID(), taskID: UUID(), document: "report.xlsx", root: root)
         await #expect(throws: OfficeAutomaticExecutionError.self) {
             try await executor.execute(
                 proposal: try self.proposal(for: "report.xlsx", baseSHA256: sourceSHA,
@@ -410,7 +422,7 @@ struct OfficeAutomaticExecutionTests {
             plan: { _ in }
         )
         let executor = OfficeAutomaticExecutor(factory: factory)
-        let (proof, _) = authorization(runID: UUID(), taskID: UUID())
+        let (proof, _) = authorization(runID: UUID(), taskID: UUID(), document: "close-fail.xlsx", root: root)
         await #expect(throws: OfficeAutomaticExecutionError.self) {
             try await executor.execute(
                 proposal: try self.proposal(for: "close-fail.xlsx", baseSHA256: sourceSHA,
@@ -453,7 +465,7 @@ struct OfficeAutomaticExecutionTests {
             openError: OfficeAutomaticExecutionError.sessionOpenUnsafe("close was not acknowledged"),
             plan: { _ in })
         let executor = OfficeAutomaticExecutor(factory: factory)
-        let (proof, _) = authorization(runID: UUID(), taskID: UUID())
+        let (proof, _) = authorization(runID: UUID(), taskID: UUID(), document: "open-fail.xlsx", root: root)
         do {
             _ = try await executor.execute(
                 proposal: try self.proposal(for: "open-fail.xlsx", baseSHA256: sourceSHA,
@@ -488,7 +500,7 @@ struct OfficeAutomaticExecutionTests {
             }
         }
         let executor = OfficeAutomaticExecutor(factory: factory)
-        let (proof, _) = authorization(runID: UUID(), taskID: UUID())
+        let (proof, _) = authorization(runID: UUID(), taskID: UUID(), document: "clean.xlsx", root: root)
         _ = try await executor.execute(
             proposal: try self.proposal(for: "clean.xlsx", baseSHA256: sourceSHA,
                                         commands: [.excelInsertRows(count: 1, at: "A1")]),
@@ -510,7 +522,7 @@ struct OfficeAutomaticExecutionTests {
         // cancel the Task at (between open and apply).
         let factory = FakeServiceSessionFactory(statusDelayNanoseconds: 500_000_000) { _ in }
         let executor = OfficeAutomaticExecutor(factory: factory)
-        let (proof, _) = authorization(runID: UUID(), taskID: UUID())
+        let (proof, _) = authorization(runID: UUID(), taskID: UUID(), document: "task-cancel.xlsx", root: root)
         let proposal = try self.proposal(for: "task-cancel.xlsx", baseSHA256: sourceSHA,
                                          commands: [.excelInsertRows(count: 1, at: "A1")])
         let task = Task {
@@ -549,7 +561,7 @@ struct OfficeAutomaticExecutionTests {
             closeError: FakeCloseFailure(),
             plan: { _ in })
         let executor = OfficeAutomaticExecutor(factory: factory)
-        let (proof, _) = authorization(runID: UUID(), taskID: UUID())
+        let (proof, _) = authorization(runID: UUID(), taskID: UUID(), document: "cancel-close.xlsx", root: root)
         do {
             _ = try await executor.execute(
                 proposal: try self.proposal(for: "cancel-close.xlsx", baseSHA256: sourceSHA,
@@ -569,6 +581,80 @@ struct OfficeAutomaticExecutionTests {
                 "staging must be retained while the engine may still hold the working copy")
     }
 
+    @Test("an authorization bound to a DIFFERENT file is refused before any session or output")
+    func authorizationForOtherFileRefused() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("report.xlsx")
+        try writePackage(source, entries: workbookData(sheetData: #"<row r="1"><c r="A1"><v>1</v></c></row>"#))
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: source)
+        let factory = FakeServiceSessionFactory { _ in }
+        let executor = OfficeAutomaticExecutor(factory: factory)
+        // The approved call declares `notes.xlsx` while the stored proposal is
+        // `report.xlsx`: the consumer must refuse on the proposal identity.
+        let (proof, _) = authorization(runID: UUID(), taskID: UUID(),
+                                       document: "notes.xlsx", root: root)
+        do {
+            _ = try await executor.execute(
+                proposal: try proposal(for: "report.xlsx", baseSHA256: sourceSHA,
+                                       commands: [.excelInsertRows(count: 1, at: "A1")]),
+                authorization: proof, relativeOutput: "report.edited.xlsx",
+                requestID: "req-other", access: access(root: root))
+            Issue.record("a binding for a different file must not run")
+        } catch let error as OfficeAutomaticExecutionError {
+            if case .authorizationMismatch = error {
+                // Expected: the stored proposal's document is authoritative.
+            } else {
+                Issue.record("unexpected error: \(error)")
+            }
+        }
+        #expect(await factory.openCount == 0)
+        // No output was written and the source is unchanged.
+        #expect(!FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("report.edited.xlsx").path))
+        #expect(try FloeDigest.sha256Hex(ofFileAt: source) == sourceSHA)
+    }
+
+    @Test("the workspace bound of the same root is accepted for a reviewed call without a declared path")
+    func workspaceBoundBindingAllowed() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("report.xlsx")
+        try writePackage(source, entries: workbookData(sheetData: #"<row r="1"><c r="A1"><v>1</v></c></row>"#))
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: source)
+        let after = #"<row r="1"><c r="A1"><v>1</v></c></row><row r="2"><c r="A2"><v>2</v></c></row>"#
+        let afterEntries = workbookData(sheetData: after)
+        let factory = FakeServiceSessionFactory { working in
+            try? FileManager.default.removeItem(at: working)
+            let archive = try Archive(url: working, accessMode: .create)
+            for (path, value) in afterEntries {
+                try archive.addFloeEntry(path: path, data: Data(value.utf8))
+            }
+        }
+        let executor = OfficeAutomaticExecutor(factory: factory)
+        // A reviewed proposal-only call (no `path` in the approved arguments)
+        // mints the workspace bound, which the executor accepts for its own
+        // root; the mutation still follows the STORED proposal.
+        let canonicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let binding = RuntimeAuthorityBinding(
+            runID: UUID(), taskID: UUID(), environmentBinding: "task:x|ws:x",
+            canonicalTarget: "workspace:" + canonicalRoot.path,
+            toolName: "document.office.edit", operation: "apply",
+            operationID: "call-ws", idempotencyKey: "key-ws",
+            baseRevision: nil, payloadDigest: String(repeating: "b", count: 64))
+        let proof = OfficeAutomaticAuthorization(
+            runID: binding.runID, taskID: binding.taskID, operationID: "call-ws",
+            idempotencyKey: "key-ws", approvalGrantID: UUID(), binding: binding)
+        let receipt = try await executor.execute(
+            proposal: try proposal(for: "report.xlsx", baseSHA256: sourceSHA,
+                                   commands: [.excelInsertRows(count: 1, at: "A1")]),
+            authorization: proof, relativeOutput: "report.edited.xlsx",
+            requestID: "req-ws", access: access(root: root))
+        #expect(receipt.saved)
+        #expect(receipt.sourceUnchanged)
+        #expect(try FloeDigest.sha256Hex(ofFileAt: source) == sourceSHA)
+    }
+
     /// The shared safety contract's discriminant, measured on the REAL enum:
     /// conformance alone is not unsafe. Exactly the two lifecycle failures are
     /// unsafe; cancellation and every ordinary refusal keep the normal error
@@ -579,6 +665,7 @@ struct OfficeAutomaticExecutionTests {
         let all: [(OfficeAutomaticExecutionError, Bool)] = [
             (.notFound("missing.pptx"), false),
             (.sourceChanged, false),
+            (.authorizationMismatch("other file"), false),
             (.outputConflict("out.xlsx"), false),
             (.commandFormatMismatch(command: "excel.insertRows", format: "pptx"), false),
             (.selectionDependent(command: "word.style"), false),

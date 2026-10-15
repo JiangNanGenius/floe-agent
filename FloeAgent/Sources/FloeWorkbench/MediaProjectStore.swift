@@ -30,6 +30,19 @@ public actor MediaProjectStore {
     private let decoder: JSONDecoder
     private let legacyMigrator: (@Sendable (URL) async throws -> MediaProject?)?
 
+    /// Canonical absolute path of the directory this store persists its
+    /// `media-project-<uuid>.json` records into. Read-only identity: the app
+    /// hands EXACTLY this value to the runtime's typed mutable-target
+    /// contract (`TypedMutationContract.mediaProjectStoreKey`), so lease
+    /// keys, the runtime-authority canonical target and the approval
+    /// classification can never diverge from the real producer — including a
+    /// custom/injected store directory chosen at init. It is never an
+    /// authorization to write: the store's own atomic compare-and-swap
+    /// commits remain the only writer.
+    public nonisolated var storeRootPath: String {
+        directory.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
     public init(directory: URL, limits: Limits = Limits(),
                 legacyMigrator: (@Sendable (URL) async throws -> MediaProject?)? = nil) {
         self.directory = directory

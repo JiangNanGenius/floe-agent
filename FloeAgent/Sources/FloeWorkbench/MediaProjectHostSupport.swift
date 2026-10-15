@@ -768,7 +768,7 @@ public enum MediaProjectSummaries {
         \(proposal.summary)
         Commands: \(proposal.commands.count)
         Resulting revision: \(draft.revision)
-        Awaiting user acceptance in the workbench UI. The model cannot apply this proposal itself.
+        Apply with the workbench UI grant the user accepts, or under the runtime-authorized apply for this exact call. The model cannot mint a grant or an authorization.
         """
     }
 

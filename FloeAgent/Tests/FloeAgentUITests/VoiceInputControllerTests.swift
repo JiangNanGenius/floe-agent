@@ -266,6 +266,27 @@ struct VoiceInputControllerTests {
         #expect(harness.diagnostics.events.contains("listeningStopped"))
     }
 
+    /// Temporary-chat contract: going to the background stops capture but
+    /// never destroys the conversation or the mic affordance — returning to
+    /// the foreground can start a fresh session immediately, without a
+    /// failure state, and no audio/transcript is retained across it.
+    @Test("Background interruption leaves the controller restartable")
+    @MainActor
+    func interruptionLeavesControllerRestartable() async {
+        let harness = Harness()
+        await harness.controller.start()
+        #expect(harness.controller.state == .listening)
+        harness.controller.handleInterruption(reason: .interrupted)
+        await waitForIdle(harness.controller)
+        #expect(harness.controller.state == .idle)
+        // The composer may start a new session after returning.
+        await harness.controller.start()
+        #expect(harness.controller.state == .listening)
+        harness.controller.stop()
+        await waitForIdle(harness.controller)
+        #expect(harness.controller.state == .idle)
+    }
+
     @Test("Route changes stop the session and log the route change")
     @MainActor
     func routeChange() async {

@@ -208,6 +208,10 @@ public enum OfficeAutomaticExecutionError: LocalizedError, Equatable, UnsafeReso
 
     case notFound(String)
     case sourceChanged
+    /// The consumed authorization is not bound to the document this run would
+    /// actually mutate (or to its workspace bound): the stored proposal's
+    /// identity is authoritative, never a model-declared path.
+    case authorizationMismatch(String)
     case outputConflict(String)
     case commandFormatMismatch(command: String, format: String)
     case selectionDependent(command: String)
@@ -242,6 +246,8 @@ public enum OfficeAutomaticExecutionError: LocalizedError, Equatable, UnsafeReso
             return "Office document does not exist: \(path)"
         case .sourceChanged:
             return "The source document changed after the proposal was approved; automatic execution was refused and no output was written."
+        case .authorizationMismatch(let detail):
+            return "The approved call is not bound to this proposal's document (\(detail)); automatic execution was refused and no output was written."
         case .outputConflict(let path):
             return "An existing file with different content is already at \(path); automatic execution never overwrites it. Choose a different output name."
         case .commandFormatMismatch(let command, let format):
@@ -331,6 +337,28 @@ public actor OfficeAutomaticExecutor {
         }
         let root = URL(fileURLWithPath: workspacePath).standardizedFileURL.resolvingSymlinksInPath()
         let documentURL = try resolveDocument(proposal.documentID, root: root)
+        // The consumed authorization must be bound to the DOCUMENT this run
+        // actually mutates: the stored proposal's canonical identity (`file:`)
+        // or the workspace bound of this same root (a reviewed legacy call
+        // that declared no path). Anything else — notably a `file:` target
+        // derived from a model-declared path that differs from the stored
+        // proposal — is refused before any staging or engine session. The
+        // bound path is canonicalized through the filesystem first, so an
+        // unresolved alias of the same file still matches exactly.
+        let documentTarget = "file:" + documentURL.path
+        let workspaceTarget = "workspace:" + root.path
+        let boundTarget = authorization.binding.canonicalTarget
+        let boundFileTarget = Self.canonicalizedTarget(boundTarget, prefix: "file:")
+        let boundWorkspaceTarget = Self.canonicalizedTarget(boundTarget, prefix: "workspace:")
+        guard boundFileTarget == documentTarget || boundWorkspaceTarget == workspaceTarget else {
+            throw OfficeAutomaticExecutionError.authorizationMismatch(
+                "authorization target \(boundTarget) vs document \(documentTarget)")
+        }
+        if let approvedRevision = authorization.binding.baseRevision,
+           approvedRevision.lowercased() != proposal.baseSHA256.lowercased() {
+            throw OfficeAutomaticExecutionError.authorizationMismatch(
+                "authorization revision \(approvedRevision.prefix(12))… vs proposal \(proposal.baseSHA256.prefix(12))…")
+        }
         guard let format = OfficeDocumentFormat(fileExtension: documentURL.pathExtension) else {
             throw OfficeAutomaticExecutionError.notFound(proposal.documentID)
         }
@@ -584,6 +612,18 @@ public actor OfficeAutomaticExecutor {
 
     private func canonicalCommands(_ commands: [OfficeEngineCommand]) -> String {
         (try? OfficeCommandCodec.encode(commands)) ?? commands.map(\.id).joined(separator: ",")
+    }
+
+    /// Canonicalize one runtime-minted target identity (`file:`/`workspace:`)
+    /// through the filesystem so an unresolved alias still compares equal to
+    /// the resolved document/root. Any other prefix (or a non-absolute
+    /// identity such as `workspace:*`) is returned unchanged and can never
+    /// match.
+    static func canonicalizedTarget(_ target: String, prefix: String) -> String {
+        guard target.hasPrefix(prefix) else { return target }
+        let path = String(target.dropFirst(prefix.count))
+        guard path.hasPrefix("/") else { return target }
+        return prefix + URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     private func resolveDocument(_ documentID: String, root: URL) throws -> URL {

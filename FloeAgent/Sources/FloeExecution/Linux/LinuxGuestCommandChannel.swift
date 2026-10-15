@@ -724,12 +724,27 @@ enum LinuxGuestFraming {
 /// stream, so a reader that loses the race to a deadline (or to a sibling
 /// chunk) cannot close the token for later chunks.
 actor LinuxGuestTokenStream {
-    private var chunks: [Data] = []
+    /// One queued element. Control frames (BEGIN/OUT/ERR/END/FAILED/PID/CAPS)
+    /// are never dropped; payload bytes are the only thing a flood may lose.
+    private struct Entry {
+        let data: Data
+        let isControl: Bool
+    }
+
+    private var entries: [Entry] = []
     private var buffered = 0
     private let maxBufferedBytes: Int
     private var waiter: CheckedContinuation<Data?, Never>?
     private var finished = false
     private var failure: (any Error & Sendable)?
+    /// Payload bytes dropped under pressure (bounded stream). Counted, never
+    /// silent: the first drop on a token is logged.
+    private var droppedPayloadBytes = 0
+    /// Control frames that had to be dropped. This can only happen when a
+    /// single token is flooded far past the budget with control frames alone;
+    /// it is counted separately so a hung token is diagnosable.
+    private var droppedControlFrames = 0
+    private var didLogDrop = false
     /// A cancellation-aware reader was cancelled. Recorded because the
     /// cancellation can land BEFORE the reader registers its continuation:
     /// without the record, that reader would install a waiter nothing ever
@@ -742,17 +757,66 @@ actor LinuxGuestTokenStream {
     }
 
     func push(_ data: Data) {
+        push(data, isControl: false)
+    }
+
+    /// Queues one control frame. Control frames are exempt from the drop
+    /// policy so a command's END/FAILED can never be lost behind a flood of
+    /// payload bytes from another (or the same) token: a lost END used to
+    /// leave a caller waiting for its own timeout, and the follow-up
+    /// interrupt/recovery path can poison the shared environment channel that
+    /// other clients are still using.
+    func pushControl(_ data: Data) {
+        push(data, isControl: true)
+    }
+
+    private func push(_ data: Data, isControl: Bool) {
         guard !finished else { return }
         if let waiter {
             self.waiter = nil
             waiter.resume(returning: data)
             return
         }
-        chunks.append(data)
+        entries.append(Entry(data: data, isControl: isControl))
         buffered += data.count
-        while buffered > maxBufferedBytes, !chunks.isEmpty {
-            buffered -= chunks.removeFirst().count
+        trimToBudget()
+    }
+
+    /// Bounds the buffer by dropping the OLDEST PAYLOAD entries first. Control
+    /// frames stay until the payload budget is met; only if control frames
+    /// alone exceed the budget are the oldest of those dropped too (and
+    /// counted). This keeps the stream bounded without ever silently losing a
+    /// token's completion.
+    private func trimToBudget() {
+        guard buffered > maxBufferedBytes, !entries.isEmpty else { return }
+        var index = 0
+        while buffered > maxBufferedBytes, index < entries.count {
+            let entry = entries[index]
+            if entry.isControl {
+                index += 1
+            } else {
+                buffered -= entry.data.count
+                droppedPayloadBytes += entry.data.count
+                entries.remove(at: index)
+            }
         }
+        // Control-only residue: bound it too, but count it distinctly.
+        while buffered > maxBufferedBytes, !entries.isEmpty {
+            let entry = entries.removeFirst()
+            buffered -= entry.data.count
+            if entry.isControl { droppedControlFrames += 1 }
+        }
+        if !didLogDrop, droppedPayloadBytes > 0 || droppedControlFrames > 0 {
+            didLogDrop = true
+            FloeLogger(category: .tools).warning(
+                "guest token stream dropped oldest output under pressure: payloadBytes=\(droppedPayloadBytes) controlFrames=\(droppedControlFrames)"
+            )
+        }
+    }
+
+    /// Diagnostics for the owner and the focused regressions.
+    func dropCounters() -> (payloadBytes: Int, controlFrames: Int) {
+        (droppedPayloadBytes, droppedControlFrames)
     }
 
     func next() async -> Data? {
@@ -799,7 +863,7 @@ actor LinuxGuestTokenStream {
     /// check runs inside the same isolated step that would install the
     /// waiter, so the wake cannot be lost between the two.
     private func install(_ continuation: CheckedContinuation<Data?, Never>, cancellationAware: Bool) {
-        if finished || !chunks.isEmpty {
+        if finished || !entries.isEmpty {
             if let chunk = dequeue() {
                 continuation.resume(returning: chunk)
             } else {
@@ -815,10 +879,10 @@ actor LinuxGuestTokenStream {
     }
 
     private func dequeue() -> Data? {
-        guard !chunks.isEmpty else { return nil }
-        let chunk = chunks.removeFirst()
-        buffered -= chunk.count
-        return chunk
+        guard !entries.isEmpty else { return nil }
+        let entry = entries.removeFirst()
+        buffered -= entry.data.count
+        return entry.data
     }
 
     func finish() {
@@ -1408,7 +1472,10 @@ public actor LinuxGuestCommandChannel {
             let window = min(remaining, .seconds(Self.helloRetryInterval))
             let token = "hello-" + UUID().uuidString
             let tokenStream = LinuxGuestTokenStream()
-            registerToken(token, stream: tokenStream)
+            // A collision here (practically impossible for a fresh UUID) must
+            // fail the attempt before anything is written; the active token
+            // that owns the collision is never touched or unregistered.
+            try registerToken(token, stream: tokenStream)
             let outcome: HelloAttemptOutcome
             do {
                 outcome = try await helloAttempt(
@@ -1553,7 +1620,23 @@ public actor LinuxGuestCommandChannel {
 
     // MARK: token routing
 
-    private func registerToken(_ token: String, stream: LinuxGuestTokenStream) {
+    /// Reserves one routing token for `stream`.
+    ///
+    /// A token that is ALREADY ACTIVE fails closed: registering a second
+    /// stream under a live token must never replace (or later unregister) the
+    /// original, because that would silently reroute the original client's
+    /// frames — output, END/FAILED completion and control — to the duplicate
+    /// (the PTY-hijack class bug). The check and the mutation are one isolated
+    /// step before any `await`, so the refusal cannot race the original's own
+    /// release. Callers MUST NOT unregister a token they failed to register:
+    /// the throw happens before the reservation exists.
+    ///
+    /// Internal rather than private: the focused regressions drive this
+    /// production routing boundary directly with the real channel.
+    func registerToken(_ token: String, stream: LinuxGuestTokenStream) throws {
+        guard tokenStreams[token] == nil else {
+            throw LinuxGuestError.invalidConfiguration("token \(token) is already active")
+        }
         tokenStreams[token] = stream
     }
 
@@ -1886,7 +1969,9 @@ public actor LinuxGuestCommandChannel {
             frame.removeLast() // drop closing 0x1e
             frame.append(Data(" \(arguments)\u{1e}".utf8))
         }
-        await stream.push(frame)
+        // Control frames (including END/FAILED) are exempt from the stream's
+        // payload drop policy: they carry completion, never bulk output.
+        await stream.pushControl(frame)
     }
 
     private func routerDidFinish() async {
@@ -1941,7 +2026,10 @@ public actor LinuxGuestCommandChannel {
 
         let token = breadcrumbID.uuidString
         let tokenStream = LinuxGuestTokenStream()
-        registerToken(token, stream: tokenStream)
+        // Duplicate reservation fails closed (throws) BEFORE the defer below
+        // is installed, so a failed registration can never unregister the
+        // active token it collided with.
+        try registerToken(token, stream: tokenStream)
         runningCommands.insert(token)
         trace(.admitted, token: token, note: "queued on the guest channel")
         defer {
@@ -2200,7 +2288,10 @@ public actor LinuxGuestCommandChannel {
         try await ensureNegotiated()
         let token = "ctl-" + UUID().uuidString
         let tokenStream = LinuxGuestTokenStream()
-        registerToken(token, stream: tokenStream)
+        // Same fail-closed contract as run(): the throw lands before the
+        // unregister defer, so a refused duplicate never releases the
+        // original client's token.
+        try registerToken(token, stream: tokenStream)
         defer { unregisterToken(token) }
 
         let frames = payload.map {
@@ -2284,7 +2375,10 @@ public actor LinuxGuestCommandChannel {
             try await self.send([frame])
         }
         let tokenStream = LinuxGuestTokenStream()
-        registerToken(sessionID, stream: tokenStream)
+        // A duplicate session id/token is refused before the handle is
+        // published and before the send-error cleanup below could run: the
+        // throw leaves the original owner's session and token untouched.
+        try registerToken(sessionID, stream: tokenStream)
         sessions[sessionID] = session
 
         let payload = LinuxGuestFraming.sessionPayload(

@@ -92,6 +92,27 @@ public struct ToolContext: Sendable {
     /// Read-only for tools: report only real processor units at natural
     /// checkpoints (coalescing/persistence belong to the injected reporter).
     public var taskProgress: (any TaskProgressReporting)?
+    /// True when this run is a temporary (ephemeral) chat run. Set by the
+    /// runtime from its immutable configuration; never model-minted. The
+    /// runtime validates the temporary read-only policy before any effect;
+    /// tools that hold their own resource ownership must treat every call in
+    /// such a run as read-only public retrieval.
+    public var temporaryReadOnly: Bool
+    /// Runtime-issued stable identity of the CLIENT that owns this call inside
+    /// one root task: the main run or one delegated child. Execution layers
+    /// that own multi-client resources on a shared backend (guest console
+    /// sessions, persistent PTYs, services) scope session ownership and
+    /// cancellation to this identity, so sibling clients of the same task
+    /// cannot exchange/close/signal each other's sessions. Never derived from
+    /// model output and never Codable.
+    public var clientSessionID: String?
+    /// Frozen identity of the descriptors this run actually offers (plan-mode
+    /// restriction, effective name ceiling, on-device curation, temporary
+    /// read-only projection already applied). Permission/catalog identity is
+    /// frozen separately from per-turn schemas: delegated children discover
+    /// and dispatch against exactly this set, never a wider raw registry.
+    /// `nil` preserves legacy contexts that predate the frozen identity.
+    public var frozenEffectiveCatalogNames: Set<String>?
 
     public init(
         runID: UUID,
@@ -113,7 +134,10 @@ public struct ToolContext: Sendable {
         childExecution: ChildExecutionHandoff? = nil,
         runtimeAuthority: RuntimeTaskAuthority? = nil,
         callOrigin: ToolCallOrigin? = nil,
-        taskProgress: (any TaskProgressReporting)? = nil
+        taskProgress: (any TaskProgressReporting)? = nil,
+        temporaryReadOnly: Bool = false,
+        clientSessionID: String? = nil,
+        frozenEffectiveCatalogNames: Set<String>? = nil
     ) {
         self.runID = runID
         self.environmentID = environmentID
@@ -135,6 +159,9 @@ public struct ToolContext: Sendable {
         self.runtimeAuthority = runtimeAuthority
         self.callOrigin = callOrigin
         self.taskProgress = taskProgress
+        self.temporaryReadOnly = temporaryReadOnly
+        self.clientSessionID = clientSessionID
+        self.frozenEffectiveCatalogNames = frozenEffectiveCatalogNames
     }
 
     /// Enforces the task's persisted file scope before the workspace path
@@ -167,14 +194,49 @@ public struct ToolContext: Sendable {
         }
         return pieces.isEmpty ? "." : pieces.joined(separator: "/")
     }
+
+    /// Bounded, printable session token that names THIS client's session on a
+    /// shared backend: unique across the parent run and every sibling child of
+    /// the same task even when two independent provider conversations happen
+    /// to reuse the same tool-call identifier. Execution layers that already
+    /// key per-exec sessions/commands by a token (the Linux guest console
+    /// channel, shell sessions) use this instead of the bare provider call id,
+    /// so a token collision can never route one client's output to another.
+    /// The runtime seeds `clientSessionID`; the model cannot mint it, and if
+    /// the combined value would exceed the printable token ceiling it is
+    /// replaced by a bounded digest of itself.
+    public var clientScopedSessionToken: String {
+        let client = clientSessionID ?? "run:\(runID.uuidString)"
+        let callID = toolCallID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let raw = callID.isEmpty ? client : "\(client)-\(callID)"
+        guard raw.utf8.count <= 96 else {
+            return "sc-" + FloeDigest.sha256Hex(Data(raw.utf8)).prefix(40)
+        }
+        return raw
+    }
 }
 
 /// Cooperative cancellation handle shared between the runtime and tools.
+///
+/// A token may derive child tokens (`derived()`): cancelling the parent
+/// cancels every live descendant, while cancelling a child affects only that
+/// child's own calls. This is how one delegated subagent can abort its own
+/// in-flight work without stopping the parent run, its siblings or an
+/// unrelated consumer of the same shared backend. Derivation is one-way
+/// (parent → child); a child can never cancel its parent.
 public final class CancellationToken: Sendable {
     private let storage: LockedBox
 
+    /// Weak back-reference so a derived token that already went out of scope
+    /// is not kept alive by its parent.
+    private final class WeakToken: @unchecked Sendable {
+        weak var token: CancellationToken?
+        init(_ token: CancellationToken) { self.token = token }
+    }
+
     private final class LockedBox: @unchecked Sendable {
         private var _cancelled = false
+        private var derived: [WeakToken] = []
         private let lock = NSLock()
 
         var cancelled: Bool {
@@ -183,10 +245,28 @@ public final class CancellationToken: Sendable {
             return _cancelled
         }
 
-        func cancel() {
+        /// Marks cancelled and returns the live descendants to propagate to.
+        /// Returns an empty array when this token was already cancelled.
+        func cancelAndCollectDescendants() -> [CancellationToken] {
             lock.lock()
+            defer { lock.unlock() }
+            guard !_cancelled else { return [] }
             _cancelled = true
-            lock.unlock()
+            let tokens = derived.compactMap(\.token)
+            derived.removeAll()
+            return tokens
+        }
+
+        /// Registers `token` as a descendant. Returns false when this token is
+        /// already cancelled, so the caller cancels the new token immediately
+        /// instead of registering it behind an already-fired cancellation.
+        func register(_ token: CancellationToken) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !_cancelled else { return false }
+            derived.append(WeakToken(token))
+            derived.removeAll { $0.token == nil }
+            return true
         }
     }
 
@@ -195,7 +275,29 @@ public final class CancellationToken: Sendable {
     }
 
     public var isCancelled: Bool { storage.cancelled }
-    public func cancel() { storage.cancel() }
+
+    /// Cancels this token and every descendant derived from it. Cancelling an
+    /// already-cancelled token is a no-op (never re-propagates).
+    public func cancel() {
+        for descendant in storage.cancelAndCollectDescendants() {
+            descendant.cancel()
+        }
+    }
+
+    /// Derives a child token that is cancelled when this token is cancelled,
+    /// but can also be cancelled on its own without affecting this token or
+    /// any sibling. If this token is already cancelled the returned token is
+    /// cancelled before it is handed out, so no new work can slip past an
+    /// inherited cancellation.
+    public func derived() -> CancellationToken {
+        let child = CancellationToken()
+        guard storage.register(child) else {
+            child.cancel()
+            return child
+        }
+        if storage.cancelled { child.cancel() }
+        return child
+    }
 
     /// Throws `FloeError.cancelled` when cancellation has been requested.
     public func throwIfCancelled() throws {

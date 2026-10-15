@@ -272,16 +272,23 @@ public enum RuntimeAuthorityDigest {
     /// when resolvable, the workspace wildcard for wildcard writes, and the
     /// tool scope identity otherwise. Two equal-content files at different
     /// paths therefore get different targets.
+    ///
+    /// `stagedDocument` carries the run's explicitly authorized Canvas staged
+    /// document: a `cad.document` call addressing exactly that document pins
+    /// to the staged draft root (see `MutationTargetResolver.resolve`), which
+    /// the tool side mirrors. Nil keeps the plain workspace resolution.
     public static func canonicalTarget(
         for call: ToolCall,
         descriptor: ToolCatalog.Descriptor?,
-        workspaceRootURL: URL?
+        workspaceRootURL: URL?,
+        stagedDocument: CanvasStagedDocumentAccess? = nil
     ) -> String {
-        if let key = MutationTargetResolver.keys(
+        if let key = MutationTargetResolver.resolve(
             for: call,
             descriptor: descriptor,
-            workspaceRootURL: workspaceRootURL
-        ).first {
+            workspaceRootURL: workspaceRootURL,
+            stagedDocument: stagedDocument
+        ).keys.first {
             switch key.family {
             case .file: return "file:\(key.identity)"
             case .workspace: return "workspace:\(key.identity)"

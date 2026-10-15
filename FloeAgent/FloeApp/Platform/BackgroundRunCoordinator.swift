@@ -1439,11 +1439,20 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     /// Foreground delivery is a system notification too (no duplicated
     /// in-app banner): the system presents it because the delegate asks for it.
+    ///
+    /// This is the completion-handler selector implemented directly, for the
+    /// same reason as `didReceive` below: Build 271 aborted on the
+    /// compiler-generated Objective-C bridge of the `async` delegate
+    /// convenience when a framework-raised exception crossed it uncaught, and
+    /// `willPresent` was the one remaining delegate callback still on that
+    /// bridge. The presentation answer is a constant, so nothing is deferred:
+    /// the completion handler is invoked synchronously and exactly once.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
     }
 
     /// A finish reported as a failure may actually be a user/system

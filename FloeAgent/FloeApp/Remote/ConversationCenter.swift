@@ -1002,6 +1002,28 @@ final class ConversationCenter: ObservableObject {
         return markers.contains { normalized.contains($0) }
     }
 
+    /// The exact temporary read-only ceiling for the run's offered
+    /// descriptors: every verified read stays, provider-backed search tools
+    /// leave the ceiling while no ready provider exists, and the result can
+    /// still serve an ordinary "查天气/帮我搜一下" turn through the read-only
+    /// personal queries plus `web.fetch`. Pure and injectable so the
+    /// App-host suite pins the composition against the REAL settings store
+    /// (`WebSearchSettingsCenter.toolIsAvailable`) instead of a synthetic
+    /// policy-only fixture.
+    nonisolated static func temporaryToolCeiling(
+        offeredDescriptors: [ToolCatalog.Descriptor],
+        webSearchAvailable: (String) -> Bool = { WebSearchSettingsCenter.toolIsAvailable($0) }
+    ) -> Set<String> {
+        var ceiling = TemporaryChatToolPolicy.allowedToolNames(from: offeredDescriptors)
+        // Unconfigured provider-backed search is never advertised: the
+        // handler exists but returns nothing without a ready provider.
+        for name in TemporaryChatToolPolicy.providerBackedWebSearchToolNames
+        where !webSearchAvailable(name) {
+            ceiling.remove(name)
+        }
+        return ceiling
+    }
+
     // MARK: - Published state
 
     /// Conversations in deterministic recency order.
@@ -1837,6 +1859,8 @@ final class ConversationCenter: ObservableObject {
         await session.conversationStore.close()
         await session.runStore.close()
         await session.runningInputStore.close()
+        // RAM-only personal-query snapshots never outlive their session.
+        await PersonalToolCursorStore.shared.revoke(fallbackRunIDs: temporaryRunIDs)
         // The RAM draft never enters the durable bucket; make sure no stale
         // durable entry survives either.
         ComposerDraftStore.shared.setTemporaryDraftExcluded(id, false)
@@ -1950,6 +1974,12 @@ final class ConversationCenter: ObservableObject {
         await session.conversationStore.close()
         await session.runStore.close()
         await session.runningInputStore.close()
+        // Personal-data pagination snapshots are RAM-only and owned per
+        // temporary run (see `PersonalToolOwnerID.init(context:)`). Destroy
+        // them with the session instead of leaving the rows to expire on the
+        // store's TTL; ordinary snapshots are keyed by conversation and are
+        // never matched by a run identity.
+        await PersonalToolCursorStore.shared.revoke(fallbackRunIDs: temporaryRunIDs)
 
         // ---- Cancellation dispatch: still before any keep settlement. ----
         // The explicit service cancel is what closes the run service's own
@@ -2383,6 +2413,92 @@ final class ConversationCenter: ObservableObject {
             .id
     }
 
+    /// Explicit execution-environment binding for one run, or nil.
+    ///
+    /// `FloeAgentRuntime.Configuration.environmentID` is an EXPLICIT binding:
+    /// every tool call of the run — and of every child it delegates to — is
+    /// routed to exactly this environment, and the execution coordinator
+    /// re-validates that the container is owned by this conversation and this
+    /// task's workspace root. It is therefore resolved from the conversation's
+    /// OWN session container whose RECORDED workspace root is this run's root:
+    /// never "the first project environment", never another task's container
+    /// and never a container of a different workspace. When no such container
+    /// exists (a fresh task, a temporary chat, a notes scratch root) the value
+    /// stays nil and the execution layer keeps its historical
+    /// conversation/workspace resolution.
+    static func runBoundExecutionEnvironmentID(
+        registry: EnvironmentRegistry,
+        conversationID: UUID,
+        workspaceRoot: URL?
+    ) async -> String? {
+        guard let workspaceRoot else { return nil }
+        let canonicalRoot = workspaceRoot.resolvingSymlinksInPath().standardizedFileURL
+        let owned = await registry.containersOwned(by: conversationID.uuidString)
+        for container in owned where container.kind == .session
+            && container.state != .deleting
+            && container.effectiveExecutionBackend == .linuxVM {
+            guard let recordedRoot = try? await registry.workspaceRoot(for: container.id),
+                  recordedRoot.resolvingSymlinksInPath().standardizedFileURL == canonicalRoot
+            else { continue }
+            return container.id
+        }
+        return nil
+    }
+
+    /// Ensures the run's environment METADATA exists BEFORE the runtime is
+    /// configured, then resolves the explicit binding for it.
+    ///
+    /// A fresh ordinary run has no session container yet: the execution layer
+    /// creates it lazily on the run's first local tool call, which would leave
+    /// the run's shared-environment coordination (consumer/lifecycle tickets,
+    /// per-client environment identity) disabled until that moment. Creating
+    /// the container here uses exactly the same registry call the lazy path
+    /// uses (`ensureSessionContainer` inherits the project's backend policy,
+    /// and `ensureProjectContainer` is its documented fallback), so the
+    /// resulting project/session/backend state is identical — only the timing
+    /// is earlier. This is metadata only: no guest is started, no VM is
+    /// activated and no tool authority changes. `taskRoot` nil (temporary
+    /// chats, canvas runs, runs without a task root) returns nil and keeps the
+    /// historical resolution; a failure also resolves to nil (legacy lazy
+    /// creation), never to another conversation's or workspace's container.
+    static func ensureRunEnvironmentBinding(
+        registry: EnvironmentRegistry,
+        conversationID: UUID,
+        taskRoot: URL?
+    ) async -> String? {
+        guard let taskRoot else { return nil }
+        let canonicalRoot = taskRoot.resolvingSymlinksInPath().standardizedFileURL
+        let workspaceID = FloeDigest.sha256Hex(Data(canonicalRoot.path.utf8))
+        _ = try? await registry.ensureSessionContainer(
+            conversationID: conversationID.uuidString,
+            workspaceID: workspaceID,
+            workspaceRootPath: canonicalRoot.path
+        )
+        return await runBoundExecutionEnvironmentID(
+            registry: registry,
+            conversationID: conversationID,
+            workspaceRoot: canonicalRoot
+        )
+    }
+
+    /// True when the resolved run environment routes local shell execution
+    /// into a local Linux guest: the same backend predicate the guest
+    /// provider applies when it owns an environment
+    /// (`executionBackend == .linuxVM`, not deleting). An inherited/effective
+    /// backend, an unknown id or a native environment fails closed, so the
+    /// policy carve-out cannot be widened by a misleading label. This does
+    /// NOT assert task ownership or disposability: shared/project guests may
+    /// legitimately be reused, and ownership/foreign-environment refusal
+    /// stays with the execution coordinator before any backend dispatch.
+    static func isLocalLinuxGuestEnvironment(
+        registry: EnvironmentRegistry,
+        environmentID: String?
+    ) async -> Bool {
+        guard let environmentID,
+              let record = await registry.record(id: environmentID) else { return false }
+        return record.executionBackend == .linuxVM && record.state != .deleting
+    }
+
     func runService(
         for conversationID: UUID,
         provider: ProviderProfile,
@@ -2628,11 +2744,22 @@ final class ConversationCenter: ObservableObject {
             // runtime enforces the result at tools.list, main dispatch and
             // child dispatch, so wrappers/aliases/batch/jobs/delegation
             // cannot widen it.
-            var temporaryCeiling = TemporaryChatToolPolicy.allowedToolNames(
-                from: Set(availableDescriptors.map(\.name)))
-            if !WebSearchSettingsCenter.toolIsAvailable(WebSearchTool.name) {
-                temporaryCeiling.remove(WebSearchTool.name)
-            }
+            //
+            // The ceiling is DERIVED from the actually offered descriptors
+            // (verified read actions, audited per-tool exclusions): public
+            // retrieval, personal-data queries, file/media inspection, skill
+            // instructions and tool discovery stay available, while writes,
+            // execution, installs, VM lifecycle, jobs, delegation, sends, GUI
+            // control and credential disclosure stay out. The previous fixed
+            // web pair could collapse the run to an EMPTY catalog for an
+            // ordinary "查天气/帮我搜一下" request (no configured search
+            // provider leaves nothing callable); a descriptor-derived set
+            // keeps the truthful read-only capabilities instead.
+            let temporaryCeiling = Self.temporaryToolCeiling(
+                offeredDescriptors: availableDescriptors)
+            // Existing per-user scope is preserved: the descriptor ceiling is
+            // intersected with the already narrowed set (user capability
+            // toggles, task policy, memory-query gating, provider ceilings).
             allowedToolNames = (allowedToolNames
                 ?? Set(availableDescriptors.map(\.name))).intersection(temporaryCeiling)
         }
@@ -2654,6 +2781,46 @@ final class ConversationCenter: ObservableObject {
             registry: environment.environmentRegistry,
             conversationID: conversationID
         )
+        // Explicit environment identity for the run and every child it
+        // delegates to: this conversation's OWN session container for THIS
+        // task workspace root. For a fresh ordinary run the session metadata
+        // is created here (metadata only, no guest) so the run is explicitly
+        // bound from its first tool call; temporary chats, canvas runs and
+        // runs without a task root never bind (no first-project fallback) and
+        // nil keeps the execution layer's existing resolution.
+        let runExecutionEnvironmentID: String?
+        if isTemporary {
+            runExecutionEnvironmentID = nil
+        } else if runSurface == .canvas {
+            runExecutionEnvironmentID = nil
+        } else {
+            let environmentRoot = taskRootLease?.url ?? notesScratchRoot
+            runExecutionEnvironmentID = await Self.ensureRunEnvironmentBinding(
+                registry: environment.environmentRegistry,
+                conversationID: conversationID,
+                taskRoot: environmentRoot
+            )
+        }
+        // Trusted guest binding for the local-command approval carve-out: the
+        // same real environment record the guest backend routes by. This is a
+        // backend classification only (shared/project guests included), never
+        // an ownership or disposability claim. False for native/unknown
+        // environments and for runs without an explicit binding; never derived
+        // from model arguments.
+        let runLocalLinuxGuest = await Self.isLocalLinuxGuestEnvironment(
+            registry: environment.environmentRegistry,
+            environmentID: runExecutionEnvironmentID
+        )
+        // Trusted service-store roots for the typed mutable-target contract,
+        // read from the ACTUAL service instance: the workbench center's own
+        // MediaProjectStore (the same store the app persists
+        // `media-project-<uuid>.json` records through). An injected/custom/
+        // migrated store directory is honored by construction, and there is
+        // no second default-path calculator to drift. The path is a resolved
+        // fact (like the workspace root): model arguments address records
+        // inside the store but never mint authority, and a missing key or an
+        // invalid project id fails closed.
+        let serviceStorePaths = environment.workbenchCenter.typedServiceStorePaths
         let configuration = FloeAgentRuntime.Configuration(
             conversationID: conversationID,
             provider: provider,
@@ -2689,7 +2856,25 @@ final class ConversationCenter: ObservableObject {
             // provider traffic (the request itself is unaffected), and their
             // web retrieval is public-only (no LAN/diagnostic opt-in).
             ephemeralTransport: isTemporary,
-            publicWebOnly: isTemporary
+            publicWebOnly: isTemporary,
+            // Typed runtime authority for the read-only ceiling: the
+            // canonical dispatcher re-validates every main-run and child call
+            // against `TemporaryChatToolPolicy` before any effect, so a
+            // wrapper/alias/batch call cannot widen the descriptor-derived
+            // ceiling. The flag travels with the immutable configuration.
+            temporaryReadOnly: isTemporary,
+            // Explicit execution environment for the run and its delegated
+            // children (see `runBoundExecutionEnvironmentID`). A temporary
+            // chat or a fresh task has no such container and stays nil.
+            environmentID: runExecutionEnvironmentID,
+            // Trusted guest classification for the deterministic local
+            // command carve-out: true for a local Linux guest environment
+            // (see `isLocalLinuxGuestEnvironment`); shared/project guests are
+            // included and ownership is not asserted here.
+            localLinuxGuestEnvironment: runLocalLinuxGuest,
+            // Service-owned store roots for the typed mutable-target
+            // contract (media project records); see the local above.
+            serviceStorePaths: serviceStorePaths
         )
         await environment.subagentRunnerRegistry.register(
             SubagentRunner(

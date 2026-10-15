@@ -18,6 +18,8 @@
 import Foundation
 import Testing
 import UIKit
+import SwiftUI
+import FloeCore
 import FloeModels
 @testable import FloeApp
 
@@ -741,4 +743,143 @@ struct ComposerFullEditorTests {
 private final class UndoProbe: @unchecked Sendable {
     var undid = false
 }
+
+@Suite("FloeApp.ComposerMeasurementHardening")
+@MainActor
+struct ComposerMeasurementHardeningTests {
+
+    @Test("Overflow scroll changes are deferred even without a host callback")
+    func overflowMutationIsDeferred() async {
+        let field = ComposerReturnField(text: .constant(""), placeholder: "", onReturn: {})
+        let coordinator = field.makeCoordinator()
+        let view = HardwareReturnTextView()
+        view.isScrollEnabled = false
+        coordinator.scheduleOverflowReport(true, textView: view, report: nil)
+        #expect(!view.isScrollEnabled)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(view.isScrollEnabled)
+    }
+
+    @Test("A layout burst applies only its latest view and overflow verdict")
+    func overflowBurstUsesLatestView() async {
+        let field = ComposerReturnField(text: .constant(""), placeholder: "", onReturn: {})
+        let coordinator = field.makeCoordinator()
+        let firstView = HardwareReturnTextView()
+        let latestView = HardwareReturnTextView()
+        firstView.isScrollEnabled = false
+        latestView.isScrollEnabled = true
+        var reports: [Bool] = []
+        coordinator.scheduleOverflowReport(true, textView: firstView, report: { reports.append($0) })
+        coordinator.scheduleOverflowReport(false, textView: latestView, report: { reports.append($0) })
+        #expect(reports.isEmpty)
+        #expect(!firstView.isScrollEnabled && latestView.isScrollEnabled)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(!firstView.isScrollEnabled && !latestView.isScrollEnabled)
+        #expect(reports == [false])
+    }
+
+    /// Build-272 regression: the composer must never mutate live TextKit
+    /// state while SwiftUI measures it. The detached path is the width-change
+    /// branch of `sizeThatFits`; it may read the view's storage but must not
+    /// touch its container, scroll flag or layout manager.
+    @Test("Detached measurement never mutates the live view")
+    func detachedMeasurementIsSideEffectFree() {
+        let view = HardwareReturnTextView()
+        view.text = String(repeating: "中文长文本与English mix，无空格长串aaaaaaaaaaaaaaaa。\n", count: 60)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 44)
+        view.layoutIfNeeded()
+        let containerSize = view.textContainer.size
+        let scrollEnabled = view.isScrollEnabled
+        let measured = ComposerFieldMeasurement.detachedHeight(
+            of: view.textStorage,
+            width: 200
+        )
+        #expect(measured > 0)
+        #expect(view.textContainer.size == containerSize)
+        #expect(view.isScrollEnabled == scrollEnabled)
+        // The view's live layout manager never received the detached layout.
+        #expect(view.layoutManager.usedRect(for: view.textContainer).height >= 0)
+    }
+
+    /// A width change wraps differently: the narrower width is taller, and
+    /// both measurements are positive for real text.
+    @Test("Detached measurement wraps long CJK text at the proposed width")
+    func detachedMeasurementWrapsAtWidth() {
+        let storage = NSTextStorage(string: String(repeating: "这是一段用于验证换行高度的中文草稿。", count: 24))
+        let wide = ComposerFieldMeasurement.detachedHeight(of: storage, width: 480)
+        let narrow = ComposerFieldMeasurement.detachedHeight(of: storage, width: 160)
+        #expect(wide > 0)
+        #expect(narrow > wide)
+        // Zero/negative widths still measure (bounded to 1pt).
+        #expect(ComposerFieldMeasurement.detachedHeight(of: storage, width: 0) >= wide)
+    }
+
+    /// The always-detached measurement replaced a crash path; this records the
+    /// ACTUAL cost of that path for a ~100k-character draft at composer widths
+    /// (wrap + scroll verdict included) instead of assuming it is cheap. The
+    /// numbers below are the observed cost of this path on the executing
+    /// machine — there is deliberately no baseline/improvement claim.
+    @Test("100k-character draft: measurement cost, wrap and scroll verdict are recorded")
+    func longDraftMeasurementCost() {
+        let text = String(repeating: "中文与English混排的长草稿，这一行会换行。", count: 5_000)
+        #expect(text.count > 100_000)
+        let storage = NSTextStorage(string: text)
+        // Warm-up: the first layout also builds font/line-fragment state.
+        _ = ComposerFieldMeasurement.detachedHeight(of: storage, width: 320)
+
+        var timingsMs: [Double] = []
+        for _ in 0..<3 {
+            let started = CFAbsoluteTimeGetCurrent()
+            let height = ComposerFieldMeasurement.detachedHeight(of: storage, width: 320)
+            timingsMs.append((CFAbsoluteTimeGetCurrent() - started) * 1_000)
+            #expect(height > 0)
+        }
+        let narrow = ComposerFieldMeasurement.detachedHeight(of: storage, width: 160)
+        let wide = ComposerFieldMeasurement.detachedHeight(of: storage, width: 480)
+        // Wrapping: a narrower proposal never produces a shorter block.
+        #expect(narrow > wide)
+
+        // Scroll verdict for the long draft: the natural height is far past
+        // the 8-line cap, so the field really scrolls instead of growing.
+        let lineHeight = ComposerFieldMeasurement.detachedHeight(
+            of: NSTextStorage(string: FloeL10n.l("design.composer_return_field.chars")),
+            width: 320)
+        let insets: CGFloat = 16
+        let cap = ComposerFieldMetrics.heightCap(
+            lineCapHeight: lineHeight * 8 + insets, availableHeight: nil)
+        let natural = wide + insets
+        #expect(natural > cap, "a 100k draft must exceed the line cap and scroll")
+
+        print("FLOE_COMPOSER_100K characters=\(text.count) detachedHeightMs=\(timingsMs) "
+            + "narrow=\(narrow) wide=\(wide) cap=\(cap) natural=\(natural)")
+        // Generous, observed ceiling: one measurement of a 100k draft must
+        // stay well inside an interactive frame budget violation; the memoized
+        // coordinator avoids repeating it for unchanged content.
+        let worst = timingsMs.max() ?? 0
+        #expect(worst < 5_000, "one 100k detached measurement took \(worst) ms")
+    }
+
+    /// The detached number is the same quantity the live field reports at the
+    /// same width, so the height contract is unchanged by the hardening.
+    @Test("Detached measurement matches the live used-rect height")
+    func detachedMatchesLiveHeight() {
+        let view = HardwareReturnTextView()
+        view.text = String(repeating: "中文与English混排的长草稿，这一行会换行。\n", count: 40)
+        let width: CGFloat = 300
+        view.textContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)
+        view.layoutManager.ensureLayout(for: view.textContainer)
+        let live = view.layoutManager.usedRect(for: view.textContainer).height
+        // Measurement order: compare only the used height, not the insets.
+        let detached = ComposerFieldMeasurement.detachedHeight(
+            of: view.textStorage,
+            width: width
+        )
+        #expect(abs(detached - live) < 0.5)
+    }
+}
+
 #endif

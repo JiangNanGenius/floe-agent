@@ -218,3 +218,63 @@ struct NativeCADCapabilityMatrixTests {
         }
     }
 }
+
+// MARK: - Unicode document names (Chinese/mixed) and actionable refusals
+
+extension NativeCADPolicyTests {
+    @Test("Chinese and mixed names are usable; unsafe names are refused with a bilingual reason")
+    func unicodeNamesAndRefusals() {
+        // Letters/digits of any language survive sanitization.
+        #expect(NativeCADPolicy.sanitizedStem("中文支架") == "中文支架")
+        #expect(NativeCADPolicy.sanitizedStem("混合 Mixed 名称") == "混合 Mixed 名称")
+        #expect(NativeCADPolicy.sanitizedStem("支架 v2 (左)") == "支架 v2 (左)")
+        #expect(NativeCADPolicy.sanitizedStem("Кронштейн-2") == "Кронштейн-2")
+        #expect(NativeCADPolicy.sanitizedStem("ブラケット") == "ブラケット")
+        #expect(NativeCADPolicy.sanitizedStem("中文 支架") == "中文 支架")
+
+        // …and are accepted by the strict validator (this is what the create
+        // flow calls before the factory).
+        #expect(NativeCADPolicy.validateName("中文支架") == nil)
+        #expect(NativeCADPolicy.validateName("混合 Mixed 名称") == nil)
+        #expect(NativeCADPolicy.validateName("  中文支架  ") == nil)
+
+        // Control/invisible characters are refused (not silently mangled).
+        let control = NativeCADPolicy.validateName("bad\u{0007}name")
+        #expect(control != nil)
+        #expect(control?.contains("控制字符") == true)
+        #expect(control?.contains("control or invisible") == true)
+        #expect(NativeCADPolicy.validateName("two\nlines") != nil)
+        #expect(NativeCADPolicy.validateName("zero\u{200D}width") != nil)
+        #expect(NativeCADPolicy.validateName("bidi\u{202E}reorder") != nil)
+
+        // Path separators and traversal are refused.
+        let separator = NativeCADPolicy.validateName("folder/name")
+        #expect(separator != nil)
+        #expect(separator?.contains("路径分隔符") == true)
+        #expect(NativeCADPolicy.validateName("folder\\name") != nil)
+        #expect(NativeCADPolicy.validateName("..") != nil)
+        #expect(NativeCADPolicy.validateName(".") != nil)
+
+        // Length is bounded, counted in characters, with the limit stated.
+        #expect(NativeCADPolicy.validateName(String(repeating: "长", count: 120)) == nil)
+        let tooLong = NativeCADPolicy.validateName(String(repeating: "长", count: 121))
+        #expect(tooLong != nil)
+        #expect(tooLong?.contains("121") == true)
+        #expect(tooLong?.contains("120") == true)
+
+        // Empty and unusable-only names are refused with a usable-character hint.
+        #expect(NativeCADPolicy.validateName("   ") != nil)
+        let emoji = NativeCADPolicy.validateName("🚀")
+        #expect(emoji != nil)
+        #expect(emoji?.contains("可用字符") == true)
+
+        // The sanitizer itself never emits a separator, a leading dot or an
+        // empty stem for a refused name.
+        for raw in ["folder/name", "..", ".hidden", "a\\b"] {
+            if let stem = NativeCADPolicy.sanitizedStem(raw) {
+                #expect(!stem.contains("/") && !stem.contains("\\"))
+                #expect(!stem.hasPrefix("."))
+            }
+        }
+    }
+}

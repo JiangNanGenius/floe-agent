@@ -632,9 +632,10 @@ struct SubagentSafetyTests {
         #expect(wrapUp.replayedToolPairs.allSatisfy { $0.call.id == "read-pair-1" })
         #expect(wrapUp.replayedToolPairs.allSatisfy { $0.result.callID == $0.call.id })
         #expect(wrapUp.toolSchemas.isEmpty)
-        // Compat-name mapping stays total over the original ceiling even
-        // though schemas are empty.
-        #expect(wrapUp.allToolNames == ["test.echo"])
+        // Compat-name mapping stays total over the run's ceiling even though
+        // schemas are empty: the child's discovery universe plus the two
+        // runtime-virtual discovery tools.
+        #expect(Set(wrapUp.allToolNames) == ["test.echo", "tools.search", "tools.list"])
 
         // Render the archived pair through the REAL wire DTOs to prove
         // call/result pairing on every protocol (an orphan result is a
@@ -753,7 +754,7 @@ struct SubagentSafetyTests {
         #expect(turn4.pendingToolCalls.map(\.id) == ["read-b"])
         #expect(turn4.toolResults.map { $0.callID } == ["read-b"])
         #expect(turn4.pendingAssistantReasoning == "plan read B")
-        #expect(turn4.allToolNames == ["test.echo"])
+        #expect(Set(turn4.allToolNames) == ["test.echo", "tools.search", "tools.list"])
 
         // Render the final request's ENTIRE replayed context through the real
         // wire DTOs the adapters consume: search's and readA's content (their
@@ -1159,18 +1160,62 @@ struct SubagentSafetyTests {
         #expect(wrapUp.toolSchemas.isEmpty)
         #expect(!wrapUp.replayedToolPairs.isEmpty)
         #expect(wrapUp.replayedToolPairs.allSatisfy { $0.call.id == $0.result.callID })
-        #expect(wrapUp.allToolNames == ["test.echo"])
+        #expect(Set(wrapUp.allToolNames) == ["test.echo", "tools.search", "tools.list"])
         for request in adapter.requests { try assertWireReadyBounds(request) }
         #expect(outcome.findings.contains("dropped from bounded replay history"))
         #expect(outcome.truncated)
     }
 
-    @Test("a frozen schema catalog above its explicit allowance fails before dispatch")
-    func oversizedFrozenSchemasFailExplicitly() async throws {
+    @Test("an oversized individual definition is reported for itself and never aborts the child")
+    func oversizedIndividualDefinitionDoesNotAbort() async throws {
         let adapter = MockAdapter()
         let executor = MockExecutor()
         executor.descriptors["test.hugeSchema"] = .init(
             name: "test.hugeSchema",
+            toolDescription: String(repeating: "s", count: 60 * 1024),
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        executor.descriptors["test.small"] = .init(
+            name: "test.small", riskLabels: [], isSideEffecting: false
+        )
+        let search = try TestFixtures.toolCall(
+            id: "search-1", toolName: "tools.search",
+            arguments: #"{"queries":["test.hugeSchema","test.small"]}"#
+        )
+        adapter.script = [
+            [.toolRequest(search)],
+            [.textDelta(.init(text: "finished")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let runner = makeRunner(adapter: adapter, executor: executor)
+        var context = ToolContext(runID: UUID(), cancellation: CancellationToken())
+        context.childBudget = budgetContext()
+        let outcome = try await runner.runStructured(exploreRequest(maxIterations: 6), context: context)
+        // The child completed: one unloadable definition is a bounded,
+        // per-definition report, never a whole-catalog abort.
+        #expect(outcome.status == .completed)
+        #expect(outcome.iterationsUsed == 2)
+        // The first request carries no results yet; the search response is the
+        // feedback of the second request.
+        let searchResult = try #require(adapter.requests.dropFirst().first?.toolResults.first?.output)
+        #expect(searchResult.contains("Not loadable within the request schema budget"))
+        #expect(searchResult.contains("test.hugeSchema"))
+        // The small definition really loaded; the oversized one never reaches
+        // the wire.
+        let followUp = try #require(adapter.requests.last)
+        #expect(followUp.toolSchemas.contains { $0.name == "test.small" })
+        #expect(!followUp.toolSchemas.contains { $0.name == "test.hugeSchema" })
+        try assertWireReadyBounds(followUp)
+    }
+
+    @Test("an over-budget pinned seed fails as a startup error with zero real iterations")
+    func overBudgetSeedFailsWithZeroIterations() async throws {
+        let adapter = MockAdapter()
+        let executor = MockExecutor()
+        // skill.read belongs to the always-present seed; a pathological
+        // definition makes the seed itself impossible to carry.
+        executor.descriptors["skill.read"] = .init(
+            name: "skill.read",
             toolDescription: String(repeating: "s", count: 60 * 1024),
             riskLabels: [],
             isSideEffecting: false
@@ -1180,8 +1225,10 @@ struct SubagentSafetyTests {
         context.childBudget = budgetContext()
         let outcome = try await runner.runStructured(exploreRequest(maxIterations: 6), context: context)
         #expect(outcome.status == .toolError)
-        #expect(outcome.iterationsUsed == 1)
-        #expect(outcome.findings.contains("bounded schema allowance"))
+        // Accurate actual iterations: nothing was reserved or dispatched, so
+        // the real count is zero and no request reached the adapter.
+        #expect(outcome.iterationsUsed == 0)
+        #expect(outcome.findings.contains("before the first request"))
         #expect(adapter.requests.isEmpty)
     }
 }

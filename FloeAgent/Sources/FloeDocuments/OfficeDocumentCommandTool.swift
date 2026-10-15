@@ -487,6 +487,14 @@ public struct OfficeEditArguments: Decodable, Sendable {
     public var summary: String?
     public var commands: [OfficeCommandCodec.Entry]?
     public var proposalID: UUID?
+    /// Raw `proposal_id` spelling exactly as the approved call carried it. The
+    /// runtime digests the RAW approved arguments; the automatic-apply
+    /// binding must derive from the same bytes, so the canonical payload
+    /// keeps the exact spelling the tool printed (and the model echoes). Nil
+    /// when the arguments were constructed programmatically. Setter-private:
+    /// only the decoder/memberwise init inside this file may fill it, so a
+    /// caller that mutates `proposalID` can never carry a stale spelling.
+    public private(set) var proposalIDRaw: String?
     public var grantID: String?
     public var requestID: String?
     public var expectedSHA256: String?
@@ -500,6 +508,57 @@ public struct OfficeEditArguments: Decodable, Sendable {
         case grantID = "grant_id"
         case requestID = "request_id"
         case expectedSHA256 = "expected_sha256"
+    }
+
+    public init(action: OfficeEditAction,
+                path: String? = nil,
+                summary: String? = nil,
+                commands: [OfficeCommandCodec.Entry]? = nil,
+                proposalID: UUID? = nil,
+                grantID: String? = nil,
+                requestID: String? = nil,
+                expectedSHA256: String? = nil,
+                output: String? = nil,
+                image: String? = nil,
+                imagePath: String? = nil) {
+        self.action = action
+        self.path = path
+        self.summary = summary
+        self.commands = commands
+        self.proposalID = proposalID
+        self.proposalIDRaw = nil
+        self.grantID = grantID
+        self.requestID = requestID
+        self.expectedSHA256 = expectedSHA256
+        self.output = output
+        self.image = image
+        self.imagePath = imagePath
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        action = try container.decode(OfficeEditAction.self, forKey: .action)
+        path = try container.decodeIfPresent(String.self, forKey: .path)
+        summary = try container.decodeIfPresent(String.self, forKey: .summary)
+        commands = try container.decodeIfPresent([OfficeCommandCodec.Entry].self, forKey: .commands)
+        if let rawProposalID = try container.decodeIfPresent(String.self, forKey: .proposalID) {
+            guard let parsed = UUID(uuidString: rawProposalID) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .proposalID, in: container,
+                    debugDescription: "proposal_id must be a UUID string")
+            }
+            proposalID = parsed
+            proposalIDRaw = rawProposalID
+        } else {
+            proposalID = nil
+            proposalIDRaw = nil
+        }
+        grantID = try container.decodeIfPresent(String.self, forKey: .grantID)
+        requestID = try container.decodeIfPresent(String.self, forKey: .requestID)
+        expectedSHA256 = try container.decodeIfPresent(String.self, forKey: .expectedSHA256)
+        output = try container.decodeIfPresent(String.self, forKey: .output)
+        image = try container.decodeIfPresent(String.self, forKey: .image)
+        imagePath = try container.decodeIfPresent(String.self, forKey: .imagePath)
     }
 }
 
@@ -516,16 +575,18 @@ public struct OfficeEditTool: AgentTool {
     Presentation slide duplicate, slide reorder, object alignment. Package-level \
     (verified, atomic): formula cell updates via document.office.updateText, image \
     replacement (action=replaceImage, same image format), formula-error cell locations \
-    (action=errors). propose binds the exact sha256 and changes nothing. apply has two \
-    modes: with grant_id (the user confirmed this proposal in the editor UI) it commits \
-    the document through the live session; without grant_id, and only when the runtime \
-    approved this exact call, it runs a service-owned engine session on an isolated \
+    (action=errors). propose binds the exact sha256 and changes nothing; it returns \
+    status=proposed with the proposal_id. For an already-authorized task, call apply \
+    with that proposal_id and the SAME path and NO grant_id: the runtime authorizes \
+    this exact call and the apply runs a service-owned engine session on an isolated \
     copy and publishes a verified <name>.edited.<ext> COPY — the original document is \
     never overwritten, the output is reopened and checked (including persisted formula \
     cached value/type/error for workbooks), and selection-relative commands are refused \
-    automatically. A model cannot mint a grant or an authorization; never claim an \
-    engine change was accepted without the returned verified facts. Unsupported engine \
-    operations are reported unavailable, never faked with screenshots or PDF edits.
+    automatically. grant_id is only for a review the user explicitly requested in the \
+    editor UI: with it, apply commits the document through the live session. A model \
+    cannot mint a grant or an authorization; never claim an engine change was accepted \
+    without the returned verified facts. Unsupported engine operations are reported \
+    unavailable, never faked with screenshots or PDF edits.
     """
     public static let parametersJSON = #"""
     {
@@ -534,15 +595,15 @@ public struct OfficeEditTool: AgentTool {
       "required": ["action"],
       "properties": {
         "action": { "type": "string", "enum": ["capabilities", "read", "query", "propose", "preview", "apply", "export", "errors", "replaceImage"] },
-        "path": { "type": "string", "description": "Workspace-relative .docx/.xlsx/.pptx path" },
+        "path": { "type": "string", "description": "Workspace-relative .docx/.xlsx/.pptx path. For apply it must resolve to the stored proposal's own document: a different path is refused before any edit." },
         "summary": { "type": "string", "maxLength": 2000, "description": "Human-readable proposal summary shown before confirmation (propose)." },
         "commands": {
           "type": "array", "maxItems": 64,
           "description": "Validated engine commands (propose). Supported ids: word.style{style}; word.bulletList; word.numberedList; word.alignment{alignment}; word.insertTable{rows,columns}; excel.numberFormat{format,cell}; excel.insertRows{count,cell}; excel.deleteRows{count,cell}; excel.insertColumns{count,cell}; excel.deleteColumns{count,cell}; excel.freezePanes{cell?}; excel.sort{ascending,range?}; excel.autoFilter; excel.goToCell{cell}; excel.recalculate; pptx.duplicateSlide{at}; pptx.moveSlide{from,to}; pptx.alignObjects{alignment}. Word style/list/alignment, excel sort/autoFilter and pptx.alignObjects act on the live selection: propose captures the engine selection identity and apply refuses if it changed. They are unavailable in automatic copy execution (no user selection exists); use explicit cell-addressed commands.",
           "items": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string" }, "arguments": { "type": "object", "additionalProperties": { "type": "string" } } } }
         },
-        "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id from propose (preview/apply)." },
-        "grant_id": { "type": "string", "description": "Opaque single-use confirmation token issued by the editor UI after the user accepts. The model cannot mint this. OMIT for an authorized automatic copy execution: the runtime approval of this exact call authorizes an isolated verified copy and the original is never modified." },
+        "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id from propose (preview/apply). For apply, pass this id with the same path and no grant_id unless the user explicitly asked to confirm in the editor UI." },
+        "grant_id": { "type": "string", "description": "Opaque single-use confirmation token issued by the editor UI after the user accepts — only for a review the user explicitly requested. The model cannot mint this. OMIT for the ordinary already-authorized apply: the runtime approval of this exact call authorizes an isolated verified copy and the original is never modified." },
         "request_id": { "type": "string", "description": "Optional caller idempotency key; defaults to the tool call id." },
         "expected_sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$", "description": "Exact revision for propose/replaceImage (from action=read or inspect)." },
         "output": { "type": "string", "description": "export relative path (default <name>.export.<ext>); for an apply without grant_id it is the verified edited-copy destination (default <name>.edited.<ext>). An apply that passes both grant_id and output is refused; an existing different file is never overwritten." },
@@ -746,7 +807,9 @@ public struct OfficeEditTool: AgentTool {
             commandsJSON: commandsJSON, access: access)
         try await host.storeProposal(proposal)
         return output("proposal_id=\(proposal.id.uuidString) sha256=\(proposal.baseSHA256) commands=\(commands.count) "
-            + "expectations=\(proposal.expectations.count) status=needs_confirmation")
+            + "expectations=\(proposal.expectations.count) status=proposed "
+            + "next=apply with this proposal_id and the same path; omit grant_id for an already-authorized task "
+            + "(the runtime authorizes this exact call), or confirm in the editor UI when review was requested")
     }
 
     private func preview(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -782,6 +845,24 @@ public struct OfficeEditTool: AgentTool {
         // No UI grant: the ONLY authority for an automatic copy execution is
         // the runtime-issued task authority for this exact approved call. A
         // model-supplied `confirmed`/grant-looking value is never consulted.
+        //
+        // The STORED proposal's document is the mutation identity: a declared
+        // `path` that names a different document than the proposal is refused
+        // here, before the authority is consumed or any engine work starts.
+        // The runtime approved the DECLARED call, so the consumer must prove
+        // the declared identity and the stored proposal identity are the same
+        // document — the model cannot pick the write boundary with `path`.
+        if let declared = args.path?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !declared.isEmpty {
+            let root = context.workspaceRootURL ?? workspaceRoot()
+            let declaredTarget = Self.canonicalDocumentTarget(declared, workspaceRoot: root)
+            let proposalTarget = Self.canonicalDocumentTarget(proposal.documentID, workspaceRoot: root)
+            guard let declaredTarget, let proposalTarget, declaredTarget == proposalTarget else {
+                throw FloeError.validationFailed(
+                    "the declared path does not match the stored proposal's document "
+                        + "\(proposal.documentID); an automatic apply is bound to the proposal's own document")
+            }
+        }
         let binding: RuntimeAuthorityBinding
         do {
             binding = try Self.runtimeAuthorityBinding(for: args, context: context, workspaceRoot: workspaceRoot)
@@ -879,8 +960,10 @@ public struct OfficeEditTool: AgentTool {
 
     /// Canonical JSON of the DECODED approved arguments, in exactly the shape
     /// the runtime hashed when it minted this call's authority. Optional fields
-    /// that were absent stay absent; a model must send canonical JSON (lowercase
-    /// UUIDs, no null placeholders) for the automatic path to bind.
+    /// that were absent stay absent, and `proposal_id` keeps the RAW approved
+    /// spelling: the runtime digests the raw argument bytes, so the consumer
+    /// must bind the exact id string the tool printed and the model echoed —
+    /// a re-spelled id is a different payload (mirrors the CAD contract).
     public static func canonicalApprovedPayload(_ args: OfficeEditArguments) throws -> Data {
         var object: [String: Any] = ["action": args.action.rawValue]
         if let path = args.path { object["path"] = path }
@@ -890,7 +973,9 @@ public struct OfficeEditTool: AgentTool {
                 ["id": entry.id, "arguments": entry.arguments]
             }
         }
-        if let proposalID = args.proposalID { object["proposal_id"] = proposalID.uuidString.lowercased() }
+        if let proposalID = args.proposalID {
+            object["proposal_id"] = approvedProposalIDSpelling(proposalID, raw: args.proposalIDRaw)
+        }
         if let grantID = args.grantID { object["grant_id"] = grantID }
         if let requestID = args.requestID { object["request_id"] = requestID }
         if let expectedSHA256 = args.expectedSHA256 { object["expected_sha256"] = expectedSHA256 }
@@ -900,23 +985,41 @@ public struct OfficeEditTool: AgentTool {
         return try JSONSerialization.data(withJSONObject: object, options: [])
     }
 
+    /// The approved `proposal_id` spelling for the canonical payload: the RAW
+    /// approved string only while it still parses to the argument's CURRENT
+    /// id. A decoded-then-mutated argument (or any stale helper field) falls
+    /// back to the current id's own spelling, so the digest can never bind an
+    /// id the call no longer carries. When they agree, the RAW approved bytes
+    /// are preserved verbatim (uppercase/lowercase wire spelling included).
+    public static func approvedProposalIDSpelling(_ proposalID: UUID, raw: String?) -> String {
+        if let raw, UUID(uuidString: raw) == proposalID { return raw }
+        return proposalID.uuidString
+    }
+
+    /// Canonical `file:` identity for one office document path, resolved with
+    /// the same rules the runtime mints its canonical target with: absolute,
+    /// or workspace-root-relative, standardized with symlinks resolved. Nil
+    /// when the value cannot name a document.
+    public static func canonicalDocumentTarget(_ raw: String, workspaceRoot: URL?) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 4_096 else { return nil }
+        let url: URL
+        if trimmed.hasPrefix("/") {
+            url = URL(fileURLWithPath: trimmed)
+        } else if let workspaceRoot {
+            url = workspaceRoot.appendingPathComponent(trimmed)
+        } else {
+            return nil
+        }
+        return "file:" + url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
     /// Mirrors `RuntimeAuthorityDigest.canonicalTarget` for this tool's exact
     /// resolution rules (`document.` prefix → path argument, else the workspace
     /// wildcard). Both sides must derive the same string or the token refuses.
     public static func canonicalTarget(for args: OfficeEditArguments, workspaceRoot: URL?) -> String {
-        if let raw = args.path {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty, trimmed.utf8.count <= 4_096 {
-                var url: URL?
-                if trimmed.hasPrefix("/") {
-                    url = URL(fileURLWithPath: trimmed)
-                } else if let workspaceRoot {
-                    url = workspaceRoot.appendingPathComponent(trimmed)
-                }
-                if let url {
-                    return "file:" + url.standardizedFileURL.resolvingSymlinksInPath().path
-                }
-            }
+        if let raw = args.path, let target = canonicalDocumentTarget(raw, workspaceRoot: workspaceRoot) {
+            return target
         }
         guard let workspaceRoot else { return "workspace:*" }
         return "workspace:" + workspaceRoot.standardizedFileURL.resolvingSymlinksInPath().path

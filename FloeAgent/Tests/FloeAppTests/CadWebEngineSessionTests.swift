@@ -495,7 +495,10 @@ struct CadDocumentCenterConcurrencyTests {
         let args = try JSONDecoder().decode(CadDocumentArguments.self, from: Data(argsJSON.utf8))
         try tool.validate(args)
         let output = try await tool.execute(args, context: context)
-        #expect(output.requiresUserAction,
+        // Primary-directed 2026-10-15 behaviour change: an ordinary CAD
+        // propose no longer pauses the run for the user; it still writes
+        // nothing and the normalized delta must reach the real engine.
+        #expect(output.requiresUserAction == false,
                 "a normalized 2-number delta must reach the real engine")
         // The tool records the proposal under the access it derived from the
         // context (chat ownership here), not the workspace helper's access.

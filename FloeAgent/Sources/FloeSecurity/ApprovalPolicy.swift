@@ -24,6 +24,12 @@ public struct ProposedAction: Sendable, Codable {
     /// activated. These values grant no general Python authority.
     public var preapprovedPythonScriptSHA256: Set<String>
     public var preapprovedPythonPackages: Set<String>
+    /// Runtime-resolved trusted facts for this call (canonical target path,
+    /// canonical workspace root, environment class). Filled by the canonical
+    /// runtime path from the run's frozen configuration — never from model
+    /// arguments or a model-authored confirmation. `nil` keeps the task's
+    /// existing approval policy (fail closed).
+    public var trustedContext: TrustedExecutionContext?
 
     public init(
         toolCall: ToolCall,
@@ -33,7 +39,8 @@ public struct ProposedAction: Sendable, Codable {
         userRequests: [String]? = nil,
         hostAndPathScope: ToolScope,
         preapprovedPythonScriptSHA256: Set<String> = [],
-        preapprovedPythonPackages: Set<String> = []
+        preapprovedPythonPackages: Set<String> = [],
+        trustedContext: TrustedExecutionContext? = nil
     ) {
         self.toolCall = toolCall
         self.riskLabels = riskLabels
@@ -43,6 +50,7 @@ public struct ProposedAction: Sendable, Codable {
         self.hostAndPathScope = hostAndPathScope
         self.preapprovedPythonScriptSHA256 = preapprovedPythonScriptSHA256
         self.preapprovedPythonPackages = preapprovedPythonPackages
+        self.trustedContext = trustedContext
     }
 }
 
@@ -97,7 +105,12 @@ public final class DynamicApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting,
     }
 }
 
-/// Policy 1: every side-effecting action waits for the user.
+/// Policy 1: every side-effecting action waits for the user, EXCEPT the
+/// deterministic local carve-outs (ordinary document edits outside a Git
+/// worktree, routine commands in a resolved local Linux guest, and
+/// clearly read-only remote diagnostics) which execute without a per-edit
+/// review. The catastrophic gate still runs first and every other
+/// side-effecting action keeps the human card.
 public struct HumanApprovalPolicy: ApprovalPolicy {
     public let policyName = "human"
 
@@ -106,6 +119,9 @@ public struct HumanApprovalPolicy: ApprovalPolicy {
     public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
         if action.isPreapprovedSkillPythonRequest {
             return .allow(scope: AutomaticApprovalPolicyScope.scope(for: action.toolCall), expiresAt: nil)
+        }
+        if let decision = DeterministicLocalApprovalPolicy.allowDecision(for: action) {
+            return decision
         }
         return .escalateToHuman(reason: "Human approval policy requires explicit user decision")
     }
@@ -211,7 +227,8 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     /// approve it. Mutating PDF calls only bypass review when they explicitly
     /// create a new output instead of overwriting their source.
     private static func isDeterministicallyExempt(_ action: ProposedAction) -> Bool {
-        if requiresPDFConsentReview(action) { return false }
+        if DeterministicLocalApprovalPolicy.requiresPDFConsentReview(action) { return false }
+        if DeterministicLocalApprovalPolicy.isExempt(action) { return true }
         if action.isPreapprovedSkillPythonRequest { return true }
         let alwaysExempt: Set<String> = [
             "image.inspect", "image.ocr", "image.barcode.scan", "image.generate",
@@ -452,39 +469,25 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             .lowercased()
     }
 
-    /// Automatic routing can resolve to a real macOS or Windows host, so it
-    /// is exempt only for a small shell-free diagnostic vocabulary. Mutating
-    /// setup work must explicitly select the disposable container mode.
+    /// Automatic routing can resolve to a real macOS or Windows HOST — the
+    /// disposable container is chosen only when the caller explicitly selects
+    /// it — so this automatic exemption is limited to exactly the SAME
+    /// strict, audited read-only diagnostic vocabulary the local-guest
+    /// classifier already enforces. A verb alone never implies read-only:
+    /// `date -s`/`date --set=…`, `python script.py --version`,
+    /// `node script.js --version`, hostname setters and prefix look-alikes
+    /// all keep the reviewing policy. Explicit host maintenance authorizations
+    /// are unchanged.
     private static func isClearlyReadOnlySSHDiagnostic(_ command: String) -> Bool {
-        let normalized = command
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        guard !normalized.isEmpty else { return false }
-        let forbidden = [";", "|", ">", "<", "`", "$(", "${", "\n", "\r"]
-        guard !forbidden.contains(where: normalized.contains) else { return false }
-        guard !normalized.replacingOccurrences(of: "&&", with: "").contains("&") else {
-            return false
-        }
-        let clauses = normalized.components(separatedBy: "&&")
-        let allowedPrefixes = [
-            "pwd", "id", "whoami", "uname", "uptime", "date", "arch",
-            "printf ", "echo ", "command -v ", "which ", "type ",
-            "ls", "stat ", "df", "du ", "free", "vm_stat",
-            "sw_vers", "systeminfo", "ver", "docker --version",
-            "podman --version", "python --version", "python3 --version",
-            "node --version", "git --version"
-        ]
-        return clauses.allSatisfy { clause in
-            let value = clause.trimmingCharacters(in: .whitespacesAndNewlines)
-            return allowedPrefixes.contains(where: { value == $0 || value.hasPrefix($0) })
-        }
+        DeterministicLocalApprovalPolicy.LocalGuestCommandClassifier
+            .isClearlyReadOnlyDiagnostic(command)
     }
 
     private func deterministicDecision(
         for action: ProposedAction,
         unavailableReason: String
     ) -> ApprovalDecision {
-        if Self.requiresPDFConsentReview(action) {
+        if DeterministicLocalApprovalPolicy.requiresPDFConsentReview(action) {
             return .escalateToHuman(reason: "PDF rasterization or credential use requires explicit consent review")
         }
         let risks = action.riskLabels
@@ -506,14 +509,6 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             scope: Self.scope(for: action.toolCall),
             expiresAt: nil
         )
-    }
-
-    private static func requiresPDFConsentReview(_ action: ProposedAction) -> Bool {
-        guard action.toolCall.toolName == "document.pdf.edit",
-              let object = try? JSONSerialization.jsonObject(with: action.toolCall.argumentsJSON) as? [String: Any] else { return false }
-        if object["userPasswordRef"] != nil || object["ownerPasswordRef"] != nil { return true }
-        let operations = object["operations"] as? [[String: Any]] ?? []
-        return operations.contains { ["rasterRedact", "flattenAnnotations", "searchableOCR"].contains($0["action"] as? String ?? "") }
     }
 
     private static func scope(for call: ToolCall) -> ApprovalScope {
@@ -569,7 +564,7 @@ public struct TaskFullAccessPolicy: ApprovalPolicy {
     }
 }
 
-private extension ProposedAction {
+extension ProposedAction {
     var argumentObject: [String: Any]? {
         try? JSONSerialization.jsonObject(with: toolCall.argumentsJSON) as? [String: Any]
     }
@@ -619,7 +614,9 @@ private extension ProposedAction {
     }
 }
 
-private enum AutomaticApprovalPolicyScope {
+/// Standard single-use approval scope for one call, shared by the built-in
+/// policies and the deterministic local carve-outs.
+enum AutomaticApprovalPolicyScope {
     static func scope(for call: ToolCall) -> ApprovalScope {
         switch call.scope {
         case .local:

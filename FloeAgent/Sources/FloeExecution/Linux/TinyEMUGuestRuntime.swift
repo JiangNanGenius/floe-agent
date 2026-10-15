@@ -24,13 +24,32 @@ import FloeTinyEMU
 /// Console output sink reachable from the C callback. The AsyncStream
 /// continuation is thread-safe; the stream is bounded so a guest that floods
 /// the console cannot grow host memory without bound.
+///
+/// Bounded WITHOUT silent loss: the stream keeps the OLDEST chunks
+/// (`.bufferingOldest`), and a chunk that no longer fits is refused with an
+/// explicit `.dropped` result. Silently dropping console bytes (the previous
+/// `.bufferingNewest` policy) tears frame boundaries for whichever token is
+/// printing; a torn frame can poison the shared environment channel and stop
+/// a VM that other clients (parent task and its children) are still using.
+/// On overflow the console therefore fails closed: it records the overflow and
+/// finishes the stream, so the router observes EOF and every in-flight command
+/// reports an honest console failure instead of a corrupted success.
 final class TinyEMUConsoleSink: @unchecked Sendable {
     private let continuation: AsyncStream<Data>.Continuation
     private let lock = NSLock()
     private var finished = false
+    private var refusedChunks = 0
 
     init(continuation: AsyncStream<Data>.Continuation) {
         self.continuation = continuation
+    }
+
+    /// Chunks the bounded buffer refused (console overflow). Nonzero means the
+    /// console was failed closed; the machine reports this for diagnostics.
+    var overflowedChunks: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return refusedChunks
     }
 
     func append(_ data: Data) {
@@ -38,7 +57,29 @@ final class TinyEMUConsoleSink: @unchecked Sendable {
         let isFinished = finished
         lock.unlock()
         guard !isFinished else { return }
-        continuation.yield(data)
+        switch continuation.yield(data) {
+        case .enqueued:
+            break
+        case .dropped:
+            recordOverflow()
+            finish()
+        case .terminated:
+            finish()
+        @unknown default:
+            break
+        }
+    }
+
+    private func recordOverflow() {
+        lock.lock()
+        let count = refusedChunks
+        refusedChunks += 1
+        lock.unlock()
+        if count == 0 {
+            FloeLogger(category: .tools).error(
+                "TinyEMU console output buffer overflowed (bounded oldest-first console); failing the console closed instead of silently dropping bytes that frame guest commands"
+            )
+        }
     }
 
     func finish() {
@@ -155,7 +196,10 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         // count must fail here even if the pool was bypassed.
         self.vcpuCount = try releasePolicy.resolve(requestedVCPUs: descriptor.vcpus)
         var continuation: AsyncStream<Data>.Continuation!
-        self.consoleStream = AsyncStream(bufferingPolicy: .bufferingNewest(Self.consoleChunkLimit)) {
+        // Oldest-first: an overflow is REPORTED through the yield result (the
+        // sink fails the console closed) instead of silently skipping console
+        // bytes, which would tear an arbitrary token's framing.
+        self.consoleStream = AsyncStream(bufferingPolicy: .bufferingOldest(Self.consoleChunkLimit)) {
             continuation = $0
         }
         self.sink = TinyEMUConsoleSink(continuation: continuation)
@@ -166,6 +210,11 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         defer { lock.unlock() }
         return running
     }
+
+    /// Console overflow diagnostics for the lifecycle owner and the focused
+    /// regressions: nonzero means the bounded console refused chunks and
+    /// failed the console closed instead of silently dropping bytes.
+    var consoleOverflowCount: Int { sink.overflowedChunks }
 
     /// Sets the RAM used by the next `start()`. Only meaningful between a
     /// confirmed stop and the restart; the running VM is never mutated.

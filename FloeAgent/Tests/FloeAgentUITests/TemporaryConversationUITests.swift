@@ -10,7 +10,9 @@
 //     selector, sheet or forced choice.
 //  2. Launchpad top-header temporary entry (primary-implemented Home
 //     integration): hosts a fresh RAM-only thread, carries the typed draft,
-//     hides attachment/voice, shows badge + Keep + provider-policy hint.
+//     keeps attachment staging hidden while the normal voice entry stays
+//     available, and shows the compact badge menu (explanation + Keep +
+//     End) instead of the removed persistent banner.
 //  3. Fixture: populated saved chat → separate temporary session; leaving to
 //     New Task discards it; the saved history stays intact.
 //  4. Fixture (preset session, seeded in-RAM messages): explicit End
@@ -115,14 +117,15 @@ final class TemporaryConversationUITests: XCTestCase {
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         XCTAssertFalse(app.sheets.firstMatch.exists)
         XCTAssertFalse(app.alerts.firstMatch.exists)
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = "New Chat — no creation-time selector"
         attachment.lifetime = .keepAlways
         add(attachment)
     }
 
     /// Launchpad toggle hosts an ephemeral thread with the carried draft and
-    /// the text-only composer (attachment/voice hidden).
+    /// the no-attachment composer (attachment staging hidden; the normal
+    /// voice entry is available).
     func testLaunchpadTemporaryEntryHostsEphemeralThread() {
         let app = launch()
         let input = app.textViews["composer.input"]
@@ -137,18 +140,21 @@ final class TemporaryConversationUITests: XCTestCase {
 
         let badge = app.descendants(matching: .any)["chat.temporary.badge"].firstMatch
         XCTAssertTrue(badge.waitForExistence(timeout: 8))
-        XCTAssertTrue(app.descendants(matching: .any)["chat.temporary.banner"].firstMatch.exists)
-        XCTAssertTrue(app.descendants(matching: .any)["chat.temporary.hint"].firstMatch.exists)
+        // The persistent banner was replaced by the compact header menu.
+        XCTAssertFalse(app.descendants(matching: .any)["chat.temporary.banner"].firstMatch.exists)
         let threadInput = app.textViews["composer.input"]
         XCTAssertTrue(threadInput.waitForExistence(timeout: 8))
         XCTAssertEqual(threadInput.value as? String, draft)
-        // Text-only composer: attachment and voice entries are hidden.
+        // No-attachment composer: attachment staging stays hidden; the
+        // normal voice entry is available in a temporary chat.
         XCTAssertFalse(app.buttons["composer.attach"].exists)
-        XCTAssertFalse(app.buttons["composer.voice"].exists)
-        // Keep-as-saved is offered before any message exists.
+        XCTAssertTrue(app.buttons["composer.voice"].waitForExistence(timeout: 8))
+        // Keep-as-saved is offered before any message exists, inside the menu.
+        badge.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat.temporary.hint"].firstMatch.waitForExistence(timeout: 8))
         XCTAssertTrue(app.descendants(matching: .any)["chat.temporary.keep"].firstMatch.exists)
-        let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = "Temporary thread — badge, carried draft, text-only"
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = "Temporary thread — badge, carried draft, voice available, no attachments"
         attachment.lifetime = .keepAlways
         add(attachment)
     }
@@ -195,7 +201,19 @@ final class TemporaryConversationUITests: XCTestCase {
             // for it.
             XCTAssertFalse(app.descendants(matching: .any)["ipad.inspector.column"].firstMatch.exists)
         }
-        let openAttachment = XCTAttachment(screenshot: app.screenshot())
+        // Capture readiness: wait until the toggle transition has settled and
+        // the active badge is really on screen/hittable, so the frame is the
+        // stable final layout rather than a mid-transition crop.
+        XCTAssertTrue(badge.isHittable, "the active temporary badge must be on screen before capture")
+        let settled = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                !app.descendants(matching: .any)["ipad.inspector.column"].firstMatch.exists
+            },
+            object: nil
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 8), .completed,
+                       "the inspector transition must settle before capture")
+        let openAttachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         openAttachment.name = "Temporary chat after inspector toggle"
         openAttachment.lifetime = .keepAlways
         add(openAttachment)
@@ -223,7 +241,9 @@ final class TemporaryConversationUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["合成临时提问"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["合成临时回答"].exists)
 
-        // The explicit End button exists because messages are present.
+        // The explicit End action exists because messages are present; it
+        // lives in the compact header menu.
+        badge.tap()
         let end = app.descendants(matching: .any)["chat.temporary.end"].firstMatch
         XCTAssertTrue(end.waitForExistence(timeout: 8))
         end.tap()
@@ -232,7 +252,7 @@ final class TemporaryConversationUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["合成历史消息-1"].waitForExistence(timeout: 8))
         XCTAssertFalse(app.staticTexts["合成临时提问"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["chat.temporary.badge"].firstMatch.exists)
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = "After End — saved chat intact, temporary content gone"
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -249,6 +269,7 @@ final class TemporaryConversationUITests: XCTestCase {
         XCTAssertTrue(badge.waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["合成临时提问"].waitForExistence(timeout: 8))
 
+        badge.tap()
         let keep = app.descendants(matching: .any)["chat.temporary.keep"].firstMatch
         XCTAssertTrue(keep.waitForExistence(timeout: 8))
         keep.tap()
@@ -256,7 +277,7 @@ final class TemporaryConversationUITests: XCTestCase {
         // Promotion completes in place: no resend, same visible thread.
         XCTAssertTrue(app.staticTexts["合成临时提问"].waitForExistence(timeout: 8))
         XCTAssertFalse(app.descendants(matching: .any)["chat.temporary.badge"].firstMatch.exists)
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = "After Keep — ordinary saved chat with promoted messages"
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -306,7 +327,7 @@ final class TemporaryConversationUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["合成临时提问"].exists)
         XCTAssertTrue(app.staticTexts["合成临时回答"].exists)
         XCTAssertEqual(app.textViews["composer.input"].value as? String, draft)
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = "Background return — same temporary chat and RAM draft"
         attachment.lifetime = .keepAlways
         add(attachment)

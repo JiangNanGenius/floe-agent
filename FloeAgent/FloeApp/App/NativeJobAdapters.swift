@@ -117,6 +117,23 @@ enum NativeJobAppAdapters {
                     throw FloeError.notFound(
                         "Office proposal \(proposalID.uuidString) is no longer available for this task")
                 }
+                // The stored proposal's document is the mutation identity: a
+                // frozen payload that declares a DIFFERENT path must not run
+                // (the same proposal-identity rule as the inline automatic
+                // apply). The job binding itself is workspace-scoped, so this
+                // check is what binds the frozen call to the real document.
+                if let declared = args.path?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !declared.isEmpty {
+                    let declaredTarget = OfficeEditTool.canonicalDocumentTarget(
+                        declared, workspaceRoot: request.workspaceRootURL)
+                    let proposalTarget = OfficeEditTool.canonicalDocumentTarget(
+                        proposal.documentID, workspaceRoot: request.workspaceRootURL)
+                    guard let declaredTarget, let proposalTarget, declaredTarget == proposalTarget else {
+                        throw FloeError.validationFailed(
+                            "the job's declared path does not match the stored proposal's document "
+                                + "\(proposal.documentID)")
+                    }
+                }
                 let authorization = OfficeAutomaticAuthorization(
                     runID: request.runID,
                     taskID: request.conversationID,

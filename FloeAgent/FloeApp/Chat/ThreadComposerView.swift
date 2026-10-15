@@ -186,9 +186,12 @@ struct ThreadComposerView: View {
     var notesDraftID: UUID? = nil
     var embedded: Bool = false
     var documentAssistant: Bool = false
-    /// Temporary (ephemeral) conversation: text-only composer — attachment,
-    /// voice, plan/goal modes, workspace binding and permission chips are
-    /// hidden; the service enforces the same ceiling anyway.
+    /// Temporary (ephemeral) conversation: no-attachment composer —
+    /// attachment staging, plan/goal modes, workspace binding and permission
+    /// chips are hidden.
+    /// Voice input stays available (normal Apple speech service, transcript
+    /// lands only in the RAM draft); the service enforces the read-only
+    /// tool ceiling anyway.
     var temporary: Bool = false
     /// False after a temporary toggle-off handed an ephemeral draft back:
     /// edits stay in the binding (and in RAM) until the user re-arms
@@ -212,6 +215,13 @@ struct ThreadComposerView: View {
     /// selection itself is already active for this composer.
     @State private var modelPersistenceFailure: String?
     @State private var dictationPrefix = ""
+    /// Draft identity that started the current voice session. A transcript
+    /// (including the final one draining after Stop) may only land in the
+    /// draft of the composer that actually started the session: switching
+    /// conversations, closing the composer or replacing the temporary
+    /// session is a leave that discards the late callback instead of
+    /// writing another task's voice text.
+    @State private var voiceSessionDraftKey: UUID?
     @State private var slashNotice: String?
     @State private var isFullEditorPresented = false
     /// True once the inline field has reached its height cap and scrolls
@@ -270,9 +280,9 @@ struct ThreadComposerView: View {
                 voiceBanner(voiceNotice)
             }
             if !attachments.isEmpty, !temporary {
-                // Temporary chat is text-only: staged ordinary attachments
-                // stay in the draft (nothing is deleted) but no chip renders
-                // and the launch carries none.
+                // Temporary chat carries no ordinary attachments: staged
+                // ones stay in the draft (nothing is deleted) but no chip
+                // renders and the launch carries none.
                 attachmentChips
             }
             inputRow
@@ -365,6 +375,12 @@ struct ThreadComposerView: View {
                 composerUndoManager.removeAllActions()
                 if isFullEditorPresented { isFullEditorPresented = false }
                 editorDraftKey = nil
+                // The voice session belongs to the previous draft identity:
+                // stop capture and refuse its late transcripts here.
+                voiceSessionDraftKey = nil
+                if voiceInput.state.hasSession || voiceInput.state == .requestingPermission {
+                    voiceInput.stop()
+                }
             }
             let entry = draftStore.entry(for: newKey)
             draftRevision = entry?.revision
@@ -465,6 +481,11 @@ struct ThreadComposerView: View {
             if running { attachmentError = nil }
         }
         .onChange(of: voiceInput.transcript) { _, transcript in
+            // Typed identity: only the draft that started this voice session
+            // may absorb its (partial or final) transcript. A late callback
+            // from a previous conversation, a replaced temporary session or
+            // a composer that never started capture is discarded.
+            guard voiceSessionDraftKey == draftKey else { return }
             guard voiceInput.isListening || !transcript.isEmpty else { return }
             let separator = dictationPrefix.isEmpty || dictationPrefix.last?.isWhitespace == true ? "" : " "
             let merged = dictationPrefix + separator + transcript
@@ -493,6 +514,9 @@ struct ThreadComposerView: View {
         }
         .onDisappear {
             voiceInput.stop()
+            // Leaving the composer discards any still-draining transcript:
+            // the draft this session belonged to is no longer on screen.
+            voiceSessionDraftKey = nil
             // Switching tasks/pages flushes immediately; rapid typing
             // earlier was already debounced into the store.
             draftStore.flush()
@@ -874,11 +898,16 @@ struct ThreadComposerView: View {
                 .accessibilityIdentifier("composer.expand")
             }
 
-            if !temporary {
+            // Voice input is available in every composer, including the
+            // temporary (RAM-only) session: the normal Apple speech service
+            // is reused, the transcript lands only in this draft and Floe
+            // keeps no recording or transcript history.
             Button {
                 // Preserve whatever the user already typed; dictation appends
-                // after this prefix and never replaces it.
+                // after this prefix and never replaces it. Bind the session to
+                // THIS draft so a late callback cannot write another task.
                 dictationPrefix = draft
+                voiceSessionDraftKey = draftKey
                 voiceInput.requestStart()
             } label: {
                 Image(systemName: "mic.fill")
@@ -896,7 +925,6 @@ struct ThreadComposerView: View {
             .accessibilityValue(voiceAccessibilityValue)
             .accessibilityHint("voice.hint")
             .accessibilityIdentifier("composer.voice")
-            }
 
             if isRunning {
                 Button(role: .destructive) {

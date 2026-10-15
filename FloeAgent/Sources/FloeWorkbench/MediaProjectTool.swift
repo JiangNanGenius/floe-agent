@@ -4,10 +4,15 @@
 //   read      — read-only project summary
 //   propose   — validates a command sequence against a revision, stores a
 //               pending proposal (internal Floe draft state) and returns its
-//               preview; changes nothing on disk
-//   apply     — requires a trusted UI grant (MediaProposalGrantStore); a
+//               preview; changes nothing on disk and does NOT pause the run
+//   apply     — two authority modes: for an already-authorized task the
+//               runtime-issued authority for this exact approved call runs
+//               the automatic transaction; a user-confirmed apply passes a
+//               trusted single-use UI grant (MediaProposalGrantStore). A
 //               fabricated grant id or changed revision is refused
-//   export    — writes a verified image/video file (approval-gated)
+//   export    — writes a verified image/video file to
+//               Workbench/Exports/<file_name>.<ext>; never overwrites an
+//               existing file with different bytes
 //
 // The tool never mints confirmation itself. Project/environment/task
 // ownership is enforced by the injected `MediaProjectHost`, which the app
@@ -63,7 +68,7 @@ public protocol MediaProjectHost: Sendable, MediaCommandEnrichmentHost {
     /// Renders ONLY the named layers to a transparent full-canvas image via the
     /// real pipeline and stages it as a new image asset file on disk. The tool
     /// prepends an `add_asset` command for it to the proposal, so the project
-    /// is not mutated until the user accepts. Never a screen capture.
+    /// is not mutated until an authorized apply. Never a screen capture.
     func renderMergeAsset(project: MediaProject, layerIDs: [UUID], name: String?) async throws -> MergePreparation
 }
 
@@ -90,15 +95,17 @@ public struct MediaProjectTool: AgentTool {
 
     public static let name = "media.project"
     public static let toolDescription = """
-    Read, inspect capabilities of, propose changes to, apply confirmed proposals to, or export a Floe \
+    Read, inspect capabilities of, propose changes to, apply proposals to, or export a Floe \
     unified image/video workbench project. Workflow is discover -> read/capabilities -> propose (draft, \
-    revision-bound) -> confirm. apply has two modes: with grant_id (the user accepted this proposal in the \
-    workbench UI) it commits through the interactive path; without grant_id, and only when the runtime \
-    approved this exact call, it applies as a runtime-authorized automatic transaction, reopens the persisted \
-    project and reports the verified revision digest with the source assets unchanged. A model cannot mint a \
-    grant or an authorization; the model cannot force overwrite of original assets. Proposals never change \
-    the project until an authorized apply; editing the current draft and making a variant are distinct: use \
-    the bound project for the current draft, forks for variants.
+    revision-bound) -> apply -> readback/export. propose stores a pending draft and returns without pausing. \
+    apply has two authority modes: for an already-authorized task, call apply with the same project_id and \
+    proposal_id and NO grant_id — the runtime authorizes this exact call, applies it as a verified automatic \
+    transaction, reopens the persisted project and reports the verified revision digest with the source \
+    assets unchanged; with grant_id (the user accepted this proposal in the workbench UI after explicitly \
+    requesting review) it commits through the interactive path. A model cannot mint a grant or an \
+    authorization, and cannot force an overwrite of original assets. Proposals never change the project \
+    until an authorized apply; editing the current draft and making a variant are distinct: use the bound \
+    project for the current draft, forks for variants.
     """
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
@@ -111,16 +118,16 @@ public struct MediaProjectTool: AgentTool {
       "additionalProperties": false,
       "required": ["action", "project_id"],
       "properties": {
-        "action": { "type": "string", "enum": ["capabilities", "read", "propose", "apply", "export"], "description": "capabilities/read are safe queries; propose stores a revision-bound draft (no change); apply needs a UI grant; export writes verified bytes." },
+        "action": { "type": "string", "enum": ["capabilities", "read", "propose", "apply", "export"], "description": "capabilities/read are safe queries; propose stores a revision-bound draft (no change, no pause); apply without grant_id uses the runtime authority for this exact call (already-authorized tasks), with grant_id it commits a user-accepted proposal; export writes verified bytes under Workbench/Exports." },
         "project_id": { "type": "string", "format": "uuid", "description": "Stable project UUID (from media.project read / the workbench UI)." },
         "summary": { "type": "string", "maxLength": 2000, "description": "Human-readable summary shown to the user before acceptance (propose)." },
         "commands": {
           "type": "array",
-          "description": "Edit commands (propose only). Each object requires type. Supported image commands: add_asset {kind: image|video|audio, relative_path}; relink_asset {asset_id, relative_path}; set_canvas {width, height, frame_rate?}; add_image_layer {kind: image|text|freehand|fill, name?, asset_id?, transform?{center_x,center_y,scale,rotation_degrees,flip_x?,flip_y?}, opacity?, is_hidden?, is_locked?, text?{text,font_size,color_hex,font_name?,tracking?,leading?,alignment?:left|center|right,stroke_color_hex?,stroke_width?,shadow?{color_hex,blur,offset_x,offset_y}}, freehand?{strokes:[{points:[{x,y,pressure?}],width,color_hex,hardness?,opacity?}]}, crop?, adjustment?, mask?{strokes:[{points,width,hardness?,restore}]}, selection_mask?, fill_color_hex?}; update_layer {id, transform?, opacity?, is_hidden?, is_locked?, adjustment?{saturation,contrast,brightness,exposure_ev,blur_radius,sharpen_radius,mosaic_block_size,filter_id,temperature,hue_degrees,levels?{black,white,gamma}}, text?, crop?|null}; add_freehand_stroke {id, points:[{x,y,pressure?}], width, color_hex, hardness?, opacity?}; set_canvas_adjustment {same adjustment fields applied once to the flattened result}; reorder_layers {ordered_ids}; move_layer {id, to_index}; duplicate_layer {id, name?}; remove_layer {id}; set_selection {selection:{shapes:[{kind:rectangle|ellipse|lasso,operation?:replace|add|subtract,points:[{x,y}]}],feather?,inverted?}}; clear_selection; set_layer_selection {id, selection:null|{...}}; add_mask_stroke {id, points:[{x,y}],width,hardness?,restore?}; clear_layer_mask {id}; flip_layer {id, horizontal?:true|false}; align_layers {ids:[uuid...], alignment:left|centerX|right|top|centerY|bottom} (renderer-measured bounds are filled in automatically); merge_layers {ids:[uuid...], name?} (raster-merges visible layers via the real renderer into one reversible image layer). Video commands: append_clip {asset_id, trim_start, trim_end, speed?, volume?, is_muted?, rotation_degrees?, crop?, leading_transition?, transition_duration?}; update_clip {...}; reorder_clips {ordered_ids}; split_clip {id, at_seconds}; duplicate_clip {id}; remove_clip {id}; set_cover {time?}; shift_captions {by_seconds}; set_primary_audio {volume?, muted?}; add_music {...}; update_music {...}; remove_music {id}; add_caption {start, end, text, source?}; update_caption {id, start?, end?, text?}; remove_caption {id}; set_caption_style {font_size?,color_hex?,background_hex?,position_y?,alignment?:leading|center|trailing,respects_safe_area?}. Unknown types are rejected. Discover workflow: call action=capabilities first, then read, then propose a batch; the user confirms in the UI before apply; verify the returned revision and (separately) the export receipt.",
+          "description": "Edit commands (propose only). Each object requires type. Supported image commands: add_asset {kind: image|video|audio, relative_path}; relink_asset {asset_id, relative_path}; set_canvas {width, height, frame_rate?}; add_image_layer {kind: image|text|freehand|fill, name?, asset_id?, transform?{center_x,center_y,scale,rotation_degrees,flip_x?,flip_y?}, opacity?, is_hidden?, is_locked?, text?{text,font_size,color_hex,font_name?,tracking?,leading?,alignment?:left|center|right,stroke_color_hex?,stroke_width?,shadow?{color_hex,blur,offset_x,offset_y}}, freehand?{strokes:[{points:[{x,y,pressure?}],width,color_hex,hardness?,opacity?}]}, crop?, adjustment?, mask?{strokes:[{points,width,hardness?,restore}]}, selection_mask?, fill_color_hex?}; update_layer {id, transform?, opacity?, is_hidden?, is_locked?, adjustment?{saturation,contrast,brightness,exposure_ev,blur_radius,sharpen_radius,mosaic_block_size,filter_id,temperature,hue_degrees,levels?{black,white,gamma}}, text?, crop?|null}; add_freehand_stroke {id, points:[{x,y,pressure?}], width, color_hex, hardness?, opacity?}; set_canvas_adjustment {same adjustment fields applied once to the flattened result}; reorder_layers {ordered_ids}; move_layer {id, to_index}; duplicate_layer {id, name?}; remove_layer {id}; set_selection {selection:{shapes:[{kind:rectangle|ellipse|lasso,operation?:replace|add|subtract,points:[{x,y}]}],feather?,inverted?}}; clear_selection; set_layer_selection {id, selection:null|{...}}; add_mask_stroke {id, points:[{x,y}],width,hardness?,restore?}; clear_layer_mask {id}; flip_layer {id, horizontal?:true|false}; align_layers {ids:[uuid...], alignment:left|centerX|right|top|centerY|bottom} (renderer-measured bounds are filled in automatically); merge_layers {ids:[uuid...], name?} (raster-merges visible layers via the real renderer into one reversible image layer). Video commands: append_clip {asset_id, trim_start, trim_end, speed?, volume?, is_muted?, rotation_degrees?, crop?, leading_transition?, transition_duration?}; update_clip {...}; reorder_clips {ordered_ids}; split_clip {id, at_seconds}; duplicate_clip {id}; remove_clip {id}; set_cover {time?}; shift_captions {by_seconds}; set_primary_audio {volume?, muted?}; add_music {...}; update_music {...}; remove_music {id}; add_caption {start, end, text, source?}; update_caption {id, start?, end?, text?}; remove_caption {id}; set_caption_style {font_size?,color_hex?,background_hex?,position_y?,alignment?:leading|center|trailing,respects_safe_area?}. Unknown types are rejected. Discover workflow: call action=capabilities first, then read, then propose a batch; for an already-authorized editing task apply without grant_id, then verify the returned revision and the export receipt. Wait for UI adoption only when the user asked to review first or the runtime requires approval.",
           "items": { "type": "object", "required": ["type"], "properties": { "type": { "type": "string" } } }
         },
-        "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id returned by propose (apply only)." },
-        "grant_id": { "type": "string", "description": "Opaque confirmation token issued by the workbench UI after user acceptance. The model cannot mint this." },
+        "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id returned by propose (apply only). For apply, pass this id with the same project_id and no grant_id unless the user explicitly asked to review in the workbench UI." },
+        "grant_id": { "type": "string", "description": "Opaque single-use confirmation token issued by the workbench UI after user acceptance — only when the user explicitly requested review. The model cannot mint this. OMIT for the ordinary already-authorized apply: the runtime authority for this exact call is the authorization." },
         "export": {
           "type": "object",
           "additionalProperties": false,
@@ -151,13 +158,19 @@ public struct MediaProjectTool: AgentTool {
 
     /// Canonical JSON of the DECODED approved arguments, in exactly the shape
     /// the runtime hashed when it minted this call's authority. Optional fields
-    /// that were absent stay absent.
+    /// that were absent stay absent. Identifier strings keep the RAW approved
+    /// spelling (`projectIDRaw`/`proposalIDRaw`): the runtime digests the raw
+    /// arguments bytes, so the consumer binds the exact id string the tool
+    /// printed and the model echoed — a call re-spelled in a different case is
+    /// a different payload (mirrors the CAD applied-proposal contract).
     static func canonicalApprovedPayload(_ args: MediaProjectArguments) throws -> Data {
         var object: [String: Any] = ["action": args.action.rawValue]
-        object["project_id"] = args.projectID.uuidString.lowercased()
+        object["project_id"] = args.projectIDRaw ?? args.projectID.uuidString
         if let summary = args.summary { object["summary"] = summary }
         if let commands = args.commands { object["commands"] = commands.map { $0.mapValues(\.jsonValue) } }
-        if let proposalID = args.proposalID { object["proposal_id"] = proposalID.uuidString.lowercased() }
+        if let proposalID = args.proposalID {
+            object["proposal_id"] = args.proposalIDRaw ?? proposalID.uuidString
+        }
         if let grantID = args.grantID { object["grant_id"] = grantID }
         if let export = args.export { object["export"] = export.jsonValue }
         return try JSONSerialization.data(withJSONObject: object, options: [])
@@ -243,7 +256,16 @@ public struct MediaProjectTool: AgentTool {
             _ = try MediaProposalGate.dryRun(proposal, against: project)
             try await host.storeProposal(proposal)
             let preview = try MediaProjectSummaries.preview(proposal: proposal, project: project)
-            return ToolExecutionOutput(digesting: preview, requiresUserAction: true)
+            // The revision-bound draft is stored and returned as a preview;
+            // the run CONTINUES without a forced user-action checkpoint so
+            // the ordinary document workflow (propose -> runtime-authorized
+            // apply -> verified export) can close in one model turn. The
+            // proposal stays pending and visible in the workbench UI, and
+            // applying it still requires the user's single-use UI grant or
+            // the runtime-approved call authority for that exact call — the
+            // automatic apply path below verifies both. Mirrors the CAD
+            // propose contract.
+            return ToolExecutionOutput(digesting: preview, requiresUserAction: false)
 
         case .apply:
             guard let proposalID = args.proposalID else {
@@ -327,14 +349,28 @@ public struct MediaProjectTool: AgentTool {
             }
             if spec.kind == "video" {
                 let options = try spec.videoOptions(project: project)
-                let output = "Workbench/Exports/\(spec.fileName).mp4"
+                // ONE derivation shared with the typed mutable-target
+                // contract: `Workbench/Exports/<file_name>.mp4`.
+                guard let output = MediaExportOutputContract.relativeOutput(
+                    kind: spec.kind, fileName: options.fileName, format: nil
+                ) else {
+                    throw FloeError.validationFailed("invalid export file name")
+                }
                 let receipt = try await host.exportVideo(project: project, options: options,
                                                          relativeOutput: output,
                                                          cancellation: context.cancellation)
                 return ToolExecutionOutput(digesting: MediaProjectSummaries.receipt(receipt))
             } else {
                 let options = try spec.imageOptions(project: project)
-                let output = "Workbench/Exports/\(options.fileName).\(options.format.fileExtension)"
+                // ONE derivation shared with the typed mutable-target
+                // contract: `Workbench/Exports/<file_name>.<format extension>`
+                // (png/jpeg/heic); an unsupported format fails closed.
+                guard let output = MediaExportOutputContract.relativeOutput(
+                    kind: spec.kind, fileName: options.fileName,
+                    format: options.format.rawValue
+                ) else {
+                    throw FloeError.validationFailed("invalid export file name")
+                }
                 let receipt = try await host.exportImage(project: project, options: options,
                                                          relativeOutput: output)
                 return ToolExecutionOutput(digesting: MediaProjectSummaries.receipt(receipt))
@@ -348,9 +384,17 @@ public struct MediaProjectTool: AgentTool {
 public struct MediaProjectArguments: Decodable, Sendable {
     public let action: MediaProjectAction
     public let projectID: UUID
+    /// Raw `project_id` spelling exactly as the approved call carried it. The
+    /// runtime digests the RAW approved arguments; this consumer must derive
+    /// its binding from the same bytes, so the canonical payload keeps the
+    /// exact spelling the tool printed (and the model echoes). Nil when the
+    /// arguments were constructed programmatically.
+    public let projectIDRaw: String?
     public let summary: String?
     public let commands: [[String: AnyCodableValue]]?
     public let proposalID: UUID?
+    /// Raw `proposal_id` spelling (see `projectIDRaw`).
+    public let proposalIDRaw: String?
     public let grantID: String?
     public let export: MediaExportArguments?
 
@@ -362,6 +406,49 @@ public struct MediaProjectArguments: Decodable, Sendable {
         case proposalID = "proposal_id"
         case grantID = "grant_id"
         case export
+    }
+
+    public init(action: MediaProjectAction, projectID: UUID, summary: String?,
+                commands: [[String: AnyCodableValue]]?, proposalID: UUID?,
+                grantID: String?, export: MediaExportArguments?) {
+        self.action = action
+        self.projectID = projectID
+        self.projectIDRaw = nil
+        self.summary = summary
+        self.commands = commands
+        self.proposalID = proposalID
+        self.proposalIDRaw = nil
+        self.grantID = grantID
+        self.export = export
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        action = try container.decode(MediaProjectAction.self, forKey: .action)
+        let rawProjectID = try container.decode(String.self, forKey: .projectID)
+        guard let parsedProjectID = UUID(uuidString: rawProjectID) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .projectID, in: container,
+                debugDescription: "project_id must be a UUID string")
+        }
+        projectID = parsedProjectID
+        projectIDRaw = rawProjectID
+        summary = try container.decodeIfPresent(String.self, forKey: .summary)
+        commands = try container.decodeIfPresent([[String: AnyCodableValue]].self, forKey: .commands)
+        if let rawProposalID = try container.decodeIfPresent(String.self, forKey: .proposalID) {
+            guard let parsedProposalID = UUID(uuidString: rawProposalID) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .proposalID, in: container,
+                    debugDescription: "proposal_id must be a UUID string")
+            }
+            proposalID = parsedProposalID
+            proposalIDRaw = rawProposalID
+        } else {
+            proposalID = nil
+            proposalIDRaw = nil
+        }
+        grantID = try container.decodeIfPresent(String.self, forKey: .grantID)
+        export = try container.decodeIfPresent(MediaExportArguments.self, forKey: .export)
     }
 }
 
@@ -441,7 +528,7 @@ public struct MediaExportArguments: Decodable, Sendable {
         guard kind == "image" || kind == "video" else {
             throw FloeError.validationFailed("export.kind must be image or video")
         }
-        guard fileName.range(of: #"^[A-Za-z0-9][A-Za-z0-9 _-]{0,199}$"#, options: .regularExpression) != nil else {
+        guard MediaExportOutputContract.isValidFileName(fileName) else {
             throw FloeError.validationFailed("invalid export file name")
         }
     }

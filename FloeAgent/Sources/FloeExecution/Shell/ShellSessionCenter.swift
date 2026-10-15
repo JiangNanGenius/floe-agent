@@ -35,10 +35,47 @@ public actor ShellSessionCenter {
         var sessionID: String
         var schedulerID: UUID
         var runID: UUID
+        /// Runtime-issued identity of the client that OPENED this session
+        /// (`run:<uuid>` for the main run, `child:<uuid>` for a delegated
+        /// child; nil for legacy/UI callers that predate client identity).
+        /// The parent and every delegated child of one task share the run id,
+        /// so session access additionally requires an exact match on this
+        /// identity: a sibling can learn a sessionID without ever being able
+        /// to exchange, close, signal or resize that session. Nil is an
+        /// identity like any other — a nil-owned session stays available to
+        /// nil callers (the existing UI terminals) and is never reachable
+        /// through a child's client id, and vice versa.
+        var clientSessionID: String?
         var environmentLease: ToolEnvironmentLease
         var expiresAt: Date
         var buffer: String
         var alive: Bool
+    }
+
+    /// Outcome of a session-scoped operation (close/signal/resize). `applied`
+    /// only ever means the caller's OWN session was reached; a live session
+    /// owned by another client of the same run is `ownerMismatch` and is never
+    /// dispatched to (so the other client's PTY is untouched).
+    public enum AccessOutcome: Sendable, Equatable {
+        case applied
+        case notFound
+        case ownerMismatch
+    }
+
+    /// Typed refusal thrown by `exchange` when the addressed session belongs
+    /// to a different client of the same run: an explicit denial (surfaced to
+    /// the model as `reason=session-owner-mismatch`), never a silent no-op and
+    /// never another client's output.
+    public struct OwnerMismatch: Error, LocalizedError, Equatable, Sendable {
+        public let sessionID: String
+
+        public init(sessionID: String) {
+            self.sessionID = sessionID
+        }
+
+        public var errorDescription: String? {
+            "session-owner-mismatch: session \(sessionID) is owned by another client of this run"
+        }
     }
 
     private let backend: any LocalShellBackend
@@ -61,6 +98,11 @@ public actor ShellSessionCenter {
         sessions.values.filter { $0.runID == runID && $0.alive }.map(\.sessionID).sorted()
     }
 
+    /// Opens a session owned by `clientSessionID` (the runtime-issued identity
+    /// of the calling client; never a model-supplied value). Every later
+    /// exchange/close/signal/resize must present the same identity, so a
+    /// sibling client of the same run cannot reach this session even if it
+    /// learns the id.
     public func open(
         command: String,
         cwd: String,
@@ -71,7 +113,8 @@ public actor ShellSessionCenter {
         rootURL: URL,
         cancellation: CancellationToken?,
         forTerminal: Bool = false,
-        toolEnvironment: ToolEnvironment? = nil
+        toolEnvironment: ToolEnvironment? = nil,
+        clientSessionID: String? = nil
     ) async throws -> ShellOpenResult {
         try cancellation?.throwIfCancelled()
         try ShellInputValidation.validate(command: command, cwd: cwd, environment: environment)
@@ -109,6 +152,7 @@ public actor ShellSessionCenter {
             sessionID: sessionID,
             schedulerID: UUID(),
             runID: runID,
+            clientSessionID: clientSessionID,
             environmentLease: lease,
             expiresAt: Date().addingTimeInterval(configuration.sessionLifetime),
             buffer: "",
@@ -136,10 +180,14 @@ public actor ShellSessionCenter {
         maxBytes: Int,
         runID: UUID,
         cancellation: CancellationToken?,
-        forTerminal: Bool = false
+        forTerminal: Bool = false,
+        clientSessionID: String? = nil
     ) async throws -> ShellExchangeResult {
         guard var entry = sessions[sessionID], entry.runID == runID else {
             throw FloeError.notFound("Unknown or expired shell session \(sessionID)")
+        }
+        guard entry.clientSessionID == clientSessionID else {
+            throw OwnerMismatch(sessionID: sessionID)
         }
         try cancellation?.throwIfCancelled()
         // Interactive input is user keystrokes on an already-approved session,
@@ -174,7 +222,7 @@ public actor ShellSessionCenter {
             // branch below and tear the session down.
             throw CancellationError()
         } catch {
-            await close(sessionID: sessionID, runID: runID)
+            await closeUnchecked(sessionID: sessionID)
             throw error
         }
         guard sessions[sessionID]?.schedulerID == entry.schedulerID else {
@@ -191,36 +239,68 @@ public actor ShellSessionCenter {
         if entry.alive {
             await scheduleExpiry(for: sessionID, schedulerID: entry.schedulerID)
         } else {
-            await close(sessionID: sessionID, runID: runID)
+            await closeUnchecked(sessionID: sessionID)
         }
         return ShellExchangeResult(output: cleanOutput, alive: result.alive, exitCode: result.exitCode, terminalOutput: forTerminal ? (result.terminalOutput ?? Data(result.output.utf8)) : nil, failure: result.failure, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
     }
 
-    public func close(sessionID: String, runID: UUID) async {
-        guard let entry = sessions[sessionID], entry.runID == runID else { return }
+    /// Closes the caller's own session. `ownerMismatch` means a live session
+    /// with that id belongs to another client of the same run: nothing was
+    /// closed and nothing was sent. `notFound` keeps the documented idempotent
+    /// "safe to call more than once" contract for an unknown/expired session.
+    @discardableResult
+    public func close(
+        sessionID: String,
+        runID: UUID,
+        clientSessionID: String? = nil
+    ) async -> AccessOutcome {
+        guard let entry = sessions[sessionID], entry.runID == runID else { return .notFound }
+        guard entry.clientSessionID == clientSessionID else { return .ownerMismatch }
         sessions.removeValue(forKey: sessionID)
-        await SessionExpiryScheduler.shared.cancel(id: entry.schedulerID)
-        await backend.closeSession(sessionID: sessionID)
-        await entry.environmentLease.finish()
+        await tearDown(entry)
+        return .applied
     }
 
-    public func signal(sessionID: String, signal: ShellSignal, runID: UUID) async {
-        guard let entry = sessions[sessionID], entry.runID == runID else { return }
+    /// Signals the caller's own session. A sibling client's live session is
+    /// refused (`ownerMismatch`) before any signal reaches the backend, so one
+    /// client's cross-cancel can never hit another client's process group.
+    @discardableResult
+    public func signal(
+        sessionID: String,
+        signal: ShellSignal,
+        runID: UUID,
+        clientSessionID: String? = nil
+    ) async -> AccessOutcome {
+        guard let entry = sessions[sessionID], entry.runID == runID else { return .notFound }
+        guard entry.clientSessionID == clientSessionID else { return .ownerMismatch }
         await backend.signalSession(sessionID: sessionID, signal: signal)
+        return .applied
     }
 
-    public func resize(sessionID: String, columns: Int, rows: Int, runID: UUID) async {
-        guard sessions[sessionID]?.runID == runID else { return }
+    @discardableResult
+    public func resize(
+        sessionID: String,
+        columns: Int,
+        rows: Int,
+        runID: UUID,
+        clientSessionID: String? = nil
+    ) async -> AccessOutcome {
+        guard let entry = sessions[sessionID], entry.runID == runID else { return .notFound }
+        guard entry.clientSessionID == clientSessionID else { return .ownerMismatch }
         await backend.resizeSession(sessionID: sessionID, columns: max(20, min(columns, 500)), rows: max(5, min(rows, 200)))
+        return .applied
     }
 
+    /// Root-owned lifecycle cleanup: closes every session of the run,
+    /// regardless of which client opened it. This is the trusted teardown
+    /// entry (run/user stop, environment teardown), not a model call path, so
+    /// it deliberately ignores client identity — it can always orderly close
+    /// owned resources.
     public func closeAll(runID: UUID) async {
         let owned = sessions.values.filter { $0.runID == runID }
         for entry in owned {
             sessions.removeValue(forKey: entry.sessionID)
-            await SessionExpiryScheduler.shared.cancel(id: entry.schedulerID)
-            await backend.closeSession(sessionID: entry.sessionID)
-            await entry.environmentLease.finish()
+            await tearDown(entry)
         }
     }
 
@@ -236,19 +316,40 @@ public actor ShellSessionCenter {
         sessions.values.filter { $0.environmentLease.context.environmentID == environmentID }.count
     }
 
+    /// Environment teardown is a trusted root-owned lifecycle entry: it closes
+    /// every session tagged with the environment, whichever client opened it.
     public func closeAll(environmentID: String) async {
         let owned = sessions.values.filter { $0.environmentLease.context.environmentID == environmentID }
-        for entry in owned { await close(sessionID: entry.sessionID, runID: entry.runID) }
+        for entry in owned {
+            sessions.removeValue(forKey: entry.sessionID)
+            await tearDown(entry)
+        }
     }
 
+    /// Closes every live session regardless of run or client (trusted
+    /// container teardown hook).
     public func closeAllSessions() async {
         let all = Array(sessions.values)
         for entry in all {
             sessions.removeValue(forKey: entry.sessionID)
-            await SessionExpiryScheduler.shared.cancel(id: entry.schedulerID)
-            await backend.closeSession(sessionID: entry.sessionID)
-            await entry.environmentLease.finish()
+            await tearDown(entry)
         }
+    }
+
+    /// Removes and tears down one session WITHOUT an ownership check. Only
+    /// trusted callers may use it: a caller that already passed the ownership
+    /// check (exchange's own cleanup when the session ended or errored), the
+    /// session's expiry, and root-owned lifecycle cleanup (`closeAll*`), which
+    /// must be able to orderly close owned resources regardless of client.
+    private func closeUnchecked(sessionID: String) async {
+        guard let entry = sessions.removeValue(forKey: sessionID) else { return }
+        await tearDown(entry)
+    }
+
+    private func tearDown(_ entry: Entry) async {
+        await SessionExpiryScheduler.shared.cancel(id: entry.schedulerID)
+        await backend.closeSession(sessionID: entry.sessionID)
+        await entry.environmentLease.finish()
     }
 
     private func scheduleExpiry(for sessionID: String, schedulerID: UUID) async {
@@ -267,7 +368,6 @@ public actor ShellSessionCenter {
             return
         }
         sessions.removeValue(forKey: sessionID)
-        await backend.closeSession(sessionID: sessionID)
-        await entry.environmentLease.finish()
+        await tearDown(entry)
     }
 }

@@ -236,6 +236,17 @@ actor PersonalToolCursorStore {
         snapshots = snapshots.filter { !$0.value.owner.matches(owner) }
     }
 
+    /// Drops every snapshot created by the given per-run identities. A
+    /// temporary (ephemeral) session owns its snapshots per RUN — its
+    /// conversation id can be reused by a later session epoch, so
+    /// same-conversation matching would expose a previous session's rows.
+    /// Ending the session revokes its run identities immediately instead of
+    /// leaving RAM-only personal-data rows to expire on the TTL.
+    func revoke(fallbackRunIDs: Set<UUID>) {
+        guard !fallbackRunIDs.isEmpty else { return }
+        snapshots = snapshots.filter { !fallbackRunIDs.contains($0.value.owner.fallbackRunID) }
+    }
+
     private func pruneExpired(now: Date) {
         snapshots = snapshots.filter { $0.value.expiresAt > now }
     }

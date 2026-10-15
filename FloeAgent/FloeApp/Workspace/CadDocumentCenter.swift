@@ -585,35 +585,72 @@ actor CadDocumentCenter: CadDocumentHost {
     /// Maps kernel errors to the documented, user-readable failure classes
     /// without exposing absolute container paths.
     static func classifiedNativeError(_ error: CADDocumentError) -> Error {
-        switch error.code {
+        classifiedNativeError(code: error.code, message: error.message)
+    }
+
+    /// The kernel's proposal service reports through `CADProposalError`, a
+    /// different type with the SAME documented code vocabulary (a stale or
+    /// unknown proposal, a consumed/absent grant). It must reach the tool and
+    /// the model as the same taxonomy instead of a raw kernel error, exactly
+    /// like `CADDocumentError`.
+    static func classifiedNativeError(_ error: CADProposalError) -> Error {
+        classifiedNativeError(code: error.code, message: error.message)
+    }
+
+    private static func classifiedNativeError(code: String, message: String) -> Error {
+        switch code {
         case "exists":
             return FloeError.validationFailed(
                 "A CAD package already exists at that name; the factory unique-ifies automatically—retry create without removing anything.")
         case "no_solids", "iges_empty", "empty_mesh", "iges_read_failed", "iges_import_failed",
              "mesh_parse_failed", "unsupported_format":
-            return FloeError.validationFailed(error.message)
+            return FloeError.validationFailed(message)
         case "stale_proposal":
-            return FloeError.validationFailed(error.message)
+            return FloeError.validationFailed(message)
         case "unknown_proposal", "grant_authority", "grant_required":
             return FloeError.unauthorized
         case "document_read_only":
-            return FloeError.validationFailed(error.message)
+            return FloeError.validationFailed(message)
         case "source_changed":
-            return FloeError.validationFailed(error.message)
+            return FloeError.validationFailed(message)
         case "save_failed":
-            return FloeError.storageCorrupted(error.message)
+            return FloeError.storageCorrupted(message)
         default:
-            return FloeError.storageCorrupted(error.message)
+            return FloeError.storageCorrupted(message)
         }
     }
 
     /// Maps a thrown native error to the documented taxonomy without
-    /// changing the thrown error surface.
+    /// changing the thrown error surface. Both kernel error types are covered:
+    /// the document/bridge errors and the proposal service's own errors.
     private func mapClassified(_ body: () async throws -> String) async rethrows -> String {
         do {
             return try await body()
         } catch let error as CADDocumentError {
             throw Self.classifiedNativeError(error)
+        } catch let error as CADProposalError {
+            throw Self.classifiedNativeError(error)
+        }
+    }
+
+    /// How one native apply is authorized. The interactive grant comes from
+    /// the CAD confirmation UI; the runtime authority comes from the
+    /// runtime-approved `cad.document` apply call and has already been
+    /// consumed (single-use) by the tool before the host sees it.
+    private enum NativeApplyAuthorization {
+        case interactiveGrant(String)
+        case runtimeAuthority(CadAutomaticAuthorization)
+
+        var grantID: String? {
+            if case .interactiveGrant(let id) = self { return id }
+            return nil
+        }
+
+        var mode: String {
+            switch self {
+            case .interactiveGrant: return "interactive-grant"
+            case .runtimeAuthority: return "runtime-authority"
+            }
         }
     }
 
@@ -625,11 +662,103 @@ actor CadDocumentCenter: CadDocumentHost {
                              canonicalTarget: String) async throws -> String {
         guard let proposalString = request["proposal_id"] as? String,
               let proposalID = UUID(uuidString: proposalString),
-              let grantID = request["grant_id"] as? String else {
+              let grantID = request["grant_id"] as? String, !grantID.isEmpty else {
             throw CADDocumentError(code: "grant_required",
                                    message: "apply requires proposal_id and a UI-issued grant_id.")
         }
         let requestID = (request["request_id"] as? String) ?? "native-\(proposalID.uuidString)"
+        return try await nativeApplyTransaction(proposalID: proposalID,
+                                                authorization: .interactiveGrant(grantID),
+                                                requestID: requestID, access: access,
+                                                canonicalTarget: canonicalTarget)
+    }
+
+    /// Automatic apply for the runtime-approved `cad.document` call (no UI
+    /// grant). The tool consumed the single-use `RuntimeTaskAuthority` for
+    /// exactly this operation; this host re-verifies the proof it carries is
+    /// bound to THIS tool, the apply operation and this proposal's canonical
+    /// document (and to the proposal base revision when the approved call
+    /// pinned one) and then runs the SAME all-or-nothing transaction as the
+    /// interactive path. A model cannot construct the proof and a replayed
+    /// token never reaches here (the store refuses a consumed token).
+    func applyAutomatic(proposalID: UUID, authorization: CadAutomaticAuthorization,
+                        requestID: String, access: CadDocumentAccess) async throws -> String {
+        try await mapClassified {
+            let target = try await self.nativeAutomaticTarget(proposalID: proposalID)
+            // The authority's canonical target is the TYPED key the runtime
+            // minted (`file:<canonical path>`), while the journal/gate/durable
+            // identities stay RAW paths; only the comparison adds the prefix.
+            let authorityKey = Self.authorityCanonicalTarget(forRawPath: target.canonicalPath)
+            guard authorization.binding.toolName == CadDocumentTool.name,
+                  authorization.binding.operation == "apply",
+                  authorization.binding.runID == authorization.runID,
+                  authorization.binding.operationID == authorization.operationID,
+                  authorization.binding.idempotencyKey == authorization.idempotencyKey,
+                  authorization.binding.canonicalTarget == authorityKey else {
+                throw FloeError.unauthorized
+            }
+            // The approved call carried a revision pin: it must be the exact
+            // revision this proposal was drafted against. (The kernel re-checks
+            // the LIVE document against that same base at commit time.)
+            if let rawRevision = authorization.binding.baseRevision {
+                guard let approvedRevision = Int64(rawRevision),
+                      approvedRevision == Int64(target.baseRevision) else {
+                    throw FloeError.validationFailed(
+                        "The approved call is bound to revision \(rawRevision), but this proposal was drafted against "
+                            + "revision \(target.baseRevision); read the document again and draft a new proposal.")
+                }
+            }
+            return try await self.nativeApplyTransaction(proposalID: proposalID,
+                                                         authorization: .runtimeAuthority(authorization),
+                                                         requestID: requestID, access: access,
+                                                         canonicalTarget: target.canonicalPath)
+        }
+    }
+
+    /// The authority key for one RAW canonical document path: exactly the
+    /// typed `file:` target the runtime mints for a `cad.document` call
+    /// (`RuntimeAuthorityDigest.canonicalTarget` → `MutationTargetResolver`).
+    static func authorityCanonicalTarget(forRawPath path: String) -> String {
+        "file:" + path
+    }
+
+    /// Canonical document path and base revision the automatic proof is
+    /// checked against. A still-pending proposal resolves through the live
+    /// bridge binding; an applied (or otherwise terminal) proposal resolves
+    /// through the DURABLE record, because the bridge clears the live binding
+    /// on apply — a legitimate idempotent retry after a success or a restart
+    /// must still replay its recorded receipt instead of dying with
+    /// `unknown_proposal`.
+    private func nativeAutomaticTarget(proposalID: UUID) async throws
+        -> (canonicalPath: String, baseRevision: Int) {
+        // Receipt-first, exactly like the interactive path: an in-process
+        // tombstone (or the durable record) already proves the target. The
+        // returned path stays RAW (the journal/gate/durable identity); the
+        // caller prefixes it only for the typed authority comparison.
+        if let applied = nativeApplyReceipts[proposalID] {
+            return (applied.canonicalPath, applied.receipt.revision)
+        }
+        if let stored = nativeProposals.record(for: proposalID) {
+            switch stored.status {
+            case .applied, .applying, .superseded, .interrupted, .rejected:
+                return (stored.canonicalDocumentPath, stored.baseRevision)
+            case .pending:
+                break
+            }
+        }
+        let binding = try await FloeCAD3DBridge.shared.proposalBinding(proposalID: proposalID)
+        return (Self.canonicalDocumentPath(URL(fileURLWithPath: binding.documentPath)), binding.revision)
+    }
+
+    /// Shared transaction entry: receipt replay, then the recorded propose-time
+    /// authority (access + canonical target), then the bridge's proposal
+    /// binding; `nativePerformApply` owns the mutation and its authorization
+    /// step (grant reservation or the already-consumed runtime authority).
+    private func nativeApplyTransaction(proposalID: UUID,
+                                        authorization: NativeApplyAuthorization,
+                                        requestID: String, access: CadDocumentAccess,
+                                        canonicalTarget: String) async throws -> String {
+        let mode = authorization.mode
         // Idempotent replay first: after a successful apply the live context is
         // cleared, but a retry with the same request id must return the
         // original receipt instead of failing or re-running the operation.
@@ -644,7 +773,7 @@ actor CadDocumentCenter: CadDocumentHost {
                     "proposal \(proposalID.uuidString) was already applied with a different request; "
                     + "start a new proposal to change the document again.")
             }
-            return try Self.encodeNativeReceipt(applied.receipt, replay: true)
+            return try Self.encodeNativeReceipt(applied.receipt, replay: true, mode: mode)
         }
         if let stored = nativeProposals.record(for: proposalID), stored.status == .applied,
            let receipt = stored.receipt {
@@ -665,7 +794,7 @@ actor CadDocumentCenter: CadDocumentHost {
             nativeApplyReceipts[proposalID] = NativeAppliedReceipt(
                 requestID: requestID, access: access,
                 canonicalPath: canonicalTarget, receipt: restored)
-            return try Self.encodeNativeReceipt(restored, replay: true)
+            return try Self.encodeNativeReceipt(restored, replay: true, mode: mode)
         }
         // Authority before any grant reservation or mutation: the recorded
         // propose context must match the current access EXACTLY and the
@@ -702,10 +831,11 @@ actor CadDocumentCenter: CadDocumentHost {
         guard Self.canonicalDocumentPath(URL(fileURLWithPath: binding.documentPath)) == canonicalTarget else {
             throw FloeError.unauthorized
         }
-        let outcome = try await nativePerformApply(proposalID: proposalID, grantID: grantID,
+        let outcome = try await nativePerformApply(proposalID: proposalID,
+                                                   authorization: authorization,
                                                    requestID: requestID, binding: binding,
                                                    recordedAccess: access)
-        return try Self.encodeNativeReceipt(outcome.receipt, replay: outcome.replay)
+        return try Self.encodeNativeReceipt(outcome.receipt, replay: outcome.replay, mode: mode)
     }
 
     /// Shared two-phase apply used by the tool and the interactive banner:
@@ -715,12 +845,16 @@ actor CadDocumentCenter: CadDocumentHost {
     /// `.applying` intent is written BEFORE the mutation and the receipt is
     /// journaled in the SHARED CadAppliedReceiptJournal after the commit, so a
     /// crash between commit and notify is recoverable — never a lost or
-    /// fabricated outcome.
-    private func nativePerformApply(proposalID: UUID, grantID: String, requestID: String,
+    /// fabricated outcome. The runtime-authority path runs the same
+    /// transaction without a grant reservation: its single-use authorization
+    /// was already consumed by the tool for this exact call.
+    private func nativePerformApply(proposalID: UUID, authorization: NativeApplyAuthorization,
+                                    requestID: String,
                                     binding: FloeCAD3DBridge.ProposalBinding,
                                     recordedAccess: CadDocumentAccess) async throws
         -> (receipt: CADApplyReceipt, replay: Bool) {
         let gateKey = Self.canonicalDocumentPath(URL(fileURLWithPath: binding.documentPath))
+        let grantID = authorization.grantID
         return try await withDocumentGate(gateKey) {
             if let applied = self.nativeApplyReceipts[proposalID] {
                 return (applied.receipt, true)
@@ -729,27 +863,29 @@ actor CadDocumentCenter: CadDocumentHost {
             // runs through the bridge's import transaction; every other
             // proposal runs the typed geometry/service operation.
             let importSpec = await FloeCAD3DBridge.shared.importSpec(for: proposalID)
-            switch await self.grants.reserve(grantID: grantID, proposalID: proposalID,
-                                             documentID: binding.documentPath,
-                                             revision: Int64(binding.revision),
-                                             sha256: binding.contentSHA256) {
-            case .reserved:
-                break
-            case .unknownGrant, .documentMismatch:
-                throw FloeError.unauthorized
-            case .expired:
-                throw FloeError.validationFailed("The confirmation grant expired; review and confirm again.")
-            case .alreadyConsumed, .alreadyReserved:
-                throw FloeError.validationFailed("The confirmation grant was already used.")
-            case .revisionMismatch(let expected, let actual):
-                throw FloeError.validationFailed(
-                    "The document revision changed (expected \(expected), actual \(actual)); regenerate the proposal.")
-            case .shaMismatch(let expected, let actual):
-                throw FloeError.validationFailed(
-                    "The document content changed (expected \(expected.prefix(12))…, actual \(actual.prefix(12))…); regenerate the proposal.")
+            if let grantID {
+                switch await self.grants.reserve(grantID: grantID, proposalID: proposalID,
+                                                 documentID: binding.documentPath,
+                                                 revision: Int64(binding.revision),
+                                                 sha256: binding.contentSHA256) {
+                case .reserved:
+                    break
+                case .unknownGrant, .documentMismatch:
+                    throw FloeError.unauthorized
+                case .expired:
+                    throw FloeError.validationFailed("The confirmation grant expired; review and confirm again.")
+                case .alreadyConsumed, .alreadyReserved:
+                    throw FloeError.validationFailed("The confirmation grant was already used.")
+                case .revisionMismatch(let expected, let actual):
+                    throw FloeError.validationFailed(
+                        "The document revision changed (expected \(expected), actual \(actual)); regenerate the proposal.")
+                case .shaMismatch(let expected, let actual):
+                    throw FloeError.validationFailed(
+                        "The document content changed (expected \(expected.prefix(12))…, actual \(actual.prefix(12))…); regenerate the proposal.")
+                }
             }
             if Task.isCancelled {
-                await self.grants.releaseReservation(grantID: grantID)
+                if let grantID { await self.grants.releaseReservation(grantID: grantID) }
                 throw FloeError.cancelled
             }
             // Write-ahead intent BEFORE the mutation. A failure here refuses
@@ -762,7 +898,7 @@ actor CadDocumentCenter: CadDocumentHost {
                 try await self.nativeProposals.markApplying(
                     proposalID, expectedResultRevision: binding.revision + 1)
             } catch {
-                await self.grants.releaseReservation(grantID: grantID)
+                if let grantID { await self.grants.releaseReservation(grantID: grantID) }
                 throw FloeError.storageCorrupted(
                     "The apply intent could not be persisted, so the confirmed change was not applied: "
                         + error.localizedDescription)
@@ -776,13 +912,13 @@ actor CadDocumentCenter: CadDocumentHost {
                 } else {
                     receipt = try await FloeCAD3DBridge.shared.performAuthorizedApply(proposalID: proposalID)
                 }
-                _ = await self.grants.commitReservation(grantID: grantID)
+                if let grantID { _ = await self.grants.commitReservation(grantID: grantID) }
                 await self.recordNativeApplySuccess(proposalID: proposalID, receipt: receipt,
                                                     requestID: requestID, canonicalPath: gateKey,
                                                     recordedAccess: recordedAccess)
                 return (receipt, false)
             } catch {
-                await self.grants.releaseReservation(grantID: grantID)
+                if let grantID { await self.grants.releaseReservation(grantID: grantID) }
                 // The document was rolled back in-memory by the proposal
                 // service (one undo); the durable record returns to pending so
                 // the same confirmed proposal can be retried inside the TTL.
@@ -872,8 +1008,9 @@ actor CadDocumentCenter: CadDocumentHost {
                              sha256: receipt.contentSHA256)
     }
 
-    private static func encodeNativeReceipt(_ receipt: CADApplyReceipt, replay: Bool) throws -> String {
-        let payload: [String: Any] = [
+    private static func encodeNativeReceipt(_ receipt: CADApplyReceipt, replay: Bool,
+                                            mode: String? = nil) throws -> String {
+        var payload: [String: Any] = [
             "ok": true,
             "replay": replay,
             "receipt": ["proposal_id": receipt.proposalID.uuidString,
@@ -881,6 +1018,7 @@ actor CadDocumentCenter: CadDocumentHost {
                         "content_sha256": receipt.contentSHA256,
                         "message": receipt.message],
         ]
+        if let mode { payload["mode"] = mode }
         let encoded = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         return String(data: encoded, encoding: .utf8) ?? "{}"
     }
@@ -1171,7 +1309,8 @@ actor CadDocumentCenter: CadDocumentHost {
             }
             throw FloeError.unauthorized
         }
-        let outcome = try await nativePerformApply(proposalID: proposalID, grantID: grantID,
+        let outcome = try await nativePerformApply(proposalID: proposalID,
+                                                   authorization: .interactiveGrant(grantID),
                                                    requestID: "ui-\(proposalID.uuidString)",
                                                    binding: binding,
                                                    recordedAccess: context?.access
@@ -1422,6 +1561,67 @@ actor CadDocumentCenter: CadDocumentHost {
 
     func apply(proposal: CadProposal, grantID: String, requestID: String,
                access: CadDocumentAccess) async throws -> CadDocumentReceipt {
+        try await applyTransactional(proposal: proposal, authorization: .interactiveGrant(grantID),
+                                     requestID: requestID, access: access)
+    }
+
+    /// How one 2D apply is authorized. The interactive grant comes from the
+    /// CAD confirmation UI; the runtime authority comes from the
+    /// runtime-approved `cad.document` apply call and was already consumed
+    /// (single-use) by the tool.
+    private enum Cad2DApplyAuthorization {
+        case interactiveGrant(String)
+        case runtimeAuthority(CadAutomaticAuthorization)
+
+        var grantID: String? {
+            if case .interactiveGrant(let id) = self { return id }
+            return nil
+        }
+    }
+
+    /// Automatic apply for the runtime-approved `cad.document` call on a 2D
+    /// drawing (no interactive grant). Same proof rules as the native path:
+    /// the proof must be bound to this tool, the apply operation and the
+    /// canonical drawing path (and to the proposal base revision when the
+    /// approved call pinned one); the serialized transaction then re-checks
+    /// the live revision/SHA before any mutation.
+    func applyAutomatic(proposal: CadProposal, authorization: CadAutomaticAuthorization,
+                        requestID: String, access: CadDocumentAccess) async throws -> CadDocumentReceipt {
+        let resolved = try resolve(documentID: proposal.documentID, access: access)
+        let canonicalURL = try resolved.service.guardResolver.resolve(resolved.id)
+        let canonicalTarget = "file:" + Self.canonicalDocumentPath(canonicalURL)
+        guard authorization.binding.toolName == CadDocumentTool.name,
+              authorization.binding.operation == "apply",
+              authorization.binding.runID == authorization.runID,
+              authorization.binding.operationID == authorization.operationID,
+              authorization.binding.idempotencyKey == authorization.idempotencyKey,
+              authorization.binding.canonicalTarget == canonicalTarget else {
+            throw FloeError.unauthorized
+        }
+        if let rawRevision = authorization.binding.baseRevision {
+            guard let approvedRevision = Int64(rawRevision),
+                  approvedRevision == proposal.baseRevision else {
+                throw FloeError.validationFailed(
+                    "The approved call is bound to revision \(rawRevision), but this proposal was drafted against "
+                        + "revision \(proposal.baseRevision); regenerate the proposal.")
+            }
+        }
+        return try await applyTransactional(proposal: proposal,
+                                            authorization: .runtimeAuthority(authorization),
+                                            requestID: requestID, access: access)
+    }
+
+    /// The serialized 2D apply transaction shared by the interactive and the
+    /// runtime-authorized paths. Only the authorization step differs: an
+    /// interactive grant is reserved here (and released on every failure so
+    /// the user can retry inside the TTL); the runtime authority was already
+    /// consumed by the tool and the kernel-level revision/SHA checks below are
+    /// the correctness gate for both paths.
+    private func applyTransactional(proposal: CadProposal,
+                                   authorization: Cad2DApplyAuthorization,
+                                   requestID: String,
+                                   access: CadDocumentAccess) async throws -> CadDocumentReceipt {
+        let grantID = authorization.grantID
         // Resolve and authenticate before any replay lookup so a receipt can
         // never be replayed across owners, environments or workspaces.
         let resolved = try resolve(documentID: proposal.documentID, access: access)
@@ -1451,26 +1651,28 @@ actor CadDocumentCenter: CadDocumentHost {
                 // Cancellation gates: a tool call cancelled while queued (or just
                 // before mutating) must not later edit or commit.
                 if Task.isCancelled { throw FloeError.cancelled }
-                switch await grants.reserve(grantID: grantID, proposalID: proposal.id,
-                                            documentID: resolved.id, revision: proposal.baseRevision,
-                                            sha256: proposal.baseSHA256) {
-                case .reserved:
-                    break
-                case .unknownGrant, .documentMismatch:
-                    throw FloeError.unauthorized
-                case .expired:
-                    throw FloeError.validationFailed("The confirmation grant expired; ask the user to confirm again.")
-                case .alreadyConsumed, .alreadyReserved:
-                    throw FloeError.validationFailed("The confirmation grant was already used.")
-                case .revisionMismatch(let expected, let actual):
-                    throw FloeError.validationFailed("The document revision changed (expected \(expected), actual \(actual)); regenerate the proposal.")
-                case .shaMismatch(let expected, let actual):
-                    throw FloeError.validationFailed("The document content changed (expected \(expected.prefix(12))…, actual \(actual.prefix(12))…); regenerate the proposal.")
+                if let grantID {
+                    switch await grants.reserve(grantID: grantID, proposalID: proposal.id,
+                                                documentID: resolved.id, revision: proposal.baseRevision,
+                                                sha256: proposal.baseSHA256) {
+                    case .reserved:
+                        break
+                    case .unknownGrant, .documentMismatch:
+                        throw FloeError.unauthorized
+                    case .expired:
+                        throw FloeError.validationFailed("The confirmation grant expired; ask the user to confirm again.")
+                    case .alreadyConsumed, .alreadyReserved:
+                        throw FloeError.validationFailed("The confirmation grant was already used.")
+                    case .revisionMismatch(let expected, let actual):
+                        throw FloeError.validationFailed("The document revision changed (expected \(expected), actual \(actual)); regenerate the proposal.")
+                    case .shaMismatch(let expected, let actual):
+                        throw FloeError.validationFailed("The document content changed (expected \(expected.prefix(12))…, actual \(actual.prefix(12))…); regenerate the proposal.")
+                    }
                 }
 
                 var draftApplied = false
                 if Task.isCancelled {
-                    await grants.releaseReservation(grantID: grantID)
+                    if let grantID { await grants.releaseReservation(grantID: grantID) }
                     throw FloeError.cancelled
                 }
                 do {
@@ -1502,7 +1704,7 @@ actor CadDocumentCenter: CadDocumentHost {
                         // Single rollback: the outer catch sees draftApplied and
                         // undoes the engine edit exactly once; this path only
                         // releases the reservation and refuses the commit.
-                        await grants.releaseReservation(grantID: grantID)
+                        if let grantID { await grants.releaseReservation(grantID: grantID) }
                         throw FloeError.storageCorrupted(
                             "The apply receipt could not be journaled before the commit; the drawing was not changed and the draft was rolled back.")
                     }
@@ -1517,7 +1719,7 @@ actor CadDocumentCenter: CadDocumentHost {
                         // completion write failed rather than claiming otherwise.
                         completed.note = "receipt completion journal failed; recovery reconciles from the prepared SHA"
                     }
-                    _ = await grants.commitReservation(grantID: grantID)
+                    if let grantID { _ = await grants.commitReservation(grantID: grantID) }
                     // Keep the proposal as an applied tombstone: a tool retry with
                     // the same request id must replay the original receipt instead
                     // of failing to load a deleted proposal.
@@ -1534,17 +1736,17 @@ actor CadDocumentCenter: CadDocumentHost {
                             _ = try await session.engine.undo()
                         } catch {
                             await invalidateSession(resolved.key)
-                            await grants.releaseReservation(grantID: grantID)
+                            if let grantID { await grants.releaseReservation(grantID: grantID) }
                             throw FloeError.validationFailed(
                                 "The drawing engine could not be rolled back after a failed save; the session was reloaded from the last saved bytes. Retry the confirmed proposal.")
                         }
-                        await grants.releaseReservation(grantID: grantID)
+                        if let grantID { await grants.releaseReservation(grantID: grantID) }
                         throw error
                     }
                     // The edit request itself failed; the engine mutation outcome
                     // is unknown (e.g. a timeout), so never reuse the session.
                     await invalidateSession(resolved.key)
-                    await grants.releaseReservation(grantID: grantID)
+                    if let grantID { await grants.releaseReservation(grantID: grantID) }
                     throw FloeError.validationFailed(
                         "The edit outcome was uncertain, so the drawing engine was reloaded from the last saved bytes. Retry the confirmed proposal.")
                 }
@@ -2318,11 +2520,32 @@ enum NativeCADPackageCreation {
         // Parenthesize so this binds Optional<String>.flatMap (String?), not
         // String's Sequence.flatMap (which yields [Character]? and has no
         // isEmpty on its Character element).
-        let nameSource = (trimmedName.flatMap { $0.isEmpty ? nil : $0 }) ?? pathStem
-        guard let stem = NativeCADPolicy.sanitizedStem(nameSource) else {
-            throw FloeError.validationFailed(
-                "A CAD document name is required and must contain usable characters.")
+        if let explicitName, trimmedName?.isEmpty ?? true {
+            // A provided-but-blank name is a real error, not "use the default":
+            // callers that mean the default omit the argument.
+            throw FloeError.validationFailed(NativeCADPolicy.emptyNameMessage)
         }
+        let requestedName = trimmedName.flatMap { $0.isEmpty ? nil : $0 }
+        // A caller-supplied DISPLAY name must be usable as written: Chinese/
+        // mixed names are supported, while empty, over-long, traversal-like
+        // and control-character names are refused with an actionable
+        // bilingual explanation (never silently mangled). The display name is
+        // stored as typed (only trimmed); only the FILE name is sanitized.
+        if let requestedName, let issue = NativeCADPolicy.validateName(requestedName) {
+            throw FloeError.validationFailed(issue)
+        }
+        if let issue = NativeCADPolicy.validateName(pathStem) {
+            throw FloeError.validationFailed(
+                "The CAD package file name is not usable (\(issue))")
+        }
+        // The FILE keeps the requested path's stem (sanitized, unique-ified);
+        // the DISPLAY name stays separate and is stored inside the package.
+        guard let fileStem = NativeCADPolicy.sanitizedStem(pathStem) else {
+            throw FloeError.validationFailed(
+                "The CAD package file name must contain at least one usable character. "
+                    + "CAD 文档文件名必须包含可用字符。")
+        }
+        let displayName = requestedName ?? fileStem
 
         // FIRST validate the REAL target/parent directory: a traversal or a
         // path outside the guard root must throw NOW, never be treated as a
@@ -2348,7 +2571,7 @@ enum NativeCADPackageCreation {
         // Bounded unique-ification against the guarded root. `exists` throws
         // on resolution failure instead of pretending a collision; the loop
         // is also hard-bounded so it can never spin indefinitely.
-        var uniqueRelative = NativeCADPolicy.packageRelativePath(parent: directory, stem: stem)
+        var uniqueRelative = NativeCADPolicy.packageRelativePath(parent: directory, stem: fileStem)
         var serial = 2
         let maximumAttempts = 1000
         func existingRelative(_ candidate: String) throws -> Bool {
@@ -2363,9 +2586,9 @@ enum NativeCADPackageCreation {
         while try existingRelative(uniqueRelative) {
             guard serial < maximumAttempts else {
                 throw FloeError.validationFailed(
-                    "Too many existing CAD packages named '\(stem)'; choose a different name.")
+                    "Too many existing CAD packages named '\(fileStem)'; choose a different name.")
             }
-            let stemName = "\(stem) \(serial)"
+            let stemName = "\(fileStem) \(serial)"
             uniqueRelative = NativeCADPolicy.packageRelativePath(parent: directory, stem: stemName)
             serial += 1
         }
@@ -2385,7 +2608,7 @@ enum NativeCADPackageCreation {
         let documentName = ((uniqueRelative as NSString).lastPathComponent as NSString)
             .deletingPathExtension
         do {
-            _ = try await FloeCADDocument.create(at: url, name: documentName, overwrite: false)
+            _ = try await FloeCADDocument.create(at: url, name: displayName, overwrite: false)
         } catch let error as CADDocumentError {
             throw FloeError.validationFailed(error.message)
         }
@@ -2396,14 +2619,18 @@ enum NativeCADPackageCreation {
             throw FloeError.storageCorrupted(
                 "The new CAD package could not be read back through the native store; it was not reported as created.")
         }
+        let note = documentName == displayName
+            ? "Empty native package created and verified through the versioned store; add geometry with the editor or an import proposal."
+            : "Empty native package created and verified through the versioned store; its display name is \u{201C}\(displayName)\u{201D}. Add geometry with the editor or an import proposal."
         return CadNativePackageReceipt(
             relativePath: uniqueRelative,
-            name: documentName,
+            name: displayName,
+            fileName: documentName,
             revision: Int64(identity.revision),
             schemaVersion: 1,
             contentSHA256: identity.contentSHA256,
             modelSHA256: identity.modelSHA256,
-            note: "Empty native package created and verified through the versioned store; add geometry with the editor or an import proposal.")
+            note: note)
     }
 }
 

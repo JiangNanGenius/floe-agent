@@ -273,18 +273,27 @@ public struct CadExportReceipt: Codable, Sendable, Equatable {
 public struct CadNativePackageReceipt: Codable, Sendable, Equatable {
     /// Workspace-relative package path that was created.
     public var relativePath: String
+    /// Human-readable display name stored INSIDE the package. It is the name
+    /// the caller asked for (letters/digits of any language) and is
+    /// independent of the file name, which is derived from the requested path
+    /// and uniquified.
     public var name: String
+    /// File stem of the created package (the `relativePath` file name without
+    /// the `.floecad` extension). Present so a caller can tell the display
+    /// name and the file name apart.
+    public var fileName: String?
     public var revision: Int64
     public var schemaVersion: Int
     public var contentSHA256: String
     public var modelSHA256: String?
     public var note: String?
 
-    public init(relativePath: String, name: String, revision: Int64,
+    public init(relativePath: String, name: String, fileName: String? = nil, revision: Int64,
                 schemaVersion: Int, contentSHA256: String, modelSHA256: String? = nil,
                 note: String? = nil) {
         self.relativePath = relativePath
         self.name = name
+        self.fileName = fileName
         self.revision = revision
         self.schemaVersion = schemaVersion
         self.contentSHA256 = contentSHA256
@@ -315,6 +324,38 @@ public enum CadGrantReservation: Sendable, Equatable {
     case alreadyReserved
     case revisionMismatch(expected: Int64, actual: Int64)
     case shaMismatch(expected: String, actual: String)
+}
+
+/// Proof that one automatic CAD apply runs under the runtime-approved call
+/// authority: the tool builds this ONLY after `consumeRuntimeAuthority`
+/// returned `.valid` for the exact approved `cad.document` apply call. It
+/// carries the runtime-owned identity (run/task/operation/idempotency) and
+/// the canonical binding (target, revision, payload digest), so the host can
+/// re-verify that the apply it is asked to perform is the SAME operation the
+/// runtime approved. A model cannot construct or smuggle one: the type is
+/// never decoded from tool arguments, and the binding only matches the
+/// approved payload the runtime hashed. The interactive UI grant path is
+/// unchanged and remains the way a human-reviewed proposal is confirmed.
+public struct CadAutomaticAuthorization: Sendable, Equatable {
+    public var runID: UUID
+    public var taskID: UUID?
+    public var operationID: String
+    public var idempotencyKey: String
+    public var approvalGrantID: UUID?
+    public var binding: RuntimeAuthorityBinding
+    public var consumedAt: Date
+
+    public init(runID: UUID, taskID: UUID?, operationID: String, idempotencyKey: String,
+                approvalGrantID: UUID?, binding: RuntimeAuthorityBinding,
+                consumedAt: Date = Date()) {
+        self.runID = runID
+        self.taskID = taskID
+        self.operationID = operationID
+        self.idempotencyKey = idempotencyKey
+        self.approvalGrantID = approvalGrantID
+        self.binding = binding
+        self.consumedAt = consumedAt
+    }
 }
 
 // MARK: - Host boundary
@@ -359,6 +400,14 @@ public protocol CadDocumentHost: Sendable {
     /// and-swap. `requestID` is the tool-call idempotency key.
     func apply(proposal: CadProposal, grantID: String, requestID: String,
                access: CadDocumentAccess) async throws -> CadDocumentReceipt
+    /// Applies an already-authorized 2D proposal through the RUNTIME-APPROVED
+    /// CALL path (no interactive UI grant). Same proof contract as the native
+    /// automatic apply: the single-use runtime authority was consumed for this
+    /// exact `cad.document` apply call and the host re-verifies the binding
+    /// before the existing serialized transaction runs. Hosts without
+    /// automatic apply refuse.
+    func applyAutomatic(proposal: CadProposal, authorization: CadAutomaticAuthorization,
+                        requestID: String, access: CadDocumentAccess) async throws -> CadDocumentReceipt
     /// Commits the current verified engine output (CAS on SHA).
     func save(documentID: String, expectedSHA256: String, requestID: String,
               access: CadDocumentAccess) async throws -> CadDocumentReceipt
@@ -373,6 +422,18 @@ public protocol CadDocumentHost: Sendable {
     /// `grant_id` bound to the proposal and base revision/SHA.
     func threeDAction(documentID: String, requestJSON: String,
                       access: CadDocumentAccess) async throws -> String
+    /// Applies an already-authorized NATIVE `.floecad` proposal through the
+    /// RUNTIME-APPROVED CALL path (no interactive UI grant). The caller
+    /// consumed the single-use runtime authority for this exact `cad.document`
+    /// apply call; the host re-verifies the proof is bound to this tool, this
+    /// operation and this canonical document (and to the proposal's base
+    /// revision when the approved call pinned one) and then runs the SAME
+    /// all-or-nothing transaction as the interactive path (propose-time
+    /// authority record, write-ahead intent, kernel revision/SHA re-check,
+    /// single commit, idempotent replay). Hosts without automatic apply
+    /// refuse.
+    func applyAutomatic(proposalID: UUID, authorization: CadAutomaticAuthorization,
+                        requestID: String, access: CadDocumentAccess) async throws -> String
     /// Creates a new EMPTY native `.floecad` package inside the caller's
     /// workspace through the versioned package factory: local workspace only,
     /// guarded relative path, sanitized unique name, non-overwriting atomic
@@ -401,6 +462,16 @@ public extension CadDocumentHost {
     }
     func nativeCapabilities(access: CadDocumentAccess) async throws -> String {
         throw FloeError.notFound("native_cad_kernel")
+    }
+    /// A host that does not implement the runtime-authorized automatic apply
+    /// refuses it; the interactive grant path stays available.
+    func applyAutomatic(proposal: CadProposal, authorization: CadAutomaticAuthorization,
+                        requestID: String, access: CadDocumentAccess) async throws -> CadDocumentReceipt {
+        throw FloeError.unauthorized
+    }
+    func applyAutomatic(proposalID: UUID, authorization: CadAutomaticAuthorization,
+                        requestID: String, access: CadDocumentAccess) async throws -> String {
+        throw FloeError.unauthorized
     }
 }
 
@@ -546,6 +617,11 @@ public struct CadDocumentArguments: Decodable, Sendable {
     public var summary: String?
     public var operations: [CadEditOperation]?
     public var proposalID: UUID?
+    /// The proposal id EXACTLY as the approved call carried it. The runtime
+    /// authority binds the raw argument payload, so the automatic apply must
+    /// re-derive the same string (an id typed in a different case is a
+    /// different payload and therefore not the approved call).
+    public var proposalIDRaw: String?
     public var grantID: String?
     public var requestID: String?
     public var kind: String?
@@ -580,9 +656,13 @@ public struct CadDocumentArguments: Decodable, Sendable {
     /// `import`/`create`: optional explicit name for the imported body(ies)
     /// or the new document (defaults to the source stem / file stem).
     public var name: String?
+    /// `apply`: optional base revision the approved call is pinned to. When
+    /// present the automatic path binds it into the runtime authority and the
+    /// host refuses a proposal drafted against a different revision.
+    public var revision: Int64?
 
     enum CodingKeys: String, CodingKey {
-        case action, path, summary, operations, kind, points, handles, tolerance, scope, layer, text, offset, limit, output, op, args, payload
+        case action, path, summary, operations, kind, points, handles, tolerance, scope, layer, text, offset, limit, output, op, args, payload, revision
         case proposalID = "proposal_id"
         case grantID = "grant_id"
         case requestID = "request_id"
@@ -592,6 +672,53 @@ public struct CadDocumentArguments: Decodable, Sendable {
         case format = "format"
         case unitScale = "unit_scale"
         case name = "name"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        action = try container.decode(CadDocumentAction.self, forKey: .action)
+        path = try container.decodeIfPresent(String.self, forKey: .path)
+        summary = try container.decodeIfPresent(String.self, forKey: .summary)
+        operations = try container.decodeIfPresent([CadEditOperation].self, forKey: .operations)
+        if let raw = try container.decodeIfPresent(String.self, forKey: .proposalID) {
+            guard let parsed = UUID(uuidString: raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .proposalID, in: container,
+                    debugDescription: "proposal_id must be a UUID string")
+            }
+            proposalID = parsed
+            proposalIDRaw = raw
+        }
+        grantID = try container.decodeIfPresent(String.self, forKey: .grantID)
+        requestID = try container.decodeIfPresent(String.self, forKey: .requestID)
+        kind = try container.decodeIfPresent(String.self, forKey: .kind)
+        points = try container.decodeIfPresent([[Double]].self, forKey: .points)
+        handles = try container.decodeIfPresent([String].self, forKey: .handles)
+        tolerance = try container.decodeIfPresent(Double.self, forKey: .tolerance)
+        scope = try container.decodeIfPresent(String.self, forKey: .scope)
+        layer = try container.decodeIfPresent(String.self, forKey: .layer)
+        entityType = try container.decodeIfPresent(String.self, forKey: .entityType)
+        text = try container.decodeIfPresent(String.self, forKey: .text)
+        offset = try container.decodeIfPresent(Int.self, forKey: .offset)
+        limit = try container.decodeIfPresent(Int.self, forKey: .limit)
+        output = try container.decodeIfPresent(String.self, forKey: .output)
+        op = try container.decodeIfPresent(String.self, forKey: .op)
+        args = try container.decodeIfPresent(String.self, forKey: .args)
+        payload = try container.decodeIfPresent(String.self, forKey: .payload)
+        taskID = try container.decodeIfPresent(String.self, forKey: .taskID)
+        sourcePath = try container.decodeIfPresent(String.self, forKey: .sourcePath)
+        format = try container.decodeIfPresent(String.self, forKey: .format)
+        unitScale = try container.decodeIfPresent(Double.self, forKey: .unitScale)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        // The revision pin is lenient about its JSON spelling; a value that is
+        // neither a number nor a numeric string stays absent, which only ever
+        // makes the automatic binding refuse (it never widens authority).
+        if let value = try? container.decodeIfPresent(Int64.self, forKey: .revision) {
+            revision = value
+        } else if let text = try? container.decodeIfPresent(String.self, forKey: .revision),
+                  let parsed = Int64(text) {
+            revision = parsed
+        }
     }
 }
 
@@ -606,27 +733,34 @@ public struct CadDocumentTool: AgentTool {
     confirmed proposals to, save and export a CAD document. The document \
     representation decides the engine: a DWG/DXF drawing runs in the local 2D \
     engine, a native `.floecad` package runs in the parametric 3D kernel. \
-    Use action "create" (name/path) to make a new EMPTY native `.floecad` \
+    Use action "create" (path/name) to make a new EMPTY native `.floecad` \
     package through the built-in factory — never create the folder, manifest \
     or zip by hand and never guess the internal package layout. Use action \
     "import" on an EXISTING `.floecad` to add the geometry of a workspace \
     STEP/STP, IGES/IGS, STL, OBJ, GLB or glTF file: it drafts a proposal on a \
-    throwaway copy and returns a preview, and like every other mutation it \
-    changes nothing until the user confirms in the CAD UI and the returned \
-    proposal is applied with that grant. STEP gives exact editable solids; \
+    throwaway copy and returns a preview. STEP gives exact editable solids; \
     IGES solids are exact while shells/faces stay render-only; STL/OBJ/GLB \
     are render meshes with no parametric history. Propose binds an exact \
-    document revision and SHA-256 and returns a preview without writing; \
-    apply needs a single-use grant the user issued in the CAD UI. 2D edits \
-    are lines, circles, arcs, LWPolylines, text, dimensions and leaders plus \
-    move/copy/rotate/scale/mirror/trim/extend/offset and layer management. \
-    3D, blocks, xrefs, splines and proxy graphics are retained read-only in \
-    the 2D engine; they are never flattened. Units stay drawing units when \
-    undefined. Native documents add parametric features, assembly \
-    constraints, drawings, ShapeScript and mesh operations through the typed \
-    operation vocabulary (feature.extrude, feature.boolean, ...) and the \
-    three_d_* aliases; status/cancel report durable native jobs. Nothing is \
-    written before an applied and UI-confirmed proposal.
+    document revision and SHA-256 and returns a preview without writing. \
+    Apply commits ONE atomic undoable transaction for the exact proposal the \
+    approved call names: a `grant_id` selects the human-reviewed CAD UI path, \
+    and WITHOUT one the runtime-approved call authority for that exact apply \
+    authorizes it automatically (the model cannot mint or replay either; the \
+    proposal's revision/SHA is re-verified against the live document at \
+    commit). 2D edits are lines, circles, arcs, LWPolylines, text, dimensions \
+    and leaders plus move/copy/rotate/scale/mirror/trim/extend/offset and \
+    layer management. 3D, blocks, xrefs, splines and proxy graphics are \
+    retained read-only in the 2D engine; they are never flattened. Units stay \
+    drawing units when undefined. Native documents add parametric features, \
+    assembly constraints, drawings, ShapeScript and mesh operations through \
+    the typed operation vocabulary (`op` + `args`; feature.extrude, \
+    feature.boolean, ...) and the three_d_* aliases; status/cancel report \
+    durable native jobs. Workflow: create → propose {"op":"sketch.create"} → \
+    apply → propose {"op":"sketch.addEntities"} → apply → propose \
+    {"op":"feature.extrude","args":{"sketchID":...,"seedPoint":[x,y],\
+    "distance":mm}} → apply → measure {"op":"body","handles":["body:<uuid>"]} → \
+    export. Nothing is written by \
+    propose/preview/import.
     """
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
@@ -651,7 +785,7 @@ public struct CadDocumentTool: AgentTool {
       "properties": {
         "action": { "type": "string", "enum": ["capabilities", "create", "read", "query", "locate", "measure", "check", "propose", "import", "preview", "apply", "save", "export", "status", "cancel", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
         "path": { "type": "string", "description": "Document path relative to the task workspace (an allowed absolute workspace path is accepted too). Required for every action except capabilities without a path. A .floecad extension routes to the native 3D kernel; .dwg/.dxf route to the 2D engine. For 'create' it is the new package location (its parent directory must exist or be omitted); for 'import' it is the EXISTING .floecad package that receives the geometry. Never write a .floecad directory, manifest.json or zip yourself: use create." },
-        "name": { "type": "string", "maxLength": 120, "description": "create: human name for the new native document (defaults to the path stem; the file name is sanitized and made unique). import: optional name for the imported body(ies)." },
+        "name": { "type": "string", "maxLength": 120, "description": "create: human-readable display name stored in the new native document. Letters and digits of ANY language (Chinese, Japanese, Cyrillic, ...), spaces and -_(). are accepted; it must not contain '/', '\\\\', control/invisible characters or a '..' path segment and must be at most 120 characters, otherwise the call is refused with a bilingual explanation. When omitted the display name defaults to the file stem. The FILE keeps the stem of 'path' and is uniquified, so the display name and the file name stay separate. import: optional name for the imported body(ies)." },
         "source_path": { "type": "string", "description": "import only: workspace-relative path of the source file to add to the existing .floecad package. Supported extensions: .step/.stp (exact solids), .iges/.igs (solids + render-only surfaces), .stl/.obj/.glb/.gltf (meshes). The file is read through the workspace guard (symlink-safe, size-bounded) and is never modified. DWG/DXF go through the 2D engine instead." },
         "format": { "type": "string", "enum": ["step", "stp", "iges", "igs", "stl", "obj", "glb", "gltf"], "description": "import only: explicit source format; defaults to the source_path extension. A JSON .gltf imports only when its buffers/images are embedded data URIs; external .bin/texture references are reported unsupported by the tool. A self-contained .glb always works." },
         "unit_scale": { "type": "number", "exclusiveMinimum": 0, "description": "import only: optional millimetres-per-file-unit scale for unitless meshes (STL/OBJ). Ignored for STEP/IGES and declared-unit glTF." },
@@ -661,13 +795,14 @@ public struct CadDocumentTool: AgentTool {
           "description": "Typed 2D engine edits (propose on a DWG/DXF drawing). Each object needs operation. Exact shapes: addLine{start:[x,y,z],end:[x,y,z],layer}; addCircle{center:[x,y,z],radius,layer}; addArc{center:[x,y,z],radius,startAngle,endAngle,layer}; addLwPolyline{points:[[x,y],...],closed?,layer} (2 numbers per point; rectangle = closed 4-point); addText{position:[x,y,z],text,height,layer}; addLeader{points:[[x,y,z],...],layer}; addDimension{kind:linear|aligned|angular|radius|diameter,points:[[x,y,z],...],layer,offset?,rotation?}; move|copy{handle,delta:[dx,dy,dz]}; rotate{handle,center:[x,y,z],angle}; scale{handle,center:[x,y,z],factor}; mirror{handle,axis:[[x,y,z],[x,y,z]]}; setText{handle,text}; setRadius{handle,radius}; setLayer{handle,layer}; setColor{handle,color}; setLineWeight{handle,lineWeight}; delete{handle}; trim|extend{handle,boundary,pick:[x,y,z]}; offset{handle,distance,side:[x,y,z]}; addLayer{name,color?,lineType?,lineWeight?}; updateLayer{name,locked?,visible?,color?,lineType?,lineWeight?}; renameLayer{from,to}; deleteLayer{name}; batch{operations:[...]} nests the same canonical shapes. Canonical vectors are arrays [x,y] (omitted z = the 2D drawing plane) or [x,y,0]; a nonzero z is rejected, never projected. The validated aliases {x,y[,z]} and {dx,dy[,dz]} are accepted and normalized to those arrays; addLwPolyline vertices are [x,y] or [x,y,0].",
           "items": { "type": "object", "required": ["operation"], "properties": { "operation": { "type": "string" } } }
         },
-        "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id from propose (preview/apply)." },
-        "grant_id": { "type": "string", "description": "Opaque single-use confirmation token issued by the CAD UI after the user accepts. The model cannot mint this." },
+        "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id from propose (preview/apply). Send it exactly as the propose reply printed it." },
+        "grant_id": { "type": "string", "description": "apply: OPTIONAL. When present, selects the human-reviewed CAD UI confirmation path (opaque single-use token the user's acceptance issued; the model cannot mint it). Omit it to let the runtime-approved call authority for this exact apply authorize the change automatically; a made-up or model-supplied value never authorizes anything." },
+        "revision": { "type": "integer", "minimum": 0, "description": "apply: optional base revision pin. When present it is bound into the approved call and the host refuses a proposal drafted against a different revision." },
         "request_id": { "type": "string", "description": "Optional caller idempotency key; defaults to the tool call id." },
         "task_id": { "type": "string", "description": "Durable native task id (status reports one task; cancel requires it)." },
         "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|variables|assembly|drawings|detail|snapshot. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind)." },
         "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "measure points: 2D distance exactly 2, angle exactly 3, area 3+; snap point (first row). Native distance exactly 2 [x,y,z] rows." },
-        "handles": { "type": "array", "items": { "type": "string" }, "description": "2D entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+. Native: one handle per action, body:<uuid> / face:<uuid>:<index> / edge:<uuid>:<index>; bounds takes body handles." },
+        "handles": { "type": "array", "items": { "type": "string" }, "description": "2D entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+. Native: one handle per action, body:<uuid> / face:<uuid>:<index> / edge:<uuid>:<index>; body, mesh and bounds accept body:<uuid> (a bare body UUID is also accepted); bounds takes one or more body handles." },
         "tolerance": { "type": "number", "description": "snap/check tolerance in drawing units; native interference tolerance in mm." },
         "layer": { "type": "string", "description": "2D query filter." },
         "entity_type": { "type": "string", "description": "2D query filter: Line|Circle|Arc|LwPolyline|Text." },
@@ -675,8 +810,8 @@ public struct CadDocumentTool: AgentTool {
         "offset": { "type": "integer", "minimum": 0, "description": "query pagination offset." },
         "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "query pagination size." },
         "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step, stl, obj, 3mf, glb, usdz, pdf, svg, dxf; the path must stay inside the workspace." },
-        "op": { "type": "string", "description": "Native typed operation name (feature.extrude, feature.boolean, feature.fillet, feature.shell, feature.pattern, ...). Native propose requires it; native measure may use it to name the measurement kind." },
-        "args": { "type": "string", "description": "JSON object string with the typed operation's arguments. Required for native propose (and the three_d_measure/three_d_propose aliases)." },
+        "op": { "type": "string", "description": "Native typed operation name. Native propose requires it; native measure may use it to name the measurement kind. Exact vocabulary (also reported by capabilities as operation_names): sketch.create, sketch.addEntities, feature.extrude, feature.revolve, feature.pattern, feature.mirror, feature.transform, feature.boolean, feature.fillet, feature.chamfer, feature.shell, feature.sweep, feature.loft, feature.pushPull, feature.moveFace, feature.scaleFace, feature.rotateFace, feature.deleteFace, feature.replaceFace, feature.draftFace, body.setMaterial, item.setHidden." },
+        "args": { "type": "string", "description": "JSON object string with the typed operation's arguments. Required for native propose (and the three_d_measure/three_d_propose aliases). Units are mm and degrees. RUNNABLE CONTRACT (exact argument names): sketch.create {name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]} defaults to the ground plane and returns sketchID; sketch.addEntities {sketchID, entities:[{kind:\"line\",a:[x,y],b:[x,y]} | {kind:\"circle\",center:[x,y],radius} | {kind:\"arc\",center:[x,y],radius,startAngle,endAngle} | {kind:\"spline\",points:[[x,y],...],closed?} | {kind:\"rect\",min:[x,y],max:[x,y]} | {kind:\"polygon\",center:[x,y],radius,sides,rotation?} | {kind:\"ellipse\",center:[x,y],radiusX,radiusY,rotation?}], construction?:[indexes]}; feature.extrude {sketchID, seedPoint:[x,y] (a point INSIDE the closed profile), distance (mm, non-zero; optional only with end), symmetric?, taperDegrees? (|t|<89, 0 = straight), end?:\"throughAll\"|\"upToNext\"|\"blind\", boolean?:\"newBody\"|\"union\"|\"subtract\"|\"intersect\", booleanTargets?:[bodyID]}. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"seedPoint\":[40,20],\"distance\":10}. Ops that act on an existing body take {bodyID} plus their own fields (feature.boolean {kind,targetBodyID,toolBodyIDs}, feature.fillet/chamfer {bodyID,isFillet,amount,edges}, feature.shell {bodyID,thickness,openFaces}, feature.pattern {bodyID,kind,count,...}); measure accepts op to name the kind (body|distance|bounds|dof|interference|mesh|rebuild)." },
         "payload": { "type": "string", "description": "JSON object string for native assembly/drawing/script/mesh actions (three_d_assembly, three_d_drawing) and for native query/export requests. Never contains file paths other than the guarded output/import fields above." }
       }
     }
@@ -721,8 +856,8 @@ public struct CadDocumentTool: AgentTool {
                     "create makes a native .floecad package; DWG/DXF drawings cannot be created by this tool")
             }
             if let name = args.name,
-               name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                throw FloeError.validationFailed("create name must not be empty")
+               let issue = NativeCADPolicy.validateName(name) {
+                throw FloeError.validationFailed(issue)
             }
         case .import:
             // Import ADDS geometry to an existing native package by drafting
@@ -777,8 +912,11 @@ public struct CadDocumentTool: AgentTool {
             guard args.proposalID != nil else {
                 throw FloeError.validationFailed("\(args.action.rawValue) requires proposal_id")
             }
-            guard let grant = args.grantID, !grant.isEmpty else {
-                throw FloeError.validationFailed("\(args.action.rawValue) requires a user-issued grant_id")
+            // `grant_id` is OPTIONAL: when present it selects the interactive,
+            // human-reviewed UI grant path; when absent the ONLY authority is
+            // the runtime-issued task authority for this exact approved call.
+            if let revision = args.revision, revision < 0 {
+                throw FloeError.validationFailed("revision must be >= 0")
             }
         case .query:
             if native {
@@ -973,6 +1111,147 @@ public struct CadDocumentTool: AgentTool {
         return text
     }
 
+    // MARK: - Runtime-approved-call binding (automatic apply)
+
+    /// Canonical JSON of the DECODED approved arguments, in exactly the shape
+    /// the runtime hashed when it minted this call's authority. Optional
+    /// fields that were absent stay absent; a `null` placeholder (or any
+    /// unknown field) changes the digest, so the automatic path refuses
+    /// instead of guessing — the model must send canonical JSON and omit
+    /// absent fields instead of writing null.
+    public static func canonicalApprovedPayload(_ args: CadDocumentArguments) throws -> Data {
+        var object: [String: Any] = ["action": args.action.rawValue]
+        if let path = args.path { object["path"] = path }
+        if let summary = args.summary { object["summary"] = summary }
+        if let operations = args.operations {
+            object["operations"] = try operations.map { operation -> [String: Any] in
+                try operation.fields.mapValues { try Self.jsonValue($0) }
+            }
+        }
+        // The RAW proposal-id spelling is the approved value: the model copies
+        // the id from the propose reply, and a differently-cased id is a
+        // different payload that must not bind.
+        if let raw = args.proposalIDRaw ?? args.proposalID?.uuidString {
+            object["proposal_id"] = raw
+        }
+        if let grant = args.grantID { object["grant_id"] = grant }
+        if let request = args.requestID { object["request_id"] = request }
+        if let kind = args.kind { object["kind"] = kind }
+        if let points = args.points { object["points"] = points }
+        if let handles = args.handles { object["handles"] = handles }
+        if let tolerance = args.tolerance { object["tolerance"] = tolerance }
+        if let scope = args.scope { object["scope"] = scope }
+        if let layer = args.layer { object["layer"] = layer }
+        if let entityType = args.entityType { object["entity_type"] = entityType }
+        if let text = args.text { object["text"] = text }
+        if let offset = args.offset { object["offset"] = offset }
+        if let limit = args.limit { object["limit"] = limit }
+        if let output = args.output { object["output"] = output }
+        if let op = args.op { object["op"] = op }
+        if let opArgs = args.args { object["args"] = opArgs }
+        if let payload = args.payload { object["payload"] = payload }
+        if let taskID = args.taskID { object["task_id"] = taskID }
+        if let sourcePath = args.sourcePath { object["source_path"] = sourcePath }
+        if let format = args.format { object["format"] = format }
+        if let unitScale = args.unitScale { object["unit_scale"] = unitScale }
+        if let name = args.name { object["name"] = name }
+        if let revision = args.revision { object["revision"] = revision }
+        guard JSONSerialization.isValidJSONObject(object) else {
+            throw FloeError.validationFailed("cad.document approved arguments could not be canonicalized")
+        }
+        return try JSONSerialization.data(withJSONObject: object, options: [])
+    }
+
+    private static func jsonValue(_ value: CadValue) throws -> Any {
+        switch value {
+        case .string(let text): return text
+        case .number(let number):
+            if number == number.rounded(), number.magnitude < 9_007_199_254_740_992 {
+                return Int64(number)
+            }
+            return number
+        case .boolean(let flag): return flag
+        case .object(let nested): return try nested.mapValues { try Self.jsonValue($0) }
+        case .array(let rows): return try rows.map { try Self.jsonValue($0) }
+        case .null: return NSNull()
+        }
+    }
+
+    /// Mirrors `RuntimeAuthorityDigest.canonicalTarget` for this tool's exact
+    /// resolution rules (a `path` argument resolves to `file:<canonical>`,
+    /// anything else falls back to the workspace identity). Both sides must
+    /// derive the same string or the authority refuses.
+    public static func canonicalTarget(for args: CadDocumentArguments, workspaceRoot: URL?) -> String {
+        if let raw = args.path?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty, raw.utf8.count <= 4_096 {
+            var url: URL?
+            if raw.hasPrefix("/") {
+                url = URL(fileURLWithPath: raw)
+            } else if let workspaceRoot {
+                url = workspaceRoot.appendingPathComponent(raw)
+            }
+            if let url {
+                return "file:" + url.standardizedFileURL.resolvingSymlinksInPath().path
+            }
+        }
+        guard let workspaceRoot else { return "workspace:*" }
+        return "workspace:" + workspaceRoot.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// Builds the binding this automatic apply call implies, exactly like the
+    /// runtime minted it. Throws only when the approved arguments cannot be
+    /// canonicalized (itself a refusal, never a bypass).
+    public static func runtimeAuthorityBinding(for args: CadDocumentArguments,
+                                               context: ToolContext) throws -> RuntimeAuthorityBinding {
+        let payload = try canonicalApprovedPayload(args)
+        return context.runtimeAuthorityBinding(
+            toolName: name,
+            operation: "apply",
+            canonicalTarget: authorityTarget(for: args, context: context),
+            baseRevision: RuntimeAuthorityDigest.baseRevision(in: payload),
+            payloadDigest: RuntimeAuthorityDigest.payloadDigest(payload))
+    }
+
+    /// Canonical target for the approved call through the SAME authorized
+    /// root the host resolves — the issuer/consumer parity rule.
+    ///
+    /// With a Canvas staged binding, a path that addresses EXACTLY the staged
+    /// document (its exact relative form or its canonical absolute form)
+    /// pins to the staged draft root, never the ordinary run root: the
+    /// runtime mints its token through `MutationTargetResolver` with the same
+    /// staged document, so both sides must derive `file:<draftRoot/draft>`.
+    /// Any other path keeps the ordinary resolution, so the staged binding
+    /// can neither broaden the token nor move it to another document (a
+    /// foreign path is still refused by `authorizeDocumentPath`/the host
+    /// before any authority is consulted).
+    static func authorityTarget(for args: CadDocumentArguments, context: ToolContext) -> String {
+        if let staged = context.canvasStagedDocument,
+           let raw = args.path?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty, raw.utf8.count <= 4_096 {
+            let stagedRoot = URL(fileURLWithPath: staged.draftRootPath)
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+            let stagedCanonical = stagedRoot
+                .appendingPathComponent(staged.stagedRelativePath)
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+                .path
+            if raw == staged.stagedRelativePath {
+                return "file:" + stagedCanonical
+            }
+            if raw.hasPrefix("/") {
+                let argumentCanonical = URL(fileURLWithPath: raw)
+                    .standardizedFileURL
+                    .resolvingSymlinksInPath()
+                    .path
+                if argumentCanonical == stagedCanonical {
+                    return "file:" + stagedCanonical
+                }
+            }
+        }
+        return canonicalTarget(for: args, workspaceRoot: context.workspaceRootURL)
+    }
+
     public func execute(_ args: CadDocumentArguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let access = Self.access(for: context)
         try Self.authorizeDocumentPath(args.path, context: context)
@@ -1036,8 +1315,24 @@ public struct CadDocumentTool: AgentTool {
             let path = args.path!
             let fallbackName = ((path as NSString).lastPathComponent as NSString)
                 .deletingPathExtension
-            let name = args.name.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .flatMap { $0.isEmpty ? nil : $0 } ?? fallbackName
+            // An OMITTED name defaults to the path stem; an explicitly
+            // supplied name is validated and a blank one is REFUSED (never
+            // silently replaced by the fallback, which would create a package
+            // the caller did not ask for).
+            let name: String
+            if let rawName = args.name {
+                let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let issue = NativeCADPolicy.validateName(rawName) {
+                    throw FloeError.validationFailed(issue)
+                }
+                guard !trimmed.isEmpty else {
+                    throw FloeError.validationFailed(
+                        NativeCADPolicy.emptyNameMessage)
+                }
+                name = trimmed
+            } else {
+                name = fallbackName
+            }
             let receipt = try await host.createNativePackage(relativePath: path, name: name,
                                                              access: access)
             let encoder = JSONEncoder()
@@ -1074,8 +1369,7 @@ public struct CadDocumentTool: AgentTool {
             let request = try jsonString(envelope)
             let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                     access: access)
-            return ToolExecutionOutput(digesting: bounded("cad.document import proposal: \(reply)", 24_000),
-                                       requiresUserAction: true)
+            return ToolExecutionOutput(digesting: bounded("cad.document import proposal: \(reply)", 24_000))
 
         case .read:
             if native {
@@ -1188,8 +1482,13 @@ public struct CadDocumentTool: AgentTool {
                 let request = try Self.threeDRequestJSON(kind: "propose", args: args)
                 let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                         access: access)
-                return ToolExecutionOutput(digesting: bounded("cad.document propose: \(reply)", 16_000),
-                                           requiresUserAction: true)
+                // The proposal changes nothing yet; BOTH authorization paths are
+                // valid for the apply that follows (UI grant or the
+                // runtime-approved call), so the model is told the truth.
+                let note = "Nothing was written. Call apply with this proposal id — a grant_id the user issued "
+                    + "in the CAD UI, or (without one) this exact approved call's runtime authority, authorizes it. "
+                    + "A pending proposal alone grants nothing and stays confirmable in the CAD UI."
+                return ToolExecutionOutput(digesting: bounded("cad.document propose: \(reply)\n\(note)", 16_000))
             }
             let snapshot = try await host.snapshot(documentID: args.path!, access: access)
             guard snapshot.editable else {
@@ -1206,9 +1505,10 @@ public struct CadDocumentTool: AgentTool {
             cad.document proposal \(proposal.id.uuidString) on \(proposal.documentID) \
             (revision \(proposal.baseRevision), sha256 \(proposal.baseSHA256.prefix(12))…): \
             +\(preview.counts["added"] ?? 0) ~\(preview.counts["changed"] ?? 0) -\(preview.counts["deleted"] ?? 0). \
-            User confirmation is required before apply; grant id must come from the CAD UI. \(preview.note)
+            User confirmation is required for a manual apply: a grant id from the CAD UI, or (without one) \
+            this exact approved apply call's runtime authority; a pending proposal alone changes nothing. \(preview.note)
             """
-            return ToolExecutionOutput(digesting: bounded(summary, 8_000), requiresUserAction: true)
+            return ToolExecutionOutput(digesting: bounded(summary, 8_000))
 
         case .preview:
             if native {
@@ -1230,29 +1530,33 @@ public struct CadDocumentTool: AgentTool {
 
         case .apply:
             if native {
-                guard let id = args.proposalID, let grant = args.grantID, !grant.isEmpty else {
-                    throw FloeError.unauthorized
-                }
-                let request = try jsonString(["kind": "apply",
-                                              "proposal_id": id.uuidString,
-                                              "grant_id": grant,
-                                              "request_id": requestID])
-                let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
-                                                        access: access)
-                return ToolExecutionOutput(digesting: bounded("cad.document apply: \(reply)", 16_000))
+                return try await applyNativeProposal(args, context: context, access: access,
+                                                     requestID: requestID)
             }
             guard let id = args.proposalID else {
                 throw FloeError.notFound("CAD proposal")
             }
-            guard let grantID = args.grantID, !grantID.isEmpty else {
-                throw FloeError.unauthorized
-            }
+            let grantID = (args.grantID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             // The proposal may still be loadable (applied tombstone retained
             // for replay) or fully applied; both paths verify ownership first.
             if let proposal = try await host.loadProposal(id: id, access: access) {
                 try await host.verifyProposalBinding(proposal, documentID: args.path!, access: access)
-                let receipt = try await host.apply(proposal: proposal, grantID: grantID,
+                let receipt: CadDocumentReceipt
+                if !grantID.isEmpty {
+                    receipt = try await host.apply(proposal: proposal, grantID: grantID,
                                                    requestID: requestID, access: access)
+                } else {
+                    // Automatic path: the ONLY authority is the runtime-issued
+                    // task authority for this exact approved call. A
+                    // model-supplied confirmation/grant-looking value is never
+                    // consulted; the proposal itself still binds the exact
+                    // document revision and SHA.
+                    let authorization = try await Self.consumeAutomaticAuthorization(
+                        args: args, context: context)
+                    receipt = try await host.applyAutomatic(proposal: proposal,
+                                                            authorization: authorization,
+                                                            requestID: requestID, access: access)
+                }
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
                 let json = String(data: try encoder.encode(receipt), encoding: .utf8) ?? "{}"
@@ -1317,14 +1621,13 @@ public struct CadDocumentTool: AgentTool {
             case .threeDAssembly: kind = "assembly"
             default: kind = "drawing"
             }
-            // The model never mints a grant; the field is passed through only
-            // so the host can validate one the UI issued. Missing/forged values
-            // are refused by the host.
+            // The model never mints a grant; when one is supplied it is passed
+            // through only so the host can validate one the UI issued. Without
+            // one, the unified runtime-approved-call path applies the proposal
+            // (the alias shares the exact same authority rules as `apply`).
             if kind == "apply" {
-                guard args.proposalID != nil, let grant = args.grantID, !grant.isEmpty else {
-                    throw FloeError.validationFailed(
-                        "cad.document three_d_apply requires proposal_id and a UI-issued grant_id.")
-                }
+                return try await applyNativeProposal(args, context: context, access: access,
+                                                     requestID: requestID)
             }
             if (kind == "propose" || kind == "measure"), args.op == nil {
                 throw FloeError.validationFailed("cad.document \(kind) requires op.")
@@ -1334,6 +1637,67 @@ public struct CadDocumentTool: AgentTool {
                                                     requestJSON: request, access: access)
             return ToolExecutionOutput(digesting: bounded("cad.document \(kind): \(reply)", 48_000))
         }
+    }
+
+    /// The unified native apply: an explicit UI grant keeps the interactive
+    /// human-reviewed path unchanged; WITHOUT one the only authority is the
+    /// runtime-issued task authority for this exact approved call, re-verified
+    /// by the host against the real canonical document. The returned reply is
+    /// the host's receipt JSON.
+    private func applyNativeProposal(_ args: CadDocumentArguments, context: ToolContext,
+                                     access: CadDocumentAccess,
+                                     requestID: String) async throws -> ToolExecutionOutput {
+        guard let id = args.proposalID else {
+            throw FloeError.notFound("CAD proposal")
+        }
+        let grant = (args.grantID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !grant.isEmpty {
+            let request = try jsonString(["kind": "apply",
+                                          "proposal_id": id.uuidString,
+                                          "grant_id": grant,
+                                          "request_id": requestID])
+            let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                    access: access)
+            return ToolExecutionOutput(digesting: bounded("cad.document apply: \(reply)", 16_000))
+        }
+        let authorization = try await Self.consumeAutomaticAuthorization(args: args, context: context)
+        let reply = try await host.applyAutomatic(proposalID: id, authorization: authorization,
+                                                  requestID: requestID, access: access)
+        return ToolExecutionOutput(digesting: bounded("cad.document apply: \(reply)", 16_000))
+    }
+
+    /// Consumes the runtime-issued authority for one automatic apply. The
+    /// binding is derived from the DECODED approved arguments (canonical JSON,
+    /// sorted keys) and the caller's real context, exactly like the runtime
+    /// derived it when it minted the token; the token is single-use, so a
+    /// replay (or a second consumer) sees `.alreadyConsumed`. Any mismatch —
+    /// run, task, environment, target, tool, operation, call id, idempotency
+    /// key, revision or payload — refuses. A model-supplied `confirmed` flag,
+    /// grant-looking string or invented UUID creates nothing.
+    static func consumeAutomaticAuthorization(args: CadDocumentArguments,
+                                              context: ToolContext) async throws -> CadAutomaticAuthorization {
+        let binding: RuntimeAuthorityBinding
+        do {
+            binding = try runtimeAuthorityBinding(for: args, context: context)
+        } catch {
+            throw FloeError.validationFailed(
+                "automatic apply could not bind the approved call: \(error.localizedDescription)")
+        }
+        let verdict = await context.consumeRuntimeAuthority(binding: binding)
+        guard verdict.isValid else {
+            throw FloeError.validationFailed(
+                "automatic apply needs the runtime-approved call authority for this exact operation"
+                    + (verdict.failureReason.map { " (\($0))" } ?? "")
+                    + "; confirm the proposal in the CAD UI (grant_id), or send the apply call "
+                    + "with canonical JSON arguments (omit optional fields instead of null).")
+        }
+        return CadAutomaticAuthorization(
+            runID: context.runID,
+            taskID: context.conversationID,
+            operationID: context.toolCallID ?? "",
+            idempotencyKey: context.toolIdempotencyKey,
+            approvalGrantID: context.approvalGrantID,
+            binding: binding)
     }
 
     static func defaultExportPath(for path: String) -> String {
@@ -1373,6 +1737,13 @@ public struct CadDocumentTool: AgentTool {
     /// Native `measure` request: deterministic kernel measurements over the
     /// document (body, distance, bounds, DOF, interference, mesh health,
     /// rebuild status). No view/render values are measured.
+    ///
+    /// Body-addressed kinds accept the DOCUMENTED handle vocabulary
+    /// (`body:<uuid>`) and translate it to the kernel's raw-UUID arguments
+    /// (`bodyID`/`bodyIDs`): the kernel's `measureJSON` resolves a body by
+    /// `UUID(uuidString:)`, so a handle string or any other prefix would be an
+    /// unresolvable id. A foreign handle is refused here, before the host or
+    /// the kernel is called.
     private func nativeMeasureRequest(_ args: CadDocumentArguments) throws -> String {
         guard let kind = args.op ?? args.kind, Self.nativeMeasureKinds.contains(kind) else {
             throw FloeError.validationFailed(
@@ -1381,17 +1752,41 @@ public struct CadDocumentTool: AgentTool {
         var payload: [String: Any] = ["kind": kind]
         switch kind {
         case "body", "mesh":
-            payload["bodyID"] = args.handles!.first!
+            payload["bodyID"] = try Self.nativeBodyUUID(fromHandle: args.handles!.first!,
+                                                         kind: kind)
         case "distance":
             payload["points"] = args.points!.map { Array($0.prefix(3)) }
         case "bounds":
-            payload["bodyIDs"] = args.handles ?? []
+            guard let handles = args.handles, !handles.isEmpty else {
+                throw FloeError.validationFailed(
+                    "native bounds measure needs at least one body:<uuid> handle")
+            }
+            payload["bodyIDs"] = try handles.map {
+                try Self.nativeBodyUUID(fromHandle: $0, kind: kind)
+            }
         case "interference":
             payload["toleranceMM"] = args.tolerance ?? 1e-6
         default:
             break
         }
         return jsonString(["kind": "measure", "payload": payload])
+    }
+
+    /// The kernel's body id for one native measure handle: `body:<uuid>` (the
+    /// handle form `locate`/`query` also use) or the bare UUID a row already
+    /// carries. Anything else refuses: forwarding an unresolvable handle would
+    /// produce a kernel `unknown_body` instead of naming the real problem.
+    static func nativeBodyUUID(fromHandle handle: String, kind: String) throws -> String {
+        let trimmed = handle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = trimmed.lowercased().hasPrefix("body:")
+            ? String(trimmed.dropFirst("body:".count))
+            : trimmed
+        guard let uuid = UUID(uuidString: raw) else {
+            throw FloeError.validationFailed(
+                "native \(kind) measure needs a body:<uuid> handle "
+                    + "(a bare body UUID is also accepted); got '\(handle)'.")
+        }
+        return uuid.uuidString
     }
 
     private func queryRequest(_ args: CadDocumentArguments) throws -> String {

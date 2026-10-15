@@ -94,9 +94,16 @@ private func openMapItem(_ args: AppleMapsOpenTool.Arguments) -> Bool {
 /// where one applies; conversation-less runs fall back to the run identity.
 extension PersonalToolOwnerID {
     init(context: ToolContext) {
+        // A temporary (ephemeral) run owns its snapshots PER RUN, never by
+        // conversation id: the ephemeral conversation id can be reused by a
+        // later temporary session epoch, so same-conversation matching would
+        // let a replacement session page rows captured for a destroyed one.
+        // `publicWebOnly` is set exclusively by the temporary run
+        // configuration; ordinary runs keep the durable-conversation owner.
+        let temporary = context.temporaryReadOnly || context.publicWebOnly
         self.init(
-            conversationID: context.conversationID,
-            environmentID: context.environmentID,
+            conversationID: temporary ? nil : context.conversationID,
+            environmentID: temporary ? nil : context.environmentID,
             fallbackRunID: context.runID
         )
     }

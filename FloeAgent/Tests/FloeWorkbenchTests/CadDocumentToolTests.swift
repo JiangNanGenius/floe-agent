@@ -11,6 +11,7 @@ import Testing
 @testable import FloeWorkbench
 import FloeTools
 import FloeCore
+import FloeModels
 
 // MARK: - Fake host
 
@@ -139,6 +140,38 @@ actor FakeCadHost: CadDocumentHost {
         // grants live inside the tool, so this path is only reached when a
         // host-owned store is used. Tests exercise the tool path below.
         .unknownGrant
+    }
+
+    // MARK: Runtime-approved automatic apply
+
+    var automaticApplies = 0
+    var nativeAutomaticApplies = 0
+    var lastAutomaticAuthorization: CadAutomaticAuthorization?
+
+    func applyAutomatic(proposal: CadProposal, authorization: CadAutomaticAuthorization,
+                        requestID: String, access: CadDocumentAccess) async throws -> CadDocumentReceipt {
+        automaticApplies += 1
+        lastAutomaticAuthorization = authorization
+        if let existing = appliedReceipts[requestID] {
+            return CadDocumentReceipt(documentID: existing.documentID, revision: existing.revision,
+                                      sha256: existing.sha256, created: existing.created,
+                                      saved: true, replay: true)
+        }
+        revision += 1
+        sha = String(repeating: "e", count: 64)
+        let receipt = CadDocumentReceipt(documentID: proposal.documentID, revision: revision,
+                                         sha256: sha, created: ["AB"], saved: true)
+        appliedReceipts[requestID] = receipt
+        storedAccess = access
+        outcome = (proposal.id, access, requestID, receipt)
+        return receipt
+    }
+
+    func applyAutomatic(proposalID: UUID, authorization: CadAutomaticAuthorization,
+                        requestID: String, access: CadDocumentAccess) async throws -> String {
+        nativeAutomaticApplies += 1
+        lastAutomaticAuthorization = authorization
+        return #"{"ok":true,"replay":false,"mode":"runtime-authority","receipt":{"proposal_id":"\#(proposalID.uuidString)","revision":1}}"#
     }
 
     func apply(proposal: CadProposal, grantID: String, requestID: String,
@@ -349,9 +382,14 @@ struct CadDocumentToolTests {
         {"action":"propose","path":"plate.dwg","summary":"add a line",
          "operations":[{"operation":"addLine","start":[0,0,0],"end":[10,0,0],"layer":"0"}]}
         """#)
-        #expect(output.requiresUserAction == true)
+        // A preview no longer ends the model turn (ordinary authorized edits
+        // apply without a per-edit human pause), but it still writes nothing
+        // and the proposal stays pending until a grant/runtime authority
+        // authorizes the apply.
+        #expect(output.requiresUserAction == false)
         #expect(output.summary.contains("+1 ~0 -0"))
         #expect(output.summary.contains("User confirmation is required"))
+        #expect(output.summary.contains("pending proposal alone changes nothing"))
         let stored = await host.storedProposal
         #expect(stored != nil)
         #expect(stored?.summary == "add a line")
@@ -452,6 +490,56 @@ struct CadDocumentToolTests {
         _ = try await execute(tool, #"{"action":"measure","path":"plate.dwg","kind":"distance","points":[[0,0],[10,10]]}"#)
         let requests = await host.queryRequests
         #expect(requests.contains { $0.contains("\"kind\":\"distance\"") && $0.contains("\"points\"") })
+    }
+
+    @Test("native measure translates body handles into the kernel's raw bodyID/bodyIDs")
+    func nativeMeasureHandleTranslation() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        let bodyID = UUID()
+        let otherID = UUID()
+
+        func lastPayload() async throws -> [String: Any] {
+            let requests = await host.threeDRequests
+            let raw = try #require(requests.last)
+            let object = try #require(try JSONSerialization.jsonObject(
+                with: Data(raw.utf8)) as? [String: Any])
+            #expect(object["kind"] as? String == "measure")
+            return try #require(object["payload"] as? [String: Any])
+        }
+
+        _ = try await execute(tool, #"""
+        {"action":"measure","path":"p.floecad","op":"body","handles":["body:\#(bodyID.uuidString)"]}
+        """#)
+        let bodyPayload = try await lastPayload()
+        #expect(bodyPayload["kind"] as? String == "body")
+        #expect(bodyPayload["bodyID"] as? String == bodyID.uuidString,
+                "the kernel measures one body by its raw UUID, not by the handle string")
+
+        // A bare UUID (copied from a query row) is accepted as well.
+        _ = try await execute(tool, #"""
+        {"action":"measure","path":"p.floecad","op":"mesh","handles":["\#(otherID.uuidString)"]}
+        """#)
+        let meshPayload = try await lastPayload()
+        #expect(meshPayload["bodyID"] as? String == otherID.uuidString)
+
+        // Bounds maps every body handle.
+        _ = try await execute(tool, #"""
+        {"action":"measure","path":"p.floecad","op":"bounds","handles":["body:\#(bodyID.uuidString)","body:\#(otherID.uuidString)"]}
+        """#)
+        let boundsPayload = try await lastPayload()
+        #expect(boundsPayload["bodyIDs"] as? [String] == [bodyID.uuidString, otherID.uuidString])
+
+        // A foreign handle is refused here; an unresolvable id must never reach
+        // the host or the kernel.
+        let requestCount = await host.threeDRequests.count
+        await #expect(throws: FloeError.self) {
+            _ = try await execute(tool, #"""
+            {"action":"measure","path":"p.floecad","op":"body","handles":["face:\#(bodyID.uuidString):1"]}
+            """#)
+        }
+        #expect(await host.threeDRequests.count == requestCount,
+                "a refused handle must not issue a native request")
     }
 
     @Test("propose refuses a drawing with blocking diagnostics")
@@ -845,7 +933,8 @@ struct CadDocumentToolTests {
         let output = try await execute(tool, #"""
         {"action":"import","path":"part.floecad","source_path":"vendor/bracket.step","format":"step"}
         """#)
-        #expect(output.requiresUserAction == true)
+        // The import is a proposal too: no forced human pause, no write.
+        #expect(output.requiresUserAction == false)
         #expect(output.summary.contains("cad.document import proposal"))
         let requests = await host.threeDRequests
         #expect(requests.count == 1)
@@ -927,5 +1016,287 @@ struct CadDocumentToolTests {
         #expect(enumValues.contains("import"))
         let runtime = Set(CadDocumentAction.allCases.map(\.rawValue))
         #expect(enumValues == runtime)
+    }
+}
+
+// MARK: - Runtime-approved automatic apply
+
+/// The automatic path must derive EXACTLY the values the runtime minted:
+/// canonical target, base revision and payload digest. These tests compare the
+/// consumer derivation against `RuntimeAuthorityDigest` +
+/// `MutationTargetResolver` (the runtime's own mint helpers) rather than
+/// against a hand-written expectation, so a format drift between the two
+/// sides fails here.
+@Suite("cad.document runtime-approved automatic apply")
+struct CadAutomaticApplyTests {
+    func makeContext(conversation: UUID? = UUID(), toolCallID: String = "call-apply-1",
+                     workspace: URL = URL(fileURLWithPath: "/tmp/workspace")) -> ToolContext {
+        ToolContext(runID: UUID(), toolCallID: toolCallID, scope: .local,
+                    workspaceRootURL: workspace,
+                    cancellation: CancellationToken(), environmentID: "env-1",
+                    conversationID: conversation)
+    }
+
+    func decode(_ json: String) throws -> CadDocumentArguments {
+        try JSONDecoder().decode(CadDocumentArguments.self, from: Data(json.utf8))
+    }
+
+    /// Mint a token exactly the way the runtime does: the evidence IS the
+    /// binding the consumer derives from the approved call.
+    @discardableResult
+    func issueAuthority(for args: CadDocumentArguments, context: ToolContext,
+                        ttl: TimeInterval = 300) async throws -> RuntimeTaskAuthority {
+        let binding = try CadDocumentTool.runtimeAuthorityBinding(for: args, context: context)
+        return await RuntimeAuthorityStore.shared.issue(
+            RuntimeAuthorityEvidence(
+                runID: binding.runID,
+                taskID: binding.taskID,
+                environmentBinding: binding.environmentBinding,
+                canonicalTarget: binding.canonicalTarget,
+                toolName: binding.toolName,
+                operation: binding.operation,
+                operationID: binding.operationID,
+                idempotencyKey: binding.idempotencyKey,
+                baseRevision: binding.baseRevision,
+                payloadDigest: binding.payloadDigest,
+                approvalGrantID: UUID()),
+            ttl: ttl)
+    }
+
+    func carrying(_ base: ToolContext, _ token: RuntimeTaskAuthority) -> ToolContext {
+        var context = base
+        context.runtimeAuthority = token
+        return context
+    }
+
+    /// validate + execute, exactly like the module's other tests.
+    func run(_ tool: CadDocumentTool, _ json: String,
+             context: ToolContext) async throws -> ToolExecutionOutput {
+        let args = try decode(json)
+        try tool.validate(args)
+        return try await tool.execute(args, context: context)
+    }
+
+    @Test("canonical target and payload digest re-derive the runtime's own values")
+    func bindingParityWithRuntimeDerivation() throws {
+        ToolCatalog.register(CadDocumentTool.self)
+        let descriptor = try #require(ToolCatalog.descriptor(named: CadDocumentTool.name))
+        let root = URL(fileURLWithPath: "/tmp/workspace")
+        let arguments = [
+            #"{"action":"apply","path":"parts/plate.dwg","proposal_id":"E621E1F8-1234-4ABC-8DEF-000000000001"}"#,
+            // The id exactly as a model echoes it (any case is part of the
+            // approved payload; the consumer must not normalize it).
+            #"{"action":"apply","path":"parts/plate.dwg","proposal_id":"e621e1f8-1234-4abc-8def-000000000001"}"#,
+            #"{"action":"apply","path":"parts/plate.floecad","proposal_id":"E621E1F8-1234-4ABC-8DEF-000000000001","revision":3,"request_id":"r-1"}"#,
+            #"{"action":"apply","path":"plate.dwg","proposal_id":"E621E1F8-1234-4ABC-8DEF-000000000001","grant_id":"ui-grant"}"#,
+        ]
+        for raw in arguments {
+            let args = try decode(raw)
+            let payload = try CadDocumentTool.canonicalApprovedPayload(args)
+            // The runtime hashes the RAW approved arguments; the consumer
+            // re-encodes the decoded arguments. Both canonicalize identically.
+            #expect(RuntimeAuthorityDigest.payloadDigest(Data(raw.utf8))
+                        == RuntimeAuthorityDigest.payloadDigest(payload),
+                    "payload digest drift for \(raw)")
+            let call = try ToolCall(id: "call-1", toolName: CadDocumentTool.name,
+                                    argumentsJSON: Data(raw.utf8), scope: .local)
+            #expect(CadDocumentTool.canonicalTarget(for: args, workspaceRoot: root)
+                        == RuntimeAuthorityDigest.canonicalTarget(for: call, descriptor: descriptor,
+                                                                  workspaceRootURL: root),
+                    "canonical target drift for \(raw)")
+            // A revision pin is part of both the digest and the base-revision
+            // binding the runtime parses.
+            let runtimeRevision = RuntimeAuthorityDigest.baseRevision(in: Data(raw.utf8))
+            let consumerRevision = RuntimeAuthorityDigest.baseRevision(in: payload)
+            #expect(runtimeRevision == consumerRevision,
+                    "base revision drift for \(raw): \(runtimeRevision ?? "nil") vs \(consumerRevision ?? "nil")")
+        }
+    }
+
+    @Test("a null placeholder or an unknown extra field refuses instead of widening authority")
+    func nonCanonicalArgumentsRefuse() throws {
+        let canonical = try decode(#"{"action":"apply","path":"plate.dwg","proposal_id":"E621E1F8-1234-4ABC-8DEF-000000000001"}"#)
+        let canonicalDigest = RuntimeAuthorityDigest.payloadDigest(
+            try CadDocumentTool.canonicalApprovedPayload(canonical))
+        for raw in [
+            #"{"action":"apply","path":"plate.dwg","proposal_id":"E621E1F8-1234-4ABC-8DEF-000000000001","grant_id":null}"#,
+            #"{"action":"apply","path":"plate.dwg","proposal_id":"E621E1F8-1234-4ABC-8DEF-000000000001","unknown_field":1}"#,
+        ] {
+            let rawDigest = RuntimeAuthorityDigest.payloadDigest(Data(raw.utf8))
+            let decoded = try decode(raw)
+            let consumerDigest = RuntimeAuthorityDigest.payloadDigest(
+                try CadDocumentTool.canonicalApprovedPayload(decoded))
+            // `null` decodes to nil and is therefore OMITTED by the consumer
+            // while the runtime hashed the null: the digests differ and the
+            // automatic path refuses (fail closed, documented in the error).
+            #expect(rawDigest != canonicalDigest)
+            #expect(consumerDigest == canonicalDigest)
+        }
+    }
+
+    @Test("a 2D apply without a grant runs on the runtime authority exactly once")
+    func twoDimensionalAutomaticApply() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        let context = makeContext()
+        _ = try await run(tool, #"""
+        {"action":"propose","path":"plate.dwg","operations":[{"operation":"delete","handle":"AB"}]}
+        """#, context: context)
+        let proposal = try #require(await host.storedProposal)
+        let applyJSON = """
+        {"action":"apply","path":"plate.dwg","proposal_id":"\(proposal.id.uuidString)"}
+        """
+        let args = try decode(applyJSON)
+
+        // Without any authority the call refuses before touching the host.
+        do {
+            _ = try await tool.execute(args, context: context)
+            Issue.record("an apply without a UI grant and without runtime authority must refuse")
+        } catch let error as FloeError {
+            if case .validationFailed(let message) = error {
+                #expect(message.contains("runtime-approved call authority"))
+            } else {
+                Issue.record("unexpected refusal: \(error)")
+            }
+        }
+        #expect(await host.automaticApplies == 0)
+
+        // A REAL runtime-issued token for this exact call authorizes it.
+        let token = try await issueAuthority(for: args, context: context)
+        let output = try await tool.execute(args, context: carrying(context, token))
+        #expect(output.summary.contains("\"saved\":true"))
+        #expect(await host.automaticApplies == 1)
+        let authorization = try #require(await host.lastAutomaticAuthorization)
+        #expect(authorization.binding.toolName == CadDocumentTool.name)
+        #expect(authorization.binding.operation == "apply")
+        #expect(authorization.operationID == context.toolCallID)
+        #expect(authorization.runID == context.runID)
+        #expect(authorization.taskID == context.conversationID)
+
+        // The single-use token is burned: a replay of the identical approved
+        // call refuses and never reaches the host again.
+        do {
+            _ = try await tool.execute(args, context: carrying(context, token))
+            Issue.record("a consumed authority must not authorize a second apply")
+        } catch let error as FloeError {
+            if case .validationFailed(let message) = error {
+                #expect(message.contains("already consumed"))
+            } else {
+                Issue.record("unexpected replay refusal: \(error)")
+            }
+        }
+        #expect(await host.automaticApplies == 1)
+    }
+
+    @Test("forged, foreign-target and foreign-payload tokens are refused")
+    func forgedAndMismatchedAuthoritiesRefuse() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        let context = makeContext()
+        _ = try await run(tool, #"""
+        {"action":"propose","path":"plate.dwg","operations":[{"operation":"delete","handle":"AB"}]}
+        """#, context: context)
+        let proposal = try #require(await host.storedProposal)
+        let applyJSON = """
+        {"action":"apply","path":"plate.dwg","proposal_id":"\(proposal.id.uuidString)"}
+        """
+        let args = try decode(applyJSON)
+        let genuine = try CadDocumentTool.runtimeAuthorityBinding(for: args, context: context)
+
+        // A struct-shaped twin that was never issued is not authority.
+        let forged = RuntimeTaskAuthority(
+            id: UUID(), runID: genuine.runID, taskID: genuine.taskID,
+            environmentBinding: genuine.environmentBinding,
+            canonicalTarget: genuine.canonicalTarget, toolName: genuine.toolName,
+            operation: genuine.operation, operationID: genuine.operationID,
+            idempotencyKey: genuine.idempotencyKey, baseRevision: genuine.baseRevision,
+            payloadDigest: genuine.payloadDigest, approvalGrantID: UUID(),
+            issuedAt: Date(), expiresAt: Date().addingTimeInterval(300))
+        await expectAutomaticRefusal(tool: tool, args: args,
+                                     context: carrying(context, forged),
+                                     host: host, contains: "not issued")
+
+        // A token issued for ANOTHER target cannot authorize this document.
+        let otherArgs = try decode("""
+        {"action":"apply","path":"other/frame.dwg","proposal_id":"\(proposal.id.uuidString)"}
+        """)
+        let otherContext = makeContext()
+        let otherToken = try await issueAuthority(for: otherArgs, context: otherContext)
+        await expectAutomaticRefusal(tool: tool, args: args,
+                                     context: carrying(context, otherToken),
+                                     host: host, contains: "different canonical target")
+
+        // A token issued for ANOTHER approved call (different proposal id)
+        // cannot authorize this proposal.
+        let otherProposal = UUID()
+        let otherPayloadArgs = try decode("""
+        {"action":"apply","path":"plate.dwg","proposal_id":"\(otherProposal.uuidString)"}
+        """)
+        let payloadToken = try await issueAuthority(for: otherPayloadArgs, context: context)
+        await expectAutomaticRefusal(tool: tool, args: args,
+                                     context: carrying(context, payloadToken),
+                                     host: host, contains: "approved payload")
+
+        // A token minted for another task is the same refusal.
+        let foreignContext = makeContext(conversation: UUID())
+        let foreignToken = try await issueAuthority(for: args, context: foreignContext)
+        await expectAutomaticRefusal(tool: tool, args: args,
+                                     context: carrying(context, foreignToken),
+                                     host: host, contains: "different task")
+        #expect(await host.automaticApplies == 0)
+    }
+
+    func expectAutomaticRefusal(tool: CadDocumentTool, args: CadDocumentArguments,
+                                context: ToolContext, host: FakeCadHost,
+                                contains fragment: String) async {
+        do {
+            _ = try await tool.execute(args, context: context)
+            Issue.record("expected refusal containing '\(fragment)'")
+        } catch let error as FloeError {
+            guard case .validationFailed(let message) = error else {
+                Issue.record("unexpected refusal: \(error)")
+                return
+            }
+            #expect(message.contains(fragment), "refusal should mention '\(fragment)': \(message)")
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
+    @Test("a .floecad apply without a grant runs through the host's automatic path")
+    func nativeAutomaticApply() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        let context = makeContext()
+        await host.setThreeDReply(#"{"ok":true}"#)
+        // Propose on the native representation records the proposal through
+        // the bridge request surface.
+        _ = try await run(tool, #"""
+        {"action":"propose","path":"part.floecad","op":"feature.extrude","args":"{\"sketchID\":\"x\",\"seedPoint\":[1,1],\"distance\":5}"}
+        """#, context: context)
+
+        let proposalID = UUID()
+        let applyJSON = """
+        {"action":"apply","path":"part.floecad","proposal_id":"\(proposalID.uuidString)"}
+        """
+        let args = try decode(applyJSON)
+        // Missing authority refuses before the host (no grant exists at all).
+        do {
+            _ = try await tool.execute(args, context: context)
+            Issue.record("a native apply without a grant or authority must refuse")
+        } catch let error as FloeError {
+            guard case .validationFailed = error else {
+                Issue.record("unexpected refusal: \(error)")
+                return
+            }
+        }
+        #expect(await host.nativeAutomaticApplies == 0)
+
+        let token = try await issueAuthority(for: args, context: context)
+        let output = try await tool.execute(args, context: carrying(context, token))
+        #expect(output.summary.contains("runtime-authority"), "the native apply reply must show the automatic mode")
+        #expect(await host.nativeAutomaticApplies == 1)
+        // The automatic apply must not fall back to a grant request.
+        #expect(await host.threeDRequests.count == 1)
     }
 }

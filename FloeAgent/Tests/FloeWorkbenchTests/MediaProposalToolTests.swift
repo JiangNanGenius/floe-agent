@@ -119,7 +119,7 @@ struct MediaProposalToolTests {
         #expect(output.summary.contains("clips: 1"))
     }
 
-    @Test func proposeRequiresUserActionAndDoesNotMutate() async throws {
+    @Test func proposeStoresDraftWithoutForcingUserAction() async throws {
         let grants = MediaProposalGrantStore()
         let project = makeProject()
         let host = Host(project: project, grants: grants)
@@ -132,7 +132,15 @@ struct MediaProposalToolTests {
             MediaProjectArguments(action: .propose, projectID: project.id, summary: "Speed up",
                                   commands: commands, proposalID: nil, grantID: nil, export: nil),
             context: context())
-        #expect(output.requiresUserAction, "proposals must wait for explicit user acceptance")
+        // The draft must not force a user-action checkpoint: the ordinary
+        // propose -> runtime-authorized apply -> export workflow closes in
+        // one run. Applying the proposal still requires the UI grant or the
+        // runtime-approved call authority for that exact call, and the
+        // proposal must stay pending/visible for the workbench UI.
+        #expect(!output.requiresUserAction,
+                "a stored draft must not end the run with a forced checkpoint")
+        #expect(output.summary.contains("proposal"), "the preview is returned: \(output.summary)")
+        #expect(await host.proposals.count == 1, "the proposal stays pending for user acceptance")
         let live = try #require(await host.loadProject(id: project.id))
         #expect(live.revision == 0, "propose must not change the project")
         #expect(live.videoTimeline?.clips[0].speed == 1)
@@ -315,6 +323,55 @@ struct MediaProposalToolTests {
                                       proposalID: nil, grantID: nil, export: export),
                 context: context())
         }
+    }
+
+    @Test func exportRelativeOutputIsTheSharedConsumerContract() async throws {
+        let grants = MediaProposalGrantStore()
+        let project = makeProject()
+        let host = Host(project: project, grants: grants)
+        let tool = MediaProjectTool(host: host)
+
+        // Video: `<file_name>.mp4` under the fixed Workbench/Exports.
+        let video: MediaExportArguments = try JSONDecoder().decode(MediaExportArguments.self, from: Data("""
+        {"kind":"video","file_name":"movie","codec":"h264","frame_rate":30,"width":640,"height":360}
+        """.utf8))
+        _ = try await tool.execute(
+            MediaProjectArguments(action: .export, projectID: project.id, summary: nil, commands: nil,
+                                  proposalID: nil, grantID: nil, export: video),
+            context: context())
+
+        // Image: `<file_name>.<format extension>` for every supported format.
+        for format in ["png", "jpeg", "heic"] {
+            let image: MediaExportArguments = try JSONDecoder().decode(MediaExportArguments.self, from: Data("""
+            {"kind":"image","file_name":"still","format":"\(format)"}
+            """.utf8))
+            _ = try await tool.execute(
+                MediaProjectArguments(action: .export, projectID: project.id, summary: nil, commands: nil,
+                                      proposalID: nil, grantID: nil, export: image),
+                context: context())
+        }
+        let exports = await host.exportList()
+        #expect(exports == ["Workbench/Exports/movie.mp4",
+                            "Workbench/Exports/still.png",
+                            "Workbench/Exports/still.jpeg",
+                            "Workbench/Exports/still.heic"],
+                "the tool must write exactly the shared contract's paths")
+
+        // The tool's paths and the typed contract's derivation are the SAME
+        // strings; drift here would silently re-open the workspace-root bait.
+        #expect(MediaExportOutputContract.relativeOutput(kind: "video", fileName: "movie", format: nil)
+                == "Workbench/Exports/movie.mp4")
+        for format in ImageExportFormat.allCases {
+            #expect(MediaExportOutputContract.relativeOutput(kind: "image", fileName: "still",
+                                                             format: format.rawValue)
+                    == "Workbench/Exports/still.\(format.fileExtension)")
+            #expect(MediaExportOutputContract.imageExtensions[format.rawValue] == format.fileExtension,
+                    "the contract's extension map must mirror ImageExportFormat.fileExtension")
+        }
+        // Invalid names / unknown kinds / unsupported formats claim no path.
+        #expect(MediaExportOutputContract.relativeOutput(kind: "image", fileName: "out.png", format: "png") == nil)
+        #expect(MediaExportOutputContract.relativeOutput(kind: "image", fileName: "still", format: "tiff") == nil)
+        #expect(MediaExportOutputContract.relativeOutput(kind: "audio", fileName: "still", format: nil) == nil)
     }
 
     @Test func ownershipEnforcementRefusesOtherEnvironmentOrTask() async throws {

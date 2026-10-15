@@ -112,7 +112,7 @@ public actor LocalShellService {
             await journal.record(ShellOperationJournal.Entry(
                 runID: context.runID.uuidString,
                 toolCallID: context.toolCallID,
-                sessionID: context.toolCallID ?? context.runID.uuidString,
+                sessionID: context.clientScopedSessionToken,
                 commandSHA256: FloeDigest.sha256Hex(Data(command.utf8)),
                 cwd: cwd,
                 exitCode: 126,
@@ -138,7 +138,7 @@ public actor LocalShellService {
             await journal.record(ShellOperationJournal.Entry(
                 runID: context.runID.uuidString,
                 toolCallID: context.toolCallID,
-                sessionID: context.toolCallID ?? context.runID.uuidString,
+                sessionID: context.clientScopedSessionToken,
                 commandSHA256: FloeDigest.sha256Hex(Data(command.utf8)),
                 cwd: cwd,
                 exitCode: 126,
@@ -167,6 +167,15 @@ public actor LocalShellService {
         catch { return .outcome(.failed(message: String(describing: error))) }
         var mergedEnvironment = environmentDefaults
         for (key, value) in environment { mergedEnvironment[key] = value }
+        // The backend session key is the runtime-issued per-CLIENT scope, not
+        // the bare provider tool-call id: a parent run and two delegated
+        // children of the same task may legitimately all be handed provider
+        // call id `call_1`, and a shared executor keeps per-session state
+        // (guest console sessions, PTYs) keyed by this string. Distinct
+        // clients therefore stay distinct here, and every journal entry below
+        // uses the same token so a reviewer can correlate the run's request
+        // with its recorded outcome. The provider-visible call id is
+        // unchanged (it is still journaled in `toolCallID`).
         let request = ShellRunRequest(
             command: command,
             cwd: cwd,
@@ -176,7 +185,7 @@ public actor LocalShellService {
             timeout: normalizedTimeout(timeout, isBackground: isBackground),
             gateTimeout: normalizedGateWait(nil),
             maxOutputBytes: normalizedOutputCap(maxOutputBytes),
-            sessionID: context.toolCallID ?? context.runID.uuidString,
+            sessionID: context.clientScopedSessionToken,
             runID: context.runID,
             toolEnvironment: context.environment
         )
@@ -200,7 +209,7 @@ public actor LocalShellService {
             entry = ShellOperationJournal.Entry(
                 runID: context.runID.uuidString,
                 toolCallID: context.toolCallID,
-                sessionID: context.toolCallID ?? context.runID.uuidString,
+                sessionID: context.clientScopedSessionToken,
                 commandSHA256: FloeDigest.sha256Hex(Data(command.utf8)),
                 cwd: cwd,
                 exitCode: code,
@@ -215,7 +224,7 @@ public actor LocalShellService {
             entry = ShellOperationJournal.Entry(
                 runID: context.runID.uuidString,
                 toolCallID: context.toolCallID,
-                sessionID: context.toolCallID ?? context.runID.uuidString,
+                sessionID: context.clientScopedSessionToken,
                 commandSHA256: FloeDigest.sha256Hex(Data(command.utf8)),
                 cwd: cwd,
                 exitCode: 124,
@@ -230,7 +239,7 @@ public actor LocalShellService {
             entry = ShellOperationJournal.Entry(
                 runID: context.runID.uuidString,
                 toolCallID: context.toolCallID,
-                sessionID: context.toolCallID ?? context.runID.uuidString,
+                sessionID: context.clientScopedSessionToken,
                 commandSHA256: FloeDigest.sha256Hex(Data(command.utf8)),
                 cwd: cwd,
                 exitCode: nil,
@@ -245,7 +254,7 @@ public actor LocalShellService {
             entry = ShellOperationJournal.Entry(
                 runID: context.runID.uuidString,
                 toolCallID: context.toolCallID,
-                sessionID: context.toolCallID ?? context.runID.uuidString,
+                sessionID: context.clientScopedSessionToken,
                 commandSHA256: FloeDigest.sha256Hex(Data(command.utf8)),
                 cwd: cwd,
                 exitCode: nil,
@@ -260,7 +269,7 @@ public actor LocalShellService {
             entry = ShellOperationJournal.Entry(
                 runID: context.runID.uuidString,
                 toolCallID: context.toolCallID,
-                sessionID: context.toolCallID ?? context.runID.uuidString,
+                sessionID: context.clientScopedSessionToken,
                 commandSHA256: FloeDigest.sha256Hex(Data(command.utf8)),
                 cwd: cwd,
                 exitCode: nil,

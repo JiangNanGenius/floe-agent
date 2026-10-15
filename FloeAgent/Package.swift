@@ -33,7 +33,12 @@ let package = Package(
         .library(name: "FloeNotes", targets: ["FloeNotes"]),
         .library(name: "FloeGit", targets: ["FloeGit"]),
         .library(name: "FloeLocalModelCatalog", targets: ["FloeLocalModelCatalog"]),
-        .library(name: "FloeLocalModels", targets: ["FloeLocalModels"])
+        .library(name: "FloeLocalModels", targets: ["FloeLocalModels"]),
+        // TEST-ONLY support module (mock adapters, fixtures) for focused
+        // tests. Exposed as a product so the App test bundle can host
+        // isolated Runtime policy cases through the warm Xcode graph. The
+        // App target never depends on it and Release builds do not embed it.
+        .library(name: "FloeTestSupport", targets: ["FloeTestSupport"])
     ],
     dependencies: [
         .package(path: "ThirdParty/WasmKit"),
@@ -198,7 +203,11 @@ let package = Package(
                 // renamed tree. Compiling this vendored C target without
                 // Clang modules keeps the same sources and flags otherwise,
                 // and Swift still imports the target through its module map.
-                .unsafeFlags(["-fno-modules"])
+                .unsafeFlags(["-fno-modules"]),
+                // Prefer interpreter throughput to size in shipped builds.
+                // The identical-source guest benchmark compares -Os/-O2;
+                // Debug keeps its normal diagnostics and optimization level.
+                .unsafeFlags(["-O2"], .when(configuration: .release))
             ],
             linkerSettings: [.linkedLibrary("m")]
         ),

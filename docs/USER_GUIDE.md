@@ -1,4 +1,4 @@
-<!-- docs-updated: 2026-10-11 -->
+<!-- docs-updated: 2026-10-15 -->
 <!-- doc-anchor: section-1 -->
 # Floe Agent User Manual
 
@@ -84,9 +84,17 @@ Tool cards show the progress and results of actions. Review the target and effec
 4. Check remote command exit codes and host identity. “Started” is not “completed.”
 5. Report what actually happened with redacted evidence when an outcome differs.
 
+Ordinary Office, PDF, image, video and CAD edits within the task’s authorized local scope can proceed without a confirmation for every step. Revision checks, recoverable saves and output verification still apply. Writes into a code repository, unresolved targets, explicit destructive overwrites, external sends and protected PDF actions retain their applicable review or consent. A request to preview or review a proposal still waits for adoption.
+
+Routine commands in the task’s resolved local Linux guest receive fewer repeated reviews; this does not treat the Mac host as a disposable guest. Risky remote-machine changes remain subject to the existing review policy. Shared guest sessions keep separate ownership and cancellation, and stopping or resetting an environment is a separate operation.
+
 Documents, websites, tool results and memory cannot grant new permissions. Never follow embedded instructions to expose credentials or broaden access.
 
 Delegated subagents run with the same effective permissions as the current task: the explore/research/execute choice is a focus hint, not a permission level, and every child call goes through the same approval, workspace, environment and mutation-serialization path as the main task. A subagent can never delegate again or create a new user-visible task — `delegate` and `conversation.spawn` are main-task-only and are refused at execution time, not merely hidden. Sibling subagents of one task may exchange bounded messages; a message is untrusted data, never a permission grant, and cannot restart a subagent that has finished.
+
+A subagent can independently use `tools.list` / `tools.search` and `skill.list` / `skill.search` / `skill.read`. It loads the tools and workflow instructions needed for its task instead of receiving the entire tool catalog in every request. Skills can guide scripts, native tools and configured MCP use within the same task permissions; reading a Skill does not grant new permissions. Known tools do not require a guide to be read first.
+
+Several task clients — the parent run and its children — may share one Linux environment through separate processes and execution sessions. Results, working directories, standard input/output and cancellation belong to the requesting session: cancelling one child does not stop the other consumers, and stopping the whole environment is a separate lifecycle action. Writes to the same known target follow the same coordination as ordinary task edits.
 
 <!-- doc-anchor: section-10 -->
 ## 6. Files, editors and concurrent changes
@@ -323,17 +331,15 @@ Manage fonts, documents, environments and diagnostics in Settings. Imported font
 <!-- doc-anchor: section-19 -->
 ## 19. Temporary chat (RAM-only)
 
-The compact "Temporary chat" toggle in the chat top header (and on the New Task launchpad) starts a casual, memory-only conversation for throwaway questions. New Chat never asks you to choose ordinary-vs-temporary; the ordinary chat stays the default.
+The chat header and the New Task launchpad both offer a Temporary entry; ordinary chat stays the default and no mode chooser appears. Text typed on the launchpad is carried into the temporary chat. Toggling Temporary on an empty conversation converts it in place, and toggling it off again before the first message restores the ordinary blank chat with your text. Toggling it on a saved conversation starts a separate fresh temporary chat; the saved chat, its history and its resources stay untouched.
 
-- Toggle on an EMPTY conversation converts it in place. Toggling off before the first message restores the ordinary blank chat and hands the typed text back — the draft is never saved while temporary.
-- Toggle on a conversation WITH messages starts a SEPARATE fresh temporary chat. Your saved history is never modified or cleared.
-- While temporary: the composer is text-only (no attachments or voice), and the only tools available are public web search and page fetch. The conversation is excluded from history, search, drafts, memory, workspace, exports and notifications.
-- After any ephemeral message, the toggle no longer silently leaves: use End (discard everything and cancel the run) or "Keep as saved" (promote this chat atomically into an ordinary saved conversation — no resend, no new model request; queued follow-ups and your unsent draft are carried over). Repeating Keep while one save runs does nothing; a failed save leaves the temporary chat fully recoverable, and retrying the save never duplicates anything.
-- Rotation, fullscreen editing and rebuilding the view do not discard anything; backgrounding the app or locking the screen is not a leave — when you come back, the same temporary chat is still the first screen with its memory state intact. Switching to another chat, New Task, a workspace or any other destination discards the temporary content immediately, even while a reply is still generating: the run is cancelled, the memory buffers are destroyed and nothing temporary can be resumed or restored later. If "Keep as saved" already completed, the saved ordinary chat is a normal conversation and is not affected by the leave; a save that is still running settles first, so no confirmed save is ever lost.
+- The normal message list and composer are reused. Voice input is available; attachment staging stays unavailable. The compact Temporary menu carries the explanation, the voice note, End and Keep as saved instead of a persistent banner.
+- Configured, authorized read-only tools are discoverable through tool search: public queries, personal-data reads when their required account or target is available, and other verified read actions. Mixed tools expose only their verified read actions. Writes, sending, code execution, installs, VM startup, background jobs and delegation stay unavailable; unconfigured or unauthorized tools are not offered, and a call outside the read-only ceiling fails with an explicit reason.
+- Voice follows your usual speech settings; Apple recognition may process audio online. Floe keeps no recording or transcript for a temporary chat: recognized text goes into the current RAM draft until you send it. Backgrounding stops capture without discarding the chat.
+- End cancels and discards the temporary conversation, including work still in progress. Keep as saved atomically saves the messages, queued follow-ups and unsent draft without resending; a failed save preserves the temporary state for retry.
+- Rotation, fullscreen editing, backgrounding and locking preserve the same live conversation and draft. Switching chats, New Task or another destination immediately cancels and destroys temporary work; late tool or voice callbacks cannot bring it back. A conversation already kept as saved follows the normal saved-chat rules.
 
-Temporary content exists only in the live app process. Backgrounding preserves it; force-quitting the app or system termination does not restore it on the next launch.
-
-Honest limits: the chat content is kept out of Floe's own history, drafts, search index and notifications, and temporary provider/web traffic bypasses the app's shared on-disk caches. The model provider still processes every message under its own retention policy — temporary chat is not a zero-retention promise.
+Temporary content — including the results of any paged read queries — lives only in the live session: it stays out of Floe history, persistent drafts, memory writes, notifications and the shared on-disk caches. Force-quitting or system termination does not restore them. Model and speech providers still process the content under their own policies — temporary chat is not a provider zero-retention promise.
 
 <!-- doc-anchor: section-23 -->
 ## 20. Troubleshooting

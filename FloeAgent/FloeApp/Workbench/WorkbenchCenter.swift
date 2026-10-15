@@ -240,6 +240,24 @@ final class WorkbenchCenter: ObservableObject {
 
     // Dependencies
     private let store: MediaProjectStore
+    /// Canonical root of the app-owned `MediaProjectStore` this center
+    /// persists through, captured at init from the store INSTANCE (custom/
+    /// injected directories included). The app fills the runtime's
+    /// `serviceStorePaths` from `typedServiceStorePaths` below, so the typed
+    /// mutable-target contract (lease keys, runtime-authority canonical
+    /// target, approval classification) follows the actual producer instead
+    /// of a second default-path calculator. Read-only identity; the store's
+    /// own atomic commits remain the only writer.
+    nonisolated let mediaProjectStoreRootPath: String
+
+    /// Runtime configuration value for `FloeAgentRuntime.Configuration
+    /// .serviceStorePaths`: the service-owned store roots of this center,
+    /// keyed by the SAME contract keys the canonical resolver consumes
+    /// (`TypedMutationContract`, FloeTools). This is the only place the app
+    /// maps its workbench store to the runtime contract.
+    nonisolated var typedServiceStorePaths: [String: String] {
+        [TypedMutationContract.mediaProjectStoreKey: mediaProjectStoreRootPath]
+    }
     private let candidateStore: WorkbenchCandidateStore
     private let imageRequestStore: WorkbenchImageRequestStore
     private let projectRootBox = ProjectRootBox()
@@ -274,7 +292,8 @@ final class WorkbenchCenter: ObservableObject {
     private var confirmedReviewRequestIDs: Set<UUID> = []
 
     init(rootProvider: @escaping @Sendable () -> URL?,
-         bridge: WorkbenchAIBridge) {
+         bridge: WorkbenchAIBridge,
+         mediaProjectStoreDirectory: URL? = nil) {
         self.rootProvider = rootProvider
         self.bridge = bridge
         // The renderer resolves assets against the ACTIVE project's recorded
@@ -287,9 +306,15 @@ final class WorkbenchCenter: ObservableObject {
             if let recorded = rootBox.get() { return recorded }
             return WorkbenchPaths.mediaRoot(preferred: fallbackRoot())
         })
-        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("FloeAgent/MediaProjects", isDirectory: true)
-        self.store = MediaProjectStore(directory: directory)
+        // The store directory defaults to the app-owned location; an injected
+        // directory (custom/migrated container) is honored verbatim, and the
+        // runtime contract always reads the root from THIS store instance.
+        let directory = mediaProjectStoreDirectory
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("FloeAgent/MediaProjects", isDirectory: true)
+        let store = MediaProjectStore(directory: directory)
+        self.store = store
+        self.mediaProjectStoreRootPath = store.storeRootPath
         self.candidateStore = WorkbenchCandidateStore(
             directory: directory.appendingPathComponent("Candidates", isDirectory: true))
         self.imageRequestStore = WorkbenchImageRequestStore(

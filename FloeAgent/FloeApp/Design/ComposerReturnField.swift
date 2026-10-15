@@ -15,10 +15,9 @@
 // can never trigger a send. Callers that previously used
 // `.submitLabel(.send)` keep software-send via `softwareReturnSends`.
 //
-// Performance: the natural-height TextKit measurement is memoized per
-// (text generation, width, content-size category) and reuses the view's
-// own layout manager, so a 100k-character draft does not trigger a full
-// re-layout on every keystroke or every layout pass.
+// Natural-height measurement uses a detached TextKit stack and is memoized
+// per (text generation, width, content-size category), so repeated layout
+// probes do not remeasure unchanged content or enter the live view's layout.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -225,9 +224,12 @@ struct ComposerReturnField: UIViewRepresentable {
             lineHeight * CGFloat(max(1, lineLimit.lowerBound)) + insets
         )
         let scrolls = natural > cap
-        if uiView.isScrollEnabled != scrolls {
-            uiView.isScrollEnabled = scrolls
-        }
+        // The scroll verdict is applied on the next main-queue turn together
+        // with the host report: `sizeThatFits` runs inside SwiftUI's layout
+        // pass, and mutating the live view there (isScrollEnabled flips
+        // intrinsic invalidation) is one half of the synchronous layout
+        // feedback loop behind the build-272 composer stack overflow. The
+        // measured height above is unaffected by the deferred flag.
         // `scrolls` is the real layout verdict the user sees: the natural
         // TextKit height has passed the cap, so the tail of the text is no
         // longer visible inline. The host is told after this pass —
@@ -240,6 +242,7 @@ struct ComposerReturnField: UIViewRepresentable {
         if let proposedWidth = proposal.width, proposedWidth.isFinite, proposedWidth > 1 {
             context.coordinator.scheduleOverflowReport(
                 scrolls,
+                textView: uiView,
                 report: context.coordinator.field.onOverflowChange ?? onOverflowChange
             )
         }
@@ -254,28 +257,19 @@ struct ComposerReturnField: UIViewRepresentable {
         max(width - textInsets.left - textInsets.right, 1)
     }
 
-    /// Natural content height via the view's own TextKit stack: glyph
-    /// layout is incremental across keystrokes, and because line breaking
-    /// depends on container width (which we hold fixed per measurement),
-    /// the temporary height change never triggers a full re-layout.
+    /// Measure only a detached TextKit stack. Even requesting live layout
+    /// here can re-enter UIKit while SwiftUI is measuring this view. The
+    /// coordinator memo avoids repeating work for the same content and width.
     private func measuredNaturalHeight(of uiView: UITextView, width: CGFloat) -> CGFloat {
-        let container = uiView.textContainer
-        let layoutManager = uiView.layoutManager
         let textWidth = contentWidth(width)
-        let oldSize = container.size
-        if oldSize.width != textWidth || oldSize.height != .greatestFiniteMagnitude {
-            container.size = CGSize(width: textWidth, height: .greatestFiniteMagnitude)
-        }
-        layoutManager.ensureLayout(for: container)
-        var used = layoutManager.usedRect(for: container).height
         if uiView.textStorage.string.isEmpty {
-            // An empty field still rests on one line.
-            used = Self.textKitHeight(of: FloeL10n.l("design.composer_return_field.chars"), width: textWidth, font: bodyFont)
+            return Self.textKitHeight(of: FloeL10n.l("design.composer_return_field.chars"), width: textWidth, font: bodyFont)
+                + textInsets.top + textInsets.bottom
         }
-        if container.size != oldSize {
-            container.size = oldSize
-        }
-        return used + textInsets.top + textInsets.bottom
+        return ComposerFieldMeasurement.detachedHeight(
+            of: uiView.textStorage,
+            width: textWidth
+        ) + textInsets.top + textInsets.bottom
     }
 
     private static func textKitHeight(of string: String, width: CGFloat, font: UIFont) -> CGFloat {
@@ -311,6 +305,10 @@ struct ComposerReturnField: UIViewRepresentable {
         private var pendingOverflowReport = false
         private var latestOverflow: Bool?
         private var latestOverflowCallback: ((Bool) -> Void)?
+        /// Live view the pending verdict belongs to, so the deferred
+        /// `isScrollEnabled` change is applied to the same field that was
+        /// measured (never a reused coordinator's older view).
+        private weak var latestOverflowView: HardwareReturnTextView?
 
         init(field: ComposerReturnField) {
             self.field = field
@@ -319,11 +317,20 @@ struct ComposerReturnField: UIViewRepresentable {
         /// Coalescing overflow reporter. Called from `sizeThatFits` on the
         /// main thread; delivers on the next main-queue turn (never
         /// synchronously from layout). Repeated calls while a delivery is
-        /// pending keep only the latest verdict and callback.
-        func scheduleOverflowReport(_ overflow: Bool, report: ((Bool) -> Void)?) {
-            guard let report else { return }
+        /// pending keep only the latest verdict, view and callback. The
+        /// measured view's `isScrollEnabled` is applied in the same deferred
+        /// hop: changing it inside SwiftUI's layout pass is what re-entered
+        /// UIKit layout on build 272.
+        func scheduleOverflowReport(
+            _ overflow: Bool,
+            textView: HardwareReturnTextView?,
+            report: ((Bool) -> Void)?
+        ) {
+            latestOverflowView = textView
             latestOverflow = overflow
             latestOverflowCallback = report
+            let needsScrollChange = textView.map { $0.isScrollEnabled != overflow } ?? false
+            guard needsScrollChange || report != nil else { return }
             guard !pendingOverflowReport else { return }
             pendingOverflowReport = true
             DispatchQueue.main.async { [weak self] in
@@ -335,8 +342,13 @@ struct ComposerReturnField: UIViewRepresentable {
             pendingOverflowReport = false
             let overflow = latestOverflow
             let report = latestOverflowCallback
+            let textView = latestOverflowView
             latestOverflow = nil
             latestOverflowCallback = nil
+            latestOverflowView = nil
+            if let overflow, let textView, textView.isScrollEnabled != overflow {
+                textView.isScrollEnabled = overflow
+            }
             guard let overflow else { return }
             report?(overflow)
         }
@@ -439,6 +451,30 @@ struct ComposerReturnField: UIViewRepresentable {
         private func placeholderLabel(of textView: UITextView) -> UILabel? {
             (textView as? HardwareReturnTextView)?.placeholderLabel
         }
+    }
+}
+
+/// Text measurement isolated from the live view's layout callbacks.
+/// The coordinator caches results by content revision, width and text size.
+@MainActor
+enum ComposerFieldMeasurement {
+    /// Height of `storage` wrapped at `width`, without any view mutation.
+    static func detachedHeight(of storage: NSTextStorage, width: CGFloat) -> CGFloat {
+        let boundedWidth = max(width, 1)
+        let detachedStorage = NSTextStorage(attributedString: storage)
+        let container = NSTextContainer(size: CGSize(
+            width: boundedWidth,
+            height: .greatestFiniteMagnitude
+        ))
+        container.lineFragmentPadding = 0
+        container.widthTracksTextView = false
+        let manager = NSLayoutManager()
+        manager.addTextContainer(container)
+        detachedStorage.addLayoutManager(manager)
+        // `glyphRange` forces layout for the container; `usedRect` is then the
+        // same quantity `sizeThatFits` reports for the live field.
+        _ = manager.glyphRange(for: container)
+        return manager.usedRect(for: container).height
     }
 }
 #endif

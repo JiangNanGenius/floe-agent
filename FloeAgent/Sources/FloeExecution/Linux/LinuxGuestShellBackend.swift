@@ -52,8 +52,17 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             // modules and package directories as exec.localPython, npm/pnpm
             // and the package UI. The preamble is a guarded no-op before the
             // first use and never renames the commands.
+            //
+            // The per-run environment (`exec.shell` env argument) is exported
+            // inside the command itself: the console protocol carries no env
+            // field, and silently dropping a documented parameter would make
+            // two clients with different env values see the same environment.
+            // Validation already constrained the names/values; quoting here
+            // keeps values verbatim.
+            let environmentPreamble = try Self.environmentPreamble(request.environment)
             let command = LinuxGuestPythonEnvironment.activationPreamble()
                 + LinuxGuestNodeEnvironment.activationPreamble()
+                + environmentPreamble
                 + request.command
             let result = try await runner.run(
                 environmentID: environmentID,
@@ -98,9 +107,13 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
         let command = request.command.trimmingCharacters(in: .whitespacesAndNewlines)
         // Interactive shells enter the environment's shared Python venv and
         // Node prefix as well (guarded no-ops when they do not exist yet), so
-        // a terminal `python3`/`pip`/`node` matches the package entries.
+        // a terminal `python3`/`pip`/`node` matches the package entries. The
+        // per-run environment is exported in the same command string for the
+        // same reason as the one-shot path: the protocol has no env field and
+        // a dropped env would silently ignore the caller's contract.
         let preamble = LinuxGuestPythonEnvironment.activationPreamble()
             + LinuxGuestNodeEnvironment.activationPreamble()
+            + (try Self.environmentPreamble(request.environment))
         let argv = command.isEmpty
             ? ["/bin/sh", "-c", preamble + "export TERM=xterm-256color; stty sane 2>/dev/null; if command -v bash >/dev/null 2>&1; then exec bash --noprofile --norc -i; else exec /bin/sh -i; fi"]
             : ["/bin/sh", "-c", preamble + command]
@@ -131,6 +144,30 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
         let directory = try ShellInputValidation.directory(cwd: cwd.isEmpty ? "." : cwd, root: root)
         let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
         return LinuxGuestMountPoint.workspace + String(directory.path.dropFirst(rootPath.count))
+    }
+
+    /// One `export NAME='value';` statement per run-scoped variable, or an
+    /// empty string. The console protocol carries no environment field, so
+    /// the variables are exported at the top of the command's own script —
+    /// each guest command runs in its own shell, so nothing leaks between
+    /// clients or into later commands. Names are the validated POSIX subset
+    /// (`ShellInputValidation`); values are single-quoted verbatim so `$`,
+    /// spaces, quotes and backticks cannot change the command's meaning.
+    static func environmentPreamble(_ environment: [String: String]) throws -> String {
+        guard !environment.isEmpty else { return "" }
+        var statements: [String] = []
+        statements.reserveCapacity(environment.count)
+        for (name, value) in environment.sorted(by: { $0.key < $1.key }) {
+            guard name.range(of: "^[A-Za-z_][A-Za-z0-9_]*$", options: .regularExpression) != nil,
+                  !value.contains("\u{0}") else {
+                throw LinuxGuestError.invalidConfiguration(
+                    "environment variable '\(name)' is not a POSIX name/value this backend can export"
+                )
+            }
+            let quoted = "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            statements.append("export \(name)=\(quoted);")
+        }
+        return statements.joined(separator: " ") + " "
     }
 
     public func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {

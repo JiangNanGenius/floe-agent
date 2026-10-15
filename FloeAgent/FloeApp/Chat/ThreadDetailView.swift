@@ -79,10 +79,9 @@ struct ThreadDetailView: View {
     var body: some View {
         GeometryReader { proxy in
             VStack(spacing: 0) {
-                if viewModel.isTemporary {
-                    temporaryBanner
-                    Divider()
-                }
+                // The temporary state lives in the compact top-header entry
+                // (badge + action menu). There is deliberately no persistent
+                // banner: the ordinary chat layout is reused unchanged.
                 if let checklist = viewModel.taskChecklist {
                     checklistStatus(checklist)
                 }
@@ -705,109 +704,104 @@ struct ThreadDetailView: View {
         }
     }
 
-    // MARK: - Temporary chat (top-header entry + keep)
+    // MARK: - Temporary chat (top-header entry + action menu)
 
     /// Compact top-header entry for the ephemeral chat mode. Toggling an
     /// empty conversation converts it in place; a populated one starts a
-    /// separate fresh temporary chat. The active state is tinted and shows
-    /// the "Temporary chat" label; the familiar chat bubble keeps the normal
-    /// toolbar compact (iPad first, 44pt target on iPhone).
+    /// separate fresh temporary chat. While active, the same slot shows the
+    /// tinted badge as a menu that carries the concise explanation plus the
+    /// Keep and End actions — no persistent banner takes chat space.
     @ToolbarContentBuilder
     private var temporaryToolbarItems: some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) {
-            Button {
-                Task {
-                    if let target = await viewModel.toggleTemporaryChat() {
-                        router.openConversation(target.id)
+        if viewModel.isTemporary {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    // Concise state explanation (the previous banner text)
+                    // plus the voice-processing disclosure: temporary voice
+                    // input reuses the normal Apple speech service, which may
+                    // process audio online, and Floe keeps no recording.
+                    Text("chat.temporary.banner")
+                        .accessibilityIdentifier("chat.temporary.hint")
+                    Text("chat.temporary.voiceNote")
+                        .accessibilityIdentifier("chat.temporary.voice.note")
+                    Button {
+                        Task { await viewModel.keepTemporaryChat() }
+                    } label: {
+                        switch viewModel.temporaryKeepState {
+                        case .saving:
+                            Label("chat.temporary.keep", systemImage: "tray.and.arrow.down")
+                        case .partialRetry:
+                            Label("chat.temporary.keepPartialRetry", systemImage: "tray.and.arrow.down")
+                        case .failed:
+                            Label("chat.temporary.keepFailedRetry", systemImage: "tray.and.arrow.down")
+                        case .idle:
+                            Label("chat.temporary.keep", systemImage: "tray.and.arrow.down")
+                        }
                     }
+                    .disabled(viewModel.temporaryKeepState == .saving)
+                    .accessibilityLabel("chat.temporary.keep")
+                    .accessibilityIdentifier("chat.temporary.keep")
+                    Button(role: .destructive) {
+                        endTemporaryChatFromHeader()
+                    } label: {
+                        Label("chat.temporary.end", systemImage: "xmark.circle")
+                    }
+                    .accessibilityLabel("chat.temporary.end")
+                    .accessibilityIdentifier("chat.temporary.end")
+                } label: {
+                    // Explicit compact word + icon: a toolbar Label collapses
+                    // to icon-only in compact layouts, which made the active
+                    // temporary state indistinguishable from an ordinary
+                    // chat's generic bubble. Same small native header menu,
+                    // just a visible state word ("Temporary"/"临时").
+                    HStack(spacing: 4) {
+                        Image(systemName: "bubble.left.fill")
+                        Text("chat.temporary.badge")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .foregroundStyle(FloeTheme.primary)
                 }
-            } label: {
-                // The label style is a concrete generic in SwiftUI, so the
-                // active/inactive variants are two branches instead of a
-                // ternary between `TitleAndIconLabelStyle` and
-                // `IconOnlyLabelStyle`.
-                if viewModel.isTemporary {
-                    Label("chat.temporary.toggle", systemImage: "bubble.left")
-                        .foregroundStyle(FloeTheme.primary)
-                        .symbolVariant(.fill)
-                        .labelStyle(.titleAndIcon)
-                } else {
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityLabel("chat.temporary.badge")
+                .accessibilityIdentifier("chat.temporary.badge")
+                .help(String(localized: "chat.temporary.banner"))
+            }
+        } else {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task {
+                        if let target = await viewModel.toggleTemporaryChat() {
+                            router.openConversation(target.id)
+                        }
+                    }
+                } label: {
                     Label("chat.temporary.toggle", systemImage: "bubble.left")
                         .foregroundStyle(Color.secondary)
                         .symbolVariant(.none)
                         .labelStyle(.iconOnly)
                 }
-            }
-            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-            .accessibilityLabel("chat.temporary.toggle")
-            .accessibilityIdentifier("chat.temporary.toggle")
-            .accessibilityHint("chat.temporary.toggle.hint")
-            .help(String(localized: "chat.temporary.toggle.hint"))
-        }
-        if viewModel.isTemporary {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Task { await viewModel.keepTemporaryChat() }
-                } label: {
-                    switch viewModel.temporaryKeepState {
-                    case .saving:
-                        ProgressView().controlSize(.small)
-                    case .partialRetry:
-                        Label("chat.temporary.keepPartialRetry", systemImage: "tray.and.arrow.down")
-                            .foregroundStyle(.orange)
-                    case .failed:
-                        Label("chat.temporary.keepFailedRetry", systemImage: "tray.and.arrow.down")
-                            .foregroundStyle(.red)
-                    case .idle:
-                        Label("chat.temporary.keep", systemImage: "tray.and.arrow.down")
-                    }
-                }
-                .disabled(viewModel.temporaryKeepState == .saving)
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("chat.temporary.keep")
-                .accessibilityIdentifier("chat.temporary.keep")
-                .help(String(localized: "chat.temporary.keep.hint"))
+                .accessibilityLabel("chat.temporary.toggle")
+                .accessibilityIdentifier("chat.temporary.toggle")
+                .accessibilityHint("chat.temporary.toggle.hint")
+                .help(String(localized: "chat.temporary.toggle.hint"))
             }
         }
     }
 
-    /// Badge + concise hint + explicit End for the active temporary chat.
-    private var temporaryBanner: some View {
-        HStack(spacing: 8) {
-            Label("chat.temporary.badge", systemImage: "bubble.left.fill")
-                .font(FloeTheme.Typography.metadata.weight(.semibold))
-                .foregroundStyle(FloeTheme.primary)
-                .accessibilityIdentifier("chat.temporary.badge")
-            Text("chat.temporary.banner")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .accessibilityIdentifier("chat.temporary.hint")
-            Spacer(minLength: 0)
-            if !viewModel.messages.isEmpty {
-                Button(role: .destructive) {
-                    Task {
-                        guard let target = await viewModel.endTemporaryChat() else { return }
-                        switch target {
-                        case .openConversation(let id):
-                            router.openConversation(id)
-                        case .openNewTask:
-                            router.startNewTask()
-                        }
-                    }
-                } label: {
-                    Label("chat.temporary.end", systemImage: "xmark.circle")
-                        .font(FloeTheme.Typography.metadata)
-                }
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityIdentifier("chat.temporary.end")
+    /// Explicit End from the compact header menu: the session is destroyed
+    /// synchronously by the view model, then the caller routes to the
+    /// restored ordinary conversation or the fresh-task surface.
+    private func endTemporaryChatFromHeader() {
+        Task {
+            guard let target = await viewModel.endTemporaryChat() else { return }
+            switch target {
+            case .openConversation(let id):
+                router.openConversation(id)
+            case .openNewTask:
+                router.startNewTask()
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .background(FloeTheme.primary.opacity(0.07))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("chat.temporary.banner")
     }
 
     /// The context-usage ring and its popover host.

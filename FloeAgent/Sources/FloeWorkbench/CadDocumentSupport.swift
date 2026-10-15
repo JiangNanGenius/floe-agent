@@ -79,20 +79,33 @@ public enum NativeCADPolicy: Sendable {
     /// Package file extension (lowercased, without dot).
     public static let packageExtension = "floecad"
 
-    /// Maximum length of a document stem after sanitization.
+    /// Maximum length of a document stem or display name, counted in
+    /// characters (grapheme clusters). Longer names are refused with an
+    /// actionable message instead of being silently cut.
     public static let maximumStemLength = 120
 
-    /// Characters allowed in a sanitized document stem, in addition to
-    /// letters/numbers: space, dash, underscore, dot and parentheses. Anything
-    /// else (path separators, control characters, leading dots) is replaced
-    /// with a space so a model-supplied name can never traverse directories.
-    private static let allowedStemCharacters: Set<Character> =
-        Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_.()")
+    /// Characters allowed in addition to letters/numbers of ANY language:
+    /// space, dash, underscore, dot and parentheses. Everything else (path
+    /// separators, control characters, emoji, symbols) is replaced with a
+    /// space, so a model-supplied name can never traverse directories.
+    private static func isAllowedStemCharacter(_ character: Character) -> Bool {
+        if character.isLetter || character.isNumber { return true }
+        if " -_.()".contains(character) { return true }
+        // Combining marks are part of a valid written name in many scripts.
+        return character.unicodeScalars.allSatisfy { scalar in
+            switch scalar.properties.generalCategory {
+            case .nonspacingMark, .spacingMark, .enclosingMark: return true
+            default: return false
+            }
+        }
+    }
 
     /// Sanitizes a caller-supplied document name into a safe stem (no
     /// extension). Returns nil when nothing usable remains. Path separators,
     /// control characters and other unsafe letters are replaced with spaces,
     /// runs of whitespace collapsed, and the result is bounded and trimmed.
+    /// Letters and digits of every language survive (`支架`, `ブラケット`,
+    /// `Кронштейн`), so Chinese and mixed names are usable as real documents.
     public static func sanitizedStem(_ rawName: String) -> String? {
         let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -103,7 +116,7 @@ public enum NativeCADPolicy: Sendable {
             stem = (stem as NSString).deletingPathExtension
         }
         let mapped = String(stem.map { character -> Character in
-            if allowedStemCharacters.contains(character) { return character }
+            if isAllowedStemCharacter(character) { return character }
             return " "
         })
         // Collapse whitespace runs and reject hidden/traversal-looking names.
@@ -119,6 +132,64 @@ public enum NativeCADPolicy: Sendable {
                 .trimmingCharacters(in: .whitespaces)
         }
         return cleaned.isEmpty ? nil : cleaned
+    }
+
+    /// Validates a caller-supplied document display name against the real
+    /// usability rules and returns a human-readable, bilingual explanation of
+    /// the first problem, or nil when the name is usable. This is the
+    /// actionable error a model/user sees instead of a silent rename or a
+    /// generic failure:
+    ///   * empty names are refused;
+    ///   * names longer than `maximumStemLength` characters are refused
+    ///     (never silently truncated);
+    ///   * path separators / `..` segments are refused (no traversal);
+    ///   * control or invisible characters (newlines, bidi controls, zero
+    ///     width joiners, NUL) are refused;
+    ///   * names with no usable characters at all are refused.
+    /// Letters and digits of any language, spaces and `-_.()` remain valid.
+    /// Actionable message for an empty (blank) document name; shared by the
+    /// validator and the create path (an explicitly blank name is refused, it
+    /// is never silently replaced by the path-stem fallback).
+    public static let emptyNameMessage =
+        "A CAD document name is required. 需要填写 CAD 文档名称。"
+
+    public static func validateName(_ rawName: String) -> String? {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return emptyNameMessage
+        }
+        guard trimmed.count <= maximumStemLength else {
+            return "The CAD document name is too long: \(trimmed.count) characters; at most "
+                + "\(maximumStemLength) are supported. CAD 文档名称过长：当前 \(trimmed.count) 个字符，最多支持 "
+                + "\(maximumStemLength) 个字符。"
+        }
+        if trimmed.contains("/") || trimmed.contains("\\") || trimmed == "." || trimmed == ".." {
+            return "The CAD document name must not contain path separators ('/' or '\\') or a '..' path segment. "
+                + "CAD 文档名称不能包含路径分隔符（/、\\）或 “..”。"
+        }
+        for scalar in trimmed.unicodeScalars where isUnsafeScalar(scalar) {
+            return "The CAD document name must not contain control or invisible characters. "
+                + "CAD 文档名称不能包含控制字符或不可见字符。"
+        }
+        guard sanitizedStem(trimmed) != nil else {
+            return "The CAD document name must contain at least one usable character "
+                + "(a letter or digit of any language, space, - _ ( ) or .). "
+                + "CAD 文档名称必须包含可用字符（任意语言的字母或数字、空格、- _ ( ) 或 .）。"
+        }
+        return nil
+    }
+
+    /// Control, format (bidi/zero-width) and line-separator scalars are never
+    /// part of a usable document name.
+    private static func isUnsafeScalar(_ scalar: Unicode.Scalar) -> Bool {
+        if CharacterSet.controlCharacters.contains(scalar) { return true }
+        if CharacterSet.illegalCharacters.contains(scalar) { return true }
+        switch scalar.properties.generalCategory {
+        case .format, .lineSeparator, .paragraphSeparator, .surrogate:
+            return true
+        default:
+            return false
+        }
     }
 
     /// The exact relative package path for `stem` inside `parent` (a

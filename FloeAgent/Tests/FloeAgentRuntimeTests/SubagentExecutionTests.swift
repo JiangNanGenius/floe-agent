@@ -123,11 +123,21 @@ struct SubagentExecutionTests {
         let dispatcher = RecordingDispatcher()
         let ceiling: Set<String> = ["test.echo", "test.write", "delegate", "delegate.peers"]
 
-        // Canonical handoff: the SAME effective ceiling for every kind. The
-        // kind is a focus hint, not a permission difference.
+        // Canonical handoff: the SAME effective ceiling for every kind, but
+        // schemas load progressively inside the child. The first request
+        // carries the stable seed plus the child-only sibling tools; the
+        // parent's write capability is reachable through the child's own
+        // discovery, and `delegate` never appears for any kind.
         for kind in [SubagentRequest.Kind.explore, .research, .execute] {
             let adapter = MockAdapter()
-            adapter.script = [[.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]]
+            let search = try TestFixtures.toolCall(
+                id: "search-\(kind.rawValue)", toolName: "tools.search",
+                arguments: #"{"queries":["test.write"]}"#
+            )
+            adapter.script = [
+                [.toolRequest(search)],
+                [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+            ]
             _ = try await makeRunner(adapter: adapter, executor: executor).runStructured(
                 SubagentRequest(task: "work", kind: kind, runID: runID),
                 context: childContext(
@@ -135,16 +145,32 @@ struct SubagentExecutionTests {
                     allowedToolNames: ceiling
                 )
             )
-            let schemas = try #require(adapter.requests.first?.toolSchemas.map(\.name))
-            #expect(schemas.contains("test.write"), "\(kind) must inherit the parent write ceiling")
-            #expect(schemas.contains("delegate.peers"), "\(kind) is a child and may coordinate")
-            #expect(!schemas.contains("delegate"), "\(kind) must never see main-only delegation")
+            let first = try #require(adapter.requests.first?.toolSchemas.map(\.name))
+            #expect(first.contains("tools.search"), "\(kind) needs discovery")
+            #expect(first.contains("tools.list"), "\(kind) needs discovery")
+            #expect(first.contains("delegate.peers"), "\(kind) is a child and may coordinate")
+            #expect(!first.contains("delegate"), "\(kind) must never see main-only delegation")
+            #expect(!first.contains("test.write"), "\(kind) starts from the bounded seed, not the whole catalog")
+            // The child's own tools.search really loads the parent's write
+            // capability for the next request — the ceiling is inherited, the
+            // schema is deferred.
+            let second = try #require(adapter.requests.last?.toolSchemas.map(\.name))
+            #expect(second.contains("test.write"), "\(kind) must be able to load the parent write ceiling")
+            #expect(!second.contains("delegate"), "\(kind) must never see main-only delegation")
         }
 
         // A read-only parent task keeps a write-free ceiling for every kind:
-        // the child inherits the ceiling, it does not expand it.
+        // the child inherits the ceiling, it does not expand it, and a search
+        // for a tool outside the ceiling loads nothing.
         let readOnlyAdapter = MockAdapter()
-        readOnlyAdapter.script = [[.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]]
+        let search = try TestFixtures.toolCall(
+            id: "search-ro", toolName: "tools.search",
+            arguments: #"{"queries":["test.write"]}"#
+        )
+        readOnlyAdapter.script = [
+            [.toolRequest(search)],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
         _ = try await makeRunner(adapter: readOnlyAdapter, executor: executor).runStructured(
             SubagentRequest(task: "read", kind: .explore, runID: runID),
             context: childContext(
@@ -152,11 +178,11 @@ struct SubagentExecutionTests {
                 allowedToolNames: ["test.echo"]
             )
         )
-        let readOnlySchemas = try #require(readOnlyAdapter.requests.first?.toolSchemas.map(\.name))
-        #expect(readOnlySchemas.contains("test.echo"))
-        #expect(!readOnlySchemas.contains("test.write"))
+        let readOnlySchemas = readOnlyAdapter.requests.compactMap { $0.toolSchemas.map(\.name) }
+        #expect(readOnlySchemas.allSatisfy { !$0.contains("test.write") })
 
-        // Legacy (no canonical handoff): fail-closed read-only ceiling.
+        // Legacy (no canonical handoff): fail-closed read-only ceiling, still
+        // with progressive discovery.
         let legacyAdapter = MockAdapter()
         legacyAdapter.script = [[.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]]
         var legacyContext = ToolContext(runID: runID, cancellation: CancellationToken())
@@ -166,9 +192,9 @@ struct SubagentExecutionTests {
             context: legacyContext
         )
         let legacySchemas = try #require(legacyAdapter.requests.first?.toolSchemas.map(\.name))
-        #expect(legacySchemas.contains("test.echo"))
         #expect(!legacySchemas.contains("test.write"))
         #expect(!legacySchemas.contains("delegate"))
+        #expect(legacySchemas.contains("tools.search"))
     }
 
     @Test("a main run never sees the child-only peer tools")
@@ -190,7 +216,10 @@ struct SubagentExecutionTests {
         )
         let schemas = try #require(adapter.requests.first?.toolSchemas.map(\.name))
         #expect(!schemas.contains("delegate.peers"))
-        #expect(schemas.contains("test.echo"))
+        // Progressive discovery: the first request carries the stable seed;
+        // the read-only tool is reachable through the child's own search.
+        #expect(schemas.contains("tools.search"))
+        #expect(!schemas.contains("test.echo"))
     }
 
     // MARK: - Canonical dispatcher routing

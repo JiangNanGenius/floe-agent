@@ -365,4 +365,96 @@ struct OfficeAutomaticApplyToolTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("book.edited.xlsx").path))
     }
 
+    @Test("a declared path that differs from the stored proposal is refused, even with valid authority")
+    func mismatchedDeclaredPathRefused() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // The real proposal document lives in a NESTED repository; the
+        // declared bait path (`notes.xlsx`) is outside it. The typed contract
+        // would see the bait targets outside the repository, so the consumer
+        // must refuse on the proposal identity before consuming authority.
+        let repo = root.appendingPathComponent("repo", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: repo.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true)
+        let repoDoc = repo.appendingPathComponent("report.xlsx")
+        try writeSource(repoDoc)
+        let repoSHA = try FloeDigest.sha256Hex(ofFileAt: repoDoc)
+        let (host, tool, _) = makeToolHost(root: root)
+        let conversationID = UUID()
+        let access = OfficeCommandAccess(environmentID: nil, workspacePath: root.path,
+                                         ownerKind: "chat", ownerID: conversationID,
+                                         conversationID: conversationID)
+        let commandsJSON = try OfficeCommandCodec.encode([.excelInsertRows(count: 1, at: "A1")])
+        let proposal = OfficeCommandProposal(documentID: "repo/report.xlsx", format: "xlsx",
+                                             baseSHA256: repoSHA, summary: "auto",
+                                             commandsJSON: commandsJSON, expectations: [])
+        await host.seed(proposal, access: access)
+
+        var args = argsFor(source: "notes.xlsx", output: "notes.edited.xlsx")
+        args.path = "notes.xlsx"
+        args.proposalID = proposal.id
+        let runID = UUID(), grantID = UUID()
+        // Mint the runtime authority for exactly this declared call: the
+        // refusal may only come from the proposal-identity binding, never
+        // from a missing token.
+        let token = try await mintAuthority(args: args, runID: runID, taskID: conversationID,
+                                            toolCallID: "call-bait", idempotencyKey: "key-bait",
+                                            grantID: grantID, root: root)
+        let context = ToolContext(runID: runID, toolCallID: "call-bait",
+                                  toolIdempotencyKey: "key-bait",
+                                  approvalGrantID: grantID, workspaceRootURL: root,
+                                  cancellation: CancellationToken(), conversationID: conversationID,
+                                  runtimeAuthority: token)
+        let output = try await tool.execute(args, context: context)
+        #expect(output.exitStatus == 2)
+        #expect(output.summary.contains("does not match the stored proposal"))
+        #expect(await host.applyAutomaticCalls == 0)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("notes.edited.xlsx").path))
+        // The repository document is untouched and no edited copy was made.
+        #expect(try FloeDigest.sha256Hex(ofFileAt: repoDoc) == repoSHA)
+        #expect(!FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent("report.edited.xlsx").path))
+    }
+
+    @Test("a declared path that matches the stored proposal still applies automatically")
+    func matchingDeclaredPathApplies() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try writeSource(source)
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: source)
+        let (host, tool, _) = makeToolHost(root: root)
+        let conversationID = UUID()
+        let access = OfficeCommandAccess(environmentID: nil, workspacePath: root.path,
+                                         ownerKind: "chat", ownerID: conversationID,
+                                         conversationID: conversationID)
+        let commandsJSON = try OfficeCommandCodec.encode([.excelInsertRows(count: 1, at: "A1")])
+        let proposal = OfficeCommandProposal(documentID: "book.xlsx", format: "xlsx",
+                                             baseSHA256: sourceSHA, summary: "auto",
+                                             commandsJSON: commandsJSON, expectations: [])
+        await host.seed(proposal, access: access)
+
+        var args = argsFor(source: "book.xlsx", output: "book.edited.xlsx")
+        args.path = "book.xlsx"
+        args.proposalID = proposal.id
+        let runID = UUID(), grantID = UUID()
+        let token = try await mintAuthority(args: args, runID: runID, taskID: conversationID,
+                                            toolCallID: "call-match", idempotencyKey: "key-match",
+                                            grantID: grantID, root: root)
+        let context = ToolContext(runID: runID, toolCallID: "call-match",
+                                  toolIdempotencyKey: "key-match",
+                                  approvalGrantID: grantID, workspaceRootURL: root,
+                                  cancellation: CancellationToken(), conversationID: conversationID,
+                                  runtimeAuthority: token)
+        let output = try await tool.execute(args, context: context)
+        #expect(output.exitStatus == 0)
+        #expect(output.summary.contains("mode=automatic-copy"))
+        #expect(output.summary.contains("sourceUnchanged=true"))
+        #expect(await host.applyAutomaticCalls == 1)
+        #expect(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("book.edited.xlsx").path))
+        #expect(try FloeDigest.sha256Hex(ofFileAt: source) == sourceSHA)
+    }
+
 }

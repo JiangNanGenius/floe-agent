@@ -579,10 +579,34 @@ actor OfficeCommandCenter: OfficeCommandHost {
         guard verified.sha256 == FloeDigest.sha256Hex(data) else {
             throw FloeError.validationFailed("Exported copy failed digest verification")
         }
+        // Export only ever writes a NEW file. An existing file is preserved
+        // unless it is byte-identical to the verified export (an idempotent
+        // re-run); a different file is NEVER replaced, and the commit below
+        // fails instead of replacing if a concurrent writer appears between
+        // the check and the move.
         if FileManager.default.fileExists(atPath: outputURL.path) {
-            _ = try FileManager.default.replaceItemAt(outputURL, withItemAt: temporary)
-        } else {
+            let existing = (try? FloeDigest.sha256Hex(ofFileAt: outputURL))?.lowercased()
+            guard existing == verified.sha256.lowercased() else {
+                throw FloeError.validationFailed(
+                    "An existing file with different content is already at \(output); "
+                        + "export never overwrites it. Choose a different output name.")
+            }
+            return OfficeExportReceipt(documentID: resolved.relativePath, relativePath: output,
+                                       sha256: verified.sha256, byteCount: data.count,
+                                       note: "Identical verified copy already exported; the existing file was preserved")
+        }
+        do {
             try FileManager.default.moveItem(at: temporary, to: outputURL)
+        } catch {
+            guard FileManager.default.fileExists(atPath: outputURL.path) else {
+                throw FloeError.validationFailed(
+                    "The export could not be committed: \(error.localizedDescription)")
+            }
+            // A concurrent writer appeared after the existence check: the
+            // move refused (never replaced), so the file is preserved.
+            throw FloeError.validationFailed(
+                "An existing file with different content is already at \(output); "
+                    + "export never overwrites it. Choose a different output name.")
         }
         return OfficeExportReceipt(documentID: resolved.relativePath, relativePath: output,
                                    sha256: verified.sha256, byteCount: data.count,

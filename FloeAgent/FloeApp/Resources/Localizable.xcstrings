@@ -1,6 +1,22 @@
 {
   "sourceLanguage": "en",
   "strings": {
+  "chat.temporary.voiceNote": {
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Voice input follows your usual speech settings. Apple recognition may process audio online; Floe does not save recordings."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "语音沿用当前识别设置；Apple 识别可能在线处理，Floe 不保存录音。"
+        }
+      }
+    }
+  },
   "providers.validation.display_name_empty": {
     "localizations": {
       "en": {
@@ -5596,13 +5612,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Temporary chat"
+            "value": "Temporary"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "临时会话"
+            "value": "临时"
           }
         }
       }
@@ -17386,13 +17402,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Reads run automatically; side-effecting actions ask first."
+            "value": "Routine local work runs automatically; repository writes and risky remote actions follow the review policy."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "读取自动运行，副作用操作会先询问。"
+            "value": "本地日常操作自动执行；代码库写入与远端风险操作按审核策略处理。"
           }
         }
       }
@@ -76858,13 +76874,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "CAD model (parametric workbench)"
+            "value": "CAD model"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "CAD 模型（参数化工作台）"
+            "value": "CAD 模型"
           }
         }
       }
@@ -82434,13 +82450,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "3D Model (unified workbench)"
+            "value": "3D Workbench"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "3D 模型（统一工作台）"
+            "value": "3D 工作台"
           }
         }
       }

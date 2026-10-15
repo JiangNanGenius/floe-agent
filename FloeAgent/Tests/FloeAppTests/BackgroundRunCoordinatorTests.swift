@@ -19,6 +19,26 @@ import FloeModels
 @MainActor
 struct BackgroundRunCoordinatorTests {
 
+    @Test("Both notification delegate callbacks are completion-handler selectors")
+    func notificationDelegateSelectorsAreExplicit() {
+        // Build 271 aborted on the compiler-generated bridge of the `async`
+        // delegate convenience (`didReceive`); the response path moved to the
+        // completion-handler selector. The foreground presentation callback is
+        // the same class of surface and must not keep an `async` bridge
+        // either — implementing both selectors directly keeps every delegate
+        // callback on a plain Objective-C entry point.
+        #expect(BackgroundRunCoordinator.instancesRespond(
+            to: NSSelectorFromString(
+                "userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:"
+            )
+        ))
+        #expect(BackgroundRunCoordinator.instancesRespond(
+            to: NSSelectorFromString(
+                "userNotificationCenter:willPresentNotification:withCompletionHandler:"
+            )
+        ))
+    }
+
     @Test("Only an explicit foreground user action may submit a continued task")
     func continuedProcessingLifecycle() {
         for origin in ContinuedProcessingStartOrigin.allCases {

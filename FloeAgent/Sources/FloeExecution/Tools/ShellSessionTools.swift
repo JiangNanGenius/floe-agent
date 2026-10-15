@@ -77,7 +77,8 @@ public struct ShellOpenTool: AgentTool {
             runID: context.runID,
             rootURL: root,
             cancellation: context.cancellation,
-            toolEnvironment: context.environment
+            toolEnvironment: context.environment,
+            clientSessionID: context.clientSessionID
         )
         var text = "status=ok sessionID=\(result.sessionID) alive=\(result.alive)"
         if !result.initialOutput.isEmpty { text += "\noutput:\n\(result.initialOutput)" }
@@ -138,14 +139,30 @@ public struct ShellExchangeTool: AgentTool {
            ) {
             return ToolExecutionOutput(digesting: denial.message, exitStatus: 126)
         }
-        let result = try await center.exchange(
-            sessionID: args.sessionID,
-            input: args.input,
-            waitMs: args.waitMs ?? 2_000,
-            maxBytes: args.maxBytes ?? 64 * 1024,
-            runID: context.runID,
-            cancellation: context.cancellation
-        )
+        let result: ShellExchangeResult
+        do {
+            result = try await center.exchange(
+                sessionID: args.sessionID,
+                input: args.input,
+                waitMs: args.waitMs ?? 2_000,
+                maxBytes: args.maxBytes ?? 64 * 1024,
+                runID: context.runID,
+                cancellation: context.cancellation,
+                clientSessionID: context.clientSessionID
+            )
+        } catch is ShellSessionCenter.OwnerMismatch {
+            // A sibling client's session (same run, different runtime-issued
+            // client identity): an explicit denial, with no backend dispatch
+            // and never the other client's output. 126 is the documented
+            // "blocked" status for the shell.* family.
+            return ToolExecutionOutput(
+                digesting: """
+                status=denied reason=session-owner-mismatch sessionID=\(args.sessionID)
+                hint=This interactive session was opened by another client (the parent run or a sibling subagent). Open your own session with shell.open and use its sessionID.
+                """,
+                exitStatus: 126
+            )
+        }
         var text = "status=ok sessionID=\(args.sessionID) alive=\(result.alive)"
         if let exitCode = result.exitCode { text += " exitCode=\(exitCode)" }
         // Cumulative counters distinguish "the program wrote nothing" from
@@ -186,8 +203,26 @@ public struct ShellCloseTool: AgentTool {
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        await center.close(sessionID: args.sessionID, runID: context.runID)
-        return ToolExecutionOutput(digesting: "status=ok sessionID=\(args.sessionID) closed=true", exitStatus: 0)
+        let outcome = await center.close(
+            sessionID: args.sessionID,
+            runID: context.runID,
+            clientSessionID: context.clientSessionID
+        )
+        switch outcome {
+        case .applied:
+            return ToolExecutionOutput(digesting: "status=ok sessionID=\(args.sessionID) closed=true", exitStatus: 0)
+        case .notFound:
+            // Idempotent close: the session is already gone for this client.
+            return ToolExecutionOutput(digesting: "status=ok sessionID=\(args.sessionID) closed=true note=session-already-gone", exitStatus: 0)
+        case .ownerMismatch:
+            return ToolExecutionOutput(
+                digesting: """
+                status=denied reason=session-owner-mismatch sessionID=\(args.sessionID)
+                hint=This interactive session belongs to another client (the parent run or a sibling subagent); nothing was closed.
+                """,
+                exitStatus: 126
+            )
+        }
     }
 }
 
@@ -223,7 +258,28 @@ public struct ShellSignalTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let signal = ShellSignal(rawValue: args.signal.uppercased()) ?? .interrupt
-        await center.signal(sessionID: args.sessionID, signal: signal, runID: context.runID)
-        return ToolExecutionOutput(digesting: "status=ok sessionID=\(args.sessionID) signal=\(signal.rawValue)", exitStatus: 0)
+        let outcome = await center.signal(
+            sessionID: args.sessionID,
+            signal: signal,
+            runID: context.runID,
+            clientSessionID: context.clientSessionID
+        )
+        switch outcome {
+        case .applied:
+            return ToolExecutionOutput(digesting: "status=ok sessionID=\(args.sessionID) signal=\(signal.rawValue)", exitStatus: 0)
+        case .notFound:
+            return ToolExecutionOutput(digesting: "status=ok sessionID=\(args.sessionID) signal=\(signal.rawValue) note=session-already-gone", exitStatus: 0)
+        case .ownerMismatch:
+            // Cross-client signal is the cross-cancel class: refuse before the
+            // backend sees it, so a sibling's KILL can never hit this client's
+            // process group.
+            return ToolExecutionOutput(
+                digesting: """
+                status=denied reason=session-owner-mismatch sessionID=\(args.sessionID) signal=\(signal.rawValue)
+                hint=This interactive session belongs to another client (the parent run or a sibling subagent); nothing was signaled.
+                """,
+                exitStatus: 126
+            )
+        }
     }
 }

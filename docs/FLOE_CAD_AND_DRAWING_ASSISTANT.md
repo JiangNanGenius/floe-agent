@@ -16,6 +16,23 @@
 > 共享工具与真实能力分级见[创作工具契约与格式能力表](FLOE_1_7_24_CREATIVE_TOOLS.md)和
 > [1.7.24（265）发布说明](releases/notes/RELEASE_NOTES_1.7.24_BUILD_265.md)。引擎层 Office
 > 编辑仍待真机资格；下文作为历史证据保留。
+>
+> **2026-10-15 current-contract note (read this first):** the dated sections below
+> keep their historical wording. In the current unreleased build an ordinary
+> authorized `cad.document` edit (native `.floecad` and 2D DWG/DXF) APPLIES
+> WITHOUT a per-edit UI grant through the runtime-approved call authority for
+> that exact call (single-use: run/task/environment/canonical target
+> `file:<canonical path>`, tool, operation, call id, idempotency key, canonical
+> payload digest and an optional revision pin; the proposal's base revision/SHA
+> is re-verified against the live document at commit). `propose` and `import`
+> stage changes without applying them and no longer stop the model turn, so one
+> task/run can propose and apply across turns; the interactive CAD-UI confirmation (single-use
+> `grant_id`, banner Apply/Discard) is unchanged and still available. Section 4's
+> `apply` row and its "only the interactive CAD UI mints grants" paragraph
+> describe the earlier confirmed-only flow. Current authorization, the runnable
+> typed-operation contract, document-name rules and the verification status are
+> in **"CAD autonomous apply, typed operations and name rules — 2026-10-15"** at
+> the end of this page. 中文见文末 2026-10-15 章节。
 
 Status: implementation validated locally (Build265 branch `codex/build265-creative-cad`).
 No tag, TestFlight or public release was produced; primary UI/CUA acceptance and
@@ -97,6 +114,17 @@ engine draft back (one `undo`) and releases the reservation so the same
 authorized proposal can be retried inside the TTL. Tool-call ids replay the
 recorded receipt only for the same authenticated owner/environment/workspace/
 document/action/payload.
+
+> **2026-10-15 update / 更新（2026-10-15）：** the `apply` row above and this
+> confirmation paragraph record the confirmed-only flow of 2026-10-08. Since
+> 2026-10-15 an ordinary authorized edit also applies WITHOUT a per-edit UI
+> grant, under the single-use runtime-approved call authority for that exact
+> apply call (the model cannot mint it), and `propose` no longer stops the model
+> turn. The interactive UI grant path is unchanged. See the 2026-10-15 section
+> at the end of this page.
+> 上文 `apply` 行与本段记录的是 2026-10-08 的“仅人工确认”流程；自 2026-10-15 起，普通且
+> 已授权的编辑也可在该次批准调用的一次性运行时授权下自动应用（模型无法伪造），`propose`
+> 不再中断模型轮次；CAD 界面人工确认路径不变。详见文末 2026-10-15 章节。
 
 ## 5. Canvas child projects / 画布子工程
 
@@ -195,6 +223,8 @@ closes and the primary agent accepts it (UI/CUA, device, release).
   `three_d_drawing`. Propose evaluates the typed operation on a *flushed*
   throwaway copy of the exact in-memory revision and never writes; apply needs
   a UI-issued single-use grant bound to proposal + revision + SHA.
+  *(2026-10-09/10 record: since 2026-10-15 apply also accepts the
+  runtime-approved call authority without a grant — see the end of this page.)*
 
 ### Verification actually run (2026-10-09/10)
 
@@ -797,3 +827,160 @@ the fixture.
   compile gate (physical-device install/acceptance remains a primary/user gate).
 - A real configured-model-provider loop was NOT run (interactive credentials unavailable to this
   worker; Apple Foundation Models unavailable / model downloading in the simulator).
+
+## CAD autonomous apply, typed operations and name rules — 2026-10-15 (unreleased work)
+
+> **Superseding note / 取代说明:** the `apply`/grant statements in the dated
+> sections above describe the earlier confirmed-only flow (and section 4 keeps
+> its 2026-10-08 wording with an inline pointer). In the current unreleased
+> build an ordinary authorized CAD edit applies **without a per-edit UI grant**
+> through the runtime-approved call authority, and `propose`/`import` no longer
+> pause the run; the interactive CAD-UI confirmation stays available and
+> unchanged. `cad.document` carries only the `readsFiles`/`writesFiles` risk
+> labels, so the production `AutomaticApprovalPolicy` decides it
+> deterministically (no approval popup): that deterministic allow is what mints
+> the single-use task authority the automatic apply consumes.
+> 上文（含第 4 节按 2026-10-08 原文保留并加了指向说明）描述的是早期“仅人工确认”流程；
+> 当前未发布构建中，普通且已授权的 CAD 编辑可通过运行时批准的调用授权自动应用，
+> `propose`/`import` 不再暂停运行；CAD 界面人工确认保持不变。`cad.document` 只带
+> `readsFiles`/`writesFiles` 风险标签，生产 `AutomaticApprovalPolicy` 会确定性地允许
+> （无审批弹窗），并据此签发自动应用所消费的一次性任务授权。
+
+### Authorization / 授权
+
+- `apply` (both `.dwg/.dxf` and native `.floecad`) accepts:
+  1. `grant_id` — the interactive, human-reviewed CAD-UI confirmation (single
+     use, bound to proposal + document + revision + SHA, TTL-bound, releasable
+     after a failed transaction). Unchanged.
+  2. **without** `grant_id` — the runtime-issued task authority for that exact
+     approved call: run, task, environment/workspace, canonical target
+     (`file:<canonical path>` derived from the `path` argument exactly like the
+     runtime's `MutationTargetResolver`; a Canvas-staged run is addressed by the
+     staged document's canonical absolute path), tool `cad.document`, operation
+     `apply`, provider call id, idempotency key, canonical payload digest and an
+     optional `revision` pin. The token is single-use; the proposal's base
+     revision/SHA is re-verified against the live document before the single
+     atomic commit; request-id replay returns the recorded receipt; a failed
+     transaction rolls back and keeps the proposal retryable.
+- A model cannot mint a grant id or an authority, and a model-supplied
+  `confirmed: true` (or any similar field) is never consulted. `propose` does not
+  modify the source drawing and does **not** end the model turn: an ordinary authorized edit can be
+  proposed and applied across turns of the SAME task/run (the runtime continues
+  the model after the tool result), while the proposal stays pending and
+  confirmable in the CAD UI — an explicit preview/review request still shows the
+  diff before anything is committed.
+- Ordinary workspace documents therefore edit without a per-edit popup. Code
+  repository writes, external sends, deletions and destructive non-recoverable
+  overwrites keep their existing safeguards.
+- 中文：`apply` 支持两种授权：CAD 界面签发的一次性 `grant_id`，或在没有 grant_id 时使用
+  运行时对“该次已批准调用”签发的一次性任务授权（绑定运行/任务/环境/规范目标/工具/
+  操作/调用 ID/幂等键/载荷摘要，可选 revision；Canvas 草稿场景使用暂存文档的规范绝对
+  路径寻址）。提案的基准 revision/SHA 在提交前会与当前文档再次核对；失败即回滚且提案
+  可重试。模型无法伪造授权，`confirmed: true` 之类的字段不会生效。`propose` 不修改原始
+  图纸，但会保留任务草稿；它不再强制暂停运行：普通且已授权的编辑可在同一任务/运行的后续轮次直接 apply，
+  提案同时保留在 CAD 界面中可供人工确认。普通工作区文档因此无需逐次弹窗；代码仓库写入、
+  外发、删除与不可恢复的覆盖仍保留原有保护，显式预览请求仍会先展示差异。
+
+### Native typed operation contract / 原生操作契约（可直接运行）
+
+Units are millimetres and degrees; the default `sketch.create` plane is the
+ground plane. Exact argument names (unknown fields are refused by the kernel):
+
+- `sketch.create` `{name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]}`
+  → reply carries `sketchID`.
+- `sketch.addEntities` `{sketchID, entities:[…], construction?:[indexes]}` with
+  `{"kind":"line",a:[x,y],b:[x,y]}` | `{"kind":"circle",center:[x,y],radius}` |
+  `{"kind":"arc",center:[x,y],radius,startAngle,endAngle}` |
+  `{"kind":"spline",points:[[x,y],…],closed?}` |
+  `{"kind":"rect",min:[x,y],max:[x,y]}` |
+  `{"kind":"polygon",center:[x,y],radius,sides,rotation?}` |
+  `{"kind":"ellipse",center:[x,y],radiusX,radiusY,rotation?}`.
+- `feature.extrude` `{sketchID, seedPoint:[x,y] (inside the closed profile),
+  distance (mm, non-zero; optional only with `end`), symmetric?,
+  taperDegrees? (|t|<89, 0 = straight), end?:"throughAll"|"upToNext"|"blind",
+  boolean?:"newBody"|"union"|"subtract"|"intersect", booleanTargets?:[bodyID]}`.
+  Example: `{"sketchID":"<uuid>","seedPoint":[40,20],"distance":10}`.
+- Full runnable example (each statement is one `cad.document` call:
+  `propose` with `op` + `args`, then `apply`):
+  `create` → `propose sketch.create` → `apply` → `propose sketch.addEntities
+  (rect [0,0]–[80,40])` → `apply` → `propose feature.extrude {sketchID,
+  seedPoint [40,20], distance 10}` → `apply` → `measure` `{"op":"body",
+  "handles":["body:<UUID>"]}` → `export output=part.export.step|.stl|.glb`.
+- Measurement addressing: `query` `{"kind":"bodies"}` returns each row's `id`,
+  `analyticBRep`, `volumeMM3`, `triangles` and `bounds`
+  (`[[x,y,z],[x,y,z]]`). `measure` `{"op":"body"|"mesh","handles":["body:<UUID>"]}`
+  answers `{kind:"body", bodyID, name, volumeMM3, surfaceAreaMM2,
+  analyticBRep, bounds}`; a bare body UUID is accepted too, and the tool
+  translates the handle to the kernel's raw `bodyID` (the kernel resolves a
+  body by UUID). `{"op":"bounds","handles":[…]}`
+  measures one or more bodies (`bodyIDs`). The alias form is
+  `three_d_measure op=body args={"bodyID":"<UUID>"}`.
+- Operation vocabulary (`capabilities.operation_names`): `sketch.create`,
+  `sketch.addEntities`, `feature.extrude`, `feature.revolve`, `feature.pattern`,
+  `feature.mirror`, `feature.transform`, `feature.boolean`, `feature.fillet`,
+  `feature.chamfer`, `feature.shell`, `feature.sweep`, `feature.loft`,
+  `feature.pushPull`, `feature.moveFace`, `feature.scaleFace`,
+  `feature.rotateFace`, `feature.deleteFace`, `feature.replaceFace`,
+  `feature.draftFace`, `body.setMaterial`, `item.setHidden`.
+- 中文：单位为毫米与度；`sketch.create` 默认使用地面平面，返回 `sketchID`；
+  `feature.extrude` 需要 `sketchID`、闭合轮廓内的 `seedPoint` 与非零 `distance`
+  （使用 `end` 时 distance 可省略），可选 `symmetric`、`taperDegrees`（|t|<89）、
+  `end`、`boolean` 与 `booleanTargets`。完整可运行链路：create → propose
+  sketch.create → apply → propose sketch.addEntities（矩形 [0,0]–[80,40]） → apply
+  → propose feature.extrude → apply → measure（`op=body` 且
+  `handles=["body:<UUID>"]`，也可直接给裸 UUID；工具会转换为内核实参 `bodyID`）
+  → export STEP/STL/GLB。`query {kind:"bodies"}` 的每行给出 `id`、`analyticBRep`、
+  `volumeMM3`、`triangles` 与 `bounds`。
+
+### Document names / 文档名称
+
+- Letters and digits of **any language** (Chinese, Japanese, Cyrillic, …), spaces
+  and `- _ . ( )` are accepted. The **display name** is stored inside the
+  package exactly as given (trimmed); the **file name** remains the sanitized,
+  uniquified stem of `path`, so display name and file name are separate.
+- Empty/blank names (an explicit blank name is refused, never silently replaced
+  by the path stem), control/invisible characters (newlines, bidi controls,
+  zero-width joiners), `/` or `\`, `..`, names with no usable character and
+  names longer than 120 characters are refused with an actionable bilingual
+  error instead of being silently renamed or truncated.
+- 中文：支持任意语言的字母与数字（中文、日文、西里尔文等）、空格与 `- _ . ( )`。显示
+  名称按原样存入包内；文件名仍取 `path` 词干并做净化与去重，两者相互独立。空/全空白名称
+  （显式空白名称会被拒绝，而不是回退为文件名）、控制/不可见字符、路径分隔符、`..`、无可用
+  字符或超过 120 个字符的名称会被拒绝，并给出中英双语可操作提示。
+
+### Verification status (2026-10-15) — Simulator App evidence
+
+- The actual arm64 Simulator App compiled with Xcode 27. After fixture corrections,
+  `NativeCADDocumentCreationTests` executed **11/11 passing cases (2.901 s)**;
+  `CadDocumentCenterConcurrencyTests` executed **10/10 passing cases (7.574 s)**.
+- The production runtime/tool/host path created a sketch and closed profile, extruded
+  an analytic solid, measured its volume and bounds, and exported real STEP, binary
+  STL and GLB. The checks inspect binary structure and reopen/import the outputs;
+  a separate single-runtime adaptive-provider case completes the dependent editing
+  sequence without resetting the runtime or injecting a human grant.
+- The same App cases cover automatic apply in the real 2D engine, Unicode names,
+  receipt replay after restart, stale/foreign authority refusal and Canvas staged
+  absolute-path scope. Earlier failed runs are retained: malformed fixture JSON,
+  a model-visible provenance envelope mistaken for the reply, three methods hidden
+  from XCTest in a private extension, and the diagnosed production target/body-handle
+  mismatches were corrected before these results.
+- Final App qualification also executed the default Human/ASK workflow and exact
+  Canvas staged-relative-path/foreign-target cases: **13 CAD XCTest cases + 2 real
+  PDF/media default-policy cases passed**, alongside **113 Swift Testing cases in
+  13 suites** covering policy, target contracts, Office, media and CAD concurrency.
+  The staged document resolves to the same canonical target on the runtime and host.
+- This is Simulator App evidence with a scripted/adaptive provider, not a real model,
+  arbitrary third-party drawing compatibility or physical-device performance result.
+  Module emit/typecheck and private policy harness results remain separate evidence.
+
+中文：Xcode 27 已完成真实 arm64 模拟器 App 编译；修正夹具后，CAD App 用例 **11/11 通过
+（2.901 秒）**，并发用例 **10/10 通过（7.574 秒）**。运行时、工具和真实宿主完成草图、
+闭合轮廓、拉伸实体、几何测量及 STEP／二进制 STL／GLB 导出，检查文件结构并重新导入。
+同一运行中的连续编辑不重建运行时、不注入人工 grant。二维真实引擎、中文名称、重启重放、
+过期或外部授权拒绝、画布暂存绝对路径边界也有实际用例。原失败记录保留。
+
+最终 App 验收还执行了默认 Human／ASK 策略及画布精确相对路径／外部目标拒绝用例：
+**13 项 CAD XCTest + 2 项真实 PDF／媒体默认策略用例通过**，另有策略、目标契约、Office、
+媒体及 CAD 并发相关 **113 项 Swift Testing／13 套件通过**。运行时与宿主对暂存文档使用同一
+规范目标。以上属于模拟器 App 加脚本供应商证据，不代表真实模型、任意第三方图纸兼容或实机
+性能；模块类型检查、私有策略桩测试和 App 证据分别记录。

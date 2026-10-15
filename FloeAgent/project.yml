@@ -37,6 +37,14 @@ packages:
     # graph, sketch solver, Metal viewport and the workbench editor, vendored
     # from OpenShape3D (MIT) with Floe's document/session adaptations.
     path: ThirdParty/FloeCADKit
+  ZIPFoundation:
+    # Already resolved through FloeAgentPackages at exactly this revision
+    # (Package.resolved: 0.9.20 / 22787ffb59de99e5dc1fbfe80b19c97a904ad48d).
+    # Declared here only so the FloeAppTests bundle can import the module for
+    # the two Office automatic-execution suites; no dependency, version or
+    # lock change.
+    url: https://github.com/weichsel/ZIPFoundation.git
+    exactVersion: 0.9.20
 
 targets:
   FloeAgent:
@@ -292,8 +300,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.31"
-        CURRENT_PROJECT_VERSION: "272"
+        MARKETING_VERSION: "1.7.32"
+        CURRENT_PROJECT_VERSION: "273"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -368,8 +376,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.31"
-        CURRENT_PROJECT_VERSION: "272"
+        MARKETING_VERSION: "1.7.32"
+        CURRENT_PROJECT_VERSION: "273"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -413,8 +421,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.31"
-        CURRENT_PROJECT_VERSION: "272"
+        MARKETING_VERSION: "1.7.32"
+        CURRENT_PROJECT_VERSION: "273"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -453,8 +461,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.31"
-        CURRENT_PROJECT_VERSION: "272"
+        MARKETING_VERSION: "1.7.32"
+        CURRENT_PROJECT_VERSION: "273"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -537,6 +545,9 @@ targets:
       - path: Tests/FloeAppTests/ComposerTests.swift
       - path: Tests/FloeAppTests/ProviderSaveRegressionTests.swift
       - path: Tests/FloeAppTests/PersonalToolPaginationTests.swift
+      - path: Tests/FloeAppTests/TemporaryChatPolicyTests.swift
+      - path: Tests/FloeAppTests/LocalShellClientIsolationTests.swift
+      - path: Tests/FloeAppTests/SubagentCoordinationRegressionTests.swift
       - path: Tests/FloeAppTests/SubagentSimulatorExecutionTests.swift
       - path: Tests/FloeAppTests/OfficeNativeAutomaticExecutionTests.swift
       - path: Tests/FloeAppTests/NotificationResponseBridgeTests.swift
@@ -565,6 +576,44 @@ targets:
       - path: Tests/FloeAppTests/NativeCADCanvasCreationTests.swift
       - path: Tests/FloeAppTests/NativeCADCanvasBackupTests.swift
       - path: Tests/FloeAppTests/EngineeringWebSessionReparentTests.swift
+      # K3: App-level default-ask ordinary-document policy regression (real
+      # runtime + production PDF/media tool hosts). Registering the file here
+      # requires regenerating the Xcode project (scripts/gen_project.sh) in the
+      # same apply step; the app test target uses an explicit source list.
+      - path: Tests/FloeAppTests/DefaultAskDocumentPolicyAppTests.swift
+      # K4: run the typed-target / approval-policy module suites INSIDE the
+      # existing App test bundle (no new target, no cold whole-SPM build):
+      # these files are self-contained (private helpers only), import
+      # Foundation/Testing plus @testable actual Floe* modules, and use no
+      # ZIPFoundation/product dependency. They are the module-test proof for
+      # the K4 findings; the App-hosted run calls the REAL module functions
+      # (it is not the full macOS SwiftPM suite). Registering them requires
+      # `bash FloeAgent/scripts/gen_project.sh` in the same apply step.
+      - path: Tests/FloeSecurityTests/DeterministicLocalApprovalPolicyTests.swift
+      - path: Tests/FloeSecurityTests/OrdinaryDocumentActionProfileTests.swift
+      - path: Tests/FloeToolsTests/TypedMutationTargetContractTests.swift
+      - path: Tests/FloeDocumentsTests/OfficeAuthorityPayloadParityTests.swift
+      - path: Tests/FloeDocumentsTests/OfficeEditToolContractTests.swift
+      - path: Tests/FloeWorkbenchTests/MediaAuthorityPayloadParityTests.swift
+      - path: Tests/FloeWorkbenchTests/MediaProjectStoreRootTests.swift
+      - path: Tests/FloeWorkbenchTests/MediaProposalToolTests.swift
+      # K4: the new App host export contract (no engine/UI needed).
+      - path: Tests/FloeAppTests/OfficeExportHostContractTests.swift
+      # D: isolated Runtime policy fixture hosted in the App bundle through
+      # the TEST-ONLY FloeTestSupport product (mock adapters). Real Runtime
+      # issuer/child/local-guest/repository policy cases run with the warm
+      # App graph; the App target never depends on the test product.
+      # AgentRuntimeTests.swift supplies the shared mock helpers that the
+      # runtime fixture uses (no duplicated parallel helpers).
+      - path: Tests/FloeAgentRuntimeTests/AgentRuntimeTests.swift
+      - path: Tests/FloeAgentRuntimeTests/DeterministicLocalApprovalRuntimeTests.swift
+      # D (coordinator preference): the two ZIPFoundation-backed Office suites
+      # run in the same App test bundle. The package below is the ALREADY
+      # PINNED 0.9.20 revision from Package.resolved (no new dependency,
+      # version or lock change); the module is required for `import
+      # ZIPFoundation` in the test target.
+      - path: Tests/FloeDocumentsTests/OfficeAutomaticApplyToolTests.swift
+      - path: Tests/FloeDocumentsTests/OfficeAutomaticExecutionTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift
       - path: Tests/FloeAgentUITests/HomeChatSeparationTests.swift
@@ -593,6 +642,10 @@ targets:
       - target: FloeAgent
       - package: FloeCADKit
         product: FloeCAD
+      - package: ZIPFoundation
+        product: ZIPFoundation
+      - package: FloeAgentPackages
+        product: FloeTestSupport
     settings:
       base:
         DEVELOPMENT_TEAM: QYL72C43K6

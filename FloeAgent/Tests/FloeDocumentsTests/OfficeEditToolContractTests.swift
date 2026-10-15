@@ -148,7 +148,12 @@ struct OfficeEditToolContractTests {
         let output = try await tool.execute(args, context: context(root: root))
         #expect(output.exitStatus == 0)
         #expect(output.summary.contains("proposal_id="))
-        #expect(output.summary.contains("status=needs_confirmation"))
+        // Truthful pending state (the proposal is stored, not "waiting for a
+        // confirmation" that an already-authorized run does not need) plus the
+        // concrete next step.
+        #expect(output.summary.contains("status=proposed"))
+        #expect(!output.summary.contains("needs_confirmation"))
+        #expect(output.summary.contains("next=apply with this proposal_id and the same path"))
         #expect(await fake.proposals.count == 1)
         let stored = try #require(await fake.proposals.values.first)
         #expect(stored.baseSHA256 == digest.lowercased())

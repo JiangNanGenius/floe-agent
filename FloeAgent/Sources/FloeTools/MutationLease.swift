@@ -183,9 +183,52 @@ public actor MutationLeaseCoordinator {
     }
 }
 
+/// The full resolution of one mutating call: lease/authority keys (FIRST key
+/// preserves every existing consumer mirror), the policy-visible mutable
+/// targets (roles included), and whether the write extent stayed unresolved.
+/// Built by `MutationTargetResolver.resolve` from the typed contract — the
+/// single source of truth shared by mutation coordination, the
+/// runtime-authority canonical target and the approval carve-out.
+public struct MutationTargetResolution: Sendable {
+    /// Exclusive lease/authority keys. The FIRST key is the runtime-authority
+    /// canonical target: it keeps each existing consumer mirror intact
+    /// (office/CAD `file:<path>`, media.project `workspace:<root>`).
+    public var keys: [MutationTargetKey]
+    /// Canonical absolute paths of every target that is genuinely MUTABLE
+    /// (typed contract, or legacy file keys). Read-only inputs are never
+    /// listed. Empty when nothing could be pinned.
+    public var mutableTargets: [TypedMutableTarget]
+    /// True when the call's specific write extent could NOT be pinned (the
+    /// keys carry the workspace wildcard as a real unresolved extent, not as
+    /// a mirror-preserving bound).
+    public var hasUnresolvedExtent: Bool
+    /// True when the typed contract declares this tool+action (its mutable
+    /// outputs are typed). False for legacy-resolved families, whose file
+    /// keys are still pinned conservatively but are NOT ordinary
+    /// document-family coverage.
+    public var contractCovered: Bool
+
+    public init(
+        keys: [MutationTargetKey],
+        mutableTargets: [TypedMutableTarget],
+        hasUnresolvedExtent: Bool,
+        contractCovered: Bool = false
+    ) {
+        self.keys = keys
+        self.mutableTargets = mutableTargets
+        self.hasUnresolvedExtent = hasUnresolvedExtent
+        self.contractCovered = contractCovered
+    }
+}
+
 /// Resolves a tool call to its canonical mutation keys without reading model
 /// intent. Unknown or unresolvable mutating targets conservatively return the
 /// workspace wildcard; read-only/internal-state calls return no keys.
+///
+/// Typed contract: the ordinary document/media families (PDF editors, office
+/// apply/export, media.project, video/audio/image editors) resolve their REAL
+/// mutable outputs through `TypedMutationContract` — see
+/// TypedMutationTargets.swift for the single source of truth.
 public enum MutationTargetResolver {
     /// Tools whose first argument names a workspace file target.
     static let workspaceFileTools: Set<String> = [
@@ -218,49 +261,179 @@ public enum MutationTargetResolver {
 
     /// Returns the exclusive keys a child call must hold, or [] when the call
     /// is not a mutation. Never returns a narrow key for a target it cannot
-    /// canonicalize.
+    /// canonicalize. Equivalent to `resolve(...).keys` with no service stores
+    /// or staged document.
     public static func keys(
         for call: ToolCall,
         descriptor: ToolCatalog.Descriptor?,
         workspaceRootURL: URL?,
         fileManager: FileManager = .default
     ) -> [MutationTargetKey] {
-        guard let descriptor, descriptor.effect == .mutating else { return [] }
+        resolve(
+            for: call,
+            descriptor: descriptor,
+            workspaceRootURL: workspaceRootURL,
+            fileManager: fileManager
+        ).keys
+    }
+
+    /// Full resolution shared by lease coordination, the runtime-authority
+    /// canonical target and the approval policy.
+    ///
+    /// - `serviceStorePaths`: trusted service-owned store roots keyed by the
+    ///   contract's store keys (e.g. the media project store). Model arguments
+    ///   address records inside; they never mint authority.
+    /// - `stagedDocument`: the run's explicitly authorized Canvas staged
+    ///   document. When a `cad.document` call addresses exactly that document
+    ///   (its exact relative path or the canonical absolute form), the target
+    ///   is pinned to the STAGED DRAFT ROOT — never the broader task root and
+    ///   never any other document under it (fail closed otherwise). This
+    ///   mirrors the tool side, which derives its access from the same staged
+    ///   binding.
+    public static func resolve(
+        for call: ToolCall,
+        descriptor: ToolCatalog.Descriptor?,
+        workspaceRootURL: URL?,
+        serviceStorePaths: [String: String] = [:],
+        stagedDocument: CanvasStagedDocumentAccess? = nil,
+        fileManager: FileManager = .default
+    ) -> MutationTargetResolution {
+        guard let descriptor, descriptor.effect == .mutating else {
+            return MutationTargetResolution(keys: [], mutableTargets: [], hasUnresolvedExtent: false)
+        }
         let rootKey = workspaceWildcardKey(root: workspaceRootURL)
         let arguments = (try? JSONSerialization.jsonObject(with: call.argumentsJSON)) as? [String: Any]
         let name = call.toolName
 
-        if workspaceWildcardToolNames.contains(name)
-            || workspaceWildcardPrefixes.contains(where: { name.hasPrefix($0) }) {
-            return [rootKey]
+        // J Canvas-staged contract: an authorized staged document addressed
+        // by its exact relative path or canonical absolute form pins to the
+        // staged draft root. Hoisted so the typed contract resolves this
+        // call's relative paths against the SAME root the tool's
+        // `access.workspacePath` uses; anything else under the draft root is
+        // never covered by the staged binding (fail closed).
+        let stagedTarget: String? = {
+            guard name == "cad.document", let staged = stagedDocument,
+                  let raw = arguments?["path"] as? String else { return nil }
+            return stagedDocumentTarget(raw: raw, staged: staged, fileManager: fileManager)
+        }()
+        let effectiveRootURL: URL? = stagedTarget.map { _ in
+            URL(fileURLWithPath: stagedDocument?.draftRootPath ?? "")
         }
 
-        if workspaceFileTools.contains(name) {
-            var keys: [MutationTargetKey] = []
-            for key in pathArgumentKeys {
-                if let raw = arguments?[key] as? String,
+        // Legacy branches, verbatim behavior, collected into a variable so the
+        // typed contract can extend them without changing their first-key
+        // semantics (the runtime-authority mirrors depend on it).
+        let legacyKeys: [MutationTargetKey] = {
+            if workspaceWildcardToolNames.contains(name)
+                || workspaceWildcardPrefixes.contains(where: { name.hasPrefix($0) }) {
+                return [rootKey]
+            }
+
+            if workspaceFileTools.contains(name) {
+                var keys: [MutationTargetKey] = []
+                for key in pathArgumentKeys {
+                    if let raw = arguments?[key] as? String,
+                       let resolved = canonicalFilePath(raw, root: workspaceRootURL, fileManager: fileManager) {
+                        keys.append(.file(resolved))
+                    }
+                }
+                return keys.isEmpty ? [rootKey] : unique(keys)
+            }
+
+            if documentToolPrefixes.contains(where: { name.hasPrefix($0) }) {
+                if let stagedTarget {
+                    return [.file(stagedTarget)]
+                }
+                if let raw = arguments?["path"] as? String,
                    let resolved = canonicalFilePath(raw, root: workspaceRootURL, fileManager: fileManager) {
-                    keys.append(.file(resolved))
+                    return [.file(resolved)]
                 }
+                for key in documentIDArgumentKeys {
+                    if let raw = arguments?[key] as? String, isPlausibleStableID(raw) {
+                        return [.document("\(name.prefix(while: { $0 != "." })):\(raw)")]
+                    }
+                }
+                return [rootKey]
             }
-            return keys.isEmpty ? [rootKey] : unique(keys)
-        }
 
-        if documentToolPrefixes.contains(where: { name.hasPrefix($0) }) {
-            if let raw = arguments?["path"] as? String,
-               let resolved = canonicalFilePath(raw, root: workspaceRootURL, fileManager: fileManager) {
-                return [.file(resolved)]
-            }
-            for key in documentIDArgumentKeys {
-                if let raw = arguments?[key] as? String, isPlausibleStableID(raw) {
-                    return [.document("\(name.prefix(while: { $0 != "." })):\(raw)")]
-                }
-            }
+            // Any other mutating tool: never assume it is narrow.
             return [rootKey]
+        }()
+
+        // Typed contract (single source of truth). Only the ordinary
+        // document/media families declare specs; every other tool keeps the
+        // legacy behavior exactly.
+        let specs = TypedMutationContract.specs(for: name, arguments: arguments ?? [:])
+        if !specs.isEmpty {
+            guard let mutable = TypedMutationContract.resolveMutableTargets(
+                for: name,
+                arguments: arguments ?? [:],
+                workspaceRootURL: workspaceRootURL,
+                serviceStorePaths: serviceStorePaths,
+                effectiveRootURL: effectiveRootURL,
+                fileManager: fileManager
+            ) else {
+                // A required target could not be pinned: the whole write
+                // extent is unresolved — conservative wildcard, existing
+                // policy. Never a partial classification.
+                return MutationTargetResolution(keys: [rootKey], mutableTargets: [],
+                                                hasUnresolvedExtent: true, contractCovered: true)
+            }
+            var keys = legacyKeys
+            if !TypedMutationContract.keepsWorkspaceBounding(name) {
+                // The typed targets fully bound the write set: drop the legacy
+                // fallback wildcard so coordination and authority get the
+                // narrow file keys.
+                keys = keys.filter { $0.family != .workspace }
+            } else {
+                // media.project: the mirror-preserved workspace bound stays
+                // FIRST, typed store/export keys follow.
+                keys = [rootKey] + keys.filter { $0.family != .workspace }
+            }
+            for target in mutable where !keys.contains(.file(target.path)) {
+                keys.append(.file(target.path))
+            }
+            return MutationTargetResolution(keys: keys, mutableTargets: mutable,
+                                            hasUnresolvedExtent: false, contractCovered: true)
         }
 
-        // Any other mutating tool: never assume it is narrow.
-        return [rootKey]
+        let legacyMutable = legacyKeys
+            .filter { $0.family == .file }
+            .map { TypedMutableTarget(path: $0.identity, role: .pinned) }
+        let unresolved = legacyKeys.contains { $0.family == .workspace }
+        return MutationTargetResolution(keys: legacyKeys, mutableTargets: legacyMutable, hasUnresolvedExtent: unresolved)
+    }
+
+    /// J Canvas-staged contract: `path` (trimmed, bounded) must equal the
+    /// exact stagedRelativePath or the canonical absolute staged path.
+    /// Returns the canonical absolute staged target on a match, nil otherwise
+    /// (nil = ordinary resolution; the staged binding is never a fallback).
+    static func stagedDocumentTarget(
+        raw: String,
+        staged: CanvasStagedDocumentAccess,
+        fileManager: FileManager
+    ) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 4096 else { return nil }
+        let stagedRoot = URL(fileURLWithPath: staged.draftRootPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let stagedCanonical = stagedRoot
+            .appendingPathComponent(staged.stagedRelativePath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+        if trimmed == staged.stagedRelativePath {
+            return stagedCanonical
+        }
+        // Canonical absolute form of the argument (if it is absolute) must
+        // equal the canonical staged path byte-for-byte.
+        guard trimmed.hasPrefix("/") else { return nil }
+        let argumentCanonical = URL(fileURLWithPath: trimmed)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+        return argumentCanonical == stagedCanonical ? stagedCanonical : nil
     }
 
     static func workspaceWildcardKey(root: URL?) -> MutationTargetKey {

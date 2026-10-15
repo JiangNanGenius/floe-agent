@@ -337,6 +337,18 @@ struct OfficeAutomationQualification {
                                 payloadDigest: String(repeating: "a", count: 64))
     }
 
+    /// The REAL `file:` identity of one document under a work root, exactly as
+    /// the runtime mints it for `document.office.edit` (canonical path with
+    /// symlinks resolved). The executor refuses an authorization that is not
+    /// bound to the stored proposal's document, so these fixtures must carry
+    /// the document's actual identity — a placeholder target is no longer
+    /// accepted (and a placeholder would prove nothing).
+    private static func fileBinding(document: String, workRoot: URL) -> RuntimeAuthorityBinding {
+        let root = workRoot.standardizedFileURL.resolvingSymlinksInPath()
+        let path = root.appendingPathComponent(document).resolvingSymlinksInPath().path
+        return binding(target: "file:" + path)
+    }
+
     private static func access(_ root: URL) -> OfficeCommandAccess {
         OfficeCommandAccess(environmentID: "qual", workspacePath: root.path,
                             ownerKind: "chat", ownerID: UUID(), conversationID: UUID())
@@ -364,7 +376,7 @@ struct OfficeAutomationQualification {
             let receipt = try await executor.execute(
                 proposal: try proposal(document: "copy-source.xlsx", sha: sha,
                                        commands: [.excelInsertRows(count: 1, at: "A1")]),
-                authorization: proof(binding: binding(target: "qual")),
+                authorization: proof(binding: fileBinding(document: "copy-source.xlsx", workRoot: workRoot)),
                 relativeOutput: "copy-verified.xlsx", requestID: "qual-copy",
                 access: access(workRoot))
             let sourceAfter = try FloeDigest.sha256Hex(ofFileAt: source)
@@ -405,7 +417,7 @@ struct OfficeAutomationQualification {
                 _ = try await executor.execute(
                     proposal: try proposal(document: "selection-source.xlsx", sha: sha,
                                            commands: [.excelSort(ascending: true, range: "A1:A2")]),
-                    authorization: proof(binding: binding(target: "qual")),
+                    authorization: proof(binding: fileBinding(document: "selection-source.xlsx", workRoot: workRoot)),
                     relativeOutput: nil, requestID: "qual-sort", access: access(workRoot))
                 return CaseResult(name: name, status: "failed", facts: ["no refusal was raised"])
             } catch let error as OfficeAutomaticExecutionError {
@@ -430,7 +442,7 @@ struct OfficeAutomationQualification {
                 _ = try await executor.execute(
                     proposal: try proposal(document: "recalc-stale.xlsx", sha: sha,
                                            commands: [.excelRecalculate]),
-                    authorization: proof(binding: binding(target: "qual")),
+                    authorization: proof(binding: fileBinding(document: "recalc-stale.xlsx", workRoot: workRoot)),
                     relativeOutput: "recalc-stale-edited.xlsx", requestID: "qual-stale",
                     access: access(workRoot))
                 return CaseResult(name: name, status: "failed", facts: ["stale cache was accepted"])
@@ -460,7 +472,7 @@ struct OfficeAutomationQualification {
             let receipt = try await executor.execute(
                 proposal: try proposal(document: "recalc-fresh.xlsx", sha: sha,
                                        commands: [.excelRecalculate]),
-                authorization: proof(binding: binding(target: "qual")),
+                authorization: proof(binding: fileBinding(document: "recalc-fresh.xlsx", workRoot: workRoot)),
                 relativeOutput: "recalc-fresh-edited.xlsx", requestID: "qual-fresh",
                 access: access(workRoot))
             let sourceAfter = try FloeDigest.sha256Hex(ofFileAt: source)
@@ -494,7 +506,7 @@ struct OfficeAutomationQualification {
                 _ = try await executor.execute(
                     proposal: try proposal(document: "conflict-source.xlsx", sha: sha,
                                            commands: [.excelInsertRows(count: 1, at: "A1")]),
-                    authorization: proof(binding: binding(target: "qual")),
+                    authorization: proof(binding: fileBinding(document: "conflict-source.xlsx", workRoot: workRoot)),
                     relativeOutput: "conflict-output.xlsx", requestID: "qual-conflict",
                     access: access(workRoot))
                 return CaseResult(name: name, status: "failed", facts: ["conflict was accepted"])
@@ -523,11 +535,11 @@ struct OfficeAutomationQualification {
             let request = try proposal(document: "replay-source.xlsx", sha: sha,
                                        commands: [.excelInsertRows(count: 1, at: "A1")])
             let first = try await executor.execute(proposal: request,
-                                                   authorization: proof(binding: binding(target: "qual")),
+                                                   authorization: proof(binding: fileBinding(document: "replay-source.xlsx", workRoot: workRoot)),
                                                    relativeOutput: "replay-edited.xlsx",
                                                    requestID: "qual-replay", access: access(workRoot))
             let second = try await executor.execute(proposal: request,
-                                                    authorization: proof(binding: binding(target: "qual")),
+                                                    authorization: proof(binding: fileBinding(document: "replay-source.xlsx", workRoot: workRoot)),
                                                     relativeOutput: "replay-edited.xlsx",
                                                     requestID: "qual-replay", access: access(workRoot))
             let facts = ["firstReplay=\(first.replay)", "secondReplay=\(second.replay)",
