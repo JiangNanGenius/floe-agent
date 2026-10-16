@@ -232,6 +232,25 @@ closest prior art; the Floe-specific delta is the stricter review pipeline.
   (`ShellHome`, `ShellTmp`, `Packages/bin`) in the native backend, and at the
   guest's environment layer in the Linux backend.
 
+### Native shell command behaviour (1.7.34 / 275 and later)
+
+The privacy rebuild of the native `shell`/`text` frameworks removes three
+`statfs`/`fstatfs` calls that derived no disk-space value
+(`FloeAgent/scripts/privacy-rebuild/`). The recorded behaviour differences
+from the pinned upstream v3.0.2 binaries are:
+
+- native `find -fstype` **explicitly reports that it is not supported in this
+  build** (exit status 2, message on stderr) instead of reading mount types;
+- `wc` still counts real bytes; only its internal read buffer is sized from
+  `fstat().st_blksize`;
+- `tail` follow mode uses the existing polling fallback on every volume, and
+  `tail -F` still re-stats names every loop iteration.
+
+Exported symbols are unchanged (ABI-compatible), and the Linux guest tools
+are not modified — these statements describe the native compatibility backend
+only. Do not read them as full behavioural equivalence with upstream
+binaries.
+
 ### 5.1 Linux guest disk, cache and install state
 
 - Each Linux environment owns a raw ext4 disk cloned from the compact

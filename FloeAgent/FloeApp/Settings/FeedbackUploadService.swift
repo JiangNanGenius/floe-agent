@@ -229,7 +229,7 @@ enum FeedbackUploadService {
         for attachment in submission.imageAttachments {
             body.appendUTF8("--\(boundary)\r\n")
             body.appendUTF8(
-                "Content-Disposition: form-data; name=\"attachments\"; filename=\"\(safeFilename(attachment.filename))\"\r\n"
+                "Content-Disposition: form-data; name=\"screenshots\"; filename=\"\(safeFilename(attachment.filename))\"\r\n"
             )
             body.appendUTF8("Content-Type: image/jpeg\r\n")
             body.appendUTF8("X-Floe-Attachment-ID: \(attachment.id.uuidString)\r\n\r\n")

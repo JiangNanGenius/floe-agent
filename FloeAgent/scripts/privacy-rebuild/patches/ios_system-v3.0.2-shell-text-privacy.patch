@@ -1,0 +1,188 @@
+diff --git a/bsd_find/function.c b/bsd_find/function.c
+index f0e5f7a..7cbb430 100644
+--- a/bsd_find/function.c
++++ b/bsd_find/function.c
+@@ -894,71 +894,20 @@ c_follow(OPTION *option, char ***argvp __unused)
+  * -fstype functions --
+  *
+  *	True if the file is of a certain type.
++ *
++ * Floe patch (privacy): the iOS build omits the statfs call. statfs/fstatfs
++ * are required-reason DiskSpace APIs; this predicate reads mount flags and
++ * the filesystem name only, derives no disk-space value, and has no approved
++ * reason to declare. -fstype fails closed with an explicit message instead
++ * of calling an undeclared API.
+  */
+ int
+ f_fstype(PLAN *plan, FTSENT *entry)
+ {
+-	static dev_t curdev;	/* need a guaranteed illegal dev value */
+-	static int first = 1;
+-	struct statfs sb;
+-	static int val_flags;
+-	static char fstype[sizeof(sb.f_fstypename)];
+-	char *p, save[2] = {0,0};
+-
+-	if ((plan->flags & F_MTMASK) == F_MTUNKNOWN)
+-		return 0;
+-
+-	/* Only check when we cross mount point. */
+-	if (first || curdev != entry->fts_statp->st_dev) {
+-		curdev = entry->fts_statp->st_dev;
+-
+-		/*
+-		 * Statfs follows symlinks; find wants the link's filesystem,
+-		 * not where it points.
+-		 */
+-		if (entry->fts_info == FTS_SL ||
+-		    entry->fts_info == FTS_SLNONE) {
+-			if ((p = strrchr(entry->fts_accpath, '/')) != NULL)
+-				++p;
+-			else
+-				p = entry->fts_accpath;
+-			save[0] = p[0];
+-			p[0] = '.';
+-			save[1] = p[1];
+-			p[1] = '\0';
+-		} else
+-			p = NULL;
+-
+-		if (statfs(entry->fts_accpath, &sb)) {
+-			if (!ignore_readdir_race || errno != ENOENT) {
+-				warn("statfs: %s", entry->fts_accpath);
+-				exitstatus = 1;
+-			}
+-			return 0;
+-		}
+-
+-		if (p) {
+-			p[0] = save[0];
+-			p[1] = save[1];
+-		}
+-
+-		first = 0;
+-
+-		/*
+-		 * Further tests may need both of these values, so
+-		 * always copy both of them.
+-		 */
+-		val_flags = sb.f_flags;
+-		strlcpy(fstype, sb.f_fstypename, sizeof(fstype));
+-	}
+-	switch (plan->flags & F_MTMASK) {
+-	case F_MTFLAG:
+-		return val_flags & plan->mt_data;
+-	case F_MTTYPE:
+-		return (strncmp(fstype, plan->c_data, sizeof(fstype)) == 0);
+-	default:
+-		abort();
+-	}
++	(void)plan;
++	(void)entry;
++	errx(1, "-fstype is not supported in this build");
++	return (0);	/* NOTREACHED */
+ }
+ 
+ PLAN *
+diff --git a/text_cmds/tail/forward.c b/text_cmds/tail/forward.c
+index 3aa31e0..0af8cc2 100644
+--- a/text_cmds/tail/forward.c
++++ b/text_cmds/tail/forward.c
+@@ -389,39 +389,16 @@ show(file_info_t *file)
+ static void
+ set_events(file_info_t *files)
+ {
+-	int i, n = 0;
+-	file_info_t *file;
+-	struct timespec ts;
+-	struct statfs sf;
+-
+-	ts.tv_sec = 0;
+-	ts.tv_nsec = 0;
+-
+-	action = USE_KQUEUE;
+-	for (i = 0, file = files; i < no_files; i++, file++) {
+-		if (! file->fp)
+-			continue;
+-
+-		if (fstatfs(fileno(file->fp), &sf) == 0 &&
+-		    (sf.f_flags & MNT_LOCAL) == 0) {
+-			action = USE_SLEEP;
+-			return;
+-		}
+-
+-		if (Fflag && fileno(file->fp) != STDIN_FILENO) {
+-			EV_SET(&ev[n], fileno(file->fp), EVFILT_VNODE,
+-			    EV_ADD | EV_ENABLE | EV_CLEAR,
+-			    NOTE_DELETE | NOTE_RENAME, 0, 0);
+-			n++;
+-		}
+-		EV_SET(&ev[n], fileno(file->fp), EVFILT_READ,
+-		    EV_ADD | EV_ENABLE | EV_CLEAR, 0, 0, 0);
+-		n++;
+-	}
+-
+-	if (kevent(kq, ev, n, NULL, 0, &ts) < 0) {
+-		action = USE_SLEEP;
+-	}
++	/*
++	 * Floe patch (privacy): the iOS build omits the statfs/fstatfs
++	 * MNT_LOCAL probe. statfs/fstatfs are required-reason DiskSpace APIs;
++	 * this probe reads mount flags only, derives no disk-space value, and
++	 * has no approved reason. Follow mode uses the sleep fallback on every
++	 * volume, which is correct on local and remote filesystems alike, and
++	 * -F still re-stats names every iteration of the follow loop.
++	 */
++	(void)files;
++	action = USE_SLEEP;
+ }
+ 
+ /*
+diff --git a/text_cmds/wc/wc.c b/text_cmds/wc/wc.c
+index 0375532..7f1143c 100644
+--- a/text_cmds/wc/wc.c
++++ b/text_cmds/wc/wc.c
+@@ -146,8 +146,8 @@ static int
+ cnt(const char *file)
+ {
+ 	struct stat sb;
+-	struct statfs fsb;
+ 	uintmax_t linect, wordct, charct;
++	int iosize;
+ 	int fd, len, warned;
+ 	int stat_ret;
+ 	size_t clen;
+@@ -170,18 +170,28 @@ cnt(const char *file)
+ 		}
+ 	}
+ 
+-	if (fstatfs(fd, &fsb)) {
+-	    fsb.f_iosize = SMALL_BUF_SIZE;
++	/*
++	 * Floe patch (privacy): fstatfs is a required-reason DiskSpace API and
++	 * this path only sizes the read buffer, deriving no disk-space value.
++	 * The file's preferred I/O size comes from fstat instead (a
++	 * FileTimestamp-category API this binary already declares and uses).
++	 */
++	iosize = SMALL_BUF_SIZE;
++	{
++		struct stat iosize_stat;
++		if (fstat(fd, &iosize_stat) == 0 && iosize_stat.st_blksize > 0) {
++			iosize = (int)iosize_stat.st_blksize;
++		}
+ 	}
+-	if (fsb.f_iosize != buf_size) {
++	if (iosize != buf_size) {
+ 	    if (buf != small_buf) {
+ 		free(buf);
+ 	    }
+-	    if (fsb.f_iosize == SMALL_BUF_SIZE || !(buf = malloc(fsb.f_iosize))) {
++	    if (iosize == SMALL_BUF_SIZE || !(buf = malloc((size_t)iosize))) {
+ 		buf = small_buf;
+ 		buf_size = SMALL_BUF_SIZE;
+ 	    } else {
+-		buf_size = fsb.f_iosize;
++		buf_size = iosize;
+ 	    }
+ 	}
+ 

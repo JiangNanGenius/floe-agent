@@ -529,7 +529,7 @@ STATIC_COMPONENTS = (
     ),
     (
         "ios_system command bus and BSD commands",
-        "v3.0.4 manifest / v3.0.2 binaries",
+        "v3.0.4 manifest / v3.0.2 binaries; shell+text locally rebuilt from v3.0.2 + Floe privacy patch (scripts/privacy-rebuild, hashes in PROVENANCE.json)",
         "BSD-3-Clause",
         "https://github.com/holzschu/ios_system",
         "engines",

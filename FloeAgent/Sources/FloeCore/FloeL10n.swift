@@ -91,9 +91,17 @@ public enum FloeL10n {
             }
         }
         let followingSystem = forced == nil && (stored == nil || stored == preferenceSystem)
+        if followingSystem {
+            // Clear this app's own AppleLanguages override *before* resolving
+            // the OS language: the public `Locale.preferredLanguages` path
+            // falls back to the OS list only while the app domain has no
+            // override (see `systemPreferredLanguages`).
+            standardDefaults.removeObject(forKey: "AppleLanguages")
+        }
         let code = forced
             ?? (followingSystem ? systemLanguageCode(standardDefaults: standardDefaults)
-                                : overrideLanguageCode(preferenceRaw: stored))
+                                : overrideLanguageCode(preferenceRaw: stored,
+                                                       standardDefaults: standardDefaults))
         apply(
             resolvedCode: code,
             followingSystem: followingSystem,
@@ -117,17 +125,22 @@ public enum FloeL10n {
             suiteDefaults?.removeObject(forKey: defaultsKey)
         }
         let followingSystem = rawValue == nil || rawValue == preferenceSystem
-        // Resolve against the actual OS language BEFORE mutating the app-level
-        // AppleLanguages override, so switching en -> System on a Chinese OS
-        // (or zhHans -> System on an English OS) cannot inherit the previous
-        // forced value through a cached preferred-languages list.
+        // Resolve against the actual OS language BEFORE mutating the stored
+        // preference. The app-level AppleLanguages override is removed first
+        // so the public Locale path cannot inherit the value we forced in an
+        // earlier session; a launch argument (UI tests) always wins and its
+        // future process is never touched here.
+        if followingSystem, launchArgumentLanguageCode(arguments: arguments) == nil {
+            standardDefaults.removeObject(forKey: "AppleLanguages")
+        }
         let code: String
         if let forced = launchArgumentLanguageCode(arguments: arguments) {
             code = forced
         } else if followingSystem {
             code = systemLanguageCode(standardDefaults: standardDefaults)
         } else {
-            code = overrideLanguageCode(preferenceRaw: rawValue)
+            code = overrideLanguageCode(preferenceRaw: rawValue,
+                                        standardDefaults: standardDefaults)
         }
         apply(
             resolvedCode: code,
@@ -139,11 +152,14 @@ public enum FloeL10n {
     }
 
     /// Language code for an explicit en/zhHans preference (never system).
-    private static func overrideLanguageCode(preferenceRaw: String?) -> String {
+    private static func overrideLanguageCode(
+        preferenceRaw: String?,
+        standardDefaults: UserDefaults = .standard
+    ) -> String {
         switch preferenceRaw {
         case preferenceEn: return "en"
         case preferenceZhHans: return "zh-Hans"
-        default: return systemLanguageCode()
+        default: return systemLanguageCode(standardDefaults: standardDefaults)
         }
     }
 
@@ -218,21 +234,22 @@ public enum FloeL10n {
     }
 
     /// Reads the *OS* preferred languages independently of this app's
-    /// `AppleLanguages` override. The app-level override lives in the
-    /// application preferences domain, while the OS list is stored in the
-    /// global domain, so the global-domain value remains accurate even while
-    /// (or immediately after) the app forces en/zh-Hans.
+    /// `AppleLanguages` override. This is the public `Locale` path: Foundation
+    /// resolves the app-domain override when one is present and falls back to
+    /// the OS-wide list when it is not. Every caller that resolves a
+    /// system-following choice clears the app-domain override first
+    /// (`bootstrap`, `setPreference`), so a previously forced language can
+    /// never leak into the OS value.
+    ///
+    /// `UserDefaults.globalDomain` is deliberately not read: no approved
+    /// `NSPrivacyAccessedAPICategoryUserDefaults` reason covers system-written
+    /// defaults (`CA92.1`/`1C8F.1` explicitly exclude "information that was
+    /// written by other apps or the system"), and `Locale.preferredLanguages`
+    /// is the documented public API for exactly this value.
     public static func systemPreferredLanguages(
         standardDefaults: UserDefaults = .standard
     ) -> [String] {
         if let testSystemLanguagesOverride { return testSystemLanguagesOverride }
-        if let global = standardDefaults.persistentDomain(forName: UserDefaults.globalDomain),
-           let languages = global["AppleLanguages"] as? [String],
-           !languages.isEmpty {
-            return languages
-        }
-        // Fallback for unusual hosts (e.g. some unit-test environments where
-        // the global domain is unavailable).
         return Locale.preferredLanguages
     }
 
@@ -267,20 +284,37 @@ public enum FloeL10n {
         return Locale(identifier: currentLanguageCode)
     }
 
-    /// OS language/region identifier resolved from the global preferences
-    /// domain, independent of the app-level AppleLanguages override.
+    /// OS language/region identifier resolved through the public `Locale`
+    /// APIs, independent of the app-level AppleLanguages override (which the
+    /// system-following callers clear first). The *language* comes from the
+    /// OS preferred-language list; the *region* comes from the process
+    /// locale's region, because the two are independent choices — English
+    /// (US) language with an Australian region must keep formatting at
+    /// `en_AU`. `Locale.current` itself is not returned: it is process-cached
+    /// and can keep a previously forced language, but its region does not
+    /// change with the app's language override (verified with the app-domain
+    /// probe recorded in the privacy deliverable).
     public static func systemLocaleIdentifier(
         standardDefaults: UserDefaults = .standard
     ) -> String {
-        if let global = standardDefaults.persistentDomain(forName: UserDefaults.globalDomain),
-           let locale = global["AppleLocale"] as? String,
-           !locale.isEmpty {
-            return locale
+        systemLocaleIdentifier(
+            preferredLanguages: systemPreferredLanguages(standardDefaults: standardDefaults),
+            region: Locale.current.region?.identifier
+        )
+    }
+
+    /// Pure composition of the OS language and the OS region (unit-testable).
+    /// A missing region keeps the language tag's own region.
+    static func systemLocaleIdentifier(
+        preferredLanguages: [String],
+        region: String?
+    ) -> String {
+        guard let first = preferredLanguages.first else { return currentLanguageCode }
+        var components = Locale.Components(identifier: first)
+        if let region, !region.isEmpty {
+            components.languageComponents.region = Locale.Region(region)
         }
-        if let first = systemPreferredLanguages(standardDefaults: standardDefaults).first {
-            return first
-        }
-        return currentLanguageCode
+        return Locale(components: components).identifier
     }
 
     /// True when language follows the OS. Internal accessor for the Bundle

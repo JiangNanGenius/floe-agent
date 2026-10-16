@@ -409,13 +409,33 @@ public enum StorageExtentProbeReader {
 
         // APFS only (measured, K2/K3): the extent identities are comparable
         // per volume and the block accounting has been reconciled there.
-        var fs = statfs()
-        guard fstatfs(fd, &fs) == 0 else { return .failed(.callFailed) }
-        let fileSystemName = withUnsafeBytes(of: &fs.f_fstypename) { raw -> String in
-            guard let base = raw.baseAddress else { return "" }
-            return String(cString: base.assumingMemoryBound(to: CChar.self))
+        //
+        // The file-system check uses public `URLResourceValues` instead of
+        // `fstatfs`/`statfs` (required-reason DiskSpace APIs this path derives
+        // no capacity value from). A volume must report the full measured
+        // capability set — file cloning (the APFS CoW feature this walk
+        // deduplicates), sparse files and zero runs — to run the walk. On the
+        // measured systems only APFS reports all three: HFS+ reports sparse
+        // false, exFAT reports all false (and F_LOG2PHYS_EXT fails with
+        // ENOTSUP), network volumes report cloning false. A volume that does
+        // not answer any capability (nil) is unsupported rather than assumed,
+        // and a future filesystem with a different capability set must be
+        // re-measured before this gate accepts it.
+        var pathBuffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(fd, F_GETPATH, &pathBuffer) != -1 else {
+            return .failed(.callFailed)
         }
-        guard fileSystemName == "apfs" else { return .unsupported }
+        let resolvedPath = String(decoding: pathBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+                                  as: UTF8.self)
+        guard let volume = try? URL(fileURLWithPath: resolvedPath)
+            .resourceValues(forKeys: [.volumeSupportsFileCloningKey,
+                                      .volumeSupportsSparseFilesKey,
+                                      .volumeSupportsZeroRunsKey]),
+            volume.volumeSupportsFileCloning == true,
+            volume.volumeSupportsSparseFiles == true,
+            volume.volumeSupportsZeroRuns == true else {
+            return .unsupported
+        }
 
         // Compressed (decmpfs) mappings cannot be enumerated here; measured
         // ENOTSUP/flag paths would otherwise silently under-count.

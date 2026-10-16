@@ -735,7 +735,7 @@ struct CrashAndFeedbackRegressionTests {
         let body = try #require(request.httpBody)
         let headers = String(decoding: body, as: UTF8.self)
 
-        #expect(headers.contains("name=\"attachments\""))
+        #expect(headers.contains("name=\"screenshots\""))
         #expect(headers.contains("filename=\"screen__shot.jpg\""))
         #expect(headers.contains("Content-Type: image/jpeg"))
         #expect(headers.contains("X-Floe-Attachment-ID: AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))

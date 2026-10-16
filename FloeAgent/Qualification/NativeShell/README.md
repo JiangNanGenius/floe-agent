@@ -15,6 +15,19 @@ execution, and timeout (status 2/exit 130). Every `workerStopped` must be true.
 `shell-interactive-results.json` must report opened=true, stdout containing
 received:interactive, workerStopped=true and passed=true.
 
+`command-smoke-results.json` (1.7.34/275 privacy-rebuild smoke) additionally
+exercises the reviewed shell/text patch with the REBUILT simulator binaries
+substituted into the built App: a normal `find` query, `find -fstype` failing
+closed with its explicit message while the App (host process) stays alive and
+later commands still run, exact `wc` byte/line/word counts for ASCII, Chinese
+UTF-8, a file larger than the old `fstatfs`-derived I/O size and pipelines,
+`tail` last-line reads, and a `tail -f` append/read/cancel case. The last
+record contains an `assertions` map; `workerStopped` for `tail -f` reflects a
+pre-existing cancellation limitation that the pinned binaries show as well (a
+blocking native child can outlive cooperative cancellation, and the bridge then
+keeps the engine gate until its teardown). The shipping device slice is
+verified by the packaging step, not by this host.
+
 Before cooperative cancellation, the infinite-loop case did not finish the
 Swift caller while dash kept running. Samples and source inspection identified
 unsafe caller-thread invocation of the global SIGINT handler by ios_kill.

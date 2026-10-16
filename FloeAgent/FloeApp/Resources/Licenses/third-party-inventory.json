@@ -935,7 +935,7 @@
     },
     {
       "name": "ios_system command bus and BSD commands",
-      "version": "v3.0.4 manifest / v3.0.2 binaries",
+      "version": "v3.0.4 manifest / v3.0.2 binaries; shell+text locally rebuilt from v3.0.2 + Floe privacy patch (scripts/privacy-rebuild, hashes in PROVENANCE.json)",
       "license": "BSD-3-Clause",
       "source": "https://github.com/holzschu/ios_system",
       "section": "engines",

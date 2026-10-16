@@ -71,6 +71,10 @@ targets:
           - Resources/Licenses
           - Resources/MindElixir
           - Resources/Whisper
+          # Per-extension privacy manifests: each extension copies its own
+          # PrivacyInfo.xcprivacy from here; they must never also land in the
+          # app bundle (one manifest per bundle root).
+          - Resources/PrivacyManifests
       - path: FloeApp/Resources/Capabilities
         type: folder
         buildPhase: resources
@@ -303,8 +307,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.33"
-        CURRENT_PROJECT_VERSION: "274"
+        MARKETING_VERSION: "1.7.34"
+        CURRENT_PROJECT_VERSION: "275"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -353,6 +357,12 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: FloeScreenShare
+      # Required-reason API declaration for this extension executable (it
+      # links FloeCore, whose code calls UserDefaults / file metadata /
+      # volume-capacity APIs). Lives here so the app target's FloeApp tree
+      # stays the single source location; excluded from the app bundle above.
+      - path: FloeApp/Resources/PrivacyManifests/FloeScreenShare/PrivacyInfo.xcprivacy
+        buildPhase: resources
     info:
       path: FloeScreenShare/Info.plist
       properties:
@@ -379,8 +389,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.33"
-        CURRENT_PROJECT_VERSION: "274"
+        MARKETING_VERSION: "1.7.34"
+        CURRENT_PROJECT_VERSION: "275"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -424,8 +434,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.33"
-        CURRENT_PROJECT_VERSION: "274"
+        MARKETING_VERSION: "1.7.34"
+        CURRENT_PROJECT_VERSION: "275"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -464,8 +474,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.33"
-        CURRENT_PROJECT_VERSION: "274"
+        MARKETING_VERSION: "1.7.34"
+        CURRENT_PROJECT_VERSION: "275"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -654,6 +664,11 @@ targets:
       # in the same apply step (this target uses an explicit source list).
       - path: Tests/FloeCoreTests/StorageExtentAccountingTests.swift
       - path: Tests/FloeAppTests/StorageExtentAppProbeTests.swift
+      # 1.7.34 (275): the locale resolution suite (public Locale path,
+      # independent language/region, cleared AppleLanguages override) runs in
+      # the App host so the changed FloeL10n code is verified on the real iOS
+      # Foundation runtime, not only on the macOS host.
+      - path: Tests/FloeCoreTests/FloeL10nTests.swift
       # G2 integration of the L Notes Office-thumbnail plan: the same file the
       # NativeNotes qualification project compiles runs here against the App
       # module (conditional import), so the bounded cover semantics are

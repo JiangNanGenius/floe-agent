@@ -165,4 +165,72 @@ struct FloeL10nTests {
             #expect(d.suite.string(forKey: FloeL10n.defaultsKey) == nil)
         }
     }
+
+    // MARK: - Public Locale path (no global-domain reads)
+
+    @Test("Uninjected system resolution uses the public Locale path")
+    func publicLocalePath() {
+        let previous = FloeL10n.testSystemLanguagesOverride
+        FloeL10n.testSystemLanguagesOverride = nil
+        defer { FloeL10n.testSystemLanguagesOverride = previous }
+        // The real OS-path behaviour after clearing the app-domain override
+        // was measured with an app-domain probe (recorded in the privacy
+        // deliverable); this guards the injection-free read itself.
+        let languages = FloeL10n.systemPreferredLanguages()
+        #expect(!languages.isEmpty)
+        #expect(languages == Locale.preferredLanguages)
+    }
+
+    @Test("System locale keeps the OS region when the language tag differs")
+    func systemLocaleKeepsIndependentRegion() {
+        // Language and region are independent user choices: English (US)
+        // selected with an Australian region must format as en_AU, and
+        // Simplified Chinese with an Australian region as zh-Hans_AU.
+        #expect(FloeL10n.systemLocaleIdentifier(
+            preferredLanguages: ["en-US"], region: "AU") == "en_AU")
+        #expect(FloeL10n.systemLocaleIdentifier(
+            preferredLanguages: ["zh-Hans-CN"], region: "AU") == "zh-Hans_AU")
+        #expect(FloeL10n.systemLocaleIdentifier(
+            preferredLanguages: ["en"], region: "AU") == "en_AU")
+        // Without an OS region the language tag's own region is kept.
+        #expect(FloeL10n.systemLocaleIdentifier(
+            preferredLanguages: ["zh-Hans-CN"], region: nil) == "zh-Hans_CN")
+        #expect(FloeL10n.systemLocaleIdentifier(
+            preferredLanguages: [], region: "AU") == FloeL10n.currentLanguageCode)
+    }
+
+    @Test("Switching to Follow System clears this app's AppleLanguages override")
+    func systemSwitchClearsAppOverride() {
+        let d = makeDefaults()
+        defer { d.cleanup() }
+        withSystemLanguages(["zh-Hans-CN"]) {
+            #expect(FloeL10n.setPreference(rawValue: "en",
+                                           standardDefaults: d.standard,
+                                           suiteDefaults: d.suite,
+                                           arguments: []) == "en")
+            #expect(d.standard.stringArray(forKey: "AppleLanguages") == ["en"])
+            // Follow System resolves from the OS list, and the app-domain
+            // override is removed before resolution, so the public Locale
+            // path can never return the previously forced language.
+            #expect(FloeL10n.setPreference(rawValue: "system",
+                                           standardDefaults: d.standard,
+                                           suiteDefaults: d.suite,
+                                           arguments: []) == "zh-Hans")
+            #expect(d.standard.persistentDomain(forName: d.standardName)?["AppleLanguages"] == nil)
+        }
+    }
+
+    @Test("Bootstrap with a system preference clears a stale override")
+    func bootstrapClearsStaleOverride() {
+        let d = makeDefaults()
+        defer { d.cleanup() }
+        d.standard.set(["en"], forKey: "AppleLanguages")
+        d.standard.set("system", forKey: FloeL10n.defaultsKey)
+        withSystemLanguages(["zh-Hans-CN"]) {
+            #expect(FloeL10n.bootstrap(standardDefaults: d.standard,
+                                       suiteDefaults: d.suite,
+                                       arguments: []) == "zh-Hans")
+            #expect(d.standard.persistentDomain(forName: d.standardName)?["AppleLanguages"] == nil)
+        }
+    }
 }

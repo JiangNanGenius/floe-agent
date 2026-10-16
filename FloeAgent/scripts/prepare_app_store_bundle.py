@@ -4,13 +4,25 @@
 The source archives remain pinned and untouched. Reviewed non-iOS pnpm addons,
 libssh2 1.11.0 architecture/metadata and dash deployment metadata are normalized.
 Every embedded deployment command is checked; unreviewed inconsistencies fail.
+
+Build 275 adds required-reason privacy manifests for every embedded executable
+(the app, the Screen Share appex and the prebuilt frameworks). Framework
+manifests are injected from controlled sources at each bundle root without
+touching a single executable byte; unknown frameworks or undeclared API use
+fail the packaging. The shell/text frameworks must come from the reviewed
+privacy rebuild (`scripts/privacy-rebuild/rebuild_shell_frameworks.py`) because
+their pinned v3.0.2 binaries call statfs/fstatfs for mount flags and I/O sizes
+— required-reason DiskSpace APIs whose data they never use and for which no
+approved reason exists.
 """
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import stat
 import struct
 import subprocess
@@ -26,9 +38,369 @@ ADDONS = {
 SSH = "Frameworks/libssh2.framework"
 MACHO = {bytes.fromhex(v) for v in ("cffaedfe", "cefaedfe", "feedfacf", "feedface", "cafebabe", "bebafeca", "cafebabf", "bfbafeca")}
 
+# --- required-reason privacy manifests -------------------------------------
+
+PRIVACY_MANIFEST_ROOT = (Path(__file__).resolve().parents[1]
+                         / "FloeApp/Resources/PrivacyManifests/EmbeddedFrameworks")
+REBUILT_FRAMEWORKS_ENV = "FLOE_PRIVACY_REBUILT_FRAMEWORKS"
+REBUILT_PRIVACY_GENERATOR = "floe-ios_system-privacy-rebuild-v1"
+
+# Apple's approved reason codes per category (fetched 2026-10-16 from
+# NSPrivacyAccessedAPITypeReasons). A manifest may only use these values.
+APPROVED_REASONS = {
+    "NSPrivacyAccessedAPICategoryFileTimestamp": {"DDA9.1", "C617.1", "3B52.1", "0A2A.1"},
+    "NSPrivacyAccessedAPICategorySystemBootTime": {"35F9.1", "8FFB.1", "3D61.1"},
+    "NSPrivacyAccessedAPICategoryDiskSpace": {"85F4.1", "E174.1", "7D9E.1", "B728.1"},
+    "NSPrivacyAccessedAPICategoryActiveKeyboards": {"3EC4.1", "54BD.1"},
+    "NSPrivacyAccessedAPICategoryUserDefaults": {"CA92.1", "1C8F.1", "C56D.1", "AC6B.1"},
+}
+
+# Mach-O undefined symbols. `getattrlist` is listed by Apple under both
+# FileTimestamp and DiskSpace; Floe's getattrlist call sites read file metadata
+# (clone/private size, directory link count), so it maps to FileTimestamp.
+SYMBOL_CATEGORIES = {
+    "_stat": "NSPrivacyAccessedAPICategoryFileTimestamp",
+    "_fstat": "NSPrivacyAccessedAPICategoryFileTimestamp",
+    "_fstatat": "NSPrivacyAccessedAPICategoryFileTimestamp",
+    "_lstat": "NSPrivacyAccessedAPICategoryFileTimestamp",
+    "_getattrlist": "NSPrivacyAccessedAPICategoryFileTimestamp",
+    "_getattrlistbulk": "NSPrivacyAccessedAPICategoryFileTimestamp",
+    "_fgetattrlist": "NSPrivacyAccessedAPICategoryFileTimestamp",
+    "_getattrlistat": "NSPrivacyAccessedAPICategoryFileTimestamp",
+    "_statfs": "NSPrivacyAccessedAPICategoryDiskSpace",
+    "_fstatfs": "NSPrivacyAccessedAPICategoryDiskSpace",
+    "_statvfs": "NSPrivacyAccessedAPICategoryDiskSpace",
+    "_fstatvfs": "NSPrivacyAccessedAPICategoryDiskSpace",
+    "_mach_absolute_time": "NSPrivacyAccessedAPICategorySystemBootTime",
+    "_mach_continuous_time": "NSPrivacyAccessedAPICategorySystemBootTime",
+    "_OBJC_CLASS_$_NSUserDefaults": "NSPrivacyAccessedAPICategoryUserDefaults",
+    "_activeInputModes": "NSPrivacyAccessedAPICategoryActiveKeyboards",
+}
+
+# Raw key/selector strings for APIs that are reached without a unique symbol.
+STRING_CATEGORIES = {
+    "NSPrivacyAccessedAPICategoryFileTimestamp": (
+        "NSURLContentModificationDateKey", "NSURLCreationDateKey", "NSFileModificationDate",
+        "fileModificationDate",
+    ),
+    "NSPrivacyAccessedAPICategoryDiskSpace": (
+        "NSURLVolumeAvailableCapacityForImportantUsageKey",
+        "NSURLVolumeAvailableCapacityForOpportunisticUsageKey",
+        "NSURLVolumeAvailableCapacityKey", "NSURLVolumeTotalCapacityKey",
+        "NSFileSystemFreeSize", "NSFileSystemSize",
+    ),
+    "NSPrivacyAccessedAPICategorySystemBootTime": ("systemUptime",),
+    "NSPrivacyAccessedAPICategoryActiveKeyboards": ("activeInputModes",),
+}
+
+DISK_SPACE_SYMBOLS = frozenset(name for name, category in SYMBOL_CATEGORIES.items()
+                               if category == "NSPrivacyAccessedAPICategoryDiskSpace")
+FILE_TIMESTAMP_SYMBOLS = frozenset(name for name, category in SYMBOL_CATEGORIES.items()
+                                   if category == "NSPrivacyAccessedAPICategoryFileTimestamp")
+REBUILT_TARGETS = {"shell": "shell.framework", "text": "text.framework"}
+
+# Every framework that can appear in Frameworks/ must be reviewed here. The
+# value is the controlled manifest directory under PRIVACY_MANIFEST_ROOT, or
+# None for a framework whose binary uses no required-reason API at all
+# (verified by symbol and key-string scan). Anything else fails closed.
+REVIEWED_EMBEDDED_FRAMEWORKS = {
+    "CPDFium.framework": "CPDFium",
+    "FloeOfficeNative.framework": "FloeOfficeNative",
+    "RoyalVNCKit.framework": "RoyalVNCKit",
+    "awk.framework": None,
+    "curl_ios.framework": "curl_ios",
+    "dash.framework": "dash",
+    "dashA.framework": "dash",
+    "dashB.framework": "dash",
+    "dashC.framework": "dash",
+    "dashD.framework": "dash",
+    "dashE.framework": "dash",
+    "files.framework": "files",
+    "ios_system.framework": "ios_system",
+    "libssh2.framework": None,
+    "llama.framework": None,
+    "openssl.framework": "openssl",
+    "shell.framework": "shell",
+    "tar.framework": "tar",
+    "text.framework": "text",
+}
+
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def macho_slices(data):
+    """Return the Mach-O images inside a thin or universal binary."""
+    if len(data) < 8:
+        return []
+    if struct.unpack_from("<I", data, 0)[0] in (0xFEEDFACF, 0xFEEDFACE):
+        return [data]
+    if struct.unpack_from(">I", data, 0)[0] in (0xCAFEBABE, 0xCAFEBABF):
+        magic = struct.unpack_from(">I", data, 0)[0]
+        wide = magic == 0xCAFEBABF
+        count = struct.unpack_from(">I", data, 4)[0]
+        width = 32 if wide else 20
+        slices = []
+        for index in range(min(count, 64)):
+            if 8 + (index + 1) * width > len(data):
+                break
+            fields = struct.unpack_from(">IIQQII" if wide else ">IIIII", data, 8 + index * width)
+            offset, size = fields[2], fields[3]
+            if offset + size <= len(data):
+                slices.append(data[offset:offset + size])
+        return slices
+    return []
+
+
+def thin_undefined_symbols(data):
+    """Undefined external symbol names of one little-endian Mach-O image."""
+    if len(data) < 32 or struct.unpack_from("<I", data, 0)[0] not in (0xFEEDFACF, 0xFEEDFACE):
+        return set()
+    sixty_four = struct.unpack_from("<I", data, 0)[0] == 0xFEEDFACF
+    ncmds = struct.unpack_from("<I", data, 16)[0]
+    offset = 32 if sixty_four else 28
+    symtab = None
+    for _ in range(ncmds):
+        if offset + 8 > len(data):
+            break
+        cmd, cmdsize = struct.unpack_from("<II", data, offset)
+        if cmd == 0x2 and offset + 24 <= len(data):
+            symtab = struct.unpack_from("<IIII", data, offset + 8)  # symoff nsyms stroff strsize
+        if cmdsize < 8:
+            break
+        offset += cmdsize
+    if not symtab:
+        return set()
+    symoff, nsyms, stroff, strsize = symtab
+    entry = 16 if sixty_four else 12
+    if stroff + strsize > len(data) or symoff + nsyms * entry > len(data):
+        return set()
+    names = set()
+    for index in range(nsyms):
+        base = symoff + index * entry
+        n_strx = struct.unpack_from("<I", data, base)[0]
+        n_type = data[base + 4]
+        if (n_type & 0x0E) != 0 or (n_type & 0x01) == 0 or n_strx == 0 or n_strx >= strsize:
+            continue
+        start = stroff + n_strx
+        end = data.find(b"\0", start, stroff + strsize)
+        if end < 0:
+            continue
+        names.add(data[start:end].decode("utf-8", "replace"))
+    return names
+
+
+def macho_undefined_symbols(data):
+    names = set()
+    for image in macho_slices(data):
+        names.update(thin_undefined_symbols(image))
+    return names
+
+
+def required_reason_categories(data):
+    """Categories the binary statically references (symbols plus raw key strings)."""
+    categories = {}
+    symbols = macho_undefined_symbols(data)
+    for symbol, category in SYMBOL_CATEGORIES.items():
+        if symbol in symbols:
+            categories.setdefault(category, set()).add(symbol)
+    for category, needles in STRING_CATEGORIES.items():
+        found = [needle for needle in needles if needle.encode() in data]
+        if found:
+            categories.setdefault(category, set()).update(found)
+    return categories
+
+
+def validate_manifest(manifest, path):
+    if not isinstance(manifest, dict):
+        raise ValueError(f"Privacy manifest is not a plist dictionary: {path}")
+    api_types = manifest.get("NSPrivacyAccessedAPITypes", [])
+    if not isinstance(api_types, list):
+        raise ValueError(f"NSPrivacyAccessedAPITypes must be an array: {path}")
+    for entry in api_types:
+        if not isinstance(entry, dict):
+            raise ValueError(f"Privacy manifest API entry is not a dictionary: {path}")
+        category = entry.get("NSPrivacyAccessedAPIType")
+        if category not in APPROVED_REASONS:
+            raise ValueError(f"Unknown privacy API category {category!r}: {path}")
+        reasons = entry.get("NSPrivacyAccessedAPITypeReasons")
+        if not isinstance(reasons, list) or not reasons:
+            raise ValueError(f"Privacy manifest declares no reason for {category}: {path}")
+        unknown = set(reasons) - APPROVED_REASONS[category]
+        if unknown:
+            raise ValueError(f"Unapproved reason(s) {sorted(unknown)} for {category}: {path}")
+    if "NSPrivacyTracking" in manifest and not isinstance(manifest["NSPrivacyTracking"], bool):
+        raise ValueError(f"NSPrivacyTracking must be a boolean: {path}")
+    return manifest
+
+
+def declared_categories(manifest):
+    return {entry.get("NSPrivacyAccessedAPIType")
+            for entry in manifest.get("NSPrivacyAccessedAPITypes", [])
+            if isinstance(entry, dict)}
+
+
+def manifest_from(path):
+    manifest = validate_manifest(plistlib.loads(Path(path).read_bytes()), path)
+    return manifest, Path(path).read_bytes()
+
+
+def rebuilt_frameworks_error(framework):
+    return (f"{framework} still calls statfs/fstatfs, a required-reason DiskSpace API whose "
+            f"data this framework never uses and no approved reason covers. Rebuild it with "
+            f"scripts/privacy-rebuild/rebuild_shell_frameworks.py and pass the rebuilt directory "
+            f"via --rebuilt-frameworks (or {REBUILT_FRAMEWORKS_ENV}).")
+
+
+def apply_rebuilt_privacy_frameworks(app, directory):
+    """Substitute the reviewed shell/text privacy rebuilds before signing."""
+    directory = Path(directory)
+    provenance_path = directory / "PROVENANCE.json"
+    if not provenance_path.is_file():
+        raise ValueError(f"--rebuilt-frameworks directory has no PROVENANCE.json: {directory}")
+    provenance = json.loads(provenance_path.read_text())
+    if provenance.get("generator") != REBUILT_PRIVACY_GENERATOR:
+        raise ValueError(f"Unexpected privacy rebuild generator: {provenance.get('generator')!r}")
+    targets = provenance.get("targets")
+    if not isinstance(targets, dict) or set(targets) != set(REBUILT_TARGETS):
+        raise ValueError("Privacy rebuild provenance must describe exactly shell and text")
+    report = []
+    for target, framework_name in REBUILT_TARGETS.items():
+        entry = targets[target]
+        artifact = directory / entry["framework"]
+        binary = artifact / entry["executable"]
+        plist = artifact / "Info.plist"
+        if sha(binary.read_bytes()) != entry.get("executableSHA256"):
+            raise ValueError(f"Rebuilt {target} binary does not match its provenance")
+        if sha(plist.read_bytes()) != entry.get("infoPlistSHA256"):
+            raise ValueError(f"Rebuilt {target} Info.plist does not match its provenance")
+        embedded = app / "Frameworks" / framework_name
+        embedded_binary = embedded / entry["executable"]
+        if not embedded_binary.is_file():
+            raise ValueError(f"App has no embedded {framework_name} to substitute")
+        pinned_symbols = macho_undefined_symbols(embedded_binary.read_bytes())
+        rebuilt_symbols = macho_undefined_symbols(binary.read_bytes())
+        pinned_exports = sorted(macho_exported_names(embedded_binary.read_bytes()))
+        rebuilt_exports = sorted(macho_exported_names(binary.read_bytes()))
+        if pinned_exports != rebuilt_exports:
+            raise ValueError(f"Rebuilt {target} is not ABI-compatible: exported symbols changed")
+        remaining = sorted(rebuilt_symbols & DISK_SPACE_SYMBOLS)
+        if remaining:
+            raise ValueError(f"Rebuilt {target} still imports {remaining}")
+        if not (rebuilt_symbols & FILE_TIMESTAMP_SYMBOLS):
+            raise ValueError(f"Rebuilt {target} lost its FileTimestamp imports")
+        pinned_before = sha(embedded_binary.read_bytes())
+        shutil.copyfile(binary, embedded_binary)
+        shutil.copyfile(plist, embedded / "Info.plist")
+        if sha(embedded_binary.read_bytes()) != entry["executableSHA256"]:
+            raise ValueError(f"{framework_name} binary changed during substitution")
+        report.append({
+            "framework": framework_name,
+            "pinned_executable_sha256": pinned_before,
+            "rebuilt_executable_sha256": entry["executableSHA256"],
+            "rebuilt_info_plist_sha256": entry["infoPlistSHA256"],
+            "exported_symbols": len(rebuilt_exports),
+            "required_reason_symbols": sorted(rebuilt_symbols & (DISK_SPACE_SYMBOLS | FILE_TIMESTAMP_SYMBOLS)),
+            "provenance": "scripts/privacy-rebuild",
+        })
+    return report
+
+
+def macho_exported_names(data):
+    """Exported symbol names (N_EXT defined) of a thin or universal binary."""
+    names = set()
+    for image in macho_slices(data):
+        if len(image) < 32 or struct.unpack_from("<I", image, 0)[0] not in (0xFEEDFACF, 0xFEEDFACE):
+            continue
+        sixty_four = struct.unpack_from("<I", image, 0)[0] == 0xFEEDFACF
+        ncmds = struct.unpack_from("<I", image, 16)[0]
+        offset = 32 if sixty_four else 28
+        symtab = None
+        for _ in range(ncmds):
+            if offset + 8 > len(image):
+                break
+            cmd, cmdsize = struct.unpack_from("<II", image, offset)
+            if cmd == 0x2 and offset + 24 <= len(image):
+                symtab = struct.unpack_from("<IIII", image, offset + 8)
+            if cmdsize < 8:
+                break
+            offset += cmdsize
+        if not symtab:
+            continue
+        symoff, nsyms, stroff, strsize = symtab
+        entry_size = 16 if sixty_four else 12
+        if stroff + strsize > len(image) or symoff + nsyms * entry_size > len(image):
+            continue
+        for index in range(nsyms):
+            base = symoff + index * entry_size
+            n_strx = struct.unpack_from("<I", image, base)[0]
+            n_type = image[base + 4]
+            n_sect = image[base + 5]
+            if (n_type & 0x01) == 0 or (n_type & 0x0E) != 0x0E or n_sect == 0:
+                continue
+            if n_strx == 0 or n_strx >= strsize:
+                continue
+            start = stroff + n_strx
+            end = image.find(b"\0", start, stroff + strsize)
+            if end >= 0:
+                names.add(image[start:end].decode("utf-8", "replace"))
+    return names
+
+
+def verify_embedded_privacy_manifests(app, bundle_infos):
+    """Inject controlled framework manifests and verify every executable's use."""
+    frameworks, declared, injected = [], [], []
+    for plist_path, info, executable in bundle_infos:
+        bundle = plist_path.parent
+        categories = required_reason_categories(executable.read_bytes())
+        manifest_path = bundle / "PrivacyInfo.xcprivacy"
+        if bundle.parent == app / "Frameworks":
+            name = bundle.name
+            if name not in REVIEWED_EMBEDDED_FRAMEWORKS:
+                raise ValueError(f"Unreviewed embedded framework {name}; add it to "
+                                 "REVIEWED_EMBEDDED_FRAMEWORKS or prove it uses no "
+                                 "required-reason API")
+            source_name = REVIEWED_EMBEDDED_FRAMEWORKS[name]
+            if source_name is None:
+                if categories:
+                    raise ValueError(f"{name} is reviewed as clean but now uses "
+                                     f"{sorted(categories)}")
+            else:
+                source = PRIVACY_MANIFEST_ROOT / source_name / "PrivacyInfo.xcprivacy"
+                manifest, expected_bytes = manifest_from(source)
+                missing = set(categories) - declared_categories(manifest)
+                if missing:
+                    detail = f"{name} uses {sorted(missing)} but its controlled manifest does not declare it"
+                    if missing == {"NSPrivacyAccessedAPICategoryDiskSpace"} and name in REBUILT_TARGETS.values():
+                        detail += ". " + rebuilt_frameworks_error(name)
+                    raise ValueError(detail)
+                before = sha(executable.read_bytes())
+                if not manifest_path.exists() or manifest_path.read_bytes() != expected_bytes:
+                    manifest_path.write_bytes(expected_bytes)
+                after = sha(executable.read_bytes())
+                if before != after:
+                    raise ValueError(f"{name} executable changed during manifest injection")
+                injected.append({"path": str(manifest_path.relative_to(app)),
+                                 "sha256": sha(expected_bytes),
+                                 "executable_sha256": after})
+                frameworks.append({"path": str(bundle.relative_to(app)), "categories": sorted(categories),
+                                   "executable_sha256": after,
+                                   "manifest_sha256": sha(expected_bytes)})
+        else:
+            if manifest_path.exists():
+                manifest, manifest_bytes = manifest_from(manifest_path)
+                missing = set(categories) - declared_categories(manifest)
+                if missing:
+                    raise ValueError(f"{bundle.name} uses {sorted(missing)} but "
+                                     f"{manifest_path.name} does not declare it")
+                declared.append({"path": str(bundle.relative_to(app)), "categories": sorted(categories),
+                                 "manifest_sha256": sha(manifest_bytes)})
+            elif categories:
+                raise ValueError(f"{bundle.name} uses {sorted(categories)} but has no "
+                                 "PrivacyInfo.xcprivacy")
+    return {"frameworks": frameworks, "injected": injected, "declared_bundles": declared}
+
 
 
 def arm64_slice(data):
@@ -87,7 +459,7 @@ def version_tuple(value):
     return values + (0,) * (3 - len(values))
 
 
-def normalize(app, report_path, *, addon_hashes=ADDONS):
+def normalize(app, report_path, *, addon_hashes=ADDONS, rebuilt_frameworks=None):
     app = Path(app).resolve()
     if app.suffix != ".app" or not app.is_dir():
         raise ValueError("Expected an existing application bundle")
@@ -98,6 +470,12 @@ def normalize(app, report_path, *, addon_hashes=ADDONS):
             if p.is_symlink() or sha(p.read_bytes()) != expected:
                 raise ValueError(f"Unreviewed addon bytes: {relative}")
             removals.append(p)
+
+    # The reviewed privacy rebuilds (shell/text without statfs) replace the
+    # pinned framework binaries before any other validation sees the bundle.
+    rebuilt_report = []
+    if rebuilt_frameworks:
+        rebuilt_report = apply_rebuilt_privacy_frameworks(app, rebuilt_frameworks)
 
     # Validate all metadata and native resource locations before making changes.
     executables = set()
@@ -192,9 +570,12 @@ def normalize(app, report_path, *, addon_hashes=ADDONS):
         p.write_bytes(plistlib.dumps(info))
     for p in removals:
         p.unlink()
+    privacy_report = verify_embedded_privacy_manifests(app, bundle_infos)
     report = {"policy": "build156-app-store-bundle-v2", "removed_non_ios_addons": [str(p.relative_to(app)) for p in removals],
               "libssh2": ssh_change, "dash_frameworks": [entry for _, _, entry in dash_updates],
-              "deployment_checks": deployment_checks, "validated_bundle_executables": len(executables)}
+              "deployment_checks": deployment_checks, "validated_bundle_executables": len(executables),
+              "rebuilt_privacy_frameworks": rebuilt_report,
+              "privacy_manifests": privacy_report}
     Path(report_path).write_text(json.dumps(report, indent=2) + "\n")
     return report
 
@@ -203,5 +584,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", required=True)
     parser.add_argument("--report", required=True)
+    parser.add_argument("--rebuilt-frameworks", default=None,
+                        help="directory produced by scripts/privacy-rebuild/rebuild_shell_frameworks.py "
+                             f"(defaults to ${REBUILT_FRAMEWORKS_ENV})")
     args = parser.parse_args()
-    print(json.dumps(normalize(args.app, args.report), indent=2))
+    rebuilt = args.rebuilt_frameworks or os.environ.get(REBUILT_FRAMEWORKS_ENV)
+    print(json.dumps(normalize(args.app, args.report, rebuilt_frameworks=rebuilt), indent=2))
