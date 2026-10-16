@@ -1,10 +1,10 @@
 # Privacy Policy · 隐私政策
 
-**Effective date / 生效日期：2026-10-02**
+**Effective date / 生效日期：2026-10-16**
 
-This page describes Floe Agent for iOS/iPadOS, version 1.7.0, and its data flows. The English text comes first, followed by the Chinese version. The two language versions are intended to say the same thing; if they differ, please treat the specific wording with caution and contact us.
+This page describes Floe Agent for iOS/iPadOS and its data flows. The English text comes first, followed by the Chinese version. The two language versions are intended to say the same thing; if they differ, please treat the specific wording with caution and contact us.
 
-本页说明 iOS/iPadOS 应用 Floe Agent 1.7.0 版本的数据处理方式。先英文、后中文，两种语言表述保持一致；如存在差异，请通过下方方式联系我们确认。
+本页说明 iOS/iPadOS 应用 Floe Agent 的数据处理方式。先英文、后中文，两种语言表述保持一致；如存在差异，请通过下方方式联系我们确认。
 
 ---
 
@@ -75,14 +75,14 @@ On-device processing depends on device, system version, language, and the model 
 The app contains an optional feedback form. The form itself uploads nothing until you press Submit, and the app has no automatic crash-reporting, analytics, or background feedback upload. (Other features can upload data when you use them — for example optional iCloud synchronisation in section 3 or cloud AI in section 4.) When you submit the form, the report is collected by the developer at the feedback endpoint (`https://www.floe-agent.com/api/v1/public/reports`) and can include:
 
 - the problem description you write;
-- diagnostics, attached by default and controllable with the toggle shown in the form. Diagnostics may contain system/runtime information, recent log entries, and technical summaries of recent tasks; the app applies secret redaction before sending, but redaction is not guaranteed to catch every sensitive value, so please review the report;
+- diagnostics, attached by default and controllable with the toggle shown in the form. Diagnostics may contain system and app information, performance and crash summaries, recent log entries, and technical summaries of recent tasks; the app applies secret redaction before sending, but redaction is not guaranteed to catch every sensitive value, so please review the report;
 - up to three images you explicitly pick.
 
 Submitted reports are used to handle the feedback and any technical problem it describes. Their retention can vary with the issue and the service operating the endpoint, and this policy does not commit to a fixed retention period. If you do not want to send diagnostics or images, leave diagnostics off and attach none; you can also export diagnostics to a local file and share it yourself through the iOS share sheet without using the form.
 
 ### 8. Apple and TestFlight data
 
-Floe Agent is distributed in beta through Apple TestFlight and through public releases on GitHub and Feather. When you test through TestFlight, Apple processes testing information (such as installation, crash, and usage data Apple collects) under Apple's own privacy policy and TestFlight terms. System permissions the app may request — Photos, local network, microphone/speech recognition, Face ID/passcode, notifications — are shown by iOS and can be changed in the iOS Settings app. Screen Broadcast and Share extensions operate on content you choose and make no independent network connections.
+Floe Agent uses Apple for App Store and TestFlight distribution. Public builds may also be available through GitHub and Feather. When you test through TestFlight, Apple processes testing information (such as installation, crash, and usage data Apple collects) under Apple's own privacy policy and TestFlight terms. System permissions the app may request — Photos, local network, microphone/speech recognition, Face ID/passcode, notifications — are shown by iOS and can be changed in the iOS Settings app. Screen Broadcast and Share extensions operate on content you choose and make no independent network connections.
 
 ### 9. Security
 
@@ -175,14 +175,14 @@ Floe Agent **没有 Floe 账号体系**，也无需注册。应用不要求你�
 应用提供可选的反馈表单。表单本身在你点击提交之前不会上传任何内容；应用不存在自动崩溃上报、分析数据或后台反馈上传（其他功能在你使用时仍可能上传数据，例如第 3 节的可选 iCloud 同步、第 4 节的云端 AI）。你提交表单后，报告会由开发者通过反馈接口（`https://www.floe-agent.com/api/v1/public/reports`）收集，可能包含：
 
 - 你填写的问题描述；
-- 诊断信息：默认随反馈附加，可通过表单中显示的开关关闭。诊断信息可能包含系统/运行时信息、近期日志条目和近期任务的技术摘要；发送前应用会进行密钥脱敏，但脱敏无法保证识别所有敏感内容，请在发送前自行检查；
+- 诊断信息：默认随反馈附加，可通过表单中显示的开关关闭。诊断信息可能包含系统与应用信息、性能与崩溃摘要、近期日志条目和近期任务的技术摘要；发送前应用会进行密钥脱敏，但脱敏无法保证识别所有敏感内容，请在发送前自行检查；
 - 你明确选取的最多三张图片。
 
 提交的报告仅用于处理反馈及其描述的技术问题。其保留时间可能因问题和接口运营服务而异，本政策不承诺固定的保留期限。如不希望发送诊断信息或图片，请关闭诊断开关且不附加图片；你也可以将诊断信息导出为本地文件，通过 iOS 分享面板自行发送而不使用该表单。
 
 ### 8. Apple 与 TestFlight 数据
 
-Floe Agent 的 Beta 版本通过 Apple TestFlight 分发，正式版本通过 GitHub 与 Feather 公开发布。通过 TestFlight 测试时，Apple 依据其自身隐私政策与 TestFlight 条款处理测试信息（如安装、崩溃与使用数据）。应用可能请求的系统权限——照片、本地网络、麦克风/语音识别、Face ID/密码、通知——均由 iOS 展示，并可在 iOS 设置中更改。屏幕广播与分享扩展仅处理你选择的内容，不会独立建立网络连接。
+Floe Agent 使用 Apple 的 App Store 与 TestFlight 分发服务，也可能通过 GitHub 与 Feather 提供公开构建。通过 TestFlight 测试时，Apple 依据其自身隐私政策与 TestFlight 条款处理测试信息（如安装、崩溃与使用数据）。应用可能请求的系统权限——照片、本地网络、麦克风/语音识别、Face ID/密码、通知——均由 iOS 展示，并可在 iOS 设置中更改。屏幕广播与分享扩展仅处理你选择的内容，不会独立建立网络连接。
 
 ### 9. 安全
 
