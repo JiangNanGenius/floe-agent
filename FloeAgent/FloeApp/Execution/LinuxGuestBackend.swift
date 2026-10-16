@@ -657,7 +657,7 @@ struct RoutingLocalShellBackend: LocalShellBackend {
     func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
         guard let environmentID = request.toolEnvironment?.id,
               await guests.ownsLinuxEnvironment(environmentID: environmentID) else {
-            return await native.run(request, cancellation: cancellation)
+            return .failed(message: "This task needs a Linux environment. Choose a Linux environment in Settings → Execution → Environments, then prepare it and retry. Existing environment files are preserved; commands never fall back to the iOS host.")
         }
         do {
             try await activateWithPreparation(
@@ -675,7 +675,7 @@ struct RoutingLocalShellBackend: LocalShellBackend {
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
         guard let environmentID = request.toolEnvironment?.id,
               await guests.ownsLinuxEnvironment(environmentID: environmentID) else {
-            return try await native.openSession(request, cancellation: cancellation)
+            throw FloeError.validationFailed("Choose and prepare a Linux environment before opening this terminal. Existing environment files are preserved; no iOS-host command was started.")
         }
         // An interactive terminal is user-driven work: it never claims the
         // run-owned transient status (and an open terminal protects the guest

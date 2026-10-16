@@ -7,6 +7,20 @@ import FloeModels
 
 @Suite("Deferred tool discovery")
 struct ToolDiscoveryTests {
+    @Test func retiredNamesNeverReappearFromPersistedDescriptors() throws {
+        let legacy = RetiredExecutionTools.names.flatMap { [$0, $0.replacingOccurrences(of: ".", with: "_")] }
+        let offered = (legacy + ["exec.shell"]).map(descriptor)
+        for name in legacy {
+            #expect(ToolDiscovery.matches(query: name, descriptors: offered).isEmpty)
+        }
+        let listed = try ToolDiscovery.list(arguments: Data("{}".utf8), descriptors: offered, loaded: [])
+        let object = try #require(JSONSerialization.jsonObject(with: Data(listed.utf8)) as? [String: Any])
+        #expect(object["total"] as? Int == 1)
+        #expect(ToolDiscovery.bounded(offered, priority: legacy).map(\.name) == ["exec.shell"])
+        let index = ToolDiscovery.index(offered)
+        for name in legacy { #expect(!index.contains(name)) }
+    }
+
     @Test func guestMulticoreRequestDiscoversLifecycleBeforeShell() {
         let offered = ["exec.shell", "environment.hardRestartLinux", "environment.startLinux",
                        "environment.linuxStatus", "environment.stopLinux"].map(descriptor)
@@ -173,7 +187,7 @@ struct ToolDiscoveryTests {
     }
     @Test("Executor and interactive Terminal are separate roles despite the SSH prefix")
     func executionRoles() {
-        let available = ["ssh.execute", "ssh.taskStatus", "ssh.cancelTask", "ssh.shellOpen", "ssh.shellExchange", "ssh.shellClose", "ssh.listHosts", "exec.localPython"].map(descriptor)
+        let available = ["ssh.execute", "ssh.taskStatus", "ssh.cancelTask", "ssh.shellOpen", "ssh.shellExchange", "ssh.shellClose", "ssh.listHosts", "exec.shell"].map(descriptor)
         let terminal = ToolDiscovery.matches(query: "terminal", descriptors: available).map(\.name)
         #expect(terminal.contains("ssh.shellOpen"))
         #expect(terminal.contains("ssh.listHosts"))
@@ -181,7 +195,7 @@ struct ToolDiscoveryTests {
         let executor = ToolDiscovery.matches(query: "executor", descriptors: available).map(\.name)
         #expect(executor.contains("ssh.cancelTask"))
         #expect(!executor.contains("ssh.shellOpen"))
-        #expect(ToolDiscovery.matches(query: "python", descriptors: available).map(\.name) == ["exec.localPython"])
+        #expect(ToolDiscovery.matches(query: "python", descriptors: available).map(\.name) == ["exec.shell"])
     }
 
     @Test("Exact lookup and bounded presentation keep requested tools and the skill reader")

@@ -44,13 +44,13 @@ struct BackgroundJobTests {
 
         let job = BackgroundJob(
             conversationID: conversation, runID: run, toolCallID: "call-1",
-            kind: .tool, targetTool: "exec.localPython", payloadJSON: Data(#"{"script":"1"}"#.utf8)
+            kind: .tool, targetTool: "exec.shell", payloadJSON: Data(#"{"script":"1"}"#.utf8)
         )
         let saved = try await store.submit(job)
         // Idempotent replay returns the original job.
         let replay = try await store.submit(BackgroundJob(
             conversationID: conversation, runID: run, toolCallID: "call-1",
-            kind: .tool, targetTool: "exec.localPython", payloadJSON: Data(#"{"script":"2"}"#.utf8)
+            kind: .tool, targetTool: "exec.shell", payloadJSON: Data(#"{"script":"2"}"#.utf8)
         ))
         #expect(replay.id == saved.id)
 
@@ -71,7 +71,7 @@ struct BackgroundJobTests {
         let registry = ToolRunnerRegistry()
         registry.register(AnyAgentTool(
             descriptor: ToolCatalog.Descriptor(
-                name: "exec.localPython", toolDescription: "test python",
+                name: "exec.shell", toolDescription: "test python",
                 parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: true
             )
         ) { arguments, context in
@@ -90,7 +90,7 @@ struct BackgroundJobTests {
 
         let submitTool = JobsSubmitTool(service: service)
         let output = try await submitTool.execute(
-            .init(tool: "exec.localPython", arguments: #"{"script":"print(1)"}"#, purpose: "test"),
+            .init(tool: "exec.shell", arguments: #"{"script":"print(1)"}"#, purpose: "test"),
             context: .init(runID: run, toolCallID: "call-9", cancellation: CancellationToken(),
                            callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
                                                       callID: "call-9", toolName: "jobs.submit"))
@@ -102,7 +102,7 @@ struct BackgroundJobTests {
 
         // Idempotent retry of the same tool call returns the same job.
         let retry = try await submitTool.execute(
-            .init(tool: "exec.localPython", arguments: #"{"script":"changed"}"#),
+            .init(tool: "exec.shell", arguments: #"{"script":"changed"}"#),
             context: .init(runID: run, toolCallID: "call-9", cancellation: CancellationToken(),
                            callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
                                                       callID: "call-9", toolName: "jobs.submit"))
@@ -137,7 +137,7 @@ struct BackgroundJobTests {
         let registry = ToolRunnerRegistry()
         registry.register(AnyAgentTool(
             descriptor: ToolCatalog.Descriptor(
-                name: "exec.localPython", toolDescription: "test python",
+                name: "exec.shell", toolDescription: "test python",
                 parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: true
             )
         ) { _, context in
@@ -149,7 +149,7 @@ struct BackgroundJobTests {
         let service = BackgroundJobService(store: BackgroundJobStore(database: db), registry: registry)
         let submit = JobsSubmitTool(service: service)
         let output = try await submit.execute(
-            .init(tool: "exec.localPython", arguments: #"{"script":"loop"}"#),
+            .init(tool: "exec.shell", arguments: #"{"script":"loop"}"#),
             context: .init(runID: run, toolCallID: "call-c", cancellation: CancellationToken(),
                            callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
                                                       callID: "call-c", toolName: "jobs.submit"))
@@ -174,7 +174,7 @@ struct BackgroundJobTests {
         let store = BackgroundJobStore(database: db)
         let orphaned = try await store.save(BackgroundJob(
             conversationID: conversation, runID: run,
-            kind: .tool, targetTool: "exec.localPython",
+            kind: .tool, targetTool: "exec.shell",
             payloadJSON: Data("{}".utf8), state: .running
         ))
         let service = BackgroundJobService(store: store, registry: ToolRunnerRegistry())
@@ -191,7 +191,7 @@ struct BackgroundJobTests {
             try tool.validate(.init(tool: "workspace.deleteEverything", arguments: "{}"))
         }
         #expect(throws: (any Error).self) {
-            try tool.validate(.init(tool: "exec.localPython", arguments: "[1,2]"))
+            try tool.validate(.init(tool: "exec.shell", arguments: "[1,2]"))
         }
         // A supported target without a registered runner fails honestly.
         await #expect(throws: (any Error).self) {
@@ -208,22 +208,22 @@ struct BackgroundJobTests {
     func submitValidatesTargetArguments() async throws {
         let (db, _, run) = try await fixture()
         let registry = ToolRunnerRegistry()
-        registry.register(LocalPythonTool(service: LocalPythonService(version: "test") { _, _ in .cancelled }))
+        registry.register(LocalShellTool(shell: LocalShellService(backend: UnavailableShellBackend(), rootProvider: { FileManager.default.temporaryDirectory })))
         let store = BackgroundJobStore(database: db)
         let service = BackgroundJobService(store: store, registry: registry)
         let tool = JobsSubmitTool(service: service)
-        // exec.localPython requires `script`; a guessed `code` key must fail NOW,
+        // exec.shell requires command or script; a guessed code key must fail now,
         // not asynchronously, and the message must name the missing argument.
         do {
             _ = try await tool.execute(
-                .init(tool: "exec.localPython", arguments: #"{"code":"print(1)","timeout":30}"#),
+                .init(tool: "exec.shell", arguments: #"{"code":"print(1)","timeout":30}"#),
                 context: .init(runID: run, toolCallID: "bad-args", cancellation: CancellationToken(),
                                callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
                                                           callID: "bad-args", toolName: "jobs.submit"))
             )
             Issue.record("Expected submit-time argument validation")
         } catch {
-            #expect(String(describing: error).contains("script"))
+            #expect(String(describing: error).contains("command"))
         }
         // No half-created job may linger after the fast failure.
         #expect(try await store.activeJobs().isEmpty)
@@ -388,6 +388,46 @@ struct BackgroundJobTests {
             try LocalServiceJobPreflight.validate(
                 payloadJSON: Data(#"{"runtime":"node","entry":"server.js","port":8080}"#.utf8),
                 workspaceRootURL: nil)
+        }
+    }
+
+    @Test("Static HTML preflight keeps workspace-relative paths with spaces and Unicode")
+    func staticHTMLPreflight() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("网页 demo")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("<html>预览</html>".utf8).write(to: folder.appendingPathComponent("首页 test.html"))
+        let payload = Data(#"{"runtime":"static","entry":"网页 demo/首页 test.html","cwd":"网页 demo","port":8080}"#.utf8)
+        try LocalServiceJobPreflight.validate(payloadJSON: payload, workspaceRootURL: root)
+        #expect(throws: (any Error).self) {
+            try LocalServiceJobPreflight.validate(payloadJSON: Data(#"{"runtime":"static","entry":"../outside.html","port":8080}"#.utf8), workspaceRootURL: root)
+        }
+        #expect(throws: (any Error).self) {
+            try LocalServiceJobPreflight.validate(payloadJSON: Data(#"{"runtime":"static","entry":"file.py","port":8080}"#.utf8), workspaceRootURL: root)
+        }
+    }
+
+    @Test("Retired language jobs are interrupted without replay and cannot be resubmitted", arguments: ["exec.localPython", "exec_localPython"])
+    func retiredJobRecovery(target: String) async throws {
+        let (db, conversation, run) = try await fixture()
+        let store = BackgroundJobStore(database: db)
+        let legacy = try await store.submit(BackgroundJob(conversationID: conversation, runID: run,
+            kind: .tool, targetTool: target, payloadJSON: Data(#"{"script":"print(1)"}"#.utf8)))
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(descriptor: .init(name: target, toolDescription: "stale cache", parametersJSON: "{}", riskLabels: [], isSideEffecting: true)) { _, _ in
+            Issue.record("Retired runner must never execute")
+            return ToolExecutionOutput(digesting: "should not run")
+        })
+        let service = BackgroundJobService(store: store, registry: registry)
+        #expect(try await service.reconcileInterruptedOnLaunch() == 1)
+        let recovered = try #require(await store.job(id: legacy.id))
+        #expect(recovered.state == .interrupted)
+        #expect(recovered.lastError?.contains("UNKNOWN") == true)
+        #expect(try await service.reconcileInterruptedOnLaunch() == 0)
+        await #expect(throws: (any Error).self) {
+            try await service.submit(runID: run, toolCallID: nil, targetTool: target, payloadJSON: legacy.payloadJSON,
+                scope: .local, workspaceRootURL: nil, allowedWorkspacePaths: [])
         }
     }
 

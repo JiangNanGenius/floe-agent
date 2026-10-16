@@ -136,9 +136,9 @@ public struct PythonPackageTool: AgentTool {
     static func wrongFamilyMessage(_ entry: CapabilityCatalog.Entry) -> String {
         switch entry.kind {
         case .pythonPackage:
-            return "\(entry.id) is a Python package; use the python.packages tool or pip inside a Linux environment"
+            return "\(entry.id) is a Python package; use python3 -m pip through exec.shell in the Linux environment"
         case .wasmCommand:
-            return "\(entry.id) is a signed WASI command; use the wasm.packages tool"
+            return "\(entry.id) is a signed WASI command; use Settings to manage signed capabilities"
         case .skill:
             return "\(entry.id) is a workflow skill; use skill.manage"
         case .font:

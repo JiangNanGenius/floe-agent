@@ -56,6 +56,25 @@ class ConvergenceAuditTests(unittest.TestCase):
     def test_real_tree_declares_convergence_and_provenance(self):
         self.assertEqual(audit.audit_convergence(), [])
 
+    def test_retired_names_cannot_reappear_as_descriptors_or_runners(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for relative in [audit.CAPABILITY_ROUTER_SOURCE, audit.TOOL_CATALOG_SOURCE,
+                             audit.TOOL_RUNNER_SOURCE, audit.CAPABILITY_CATALOG,
+                             audit.CAPABILITY_LANGUAGES_DOC]:
+                destination = base / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((ROOT.parent.parent / relative).read_bytes())
+            self.assertEqual(audit.audit_convergence(base), [])
+            catalog = base / audit.TOOL_CATALOG_SOURCE
+            catalog.write_text(catalog.read_text().replace('"exec.localPython", ', '', 1))
+            self.assertTrue(any("exec.localPython is not fenced" in value
+                                for value in audit.audit_convergence(base)))
+            runner = base / audit.TOOL_RUNNER_SOURCE
+            runner.write_text(runner.read_text().replace("guard !RetiredExecutionTools.contains", "guard disabledFence", 1))
+            self.assertTrue(any("retired runner registration fence is missing" in value
+                                for value in audit.audit_convergence(base)))
+
     def test_missing_router_and_provenance_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             findings = audit.audit_convergence(tmp)

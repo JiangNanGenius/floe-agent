@@ -80,7 +80,7 @@ import FloeCore
                         context.restoreGState()
                     }
                 }
-                NotePageRenderer.draw(page, background: background, images: images, backgroundDrawing: drawPDF)
+                NotePageRenderer.draw(page, background: background, images: images, backgroundDrawing: drawPDF, textSources: document.textSources ?? [:])
                 // Bound ink rasterization independently of page size; text remains PDF text.
                 let scale = min(2, 4096 / max(page.width, page.height))
                 drawing?.image(from: box, scale: scale).draw(in: box)

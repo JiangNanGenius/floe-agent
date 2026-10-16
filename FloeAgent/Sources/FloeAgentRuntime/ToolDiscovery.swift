@@ -33,6 +33,7 @@ enum ToolDiscovery {
     }
 
     static func list(arguments: Data, descriptors: [ToolCatalog.Descriptor], loaded: Set<String>, relatedSkills: [String: [String]] = [:], wireSafeNames: Bool = false) throws -> String {
+        let descriptors = descriptors.filter { !RetiredExecutionTools.contains($0.name) }
         var args = try JSONDecoder().decode(ListArguments.self, from: arguments)
         if let cursor = args.afterName {
             let normalized = canonicalSpelling(cursor, among: descriptors)
@@ -84,6 +85,8 @@ enum ToolDiscovery {
     }
 
     static func matches(query: String, descriptors: [ToolCatalog.Descriptor]) -> [ToolCatalog.Descriptor] {
+        let descriptors = descriptors.filter { !RetiredExecutionTools.contains($0.name) }
+        guard !RetiredExecutionTools.contains(query.trimmingCharacters(in: .whitespacesAndNewlines)) else { return [] }
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return [] }
         // Native-first arbitration over the tools this run actually offers.
@@ -187,13 +190,14 @@ enum ToolDiscovery {
         descriptors: [ToolCatalog.Descriptor]
     ) -> [ToolCatalog.Descriptor] {
         guard routing.intent == .nativeMedia, !routing.prefersNativeTools else { return base }
-        let fallbackNames: Set<String> = ["exec.shell", "shell.open", "exec.localPython", "exec.localService"]
+        let fallbackNames: Set<String> = ["exec.shell", "shell.open", "exec.localService"]
         let existing = Set(base.map(\.name))
         let fallback = descriptors.filter { fallbackNames.contains($0.name) && !existing.contains($0.name) }
         return base + fallback
     }
 
     static func index(_ descriptors: [ToolCatalog.Descriptor], wireSafeNames: Bool = false) -> String {
+        let descriptors = descriptors.filter { !RetiredExecutionTools.contains($0.name) }
         let groups = Dictionary(grouping: descriptors, by: { group($0.name) })
         let names = Set(descriptors.map(\.name))
         func n(_ name: String) -> String { wireSpelling(name, wireSafe: wireSafeNames) }
@@ -223,9 +227,7 @@ enum ToolDiscovery {
         if names.contains("exec.shell") {
             lines.append("\(n("exec.shell")) is the general local execution entry point, with its schema kept available when authorized. Use POSIX shell commands and scripts for file/text processing, loops, pipelines and combining Python or Node operations in the current workspace. Choose shell when it expresses the task naturally; there is no requirement to split a command workflow into many specialized tools. Inspect available commands with command -v before relying on an unfamiliar utility. \(n("shell.open"))/\(n("shell.exchange")) provide persistent sessions when available. Shell calls retain the same permissions and result checks as other tools.")
         }
-        if names.contains("exec.localPython") {
-            lines.append("Local Python execution is \(n("exec.localPython")); it is a different environment from SSH Executor or interactive Terminal.")
-        }
+
         // Native-first routing guidance is emitted only for capabilities this
         // run actually offers. It never names a disabled or unconfigured tool.
         let descriptorNames = descriptors.map(\.name)
@@ -238,7 +240,7 @@ enum ToolDiscovery {
         if !nativeMediaNames.isEmpty {
             let examples = nativeMediaNames.prefix(6).map(n).joined(separator: ", ")
             // Name only the interpreter entries that are actually offered.
-            let explicitInterpreters = ["exec.shell", "shell.open", "exec.localPython"]
+            let explicitInterpreters = ["exec.shell", "shell.open"]
                 .filter { names.contains($0) }
                 .map(n)
             let interpreterMentions = explicitInterpreters.isEmpty
@@ -267,6 +269,7 @@ enum ToolDiscovery {
 
     /// Discovery is a presentation budget, never an authority grant.
     static func bounded(_ descriptors: [ToolCatalog.Descriptor], priority: [String], pinned: Set<String> = [], maxTools: Int = 23, maxBytes: Int = 23_000) -> [ToolCatalog.Descriptor] {
+        let descriptors = descriptors.filter { !RetiredExecutionTools.contains($0.name) }
         let core = coreNames
         let ranks = Dictionary(priority.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         let ordered = descriptors.sorted {

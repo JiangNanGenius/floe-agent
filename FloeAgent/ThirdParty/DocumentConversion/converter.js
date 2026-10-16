@@ -6,6 +6,7 @@ import Turndown from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import DOMPurify from 'dompurify';
 import HTMLtoDOCX from '@turbodocx/html-to-docx';
+import { applyEastAsianFonts } from './docx-east-asian-fonts.js';
 
 const max = 16 * 1024 * 1024;
 const escape = s => s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
@@ -56,6 +57,7 @@ async function finish(input) {
   if(input.format==='docx') {
     const result=await HTMLtoDOCX('<!doctype html><html><head><meta charset="utf-8"></head><body>'+html+'</body></html>',null,{font:'Arial',fontSize:24,table:{row:{cantSplit:true}},pageNumber:false});
     bytes = result instanceof Blob ? new Uint8Array(await result.arrayBuffer()) : new Uint8Array(result);
+    bytes = await applyEastAsianFonts(bytes);
   } else if(input.format==='markdown') {
     const td=new Turndown({headingStyle:'atx',codeBlockStyle:'fenced',bulletListMarker:'-'}); td.use(gfm);
     bytes=new TextEncoder().encode(td.turndown(html)+'\n');

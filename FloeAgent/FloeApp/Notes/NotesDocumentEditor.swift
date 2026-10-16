@@ -189,7 +189,7 @@ struct NotesDocumentEditor: View {
                 writingTools
                 Divider()
                 if loadedPageID == page.id {
-                    NotePencilView(page: page, drawing: drawing, background: background,
+                    NotePencilView(page: page, drawing: drawing, background: background, textSources: document.textSources ?? [:],
                                    fingerDrawing: fingerDrawing, tool: pencilTool,
                                    onDrawing: { data in
                         drawing = data
@@ -335,8 +335,10 @@ struct NotesDocumentEditor: View {
         }
         .sheet(item: $inspectingElement) { element in
             if let base = inspectionBase, let page = base.pages.first(where: { $0.elements.contains(where: { $0.id == element.id }) }) {
-                NoteElementInspector(element: element, page: page, save: { updated in
-                    _ = try await session.commit([.upsertElement(pageID: page.id, element: updated)], documentID: base.id, expectedRevision: base.revision)
+                NoteElementInspector(element: element, page: page, sourceText: element.textSourceID.flatMap { base.textSources?[$0.uuidString] }, save: { updated in
+                    let edits = NotesTextLayout.replacementEdits(element: updated, text: updated.text,
+                                                                markdown: updated.isMarkdown, page: page, document: base)
+                    _ = try await session.commit(edits, documentID: base.id, expectedRevision: base.revision)
                     inspectingElement = nil
                 }, delete: {
                     _ = try await session.commit([.deleteElements(pageID: page.id, ids: [element.id])], documentID: base.id, expectedRevision: base.revision)
@@ -591,9 +593,10 @@ struct NotesDocumentEditor: View {
     private func saveAnswer(_ text: String, insert: Bool) {
         let source = answerSource ?? NoteSourceReference(documentID: document.id, revision: document.revision, pageID: page?.id)
         if insert, document.kind == .notebook, let page {
-            let pages = NotesTextLayout.pages(text: text, source: source, width: page.width, height: page.height)
+            let result = NotesTextLayout.formattedPages(text: text, source: source, width: page.width, height: page.height)
+            let pages = result.pages
             guard let first = pages.first?.elements.first else { return }
-            var edits: [NoteEdit] = [.upsertElement(pageID: page.id, element: first)]
+            var edits: [NoteEdit] = [.textSource(id: result.sourceID, text: text), .upsertElement(pageID: page.id, element: first)]
             let index = document.pages.firstIndex(where: { $0.id == page.id }) ?? 0
             for (offset, additional) in pages.dropFirst().enumerated() { edits.append(.insertPage(additional, at: index + offset + 1)) }
             session.apply(edits, title: FloeL10n.l("notes.notes_document_editor.save_ai_answer"), base: document)
@@ -603,7 +606,10 @@ struct NotesDocumentEditor: View {
             session.apply([.upsertNode(node)], title: FloeL10n.l("notes.notes_document_editor.save_ai_answer"), base: document)
         } else {
             var value = NoteDocument(notebookID: document.notebookID, title: FloeL10n.l("notes.notes_document_editor.organize", document.title))
-            value.pages = NotesTextLayout.pages(text: text, source: source)
+            let result = NotesTextLayout.formattedPages(text: text, source: source)
+            value.pages = result.pages
+            value.textSources = [result.sourceID.uuidString: text]
+            value.schemaVersion = 2
             session.importDocument(value)
         }
     }

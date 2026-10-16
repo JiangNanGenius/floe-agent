@@ -226,6 +226,12 @@ public actor NotesStore {
             guard before.revision == batch.expectedRevision else { throw NoteError.conflict }
             var after = before
             for edit in batch.edits { try edit.apply(to: &after) }
+            // Reclaim sources only after the complete transaction: a reflow
+            // deletes its old slices before inserting replacement slices.
+            // Undo/redo snapshots still retain the source they can restore.
+            let sourceIDs = Set(after.pages.flatMap(\.elements).compactMap(\.textSourceID).map(\.uuidString))
+            after.textSources = after.textSources?.filter { sourceIDs.contains($0.key) || UUID(uuidString: $0.key) == nil }
+
             for link in after.linkedMindMaps ?? [] where !(before.linkedMindMaps ?? []).contains(link) {
                 let target = try read(link.documentID, db: db)
                 guard target.kind == .mindMap, target.deletedAt == nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_link_target_is_not_a")) }

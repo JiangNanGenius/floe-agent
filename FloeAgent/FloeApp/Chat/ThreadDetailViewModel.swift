@@ -9,6 +9,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import Combine
 import Darwin
 import FloeCore
 import FloeModels
@@ -136,16 +137,16 @@ final class ThreadDetailViewModel: ObservableObject {
     }
     /// Monotonic identity of the live composer text. See `draft`.
     private(set) var draftGeneration = 0
+    private var draftHandoffObserver: AnyCancellable?
     /// Id membership indexes for the paged-in rows. Merging a page no longer
     /// rebuilds a dictionary over every loaded row just to dedup: pages are
     /// sequence-ordered, so only genuinely new rows are appended (earlier
     /// pages) or prepended (newer live rows).
     private var messageIDs = Set<UUID>()
     private var eventIDsByRun: [UUID: Set<UUID>] = [:]
-    /// True from the moment `send` consumes the draft until the send's
-    /// outcome is known. The composer keeps the sent content in the draft
-    /// store while it is set, so a failure can restore it and a success can
-    /// clear exactly what was sent.
+    /// True only while launch acceptance is pending. The draft remains
+    /// recoverable if launch fails; an accepted run consumes it immediately,
+    /// independently of how long the provider continues running.
     @Published private(set) var isConsumingDraft = false
     @Published var selectedModelID: UUID?
     private var didRestoreConversationModel = false
@@ -292,6 +293,14 @@ final class ThreadDetailViewModel: ObservableObject {
         }
         self.reasoningAnimator.onDisplayedTextChange = { [weak self] text in
             self?.liveReasoningText = text
+        }
+        draftHandoffObserver = ComposerDraftStore.shared.$sendHandoffUpdate.dropFirst().sink { [weak self] update in
+            guard let self, let update, update.conversationID == self.conversationID,
+                  self.draftGeneration == 0 else { return }
+            // A freshly reconstructed editor follows launch reconciliation.
+            // Any real edit, including typing then deleting, owns a newer epoch.
+            self.draft = update.entry?.text ?? ""
+            self.attachments = update.entry?.attachments ?? []
         }
     }
 
@@ -929,6 +938,9 @@ final class ThreadDetailViewModel: ObservableObject {
         // Captured after the send's own clear: from here only user edits
         // advance the generation.
         let commit = makeCommit()
+        commit?.beginLaunch()
+        isConsumingDraft = false
+        var launchAccepted = false
         do {
             let started = try await center.startRun(
                 goal: goal,
@@ -942,6 +954,18 @@ final class ThreadDetailViewModel: ObservableObject {
                 canvasContext: canvasContext,
                 startOrigin: .explicitUserAction
             )
+            // The run now owns the submitted message. Clear its durable
+            // draft before awaiting the provider, so leaving and returning
+            // while it runs cannot restore an already-sent prompt.
+            launchAccepted = true
+            if let commit, sendOriginAllowsDraftMutation(sendOrigin) {
+                commit.acceptLaunch()
+                draft = commit.draftAfterSuccess(currentDraft: draft, currentGeneration: draftGeneration)
+                attachments = commit.attachmentsAfterSuccess(current: attachments)
+            }
+            // From here, emptying a newly typed draft is a real user edit,
+            // not the launch's programmatic clear. Persist it normally.
+            isConsumingDraft = false
             // The atomic launch returns a durable run identity immediately.
             // Subscribe before awaiting the provider loop so the UI no longer
             // waits for the first token or races a very fast completion.
@@ -955,23 +979,17 @@ final class ThreadDetailViewModel: ObservableObject {
             case .failure(let error):
                 throw error
             }
-            if let commit, sendOriginAllowsDraftMutation(sendOrigin) {
-                consumeSentDraft(commit)
-            }
             await load()
         } catch {
-            if let commit, sendOriginAllowsDraftMutation(sendOrigin) {
-                // Attachments staged for the failed send come back first,
-                // then the full original text, and only then is the pair
-                // persisted — a relaunch restores prompt and files together.
-                // Text the user typed while the send was in flight wins.
-                if attachments.isEmpty { attachments = stagedAttachments }
-                draft = commit.draftAfterFailure(trimmedGoal: goal, currentDraft: draft)
-                ComposerDraftStore.shared.save(
-                    text: draft,
-                    attachments: attachments,
-                    conversationID: conversationID
-                )
+            // Once accepted, a failed provider turn is already visible in
+            // history and must not put the sent text back into the composer.
+            if !launchAccepted, let commit, sendOriginAllowsDraftMutation(sendOrigin) {
+                let restored = commit.failLaunch(allowTextRecovery: commit.editorStillConsumed(currentGeneration: draftGeneration))
+                if restored {
+                    draft = ComposerDraftStore.shared.text(for: conversationID)
+                    attachments = ComposerDraftStore.shared.attachments(for: conversationID)
+                }
+
             }
             actionError = presentableError(error, stage: "startOrCompleteRun")
         }

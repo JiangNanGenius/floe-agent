@@ -1474,7 +1474,7 @@ enum NotesDocumentCoverService {
             let size = CGSize(width: page.width * scale, height: page.height * scale)
             let rendered = UIGraphicsImageRenderer(size: size).image { context in
                 context.cgContext.scaleBy(x: scale, y: scale)
-                NotePageRenderer.draw(page, background: background, images: images.compactMapValues { UIImage(data: $0) })
+                NotePageRenderer.draw(page, background: background, images: images.compactMapValues { UIImage(data: $0) }, textSources: document.textSources ?? [:])
                 ink?.image(from: CGRect(x: 0, y: 0, width: page.width, height: page.height), scale: 240 / page.width)
                     .draw(in: CGRect(x: 0, y: 0, width: page.width, height: page.height))
             }

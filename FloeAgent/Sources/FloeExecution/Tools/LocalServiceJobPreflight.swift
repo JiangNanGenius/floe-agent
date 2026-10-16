@@ -18,6 +18,7 @@ public enum LocalServiceJobPreflight {
     struct Payload: Decodable, Sendable {
         var runtime: String
         var entry: String
+        var arguments: [String]?
         var cwd: String?
         var port: Int
     }
@@ -35,8 +36,14 @@ public enum LocalServiceJobPreflight {
         } catch {
             throw FloeError.validationFailed("Invalid exec.localService arguments: \(error.localizedDescription)")
         }
-        guard ["node", "python"].contains(payload.runtime) else {
-            throw FloeError.validationFailed("exec.localService runtime must be 'node' or 'python', got '\(payload.runtime)'")
+        guard ["node", "python", "shell", "static"].contains(payload.runtime) else {
+            throw FloeError.validationFailed("exec.localService runtime must be node, python, shell or static, got '\(payload.runtime)'")
+        }
+        if payload.runtime == "static", !["html", "htm"].contains(URL(fileURLWithPath: payload.entry).pathExtension.lowercased()) {
+            throw FloeError.validationFailed("Static preview requires an HTML file")
+        }
+        if payload.runtime == "static", !(payload.arguments ?? []).isEmpty {
+            throw FloeError.validationFailed("Static preview does not accept script arguments")
         }
         guard (1024...65535).contains(payload.port) else {
             throw FloeError.validationFailed("exec.localService port must be in 1024...65535, got \(payload.port)")

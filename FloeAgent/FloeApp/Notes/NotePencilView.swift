@@ -9,6 +9,7 @@ struct NotePencilView: UIViewRepresentable {
     let page: NotePage
     let drawing: Data?
     let background: Data?
+    var textSources: [String: String] = [:]
     let fingerDrawing: Bool
     let tool: PKTool
     let onDrawing: (Data) -> Void
@@ -83,9 +84,12 @@ struct NotePencilView: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.parent = self
         coordinator.regionGesture?.isEnabled = regionSelection
-        canvas.drawingGestureRecognizer.isEnabled = !regionSelection
-        canvas.drawingPolicy = fingerDrawing ? .anyInput : .pencilOnly
-        canvas.tool = tool
+        if canvas.drawingGestureRecognizer.isEnabled == regionSelection {
+            canvas.drawingGestureRecognizer.isEnabled = !regionSelection
+        }
+        let policy: PKCanvasViewDrawingPolicy = fingerDrawing ? .anyInput : .pencilOnly
+        if canvas.drawingPolicy != policy { canvas.drawingPolicy = policy }
+        coordinator.applyToolIfChanged(tool, to: canvas)
         #if compiler(>=6.4)
         if #available(iOS 27.0, *) {
             if let request = deleteSelectionRequest, request != coordinator.handledDeleteRequest {
@@ -125,20 +129,23 @@ struct NotePencilView: UIViewRepresentable {
         #endif
         if coordinator.loadedDrawing != drawing, !coordinator.isUsingTool {
             coordinator.isApplying = true
-            canvas.drawing = drawing.flatMap { try? PKDrawing(data: $0) } ?? PKDrawing()
             coordinator.loadedDrawing = drawing
+            canvas.drawing = drawing.flatMap { try? PKDrawing(data: $0) } ?? PKDrawing()
             coordinator.isApplying = false
+            coordinator.noteInkRevision()
+            coordinator.scheduleInkDisplayRefresh(canvas)
         }
         if !coordinator.isUsingTool, coordinator.loadedDrawing == drawing {
             coordinator.loadedBaseline = drawingBaseline
         }
-        if coordinator.loadedBackground != background || coordinator.elements != page.elements || coordinator.paper != page.paper || coordinator.loadedImages != elementImages {
+        if coordinator.loadedBackground != background || coordinator.elements != page.elements || coordinator.paper != page.paper || coordinator.loadedImages != elementImages || coordinator.loadedTextSources != textSources {
+            coordinator.loadedTextSources = textSources
             coordinator.loadedImages = elementImages
             coordinator.loadedBackground = background; coordinator.elements = page.elements; coordinator.paper = page.paper
             let size = CGSize(width: page.width, height: page.height)
             let format = UIGraphicsImageRendererFormat(); format.scale = min(2, 2048 / max(size.width, size.height))
             coordinator.backdrop?.image = UIGraphicsImageRenderer(size: size, format: format).image { context in
-                NotePageRenderer.draw(page, background: background.flatMap { UIImage(data: $0) }, images: elementImages.compactMapValues { UIImage(data: $0) })
+                NotePageRenderer.draw(page, background: background.flatMap { UIImage(data: $0) }, images: elementImages.compactMapValues { UIImage(data: $0) }, textSources: textSources)
             }
         }
         if let focus, focus.pageID == page.id, coordinator.handledFocusRequest != focus.requestID {
@@ -180,6 +187,7 @@ struct NotePencilView: UIViewRepresentable {
         var loadedBaseline: NoteDocument?
         var gestureBaseline: NoteDocument?
         var loadedBackground: Data?
+        var loadedTextSources: [String: String] = [:]
         var loadedImages: [UUID: Data] = [:]
         var elements: [NoteElement] = []
         var paper: NotePage.Paper?
@@ -247,6 +255,47 @@ struct NotePencilView: UIViewRepresentable {
             (scrollView as? NotesPKCanvasView)?.alignPageBackdrop()
             updateHighlightFrame(zoom: scrollView.zoomScale)
         }
+        private var inkRevision: UInt64 = 0
+        private var renderedInkRevision: UInt64 = 0
+        private var requestedInkRevision: UInt64 = 0
+        private var refreshScheduled = false
+        private(set) var displayRefreshCount = 0
+
+        @discardableResult
+        func applyToolIfChanged(_ desired: PKTool, to canvas: PKCanvasView) -> Bool {
+            switch (canvas.tool, desired) {
+            case let (current as PKInkingTool, next as PKInkingTool) where current == next: return false
+            case let (current as PKEraserTool, next as PKEraserTool) where current == next: return false
+            case let (current as PKLassoTool, next as PKLassoTool) where current == next: return false
+            default: canvas.tool = desired; return true
+            }
+        }
+
+        func noteInkRevision() { inkRevision &+= 1 }
+
+        /// One request per completed, not-yet-rendered stroke batch. This
+        /// never reassigns drawing or rebuilds paper, and never runs from
+        /// layout/delegate rendering completion, preventing a refresh loop.
+        func scheduleInkDisplayRefresh(_ canvas: PKCanvasView) {
+            guard inkRevision != renderedInkRevision, inkRevision != requestedInkRevision, !refreshScheduled else { return }
+            refreshScheduled = true
+            DispatchQueue.main.async { [weak self, weak canvas] in
+                guard let self else { return }
+                self.refreshScheduled = false
+                guard let canvas, !self.isUsingTool, self.inkRevision != self.renderedInkRevision,
+                      self.inkRevision != self.requestedInkRevision else { return }
+                self.requestedInkRevision = self.inkRevision
+                self.displayRefreshCount += 1
+                canvas.setNeedsLayout()
+                canvas.setNeedsDisplay()
+                canvas.layer.setNeedsDisplay()
+            }
+        }
+
+        func canvasViewDidFinishRendering(_ canvasView: PKCanvasView) {
+            renderedInkRevision = inkRevision
+        }
+
         func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
             gestureBaseline = loadedBaseline
             isUsingTool = true
@@ -259,6 +308,7 @@ struct NotePencilView: UIViewRepresentable {
             isUsingTool = false
             if let data = pendingDrawing { pendingDrawing = nil; reportDrawing(data, baseline: gestureBaseline) }
             gestureBaseline = nil
+            scheduleInkDisplayRefresh(canvasView)
         }
         func canvasViewSelectionDidChange(_ canvasView: PKCanvasView) {
             #if compiler(>=6.4)
@@ -274,19 +324,24 @@ struct NotePencilView: UIViewRepresentable {
             let data = canvasView.drawing.dataRepresentation()
             guard data != loadedDrawing else { return }
             loadedDrawing = data
+            noteInkRevision()
             if isUsingTool { pendingDrawing = data }
-            else { reportDrawing(data, baseline: loadedBaseline) }
+            else {
+                reportDrawing(data, baseline: loadedBaseline)
+                scheduleInkDisplayRefresh(canvasView)
+            }
         }
     }
 }
 /// Background subviews of a scroll view do not automatically participate in PencilKit's zoom view.
-private final class NotesPKCanvasView: PKCanvasView {
+final class NotesPKCanvasView: PKCanvasView {
     var pageSize = CGSize.zero
     weak var pageBackdrop: UIImageView?
     var initialViewport: NoteWorkspaceTabs.Viewport?
     var onViewportChanged: (NoteWorkspaceTabs.Viewport) -> Void = { _ in }
     private var viewportSize = CGSize.zero
     private var pagePosition = CGPoint.zero
+    private var lastReportedViewport: NoteWorkspaceTabs.Viewport?
     private var updatingViewport = false
     /// True while a search jump moves the viewport. The jump must not overwrite
     /// the user's remembered reading position with the search viewport.
@@ -299,7 +354,10 @@ private final class NotesPKCanvasView: PKCanvasView {
         guard !updatingViewport, !isProgrammaticViewportUpdate, bounds.size == viewportSize, zoomScale > 0 else { return }
         pagePosition = CGPoint(x: max(0, contentOffset.x) / zoomScale,
                                y: max(0, contentOffset.y) / zoomScale)
-        onViewportChanged(.init(x: pagePosition.x, y: pagePosition.y, zoom: zoomScale))
+        let viewport = NoteWorkspaceTabs.Viewport(x: pagePosition.x, y: pagePosition.y, zoom: zoomScale)
+        guard viewport != lastReportedViewport else { return }
+        lastReportedViewport = viewport
+        onViewportChanged(viewport)
     }
 
     /// Centres `pageRect` (page coordinates) in the viewport, or scrolls to the
@@ -368,7 +426,14 @@ private final class NotesPKCanvasView: PKCanvasView {
         applyPendingSearchFocus()
     }
     func alignPageBackdrop() {
-        pageBackdrop?.frame = CGRect(x: 0, y: 0, width: pageSize.width * zoomScale, height: pageSize.height * zoomScale)
+        if let backdrop = pageBackdrop {
+            let frame = CGRect(x: 0, y: 0, width: pageSize.width * zoomScale, height: pageSize.height * zoomScale)
+            if backdrop.frame != frame { backdrop.frame = frame }
+            // PencilKit may add its rendering subviews after our backdrop.
+            // Maintain ordering through public UIView APIs, never by private
+            // class names or by flattening/replacing the live drawing.
+            if backdrop.superview === self, subviews.first !== backdrop { sendSubviewToBack(backdrop) }
+        }
         // Center undersized paper using scroll insets, keeping the paper and
         // PencilKit drawing at the same unshifted page-space origin. Selection
         // coordinates therefore remain valid through zoom and rotation.

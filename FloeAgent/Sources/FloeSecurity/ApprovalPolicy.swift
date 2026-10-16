@@ -248,7 +248,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "apple.home.list", "apple.watch.status", "apple.location.current",
             "apple.automation.list",
             "font.list", "font.install",
-            "memory.recall", "exec.compatEvaluator", "document.presentation.createInline",
+            "memory.recall", "document.presentation.createInline",
             "git.status", "git.diff", "git.log", "git.initialize", "git.stage",
             "git.commit", "git.createBranch", "git.switchBranch", "git.fetch",
             "git.pull", "github.repositories", "github.clone",
@@ -260,9 +260,6 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         if alwaysExempt.contains(action.toolCall.toolName) { return true }
         if Self.isRoutineToolDiagnosticRequest(action) { return true }
         if Self.isExplicitlyAuthorizedGitPublication(action) { return true }
-        if action.toolCall.toolName == "exec.localPython", !action.isSoftwareInstallRequest {
-            return true
-        }
         if Self.isReadOnlySSHBootstrap(action) { return true }
         if Self.isExplicitlyAuthorizedSSHBootstrap(action) { return true }
         if Self.isExplicitlyAuthorizedSandboxedSSH(action) { return true }
@@ -502,7 +499,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "sendsDataToProvider",
             "executesRemoteCommand"
         ]
-        if !risks.isDisjoint(with: requiresReview), action.toolCall.toolName != "exec.localPython" {
+        if !risks.isDisjoint(with: requiresReview) {
             return .escalateToHuman(reason: unavailableReason)
         }
         return .allow(

@@ -131,10 +131,15 @@ KEEPALIVE_SOURCE_DIRS = [
     "FloeAgent/Sources/FloeExecution/Linux",
 ]
 
-# Generic interpreter surfaces that converged on the Linux guest. Each name
-# must be declared Linux-routed in the capability router; a native/bundled
-# payload for one of them is a regression.
-CONVERGED_RUNTIME_TOOL_NAMES = ["exec.wasm", "exec.compatEvaluator", "wasm.packages"]
+# These model-facing surfaces are retired, not executable Linux aliases.
+# Historical routing entries may remain for diagnostics; descriptor and runner
+# registration must reject every name, including compatibility-only attempts.
+RETIRED_RUNTIME_TOOL_NAMES = [
+    "exec.localPython", "exec.javascript", "exec.compatEvaluator", "exec.wasm",
+    "python.packages", "wasm.packages",
+]
+TOOL_CATALOG_SOURCE = "FloeAgent/Sources/FloeTools/ToolCatalog.swift"
+TOOL_RUNNER_SOURCE = "FloeAgent/Sources/FloeTools/ToolRunnerRegistry.swift"
 
 CAPABILITY_ROUTER_SOURCE = "FloeAgent/Sources/FloeTools/CapabilityExecutionRouter.swift"
 CAPABILITY_CATALOG = "capability-hub/catalog.json"
@@ -171,13 +176,25 @@ def audit_convergence(root=None):
     if not router.exists():
         findings.append(f"{CAPABILITY_ROUTER_SOURCE}: capability router is missing")
     else:
-        for tool_name in CONVERGED_RUNTIME_TOOL_NAMES:
-            if f'"{tool_name}"' not in router_text:
-                findings.append(
-                    f"{CAPABILITY_ROUTER_SOURCE}: converged runtime tool {tool_name} is not declared"
-                )
-        if "linuxGuest" not in router_text:
-            findings.append(f"{CAPABILITY_ROUTER_SOURCE}: no Linux guest backend declared")
+        if '"exec.shell"' not in router_text or "linuxGuest" not in router_text:
+            findings.append(f"{CAPABILITY_ROUTER_SOURCE}: no Linux shell backend declared")
+
+    catalog_source = base / TOOL_CATALOG_SOURCE
+    catalog_text = catalog_source.read_text(errors="ignore") if catalog_source.exists() else ""
+    declaration = re.search(
+        r"enum\s+RetiredExecutionTools\s*\{.*?static\s+let\s+names\s*:\s*Set<String>\s*=\s*\[(.*?)\]",
+        catalog_text, re.S,
+    )
+    declared = set(re.findall(r'"([^"\n]+)"', declaration.group(1))) if declaration else set()
+    for name in RETIRED_RUNTIME_TOOL_NAMES:
+        if name not in declared:
+            findings.append(f"{TOOL_CATALOG_SOURCE}: retired execution name {name} is not fenced")
+    if "guard !RetiredExecutionTools.contains" not in catalog_text:
+        findings.append(f"{TOOL_CATALOG_SOURCE}: retired descriptor registration fence is missing")
+    runner_source = base / TOOL_RUNNER_SOURCE
+    runner_text = runner_source.read_text(errors="ignore") if runner_source.exists() else ""
+    if "guard !RetiredExecutionTools.contains" not in runner_text:
+        findings.append(f"{TOOL_RUNNER_SOURCE}: retired runner registration fence is missing")
 
     catalog = base / CAPABILITY_CATALOG
     if not catalog.exists():

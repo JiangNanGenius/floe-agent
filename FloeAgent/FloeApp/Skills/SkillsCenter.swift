@@ -385,9 +385,9 @@ final class SkillsCenter: ObservableObject {
         let manifest = SkillManifest(
             id: id,
             version: "1.0.0",
-            capabilities: hasPython ? [SkillCapability.localPython.rawValue] : [],
-            tools: hasPython ? [LocalPythonTool.name] : [],
-            scriptRuntime: hasPython ? .localPython : .none,
+            capabilities: hasPython ? [SkillCapability.remoteExecution.rawValue] : [],
+            tools: hasPython ? ["exec.shell"] : [],
+            scriptRuntime: hasPython ? .remote : .none,
             pythonPackages: request.pythonPackages
         )
         try Data(markdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
@@ -687,7 +687,7 @@ final class SkillsCenter: ObservableObject {
             if let pythonManifest { markdown += "\n## Current build runtime probe\n\(pythonManifest)\n" }
             if id != nil {
                 for path in snapshot.files.keys.sorted() where path.hasPrefix("scripts/") && path.hasSuffix(".py") {
-                    markdown += "\n### Audited source: \(path)\nPass task data through inputJSON; run this source verbatim.\n```python\n\(String(decoding: snapshot.files[path]!, as: UTF8.self))\n```\n"
+                    markdown += "\n### Audited source: \(path)\nRun this source with python3 through exec.shell in the task's Linux environment. Preserve the source and follow its argument or JSON-stdin interface; no inputJSON variable is injected automatically.\n```python\n\(String(decoding: snapshot.files[path]!, as: UTF8.self))\n```\n"
                 }
             }
             return ManagedSkill(id: row.id, name: builtin?.name ?? row.name, version: manifest.version, enabled: row.status == "enabled", digest: snapshot.package.canonicalSHA256, markdown: id == nil ? nil : markdown, requiredToolNames: id == nil ? nil : Array(Set(manifest.tools + (builtin?.automaticallyLoadedToolNames ?? []))).sorted(), currentDigest: row.rewrittenDigest, description: snapshot.package.metadata.description)
@@ -1058,7 +1058,8 @@ final class SkillsCenter: ObservableObject {
         {"skillMarkdown":"...","manifest":{...},"files":{"scripts/name.py":"..."}}. Preserve the user's intent. You may remove unsupported
         capabilities or tools, but must never add either. Skill packages cannot install JavaScript runtimes,
         native binaries, WASM or install hooks; this does not remove compiled base tools. Preserve every files key/value byte-for-byte; audited UTF-8 Python scripts may
-        run only through the python.local runtime declared by the manifest. Source: \(sourceURL.absoluteString)
+        run through exec.shell in the task's Linux environment with the manifest's declared command-execution permission.
+        Do not assume an injected inputJSON variable, a host interpreter, or an SSH connection. Source: \(sourceURL.absoluteString)
 
         Candidate:
         \(sourceJSON)

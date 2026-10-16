@@ -1630,6 +1630,20 @@ final class DesignOwnerWorkflowModel: ObservableObject {
         do {
             resolvedSource = try await environment.designTargetService.resolve(target)
             sourceUnavailableReason = nil
+            // Opening an existing file starts with that real file as its
+            // preview. Private task files do not have a prior design envelope.
+            // Freeze only the initial snapshot; never overwrite an adopted
+            // artifact or re-import over an in-flight candidate on reload.
+            if target.kind == .fileDocument, currentArtifact == nil,
+               let source = resolvedSource {
+                let frozen = try await environment.designOwnerWorkflow.freezeInput(
+                    target: target,
+                    operationID: "file-preview:\(source.contentSHA256)",
+                    expectedOwnerRevision: envelope?.revision,
+                    displayName: source.displayName)
+                envelope = frozen.envelope
+                errorMessage = nil
+            }
         } catch {
             resolvedSource = nil
             sourceUnavailableReason = Self.friendly(error)

@@ -278,7 +278,7 @@ enum FloeShellCommands {
                 let installed = await store.installedIDs().contains(entry.id)
                 guard installed else {
                     let invoked = arguments.first.map { ($0 as NSString).lastPathComponent } ?? entry.command
-                    FloeShellWrite(stderr, "\(invoked): \(entry.id) is not installed; install the signed capability with the wasm.packages tool\n")
+                    FloeShellWrite(stderr, "\(invoked): \(entry.id) is not installed; open environment package management to check available installations\n")
                     return 127
                 }
                 var standardInput: String?

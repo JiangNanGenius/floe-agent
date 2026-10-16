@@ -120,11 +120,14 @@ struct ComposerReturnField: UIViewRepresentable {
         let view = HardwareReturnTextView()
         view.delegate = context.coordinator
         view.backgroundColor = .clear
-        view.font = UIFont.preferredFont(forTextStyle: .body)
+        view.font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: view.traitCollection)
         view.adjustsFontForContentSizeCategory = true
         view.textColor = .label
         view.textContainerInset = textInsets
         view.textContainer.lineFragmentPadding = 0
+        view.isScrollEnabled = false
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.textContainer.lineBreakMode = .byWordWrapping
         view.textContainer.widthTracksTextView = true
         view.showsVerticalScrollIndicator = false
         view.showsHorizontalScrollIndicator = false
@@ -161,6 +164,12 @@ struct ComposerReturnField: UIViewRepresentable {
         // current draft/model state instead of the initial empty field.
         context.coordinator.field = self
         uiView.sharedUndoManager = undoManager
+        let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: uiView.traitCollection)
+        if uiView.markedTextRange == nil, uiView.font != font {
+            uiView.font = font
+            uiView.placeholderLabel.font = font
+            context.coordinator.noteTextChange()
+        }
         // Never clobber in-flight IME composition or echo the user's own edit.
         if uiView.markedTextRange == nil, uiView.text != text {
             uiView.text = text
@@ -194,9 +203,11 @@ struct ComposerReturnField: UIViewRepresentable {
         uiView: HardwareReturnTextView,
         context: Context
     ) -> CGSize? {
-        let width = max(proposal.width ?? 320, 1)
-        let sizeClass = UITraitCollection.current.horizontalSizeClass
-        let category = UITraitCollection.current.preferredContentSizeCategory
+        let proposed = proposal.width
+        let width = max(proposed.flatMap { $0.isFinite && $0 > 1 ? $0 : nil }
+            ?? (uiView.bounds.width > 1 ? uiView.bounds.width : 320), 1)
+        let sizeClass = uiView.traitCollection.horizontalSizeClass
+        let category = uiView.traitCollection.preferredContentSizeCategory
         let deviceCap = ComposerFieldMetrics.lineCap(horizontalSizeClass: sizeClass)
         let upperBound = max(1, min(lineLimit.upperBound, deviceCap))
 
@@ -212,13 +223,13 @@ struct ComposerReturnField: UIViewRepresentable {
             width: width,
             contentSizeCategory: category
         ) { [self] in
-            Self.textKitHeight(of: FloeL10n.l("design.composer_return_field.chars"), width: contentWidth(width), font: bodyFont)
+            Self.textKitHeight(of: FloeL10n.l("design.composer_return_field.chars"), width: contentWidth(width), font: uiView.font ?? bodyFont)
         }
         let insets = textInsets.top + textInsets.bottom
-        let cap = ComposerFieldMetrics.heightCap(
+        let cap = max(restingMinHeight, max(lineHeight + insets, ComposerFieldMetrics.heightCap(
             lineCapHeight: lineHeight * CGFloat(upperBound) + insets,
             availableHeight: maxHeightBudget
-        )
+        )))
         let floor = max(
             restingMinHeight,
             lineHeight * CGFloat(max(1, lineLimit.lowerBound)) + insets
@@ -268,7 +279,8 @@ struct ComposerReturnField: UIViewRepresentable {
         }
         return ComposerFieldMeasurement.detachedHeight(
             of: uiView.textStorage,
-            width: textWidth
+            width: textWidth,
+            fallbackFont: uiView.font ?? bodyFont
         ) + textInsets.top + textInsets.bottom
     }
 
@@ -405,6 +417,10 @@ struct ComposerReturnField: UIViewRepresentable {
         func textViewDidChange(_ textView: UITextView) {
             contentGeneration += 1
             field.text = textView.text
+            // Scroll-enabled UITextView has no useful intrinsic height. Ask
+            // SwiftUI to remeasure after each user edit, without mutating
+            // layout from inside sizeThatFits.
+            textView.invalidateIntrinsicContentSize()
             placeholderLabel(of: textView)?.isHidden = !textView.text.isEmpty
             if textView.isScrollEnabled {
                 textView.scrollRangeToVisible(textView.selectedRange)
@@ -459,15 +475,25 @@ struct ComposerReturnField: UIViewRepresentable {
 @MainActor
 enum ComposerFieldMeasurement {
     /// Height of `storage` wrapped at `width`, without any view mutation.
-    static func detachedHeight(of storage: NSTextStorage, width: CGFloat) -> CGFloat {
+    static func detachedHeight(of storage: NSTextStorage, width: CGFloat, fallbackFont: UIFont? = nil) -> CGFloat {
         let boundedWidth = max(width, 1)
-        let detachedStorage = NSTextStorage(attributedString: storage)
+        let detachedStorage: NSTextStorage
+        if let fallbackFont {
+            // Composer content is plain text. Reading a live NSTextStorage's
+            // attributes can lazily synthesize 12pt fonts before they can be
+            // filled. Copy only characters and use the ACTUAL visible font;
+            // no attribute/layout access can normalize the live storage.
+            detachedStorage = NSTextStorage(string: storage.string, attributes: [.font: fallbackFont])
+        } else {
+            detachedStorage = NSTextStorage(attributedString: storage)
+        }
         let container = NSTextContainer(size: CGSize(
             width: boundedWidth,
             height: .greatestFiniteMagnitude
         ))
         container.lineFragmentPadding = 0
         container.widthTracksTextView = false
+        container.lineBreakMode = .byWordWrapping
         let manager = NSLayoutManager()
         manager.addTextContainer(container)
         detachedStorage.addLayoutManager(manager)

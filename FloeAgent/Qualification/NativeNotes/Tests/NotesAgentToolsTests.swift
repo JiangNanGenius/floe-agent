@@ -748,7 +748,7 @@ final class NotesAgentToolsTests: XCTestCase {
     }
 
     /// buildEdits is the single construction path shared by apply and propose.
-    func testBuildEditsNormalizesReplaceMapAndRejectsUnknownActions() throws {
+    @MainActor func testBuildEditsNormalizesReplaceMapAndRejectsUnknownActions() throws {
         var document = NoteDocument(kind: .mindMap, title: "导图")
         let rootID = document.nodes[0].id
         let child = MindMapNode(parentID: rootID, title: "子")

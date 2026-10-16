@@ -4965,7 +4965,7 @@ final class ConversationCenter: ObservableObject {
         }
         if target.kind == .fileDocument,
            binding.workMode == .modify || binding.workMode == .restructure {
-            lines.append("- the ORIGINAL source is write-frozen for this task: ordinary workspace writes to it are refused, and arbitrary Linux guest commands (exec.shell / exec.localPython / interactive shell input) are denied BEFORE dispatch while any candidate is pending (read-only inspection commands stay available)")
+            lines.append("- the ORIGINAL source is write-frozen for this task: ordinary workspace writes to it are refused, and arbitrary Linux guest commands (exec.shell / interactive shell input) are denied BEFORE dispatch while any candidate is pending (read-only inspection commands stay available)")
             lines.append("- recovery: stage changes as isolated candidates with design.propose and let the user adopt them; the freeze lifts on verified adoption or when the last pending candidate is rejected")
         }
         lines.append("Address design.creativeBegin/design.propose/design.resolveTarget to EXACTLY this target identity. For a new creative request the requested output kind is chosen from the user's request; it is frozen at creativeBegin and must not change afterwards.")

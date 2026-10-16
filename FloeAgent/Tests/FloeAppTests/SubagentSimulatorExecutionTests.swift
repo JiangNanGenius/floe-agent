@@ -4,7 +4,7 @@
 // delegated child's calls run through the REAL `FloeAgentRuntime.dispatchChildTool`
 // chain (catalog, effective ceiling, main-only boundary, approval policy,
 // mutation lease, the same executor) and the executed tools are the App's REAL
-// registered `exec.shell` / `exec.localPython` / `shell.*`, routed by the
+// registered `exec.shell` / `shell.*`, routed by the
 // production `ToolEnvironmentRouting` into the TinyEMU Linux guest prepared by
 // the production platform services. A host-side Python or mock backend is
 // never accepted: the file is written by the guest and the hash is computed in
@@ -364,7 +364,13 @@ struct SubagentSimulatorExecutionTests {
 
         func cleanup() async {
             if !ownedEnvironmentID.isEmpty {
-                try? await services.stopEnvironment(id: ownedEnvironmentID)
+                do {
+                    try await services.stopEnvironment(id: ownedEnvironmentID)
+                    try await services.deleteEnvironment(id: ownedEnvironmentID)
+                } catch {
+                    Issue.record("Owned qualification environment cleanup failed: \(error)")
+                    return // Preserve its workspace if shutdown/deletion did not finish.
+                }
             }
             try? FileManager.default.removeItem(at: root)
         }
@@ -374,7 +380,7 @@ struct SubagentSimulatorExecutionTests {
 
             let conversationID = UUID()
             let runID = UUID()
-            let ceiling: Set<String> = ["exec.shell", "exec.localPython", "delegate", "conversation.spawn"]
+            let ceiling: Set<String> = ["exec.shell", "delegate", "conversation.spawn"]
             let runtime = makeRuntime(
                 root: root, conversationID: conversationID, runID: runID,
                 allowedToolNames: ceiling, environmentID: environmentID,
@@ -416,7 +422,7 @@ struct SubagentSimulatorExecutionTests {
             #expect(String(decoding: written, as: UTF8.self) == payload)
             #expect(FloeDigest.sha256Hex(written) == expectedHash)
 
-            // 2. exec.localPython: the GUEST reads the file and reports the
+            // 2. python3 through exec.shell: the GUEST reads the file and reports the
             //    hash; a host/mock Python stand-in would not see the guest
             //    version string and the mounted workspace together.
             let pythonScript = """
@@ -431,11 +437,11 @@ struct SubagentSimulatorExecutionTests {
             """
             let pythonCall = try toolCall(
                 id: "child-python-1",
-                toolName: "exec.localPython",
-                arguments: String(decoding: try JSONSerialization.data(withJSONObject: ["script": pythonScript]), as: UTF8.self))
+                toolName: "exec.shell",
+                arguments: String(decoding: try JSONSerialization.data(withJSONObject: ["command": "python3 -", "stdin": pythonScript, "timeout": 60]), as: UTF8.self))
             let pythonResult = await runtime.dispatchChildTool(
                 pythonCall, identity: firstChild, childContext: childContext)
-            #expect(pythonResult.status == .ok, "child exec.localPython failed: \(pythonResult.outputSummary)")
+            #expect(pythonResult.status == .ok, "child Linux Python failed: \(pythonResult.outputSummary)")
             #expect(pythonResult.outputSummary.contains("FLOE_CHILD_PY_READ=\(payload)"))
             #expect(pythonResult.outputSummary.contains("FLOE_CHILD_PY_HASH=\(expectedHash)"))
             #expect(pythonResult.outputSummary.contains("FLOE_CHILD_PY_PLATFORM=linux"))
@@ -490,7 +496,13 @@ struct SubagentSimulatorExecutionTests {
 
         func cleanup() async {
             if !ownedEnvironmentID.isEmpty {
-                try? await services.stopEnvironment(id: ownedEnvironmentID)
+                do {
+                    try await services.stopEnvironment(id: ownedEnvironmentID)
+                    try await services.deleteEnvironment(id: ownedEnvironmentID)
+                } catch {
+                    Issue.record("Owned qualification environment cleanup failed: \(error)")
+                    return // Preserve its workspace if shutdown/deletion did not finish.
+                }
             }
             try? FileManager.default.removeItem(at: root)
         }
@@ -501,7 +513,7 @@ struct SubagentSimulatorExecutionTests {
             let conversationID = UUID()
             let runID = UUID()
             let ceiling: Set<String> = [
-                "exec.shell", "exec.localPython", "shell.open", "shell.exchange",
+                "exec.shell", "shell.open", "shell.exchange",
                 "shell.close", "shell.signal", "environment.stopLinux",
                 "environment.linuxStatus",
             ]
@@ -983,7 +995,13 @@ struct SubagentSimulatorExecutionTests {
 
         func cleanup() async {
             if !ownedEnvironmentID.isEmpty {
-                try? await services.stopEnvironment(id: ownedEnvironmentID)
+                do {
+                    try await services.stopEnvironment(id: ownedEnvironmentID)
+                    try await services.deleteEnvironment(id: ownedEnvironmentID)
+                } catch {
+                    Issue.record("Owned qualification environment cleanup failed: \(error)")
+                    return // Preserve its workspace if shutdown/deletion did not finish.
+                }
             }
             try? FileManager.default.removeItem(at: root)
         }
@@ -1009,13 +1027,14 @@ struct SubagentSimulatorExecutionTests {
             let payload = "scripted-child-guest-artifact"
             let expectedHash = FloeDigest.sha256Hex(Data(payload.utf8))
             let pythonScript = """
-            import hashlib, pathlib, sys
+            import hashlib, json, pathlib, sys
             data = pathlib.Path('mc/child-artifact.txt').read_bytes()
+            pathlib.Path('mc/python-proof.json').write_text(json.dumps({'platform':sys.platform,'sha256':hashlib.sha256(data).hexdigest()}))
             print('FLOE_SCRIPTED_CHILD_HASH=' + hashlib.sha256(data).hexdigest())
             print('FLOE_SCRIPTED_CHILD_READ=' + data.decode())
             print('FLOE_SCRIPTED_CHILD_PLATFORM=' + sys.platform)
             """
-            let pythonArguments = try Self.json(["script": pythonScript])
+            let pythonArguments = try Self.json(["command": "python3 -", "stdin": pythonScript, "timeout": 60])
             let scriptedAdapter = ScriptedProviderAdapter(turns: [
                 [.toolRequest(try scriptedCall(id: "call_1", name: "tools.search", arguments: #"{"query":"exec.shell"}"#))],
                 [.toolRequest(try scriptedCall(id: "call_2", name: "skill.search", arguments: #"{"query":"shell"}"#))],
@@ -1024,7 +1043,7 @@ struct SubagentSimulatorExecutionTests {
                     id: "call_4", name: "exec.shell",
                     arguments: #"{"command":"mkdir -p mc && printf '%s' 'scripted-child-guest-artifact' > mc/child-artifact.txt && sha256sum mc/child-artifact.txt && uname -r && echo CHILD_ARTIFACT_OK","timeout":60}"#))],
                 [.toolRequest(try scriptedCall(
-                    id: "call_5", name: "exec.localPython", arguments: pythonArguments))],
+                    id: "call_5", name: "exec.shell", arguments: pythonArguments))],
                 [.toolRequest(try scriptedCall(id: "call_6", name: "delegate", arguments: #"{"task":"nested"}"#))],
                 [.textDelta(.init(text: "scripted child finished with a verified guest artifact"))],
             ])
@@ -1111,8 +1130,7 @@ struct SubagentSimulatorExecutionTests {
                 where: { $0.contains("skill.read floe-shell") && $0.contains("loaded=") })
             let guestShellOK = outcome.evidence.contains(
                 where: { $0.hasPrefix("exec.shell") && !$0.contains("[") })
-            let guestPythonOK = outcome.evidence.contains(
-                where: { $0.hasPrefix("exec.localPython") && !$0.contains("[") })
+            let guestPythonOK = outcome.evidence.filter { $0.hasPrefix("exec.shell") && !$0.contains("[") }.count == 2
             let childDelegateDenied = outcome.evidence.contains(
                 where: { $0.hasPrefix("delegate") && $0.contains("[denied]") })
             #expect(ranToolSearch, "tools.search must run in the child: \(outcome.evidence)")
@@ -1128,6 +1146,9 @@ struct SubagentSimulatorExecutionTests {
             let artifact = try Data(contentsOf: root.appendingPathComponent("mc/child-artifact.txt"))
             #expect(String(decoding: artifact, as: UTF8.self) == payload)
             #expect(FloeDigest.sha256Hex(artifact) == expectedHash)
+            let proof = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("mc/python-proof.json"))) as? [String: String]
+            #expect(proof?["platform"] == "linux")
+            #expect(proof?["sha256"] == expectedHash)
 
             await cleanup()
         } catch {

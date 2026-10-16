@@ -214,7 +214,7 @@ a successful launch saves its core/memory configuration for later resumption. Ch
 <!-- doc-anchor: section-25 -->
 ### Web services and full-screen terminals
 
-Open a workspace `.py`, `.js` or `.sh` file, choose Run, then Run as web service. Confirm the owning task and port. The script must read `PORT` and listen on that port. Preview appears only after an HTTP response; check service logs for startup failures. Closing the window keeps the service alive. Stop it explicitly or manage it in the environment's local services list. Services must be restarted after the App is terminated.
+Open a workspace `.html` or `.htm` file and choose **Run** to preview the page and its nearby resources. For a `.py`, `.js` or `.sh` HTTP server, choose **Run as web service**. Confirm the owning task and port, or create a run task when asked. Server scripts should read `PORT` and listen on the guest network interface; static pages need no server code. **Preview** appears after the page responds. Check logs if startup fails. Closing the window keeps the service running; use **Stop** or the environment's local-service list to end it. Restart the service after the app is terminated.
 
 Use the terminal status bar's expand button for full screen, then Hide to return without ending the session. Run terminals explicitly report when the process has not written output and show exit status.
 

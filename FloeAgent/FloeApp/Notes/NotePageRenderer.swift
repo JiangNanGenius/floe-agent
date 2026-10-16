@@ -6,7 +6,7 @@ import FloeNotes
 
 /// Shared by the editor, selection captures and exports, in stable page coordinates.
 @MainActor enum NotePageRenderer {
-    static func draw(_ page: NotePage, background: UIImage?, images: [UUID: UIImage] = [:], backgroundDrawing: (() -> Void)? = nil) {
+    static func draw(_ page: NotePage, background: UIImage?, images: [UUID: UIImage] = [:], backgroundDrawing: (() -> Void)? = nil, textSources: [String: String] = [:]) {
         let bounds = CGRect(x: 0, y: 0, width: page.width, height: page.height)
         UIColor.white.setFill(); UIRectFill(bounds)
         background?.draw(in: bounds)
@@ -29,7 +29,12 @@ import FloeNotes
             let tint = color(element.color)
             switch element.kind {
             case .text:
-                (element.text as NSString).draw(in: frame, withAttributes: [.font: UIFont.systemFont(ofSize: element.fontSize), .foregroundColor: tint])
+                if element.isMarkdown {
+                    let source = element.textSourceID.flatMap { textSources[$0.uuidString] } ?? element.text
+                    NotesMarkdownLayout.draw(source: source, slice: element.textSlice, frame: frame, fontSize: element.fontSize, color: tint)
+                } else {
+                    (element.text as NSString).draw(in: frame, withAttributes: [.font: UIFont.systemFont(ofSize: element.fontSize), .foregroundColor: tint])
+                }
             case .image:
                 if let id = element.resourceID { images[id]?.draw(in: frame) }
             case .rectangle, .ellipse, .line, .arrow:

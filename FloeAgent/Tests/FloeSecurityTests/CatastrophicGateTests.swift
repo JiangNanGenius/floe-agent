@@ -288,7 +288,7 @@ struct ApprovalPolicyTests {
         }
     }
 
-    @Test("Sandbox Python runs automatically but package installs require review")
+    @Test("Retired unaudited Python has no automatic exemption; package review remains explicit")
     func localPythonReviewBoundary() async throws {
         struct AllowBackend: ModelApprovalPolicy.DecisionBackend {
             func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
@@ -309,9 +309,12 @@ struct ApprovalPolicyTests {
                 hostAndPathScope: .local
             )
         }
-        #expect(try await AutomaticApprovalPolicy().decide(
+        guard case .escalateToHuman = try await AutomaticApprovalPolicy().decide(
             pythonAction(#"{"script":"print(1)"}"#)
-        ).permitsExecution)
+        ) else {
+            Issue.record("Retired unaudited Python must not keep its removed automatic exemption")
+            return
+        }
         #expect(try await AutomaticApprovalPolicy(backend: AllowBackend()).decide(
             pythonAction(#"{"script":"print(1)"}"#)
         ).permitsExecution)
@@ -335,7 +338,7 @@ struct ApprovalPolicyTests {
         ).permitsExecution)
     }
 
-    @Test("Installed skill Python audit is exact and reusable across approval modes")
+    @Test("Historical Python audit stays exact without granting general Shell authority")
     func installedSkillPythonAuditReuse() async throws {
         let source = "import json\nprint(json.dumps(input))\n"
         let digest = SHA256.hash(data: Data(source.utf8))

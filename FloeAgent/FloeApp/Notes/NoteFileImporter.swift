@@ -13,7 +13,7 @@ import Vision
 
 import FloeCore
 enum NoteFileImporter {
-    static func visualSearchText(page: NotePage, store: NotesStore) async throws -> String {
+    static func visualSearchText(page: NotePage, store: NotesStore, textSources: [String: String] = [:]) async throws -> String {
         let background = try await background(page: page, store: store)
         let images = try await elementImages(page: page, store: store)
         let ink: Data?
@@ -25,7 +25,7 @@ enum NoteFileImporter {
             let size = CGSize(width: page.width, height: page.height)
             let drawing = try ink.map { try PKDrawing(data: $0) }
             let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
-                NotePageRenderer.draw(page, background: background.flatMap(UIImage.init(data:)), images: images.compactMapValues(UIImage.init(data:)))
+                NotePageRenderer.draw(page, background: background.flatMap(UIImage.init(data:)), images: images.compactMapValues(UIImage.init(data:)), textSources: textSources)
                 drawing?.image(from: CGRect(origin: .zero, size: size), scale: format.scale).draw(in: CGRect(origin: .zero, size: size))
             }
             guard let data = image.pngData() else { throw NoteError.resourceUnavailable }

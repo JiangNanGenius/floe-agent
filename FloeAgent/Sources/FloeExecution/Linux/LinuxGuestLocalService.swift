@@ -25,6 +25,7 @@ public enum LinuxGuestLocalServiceRuntime: String, Sendable, Codable, CaseIterab
     case node
     case python
     case shell
+    case `static`
 }
 
 public struct LinuxGuestLocalServiceRequest: Sendable {
@@ -695,6 +696,15 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
 
         var command: [String]
         switch request.runtime {
+        case .static:
+            // Serve the HTML's directory, never execute HTML as Python.
+            // argv preserves Unicode, spaces and shell metacharacters.
+            command = LinuxGuestPythonEnvironment.activatedArgv(
+                command: "python3", arguments: ["-u", "-m", "http.server", String(request.port),
+                    // slirp forwards to the guest DHCP interface, not guest lo.
+                    // Host exposure remains restricted by forward.hostAddress.
+                    "--bind", "10.0.2.15", "--directory", (entryGuest as NSString).deletingLastPathComponent]
+            )
         case .python:
             // Running a script must not install pip or create a venv first.
             // Use the same existing interpreter selection as the shell:

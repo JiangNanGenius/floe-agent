@@ -142,6 +142,7 @@ public final class ToolRunnerRegistry: @unchecked Sendable {
 
     /// Registers (or replaces) the runner for `tool.descriptor.name`.
     public func register(_ tool: AnyAgentTool, compatibilityOnly: Bool = false) {
+        guard !RetiredExecutionTools.contains(tool.descriptor.name) else { return }
         lock.lock()
         runners[tool.descriptor.name] = tool
         if compatibilityOnly { compatibilityNames.insert(tool.descriptor.name) } else { compatibilityNames.remove(tool.descriptor.name) }

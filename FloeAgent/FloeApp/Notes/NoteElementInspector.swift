@@ -14,8 +14,10 @@ struct NoteElementInspector: View {
     let openSource: ((NoteSourceReference) -> Void)?
     @Environment(\.dismiss) private var dismiss
 
-    init(element: NoteElement, page: NotePage, save: @escaping (NoteElement) async throws -> Void, delete: @escaping () async throws -> Void, openSource: ((NoteSourceReference) -> Void)? = nil) {
-        _draft = State(initialValue: element); self.page = page; self.save = save; self.delete = delete
+    init(element: NoteElement, page: NotePage, sourceText: String? = nil, save: @escaping (NoteElement) async throws -> Void, delete: @escaping () async throws -> Void, openSource: ((NoteSourceReference) -> Void)? = nil) {
+        var initial = element
+        if let sourceText { initial.text = sourceText }
+        _draft = State(initialValue: initial); self.page = page; self.save = save; self.delete = delete
         self.openSource = openSource
     }
 
@@ -33,6 +35,10 @@ struct NoteElementInspector: View {
                 }
                 if draft.kind == .text {
                     Section("notes.notes_document_editor.text") {
+                        Picker("notes.text.format", selection: Binding(get: { draft.isMarkdown }, set: { draft.textFormat = $0 ? "markdown" : nil })) {
+                            Text("notes.text.plain").tag(false)
+                            Text("notes.text.formatted").tag(true)
+                        }
                         TextEditor(text: $draft.text).frame(minHeight: 160)
                         Stepper(FloeL10n.l("notes.note_element_inspector.font_size", Int(draft.fontSize)), value: $draft.fontSize, in: 8...128, step: 1)
                     }
@@ -72,7 +78,7 @@ struct NoteElementInspector: View {
                         .disabled(!draft.frame.isValid || (draft.kind == .text && draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 }
             }
-            .disabled(saving)
+            .disabled(saving || (draft.textFormat != nil && draft.textFormat != "markdown" && draft.textFormat != "plain"))
             .alert("notes.notes_root_view.notes", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("workspace.office_document_editor_view.ok") { error = nil }
             } message: { Text(error ?? "") }

@@ -46,6 +46,8 @@ public actor BackgroundJobService {
     /// them (the adapter freezes the operation and consumes the runtime
     /// authority for the submitting call); without an adapter only their
     /// export actions are admitted.
+    public static let retiredExecutionTargets = RetiredExecutionTools.names
+
     public static let supportedTargets: Set<String> = NativeJobActionPolicy.default.supportedTargetNames
 
     /// Writes the full (bounded) job output to a spooled artifact BEFORE any
@@ -155,6 +157,9 @@ public actor BackgroundJobService {
         /// submission: the run may finish and the job continues independently.
         waitForCompletion: Bool = true
     ) async throws -> BackgroundJob {
+        guard !RetiredExecutionTools.contains(targetTool) else {
+            throw FloeError.validationFailed("This execution tool was removed. Inspect existing outputs first, then use exec.shell in the task Linux environment; long commands use jobs.submit.")
+        }
         let action = policy.action(in: payloadJSON)
         let adapter = adapters[targetTool].flatMap { $0.handles(action: action) ? $0 : nil }
         guard policy.allows(target: targetTool, action: action) || adapter != nil else {
@@ -589,6 +594,15 @@ public actor BackgroundJobService {
         let active = try await store.activeJobs()
         var count = 0
         for job in active where job.kind == .tool {
+            if RetiredExecutionTools.contains(job.targetTool) {
+                if let interrupted = try? await store.transition(id: job.id, to: .interrupted, mutate: { job in
+                    job.lastError = "The previous execution tool is no longer available. Its outcome is UNKNOWN. Inspect saved outputs before explicitly resubmitting with exec.shell in the task Linux environment."
+                }) {
+                    count += 1
+                    await resolveDependency?(interrupted.id, .interrupted, interrupted.lastError)
+                }
+                continue
+            }
             let reconcile = policy.handlers[job.targetTool]?.reconcile
                 ?? adapters[job.targetTool]?.reconcile
             if let reconcile,

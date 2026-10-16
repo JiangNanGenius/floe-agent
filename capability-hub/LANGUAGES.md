@@ -1,5 +1,12 @@
 # Floe language capability routes (WASI catalog)
 
+## Current model execution contract (2026-10-17)
+
+Use `exec.shell` in the resolved task-owned Linux guest for all model-requested code. Discover actual installed commands before executing; use existing jobs for long runs. Legacy `exec.wasm`, `exec.compatEvaluator`, `exec.localPython`, `exec.javascript`, `wasm.packages` and `python.packages` are no longer registered. Catalog provenance and existing installed packages are retained; their presence does not imply an active standalone interpreter tool. Historical qualification and promotion records below remain scoped to their original source.
+
+模型请求的代码统一通过任务所属 Linux 环境的 `exec.shell` 执行；先检查实际命令，长任务使用现有 jobs。旧独立解释器与重复包工具不再注册。保留现有包、收据和许可不等于宣称旧工具仍可运行。
+
+
 Updated 2026-09-19. Signed bundle source: capability-hub.yml run 35399070312
 at commit 96be231e978354e7c15cdb909cf118ad7b415c23 (prepare=true). The main-only
 publication ran afterwards as capability-hub.yml run 35415682874 at merge

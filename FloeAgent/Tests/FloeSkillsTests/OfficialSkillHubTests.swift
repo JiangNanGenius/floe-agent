@@ -99,10 +99,10 @@ struct OfficialSkillHubTests {
 @Test func bundledRecipeDependenciesExcludeCodeAndRetiredNames() throws {
     for id in ["floe-image-edit", "floe-svg"] {
         let guide = try #require(BundledDomainSkills.all.first { $0.id == id })
-        #expect(guide.toolNames == ["exec.localPython"])
+        #expect(guide.toolNames == ["exec.shell"])
     }
     let text = try #require(BundledDomainSkills.all.first { $0.id == "floe-text-edit" })
-    #expect(Set(text.toolNames) == ["exec.localPython", "workspace.applyPatch", "workspace.writeFile"])
+    #expect(Set(text.toolNames) == ["exec.shell", "workspace.applyPatch", "workspace.writeFile"])
     let shell = try #require(BundledDomainSkills.all.first { $0.id == "floe-shell" })
     #expect(!shell.toolNames.contains("ssh.shell"))
     #expect(shell.toolNames.contains("exec.shell"))
@@ -123,5 +123,5 @@ struct OfficialSkillHubTests {
     #expect(!guide.toolNames.contains("workspace.replaceText"))
     // ContentUpdate version priority/frozen-run machinery serves bundled
     // guides through the SAME BundledDomainSkills.all entry point.
-    #expect(BundledDomainSkills.all.contains { $0.id == "floe-design" && $0.version == "1.0.0" })
+    #expect(BundledDomainSkills.all.contains { $0.id == "floe-design" && $0.version == "1.1.0" })
 }

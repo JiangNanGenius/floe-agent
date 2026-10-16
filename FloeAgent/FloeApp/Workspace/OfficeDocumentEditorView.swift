@@ -2684,14 +2684,164 @@ final class OfficeFileSession: ObservableObject {
     }
 }
 
+/// Feature-owned containment keeps the engine session stable while its UIKit
+/// geometry follows the CURRENT SwiftUI allocation, including keyboard exits.
+@MainActor
+final class OfficeKeyboardLayoutHostController: UIViewController {
+    let officeController: UIViewController
+    var claimsKeyboardOnEntry: Bool
+    private var completedEntryHandoff = false
+    private var viewportRefreshScheduled = false
+    private var lastHostedSize = CGSize.zero
+    private(set) var viewportRefreshCount = 0
+
+    init(controller: UIViewController, claimsKeyboardOnEntry: Bool) {
+        self.officeController = controller
+        self.claimsKeyboardOnEntry = claimsKeyboardOnEntry
+        super.init(nibName: nil, bundle: nil)
+    }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        // A session has one live surface. Never detach it from another
+        // presenter merely because SwiftUI asks to build a second host.
+        guard officeController.parent == nil else {
+            let message = UILabel()
+            message.text = OfficeInkText.t("文档已在其他位置打开，请先关闭原来的编辑窗口。",
+                                          "This document is already open. Close its other editor first.")
+            message.numberOfLines = 0; message.textAlignment = .center
+            message.accessibilityIdentifier = "office.editor.alreadyMounted"
+            message.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(message)
+            NSLayoutConstraint.activate([
+                message.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+                message.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+                message.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            ])
+            return
+        }
+        addChild(officeController)
+        let content = officeController.view!
+        content.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            content.topAnchor.constraint(equalTo: view.topAnchor),
+            content.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        officeController.didMove(toParent: self)
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardSettled(_:)),
+                                               name: UIResponder.keyboardDidChangeFrameNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardSettled(_:)),
+                                               name: UIResponder.keyboardDidHideNotification, object: nil)
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        if let window = viewIfLoaded?.window { handOffExternalResponder(in: window) }
+        super.viewWillAppear(animated)
+    }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if let window = view.window { handOffExternalResponder(in: window) }
+        scheduleViewportRefresh()
+    }
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let size = view.bounds.size
+        if size.width > 0, size.height > 0, size != lastHostedSize {
+            lastHostedSize = size
+            scheduleViewportRefresh()
+        }
+    }
+
+    /// Never use UIApplication-wide resign: another window or the Office
+    /// editor's own text input must retain its first responder.
+    func handOffExternalResponder(in window: UIWindow) {
+        guard claimsKeyboardOnEntry, !completedEntryHandoff, officeController.parent === self,
+              viewIfLoaded?.window === window else { return }
+        completedEntryHandoff = true
+        func firstResponder(in view: UIView) -> UIView? {
+            if view.isFirstResponder { return view }
+            for child in view.subviews {
+                if let found = firstResponder(in: child) { return found }
+            }
+            return nil
+        }
+        guard let responder = firstResponder(in: window),
+              !responder.isDescendant(of: officeController.view) else { return }
+        _ = responder.resignFirstResponder()
+        scheduleViewportRefresh()
+    }
+
+    @objc private func keyboardSettled(_ notification: Notification) {
+        guard let window = viewIfLoaded?.window, window.isKeyWindow,
+              (notification.userInfo?[UIResponder.keyboardIsLocalUserInfoKey] as? Bool) != false else { return }
+        // SwiftUI still owns keyboard safe-area avoidance and bottom toolbars.
+        // After its transition, ask UIKit/WebKit to consume the real new bounds.
+        scheduleViewportRefresh()
+    }
+
+    func scheduleViewportRefresh() {
+        guard !viewportRefreshScheduled else { return }
+        viewportRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            defer { self.viewportRefreshScheduled = false }
+            guard self.isViewLoaded, self.officeController.parent === self else { return }
+            // Ask the presenting SwiftUI allocation to settle as well as the
+            // child. Do not replace its frame with window bounds: an Office
+            // text keyboard and feature toolbars still legitimately reduce it.
+            let container = self.parent?.viewIfLoaded ?? self.view.superview
+            container?.setNeedsUpdateConstraints()
+            container?.setNeedsLayout()
+            self.view.invalidateIntrinsicContentSize()
+            self.view.setNeedsUpdateConstraints()
+            self.view.setNeedsLayout()
+            container?.layoutIfNeeded()
+            self.view.layoutIfNeeded()
+            self.officeController.view.setNeedsLayout()
+            self.officeController.view.layoutIfNeeded()
+            guard self.view.bounds.width > 0, self.view.bounds.height > 0 else { return }
+            self.viewportRefreshCount += 1
+            if let webView = OfficeExplicitSaveBridge.findWebView(in: self.officeController.view) {
+                webView.setNeedsLayout(); webView.layoutIfNeeded()
+                // Standard DOM resize only: no engine command, zoom, content
+                // inset reset, document mutation or private WebKit selector.
+                webView.evaluateJavaScript("window.dispatchEvent(new Event('resize'));") { _, _ in }
+            }
+        }
+    }
+
+    func detachOfficeController() {
+        guard officeController.parent === self else { return }
+        officeController.willMove(toParent: nil)
+        officeController.view.removeFromSuperview()
+        officeController.removeFromParent()
+    }
+    deinit { NotificationCenter.default.removeObserver(self) }
+}
+
 private struct OfficeControllerSurface: UIViewControllerRepresentable {
     let controller: UIViewController
-    func makeUIViewController(context: Context) -> UIViewController { controller }
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+    let claimsKeyboardOnEntry: Bool
+    func makeUIViewController(context: Context) -> OfficeKeyboardLayoutHostController {
+        OfficeKeyboardLayoutHostController(controller: controller, claimsKeyboardOnEntry: claimsKeyboardOnEntry)
+    }
+    func updateUIViewController(_ host: OfficeKeyboardLayoutHostController, context: Context) {
+        host.claimsKeyboardOnEntry = claimsKeyboardOnEntry
+    }
+    static func dismantleUIViewController(_ host: OfficeKeyboardLayoutHostController, coordinator: ()) {
+        host.detachOfficeController()
+    }
 }
 
 struct OfficeDocumentSurface: View {
     @ObservedObject var session: OfficeFileSession
+    var ownsInputFocusOnEntry = false
     /// Owning-surface retry, invoked after `recoverFailedSession()` returns.
     /// A pre-mount open failure only re-arms the session to `.idle`; the
     /// surface's own open task has already run and will not re-run while the
@@ -2705,7 +2855,7 @@ struct OfficeDocumentSurface: View {
     var body: some View {
         ZStack {
             if let controller = session.controller {
-                OfficeControllerSurface(controller: controller)
+                OfficeControllerSurface(controller: controller, claimsKeyboardOnEntry: ownsInputFocusOnEntry)
                     .id(ObjectIdentifier(controller))
                     .accessibilityIdentifier(session.readOnly ? "office.preview.native" : "office.editor.native")
                     .accessibilityValue(session.documentActionsReady
@@ -2865,7 +3015,7 @@ struct OfficeDocumentEditorView: View {
     @State private var shareSnapshot: DocumentExportSnapshot?
 
     var body: some View {
-        OfficeDocumentSurface(session: session)
+        OfficeDocumentSurface(session: session, ownsInputFocusOnEntry: true)
             .navigationTitle((relativePath as NSString).lastPathComponent)
             .navigationBarTitleDisplayMode(.inline)
             .background {

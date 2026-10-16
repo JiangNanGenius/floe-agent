@@ -36,8 +36,25 @@ private struct DangerTool: AgentTool {
     }
 }
 
+private struct RetiredPythonCatalogProbe: AgentTool {
+    struct Arguments: Decodable, Sendable {}
+    static let name = "exec.localPython"
+    static let riskLabels: Set<RiskLabel> = [.executesLocalCode]
+    static let isSideEffecting = true
+    func validate(_ args: Arguments) throws {}
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        ToolExecutionOutput(summary: "must not run", fullOutputSHA256: "")
+    }
+}
+
 @Suite("FloeTools.ToolCatalog")
 struct ToolCatalogTests {
+    @Test func retiredDescriptorCannotReturnThroughCompatibilityRegistration() {
+        ToolCatalog.register(RetiredPythonCatalogProbe.self)
+        ToolCatalog.register(RetiredPythonCatalogProbe.self, compatibilityOnly: true)
+        #expect(ToolCatalog.descriptor(named: RetiredPythonCatalogProbe.name) == nil)
+        #expect(!ToolCatalog.allDescriptors.contains { RetiredExecutionTools.contains($0.name) })
+    }
 
     @Test("Register and look up a tool descriptor")
     func registerAndLookup() {

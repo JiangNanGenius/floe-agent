@@ -1,5 +1,12 @@
 # Floe Linux 环境后端（TinyEMU RV64）/ Floe Linux Environment Backend
 
+## 当前工具契约 / Current tool contract (2026-10-17)
+
+Python、Node 及其他语言统一从 `exec.shell` 调用 Linux 中实际安装的命令；包管理 UI 与内部安装器继续复用 guest 包状态。`exec.localPython`、`exec.javascript`、`exec.compatEvaluator`、`exec.wasm`、`python.packages`、`wasm.packages` 已停止注册，旧名不能通过别名或历史后台任务重放。现有环境文件保留；需要执行时必须明确启用 Linux，不回退宿主。
+
+Python, Node and other languages use installed Linux commands through `exec.shell`. Package UI and internal provisioning retain guest ownership. The legacy tool names above are not registered or replayable; retained environment files do not authorize native-host fallback. The dated sections below describe their original implementation, not additional current tools.
+
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 日期 / Dated: 2026-09-20（Build 215 复核 2026-09-21；Build 219 增补 2026-09-22）· 状态 / Status: host 消费侧已接线并通过轻量真链路检查（见 §5）；

@@ -745,7 +745,6 @@ public struct NativeJobActionPolicy: Sendable {
         return NativeJobActionPolicy(handlers: [
             // Legacy targets keep their exact previous admission.
             "exec.localService": NativeJobHandler(allowedActions: any),
-            "exec.localPython": NativeJobHandler(allowedActions: any),
             "exec.shell": NativeJobHandler(allowedActions: any),
             "network.download": NativeJobHandler(allowedActions: any),
             "network.http": NativeJobHandler(allowedActions: any),

@@ -211,6 +211,7 @@ enum ComposerDraftSafety {
 struct ComposerSendCommit {
     /// Conversation whose draft the send consumed.
     let conversationID: UUID
+    let handoffID = UUID()
     /// Complete draft as it was sent (never the trimmed goal).
     let sentText: String
     /// Attachments that belonged to the send.
@@ -233,6 +234,20 @@ struct ComposerSendCommit {
         self.sentAttachments = attachments
         self.editorGeneration = editorGeneration
         self.storeToken = store.sendCommitToken(for: conversationID)
+    }
+
+    func beginLaunch(store: ComposerDraftStore? = nil) {
+        (store ?? .shared).beginSendHandoff(id: handoffID, conversationID: conversationID,
+                                         text: sentText, attachments: sentAttachments)
+    }
+
+    func acceptLaunch(store: ComposerDraftStore? = nil) {
+        _ = (store ?? .shared).acceptSendHandoff(id: handoffID)
+    }
+
+    @discardableResult
+    func failLaunch(allowTextRecovery: Bool, store: ComposerDraftStore? = nil) -> Bool {
+        (store ?? .shared).failSendHandoff(id: handoffID, allowTextRecovery: allowTextRecovery)
     }
 
     /// True while the live field still holds exactly the generation this

@@ -454,6 +454,30 @@ final class LinuxGuestLocalServiceTests: XCTestCase {
         await supervisor.stopLocalService(handle)
     }
 
+    func testStaticHTMLUsesPythonHTTPServerAndPreservesLiteralDirectory() async throws {
+        let root = try serviceFixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let host = ScriptedServiceHost(descriptor: serviceDescriptor(id: "static", root: root))
+        let supervisor = LinuxGuestLocalServiceSupervisor(host: host)
+        var request = serviceRequest(root: root, port: 8125)
+        request.runtime = .static
+        let directory = root.appendingPathComponent("网页 demo/$literal")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        request.entry = directory.appendingPathComponent("首页 test.html").path
+        try Data("<html>ok</html>".utf8).write(to: URL(fileURLWithPath: request.entry))
+        let handle = try await supervisor.startLocalService(environmentID: "static", request: request, cancellation: nil)
+        XCTAssertTrue(host.spawnArguments.contains("python3"))
+        XCTAssertTrue(host.spawnArguments.contains("http.server"))
+        XCTAssertTrue(host.spawnArguments.contains("10.0.2.15"), "slirp forwards to the guest DHCP interface, not guest loopback")
+        XCTAssertFalse(host.spawnArguments.contains("0.0.0.0"))
+        XCTAssertTrue(host.spawnArguments.contains("-u"), "startup failures and readiness logs must not remain buffered")
+        XCTAssertEqual(handle.forward.hostAddress, "127.0.0.1", "guest reachability must not widen host exposure")
+        XCTAssertTrue(host.spawnArguments.contains { $0.hasSuffix("/网页 demo/$literal") })
+        XCTAssertFalse(host.spawnArguments.contains { $0.hasSuffix("首页 test.html") })
+        XCTAssertEqual(host.provisioningCommands, 0)
+        await supervisor.stopLocalService(handle)
+    }
+
     private func makeStartedService(
         environmentID: String
     ) async throws -> (supervisor: LinuxGuestLocalServiceSupervisor, host: ScriptedServiceHost, handle: LinuxGuestLocalServiceHandle) {

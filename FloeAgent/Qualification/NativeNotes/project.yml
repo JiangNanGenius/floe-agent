@@ -38,6 +38,7 @@ targets:
       - ../../FloeApp/Notes/NoteFileImporter.swift
       - ../../FloeApp/Notes/NoteElementInspector.swift
       - ../../FloeApp/Notes/NotesTextLayout.swift
+      - ../../FloeApp/Notes/NotesMarkdownLayout.swift
       - ../../FloeApp/Notes/NotesAnswerSaveSheet.swift
       - ../../FloeApp/Notes/NotesKnowledgePicker.swift
       - ../../FloeApp/Notes/NotesRepository.swift

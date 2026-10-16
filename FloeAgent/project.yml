@@ -536,6 +536,8 @@ targets:
       - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
       - path: Tests/FloeAppTests/TemporaryConversationTests.swift
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ToolDiscoveryTests.swift
+      - path: Tests/FloeAgentRuntimeTests/NativeMediaRoutingTests.swift
       - path: Tests/FloeAppTests/DesignWorkflowIntegrationTests.swift
       - path: Tests/FloeAppTests/DesignFreezeLaunchTests.swift
       - path: Tests/FloeAppTests/DesignWorkflowFixtureTests.swift
@@ -543,19 +545,25 @@ targets:
       - path: Tests/FloeAppTests/DesignEntryPolicyTests.swift
       - path: Tests/FloeAppTests/CreativeDestinationRouteTests.swift
       - path: Tests/FloeAppTests/DesignAdapterReopenTests.swift
+      - path: Tests/FloeAppTests/NotesMarkdownPaginationTests.swift
+      - path: Tests/FloeAppTests/NotesInkRefreshTests.swift
       - path: Tests/FloeAppTests/DesignBuiltinNodeTests.swift
       - path: Tests/FloeAppTests/OfficePresentationOpeningTests.swift
       - path: Tests/FloeAppTests/OfficeSelectedObjectSaveTests.swift
       - path: Tests/FloeAppTests/ApprovalCardRegistryTests.swift
       - path: Tests/FloeAppTests/ContentUpdateRealSignedFeedTests.swift
       - path: Tests/FloeAppTests/LocalLinuxTerminalRealVMTests.swift
+      - path: Tests/FloeAppTests/LocalLinuxStaticServiceRealVMTests.swift
       - path: Tests/FloeAgentUITests/TerminalPollCadenceTests.swift
       - path: Tests/FloeAgentUITests/floe-sim-qual.pptx
         buildPhase: resources
       - path: Tests/FloeAppTests/OfficeEditEntryAckTests.swift
+      - path: Tests/FloeAppTests/OfficeKeyboardLayoutTests.swift
+      - path: Tests/FloeAppTests/OfficeDocumentConversionAppQualificationTests.swift
       - path: Tests/FloeAppTests/SourceControlRootIdentityTests.swift
       - path: Tests/FloeAppTests/IDEMarkdownOutlineTests.swift
       - path: Tests/FloeAppTests/ComposerTests.swift
+      - path: Tests/FloeAppTests/ComposerLaunchHandoffTests.swift
       - path: Tests/FloeAppTests/ProviderSaveRegressionTests.swift
       - path: Tests/FloeAppTests/PersonalToolPaginationTests.swift
       - path: Tests/FloeAppTests/TemporaryChatPolicyTests.swift
@@ -641,6 +649,7 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/ChildRunPersistenceTests.swift
       - path: Tests/FloeAgentRuntimeTests/DependencyWaitTests.swift
       - path: Tests/FloeExecutionTests/JobOutputPagingTests.swift
+      - path: Tests/FloeExecutionTests/BackgroundJobTests.swift
       - path: Tests/FloeExecutionTests/TaskScheduleToolTests.swift
       # E provisioner speed patch (applied by G after E's 1->2-hart boundary
       # note; production engine paths untouched): the fast venv path and its

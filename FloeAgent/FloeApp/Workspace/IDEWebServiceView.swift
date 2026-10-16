@@ -6,6 +6,24 @@ import FloeTools
 import FloeExecution
 import FloePersistence
 
+enum IDEWebServicePolicy {
+    static func runtime(for path: String?) -> String? {
+        guard let path else { return nil }
+        switch (path as NSString).pathExtension.lowercased() {
+        case "html", "htm": return "static"
+        case "py": return "python"
+        case "js", "mjs", "cjs": return "node"
+        case "sh", "bash": return "shell"
+        default: return nil
+        }
+    }
+
+    static func validPort(_ text: String) -> Int? {
+        guard let port = Int(text), (1024...65535).contains(port) else { return nil }
+        return port
+    }
+}
+
 /// A UI caller of the same durable service lifecycle used by jobs.submit.
 /// Closing the IDE only closes this observer, never the managed service.
 struct IDEWebServiceView: View {
@@ -13,6 +31,7 @@ struct IDEWebServiceView: View {
     @ObservedObject var state: IDEWorkbenchState
     let workspaceID: UUID
     let root: URL
+    let entry: String?
     @State private var owners: [UUID] = []
     @State private var owner: UUID?
     @State private var port = "8080"
@@ -21,13 +40,19 @@ struct IDEWebServiceView: View {
     @State private var job: BackgroundJob?
     @State private var preview = false
 
-    private var runtime: String? {
-        switch (state.activePath as NSString?)?.pathExtension.lowercased() {
-        case "py": "python"
-        case "js", "mjs", "cjs": "node"
-        case "sh", "bash": "shell"
-        default: nil
+    private var runtime: String? { IDEWebServicePolicy.runtime(for: entry) }
+    private var isRunning: Bool { job.map { !$0.state.isTerminal } == true }
+    private var unavailableReason: String? {
+        if entry == nil { return IDELanguageRunText.t("请先打开文件。", "Open a file first.") }
+        if runtime == nil { return IDELanguageRunText.t("此文件不能作为网页服务启动。", "This file cannot start a web service.") }
+        if center.environment.backgroundJobService == nil {
+            return IDELanguageRunText.t("网页服务暂不可用，请稍后重试。", "Web services are unavailable. Try again later.")
         }
+        if owner == nil { return IDELanguageRunText.t("请选择所属任务，或创建一个运行任务。", "Choose an owning task or create one.") }
+        if IDEWebServicePolicy.validPort(port) == nil {
+            return IDELanguageRunText.t("请输入 1024–65535 的端口。", "Enter a port from 1024 to 65535.")
+        }
+        return nil
     }
     private var progress: LocalServiceProgress? {
         job?.progressJSON.flatMap { try? JSONDecoder().decode(LocalServiceProgress.self, from: $0) }
@@ -35,7 +60,7 @@ struct IDEWebServiceView: View {
     var body: some View {
         Form {
             Section {
-                Text(state.activePath ?? "")
+                Text(entry ?? "")
                 TextField(IDELanguageRunText.t("端口", "Port"), text: $port)
                     .keyboardType(.numberPad)
                     .disabled(busy || job.map { !$0.state.isTerminal } == true)
@@ -50,14 +75,23 @@ struct IDEWebServiceView: View {
                     .disabled(busy || job.map { !$0.state.isTerminal } == true)
                 }
                 if owners.isEmpty {
-                    Text(IDELanguageRunText.t("请先将聊天任务关联到此工作区，再启动服务。", "Associate a chat task with this workspace before starting a service."))
+                    Button(IDELanguageRunText.t("创建运行任务", "Create a run task")) {
+                        Task { await createOwner() }
+                    }
+                    .disabled(busy || isRunning)
+                    .accessibilityIdentifier("workspace.ide.service.createTask")
                 }
-                Text(IDELanguageRunText.t("支持 Python、Node 和 Shell。服务读取 PORT，并在该端口监听；关闭此窗口不会停止服务。", "Supports Python, Node and Shell. The server must read PORT and listen on that port. Closing this window keeps it running."))
+                Text(runtime == "static"
+                     ? IDELanguageRunText.t("预览此页面及同目录资源。关闭窗口后服务继续运行。", "Preview this page and its nearby files. The service keeps running when this window closes.")
+                     : IDELanguageRunText.t("脚本应监听所选端口。关闭窗口后服务继续运行。", "Your script should listen on the selected port. The service keeps running when this window closes."))
                     .font(.caption).foregroundStyle(.secondary)
+                if !busy, !isRunning, let unavailableReason {
+                    Text(unavailableReason).font(.callout).foregroundStyle(.secondary)
+                }
                 Button(IDELanguageRunText.t("启动网页服务", "Start web service")) {
                     Task { await start() }
                 }
-                .disabled(busy || owner == nil || runtime == nil || job.map { !$0.state.isTerminal } == true)
+                .disabled(busy || isRunning || unavailableReason != nil)
                 .accessibilityIdentifier("workspace.ide.service.start")
             }
             if busy { ProgressView() }
@@ -92,7 +126,7 @@ struct IDEWebServiceView: View {
             } catch { failure = error.localizedDescription }
         }
         .task(id: owner) {
-            guard let owner, job == nil, let entry = state.activePath else { return }
+            guard let owner, job == nil, let entry else { return }
             do {
                 let records = try await BackgroundJobStore(database: center.environment.database).jobs(conversationID: owner, limit: 100)
                 job = records.first { record in
@@ -119,9 +153,25 @@ struct IDEWebServiceView: View {
         }
     }
 
+    @MainActor private func createOwner() async {
+        guard !busy, !isRunning, center.currentWorkspace?.id == workspaceID,
+              center.currentRootURL == root else { return }
+        busy = true; failure = nil
+        defer { busy = false }
+        do {
+            let record = try await center.environment.conversationCenter.createConversation(
+                title: IDELanguageRunText.t("网页预览", "Web preview"))
+            try await center.ensureReviewConversationWorkspace(
+                conversationID: record.id, workspaceID: workspaceID, title: record.title)
+            owners = try await SQLiteWorkspaceStore(database: center.environment.database)
+                .conversations(workspaceID: workspaceID)
+            owner = record.id
+        } catch { failure = error.localizedDescription }
+    }
+
     @MainActor private func start() async {
-        guard !busy, let owner, let runtime, let entry = state.activePath,
-              let number = Int(port), (1024...65535).contains(number),
+        guard !busy, let owner, let runtime, let entry,
+              let number = IDEWebServicePolicy.validPort(port),
               let service = center.environment.backgroundJobService else {
             failure = IDELanguageRunText.t("请输入 1024–65535 的端口并选择任务。", "Choose a task and a port from 1024 to 65535."); return
         }

@@ -1,6 +1,6 @@
 // FloeExecution — exec.shell agent tool.
 // Executes one bounded shell command through the injected local backend
-// (ios_system + sh/dash in production). Risks are broad by construction:
+// (the selected Linux guest in production). Risks are broad by construction:
 // the approval card shows the exact command and the user decides.
 
 import Foundation
@@ -19,8 +19,7 @@ public struct LocalShellTool: AgentTool {
         public var stdin: String?
         public var timeout: Double?
         public var maxOutputBytes: Int?
-        /// Optional managed pure-Python packages installed (reviewed) before
-        /// the command runs, exactly like exec.localPython.
+        /// Legacy managed dependency input; prefer python3 -m pip in the command.
         public var packages: [String]?
         public var packagePurpose: String?
         public var packageCapabilities: [String]?
@@ -58,7 +57,7 @@ public struct LocalShellTool: AgentTool {
 
     public static let name = "exec.shell"
     public static let toolDescription =
-        "Execute local Unix commands or a multi-line POSIX shell script. Use for file/text processing, batch edits, loops, pipelines, redirections, globs, variables and &&/||; compose commands in one script when appropriate. Includes text/archive/hash commands, python3, node, network diagnostics and installed signed WASI floe-* commands in the current task workspace; `git` is not provided here (use the git.* tools). Package entries are per family: Python packages install through the `packages` argument or the python.packages tool, Node packages through npm/pnpm, signed WASI commands through the wasm.packages tool, and Debian packages through apt. Check unfamiliar commands with command -v. Use jobs.submit for long-running commands, or shell.open/shell.exchange for a persistent session. Output is capped; inspect exit status (124 timeout, 126 blocked, 127 not found, 75 not started — retry after the running command stops). The task environment selects the backend: the default Linux backend runs the command inside the environment’s TinyEMU Linux guest (Debian userland, real python3/node/apt, workspace mounted at /workspace); an environment explicitly set to the native compatibility backend keeps the iOS-hosted POSIX subset without python3/node. A stopped guest resumes its last successful CPU/RAM shape; a new environment defaults to one core and 256 MiB. Before the first shell call, choose CPU/RAM for the task (light commands or small servers: 1 core; parallel compilation or CPU workers: 2–3 cores), respecting the user choice and available pool budget. Call environment.linuxStatus first; start a stopped guest with environment.startLinux(vcpus=2) or environment.startLinux(vcpus=3) before running shell. A running single-core guest requires environment.hardRestartLinux(vcpus=2) or environment.hardRestartLinux(vcpus=3) when restarting it is acceptable; shell commands and in-guest reboot cannot change the VM shape. A missing Linux component fails with the install reason."
+        "Execute commands or a POSIX shell script in the task's resolved Linux guest, never the iOS host. Supports python3, node, pipelines, redirections, loops and the actual installed Linux utilities. Inspect command -v and versions before relying on tools; use python3 -m pip, npm/pnpm or the guest's apt for dependencies when available. Git may be used if actually installed; git.* tools provide structured repository operations. cwd is workspace-relative. Use jobs.submit targeting exec.shell for long commands or shell.open/shell.exchange for persistent input. Effective timeout is reported (foreground max 120 seconds; jobs max 600); output is bounded. Inspect exit status and saved outputs before continuing a timed-out/interrupted operation, rather than repeating side effects. A missing or legacy non-Linux environment fails with preparation/selection guidance and never falls back to a host interpreter. A stopped guest resumes its last successful CPU/RAM shape. Use environment.linuxStatus to inspect it, and lifecycle tools to select 1–3 cores within the shared budget when needed; do not restart another task's environment to cancel your command."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "command":{"type":"string","description":"Shell command line (max 16 KiB). Pipelines and redirections supported."},
@@ -67,10 +66,7 @@ public struct LocalShellTool: AgentTool {
       "env":{"type":"object","additionalProperties":{"type":"string"},"description":"Extra environment variables for this run only"},
       "stdin":{"type":"string","description":"Optional stdin content (max 256 KiB)"},
       "timeout":{"type":"number","description":"Wall-clock timeout seconds (default 10, max 120; 600 for jobs.submit background jobs)"},
-      "maxOutputBytes":{"type":"integer","description":"Combined output cap (default 65536, max 262144)"},
-      "packages":{"type":"array","maxItems":16,"items":{"type":"string"},"description":"Managed pure-Python packages installed before the command; each entry is reviewed"},
-      "packagePurpose":{"type":"string","description":"Why the packages are required (reviewed evidence)"},
-      "packageCapabilities":{"type":"array","maxItems":16,"items":{"type":"string"},"description":"Narrow capabilities such as spreadsheet or network.http"}},
+      "maxOutputBytes":{"type":"integer","description":"Combined output cap (default 65536, max 262144)"}},
      "additionalProperties":false}
     """#
     public static let riskLabels: Set<RiskLabel> = [
@@ -179,7 +175,7 @@ public struct LocalShellTool: AgentTool {
             let text = "status=blocked pattern=\(verdict.matchedPatternID ?? "policy")\n\(verdict.reason ?? "Command blocked")\nexit=126"
             return Self.output(text, exitStatus: 126)
         case .outcome(let outcome):
-            return render(outcome: outcome, command: command, cwd: cwd, installOutput: installOutput)
+            return render(outcome: outcome, command: command, cwd: cwd, installOutput: installOutput, effectiveTimeout: shell.normalizedTimeout(args.timeout, isBackground: isBackground), isBackground: isBackground)
         }
     }
 
@@ -187,7 +183,9 @@ public struct LocalShellTool: AgentTool {
         outcome: ShellRunOutcome,
         command: String,
         cwd: String,
-        installOutput: String
+        installOutput: String,
+        effectiveTimeout: TimeInterval,
+        isBackground: Bool
     ) -> ToolExecutionOutput {
         func prefix() -> String {
             var header = ""
@@ -199,7 +197,7 @@ public struct LocalShellTool: AgentTool {
             let cleanOut = SecretRedactor.redact(ShellOutputSanitizer.sanitize(stdout))
             let cleanErr = SecretRedactor.redact(ShellOutputSanitizer.sanitize(stderr))
             var text = prefix()
-            text += "exit=\(code) durationMs=\(durationMs) cwd=\(cwd)"
+            text += "exit=\(code) durationMs=\(durationMs) cwd=\(cwd) effectiveTimeoutSeconds=\(effectiveTimeout)"
             if truncated { text += " stdoutTruncated" }
             if stderrTruncated { text += " stderrTruncated" }
             text += "\n--- stdout ---\n\(cleanOut)"
@@ -207,7 +205,10 @@ public struct LocalShellTool: AgentTool {
             return Self.output(text, exitStatus: code)
         case .timedOut(let partialStdout, let partialStderr, let durationMs):
             var text = prefix()
-            text += "exit=124 durationMs=\(durationMs) cwd=\(cwd) status=timedOut"
+            text += "exit=124 durationMs=\(durationMs) cwd=\(cwd) status=timedOut effectiveTimeoutSeconds=\(effectiveTimeout)"
+            text += isBackground
+                ? "\nThe background command reached its effective deadline. Inspect existing outputs before explicitly continuing; do not blindly repeat side effects."
+                : "\nThe foreground command reached its effective deadline. Inspect existing outputs before explicitly continuing long work through jobs.submit; do not blindly repeat side effects."
             let cleanOut = SecretRedactor.redact(ShellOutputSanitizer.sanitize(partialStdout))
             if !cleanOut.isEmpty { text += "\n--- stdout ---\n\(cleanOut)" }
             let cleanErr = SecretRedactor.redact(ShellOutputSanitizer.sanitize(partialStderr))

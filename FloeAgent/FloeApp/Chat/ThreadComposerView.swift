@@ -871,7 +871,7 @@ struct ThreadComposerView: View {
                 },
                 onReturn: { onSend() }
             )
-            .frame(minHeight: FloeTheme.minimumTarget, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
             .contentShape(Rectangle())
             .accessibilityLabel("home.new_task.placeholder")
             .accessibilityIdentifier("composer.input")

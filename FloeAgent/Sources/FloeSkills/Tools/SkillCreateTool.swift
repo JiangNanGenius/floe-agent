@@ -34,7 +34,7 @@ public struct SkillCreateTool: AgentTool {
 
     public static let name = "skill.create"
     public static let toolDescription =
-        "Create a reusable Floe skill from instructions and optional audited pure-Python scripts. Python scripts must accept changing task data through inputJSON rather than rewriting their source. Optional dependencies must be exact PyPI name==version pure-Python wheels with a narrow purpose and capability list. Floe audits scripts and wheels once during installation; later execution of the exact installed script and package set can run without repeated approval, while changed code or broader side effects return to normal approval. If the skill will carry Python scripts, read floe-python via skill.read first for the scriptRuntime/capability/audit contract; reuse that guide if its current version is already in context."
+        "Create a reusable skill from instructions and optional Python scripts. Scripts run with python3 through exec.shell in the selected task Linux environment, under the task's normal permissions. Dependencies are explicit name==version requirements, not proof that a package is installed. Read floe-python before authoring script-carrying skills; inspect the environment and install needed dependencies with python3 -m pip through exec.shell. Never claim scripts or packages are usable until execution succeeds."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -44,7 +44,7 @@ public struct SkillCreateTool: AgentTool {
         "instructions": {"type": "string", "description": "The skill body (Markdown): steps, conventions, or reference knowledge to reuse"},
         "pythonScripts": {
           "type": "array", "maxItems": 8,
-          "description": "Optional UTF-8 pure-Python scripts bundled under scripts/. Use inputJSON for task-specific data.",
+          "description": "Optional UTF-8 Python scripts bundled under scripts/. Declare task-specific arguments or JSON stdin in the instructions.",
           "items": {
             "type": "object",
             "properties": {
@@ -56,7 +56,7 @@ public struct SkillCreateTool: AgentTool {
         },
         "pythonPackages": {
           "type": "array", "maxItems": 16,
-          "description": "Optional exact, pure-Python PyPI dependencies audited during installation.",
+          "description": "Optional exact PyPI dependency requirements. These declare intent, not installation or runtime availability; inspect and install compatible Linux packages through exec.shell.",
           "items": {
             "type": "object",
             "properties": {

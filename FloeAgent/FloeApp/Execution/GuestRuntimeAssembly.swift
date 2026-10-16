@@ -13,8 +13,8 @@ import FloeTools
 enum LocalPythonServiceFactory {
     /// Builds the app's one `LocalPythonService`: every request routes into
     /// the task environment's TinyEMU Linux guest. Returns nil only when no
-    /// Linux backend exists in this build, leaving `exec.localPython`
-    /// honestly absent from the catalog.
+    /// Linux backend exists in this build. This is an internal business-service
+    /// adapter; model code uses exec.shell, not a separate Python tool.
     static func make(
         linuxGuests: TinyEMULinuxCommandService?,
         prepareLinux: LinuxPreparationHandler? = nil

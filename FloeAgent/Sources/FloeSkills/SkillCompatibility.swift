@@ -64,7 +64,7 @@ public enum SkillCompatibility {
             problems.append(.javaScriptCoreUnavailable)
         case .localPython where !environment.supportedCapabilities.contains(.localPython) || !environment.registeredTools.contains("exec.localPython"):
             problems.append(.localPythonUnavailable)
-        case .remote where !environment.hasRemoteExecutionHost:
+        case .remote where !environment.registeredTools.contains("exec.shell") && !environment.hasRemoteExecutionHost:
             problems.append(.remoteHostRequired)
         default:
             break

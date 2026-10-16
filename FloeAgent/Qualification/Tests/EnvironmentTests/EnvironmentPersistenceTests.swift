@@ -5,6 +5,89 @@ import FloeTools
 
 @Suite("Environment durability")
 struct EnvironmentPersistenceTests {
+    @Test func removalClearsAllOwnWorkspaceBindingsAndPreservesNeighbours() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let registry = EnvironmentRegistry(roots: roots, baseRevision: "one")
+        let own = try await registry.ensureProjectContainer(workspaceID: "own", workspaceRootPath: "/own")
+        let neighbour = try await registry.ensureProjectContainer(workspaceID: "neighbour", workspaceRootPath: "/neighbour")
+        let mappingURL = root.appendingPathComponent("workspace-containers.json")
+        let untouched = ["containerID": neighbour.id, "path": "/neighbour", "extra": "preserve"]
+        let mapping = ["own": ["containerID": own.id, "path": "/own"],
+                       "second-own-reference": ["containerID": own.id, "path": "/legacy-own"],
+                       "neighbour": untouched,
+                       "metadata-only": ["note": "preserve unknown string fields"]]
+        try JSONEncoder().encode(mapping).write(to: mappingURL, options: .atomic)
+        #expect(try await registry.remove(id: own.id)?.id == own.id)
+        let remaining = try JSONDecoder().decode([String: [String: String]].self, from: Data(contentsOf: mappingURL))
+        #expect(remaining.count == 2)
+        #expect(remaining["neighbour"] == untouched)
+        #expect(remaining["metadata-only"] == mapping["metadata-only"])
+        #expect(await registry.record(id: neighbour.id) != nil)
+        let reopened = EnvironmentRegistry(roots: roots, baseRevision: "one")
+        try await reopened.prepare()
+        #expect(await reopened.record(id: own.id) == nil)
+        #expect(await reopened.record(id: neighbour.id) != nil)
+    }
+
+    @Test func repeatedRemovalIsIdempotentAndRepairsOnlyItsStaleBinding() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = EnvironmentRegistry(roots: EnvironmentRoots(rootURL: root), baseRevision: "one")
+        let own = try await registry.ensureProjectContainer(workspaceID: "own", workspaceRootPath: "/own")
+        _ = try await registry.remove(id: own.id)
+        let mappingURL = root.appendingPathComponent("workspace-containers.json")
+        // Simulate the safe interruption window: registry commit succeeded,
+        // mapping commit did not. No record should be resurrected on retry.
+        let other = ["containerID": "unrelated-id", "path": "/unrelated"]
+        try JSONEncoder().encode(["stale": ["containerID": own.id, "path": "/own"], "other": other])
+            .write(to: mappingURL, options: .atomic)
+        #expect(try await registry.remove(id: own.id) == nil)
+        let bytes = try Data(contentsOf: mappingURL)
+        #expect(try JSONDecoder().decode([String: [String: String]].self, from: bytes) == ["other": other])
+        #expect(try await registry.remove(id: own.id) == nil)
+        #expect(try Data(contentsOf: mappingURL) == bytes)
+    }
+
+    @Test func corruptWorkspaceMappingRejectsRemovalWithoutChangingRecordOrBytes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let registry = EnvironmentRegistry(roots: roots, baseRevision: "one")
+        let own = try await registry.ensureProjectContainer(workspaceID: "own", workspaceRootPath: "/own")
+        let registryBytes = try Data(contentsOf: roots.registryURL)
+        let mappingURL = root.appendingPathComponent("workspace-containers.json")
+        let corrupt = Data("not-json; preserve me".utf8)
+        try corrupt.write(to: mappingURL, options: .atomic)
+        await #expect(throws: (any Error).self) { _ = try await registry.remove(id: own.id) }
+        #expect(await registry.record(id: own.id) != nil)
+        #expect(try Data(contentsOf: roots.registryURL) == registryBytes)
+        #expect(try Data(contentsOf: mappingURL) == corrupt)
+    }
+
+    @Test func failedRegistryCommitPreservesWorkspaceBindingsAndMemoryRecord() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let registry = EnvironmentRegistry(roots: roots, baseRevision: "one")
+        let own = try await registry.ensureProjectContainer(workspaceID: "own", workspaceRootPath: "/own")
+        let registryBytes = try Data(contentsOf: roots.registryURL)
+        let mappingURL = root.appendingPathComponent("workspace-containers.json")
+        let mappingBytes = try Data(contentsOf: mappingURL)
+        // A directory at the exact file target deterministically rejects an
+        // atomic file commit, independent of root/user permission differences.
+        try FileManager.default.removeItem(at: roots.registryURL)
+        try FileManager.default.createDirectory(at: roots.registryURL, withIntermediateDirectories: false)
+        await #expect(throws: (any Error).self) { _ = try await registry.remove(id: own.id) }
+        #expect(await registry.record(id: own.id) != nil)
+        #expect(try Data(contentsOf: mappingURL) == mappingBytes)
+        try FileManager.default.removeItem(at: roots.registryURL)
+        try registryBytes.write(to: roots.registryURL, options: .atomic)
+        let reopened = EnvironmentRegistry(roots: roots, baseRevision: "one")
+        try await reopened.prepare()
+        #expect(await reopened.record(id: own.id) != nil)
+    }
     @Test func registrySurvivesRestartAndMarksNewBase() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

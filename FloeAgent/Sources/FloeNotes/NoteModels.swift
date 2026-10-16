@@ -46,6 +46,14 @@ public struct NoteSourceReference: Codable, Hashable, Sendable {
     }
 }
 
+/// A slice of the deterministic formatted layout, not a substring of Markdown.
+public struct NoteTextSlice: Codable, Hashable, Sendable {
+    public var start: Int
+    public var count: Int
+    public var total: Int?
+    public init(start: Int, count: Int, total: Int? = nil) { self.start = start; self.count = count; self.total = total }
+}
+
 public struct NoteElement: Codable, Hashable, Identifiable, Sendable {
     public enum Kind: String, Codable, Sendable { case text, image, rectangle, ellipse, line, arrow }
     public var id: UUID
@@ -55,6 +63,11 @@ public struct NoteElement: Codable, Hashable, Identifiable, Sendable {
     public var resourceID: UUID?
     public var color: String
     public var fontSize: Double
+    /// Nil in existing documents means plain text. Unknown values are retained.
+    public var textFormat: String?
+    public var textSourceID: UUID?
+    public var textSlice: NoteTextSlice?
+    public var isMarkdown: Bool { textFormat == "markdown" }
     public var source: NoteSourceReference?
     public var isAIGenerated: Bool
     public init(id: UUID = UUID(), kind: Kind = .text, frame: NoteRect = .init(), text: String = "",
@@ -230,6 +243,8 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
     public var title: String
     public var revision: Int
     public var pages: [NotePage]
+    /// Shared immutable source per formatted text flow; pagination never duplicates it.
+    public var textSources: [String: String]?
     public var nodes: [MindMapNode]
     public var connections: [MindMapConnection]
     public var linkedMindMaps: [NoteMindMapLink]?
@@ -311,7 +326,7 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
         return supportedEngineeringFileExtensions.contains((name as NSString).pathExtension.lowercased())
     }
     public func validate() throws {
-        guard schemaVersion == 1, revision >= 0, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard (1...2).contains(schemaVersion), revision >= 0, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_document_version_or_title_is"))
         }
         guard coverRevision == nil || coverRevision! >= 0 else {
@@ -345,6 +360,13 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
             for element in page.elements {
                 guard element.frame.isValid, element.fontSize.isFinite, (1...512).contains(element.fontSize) else {
                     throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_page_content_size"))
+                }
+                if let sourceID = element.textSourceID {
+                    guard schemaVersion >= 2, element.kind == .text, textSources?[sourceID.uuidString] != nil,
+                          let slice = element.textSlice, slice.start >= 0, slice.count > 0,
+                          let total = slice.total, total > 0, slice.start <= total, slice.count <= total - slice.start else {
+                        throw NoteError.invalidDocument(String(localized: "notes.text.unavailable", defaultValue: "The formatted text could not be read"))
+                    }
                 }
                 if element.kind == .image && element.resourceID == nil {
                     throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_image_is_missing_a_resource"))

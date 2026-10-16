@@ -97,7 +97,7 @@ enum TaskLifecycleUITestFixture {
             jobID: jobID, text: fullText, root: BackgroundJobOutputSpool.defaultRoot())
         var job = (try? await jobStore.job(id: jobID)) ?? BackgroundJob(
             id: jobID, conversationID: conversationID, runID: runID,
-            kind: .tool, targetTool: "exec.localPython",
+            kind: .tool, targetTool: "exec.shell",
             payloadJSON: Data("{}".utf8), state: .completed)
         job.conversationID = conversationID
         job.runID = runID

@@ -35,7 +35,7 @@ public struct ManagedPackageTool: AgentTool {
 
     public static let name = "apt"
     public static let toolDescription =
-        "Retired compatibility entry; not advertised to new conversations. APT now manages Linux distribution packages only, inside a Linux environment. Read-only `search`/`show`/`list` still query the reviewed capability catalog so old references resolve. `install`/`remove`/`download` no longer perform any install here: Python packages use the python.packages tool, signed WASI commands use the wasm.packages tool, skills/fonts/models use their own managers, and Debian packages use apt inside a Linux environment."
+        "Retired compatibility entry; not advertised to new conversations. APT now manages Linux distribution packages only, inside a Linux environment. Read-only `search`/`show`/`list` still query the reviewed capability catalog so old references resolve. `install`/`remove`/`download` no longer perform any install here: Python packages use python3 -m pip through exec.shell, signed capabilities use Settings, skills/fonts/models use their own managers, and Debian packages use apt inside a Linux environment."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "action":{"type":"string","enum":["search","list","show","install","remove","download"]},

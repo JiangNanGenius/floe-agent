@@ -65,15 +65,20 @@ struct TraditionalSkillTests {
         #expect(package.manifest.tools == ["exec.shell"])
     }
 
-    @Test("Pure Python keeps the audited on-device runtime; unknown types fail closed")
+    @Test("Pure Python uses the task Linux shell; unknown types fail closed")
     func pythonAndUnknownTypes() throws {
         let pythonRoot = try Self.makePackage(files: [
             "scripts/analyze.py": "print('ok')"
         ])
         defer { try? FileManager.default.removeItem(at: pythonRoot) }
         let python = try SkillPackageValidator().validate(packageAt: pythonRoot, requireManifest: false)
-        #expect(python.manifest.scriptRuntime == .localPython)
-        #expect(python.manifest.tools == ["exec.localPython"])
+        #expect(python.manifest.scriptRuntime == .remote)
+        #expect(python.manifest.tools == ["exec.shell"])
+        let report = SkillCompatibility.evaluate(python, in: SkillRuntimeEnvironment(
+            platform: .iOS, supportedCapabilities: [.remoteExecution], registeredTools: ["exec.shell"],
+            supportsJavaScriptCore: false, hasRemoteExecutionHost: false))
+        #expect(report.isRunnable)
+
 
         let unknownRoot = try Self.makePackage(files: [
             "scripts/tool.rb": "puts 'hi'"

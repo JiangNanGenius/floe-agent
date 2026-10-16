@@ -205,7 +205,7 @@ final class NotesSession {
                     self.indexingDocumentID = document.id
                     let key = page.visualIndexKey
                     do {
-                        let text = try await NoteFileImporter.visualSearchText(page: page, store: store)
+                        let text = try await NoteFileImporter.visualSearchText(page: page, store: store, textSources: document.textSources ?? [:])
                         try Task.checkCancellation()
                         try await store.cachePageOCR(documentID: document.id, pageID: page.id, sourceKey: key, text: text, error: nil)
                     } catch is CancellationError { return }

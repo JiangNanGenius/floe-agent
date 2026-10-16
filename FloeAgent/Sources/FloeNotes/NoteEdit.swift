@@ -4,6 +4,7 @@ import Foundation
 import FloeCore
 /// Value-only commands shared by UI and tool adapters. No executable scripts or filesystem paths.
 public enum NoteEdit: Codable, Hashable, Sendable {
+    case textSource(id: UUID, text: String?)
     case linkMindMap(NoteMindMapLink)
     case unlinkMindMap(UUID)
     case rename(String)
@@ -30,6 +31,17 @@ public enum NoteEdit: Codable, Hashable, Sendable {
 
     public func apply(to document: inout NoteDocument) throws {
         switch self {
+        case .textSource(let id, let text):
+            if let text {
+                document.schemaVersion = max(2, document.schemaVersion)
+                if document.textSources == nil { document.textSources = [:] }
+                document.textSources?[id.uuidString] = text
+            } else {
+                guard !document.pages.contains(where: { $0.elements.contains(where: { $0.textSourceID == id }) }) else {
+                    throw NoteError.invalidOperation(String(localized: "notes.text.still_in_use", defaultValue: "This text is still in use"))
+                }
+                document.textSources?.removeValue(forKey: id.uuidString)
+            }
         case .linkMindMap(let link):
             var links = document.linkedMindMaps ?? []
             if let index = links.firstIndex(where: { $0.id == link.id }) { links[index] = link }
@@ -65,9 +77,16 @@ public enum NoteEdit: Codable, Hashable, Sendable {
             copy.id = UUID()
             // Fresh element identities so later edits/deletes never alias the
             // original page; drawing/background resources stay shared.
+            var copiedSources: [UUID: UUID] = [:]
             copy.elements = copy.elements.map { element in
                 var duplicate = element
                 duplicate.id = UUID()
+                if let sourceID = element.textSourceID, let sourceText = document.textSources?[sourceID.uuidString] {
+                    let independent = copiedSources[sourceID] ?? UUID()
+                    copiedSources[sourceID] = independent
+                    document.textSources?[independent.uuidString] = sourceText
+                    duplicate.textSourceID = independent
+                }
                 return duplicate
             }
             document.pages.insert(copy, at: index + 1)

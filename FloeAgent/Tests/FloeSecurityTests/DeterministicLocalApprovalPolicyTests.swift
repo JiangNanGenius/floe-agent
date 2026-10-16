@@ -995,7 +995,8 @@ struct DeterministicLocalApprovalPolicyTests {
             Issue.record("PDF rasterRedact must keep the consent review")
             return
         }
-        // A preapproved managed-Python skill request stays allowed.
+        // Historical exact Python audit data still decodes and matches here.
+        // The runtime rejects its retired tool name; this is NOT a grant to exec.shell.
         let script = "print(1)"
         let preapproved = ProposedAction(
             toolCall: try ToolCall(
@@ -1010,5 +1011,12 @@ struct DeterministicLocalApprovalPolicyTests {
             preapprovedPythonScriptSHA256: [FloeDigest.sha256Hex(Data(script.utf8))]
         )
         #expect(try await HumanApprovalPolicy().decide(preapproved).permitsExecution)
+        var shell = preapproved
+        shell.toolCall = try ToolCall(id: "shell-no-legacy-bypass", toolName: "exec.shell",
+            argumentsJSON: Data(#"{"command":"python3 -c 'print(1)'"}"#.utf8), scope: .local)
+        guard case .escalateToHuman = try await HumanApprovalPolicy().decide(shell) else {
+            Issue.record("Legacy Python fingerprints must not authorize Linux Shell without trusted task context")
+            return
+        }
     }
 }

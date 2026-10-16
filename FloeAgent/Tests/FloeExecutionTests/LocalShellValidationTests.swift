@@ -35,10 +35,9 @@ struct LocalShellValidationTests {
         #expect(registry.allDescriptors.contains { $0.name == "exec.shell" })
         let shellDescription = try #require(registry.allDescriptors.first { $0.name == "exec.shell" }?.toolDescription)
         #expect(shellDescription.contains("environment.linuxStatus"))
-        #expect(shellDescription.contains("environment.startLinux(vcpus=2)"))
-        // The per-family entries are advertised instead; without a signed WASM
-        // store the WASM entry stays absent rather than claiming availability.
-        #expect(registry.allDescriptors.contains { $0.name == "python.packages" })
+        #expect(shellDescription.contains("never the iOS host"))
+        // Language-specific package tools are retired; use Linux commands.
+        #expect(!registry.allDescriptors.contains { $0.name == "python.packages" })
         #expect(!registry.allDescriptors.contains { $0.name == "wasm.packages" })
         #expect(registry.runner(named: "wasm.packages") == nil)
     }
@@ -64,8 +63,8 @@ struct LocalShellValidationTests {
         #expect(install.exitStatus == 1)
         #expect(install.summary.contains("status=retired"))
         #expect(install.summary.contains("no changes were made"))
-        #expect(install.summary.contains("python.packages"))
-        #expect(install.summary.contains("wasm.packages"))
+        #expect(install.summary.contains("python3 -m pip"))
+        #expect(install.summary.contains("Settings"))
         // The read-only actions still answer catalog queries.
         let search = try await apt.execute(
             argumentsJSON: Data(#"{"action":"search","query":"marko"}"#.utf8), context: context)
@@ -86,13 +85,14 @@ struct LocalShellValidationTests {
         registerShellTools(registry: registry,
             shell: LocalShellService(backend: backend, rootProvider: { root }),
             sessions: ShellSessionCenter(backend: backend), capabilityInstaller: installer)
-        let tool = try #require(registry.runner(named: "python.packages"))
+        #expect(registry.runner(named: "python.packages") == nil)
+        let tool = AnyAgentTool(PythonPackageTool(installer: installer))
         let context = ToolContext(runID: UUID(), scope: .local, cancellation: CancellationToken())
         let wrong = try await tool.execute(
             argumentsJSON: Data(#"{"action":"install","ids":["floe/lua"],"purpose":"test"}"#.utf8),
             context: context)
         #expect(wrong.exitStatus == 1)
-        #expect(wrong.summary.contains("wasm.packages"))
+        #expect(wrong.summary.contains("Settings"))
         // list only surfaces the Python family.
         let list = try await tool.execute(argumentsJSON: Data(#"{"action":"list"}"#.utf8), context: context)
         #expect(list.summary.contains("floe/py-marko"))

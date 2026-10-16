@@ -67,6 +67,67 @@ final class ComposerDraftStore: ObservableObject {
         fileprivate let textGeneration: Int
     }
 
+    struct SendHandoffUpdate {
+        enum Phase { case began, accepted, failed }
+        var conversationID: UUID
+        var phase: Phase
+        var entry: Entry?
+    }
+    @Published private(set) var sendHandoffUpdate: SendHandoffUpdate?
+    private struct PendingSend {
+        var conversationID: UUID
+        var token: SendCommitToken
+        var text: String
+        var attachments: [AttachmentRef]
+    }
+    /// A projection over the SAME durable draft, not another draft store.
+    /// While launch is pending the underlying bytes remain recoverable after
+    /// process death, but reconstructed editors cannot present sent content.
+    private var pendingSends: [UUID: PendingSend] = [:]
+
+    private func pendingSend(for id: UUID) -> PendingSend? {
+        pendingSends.values.first { pending in
+            pending.conversationID == id && pending.token.textGeneration == (textGenerations[id] ?? 0)
+        }
+    }
+
+    func beginSendHandoff(id: UUID, conversationID: UUID, text: String, attachments: [AttachmentRef]) {
+        if pendingSends[id] != nil { return }
+        // Called before the first await, while the live editor is authoritative.
+        // Flush a final keystroke whose SwiftUI onChange has not run yet.
+        let current = bucket(for: conversationID)[conversationID]
+        let sentIDs = Set(attachments.map(\.id))
+        if current?.text != text || !sentIDs.isSubset(of: Set(current?.attachments.map(\.id) ?? [])) {
+            let existing = current?.attachments ?? []
+            let merged = existing + attachments.filter { value in !existing.contains(where: { $0.id == value.id }) }
+            save(text: text, attachments: merged, conversationID: conversationID)
+        }
+        pendingSends[id] = PendingSend(conversationID: conversationID,
+                                      token: sendCommitToken(for: conversationID), text: text, attachments: attachments)
+        sendHandoffUpdate = .init(conversationID: conversationID, phase: .began, entry: entry(for: conversationID))
+    }
+
+    @discardableResult
+    func acceptSendHandoff(id: UUID) -> Bool {
+        guard let pending = pendingSends.removeValue(forKey: id) else { return false }
+        clearAfterSend(conversationID: pending.conversationID, sentText: pending.text,
+                       sentAttachments: pending.attachments, sendToken: pending.token)
+        sendHandoffUpdate = .init(conversationID: pending.conversationID, phase: .accepted, entry: entry(for: pending.conversationID))
+        return true
+    }
+
+    @discardableResult
+    func failSendHandoff(id: UUID, allowTextRecovery: Bool) -> Bool {
+        guard let pending = pendingSends.removeValue(forKey: id) else { return false }
+        let matches = pending.token.textGeneration == (textGenerations[pending.conversationID] ?? 0)
+        if !allowTextRecovery && matches {
+            clearAfterSend(conversationID: pending.conversationID, sentText: pending.text,
+                           sentAttachments: pending.attachments, sendToken: pending.token)
+        }
+        sendHandoffUpdate = .init(conversationID: pending.conversationID, phase: .failed, entry: entry(for: pending.conversationID))
+        return matches && allowTextRecovery
+    }
+
     /// Outcome of the durable write pipeline. The composer surfaces
     /// `.failed` so a save problem is visible; nothing is silently dropped.
     enum WriteState: Equatable {
@@ -186,15 +247,22 @@ final class ComposerDraftStore: ObservableObject {
     // MARK: - Reads
 
     func entry(for conversationID: UUID) -> Entry? {
-        bucket(for: conversationID)[conversationID]
+        guard var value = bucket(for: conversationID)[conversationID] else { return nil }
+        if let pending = pendingSend(for: conversationID), value.text == pending.text {
+            value.text = ""
+            let sentIDs = Set(pending.attachments.map(\.id))
+            value.attachments.removeAll { sentIDs.contains($0.id) }
+            value.selectionLocation = nil; value.selectionLength = nil
+        }
+        return value
     }
 
     func text(for conversationID: UUID) -> String {
-        bucket(for: conversationID)[conversationID]?.text ?? ""
+        entry(for: conversationID)?.text ?? ""
     }
 
     func attachments(for conversationID: UUID) -> [AttachmentRef] {
-        bucket(for: conversationID)[conversationID]?.attachments ?? []
+        entry(for: conversationID)?.attachments ?? []
     }
 
     private func bucket(for conversationID: UUID) -> [UUID: Entry] {
@@ -285,11 +353,19 @@ final class ComposerDraftStore: ObservableObject {
         // The text generation tracks the *text*: a real change always
         // advances it (A → B → A is two changes, never zero), while an
         // attachment-only update leaves it where it was.
-        if text != entry.text {
+        let pending = pendingSend(for: conversationID)
+        let maskedEmpty = pending != nil && text.isEmpty && entry.text == pending?.text
+        let storedText = maskedEmpty ? entry.text : text
+        let textChanged = pending != nil ? (!maskedEmpty && !text.isEmpty) : storedText != entry.text
+        if textChanged {
             textGenerations[conversationID, default: 0] += 1
         }
-        entry.text = text
-        entry.attachments = attachments
+        entry.text = storedText
+        if maskedEmpty, let pending {
+            let sentIDs = Set(pending.attachments.map(\.id))
+            let preserved = current?.attachments.filter { sentIDs.contains($0.id) } ?? []
+            entry.attachments = preserved + attachments.filter { value in !preserved.contains(where: { $0.id == value.id }) }
+        } else { entry.attachments = attachments }
         entry.revision = next
         entry.updatedAt = Date()
         if let selection {
@@ -318,6 +394,8 @@ final class ComposerDraftStore: ObservableObject {
     /// text generation advances too: text saved after a clear is a new draft,
     /// never the one a pre-clear send token captured.
     func clear(conversationID: UUID) {
+        pendingSends = pendingSends.filter { $0.value.conversationID != conversationID }
+        if sendHandoffUpdate?.conversationID == conversationID { sendHandoffUpdate = nil }
         // Always drop both buckets: exclusion state must never resurrect a
         // stale durable draft for a converted temporary id.
         var removed = entries.removeValue(forKey: conversationID)

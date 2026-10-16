@@ -86,27 +86,17 @@ struct TextReaderSource {
     /// Text content of a Notes document in page order. Only `.text` elements
     /// are read; the document itself is untouched.
     static func notesText(_ document: NoteDocument) -> (text: String, hasNonTextContent: Bool) {
-        var segments: [String] = []
-        var hasNonText = false
-        for page in document.pages {
-            if page.drawingResourceID != nil || page.backgroundResourceID != nil { hasNonText = true }
-            for element in page.elements {
-                switch element.kind {
-                case .text:
-                    if !element.text.isEmpty { segments.append(element.text) }
-                default:
-                    hasNonText = true
-                }
-            }
-            // A page boundary is a paragraph boundary in reading mode.
-            segments.append("")
+        let hasNonText = document.pages.contains { page in
+            page.drawingResourceID != nil || page.backgroundResourceID != nil || page.elements.contains { $0.kind != .text }
         }
-        return (segments.joined(separator: "\n"), hasNonText)
+        return (NoteTextContent.reading(document).text, hasNonText)
     }
 
     static func notes(document: NoteDocument) -> TextReaderSource {
         let extracted = notesText(document)
-        let data = Data(extracted.text.utf8)
+        let markdown = document.pages.contains { $0.elements.contains { $0.kind == .text && $0.isMarkdown } }
+        let presentation = markdown ? NoteTextContent.readerMarkdown(extracted.text) : extracted.text
+        let data = Data(presentation.utf8)
         let fingerprint = dataFingerprint(data, revision: document.revision)
         return TextReaderSource(
             kind: .notesDocument,
@@ -114,7 +104,7 @@ struct TextReaderSource {
             documentKey: document.id.uuidString,
             displayName: document.title,
             format: "notes",
-            markdown: false,
+            markdown: markdown,
             isRemoteSnapshot: false,
             persistsPosition: true,
             hasNonTextContent: extracted.hasNonTextContent,

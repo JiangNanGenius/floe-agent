@@ -107,7 +107,7 @@ struct NativeJobExecutionTests {
         let (db, conversation, run, workspace) = try await fixture()
         defer { try? FileManager.default.removeItem(at: workspace) }
         let registry = ToolRunnerRegistry()
-        registerEcho(registry, name: "exec.localPython")
+        registerEcho(registry, name: "exec.shell")
         let service = BackgroundJobService(store: BackgroundJobStore(database: db), registry: registry)
         let childID = UUID()
         let identity = ChildExecutionIdentity(parentRunID: run, rootTaskID: conversation, delegateCallID: "delegate-1")
@@ -116,7 +116,7 @@ struct NativeJobExecutionTests {
 
         // (1) A delegated-child origin WITHOUT the runtime child handoff.
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: "f1", targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: "f1", targetTool: "exec.shell",
                 payloadJSON: payload(), scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                 callOrigin: ToolCallOrigin(kind: .delegatedChild, runID: run, callID: "f1",
                                            toolName: "jobs.submit", childID: childID, rootTaskID: conversation),
@@ -124,20 +124,20 @@ struct NativeJobExecutionTests {
         }
         // (2) A child handoff with NO origin.
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: "f2", targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: "f2", targetTool: "exec.shell",
                 payloadJSON: payload(), scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                 childExecution: handoff, submissionSource: .runtime)
         }
         // (3) A child handoff contradicted by a main-run origin.
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: "f3", targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: "f3", targetTool: "exec.shell",
                 payloadJSON: payload(), scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                 callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run, callID: "f3", toolName: "jobs.submit"),
                 childExecution: handoff, submissionSource: .runtime)
         }
         // (4) A child origin whose child identity does not match the handoff.
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: "f4", targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: "f4", targetTool: "exec.shell",
                 payloadJSON: payload(), scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                 callOrigin: ToolCallOrigin(kind: .delegatedChild, runID: run, callID: "f4",
                                            toolName: "jobs.submit", childID: UUID(), rootTaskID: conversation),
@@ -145,7 +145,7 @@ struct NativeJobExecutionTests {
         }
         // (5) An origin bound to a different tool (tool-name binding).
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: "f5", targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: "f5", targetTool: "exec.shell",
                 payloadJSON: payload(), scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                 callOrigin: ToolCallOrigin(kind: .delegatedChild, runID: run, callID: "f5",
                                            toolName: "delegate", childID: identity.childID, rootTaskID: conversation),
@@ -153,7 +153,7 @@ struct NativeJobExecutionTests {
         }
         // (6) A main-run origin carrying a child identity.
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: "f6", targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: "f6", targetTool: "exec.shell",
                 payloadJSON: payload(), scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                 callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run, callID: "f6",
                                            toolName: "jobs.submit", childID: childID),
@@ -161,7 +161,7 @@ struct NativeJobExecutionTests {
         }
         // (7) A main-run origin for a different run.
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: "f7", targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: "f7", targetTool: "exec.shell",
                 payloadJSON: payload(), scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                 callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: UUID(), callID: "f7", toolName: "jobs.submit"),
                 submissionSource: .runtime)
@@ -169,14 +169,14 @@ struct NativeJobExecutionTests {
         // (8) NO origin at all: there is no nil-origin fallback to main-run
         // for a runtime-dispatched submission.
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: "f8", targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: "f8", targetTool: "exec.shell",
                 payloadJSON: payload(), scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                 submissionSource: .runtime)
         }
         // (9) A wrapper tool forwarding the same run/call identity but bound to
         // its own tool name is refused.
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: "f9", targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: "f9", targetTool: "exec.shell",
                 payloadJSON: payload(), scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                 callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run, callID: "f9",
                                            toolName: "workspace.writeFile"),
@@ -186,7 +186,7 @@ struct NativeJobExecutionTests {
         // origin alone (a reconstructed context that dropped only the call id)
         // is refused.
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: nil, targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: nil, targetTool: "exec.shell",
                 payloadJSON: payload(), scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                 callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run, callID: "f10", toolName: "jobs.submit"),
                 submissionSource: .runtime)
@@ -199,8 +199,8 @@ struct NativeJobExecutionTests {
         let (db, conversation, run, workspace) = try await fixture()
         defer { try? FileManager.default.removeItem(at: workspace) }
         let registry = ToolRunnerRegistry()
-        registerEcho(registry, name: "exec.localPython")
         registerEcho(registry, name: "exec.shell")
+        registerEcho(registry, name: "network.http")
         let store = BackgroundJobStore(database: db)
         let service = BackgroundJobService(store: store, registry: registry)
         let identity = ChildExecutionIdentity(parentRunID: run, rootTaskID: conversation, delegateCallID: "delegate-1")
@@ -211,14 +211,14 @@ struct NativeJobExecutionTests {
 
         // Same target as a main-run call with the parent's effective ceiling.
         let job = try await service.submit(
-            runID: run, toolCallID: "c1", targetTool: "exec.localPython",
+            runID: run, toolCallID: "c1", targetTool: "exec.shell",
             payloadJSON: Data(#"{"script":"1"}"#.utf8), scope: .local,
             workspaceRootURL: workspace, allowedWorkspacePaths: ["scripts"],
-            environmentID: "env-1", allowedToolNames: ["jobs.submit", "exec.localPython"],
+            environmentID: "env-1", allowedToolNames: ["jobs.submit", "exec.shell"],
             callOrigin: childOrigin, childExecution: handoff, submissionSource: .runtime)
         let terminal = try await waitForTerminal(service, id: job.id)
         #expect(terminal.state == .completed)
-        #expect(terminal.resultSummary == "echo:exec.localPython")
+        #expect(terminal.resultSummary == "echo:exec.shell")
         let document = try #require(NativeJobProgressDocument.decode(terminal.progressJSON))
         #expect(document.origin?.kind == .delegatedChild)
         #expect(document.origin?.childID == identity.childID)
@@ -227,10 +227,10 @@ struct NativeJobExecutionTests {
         // A target OUTSIDE the child's inherited ceiling is refused.
         await #expect(throws: (any Error).self) {
             try await service.submit(
-                runID: run, toolCallID: "c2", targetTool: "exec.shell",
+                runID: run, toolCallID: "c2", targetTool: "network.http",
                 payloadJSON: Data(#"{"command":"true"}"#.utf8), scope: .local,
                 workspaceRootURL: workspace, allowedWorkspacePaths: [],
-                allowedToolNames: ["jobs.submit", "exec.localPython"],
+                allowedToolNames: ["jobs.submit", "exec.shell"],
                 callOrigin: ToolCallOrigin(kind: .delegatedChild, runID: run, callID: "c2",
                                            toolName: "jobs.submit", childID: identity.childID,
                                            rootTaskID: conversation),
@@ -240,10 +240,10 @@ struct NativeJobExecutionTests {
         let otherTask = UUID()
         await #expect(throws: (any Error).self) {
             try await service.submit(
-                runID: run, toolCallID: "c3", targetTool: "exec.localPython",
+                runID: run, toolCallID: "c3", targetTool: "exec.shell",
                 payloadJSON: Data(#"{"script":"1"}"#.utf8), scope: .local,
                 workspaceRootURL: workspace, allowedWorkspacePaths: [],
-                allowedToolNames: ["jobs.submit", "exec.localPython"],
+                allowedToolNames: ["jobs.submit", "exec.shell"],
                 callOrigin: ToolCallOrigin(kind: .delegatedChild, runID: run, callID: "c3",
                                            toolName: "jobs.submit", childID: identity.childID,
                                            rootTaskID: otherTask),
@@ -302,14 +302,14 @@ struct NativeJobExecutionTests {
         defer { try? FileManager.default.removeItem(at: workspace) }
         let registry = ToolRunnerRegistry()
         let executed = ExecutedTargets()
-        registerEcho(registry, name: "exec.localPython", executed: executed)
+        registerEcho(registry, name: "exec.shell", executed: executed)
         let store = BackgroundJobStore(database: db)
         // Register the REAL jobs.* tools through the production registration
         // path, then reach jobs.submit exactly like a reconstructed wrapper
         // context would: through the raw registered registry entry.
         let service = registerBackgroundJobTools(database: db, registry: registry)
         let raw = try #require(registry.runner(named: JobsSubmitTool.name))
-        let arguments = Data(#"{"tool":"exec.localPython","arguments":"{\"script\":\"1\"}"}"#.utf8)
+        let arguments = Data(#"{"tool":"exec.shell","arguments":"{\"script\":\"1\"}"}"#.utf8)
 
         // (a) ALL provenance stripped: no call id, no origin, no child
         // handoff. Before this fix the runtime source admitted this shape as an
@@ -356,8 +356,8 @@ struct NativeJobExecutionTests {
         let jobID = try #require(extractJobID(output.summary))
         let terminal = try await waitForTerminal(service, id: jobID)
         #expect(terminal.state == .completed)
-        #expect(terminal.resultSummary == "echo:exec.localPython")
-        #expect(await executed.names == ["exec.localPython"])
+        #expect(terminal.resultSummary == "echo:exec.shell")
+        #expect(await executed.names == ["exec.shell"])
         #expect(try await store.jobs(conversationID: conversation).count == 1)
     }
 
@@ -392,25 +392,25 @@ struct NativeJobExecutionTests {
         let (db, conversation, run, workspace) = try await fixture()
         defer { try? FileManager.default.removeItem(at: workspace) }
         let registry = ToolRunnerRegistry()
-        registerEcho(registry, name: "exec.localPython")
+        registerEcho(registry, name: "exec.shell")
         let store = BackgroundJobStore(database: db)
         let service = BackgroundJobService(store: store, registry: registry)
         // A different task id in the payload is refused.
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: "s1", targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: "s1", targetTool: "exec.shell",
                 payloadJSON: Data(#"{"script":"1","task_id":"\#(UUID().uuidString)"}"#.utf8),
                 scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                 submissionSource: .nativeService)
         }
         // A different environment is refused.
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: "s2", targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: "s2", targetTool: "exec.shell",
                 payloadJSON: Data(#"{"script":"1","environment_id":"other"}"#.utf8),
                 scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                 environmentID: "env-1", submissionSource: .nativeService)
         }
         // The submitting task/environment themselves are admitted.
-        let job = try await service.submit(runID: run, toolCallID: "s3", targetTool: "exec.localPython",
+        let job = try await service.submit(runID: run, toolCallID: "s3", targetTool: "exec.shell",
             payloadJSON: Data(#"{"script":"1","task_id":"\#(conversation.uuidString)","environment_id":"env-1"}"#.utf8),
             scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
             environmentID: "env-1", submissionSource: .nativeService)
@@ -741,7 +741,7 @@ struct NativeJobExecutionTests {
         let store = BackgroundJobStore(database: db)
         let interrupted = try await store.save(BackgroundJob(
             conversationID: conversation, runID: run, kind: .tool,
-            targetTool: "exec.localPython", payloadJSON: Data("{}".utf8),
+            targetTool: "exec.shell", payloadJSON: Data("{}".utf8),
             state: .running))
         let service = BackgroundJobService(store: store, registry: ToolRunnerRegistry())
         _ = try await service.reconcileInterruptedOnLaunch()

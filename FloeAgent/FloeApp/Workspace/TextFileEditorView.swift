@@ -310,15 +310,14 @@ struct TextFileEditorView: View {
             return
         }
         do {
-            if toolName == "exec.shell", (relativePath as NSString).pathExtension.lowercased() != "sh" {
+            guard let command = language.runCommand(source: text, relativePath: relativePath) else {
                 runOutput = CodeRunOutput(title: FloeL10n.l("workspace.text_file_editor_view.unsupported_shell_dialect"), text: FloeL10n.l("workspace.text_file_editor_view.local_execution_uses_posix_sh_convert"))
                 return
             }
-            var values: [String: Any] = ["script": text, "timeout": 30, "maxOutputBytes": 262_144]
-            if toolName == "exec.shell" {
-                let directory = (relativePath as NSString).deletingLastPathComponent
-                values["cwd"] = directory.isEmpty ? "." : directory
-            }
+            let directory = (relativePath as NSString).deletingLastPathComponent
+            let values: [String: Any] = ["command": command, "timeout": 30,
+                                       "maxOutputBytes": 262_144,
+                                       "cwd": directory.isEmpty ? "." : directory]
             let arguments = try JSONSerialization.data(withJSONObject: values)
             let cancellation = CancellationToken()
             runCancellation = cancellation

@@ -1,5 +1,14 @@
 # Floe Local Shell Substrate — Architecture
 
+## 当前执行入口 / Current execution entry points (2026-10-17)
+
+模型代码统一使用任务所属 Linux 环境中的 `exec.shell`：Python、JavaScript 和其他语言通过实际安装的命令运行。耗时工作使用现有 `jobs.submit`，网页服务使用 `exec.localService`；HTML 静态预览使用 `runtime=static`。`exec.localPython`、`exec.javascript`、`exec.compatEvaluator`、`exec.wasm`、`python.packages` 和 `wasm.packages` 不再注册，旧任务不会自动重放。缺少 Linux 环境或运行时返回明确错误，不回退执行宿主代码。内部文档处理服务和用户既有安装不因工具退役被删除。
+
+Model code runs through `exec.shell` in the task-owned Linux environment. Use installed language commands, existing jobs for long work, and `exec.localService` for services (`runtime=static` for HTML). The six legacy language/package tools listed above are no longer registered. Old jobs are not replayed, and an unavailable guest never falls back to host execution. Internal document services and existing user installations are retained.
+
+以下历史实现与测试记录保留其日期边界；“Native”兼容执行描述不代表当前模型可用入口。Historical implementation and test records below do not advertise a current native-host execution option.
+
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 Status: 1.7 current. TinyEMU/Linux is the primary local runtime (see

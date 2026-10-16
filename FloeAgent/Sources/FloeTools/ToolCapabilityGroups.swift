@@ -10,7 +10,6 @@ public enum ToolCapabilityGroups {
         if name == "exec.localService" { return "jobs" }
         if name == "exec.shell" || name.hasPrefix("shell.") { return "shell" }
         if name == "apt" { return "packages" }
-        if name == "exec.localPython" { return "python" }
         if name.hasPrefix("cad.") { return "cad" }
         if name.hasPrefix("document.pdf.") { return "pdf" }
         if name.hasPrefix("document.") || name.hasPrefix("font.") { return "office" }
@@ -57,7 +56,8 @@ public enum ToolRoutingPolicy {
     /// True when the tool runs inside the Linux guest (shell, interpreter,
     /// package manager or guest server).
     public static func isInterpreterTool(_ name: String) -> Bool {
-        CapabilityExecutionRouter.decision(for: name).backend == .linuxGuest
+        !RetiredExecutionTools.contains(name)
+            && CapabilityExecutionRouter.decision(for: name).backend == .linuxGuest
     }
 
     /// The group names that must not be auto-expanded for a native-media task

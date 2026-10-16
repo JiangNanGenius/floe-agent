@@ -64,6 +64,22 @@ private struct UnrunTool: AgentTool {
 
 @Suite("FloeTools.ToolRunnerRegistry")
 struct ToolRunnerRegistryTests {
+    @Test func retiredExecutionNamesCannotBeRegisteredAsRunners() {
+        let registry = ToolRunnerRegistry()
+        let spellings = RetiredExecutionTools.names.flatMap { [$0, $0.replacingOccurrences(of: ".", with: "_")] }
+        for name in spellings {
+            var tool = AnyAgentTool(EchoRunnerTool())
+            tool.descriptor.name = name
+            registry.register(tool)
+            registry.register(tool, compatibilityOnly: true)
+            #expect(registry.runner(named: name) == nil)
+            #expect(registry.descriptor(named: name) == nil)
+        }
+        #expect(registry.allDescriptors.isEmpty)
+        registry.register(EchoRunnerTool())
+        #expect(registry.runner(named: EchoRunnerTool.name) != nil)
+    }
+
     @Test func availabilityAppliesToDiscoveryLookupAndCapturedRunners() async throws {
         final class State: @unchecked Sendable {
             let lock = NSLock()

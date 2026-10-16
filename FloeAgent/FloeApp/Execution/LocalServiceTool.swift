@@ -29,7 +29,7 @@ struct LocalServiceProgress: Codable, Sendable {
 /// left attached to a foreground executor that later times out.
 func registerLocalServiceCommand(service: BackgroundJobService, store: BackgroundJobStore) {
     FloeShellCommandRegistry.shared.register("floe-service") { arguments, stdout, stderr in
-        let usage = "floe-service start node|python|shell ENTRY PORT [-- ARGS...] | list | status JOB_ID | logs JOB_ID | stop JOB_ID | restart JOB_ID\nUse a workspace-relative entry script; bind 127.0.0.1 using PORT. Services survive replies and closed previews, not app termination.\n"
+        let usage = "floe-service start node|python|shell|static ENTRY PORT [-- ARGS...] | list | status JOB_ID | logs JOB_ID | stop JOB_ID | restart JOB_ID\nUse a workspace-relative entry script or HTML file; scripts listen on guest interface 10.0.2.15 using PORT, and the host preview binds only 127.0.0.1. Services survive replies and closed previews, not app termination.\n"
         let args = Array(arguments.dropFirst())
         if args.isEmpty || args == ["--help"] { FloeShellWrite(stdout, usage); return 0 }
         guard let context = FloeShellCommandRegistry.shared.context, let environment = context.environment else {
@@ -131,8 +131,8 @@ struct LocalServiceTool: AgentTool {
     private static func reserve(_ port: Int) -> Bool { portsLock.withLock { reservedPorts.insert(port).inserted } }
     private static func release(_ port: Int) { portsLock.withLock { _ = reservedPorts.remove(port) } }
     static let name = "exec.localService"
-    static let toolDescription = "Persistent local Node/Python/Shell HTTP service inside the task environment's Linux guest. Invoke through jobs.submit with this target; do not call directly. entry is an existing workspace-relative script, cwd defaults to workspace root, port is 1024..65535. The guest process binds loopback inside the VM and Floe forwards it to 127.0.0.1; PORT/FLOE_SERVICE_PORT are set to port. Closing a tool turn or browser tab does not stop the server. jobs.status exposes bounded live logs and a previewURL only after HTTP responds; jobs.cancel waits for actual guest process exit. Stopping the environment or the app stops the guest and its services; explicitly restart if still needed."
-    static let parametersJSON = #"{"type":"object","properties":{"runtime":{"type":"string","enum":["node","python","shell"]},"entry":{"type":"string","maxLength":2048,"description":"Workspace-relative path to an existing entry script (checked when the job is submitted)"},"arguments":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":2048}},"cwd":{"type":"string","maxLength":2048,"description":"Workspace-relative working directory (default: workspace root; must exist)"},"port":{"type":"integer","minimum":1024,"maximum":65535,"description":"Loopback port the service binds (1024..65535); the server reads PORT/FLOE_SERVICE_PORT"}},"required":["runtime","entry","port"],"additionalProperties":false}"#
+    static let toolDescription = "Persistent local Node/Python/Shell HTTP service or static HTML preview inside the task environment's Linux guest. Invoke through jobs.submit with this target; do not call directly. entry is an existing workspace-relative script or HTML file. cwd is workspace-relative and defaults to the workspace root for every runtime; the static HTTP document root is the HTML parent. entry remains workspace-relative in both cases. Static preview uses a fixed HTTP server and accepts no arguments. port is 1024..65535. Static HTTP binds the guest DHCP interface and Floe forwards it only to host 127.0.0.1; PORT/FLOE_SERVICE_PORT are set to port. Closing a tool turn or browser tab does not stop the server. jobs.status exposes bounded live logs and a previewURL only after HTTP responds; jobs.cancel waits for actual guest process exit. Stopping the environment or the app stops the guest and its services; explicitly restart if still needed."
+    static let parametersJSON = #"{"type":"object","properties":{"runtime":{"type":"string","enum":["node","python","shell","static"]},"entry":{"type":"string","maxLength":2048,"description":"Workspace-relative path to an existing script, or .html/.htm for static (checked on submission)"},"arguments":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":2048}},"cwd":{"type":"string","maxLength":2048,"description":"Workspace-relative working directory (defaults to workspace root; static HTTP serves entry parent independently; must exist)"},"port":{"type":"integer","minimum":1024,"maximum":65535,"description":"Port exposed on host loopback (1024..65535); scripts read PORT/FLOE_SERVICE_PORT"}},"required":["runtime","entry","port"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.executesLocalCode, .readsFiles, .writesFiles, .deletesFiles, .networkAccess]
     static let isSideEffecting = true
     let store: BackgroundJobStore
@@ -151,17 +151,24 @@ struct LocalServiceTool: AgentTool {
         self.onServiceReady = onServiceReady
     }
 
-    private static func responds(_ session: URLSession, request: URLRequest) async -> Bool {
+    private static func responds(_ session: URLSession, request: URLRequest, successfulOnly: Bool = false) async -> Bool {
         do {
             let (bytes, response) = try await session.bytes(for: request)
             defer { bytes.task.cancel() } // HEAD may still receive a noncompliant, unbounded body.
-            return response is HTTPURLResponse
+            guard let response = response as? HTTPURLResponse else { return false }
+            return !successfulOnly || (200..<300).contains(response.statusCode)
         } catch { return false }
     }
 
     func validate(_ args: Arguments) throws {
-        guard ["node", "python", "shell"].contains(args.runtime) else {
-            throw FloeError.validationFailed("exec.localService runtime must be 'node', 'python' or 'shell', got '\(args.runtime)'")
+        guard ["node", "python", "shell", "static"].contains(args.runtime) else {
+            throw FloeError.validationFailed("exec.localService runtime must be node, python, shell or static, got '\(args.runtime)'")
+        }
+        if args.runtime == "static", !["html", "htm"].contains(URL(fileURLWithPath: args.entry).pathExtension.lowercased()) {
+            throw FloeError.validationFailed("Static preview requires an HTML file")
+        }
+        if args.runtime == "static", !(args.arguments ?? []).isEmpty {
+            throw FloeError.validationFailed("Static preview does not accept script arguments")
         }
         guard !args.entry.isEmpty, args.entry.utf8.count <= 2048, !args.entry.contains("\0") else {
             throw FloeError.validationFailed("exec.localService entry must be a non-empty workspace-relative path (max 2048 bytes)")
@@ -189,7 +196,7 @@ struct LocalServiceTool: AgentTool {
         // guest code with the workspace share mounted; while this run owns
         // frozen design originals it is denied BEFORE dispatch (jobs.submit
         // replays funnel through here too).
-        if let denial = DesignGuestWriteGate.arbitraryCodeDenial(context: context) {
+        if args.runtime != "static", let denial = DesignGuestWriteGate.arbitraryCodeDenial(context: context) {
             return ToolExecutionOutput(digesting: denial.message, exitStatus: 126)
         }
         try context.authorizeWorkspacePath(args.entry)
@@ -305,7 +312,8 @@ struct LocalServiceTool: AgentTool {
         var stopRequested = false
         var stopSent = false
         var announcedReady = false
-        var probeRequest = URLRequest(url: endpoint); probeRequest.httpMethod = "HEAD"
+        let previewEndpoint = args.runtime == "static" ? endpoint.appendingPathComponent(entry.lastPathComponent) : endpoint
+        var probeRequest = URLRequest(url: previewEndpoint); probeRequest.httpMethod = "HEAD"
         while true {
             if context.cancellation.isCancelled { stopRequested = true }
             if stopRequested && !stopSent {
@@ -324,8 +332,8 @@ struct LocalServiceTool: AgentTool {
             if stopRequested {
                 snapshot.state = "stopping"; snapshot.previewURL = nil
                 BrowserURLPolicy.revokeService(owner: jobID)
-            } else if snapshot.state == "running", await responds(probe, request: probeRequest) {
-                snapshot.previewURL = endpoint.absoluteString
+            } else if snapshot.state == "running", await responds(probe, request: probeRequest, successfulOnly: args.runtime == "static") {
+                snapshot.previewURL = previewEndpoint.absoluteString
                 BrowserURLPolicy.authorizeService(endpoint, owner: jobID, conversationID: conversationID)
                 // First verified readiness: announce once so the app can
                 // settle the durable dependency edge and resume a parked run

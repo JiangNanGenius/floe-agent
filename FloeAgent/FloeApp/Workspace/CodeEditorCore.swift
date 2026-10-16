@@ -119,11 +119,24 @@ enum CodeLanguage: Equatable {
 
     var runnableToolName: String? {
         switch self {
-        case .shell: "exec.shell"
-        case .python: "exec.localPython"
-        case .javascript: "exec.javascript"
+        case .shell, .python: "exec.shell"
+        case .javascript(let name): name == "TypeScript" ? nil : "exec.shell"
         default: nil
         }
+    }
+
+    func runCommand(source: String, relativePath: String) -> String? {
+        let argv: [String]
+        switch self {
+        case .python: argv = ["python3", "-c", source]
+        case .javascript(let name) where name != "TypeScript": argv = ["node", "-e", source]
+        case .shell:
+            let ext = (relativePath as NSString).pathExtension.lowercased()
+            guard ["sh", "bash", "zsh", "fish"].contains(ext) else { return nil }
+            argv = [ext, "-c", source]
+        default: return nil
+        }
+        return IDELanguageRunPolicy.shellCommand(argv)
     }
 
     func symbols(in source: String) -> [(offset: Int, label: String)] {

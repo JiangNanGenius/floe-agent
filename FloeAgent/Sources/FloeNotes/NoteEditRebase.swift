@@ -36,6 +36,8 @@ extension NoteEdit {
                 && a.backgroundResourceID == b.backgroundResourceID && a.pdfPageIndex == b.pdfPageIndex
         }
         switch self {
+        case .textSource(let id, _):
+            return base.textSources?[id.uuidString] == current.textSources?[id.uuidString]
         case .rename: return base.title == current.title
         case .moveToNotebook: return base.notebookID == current.notebookID
         case .favorite: return base.isFavorite == current.isFavorite

@@ -96,7 +96,8 @@ struct NativeMediaRoutingTests {
 
     @Test func interpreterGroupsAreDerivedFromOfferedTools() {
         let groups = ToolRoutingPolicy.interpreterGroups(among: ["exec.shell", "shell.open", "exec.localPython", "clipboard.read"])
-        #expect(groups == ["shell", "python"])
+        #expect(groups == ["shell"])
+        #expect(!ToolRoutingPolicy.isInterpreterTool("exec.localPython"))
         #expect(ToolRoutingPolicy.isNativeMediaTool("document.pdf.merge"))
         #expect(ToolRoutingPolicy.isNativeMediaTool("canvas.generate"))
         #expect(!ToolRoutingPolicy.isNativeMediaTool("workspace.readFile"))
@@ -132,7 +133,7 @@ struct NativeMediaRoutingTests {
         let found = ToolDiscovery.matches(query: "把这个视频转码成 mp4", descriptors: available).map(\.name)
         // OCR does not cover video encoding: the guest route stays discoverable
         // and the unrelated native tool is not offered as coverage.
-        #expect(found == ["exec.shell", "exec.localPython"])
+        #expect(found == ["exec.shell"])
     }
 
     @Test func explicitInterpreterRequestIsAlwaysReturned() {
@@ -150,7 +151,7 @@ struct NativeMediaRoutingTests {
         let available = ["exec.shell", "exec.localPython", "workspace.readFile"].map(descriptor)
         let found = ToolDiscovery.matches(query: "批量处理视频", descriptors: available).map(\.name)
         #expect(found.contains("exec.shell"))
-        #expect(found.contains("exec.localPython"))
+        #expect(!found.contains("exec.localPython"))
     }
 
     @Test func mixedTaskPrefersMatchedNativeAndKeepsOtherGroups() {
@@ -195,7 +196,7 @@ struct NativeMediaRoutingTests {
         #expect(!index.contains("Media rule"))
 
         let pythonOnly = ToolDiscovery.index(["video.transcode", "exec.localPython"].map(descriptor))
-        #expect(pythonOnly.contains("exec.localPython"))
+        #expect(!pythonOnly.contains("exec.localPython"))
         #expect(!pythonOnly.contains("exec.shell"))
     }
 

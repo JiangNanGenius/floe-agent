@@ -4,6 +4,20 @@ import Foundation
 import FloeCore
 import Crypto
 
+/// Removed execution names cannot be reactivated by stale or dynamic registration.
+public enum RetiredExecutionTools {
+    public static let names: Set<String> = [
+        "exec.localPython", "exec.javascript", "exec.compatEvaluator", "exec.wasm",
+        "python.packages", "wasm.packages"
+    ]
+
+    public static func contains(_ name: String) -> Bool {
+        let canonical = ToolAliasTable.canonical(name)
+        return names.contains(canonical)
+            || names.contains { $0.replacingOccurrences(of: ".", with: "_") == canonical }
+    }
+}
+
 /// Registry of every tool the agent may invoke. Tools are compiled in;
 /// there is no dynamic loading, download, or plugin mechanism.
 public enum ToolCatalog {
@@ -152,6 +166,7 @@ public enum ToolCatalog {
         private let lock = NSLock()
 
         func register(_ descriptor: Descriptor, compatibilityOnly: Bool = false) {
+            guard !RetiredExecutionTools.contains(descriptor.name) else { return }
             lock.lock()
             descriptors[descriptor.name] = descriptor
             if compatibilityOnly { compatibilityNames.insert(descriptor.name) } else { compatibilityNames.remove(descriptor.name) }

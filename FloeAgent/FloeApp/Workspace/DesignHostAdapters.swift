@@ -56,6 +56,8 @@ struct AppWorkspaceFilePort: DesignWorkspaceFilePort {
     ) async throws -> DesignResolvedFile {
         let (record, root) = try await resolveWorkspace(workspaceID)
         try await requireRunWorkspace(runID: runID, workspaceID: record.id)
+        let accessing = root.startAccessingSecurityScopedResource()
+        defer { if accessing { root.stopAccessingSecurityScopedResource() } }
         let service = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root))
         let metadata = try service.metadata(reference)
         guard metadata.size <= Self.maxSourceBytes else {
@@ -66,8 +68,6 @@ struct AppWorkspaceFilePort: DesignWorkspaceFilePort {
         // Read through the same guard (size caps, secret denial,
         // containment). Binary-capable full read.
         let url = try WorkspacePathGuard(rootURL: root).resolve(reference)
-        let accessing = root.startAccessingSecurityScopedResource()
-        defer { if accessing { root.stopAccessingSecurityScopedResource() } }
         let data = try Data(floeContentsOf: url, options: [.mappedIfSafe])
         let actual = FloeDigest.sha256Hex(data)
         guard Int64(data.count) <= Self.maxSourceBytes else {
@@ -153,7 +153,30 @@ struct AppWorkspaceFilePort: DesignWorkspaceFilePort {
         return (record, try Self.resolveRoot(record))
     }
 
-    static func resolveRoot(_ record: WorkspaceRecord) throws -> URL {
+    static func resolveRoot(_ record: WorkspaceRecord, applicationSupportURL: URL? = nil) throws -> URL {
+        if record.kind == .privateTask {
+            guard let relative = record.internalRelativePath else {
+                throw DesignTargetError.invalidReference("Missing private workspace path")
+            }
+            let components = relative.split(separator: "/", omittingEmptySubsequences: false)
+            guard components.count == 2, components[0] == "PrivateTasks",
+                  UUID(uuidString: String(components[1])) != nil else {
+                throw DesignTargetError.invalidReference("Invalid private workspace path")
+            }
+            let support = try applicationSupportURL ?? FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: false)
+            let base = support.resolvingSymlinksInPath()
+                .appendingPathComponent("FloeAgent/PrivateTasks", isDirectory: true).standardizedFileURL
+            let root = base.appendingPathComponent(String(components[1]), isDirectory: true)
+            // Directory URL flags/trailing slashes can differ for a not-yet-
+            // created task directory. Compare canonical filesystem paths.
+            guard base.resolvingSymlinksInPath().path == base.path,
+                  root.resolvingSymlinksInPath().path == root.path else {
+                throw DesignTargetError.invalidReference("Invalid private workspace location")
+            }
+            return root
+        }
         var isStale = false
         return try URL(
             resolvingBookmarkData: record.rootBookmark,
@@ -866,13 +889,7 @@ struct WorkspaceFileOwnerCommitPort: DesignOwnerCommitPort {
               let record = try await workspaceStore.workspace(id: workspaceUUID) else {
             throw DesignOwnerCommitError.notWritten("the workspace source no longer exists")
         }
-        var isStale = false
-        let root = try URL(
-            resolvingBookmarkData: record.rootBookmark,
-            options: [],
-            relativeTo: nil,
-            bookmarkDataIsStale: &isStale
-        )
+        let root = try AppWorkspaceFilePort.resolveRoot(record)
         return (record.id, root, WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root)))
     }
 

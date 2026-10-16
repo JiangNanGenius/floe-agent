@@ -470,26 +470,15 @@ private struct EnvironmentDetailView: View {
                     imageInstallControls
                 }
             }
-            // Execution backend: Linux is the default since the Phase 2
-            // migration (shell/Python/Node/services run inside this
-            // environment's TinyEMU guest); native is the explicit
-            // compatibility backend (POSIX shell subset, no Python/Node).
+            // Commands use Linux. Legacy environments retain their files and
+            // need an explicit enable action rather than a hidden host fallback.
             // Running Python, Node or Shell prepares and leases this
             // environment automatically, so there is no manual VM start
             // control here — only the real per-environment state, the guest
             // runtimes and the active VM, plus an explicit stop.
             Section("environment.backend.title") {
-                Picker("environment.backend.picker", selection: $backendSelection) {
-                    Text("environment.backend.native").tag(EnvironmentExecutionBackend.native)
-                    Text("environment.backend.linux").tag(EnvironmentExecutionBackend.linuxVM)
-                }
-                .pickerStyle(.segmented)
-                .disabled(!backendEditable)
-                .onChange(of: backendSelection) { _, newValue in
-                    guard newValue != backendApplied else { return }
-                    apply(backend: newValue)
-                }
                 if backendSelection == .linuxVM {
+                    LabeledContent("environment.backend.picker", value: "Linux")
                     if let status = guestStatus {
                         LabeledContent("environment.backend.status", value: status.running ? String(localized: "environment.backend.status.running") : String(localized: "environment.backend.status.stopped"))
                         if status.running {
@@ -521,9 +510,13 @@ private struct EnvironmentDetailView: View {
                         ProgressView().controlSize(.small)
                     }
                 } else {
-                    Text("environment.backend.native_hint")
-                        .font(.caption2)
+                    Text(OfficeInkText.t("此环境尚未启用 Linux。现有文件会保留。", "Linux is not enabled for this environment. Your existing files are preserved."))
+                        .font(.callout)
                         .foregroundStyle(.secondary)
+                    Button(OfficeInkText.t("启用 Linux", "Enable Linux")) {
+                        apply(backend: .linuxVM)
+                    }
+                    .disabled(!backendEditable || backendBusy)
                 }
             }
             // VERIFIED disk repair: only present while a durable repair

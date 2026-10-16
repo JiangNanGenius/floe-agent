@@ -782,6 +782,42 @@ struct ComposerMeasurementHardeningTests {
         #expect(reports == [false])
     }
 
+    @Test("Missing font attributes use the visible field font without changing the source")
+    func inheritedFontMeasurement() {
+        let text = String(repeating: "中文English0123456789", count: 100)
+        let storage = NSTextStorage(string: text)
+        let original = NSAttributedString(attributedString: storage)
+        let font = UIFont.systemFont(ofSize: 28)
+        let reference = NSTextStorage(string: text, attributes: [.font: font])
+        let measured = ComposerFieldMeasurement.detachedHeight(of: storage, width: 600, fallbackFont: font)
+        let expected = ComposerFieldMeasurement.detachedHeight(of: reference, width: 600)
+        #expect(abs(measured - expected) < 0.5)
+        #expect(storage.isEqual(to: original))
+        #expect(measured > ComposerFieldMeasurement.detachedHeight(of: storage, width: 600))
+    }
+
+    @Test("Accepted sends clear durable text before a run finishes, with newer work preserved")
+    func acceptedSendDoesNotRestoreOnNavigation() {
+        let url = makeTempDraftURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ComposerDraftStore(fileURL: url)
+        let id = UUID()
+        let sent = makeAttachment("sent.txt"), new = makeAttachment("new.txt")
+        store.save(text: "长问题", attachments: [sent], conversationID: id)
+        let commit = ComposerSendCommit(draft: "长问题", attachments: [sent], editorGeneration: 1, conversationID: id, store: store)
+        // This is the atomic startRun acceptance boundary, before the
+        // provider task finishes. A reconstructed editor reads this store.
+        commit.commitStore(store: store)
+        #expect(store.text(for: id).isEmpty)
+        #expect(store.attachments(for: id).isEmpty)
+        store.save(text: "A", attachments: [new], conversationID: id)
+        store.save(text: "B", attachments: [new], conversationID: id)
+        store.save(text: "A", attachments: [new], conversationID: id)
+        #expect(commit.draftAfterSuccess(currentDraft: "A", currentGeneration: 4) == "A")
+        #expect(store.text(for: id) == "A")
+        #expect(store.attachments(for: id).map(\.id) == [new.id])
+    }
+
     /// Build-272 regression: the composer must never mutate live TextKit
     /// state while SwiftUI measures it. The detached path is the width-change
     /// branch of `sizeThatFits`; it may read the view's storage but must not

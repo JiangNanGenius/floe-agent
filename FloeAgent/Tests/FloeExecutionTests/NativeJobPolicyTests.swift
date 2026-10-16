@@ -150,7 +150,7 @@ struct NativeJobPolicyTests {
         let (db, conversation, run, workspace) = try await fixture()
         defer { try? FileManager.default.removeItem(at: workspace) }
         let registry = ToolRunnerRegistry()
-        _ = registerEcho(registry, name: "exec.localPython")
+        _ = registerEcho(registry, name: "exec.shell")
         let store = BackgroundJobStore(database: db)
         let service = BackgroundJobService(store: store, registry: registry)
         // A reconstructed delegated-child origin with no runtime-issued child
@@ -159,7 +159,7 @@ struct NativeJobPolicyTests {
         let childOrigin = ToolCallOrigin(kind: .delegatedChild, runID: run, callID: "child-call",
                                          toolName: "jobs.submit", childID: UUID(), rootTaskID: UUID())
         await #expect(throws: (any Error).self) {
-            try await service.submit(runID: run, toolCallID: "child-1", targetTool: "exec.localPython",
+            try await service.submit(runID: run, toolCallID: "child-1", targetTool: "exec.shell",
                                      payloadJSON: Data(#"{"script":"1"}"#.utf8),
                                      scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
                                      callOrigin: childOrigin, submissionSource: .runtime)
@@ -252,7 +252,7 @@ struct NativeJobPolicyTests {
         let (db, conversation, run, workspace) = try await fixture()
         defer { try? FileManager.default.removeItem(at: workspace) }
         let registry = ToolRunnerRegistry()
-        _ = registerEcho(registry, name: "exec.localPython")
+        _ = registerEcho(registry, name: "exec.shell")
         let store = BackgroundJobStore(database: db)
         let service = BackgroundJobService(store: store, registry: registry)
         let tool = JobsSubmitTool(service: service)
@@ -260,9 +260,9 @@ struct NativeJobPolicyTests {
                                   cancellation: CancellationToken(),
                                   callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
                                                              callID: "same", toolName: "jobs.submit"))
-        let first = try await tool.execute(.init(tool: "exec.localPython", arguments: #"{"script":"a"}"#), context: context)
+        let first = try await tool.execute(.init(tool: "exec.shell", arguments: #"{"script":"a"}"#), context: context)
         #expect(first.summary.contains("\"payloadMatches\":true"))
-        let retried = try await tool.execute(.init(tool: "exec.localPython", arguments: #"{"script":"b"}"#), context: context)
+        let retried = try await tool.execute(.init(tool: "exec.shell", arguments: #"{"script":"b"}"#), context: context)
         #expect(retried.summary.contains("\"payloadMatches\":false"))
         #expect(try await store.jobs(conversationID: conversation).count == 1)
     }
@@ -274,9 +274,9 @@ struct NativeJobPolicyTests {
         let registry = ToolRunnerRegistry()
         // Submit-time availability checks the registered runner even though the
         // adapter intercepts the prepared operation.
-        _ = registerEcho(registry, name: "exec.localPython")
+        _ = registerEcho(registry, name: "exec.shell")
         let adapter = NativeJobServiceAdapter(
-            targetTool: "exec.localPython",
+            targetTool: "exec.shell",
             adaptedActions: nil,
             requiresRuntimeAuthorization: false,
             prepare: { request in
@@ -288,9 +288,9 @@ struct NativeJobPolicyTests {
         let store = BackgroundJobStore(database: db)
         let service = BackgroundJobService(store: store, registry: registry,
                                            policy: .default,
-                                           adapters: ["exec.localPython": adapter])
+                                           adapters: ["exec.shell": adapter])
         let job = try await service.submit(runID: run, toolCallID: "safe-1",
-                                           targetTool: "exec.localPython",
+                                           targetTool: "exec.shell",
                                            payloadJSON: Data(#"{"script":"1"}"#.utf8),
                                            scope: .local, workspaceRootURL: workspace,
                                            allowedWorkspacePaths: [],
@@ -313,9 +313,9 @@ struct NativeJobPolicyTests {
         let (db, _, run, workspace) = try await fixture()
         defer { try? FileManager.default.removeItem(at: workspace) }
         let registry = ToolRunnerRegistry()
-        _ = registerEcho(registry, name: "exec.localPython")
+        _ = registerEcho(registry, name: "exec.shell")
         let adapter = NativeJobServiceAdapter(
-            targetTool: "exec.localPython",
+            targetTool: "exec.shell",
             adaptedActions: nil,
             requiresRuntimeAuthorization: false,
             prepare: { request in
@@ -327,9 +327,9 @@ struct NativeJobPolicyTests {
         let store = BackgroundJobStore(database: db)
         let service = BackgroundJobService(store: store, registry: registry,
                                            policy: .default,
-                                           adapters: ["exec.localPython": adapter])
+                                           adapters: ["exec.shell": adapter])
         let job = try await service.submit(runID: run, toolCallID: "safe-contract",
-                                           targetTool: "exec.localPython",
+                                           targetTool: "exec.shell",
                                            payloadJSON: Data(#"{"script":"1"}"#.utf8),
                                            scope: .local, workspaceRootURL: workspace,
                                            allowedWorkspacePaths: [],
@@ -354,12 +354,12 @@ struct NativeJobPolicyTests {
         let (db, conversation, run, workspace) = try await fixture()
         defer { try? FileManager.default.removeItem(at: workspace) }
         let registry = ToolRunnerRegistry()
-        let recorder = registerEcho(registry, name: "exec.localPython")
+        let recorder = registerEcho(registry, name: "exec.shell")
         let terminalJobs = NativeTerminalCollector()
         let service = BackgroundJobService(
             store: BackgroundJobStore(database: db), registry: registry,
             onTerminal: { job in await terminalJobs.record(job.id) })
-        let job = try await service.submit(runID: run, toolCallID: "o1", targetTool: "exec.localPython",
+        let job = try await service.submit(runID: run, toolCallID: "o1", targetTool: "exec.shell",
                                            payloadJSON: Data(#"{"script":"1"}"#.utf8),
                                            scope: .local, workspaceRootURL: workspace,
                                            allowedWorkspacePaths: [], environmentID: "env-9",

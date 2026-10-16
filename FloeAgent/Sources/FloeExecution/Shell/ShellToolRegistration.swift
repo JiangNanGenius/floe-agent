@@ -1,7 +1,7 @@
 // FloeExecution — Shell tool registration.
 // Dual-registration seam (descriptor + runner) for exec.shell, shell.*, the
-// per-family package entries (python.packages, wasm.packages) and a
-// history-only apt compatibility shim. The app injects the real ios_system-backed
+// signed capability packages and a
+// history-only apt compatibility shim. The app injects the resolved Linux guest
 // service; an unavailable backend still registers exec.shell so the catalog
 // honestly reports a failed engine instead of hiding the capability.
 
@@ -31,8 +31,6 @@ public func registerShellTools(
     registry.register(ShellSignalTool(center: sessions))
 
     if let capabilityInstaller {
-        ToolCatalog.register(PythonPackageTool.self)
-        registry.register(PythonPackageTool(installer: capabilityInstaller))
         ToolCatalog.register(ManagedPackageTool.self, compatibilityOnly: true)
         registry.register(ManagedPackageTool(installer: capabilityInstaller), compatibilityOnly: true)
     }

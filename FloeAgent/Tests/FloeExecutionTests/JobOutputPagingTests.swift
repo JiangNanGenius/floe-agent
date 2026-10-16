@@ -148,7 +148,7 @@ struct JobOutputPagingTests {
         let spooled = try #require(BackgroundJobOutputSpool.write(jobID: jobID, text: text, root: root))
         let job = BackgroundJob(
             id: jobID, conversationID: conversation, runID: run,
-            kind: .tool, targetTool: "exec.localPython",
+            kind: .tool, targetTool: "exec.shell",
             payloadJSON: Data("{}".utf8), state: .queued,
             resultSummary: "head", outputPath: spooled.path, outputBytes: spooled.bytes)
         _ = try await store.save(job)
@@ -189,7 +189,7 @@ struct JobOutputPagingTests {
         let foreignID = UUID()
         let foreign = BackgroundJob(
             id: foreignID, conversationID: conversation, runID: run,
-            kind: .tool, targetTool: "exec.localPython",
+            kind: .tool, targetTool: "exec.shell",
             payloadJSON: Data("{}".utf8), state: .queued,
             resultSummary: "head", outputPath: outsideFile.path)
         _ = try await store.save(foreign)
@@ -209,7 +209,7 @@ struct JobOutputPagingTests {
         let registry = ToolRunnerRegistry()
         registry.register(AnyAgentTool(
             descriptor: ToolCatalog.Descriptor(
-                name: "exec.localPython", toolDescription: "test python",
+                name: "exec.shell", toolDescription: "test python",
                 parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: true
             )
         ) { arguments, context in
@@ -225,7 +225,7 @@ struct JobOutputPagingTests {
             database: db, registry: registry, outputRootURL: root)
         let submit = JobsSubmitTool(service: service)
         let output = try await submit.execute(
-            .init(tool: "exec.localPython", arguments: #"{"script":"print(1)"}"#),
+            .init(tool: "exec.shell", arguments: #"{"script":"print(1)"}"#),
             context: .init(runID: run, toolCallID: "call-dep", cancellation: CancellationToken(),
                            callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
                                                       callID: "call-dep", toolName: "jobs.submit"))
@@ -301,7 +301,7 @@ struct JobOutputPagingTests {
         let registry = ToolRunnerRegistry()
         registry.register(AnyAgentTool(
             descriptor: ToolCatalog.Descriptor(
-                name: "exec.localPython", toolDescription: "test python",
+                name: "exec.shell", toolDescription: "test python",
                 parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: true
             )
         ) { _, _ in
@@ -314,7 +314,7 @@ struct JobOutputPagingTests {
         let service = registerBackgroundJobTools(database: db, registry: registry, outputRootURL: root)
         let submit = JobsSubmitTool(service: service)
         let output = try await submit.execute(
-            .init(tool: "exec.localPython", arguments: #"{"script":"print(2)"}"#, wait: false),
+            .init(tool: "exec.shell", arguments: #"{"script":"print(2)"}"#, wait: false),
             context: .init(runID: run, toolCallID: "call-detached", cancellation: CancellationToken(),
                            callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
                                                       callID: "call-detached", toolName: "jobs.submit"))

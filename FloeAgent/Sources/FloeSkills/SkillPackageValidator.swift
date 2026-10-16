@@ -114,7 +114,7 @@ public struct SkillPackageValidator: Sendable {
 
     /// Derives a conservative manifest for a traditional package that has no
     /// `floe.json`. Only runtimes the app already owns are inferred:
-    ///  * Pure Python → the audited on-device `python.local` runtime.
+    ///  * Python, Shell and Node use the selected task environment.
     ///  * Shell and/or Node (including mixed Python) → the existing task
     ///    environment (`exec.shell`), which runs in the selected local Linux
     ///    guest or an authorized remote host. No new engine is introduced.
@@ -135,20 +135,11 @@ public struct SkillPackageValidator: Sendable {
         }
         let python = Set(["py"])
         let taskEnvironment = Set(["sh", "js", "mjs"])
-        if extensions.isSubset(of: python) {
-            return SkillManifest(
-                id: metadata.name,
-                version: "1.0.0",
-                capabilities: [SkillCapability.localPython.rawValue],
-                tools: ["exec.localPython"],
-                scriptRuntime: .localPython
-            )
-        }
         guard extensions.isSubset(of: python.union(taskEnvironment)) else {
             let unknown = extensions.subtracting(python.union(taskEnvironment)).sorted().first ?? ""
             throw SkillValidationError.unsupportedFile("scripts/*.\(unknown)")
         }
-        // Shell/Node, and mixed Python + Shell/Node, run through the selected
+        // Python, Shell and Node run through the selected
         // execution environment; the manifest declares the environment tool
         // rather than demanding a remote host.
         return SkillManifest(
@@ -452,11 +443,10 @@ public struct SkillPackageValidator: Sendable {
             throw SkillValidationError.invalidManifest("pythonPackages accepts at most 16 entries")
         }
         guard !packages.isEmpty else { return }
-        guard manifest.scriptRuntime == .localPython,
-              capabilities.contains(.localPython),
-              manifest.tools.contains("exec.localPython") else {
+        guard (manifest.scriptRuntime == .localPython && capabilities.contains(.localPython) && manifest.tools.contains("exec.localPython"))
+            || (manifest.scriptRuntime == .remote && capabilities.contains(.remoteExecution) && manifest.tools.contains("exec.shell")) else {
             throw SkillValidationError.incompatibleScriptRuntime(
-                "pythonPackages require python.local runtime/capability and exec.localPython"
+                "Python dependencies require a declared script runtime and its execution capability"
             )
         }
         let capabilityPattern = try NSRegularExpression(

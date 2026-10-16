@@ -104,7 +104,7 @@ final class AppEnvironment: ObservableObject {
     /// one guest per `runtime == .linux` environment and is the single place
     /// exec.shell and the apt/dpkg entry reach it today; guest localService
     /// daemons use the same session/forward API when their consumer lands.
-    /// Explicit native tools (exec.localPython, …) are never rerouted. nil
+    /// Explicit tool calls retain their resolved environment. nil
     /// only where the engine is not built in.
     let linuxGuestService: TinyEMULinuxCommandService?
     /// Single lifecycle manager shared by the execution tools and the
@@ -123,11 +123,9 @@ final class AppEnvironment: ObservableObject {
     /// or default one.
     let environmentRegistry: EnvironmentRegistry
     lazy var localTerminals = LocalTerminalStore(sessions: shellSessionCenter)
-    /// Managed pure-Python installer shared by exec.localPython, exec.shell
-    /// and the python.packages tool.
+    /// Managed Linux Python installer shared by internal services and exec.shell.
     let managedPythonInstaller: ManagedPythonInstallService?
-    /// Reviewed capability catalog and install routing behind the
-    /// python.packages tool and the retired apt compatibility shim.
+    /// Reviewed capability catalog and install routing for internal provisioning.
     // SkillsCenter needs the fully initialized environment. Resolve this
     // dependency only when tool registration first asks for the installer.
     lazy var capabilityInstaller = CapabilityInstaller(
@@ -504,7 +502,7 @@ final class AppEnvironment: ObservableObject {
 
         // Linux guest backend: one TinyEMU-backed service for the whole app,
         // injected into the platform services seam so apt/dpkg, exec.shell and
-        // exec.localPython share the same guest interpreter per Linux
+        // Python scripts share the same guest interpreter per Linux
         // environment. Native environments never touch it
         // (`ownsLinuxEnvironment` is false without `executionBackend .linuxVM`).
         let linuxGuests = LinuxGuestBackendAssembly.makeService(
@@ -772,7 +770,6 @@ final class AppEnvironment: ObservableObject {
         // registered here in one place, in a deterministic order.
         registerAllAgentTools(
             localPythonService: localPythonService,
-            localPythonInstaller: managedPython,
             sshCommandService: sshCommandService,
             cloudWorkspaceService: cloudWorkspaceService,
             linuxPreparation: linuxPreparation,
@@ -907,7 +904,6 @@ final class AppEnvironment: ObservableObject {
     /// model's tool catalog.
     private func registerAllAgentTools(
         localPythonService: LocalPythonService?,
-        localPythonInstaller: ManagedPythonInstallService?,
         sshCommandService: SSHCommandService?,
         cloudWorkspaceService: CloudWorkspaceService?,
         linuxPreparation: LinuxPreparationHandler?,
@@ -1131,8 +1127,6 @@ final class AppEnvironment: ObservableObject {
             }
         }
         registerExecutionTools(
-            localPythonService: localPythonService,
-            localPythonInstaller: localPythonInstaller,
             sshCommandService: sshCommandService,
             interactiveShellService: interactiveShell,
             cloudWorkspaceService: cloudWorkspaceService,
@@ -1177,12 +1171,9 @@ final class AppEnvironment: ObservableObject {
             webSearchService: WebSearchService(configurations: WebSearchSettingsCenter.resolvedConfigurations),
             webSearchAvailability: WebSearchSettingsCenter.toolIsAvailable,
             linuxPreparation: linuxPreparation,
-            linuxLifecycle: linuxLifecycle,
-            includeOnDeviceJavaScript: true
+            linuxLifecycle: linuxLifecycle
         )
-        // Local shell surface: exec.shell, interactive shell.* and the
-        // per-family package entries (python.packages, wasm.packages; the
-        // retired mixed apt tool stays as a hidden compatibility shim).
+        // One Linux command surface, shared with interactive terminals.
         registerShellTools(
             shell: localShellService,
             sessions: shellSessionCenter,

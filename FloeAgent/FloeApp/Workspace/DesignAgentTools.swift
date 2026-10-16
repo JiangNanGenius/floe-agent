@@ -219,7 +219,7 @@ private struct DesignCapabilitiesTool: AgentTool {
             if frozen {
                 payload["designFreeze"] = [
                     "active": true,
-                    "restrictedBackends": ["exec.shell (mutating)", "exec.localPython", "shell.open/shell.exchange"],
+                    "restrictedBackends": ["exec.shell (mutating)", "shell.open/shell.exchange"],
                     "stillAvailable": ["read-only shell inspection", "design.propose candidate staging", "workspace reads/new files"],
                     "recovery": "stage changes with design.propose; the freeze lifts on verified adoption or last rejection",
                 ]

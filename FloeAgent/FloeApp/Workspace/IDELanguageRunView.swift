@@ -54,8 +54,8 @@ enum IDELanguageRunText {
         case .snapshotSaveFailed:
             return t(FloeL10n.l("workspace.i_d_e_language_run_view.saving_the_current_file_failed_the"), "Saving the current file failed; the run was cancelled")
         case .guestShapeUnavailable:
-            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_selected_guest_core_count_cannot"),
-                     "The selected guest core count cannot be delivered; the run was blocked before any guest start (an explicit dual-core request is never silently run on one hart)")
+            return t("当前资源不足，请减少核心数或先停止其他环境。",
+                     "Not enough resources. Choose fewer cores or stop another environment.")
         case .gitHubNotConnected:
             return t(FloeL10n.l("workspace.i_d_e_language_run_view.github_is_not_connected_sign_in"), "GitHub is not connected; sign in under Settings")
         case .noGitHubRepositorySelected:
@@ -90,7 +90,7 @@ enum IDELanguageRunText {
         switch status {
         case .idle: return nil
         case .preparing:
-            return t(FloeL10n.l("workspace.i_d_e_language_run_view.preparing_the_run_save_probe_verified"), "Preparing the run (save, probe, verified transfer)…")
+            return t("正在准备运行…", "Preparing…")
         case .blocked(let reason): return Self.reason(reason)
         case .probeFailed(let tool):
             return t(FloeL10n.l("workspace.i_d_e_language_run_view.no_executable_exists_on_the_remote", tool), "\(tool) is not executable on the host; no run command was sent")
@@ -120,7 +120,7 @@ enum IDELanguageRunText {
         case .runningLocal:
             return t(FloeL10n.l("workspace.i_d_e_language_run_view.running_in_the_local_terminal"), "Running in the local terminal")
         case .runningRemote:
-            return t(FloeL10n.l("workspace.i_d_e_language_run_view.running_on_the_remote_host_source"), "Running on the remote host (source staged and verified)")
+            return t("正在远端运行", "Running remotely")
         case .cancelledPreparation:
             return t(FloeL10n.l("workspace.i_d_e_language_run_view.run_preparation_was_cancelled"),
                      "Run preparation was cancelled.")
@@ -300,15 +300,26 @@ struct IDELanguageRunView: View {
         return IDELanguageRunPolicy.definition(forRelativePath: path)
     }
 
+    private var isStaticWebPage: Bool {
+        IDEWebServicePolicy.runtime(for: state.activePath) == "static"
+    }
+
     var body: some View {
         NavigationStack {
-            Form {
+            Group {
+              if isStaticWebPage, let root = controller.root {
+                IDEWebServiceView(center: controller.center, state: state,
+                                  workspaceID: controller.workspaceID, root: root,
+                                  entry: state.activePath)
+              } else {
+               Form {
                 fileSection
                 if let root = controller.root {
                     Section {
                         NavigationLink {
                             IDEWebServiceView(center: controller.center, state: state,
-                                              workspaceID: controller.workspaceID, root: root)
+                                              workspaceID: controller.workspaceID, root: root,
+                                              entry: state.activePath)
                         } label: {
                             Label(IDELanguageRunText.t("作为网页服务运行", "Run as web service"), systemImage: "server.rack")
                         }
@@ -321,8 +332,12 @@ struct IDELanguageRunView: View {
                 if case .githubActions = controller.selection.target { gitHubActionsSection }
                 availabilitySection
                 commandSection
+               }
+              }
             }
-            .navigationTitle(IDELanguageRunText.t("运行", "Run"))
+            .navigationTitle(isStaticWebPage
+                             ? IDELanguageRunText.t("网页预览", "Web preview")
+                             : IDELanguageRunText.t("运行", "Run"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -338,13 +353,14 @@ struct IDELanguageRunView: View {
                         }
                         .accessibilityIdentifier("workspace.ide.run.stop")
                     }
-                    Button {
+                    if !isStaticWebPage { Button {
                         Task { await controller.dispatch() }
                     } label: {
                         Label(IDELanguageRunText.t("运行", "Run"), systemImage: "play.fill")
                     }
                     .disabled(!controller.canDispatch || guestShapeBlocksDispatch)
                     .accessibilityIdentifier("workspace.ide.run.confirm")
+                    }
                 }
             }
             .task { await controller.prepare() }
