@@ -538,6 +538,7 @@ targets:
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
       - path: Tests/FloeAgentRuntimeTests/ToolDiscoveryTests.swift
       - path: Tests/FloeAgentRuntimeTests/NativeMediaRoutingTests.swift
+      - path: Qualification/Tests/EnvironmentTests/EnvironmentPersistenceTests.swift
       - path: Tests/FloeAppTests/DesignWorkflowIntegrationTests.swift
       - path: Tests/FloeAppTests/DesignFreezeLaunchTests.swift
       - path: Tests/FloeAppTests/DesignWorkflowFixtureTests.swift
@@ -560,6 +561,8 @@ targets:
       - path: Tests/FloeAppTests/OfficeEditEntryAckTests.swift
       - path: Tests/FloeAppTests/OfficeKeyboardLayoutTests.swift
       - path: Tests/FloeAppTests/OfficeDocumentConversionAppQualificationTests.swift
+      - path: Tests/FloeAppTests/OfficeNativeDrawingAppQualificationTests.swift
+      - path: Tests/FloeAppTests/OfficeNativeChartAppQualificationTests.swift
       - path: Tests/FloeAppTests/SourceControlRootIdentityTests.swift
       - path: Tests/FloeAppTests/IDEMarkdownOutlineTests.swift
       - path: Tests/FloeAppTests/ComposerTests.swift
@@ -659,6 +662,10 @@ targets:
       # with a lagging consumer must apply backpressure, never overflow the
       # shared guest console). Production compile only; no engine change.
       - path: Tests/FloeExecutionTests/LinuxGuestConsoleSinkTests.swift
+      # Linux command timeout/reap and internal Python compatibility use the
+      # production App-linked execution module; no second package build.
+      - path: Tests/FloeExecutionTests/LinuxGuestBackendTests.swift
+      - path: Tests/FloeExecutionTests/GuestPythonRuntimeTests.swift
       # G2 integration of the K storage repair: the changed accounting
       # (device-scoped clone-stream dedup, file counts), report builder and
       # the shared snapshot cache run inside the App host.

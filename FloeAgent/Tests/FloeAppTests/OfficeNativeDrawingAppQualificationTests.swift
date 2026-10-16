@@ -1,0 +1,431 @@
+// SPDX-License-Identifier: MPL-2.0
+// Actual App drawing mode/settings -> synthetic pen PointerEvents -> real frontend/core -> saved
+// vector OOXML -> native reopen. NOT physical Apple Pencil/pointer acceptance.
+#if canImport(UIKit) && canImport(FloeOfficeNative) && targetEnvironment(simulator) && DEBUG
+import Foundation
+import XCTest
+import UIKit
+import SwiftUI
+import WebKit
+import ZIPFoundation
+import CryptoKit
+import FloeDocuments
+import FloeOfficeNative
+@testable import FloeApp
+
+@MainActor
+final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
+    func testDOCXTwoNativeVectorStrokesSaveAndReopen() async throws { try await exercise("docx") }
+    func testXLSXTwoNativeVectorStrokesSaveAndReopen() async throws { try await exercise("xlsx") }
+    func testPPTXTwoNativeVectorStrokesSaveAndReopen() async throws { try await exercise("pptx") }
+
+    private func exercise(_ format: String) async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in App drawing + engine synthetic-stroke qualification; not executed")
+        }
+        executionTimeAllowance = 480
+        // Accumulate package findings and still collect reopen images on a
+        // validation failure; no false-success early return or weakened gate.
+        continueAfterFailure = true
+        let fm = FileManager.default
+        let documents = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let root = documents.appendingPathComponent("Qualification/OfficeDrawing-\(format)-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        print("FLOE_NATIVE_DRAWING_ARTIFACT_ROOT=\(root.path)")
+        let source = root.appendingPathComponent("original.\(format)")
+        switch format {
+        case "docx":
+            try OfficeDocumentBuilder.createWord(at: source, title: "中文笔迹验收 Drawing",
+                paragraphs: ["BASELINE-DRAWING-KEEP 中文正文 12345", "Second paragraph remains editable."])
+        case "xlsx":
+            try OfficeDocumentBuilder.createWorkbook(at: source, sheets: [
+                OfficeWorkbookSheet(name: "基准", rows: [["BASELINE-DRAWING-KEEP", "数值"], ["原值", "12"], ["公式", "=B2*2"]])
+            ])
+        default:
+            try OfficeDocumentBuilder.createPresentation(at: source, title: "中文笔迹验收 Drawing", slides: [
+                OfficePresentationSlide(title: "BASELINE-DRAWING-KEEP", bullets: ["中文原文 12345", "Editable original content"], notes: "DRAWING-NOTES-KEEP")
+            ])
+        }
+        let sourceHash = try hash(source)
+        let baseline = try package(source, format: format)
+        XCTAssertEqual(baseline.customGeometryPaths.count, 0, "Fixture must contain no preinserted strokes")
+        attach(source, name: "drawing-source-\(format)")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = mount(session, in: scene)
+        defer { window.isHidden = true; window.rootViewController = nil; previousKeyWindow?.makeKey() }
+        let exported: URL
+        do {
+            await session.open(source)
+            try await wait(120, "initial native open") { session.canAct && session.documentActionsReady && session.controller != nil }
+            if session.readOnly {
+                let accepted = await session.requestEditing()
+                XCTAssertTrue(accepted, "Actual App edit entry rejected: \(session.error ?? "unknown")")
+            }
+            try await wait(150, "editable native document") {
+                !session.readOnly && session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            // Keep mode armed across both strokes: toggling between them would
+            // hide the production bridge's consecutive-stroke rearm defects.
+            session.useInkPreferences(workspaceIdentity: root.path, documentKey: source.lastPathComponent)
+            let preferences = session.inkPreferences
+            let previousStroke = preferences.stroke
+            defer {
+                preferences.setColorHex(previousStroke.colorHex)
+                preferences.setWidthMillimeters(previousStroke.widthMillimeters)
+                preferences.setTransparencyPercent(previousStroke.transparencyPercent)
+            }
+            let expectedStyles = [OfficeInkStroke(colorHex: "#FF0000", widthMillimeters: 0.4),
+                                  OfficeInkStroke(colorHex: "#0000FF", widthMillimeters: 1.2)]
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode)
+            var penReceipts: [[String: Any]] = []
+            for index in 0..<2 {
+                // Same per-document setters and App reapply action as the pen
+                // panel; preserve drawing mode across both style changes.
+                let expected = expectedStyles[index]
+                preferences.setColorHex(expected.colorHex)
+                preferences.setWidthMillimeters(expected.widthMillimeters)
+                preferences.setTransparencyPercent(0)
+                await session.applyInkPreferences()
+                guard session.inkError == nil else { throw NSError(domain: "OfficeNativeDrawingQualification", code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: session.inkError ?? "App ink attributes unavailable"]) }
+                let receipt = try await web.callAsyncJavaScript(Self.strokeScript,
+                    arguments: ["strokeID": index], in: nil, in: .page)
+                let sent = try XCTUnwrap(receipt as? [String: Any])
+                XCTAssertEqual(sent["strokeDelta"] as? Int, 1, "Actual pen bridge did not finish the stroke")
+                XCTAssertGreaterThanOrEqual(sent["coreEventDelta"] as? Int ?? 0, 5, "Actual pen bridge did not forward all events")
+                XCTAssertEqual(sent["activeAfter"] as? Bool, false)
+                penReceipts.append(sent)
+            }
+            if session.drawingMode { try await session.toggleDrawing() }
+            let nativeCopy = try await session.exportDocument(format: format)
+            let copy = root.appendingPathComponent("drawn.\(format)")
+            try fm.copyItem(at: nativeCopy, to: copy)
+            exported = copy
+            attach(copy, name: "drawing-native-saved-\(format)")
+            XCTAssertEqual(try hash(source), sourceHash, "Native copy export altered original")
+            let result = try package(copy, format: format)
+            XCTAssertTrue(result.text.contains("BASELINE-DRAWING-KEEP"), "Original content lost")
+            XCTAssertGreaterThanOrEqual(result.customGeometryPaths.count, 2, "Two newly saved vector paths required")
+            XCTAssertGreaterThanOrEqual(Set(result.customGeometryPaths).count, 2, "Stroke geometry must differ")
+            XCTAssertTrue(result.customGeometryPointCounts.allSatisfy { $0 >= 3 }, "Missing actual vector points")
+            // a:ln width is EMU (36,000/mm); App UNO width is 1/100 mm.
+            // Allow one twip (635 EMU) for Writer's supported round-trip
+            // quantization, far smaller than the deliberately different widths.
+            for style in expectedStyles {
+                let expectedEMU = style.lineWidthValue * 360
+                let color = String(style.colorHex.dropFirst()).uppercased()
+                XCTAssertTrue(result.vectorShapes.contains { shape in
+                    shape.colorHex?.uppercased() == color
+                        && shape.widthEMU.map { abs($0 - expectedEMU) <= 635 } == true
+                        && !shape.paths.isEmpty
+                }, "Actual saved vector shape did not retain \(color) / \(expectedEMU) EMU: \(result.vectorShapes)")
+            }
+            if format == "xlsx" {
+                XCTAssertEqual(result.cells["B2"], "12", "Excel basic value lost")
+                XCTAssertEqual(result.formulas["B3"], "B2*2", "Excel formula lost or flattened")
+                XCTAssertGreaterThanOrEqual(result.validAnchors, 2, "Excel strokes need nonzero visible sheet anchors")
+            }
+            if format == "pptx" { XCTAssertTrue(result.text.contains("DRAWING-NOTES-KEEP"), "Speaker notes lost") }
+            let manifest: [String: Any] = [
+                "format": format, "sourceSHA256": sourceHash, "outputSHA256": try hash(copy),
+                "route": "OfficeFileSession.toggleDrawing/applyInkPreferences/pen-PointerEvent/production-DOM-MouseEvent/frontend-core/exportDocument",
+                "hardwarePointerInput": "not-tested", "pressure": "not-tested",
+                "syntheticPenBridgeReceipts": penReceipts,
+                "expectedLineStyles": expectedStyles.map { ["color": $0.colorHex, "widthEMU": $0.lineWidthValue * 360] as [String: Any] },
+                "savedVectorLineStyles": result.vectorShapes.map { ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1, "paths": $0.paths.count] as [String: Any] },
+                "lineWidthToleranceEMU": 635,
+                "vectorPaths": result.customGeometryPaths.count,
+                "distinctVectorPaths": Set(result.customGeometryPaths).count,
+                "vectorPointCounts": result.customGeometryPointCounts,
+                "excelVisibleAnchors": result.validAnchors,
+                "visualReview": "pending-primary-image-review"
+            ]
+            let receipt = root.appendingPathComponent("verification.json")
+            try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys]).write(to: receipt)
+            attach(receipt, name: "drawing-verification-\(format)")
+            await session.release()
+        } catch { await session.release(); throw error }
+
+        // Fresh native session, same production App surface, exact saved copy.
+        let reopen = OfficeFileSession()
+        let reopenWindow = mount(reopen, in: scene)
+        defer { reopenWindow.isHidden = true; reopenWindow.rootViewController = nil }
+        do {
+            await reopen.open(exported)
+            try await wait(120, "saved vector document reopen") { reopen.canAct && reopen.documentActionsReady && reopen.controller != nil }
+            let native = try XCTUnwrap(reopen.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            let config = WKSnapshotConfiguration(); config.afterScreenUpdates = true
+            let image = try await web.takeSnapshot(configuration: config)
+            let png = try XCTUnwrap(image.pngData())
+            let screenshot = root.appendingPathComponent("reopened-native-\(format).png")
+            try png.write(to: screenshot)
+            attach(screenshot, name: "drawing-reopened-native-\(format)")
+            let windowImage = UIGraphicsImageRenderer(bounds: reopenWindow.bounds).image { _ in
+                reopenWindow.drawHierarchy(in: reopenWindow.bounds, afterScreenUpdates: true)
+            }
+            let whole = root.appendingPathComponent("reopened-window-\(format).png")
+            try XCTUnwrap(windowImage.pngData()).write(to: whole)
+            attach(whole, name: "drawing-reopened-window-\(format)")
+            let receiptURL = root.appendingPathComponent("verification.json")
+            var receipt = (try JSONSerialization.jsonObject(with: Data(contentsOf: receiptURL))) as? [String: Any] ?? [:]
+            receipt["savedCopyReopened"] = true
+            receipt["reopenNativeRenderDiagnostics"] = OfficeFileSession.hostRenderDiagnostics(native)
+            receipt["visualReview"] = "pending-primary-image-review"
+            try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]).write(to: receiptURL)
+            attach(receiptURL, name: "drawing-reopen-verification-\(format)")
+            await reopen.release()
+        } catch { await reopen.release(); throw error }
+    }
+
+    private static let strokeScript = #"""
+    const app = window.app;
+    const container = app && app.sectionContainer;
+    const canvas = container && container.canvas;
+    const layout = app && app.activeDocument && app.activeDocument.activeLayout;
+    const size = app && app.activeDocument && app.activeDocument.fileSize;
+    if (!canvas || !layout || !size || typeof window.PointerEvent !== 'function'
+        || typeof window.__floeOfficePenState !== 'function')
+        throw new Error('production pen bridge or native document canvas unavailable');
+    const before = window.__floeOfficePenState();
+    if (!before.drawing || before.activeStroke) throw new Error('App pen mode not armed or previous stroke active');
+    const rect = canvas.getBoundingClientRect();
+    const section = container.getDocumentAnchorSection();
+    const scaleX = rect.width / canvas.width, scaleY = rect.height / canvas.height;
+    if (!section || !section.myTopLeft || !section.size || !Number.isFinite(scaleX) || !Number.isFinite(scaleY))
+        throw new Error('actual document viewport geometry unavailable');
+    // Transform actual document corners through the existing renderer layout,
+    // then intersect with its document section and visible CSS canvas. Never
+    // mistake twips, device pixels or a fixed screen point for client coords.
+    const origin = size.clone(); origin.pX = 0; origin.pY = 0;
+    const end = size.clone();
+    const dx1 = layout.documentToViewX(origin), dy1 = layout.documentToViewY(origin);
+    const dx2 = layout.documentToViewX(end), dy2 = layout.documentToViewY(end);
+    const x1 = rect.left + Math.max(0, section.myTopLeft[0], Math.min(dx1, dx2)) * scaleX;
+    const y1 = rect.top + Math.max(0, section.myTopLeft[1], Math.min(dy1, dy2)) * scaleY;
+    const x2 = rect.left + Math.min(canvas.width, section.myTopLeft[0] + section.size[0], Math.max(dx1, dx2)) * scaleX;
+    const y2 = rect.top + Math.min(canvas.height, section.myTopLeft[1] + section.size[1], Math.max(dy1, dy2)) * scaleY;
+    if (![x1, y1, x2, y2].every(Number.isFinite) || x2 - x1 < 120 || y2 - y1 < 120)
+        throw new Error('no safely visible document drawing area');
+    const fractions = strokeID === 0 ? [[.28,.45],[.37,.40],[.47,.49],[.57,.43]]
+                                     : [[.30,.66],[.39,.73],[.49,.64],[.59,.71]];
+    const points = fractions.map(([x,y]) => [x1 + x * (x2-x1), y1 + y * (y2-y1)]);
+    const post = (type, p, buttons) => canvas.dispatchEvent(new PointerEvent(type, {
+        bubbles:true, cancelable:true, composed:true, pointerType:'pen', pointerId:41 + strokeID,
+        isPrimary:true, clientX:p[0], clientY:p[1], button:0, buttons, pressure: buttons ? .5 : 0
+    }));
+    post('pointerdown', points[0], 1);
+    for (let i = 1; i < points.length; i++) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+        post('pointermove', points[i], 1);
+    }
+    post('pointerup', points[points.length - 1], 0);
+    const after = window.__floeOfficePenState();
+    const strokeDelta = after.strokes - before.strokes, coreEventDelta = after.coreEvents - before.coreEvents;
+    if (strokeDelta !== 1 || coreEventDelta < points.length + 1 || after.activeStroke)
+        throw new Error('production pen bridge did not forward/finish synthetic stroke');
+    return {strokeID, strokeDelta, coreEventDelta, activeAfter:after.activeStroke,
+        before, after, canvasRect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},
+        visibleDocumentRect:{x1,y1,x2,y2}, clientPoints:points,
+        hardwarePointerInput:'not-tested', pressure:'synthetic-not-hardware-tested'};
+    """#
+
+    private func mount(_ session: OfficeFileSession, in scene: UIWindowScene) -> UIWindow {
+        let window = UIWindow(windowScene: scene); window.frame = scene.coordinateSpace.bounds
+        window.rootViewController = UIHostingController(rootView: OfficeDocumentSurface(session: session)
+            .frame(maxWidth: .infinity, maxHeight: .infinity))
+        window.windowLevel = .normal + 1; window.makeKeyAndVisible()
+        return window
+    }
+
+    private func wait(_ seconds: TimeInterval, _ stage: String, _ ready: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !ready(), Date() < deadline { try await Task.sleep(for: .milliseconds(100)) }
+        guard ready() else { throw NSError(domain: "OfficeNativeDrawingQualification", code: 1,
+                                          userInfo: [NSLocalizedDescriptionKey: "Timed out: \(stage)"]) }
+    }
+
+    private func waitForPaint(_ controller: FloeOfficeNativeViewController) async throws {
+        try await wait(45, "native decoded tile/vector paint") {
+            let facts = OfficeFileSession.hostRenderDiagnostics(controller)
+            return facts["stage"] == "visible-render" && facts["docLoaded"] == "1"
+                && ((Int(facts["decodedTiles"] ?? "") ?? 0) > 0 || facts["vectorRendering"] == "1")
+        }
+    }
+
+    private func hash(_ url: URL) throws -> String {
+        SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func attach(_ url: URL, name: String) {
+        let attachment = XCTAttachment(contentsOfFile: url); attachment.name = name
+        attachment.lifetime = .keepAlways; add(attachment)
+    }
+
+    private func package(_ url: URL, format: String) throws -> DrawingQualificationXML {
+        let archive = try Archive(url: url, accessMode: .read)
+        let result = DrawingQualificationXML()
+        for entry in archive where entry.path.hasSuffix(".xml") {
+            let p = entry.path
+            guard p == "word/document.xml" || p.hasPrefix("xl/worksheets/") || p == "xl/sharedStrings.xml"
+                || p.hasPrefix("xl/drawings/drawing") || p.hasPrefix("ppt/slides/slide") || p.hasPrefix("ppt/notesSlides/notesSlide") else { continue }
+            var bytes = Data(); _ = try archive.extract(entry) { bytes.append($0) }
+            let parser = XMLParser(data: bytes); parser.shouldResolveExternalEntities = false
+            parser.shouldProcessNamespaces = true; parser.delegate = result
+            guard parser.parse() else { throw parser.parserError ?? NSError(domain: "DrawingOOXML", code: 2) }
+        }
+        return result
+    }
+}
+
+/// Independent saved-package XML inspection, no product reader or shape insertion.
+private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
+    var text = "", cells: [String: String] = [:], formulas: [String: String] = [:]
+    var customGeometryPaths: [String] = [], customGeometryPointCounts: [Int] = []
+    struct VectorShape: CustomStringConvertible {
+        var depth: Int, spPrDepth: Int?, paths: [String] = []
+        var widthEMU: Int?, colorHex: String?
+        var description: String { "vector(color=\(colorHex ?? "missing"), widthEMU=\(widthEMU ?? -1), paths=\(paths.count))" }
+    }
+    var vectorShapes: [VectorShape] = []
+    private var activeShapes: [VectorShape] = []
+    private let drawingNamespaces: Set<String> = ["http://schemas.openxmlformats.org/drawingml/2006/main", "http://purl.oclc.org/ooxml/drawingml/main"]
+    private let shapeNamespaces: Set<String> = [
+        "http://schemas.openxmlformats.org/presentationml/2006/main", "http://purl.oclc.org/ooxml/presentationml/main",
+        "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing", "http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing",
+        "http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+    ]
+    var validAnchors = 0
+    private var inCustom = false, inPath = false, path = "", pointCount = 0
+    private var cell = "", field = "", buffer = ""
+    private var anchorKind: String?, anchorFields: [String: Int] = [:]
+    private var elements: [String] = [], elementNamespaces: [String?] = [], anchorDepth = 0
+    private var anchorNamespace: String?
+    private let spreadsheetDrawingNamespaces: Set<String> = [
+        "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing",
+        "http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing"
+    ]
+
+    func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
+        let local = String(name.split(separator: ":").last ?? "")
+        elements.append(local); elementNamespaces.append(namespaceURI)
+        if (local == "sp" || local == "wsp"), shapeNamespaces.contains(namespaceURI ?? "") {
+            activeShapes.append(VectorShape(depth: elements.count, spPrDepth: nil))
+        }
+        if let last = activeShapes.indices.last {
+            if local == "spPr", elements.count == activeShapes[last].depth + 1,
+               namespaceURI == elementNamespaces[activeShapes[last].depth - 1] {
+                activeShapes[last].spPrDepth = elements.count
+            }
+            if let properties = activeShapes[last].spPrDepth, elements.count >= properties,
+               elements[properties - 1] == "spPr" {
+                if local == "ln", elements.count == properties + 1, drawingNamespaces.contains(namespaceURI ?? "") {
+                    activeShapes[last].widthEMU = Int(attributes["w"] ?? "")
+                }
+                // Only shape/spPr/a:ln/a:solidFill/a:srgbClr can establish
+                // this path's line color. Text runs and shape fills never do.
+                if local == "srgbClr", elements.count == properties + 3,
+                   elements[properties] == "ln", elements[properties + 1] == "solidFill",
+                   drawingNamespaces.contains(namespaceURI ?? ""),
+                   drawingNamespaces.contains(elementNamespaces[properties] ?? ""),
+                   drawingNamespaces.contains(elementNamespaces[properties + 1] ?? "") {
+                    activeShapes[last].colorHex = attributes["val"]
+                }
+            }
+        }
+        if local == "custGeom" { inCustom = true }
+        if inCustom && local == "path" { inPath = true; path = ""; pointCount = 0 }
+        if inPath {
+            path += name + attributes.keys.sorted().map { " \($0)=\(attributes[$0]!)" }.joined() + ";"
+            if local == "pt" { pointCount += 1 }
+        }
+        if ["twoCellAnchor", "oneCellAnchor", "absoluteAnchor"].contains(local),
+           spreadsheetDrawingNamespaces.contains(namespaceURI ?? "") {
+            anchorKind = local; anchorFields = [:]; anchorDepth = elements.count; anchorNamespace = namespaceURI
+        }
+        // Shape a:xfrm/a:ext is not an anchor extent. Only direct children
+        // of the current xdr anchor may establish its size or absolute origin.
+        if anchorKind != nil, elements.count == anchorDepth + 1, namespaceURI == anchorNamespace {
+            if local == "ext" {
+                anchorFields["cx"] = Int(attributes["cx"] ?? "")
+                anchorFields["cy"] = Int(attributes["cy"] ?? "")
+            }
+            if local == "pos" {
+                anchorFields["x"] = Int(attributes["x"] ?? "")
+                anchorFields["y"] = Int(attributes["y"] ?? "")
+            }
+        }
+        if local == "c" { cell = attributes["r"] ?? "" }
+        field = local; buffer = ""
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        buffer += string
+        if field == "t" { text += string }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+        let local = String(name.split(separator: ":").last ?? "")
+        if inPath && local == "path" {
+            customGeometryPaths.append(path); customGeometryPointCounts.append(pointCount)
+            if let last = activeShapes.indices.last, let properties = activeShapes[last].spPrDepth,
+               elements.count > properties, elements[properties - 1] == "spPr", elements[properties] == "custGeom",
+               drawingNamespaces.contains(elementNamespaces[properties] ?? "") {
+                activeShapes[last].paths.append(path)
+            }
+            inPath = false
+        }
+        if local == "custGeom" { inCustom = false }
+        if local == "v", !cell.isEmpty { cells[cell] = buffer.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if local == "f", !cell.isEmpty { formulas[cell] = buffer.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if local == "c" { cell = "" }
+        if anchorKind != nil, elements.count == anchorDepth + 2,
+           namespaceURI == anchorNamespace, elementNamespaces[elements.count - 2] == anchorNamespace,
+           ["row", "col", "rowOff", "colOff"].contains(local),
+           let parent = elements.dropLast().last, parent == "from" || parent == "to" {
+            anchorFields[parent + "." + local] = Int(buffer.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if local == anchorKind, elements.count == anchorDepth {
+            if anchorIsValid() { validAnchors += 1 }
+            anchorKind = nil; anchorDepth = 0; anchorNamespace = nil
+        }
+        if let last = activeShapes.last, last.depth == elements.count {
+            if !last.paths.isEmpty { vectorShapes.append(last) }
+            activeShapes.removeLast()
+        }
+        elements.removeLast(); elementNamespaces.removeLast()
+        field = ""; buffer = ""
+    }
+
+    private func anchorIsValid() -> Bool {
+        func marker(_ side: String) -> Bool {
+            ["col", "colOff", "row", "rowOff"].allSatisfy {
+                guard let value = anchorFields[side + "." + $0] else { return false }
+                return value >= 0
+            }
+        }
+        func increases(_ cell: String, _ offset: String) -> Bool {
+            guard let start = anchorFields["from." + cell], let end = anchorFields["to." + cell],
+                  let startOffset = anchorFields["from." + offset], let endOffset = anchorFields["to." + offset] else { return false }
+            return end > start || (end == start && endOffset > startOffset)
+        }
+        let extent = (anchorFields["cx"] ?? 0) > 0 && (anchorFields["cy"] ?? 0) > 0
+        switch anchorKind {
+        case "twoCellAnchor": return marker("from") && marker("to") && increases("col", "colOff") && increases("row", "rowOff")
+        case "oneCellAnchor": return marker("from") && extent
+        case "absoluteAnchor":
+            guard let x = anchorFields["x"], let y = anchorFields["y"] else { return false }
+            return x >= 0 && y >= 0 && extent
+        default: return false
+        }
+    }
+}
+#endif
