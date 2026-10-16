@@ -28,7 +28,8 @@ Exact-source local archive, minimum cloud signing/upload and the independent App
 - Build `a75934ba-3599-4664-93e1-ca6a5708b05c`: processing `VALID`, `expired=false`, audience `APP_STORE_ELIGIBLE`, uploaded 2026-10-15T21:06:59-07:00.
 - Internal: attached to exactly the existing private Floe QA group (internal group count 1, unexpected count 0), `internalBuildState=IN_BETA_TESTING` — internal installation available. Independent GET-only confirmation: [run 38849845297](https://github.com/JiangNanGenius/floe-agent/actions/runs/38849845297); the workflow's own `APPLE-INTERNAL.json` agrees.
 - TestFlight copy: the beta localizations were updated to the concise bilingual copy (language/region switching; feedback screenshots; storage checks) and read back by the upload workflow (`betaNotesVerified: en-US, zh-Hans`). The detailed command limitations and the baseline tail-cancellation limitation stay in the engineering record here, not in tester-facing copy.
-- Not done (boundaries): no `publictest1` attachment, no App Review submission, no GitHub release, no Feather/website/content publication, no scheduled follow-up, no ASC API metadata writes.
+- Formal App Store review: on 2026-10-16 the primary coordinator saved the bilingual listing and review contact, associated **1.7.34 (275)**, and submitted it once through App Store Connect. The separate App Review submission detail page confirms **Waiting for Review** for that exact version/build. The app is free to download; users configure their own AI services. **Manual release after approval** remains selected. China mainland and the EU27 remain excluded (147 storefronts available); no account-wide DSA declaration or other app's availability was changed.
+- Boundaries: App Review submission is not approval or public availability. No `publictest1` attachment for 275, no GitHub binary release, no Feather/website/content publication, no scheduled follow-up, no ASC API metadata writes. The synthetic review sample archive was prepared but not uploaded.
 
 ## Qualification scope and limits
 
@@ -45,5 +46,5 @@ Exact-source local archive, minimum cloud signing/upload and the independent App
 
 ## Remaining for the coordinator
 
-- External review/approval, ASC web pages (unsaved drafts/legal/contact) and the Developer Program agreement actions stay with the primary/user; this round performed no ASC web or API writes beyond the upload workflow's existing beta-localization update and Floe QA attachment.
+- Apple review/approval remains pending. The primary coordinator completed the App Store web submission and, following the user's explicit action-time authorization, accepted the updated Apple Developer Program License Agreement; its account page reads an acceptance date of 2026-10-16. No automatic public release or recurring follow-up is enabled.
 - Physical-device acceptance (real iPad storage/performance, Office device gates) remains the user's acceptance step.

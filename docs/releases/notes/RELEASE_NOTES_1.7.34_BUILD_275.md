@@ -2,6 +2,8 @@
 
 Release candidate. Source freeze, archive, signing, TestFlight upload and Apple processing states are recorded separately from the qualification results below.
 
+交付状态（2026-10-16）：Floe QA 内部可安装；1.7.34（275）已提交正式 App Store 审核，正在等待审核，审核通过后手动发布。应用免费下载，AI 服务由用户自行配置。 / Delivery status (2026-10-16): available in internal Floe QA; 1.7.34 (275) submitted to App Store review and Waiting for Review, with manual release after approval. Free download; users configure their own AI services.
+
 本候选完成首轮正式审核所需的隐私清单闭环：App、Screen Share 扩展和需要声明的 16 个嵌入 framework 都带有与真实调用一致的必需理由（required-reason）隐私清单；评审相关的语言解析改为公开 API；反馈图片字段与服务契约一致。此前 1.7.33（274）已内部可用并送 publictest1 等待审核，本版不替代其状态。
 
 ## 简体中文
