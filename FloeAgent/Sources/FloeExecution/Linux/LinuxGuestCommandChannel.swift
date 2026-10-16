@@ -2148,6 +2148,14 @@ public actor LinuxGuestCommandChannel {
                     // The guest really reaped the process group; only now is
                     // the timeout/cancellation allowed to surface.
                     trace(.stopConfirmed, token: token, note: "guest reaped the interrupted command")
+                    if let linuxError = interruptError as? LinuxGuestError,
+                       case .timedOut(let seconds) = linuxError,
+                       !parser.stdout.isEmpty || !parser.stderr.isEmpty || parser.truncated {
+                        throw LinuxGuestCommandTimeout(seconds: seconds,
+                            partialStdout: parser.stdoutText, partialStderr: parser.stderrText,
+                            outputTruncated: parser.truncated)
+                    }
+                    // Keep existing cancellation and no-output timeout types.
                     throw interruptError
                 }
                 breadcrumbCompleted = true

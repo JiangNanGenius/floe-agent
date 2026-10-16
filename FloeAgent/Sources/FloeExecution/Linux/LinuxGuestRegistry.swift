@@ -2069,6 +2069,8 @@ public actor TinyEMULinuxGuestRegistry {
                 timeout: min(stepTimeout, remaining),
                 cancellation: nil
             )
+        } catch is LinuxGuestCommandTimeout {
+            throw LinuxGuestError.startFailed("a runner upgrade step timed out; the persistent disk is unchanged")
         } catch let error as LinuxGuestError {
             if case .timedOut = error {
                 throw LinuxGuestError.startFailed("a runner upgrade step timed out; the persistent disk is unchanged")

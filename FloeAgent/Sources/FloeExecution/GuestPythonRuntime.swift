@@ -156,6 +156,11 @@ public enum GuestPythonRuntime {
             )
         } catch FloeError.cancelled {
             return .cancelled
+        } catch let error as LinuxGuestCommandTimeout {
+            // Internal Python consumers retain their existing timeout outcome;
+            // never reclassify a bounded reaped timeout as a script exception.
+            return .timedOut(afterMs: Int(error.seconds * 1000),
+                partialStdout: SecretRedactor.redact(ShellOutputSanitizer.sanitize(error.partialStdout)))
         } catch let error as LinuxGuestError {
             if case .timedOut = error {
                 return .timedOut(afterMs: Int(timeout * 1000), partialStdout: "")

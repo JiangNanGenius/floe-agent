@@ -34,7 +34,7 @@ private final class ScriptedGuest: LinuxCommandRunning, LinuxGuestPathMapping, L
     var owns = true
     var running = true
     private(set) var startCalls = 0
-    var handler: ([String]) -> LinuxCommandResult = { _ in LinuxCommandResult(stdout: "", stderr: "", exitCode: 0) }
+    var handler: ([String]) throws -> LinuxCommandResult = { _ in LinuxCommandResult(stdout: "", stderr: "", exitCode: 0) }
     var pathMap: LinuxGuestPathMap?
 
     private let lock = NSLock()
@@ -56,7 +56,7 @@ private final class ScriptedGuest: LinuxCommandRunning, LinuxGuestPathMapping, L
     ) async throws -> LinuxCommandResult {
         if cancellation?.isCancelled == true { throw FloeError.cancelled }
         lock.withLock { recorded.append(Call(argv: argv, workingDirectory: workingDirectory, standardInput: standardInput)) }
-        return handler(argv)
+        return try handler(argv)
     }
 
     // LinuxGuestControlling (only what the activator touches is live)
@@ -115,6 +115,35 @@ final class GuestPythonRuntimeTests: XCTestCase {
             LinuxGuestShare(tag: LinuxGuestShare.workspaceTag, hostDirectory: workspace)
         ])
         return (map, workspace)
+    }
+
+    func testReapedPartialTimeoutRemainsInternalPythonTimeoutAndIsSanitized() async throws {
+        let guest = ScriptedGuest()
+        let (map, workspace) = try makePathMap()
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        guest.pathMap = map
+        Self.provisioned(guest)
+        let base = guest.handler
+        guest.handler = { argv in
+            if argv.joined(separator: " ").contains("TIMEOUT_TEST") {
+                throw LinuxGuestCommandTimeout(seconds: 2,
+                    partialStdout: "progress Bearer synthetic_qualification_token_0123456789",
+                    partialStderr: "bounded error", outputTruncated: false)
+            }
+            return try base(argv)
+        }
+        let id = "env-" + UUID().uuidString
+        let outcome = await GuestPythonRuntime.run(
+            ScriptExecutionRequest(script: "print('TIMEOUT_TEST')", timeout: 2, maxOutputBytes: 4096,
+                pythonContext: .init(environmentID: id, workingDirectory: workspace.path)),
+            environmentID: id, guests: guest, controller: guest, cancellation: nil)
+        await LinuxGuestPythonProvisioner.shared.forget(environmentID: id)
+        guard case .timedOut(let afterMs, let partial) = outcome else {
+            return XCTFail("partial timeout was reclassified: \(outcome)")
+        }
+        XCTAssertEqual(afterMs, 2000)
+        XCTAssertTrue(partial.contains("progress"))
+        XCTAssertFalse(partial.contains("synthetic_qualification_token_0123456789"))
     }
 
     func testScriptRunsInSharedVenvWithMappedCwdAndResultMarker() async throws {
@@ -181,7 +210,7 @@ final class GuestPythonRuntimeTests: XCTestCase {
                     stderr: "", exitCode: 0
                 )
             }
-            return base(argv)
+            return try base(argv)
         }
         let outcome = await GuestPythonRuntime.run(
             ScriptExecutionRequest(script: "pass", timeout: 10, maxOutputBytes: 4096,
@@ -215,7 +244,7 @@ final class GuestPythonRuntimeTests: XCTestCase {
         Self.provisioned(guest)
         let token = CancellationToken()
         let base = guest.handler
-        guest.handler = { argv in base(argv) }
+        guest.handler = { argv in try base(argv) }
         // Cancel before the run starts: the runtime must answer cancelled
         // without executing anything.
         token.cancel()

@@ -114,6 +114,28 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
     }
 }
 
+/// A reaped timeout carrying only the command parser's already bounded output.
+/// Diagnostic descriptions intentionally omit output; callers must use the
+/// explicit fields through the existing sanitized tool-output path.
+public struct LinuxGuestCommandTimeout: Error, LocalizedError, CustomStringConvertible,
+    CustomDebugStringConvertible, Sendable, Equatable {
+    public let seconds: TimeInterval
+    public let partialStdout: String
+    public let partialStderr: String
+    public let outputTruncated: Bool
+
+    public init(seconds: TimeInterval, partialStdout: String, partialStderr: String, outputTruncated: Bool) {
+        self.seconds = seconds
+        self.partialStdout = partialStdout
+        self.partialStderr = partialStderr
+        self.outputTruncated = outputTruncated
+    }
+    public var underlyingError: LinuxGuestError { .timedOut(seconds: seconds) }
+    public var errorDescription: String? { underlyingError.errorDescription }
+    public var description: String { errorDescription ?? "Linux command timed out" }
+    public var debugDescription: String { description }
+}
+
 /// Bounds applied to every guest. The RAM ceiling is deliberately small: the
 /// guest is an interpreted RV64 machine sharing memory with the app.
 public struct LinuxGuestLimits: Sendable, Equatable {

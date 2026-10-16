@@ -397,6 +397,60 @@ final class LinuxGuestCommandChannelTests: XCTestCase {
         XCTAssertFalse(poisoned, "a confirmed reap must not poison the channel")
     }
 
+    func testTimedOutOutputIsBoundedAndOnlyReturnedAfterReap() async throws {
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in
+            if token.hasPrefix("hello-") { return caps(token) }
+            return [Data(("\u{1e}FLOE-BEGIN \(token)\u{1e}\u{1e}FLOE-OUT \(token)\u{1e}" + String(repeating: "progress", count: 400)).utf8)]
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        let completed = TestFlag()
+        let task = Task {
+            do {
+                let result = try await channel.run(argv: ["sleep", "100"], timeout: 1, maxOutputBytes: 1024)
+                completed.value = true; return result
+            } catch { completed.value = true; throw error }
+        }
+        guard let token = await awaitSignalToken(console) else { return XCTFail("no targeted timeout interrupt") }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(completed.value, "partial output must not return before guest reaps")
+        console.push([Data("\u{1e}FLOE-END \(token) 130\u{1e}".utf8)])
+        do { _ = try await task.value; XCTFail("timeout must remain a failure") }
+        catch let error as LinuxGuestCommandTimeout {
+            XCTAssertEqual(error.underlyingError, .timedOut(seconds: 1))
+            XCTAssertEqual(error.partialStdout.utf8.count, 1024)
+            XCTAssertTrue(error.outputTruncated)
+            XCTAssertFalse(error.localizedDescription.contains("progress"))
+            XCTAssertFalse(String(reflecting: error).contains("progress"))
+        }
+        let poisoned = await channel.isPoisoned
+        XCTAssertFalse(poisoned)
+    }
+
+    func testCancellationWithOutputStillWaitsForReapAndRemainsCancellation() async throws {
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in
+            token.hasPrefix("hello-") ? caps(token) : [Data("\u{1e}FLOE-BEGIN \(token)\u{1e}\u{1e}FLOE-OUT \(token)\u{1e}before-cancel".utf8)]
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        let cancellation = CancellationToken(), completed = TestFlag()
+        let task = Task {
+            do {
+                let result = try await channel.run(argv: ["sleep", "100"], timeout: 10, cancellation: cancellation)
+                completed.value = true; return result
+            } catch { completed.value = true; throw error }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        cancellation.cancel()
+        guard let token = await awaitSignalToken(console) else { return XCTFail("no targeted cancellation") }
+        XCTAssertFalse(completed.value)
+        console.push([Data("\u{1e}FLOE-END \(token) 130\u{1e}".utf8)])
+        do { _ = try await task.value; XCTFail("expected cancellation") }
+        catch FloeError.cancelled {}
+        let poisoned = await channel.isPoisoned
+        XCTAssertFalse(poisoned)
+    }
+
     func testRunCancellationSurfacesAfterGuestConfirmsReap() async throws {
         let console = TestLinuxGuestConsole()
         console.setHandler { token in token.hasPrefix("hello-") ? caps(token) : [] }
@@ -923,7 +977,43 @@ final class LinuxGuestRegistryTests: XCTestCase {
 
 // MARK: - Shell routing backend
 
+private struct PartialTimeoutLinuxRunner: LinuxCommandRunning {
+    func supports(environmentID: String) async -> Bool { true }
+    func run(environmentID: String, argv: [String], workingDirectory: String?, standardInput: String?,
+             timeout: TimeInterval, maxOutputBytes: Int, cancellation: CancellationToken?) async throws -> LinuxCommandResult {
+        throw LinuxGuestCommandTimeout(seconds: timeout,
+            partialStdout: "download-progress", partialStderr: "source-error Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz0123456789",
+            outputTruncated: true)
+    }
+}
+
 final class LinuxGuestShellBackendTests: XCTestCase {
+    func testPartialTimeoutFlowsThroughToolOutputWithoutLeakingToDescriptionOrJournal() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let shell = LocalShellService(backend: LinuxGuestShellBackend(runner: PartialTimeoutLinuxRunner()),
+            journal: ShellOperationJournal(rootURL: root), rootProvider: { root })
+        let tool = LocalShellTool(shell: shell)
+        let context = ToolContext(runID: UUID(), toolCallID: "timeout-output", workspaceRootURL: root,
+            cancellation: CancellationToken(), environmentID: "own",
+            environment: ToolEnvironment(id: "own", writableLayerURL: root, layerURLs: [root], variables: [:]))
+        let result = try await tool.execute(.init(command: "printf probe", timeout: 180), context: context)
+        XCTAssertEqual(result.exitStatus, 124)
+        XCTAssertTrue(result.summary.contains("status=timedOut"))
+        XCTAssertTrue(result.summary.contains("effectiveTimeoutSeconds=120"))
+        XCTAssertTrue(result.summary.contains("download-progress"))
+        XCTAssertTrue(result.summary.contains("source-error"))
+        XCTAssertTrue(result.summary.contains("[output truncated]"))
+        XCTAssertFalse(result.summary.contains("sk-abcdefghijklmnopqrstuvwxyz0123456789"))
+        let journal = root.appendingPathComponent("shell-journal.jsonl")
+        if FileManager.default.fileExists(atPath: journal.path) {
+            let log = try String(contentsOf: journal, encoding: .utf8)
+            XCTAssertFalse(log.contains("download-progress"))
+            XCTAssertFalse(log.contains("source-error"))
+        }
+    }
+
     func testOwnedStoppedEnvironmentFailsInsteadOfRunning() async {
         let service = TinyEMULinuxCommandService(registry: TinyEMULinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: ["env-1": makeDescriptor(id: "env-1")]),

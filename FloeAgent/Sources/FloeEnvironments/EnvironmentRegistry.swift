@@ -590,10 +590,47 @@ public actor EnvironmentRegistry {
     @discardableResult
     public func remove(id: String) throws -> ContainerRecord? {
         try prepare()
-        guard let record = records[id] else { return nil }
-        records.removeValue(forKey: id)
-        do { try persist() }
-        catch { records[id] = record; throw error }
+        // Validate the mapping before changing the record; unreadable or
+        // unknown data must not be discarded during environment cleanup.
+        let mappingURL = roots.rootURL.appendingPathComponent("workspace-containers.json")
+        var updatedMapping: Data?
+        if fileManager.fileExists(atPath: mappingURL.path) {
+            let data = try Data(floeContentsOf: mappingURL)
+            let mapping = try JSONDecoder().decode([String: [String: String]].self, from: data)
+            let remaining = mapping.filter { $0.value["containerID"] != id }
+            if remaining.count != mapping.count {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                updatedMapping = try encoder.encode(remaining)
+            }
+        }
+        let record = records[id]
+        if record != nil {
+            records.removeValue(forKey: id)
+            do { try persist() }
+            catch { records[id] = record; throw error }
+        }
+        do {
+            // Each file replacement is atomic. Write the registry first so a
+            // process interruption can leave only a stale mapping, never a
+            // live container whose workspace binding has already vanished.
+            // Repeating removal also repairs that stale-reference case.
+            if let updatedMapping { try updatedMapping.write(to: mappingURL, options: .atomic) }
+        } catch {
+            let removalError = error
+            if let record {
+                records[id] = record
+                do { try persist() }
+                catch {
+                    throw NSError(domain: "Floe.EnvironmentRemoval", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "Environment deletion failed and its registry recovery could not be saved; data was retained",
+                        NSUnderlyingErrorKey: removalError,
+                        "registryRecoveryError": error
+                    ])
+                }
+            }
+            throw removalError
+        }
         return record
     }
 

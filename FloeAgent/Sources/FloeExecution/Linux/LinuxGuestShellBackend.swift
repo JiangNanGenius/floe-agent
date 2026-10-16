@@ -84,6 +84,11 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             )
         } catch FloeError.cancelled {
             return .cancelled
+        } catch let error as LinuxGuestCommandTimeout {
+            let truncation = error.outputTruncated ? "\n[output truncated]" : ""
+            return .timedOut(partialStdout: error.partialStdout,
+                partialStderr: error.partialStderr + truncation,
+                durationMs: Int(error.seconds * 1000))
         } catch let error as LinuxGuestError {
             if case .timedOut(let seconds) = error {
                 return .timedOut(partialStdout: "", partialStderr: "", durationMs: Int(seconds * 1000))
