@@ -29,15 +29,11 @@
 从一句要求开始，生成并编辑文档、处理表格与演示稿、运行网页、批注 PDF，再把素材整理到画布。95 秒演示，了解 Floe 的日常工作流程。
 
 <p align="center">
-  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/feather-official-icon.png" alt="添加到 Feather" width="64" height="64"></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=altstore"><img src="docs/images/altstore-official-icon.png" alt="添加到 AltStore" width="64" height="64"></a>
+  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/badge-add-to-feather.png" alt="添加到 Feather" height="52"></a>
+  &nbsp;
+  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=altstore"><img src="docs/images/badge-add-to-altstore.png" alt="添加到 AltStore" height="52"></a>
 </p>
 <p align="center">
-  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><strong>添加到 Feather</strong></a>
-  &nbsp; · &nbsp;
-  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=altstore"><strong>添加到 AltStore</strong></a>
-  &nbsp; · &nbsp;
   <a href="https://github.com/JiangNanGenius/floe-agent/releases"><strong>下载发布版本</strong></a>
 </p>
 

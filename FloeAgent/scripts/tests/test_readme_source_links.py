@@ -1,4 +1,4 @@
-"""Check bilingual quick-add links, original app icons and the shared feed."""
+"""Check bilingual quick-add links, upstream app badges and the shared feed."""
 
 import json
 from html import unescape
@@ -13,19 +13,19 @@ QUICK_ADD_BADGES = {
     "README.md": {
         "alt": "Add to Feather",
         "href": "https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&r=feather",
-        "src": "docs/images/feather-official-icon.png",
+        "src": "docs/images/badge-add-to-feather.png",
         "releases_label": "Download releases",
     },
     "README.zh-CN.md": {
         "alt": "添加到 Feather",
         "href": "https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&r=feather",
-        "src": "docs/images/feather-official-icon.png",
+        "src": "docs/images/badge-add-to-feather.png",
         "releases_label": "下载发布版本",
     },
 }
 ALTSTORE_BADGE = {
-    "README.md": {"alt": "Add to AltStore", "src": "docs/images/altstore-official-icon.png"},
-    "README.zh-CN.md": {"alt": "添加到 AltStore", "src": "docs/images/altstore-official-icon.png"},
+    "README.md": {"alt": "Add to AltStore", "src": "docs/images/badge-add-to-altstore.png"},
+    "README.zh-CN.md": {"alt": "添加到 AltStore", "src": "docs/images/badge-add-to-altstore.png"},
 }
 ALTSTORE_HREF = "https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&r=altstore"
 GITHUB_RELEASES_URL = "https://github.com/JiangNanGenius/floe-agent/releases"

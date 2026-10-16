@@ -1,6 +1,6 @@
-# Third-party app icons
+# Third-party installation badges
 
-Original, unmodified app icons used to identify the installation apps. Their names and artwork belong to the respective projects; use here does not imply endorsement.
+Unmodified installation badges from [JHenTai](https://github.com/jiangtian616/JHenTai), used to identify Feather and AltStore. Brand names and logos belong to their respective owners. This use does not imply endorsement. See the [upstream license](https://github.com/jiangtian616/JHenTai/blob/master/LICENSE).
 
-- `feather-official-icon.png`: [claration/Feather](https://github.com/claration/Feather/blob/7078b053c0af262809a48e4d3898d42b0d35fedf/Feather/Resources/Assets.xcassets/AppIcon.appiconset/feather.png); SHA-256 `57102c788b79b6f62e61bde0febc91026cb1c9d48ed1fe534530fc139e80ac5c`.
-- `altstore-official-icon.png`: [altstoreio/AltStore](https://github.com/altstoreio/AltStore/blob/56854e66fef2eac32dad88dcbad1dc131d430e60/AltStore/Resources/Icons.xcassets/Classic/Original.appiconset/Group%2023_180.png); SHA-256 `b0754b6d53cc7844a15ffd863e681a86b38d01d0eb2b9bc603a15d93cf12262e`.
+- `badge-add-to-feather.png`: [original asset](https://github.com/jiangtian616/JHenTai/blob/c1470866efb0931f5277778e2923d19d27db25a4/badges/add_to_feather.png); SHA-256 `88e307403b416443d5c566f8778896c9b12f46962cc378c79f7ecd9e2e299f0c`.
+- `badge-add-to-altstore.png`: [original asset](https://github.com/jiangtian616/JHenTai/blob/c1470866efb0931f5277778e2923d19d27db25a4/badges/add_to_altstore.png); SHA-256 `4fe37d7cb9e0fa95585cb673c46b8ad46fb8e4352f96e1d7c918aefb19312fab`.
