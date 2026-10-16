@@ -175,7 +175,7 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         do {
             _ = try await web.callAsyncJavaScript(
                 "if (!window.__floeChartQA || typeof window.__floeChartQA[operation] !== 'function') throw new Error('verified chart UI driver unavailable'); return JSON.stringify(await window.__floeChartQA[operation](...parameters));",
-                arguments: ["operation":operation,"parameters":parameters], in: nil, in: .page)
+                arguments: ["operation":operation,"parameters":parameters], in: nil, contentWorld: .page)
             try await recordChartUI(web, root: root, stage: stage, window: window)
         } catch {
             try? await recordChartUI(web, root: root, stage: stage + "-failed", window: window)
@@ -186,7 +186,7 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
     }
 
     private func recordChartUI(_ web: WKWebView, root: URL, stage: String, window: UIWindow) async throws {
-        let raw = try await web.callAsyncJavaScript("return JSON.stringify(window.__floeChartQA.observe());", arguments: [:], in: nil, in: .page)
+        let raw = try await web.callAsyncJavaScript("return JSON.stringify(window.__floeChartQA.observe());", arguments: [:], in: nil, contentWorld: .page)
         let json = try XCTUnwrap(raw as? String)
         guard json.utf8.count < 65_536 else { throw failure("Unexpectedly oversized native chart dialog observation") }
         let observation = root.appendingPathComponent(stage + ".json")
@@ -260,20 +260,33 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
         // Actual renderer slide selection; no HTML/canvas substitute. Original
         // chart1 is on slide4 (zero-based 3), confirmed by original rels.
-        _ = try await web.callAsyncJavaScript(#"""
-        const map = window.app && window.app.map;
-        if (!map || typeof map.setPart !== 'function') throw new Error('native slide navigation unavailable');
-        map.setPart(3);
-        const deadline = Date.now() + 20000;
-        while ((!map._docLayer || map._docLayer._selectedPart !== 3) && Date.now() < deadline)
-            await new Promise(resolve => setTimeout(resolve, 100));
-        if (!map._docLayer || map._docLayer._selectedPart !== 3) throw new Error('native slide selection did not reach chart slide');
-        // Cached tiles do not emit a new alltilesloaded event. Observe actual
-        // selected part and compositor turns, then retain pixels for primary
-        // review; do not pretend selection proves the five bars painted.
-        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        return {selectedPart: map._docLayer._selectedPart, chartPixels: 'pending-image-review'};
-        """#, arguments: [:], in: nil, in: .page)
+        let navigation: Any?
+        do {
+            navigation = try await web.callAsyncJavaScript(Self.targetSlideNavigationScript, arguments: [:], in: nil, contentWorld: .page)
+        } catch {
+            let last = try? await web.evaluateJavaScript("JSON.stringify(window.__floeChartTargetObservation || {targetObservationUnavailable:true})")
+            if let json = last as? String {
+                let diagnostic = root.appendingPathComponent(stage + "-target-failed.json")
+                try? Data(json.utf8).write(to: diagnostic); attach(diagnostic, stage + "-target-failed")
+            }
+            let failed = WKSnapshotConfiguration(); failed.afterScreenUpdates = true
+            if let image = try? await web.takeSnapshot(configuration: failed), let png = image.pngData() {
+                let snapshot = root.appendingPathComponent(stage + "-target-failed.png")
+                try? png.write(to: snapshot); attach(snapshot, stage + "-target-failed-surface")
+            }
+            throw error
+        }
+        let navigationJSON = try XCTUnwrap(navigation as? String)
+        let observation = root.appendingPathComponent(stage + "-target-observation.json")
+        try Data(navigationJSON.utf8).write(to: observation); attach(observation, stage + "-target-observation")
+        let facts = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(navigationJSON.utf8)) as? [String: Any])
+        let rect = try XCTUnwrap(facts["targetCSSRect"] as? [String: NSNumber])
+        let targetConfiguration = WKSnapshotConfiguration(); targetConfiguration.afterScreenUpdates = true
+        targetConfiguration.rect = CGRect(x: try XCTUnwrap(rect["x"]).doubleValue, y: try XCTUnwrap(rect["y"]).doubleValue,
+            width: try XCTUnwrap(rect["width"]).doubleValue, height: try XCTUnwrap(rect["height"]).doubleValue)
+        let targetImage = try await web.takeSnapshot(configuration: targetConfiguration)
+        let targetURL = root.appendingPathComponent(stage + "-target-slide.png")
+        try XCTUnwrap(targetImage.pngData()).write(to: targetURL); attach(targetURL, stage + "-actual-target-slide")
         let config = WKSnapshotConfiguration(); config.afterScreenUpdates = true
         let image = try await web.takeSnapshot(configuration: config)
         let surface = root.appendingPathComponent(stage + "-surface.png")
@@ -282,6 +295,71 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         let windowURL = root.appendingPathComponent(stage + "-window.png")
         try XCTUnwrap(whole.pngData()).write(to: windowURL); attach(windowURL, stage + "-window")
     }
+
+    private static let targetSlideNavigationScript = #"""
+    const app = window.app, map = app && app.map, layer = map && map._docLayer;
+    const container = app && app.sectionContainer;
+    const manager = window.RenderManager || (app && app.definitions && app.definitions.RenderManager);
+    if (!layer || !container || !manager || typeof manager.getTiles !== 'function') throw new Error('actual target-part tile observation unavailable');
+    const started = performance.now(), deadline = Date.now() + 45000;
+    const waitState = async predicate => {
+        while (Date.now() < deadline) { const value = predicate(); if (value) return value; await new Promise(r=>setTimeout(r,50)); }
+        throw new Error('target slide visibility/paint deadline: ' + JSON.stringify(window.__floeChartTargetObservation || {}));
+    };
+    map.setPart(3);
+    await waitState(()=>layer._selectedPart===3 && !layer._isZooming && app.activeDocument && app.activeDocument.activeLayout);
+    let layout = app.activeDocument.activeLayout;
+    const section = container.getDocumentAnchorSection();
+    if (!section || !section.size || typeof layout.scrollTo !== 'function') throw new Error('actual document viewport navigation unavailable');
+    if (app.file.fileBasedView) {
+        const target = layout.viewRectangles && layout.viewRectangles[3];
+        if (!target) throw new Error('file-based target slide rectangle missing');
+        // Same existing scrollTo route as PartsPreview._scrollViewToPartPosition,
+        // center actual target page without changing zoom, layout or canvas size.
+        layout.scrollTo(Math.max(0,target.pX1+(target.pWidth-section.size[0])/2),
+                        Math.max(0,target.pY1+(target.pHeight-section.size[1])/2));
+    }
+    container.requestReDraw();
+    const observe = () => {
+        layout=app.activeDocument.activeLayout;
+        const canvas=container.canvas, css=canvas.getBoundingClientRect(), anchor=container.getDocumentAnchorSection();
+        const point=app.activeDocument.fileSize.clone(); point.pX=0; point.pY=0; point.part=3;
+        const page=app.file.fileBasedView && layout.viewRectangles && layout.viewRectangles[3];
+        let left,top,width,height;
+        if (page) {
+            left=anchor.myTopLeft[0]+page.pX1-layout.scrollProperties.viewX;
+            top=anchor.myTopLeft[1]+page.pY1-layout.scrollProperties.viewY;
+            width=page.pWidth; height=page.pHeight;
+        } else {
+            left=layout.documentToViewX(point); top=layout.documentToViewY(point);
+            width=app.activeDocument.fileSize.pX; height=app.activeDocument.fileSize.pY;
+        }
+        const sx=css.width/canvas.width,sy=css.height/canvas.height;
+        const fullyVisible=left>=anchor.myTopLeft[0]-1 && top>=anchor.myTopLeft[1]-1
+            && left+width<=anchor.myTopLeft[0]+anchor.size[0]+1 && top+height<=anchor.myTopLeft[1]+anchor.size[1]+1
+            && width>1 && height>1;
+        const part=String(layer.getPartFromIndex(3));
+        const coords=typeof layout.getCurrentCoordList==='function' ? layout.getCurrentCoordList().filter(c=>String(c.part)===part) : [];
+        const all=manager.getTiles(); let decoded=0,painted=0; const missing=[];
+        for (const coord of coords) {
+            const tile=all.get(coord.key());
+            const ready=!!tile && typeof tile.isReadyToDraw==='function' && tile.isReadyToDraw();
+            if (ready) decoded++;
+            // lastRendered starts as epoch time, not a paint. touchImage sets the
+            // monotonic value immediately before real canvas.drawImage in TilesSection.
+            if (ready && Number.isFinite(tile.lastRendered) && tile.lastRendered>=started && tile.lastRendered<=performance.now()+1) painted++;
+            else if (missing.length<12) missing.push(coord.key());
+        }
+        const result={selectedPart:layer._selectedPart,targetPartID:part,fileBased:!!app.file.fileBasedView,
+            layoutType:layout.type,fullyVisible,requiredTargetTiles:coords.length,decodedTargetTiles:decoded,paintedTargetTiles:painted,
+            targetCSSRect:{x:css.left+left*sx,y:css.top+top*sy,width:width*sx,height:height*sy},missingTargetTiles:missing};
+        window.__floeChartTargetObservation=result;
+        return result;
+    };
+    const result=await waitState(()=>{const r=observe();return r.selectedPart===3 && r.fullyVisible && r.requiredTargetTiles>0 && r.decodedTargetTiles===r.requiredTargetTiles && r.paintedTargetTiles===r.requiredTargetTiles ? r:null;});
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    return JSON.stringify(result);
+    """#
 
     private func mount(_ session: OfficeFileSession, _ scene: UIWindowScene) -> UIWindow {
         let window = UIWindow(windowScene: scene); window.frame = scene.coordinateSpace.bounds

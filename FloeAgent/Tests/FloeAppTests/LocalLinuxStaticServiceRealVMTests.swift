@@ -29,6 +29,9 @@ import FloeTools
         await app.bootstrap()
         try #require(app.persistenceReady)
         let registry = app.environmentRegistry
+        // App bootstrap opens persistence; the environment registry is loaded
+        // lazily by execution. This explicit maintenance path must load it too.
+        try await registry.prepare()
         let record = try #require(await registry.record(id: id))
         let name = try #require(record.name)
         try #require(record.kind == .project && record.state == .stopped && record.ownerID == owner)

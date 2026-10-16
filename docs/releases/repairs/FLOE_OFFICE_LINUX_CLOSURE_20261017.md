@@ -28,6 +28,8 @@ The existing App Store review build remains unchanged. Any new beta requires its
 | --- | --- |
 | 模块 / Modules | Notes 74 checks; Linux execution 196 checks. A later focused original-source harness passed 8 timeout/cancellation XCTest cases and 4 registry Swift Testing cases, including Swift 6 object compilation on macOS. These are module results, not iPad results. |
 | App 中 Linux / Linux in the App | Actual guest file/Python output and hash; parent plus two children sharing a guest with file/terminal/cancellation isolation; tool search and Skill discovery. Discovery used a scripted provider, not a live model. |
+| 安装与超时 / Installation and timeout | Actual Simulator App installed a tiny local wheel through the production job service, independently imported it again, preserved stdout/stderr at a 5-second deadline, and confirmed the owned child exited without its delayed write. The owned guest and fixture were removed. This does not establish network package availability. |
+| 精确清理 / Owned cleanup | Production lifecycle removed one explicitly identified stopped qualification environment and its mapping; 139 other registry records remained. No broad registry or VM deletion was used. |
 | 静态网页 / Static service | Actual App/guest HTTP responses for Chinese/spaced HTML paths and relative CSS; closing an observer keeps the service alive; explicit cancellation closes the forwarding port and removes the owned test environment. |
 | App 和界面 / App and UI | Focused composer, Notes and ownership checks; iPad/iPhone wrapping and expansion; immediate highlighter visibility, undo/redo and cold reopen; Office keyboard container checks. |
 | 转换 / Conversion | Actual conversion tool → native Office rendering, after confirmed decoded tiles. Visual inspection found readable Chinese/Latin text and a bilingual table. An earlier blank capture was retained as a failed visual result. |
@@ -38,18 +40,19 @@ Suites may overlap and are not summed into a total. Simulator strokes do not est
 
 ## 尚未闭环 / Remaining acceptance
 
-- 匹配当前源码的原生组件仍在重建。旧组件测试结束时出现的原生 mutex 异常保留为失败，不能用 Xcode 的成功退出码忽略。
+- 匹配当前源码的原生组件仍在重建。新模拟器组件的真实测试结束时仍出现原生 mutex 异常保留为失败，不能用 Xcode 的成功退出码忽略。
 - 三格式笔迹需实际经输入桥接保存为矢量、核对颜色与线宽并重开。图表需检查五类别实际显示、未编辑保存以及修改数据后保存重开；保持原有保存保护，不用图片、形状或旧工作簿替代真实编辑。
-- 新增 App 内离线 pip／超时子进程清理、已停止测试环境的精确服务清理，以及真实配置模型的 Word／Excel／PPT 闭环仍待最终组件后执行。
+- 真实配置模型的 Word／Excel／PPT 闭环仍待原生组件最终修复后执行；离线 pip、超时子进程及精确环境清理已在实际 App 中通过。
 - 原三包网络安装超时的具体下载或包源原因未证实；120 秒前台上限与后台有效超时是已区分的行为，不能据此归因为内核故障。
 - 聊天键盘到 Office 附件的具体入口、实体设备和物理 Pencil 仍单独记录；其他入口或模块测试不替代它们。
 
-The matching native components are still being rebuilt. The old component's exit-time mutex exception remains a failure despite Xcode's successful command result. Native vector strokes/styles, chart rendering and edited-data roundtrips, App offline pip/process cleanup, exact owned-environment cleanup and live-model Office scenarios still require execution. Existing save protections remain. The original network package-install stall is not diagnosed from its timeout alone. Exact chat-to-Office entry, physical devices and physical Pencil acceptance remain separate.
+The matching native components are still being rebuilt. The new Simulator component still produced an exit-time mutex exception; it remains a failure regardless of Xcode's command result. Native vector strokes/styles, chart rendering and edited-data roundtrips, and live-model Office scenarios still require successful qualification. App offline pip/process cleanup and exact owned-environment cleanup have passed. Existing save protections remain. The original network package-install stall is not diagnosed from its timeout alone. Exact chat-to-Office entry, physical devices and physical Pencil acceptance remain separate.
 
 ## 源码检查点 / Source checkpoints
 
 - `52d47f42`: primary implementation checkpoint.
 - `aef0f344`: bounded timeout output after reaping and stale environment-binding cleanup.
 - `a6d0cd41`: current Linux documentation separated from historical native execution descriptions.
+- `07536493`: native Office and Linux lifecycle qualification sources; later test observations and lazy-registry preparation are tracked separately.
 
 No new beta upload or installability is asserted by these source checkpoints.

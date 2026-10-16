@@ -95,9 +95,7 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                 await session.applyInkPreferences()
                 guard session.inkError == nil else { throw NSError(domain: "OfficeNativeDrawingQualification", code: 3,
                     userInfo: [NSLocalizedDescriptionKey: session.inkError ?? "App ink attributes unavailable"]) }
-                let receipt = try await web.callAsyncJavaScript(Self.strokeScript,
-                    arguments: ["strokeID": index], in: nil, in: .page)
-                let sent = try XCTUnwrap(receipt as? [String: Any])
+                let sent = try await receiveStroke(index, web: web, native: native, window: window, root: root, syntheticSource: source)
                 XCTAssertEqual(sent["strokeDelta"] as? Int, 1, "Actual pen bridge did not finish the stroke")
                 XCTAssertGreaterThanOrEqual(sent["coreEventDelta"] as? Int ?? 0, 5, "Actual pen bridge did not forward all events")
                 XCTAssertEqual(sent["activeAfter"] as? Bool, false)
@@ -186,6 +184,143 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         } catch { await reopen.release(); throw error }
     }
 
+    private func receiveStroke(_ index: Int, web: WKWebView,
+                               native: FloeOfficeNativeViewController, window: UIWindow,
+                               root: URL, syntheticSource: URL) async throws -> [String: Any] {
+        var resultType = "not-returned"
+        var jsonByteCount: Int?
+        var stage = "call-actual-pen-bridge"
+        do {
+            let receipt: Any? = try await web.callAsyncJavaScript(Self.strokeScript,
+                arguments: ["strokeID": index], in: nil, contentWorld: .page)
+            resultType = receipt.map { String(reflecting: type(of: $0)) } ?? "nil"
+            stage = "decode-WK-JSON-string"
+            guard let json = receipt as? String else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 4,
+                    userInfo: [NSLocalizedDescriptionKey: "Actual pen bridge did not return its JSON-string receipt (type=\(resultType))"])
+            }
+            jsonByteCount = json.utf8.count
+            guard json.utf8.count <= 65_536 else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 5,
+                    userInfo: [NSLocalizedDescriptionKey: "Actual pen bridge receipt exceeded its bounded transport"])
+            }
+            // Persist immediately, before JSON decoding, counter assertions,
+            // another stroke, save or release can fail and erase this evidence.
+            let receiptURL = root.appendingPathComponent("stroke-\(index + 1)-receipt.json")
+            try Data(json.utf8).write(to: receiptURL, options: .atomic)
+            attach(receiptURL, name: "stroke-\(index + 1)-actual-WK-receipt")
+            guard let decoded = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 6,
+                    userInfo: [NSLocalizedDescriptionKey: "Actual pen bridge receipt was not a JSON object"])
+            }
+            stage = "validate-actual-pen-receipt"
+            guard (decoded["strokeDelta"] as? Int) == 1,
+                  (decoded["coreEventDelta"] as? Int ?? 0) >= 5,
+                  (decoded["activeAfter"] as? Bool) == false else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 7,
+                    userInfo: [NSLocalizedDescriptionKey: "Actual pen bridge receipt did not confirm one complete forwarded stroke"])
+            }
+            return decoded
+        } catch {
+            await retainStrokeFailure(index, stage: stage, resultType: resultType, jsonByteCount: jsonByteCount,
+                                      error: error, web: web, native: native, window: window, root: root, syntheticSource: syntheticSource)
+            throw error
+        }
+    }
+
+    private func retainStrokeFailure(_ index: Int, stage: String, resultType: String,
+                                     jsonByteCount: Int?, error: Error, web: WKWebView,
+                                     native: FloeOfficeNativeViewController, window: UIWindow, root: URL,
+                                     syntheticSource: URL) async {
+        let prefix = "stroke-\(index + 1)-failure"
+        let nsError = error as NSError
+        var facts: [String: Any] = ["strokeIndex": index, "stage": stage, "WKResultType": resultType,
+            "errorDomain": nsError.domain, "errorCode": nsError.code,
+            "nativeRenderDiagnostics": OfficeFileSession.hostRenderDiagnostics(native),
+            "hardwarePointerInput": "not-tested", "saveAndVectorVerification": "not-completed"]
+        if let jsonByteCount { facts["receiptJSONBytes"] = jsonByteCount }
+        // Allowlisted counters/layout only. No URL/path, page title, document
+        // text, form values, clipboard, chat messages, credentials or cache edits.
+        do {
+            let observed = try await web.callAsyncJavaScript(Self.strokeFailureObservationScript,
+                arguments: [:], in: nil, contentWorld: .page)
+            if let json = observed as? String, json.utf8.count <= 16_384,
+               let value = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] {
+                facts["actualPageAndPenState"] = value
+            } else { facts["observationTransport"] = "missing-or-invalid-JSON-string" }
+        } catch {
+            facts["observationErrorDomain"] = (error as NSError).domain
+            facts["observationErrorCode"] = (error as NSError).code
+        }
+        // Public read-only host URL, belonging to this exact synthetic test
+        // session. Copy only persisted bytes; do not force a save, mutate or
+        // scan recovery folders, and do not imply this captures unsaved core RAM.
+        let working = native.workingFileURL
+        if syntheticSource.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL,
+           syntheticSource.lastPathComponent == "original." + working.pathExtension,
+           ["docx", "xlsx", "pptx"].contains(working.pathExtension), working.isFileURL {
+            do {
+                let size = try working.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                guard size <= 16 * 1_024 * 1_024 else { throw CocoaError(.fileReadTooLarge) }
+                let bytes = try Data(contentsOf: working)
+                let copy = root.appendingPathComponent(prefix + "-working-copy." + working.pathExtension)
+                try bytes.write(to: copy, options: .atomic)
+                attach(copy, name: prefix + "-owned-synthetic-working-copy")
+                facts["persistedWorkingCopyBytes"] = bytes.count
+                facts["persistedWorkingCopySHA256"] = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+                facts["workingCopyInterpretation"] = "last-persisted-engine-bytes; no forced save; unsaved core edits may be absent"
+            } catch {
+                facts["workingCopyCaptureErrorDomain"] = (error as NSError).domain
+                facts["workingCopyCaptureErrorCode"] = (error as NSError).code
+            }
+        } else { facts["workingCopyCapture"] = "not-owned-synthetic-session" }
+        // Retain diagnostics before snapshots: a crashed/unresponsive renderer
+        // may refuse its image, but must not lose the original failure facts.
+        let diagnosticURL = root.appendingPathComponent(prefix + ".json")
+        if let bytes = try? JSONSerialization.data(withJSONObject: facts, options: [.prettyPrinted, .sortedKeys]),
+           (try? bytes.write(to: diagnosticURL, options: .atomic)) != nil {
+            attach(diagnosticURL, name: prefix + "-actual-state")
+        }
+        do {
+            let configuration = WKSnapshotConfiguration(); configuration.afterScreenUpdates = true
+            let image = try await web.takeSnapshot(configuration: configuration)
+            guard let png = image.pngData() else { throw CocoaError(.fileWriteUnknown) }
+            let surface = root.appendingPathComponent(prefix + "-surface.png")
+            try png.write(to: surface); attach(surface, name: prefix + "-actual-surface")
+        } catch {
+            let snapshotFailure = root.appendingPathComponent(prefix + "-snapshot-unavailable.txt")
+            let message = "Actual WK snapshot unavailable; domain=\((error as NSError).domain) code=\((error as NSError).code)"
+            if (try? Data(message.utf8).write(to: snapshotFailure)) != nil { attach(snapshotFailure, name: prefix + "-snapshot-unavailable") }
+        }
+        // This UIWindow contains only this test's synthetic Office surface;
+        // do not use screen-wide capture that could include a background chat.
+        let whole = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        if let png = whole.pngData() {
+            let wholeURL = root.appendingPathComponent(prefix + "-window.png")
+            if (try? png.write(to: wholeURL)) != nil { attach(wholeURL, name: prefix + "-actual-window") }
+        }
+    }
+
+    private static let strokeFailureObservationScript = #"""
+    const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const map = window.app && window.app.map;
+    const canvas = window.app && window.app.sectionContainer && window.app.sectionContainer.canvas;
+    const rect = canvas && canvas.getBoundingClientRect();
+    const pen = typeof window.__floeOfficePenState === 'function' ? window.__floeOfficePenState() : null;
+    return JSON.stringify({readyState:document.readyState, visibility:document.visibilityState,
+        hasApp:!!window.app, hasMap:!!map, hasPenBridge:typeof window.__floeOfficePenState === 'function',
+        docType:map && typeof map.getDocType === 'function' ? String(map.getDocType()).slice(0,32) : null,
+        selectedPart:finite(map && map._docLayer && map._docLayer._selectedPart),
+        editable:!!(map && typeof map.isEditMode === 'function' && map.isEditMode()),
+        viewport:{width:finite(window.innerWidth),height:finite(window.innerHeight),scale:finite(window.devicePixelRatio)},
+        canvas:rect ? {x:finite(rect.x),y:finite(rect.y),width:finite(rect.width),height:finite(rect.height)} : null,
+        pen:pen ? {drawing:pen.drawing === true,strokes:finite(pen.strokes),coreEvents:finite(pen.coreEvents),
+            armedDispatches:finite(pen.armedDispatches),activeStroke:pen.activeStroke === true,
+            toolState:typeof pen.toolState === 'string' ? pen.toolState.slice(0,64) : null} : null});
+    """#
+
     private static let strokeScript = #"""
     const app = window.app;
     const container = app && app.sectionContainer;
@@ -232,10 +367,10 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     const strokeDelta = after.strokes - before.strokes, coreEventDelta = after.coreEvents - before.coreEvents;
     if (strokeDelta !== 1 || coreEventDelta < points.length + 1 || after.activeStroke)
         throw new Error('production pen bridge did not forward/finish synthetic stroke');
-    return {strokeID, strokeDelta, coreEventDelta, activeAfter:after.activeStroke,
+    return JSON.stringify({strokeID, strokeDelta, coreEventDelta, activeAfter:after.activeStroke,
         before, after, canvasRect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},
         visibleDocumentRect:{x1,y1,x2,y2}, clientPoints:points,
-        hardwarePointerInput:'not-tested', pressure:'synthetic-not-hardware-tested'};
+        hardwarePointerInput:'not-tested', pressure:'synthetic-not-hardware-tested'});
     """#
 
     private func mount(_ session: OfficeFileSession, in scene: UIWindowScene) -> UIWindow {
