@@ -6,23 +6,31 @@
 
 Model code runs through `exec.shell` in the task-owned Linux environment. Use installed language commands, existing jobs for long work, and `exec.localService` for services (`runtime=static` for HTML). The six legacy language/package tools listed above are no longer registered. Old jobs are not replayed, and an unavailable guest never falls back to host execution. Internal document services and existing user installations are retained.
 
-以下历史实现与测试记录保留其日期边界；“Native”兼容执行描述不代表当前模型可用入口。Historical implementation and test records below do not advertise a current native-host execution option.
+本地执行由 `LocalShellService` / `ShellSessionCenter` 解析任务与环境归属，使用 `LinuxGuestShellBackend` 及共享 Linux 生命周期。取消和超时先确认来宾命令组退出，再返回结果；已收集的输出有界返回并按现有规则脱敏。无法确认退出时不能伪报停止成功。远端 SSH 仍走独立的远端执行与审批路径。
+
+Local execution resolves task/environment ownership through `LocalShellService` / `ShellSessionCenter`, then uses `LinuxGuestShellBackend` and the shared guest lifecycle. Cancellation and timeouts confirm the guest command group has stopped before returning; captured output remains bounded and is sanitized through the existing output path. An unconfirmed stop is not reported as successful. Remote SSH retains its own execution and review path.
+
+## 历史原生执行实现 / Historical native execution implementation
+
+以下保留旧架构与验收记录，**不作为现行工具、权限、包安装或 Linux 命令行为说明**。其中的 Native 后端、命令替代器、mini-root 与 App 内解释器描述不能用于推荐当前执行方式。现行 Linux 细节见 [Linux backend](FLOE_LINUX_GUEST_BACKEND.md) 及上节。
+
+The records below preserve the earlier architecture and qualification evidence. They do **not** define current tools, permissions, package installation or Linux command behavior. Native backends, replacement commands, mini-roots and in-App interpreters described below are historical. Use the current entry points above and the [Linux backend](FLOE_LINUX_GUEST_BACKEND.md).
 
 
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
-Status: 1.7 current. TinyEMU/Linux is the primary local runtime (see
+Historical status: TinyEMU/Linux became the primary local runtime (see
 [Linux backend](FLOE_LINUX_GUEST_BACKEND.md) and [Build 219 notes](releases/notes/RELEASE_NOTES_1.7.0_BUILD_219.md));
-the native `ios_system` substrate described below remains as the explicit
-compatibility backend for environments set to **Native**. Physical-device
+the native `ios_system` substrate below was an explicit
+compatibility backend for environments set to **Native** at that time. Physical-device
 acceptance remains with the user.
 
 > Implementation audit 2026-09-12: the mini-root filesystem-isolation claim below
 > is not established by the pinned ios_system binaries. Treat security/concurrency
 > statements as requirements, not verified behavior. See PLAN_LOCAL_SHELL.md
 > implementation checkpoint for the blocking decision and current evidence.
-Audience: maintainers. This document is the authority for the local shell,
-terminal and package surfaces; it supersedes the earlier statements in
+Audience: maintainers. This historical section recorded the local shell,
+terminal and package surfaces and superseded the then-earlier statements in
 `PRODUCT.md`, `DEVELOPMENT_PLAN.md` and `SECURITY.md` that the app offers no
 local command environment.
 
