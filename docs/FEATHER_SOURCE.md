@@ -28,12 +28,7 @@ URL, an "Open app" button, the download page and GitHub releases.
 - Feather: `https://www.floe-agent.com/add/feather` issues `feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
 - AltStore: `https://www.floe-agent.com/add/altstore` issues `altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json`
 
-GitHub renders README links only for `http`, `https` and `mailto`; it removes
-the custom-scheme `href`. The English and Simplified Chinese READMEs therefore
-embed two badge images that link directly to these HTTPS endpoints, so the
-quick-add flow is fully clickable on GitHub while the deep links stay reserved
-for on-device use. The download page chooser routes through the same
-endpoints.
+The English and Simplified Chinese READMEs use app-specific [AltDirect](https://github.com/StikDebug/altdirect) HTTPS links (`r=feather` or `r=altstore`) to attempt immediate launch without the Floe website landing page. This follows the approach used by Feather's own README while keeping links clickable on GitHub. The source URL remains unchanged. The website download chooser continues to offer the HTTPS endpoints above.
 
 In Feather, open **Sources**, add this URL and choose **Floe Agent**. Feather
 downloads the unsigned developer IPA; use your own certificate and provisioning
@@ -56,7 +51,7 @@ GitHub app release refreshes the same source URL without rebuilding the app.
 
 Floe Agent 软件源首版为 1.7.0（172），当前条目为 **1.7.14（build 255）**，对应标签 `v1.7.14`、App 源码提交 `850701db`、sha256 `748b40…b64255`（738,962,981 B）；172、191 等早期条目作为历史保留。源只重新发布固定的 GitHub 未签名开发者 IPA，保留最近十个已发布构建。
 
-在 Feather 的「软件源 / Sources」中添加上方地址，选择 Floe Agent 下载，再使用自己的证书和描述文件签名安装。这里提供的是开发者未签名 IPA，TestFlight 是独立渠道；Feather 中有条目不代表测试版已在 TestFlight 可用。一键添加入口是官网两个固定的 HTTPS 端点（`/add/feather` 与 `/add/altstore`）：设备上先按上文逐字节一致的深链拉起对应 App，同时始终显示可手动复制的源地址、打开 App、下载页与 GitHub 发布页等回退内容。GitHub 会移除自定义 scheme 链接，因此中英文 README 使用两张徽章图片分别直连这两个 HTTPS 端点。
+在 Feather 的「软件源 / Sources」中添加上方地址，选择 Floe Agent 下载，再使用自己的证书和描述文件签名安装。这里提供的是开发者未签名 IPA，TestFlight 是独立渠道；Feather 中有条目不代表测试版已在 TestFlight 可用。中英文 README 的 Feather、AltStore 图标分别通过 AltDirect 的 `r=feather`、`r=altstore` HTTPS 链接直接尝试唤起对应 App，省去 Floe 官网中转页。该方式沿用 Feather 项目 README 的做法，也兼容 GitHub 链接过滤。官网的下载菜单继续使用上文列出的 HTTPS 添加源入口。
 
 版本、构建号、最低系统和文件大小从实际安装包读取；发布前核对校验和及构建来源，并拒绝草稿发布、签名分发包、其他 bundle ID 与版本回退。以后更新沿用同一个源地址。
 

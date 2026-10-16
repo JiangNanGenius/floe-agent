@@ -29,10 +29,15 @@
 Go from a request to editable documents, spreadsheets and slides. Run a webpage, annotate a PDF and organize creative work on Canvas. See the everyday workflow in 95 seconds.
 
 <p align="center">
-  <a href="https://www.floe-agent.com/add/feather"><img src="docs/images/badge-add-to-feather.svg" alt="Add to Feather" width="190"></a>
-  &nbsp;
-  <a href="https://www.floe-agent.com/add/altstore"><img src="docs/images/badge-add-to-altstore.svg" alt="Add to AltStore" width="200"></a>
-  &nbsp;
+  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/feather-official-icon.png" alt="Add to Feather" width="64" height="64"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=altstore"><img src="docs/images/altstore-official-icon.png" alt="Add to AltStore" width="64" height="64"></a>
+</p>
+<p align="center">
+  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><strong>Add to Feather</strong></a>
+  &nbsp; · &nbsp;
+  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=altstore"><strong>Add to AltStore</strong></a>
+  &nbsp; · &nbsp;
   <a href="https://github.com/JiangNanGenius/floe-agent/releases"><strong>Download releases</strong></a>
 </p>
 
@@ -119,12 +124,15 @@ Gitee remains a one-way source and Release synchronization channel only. It is n
 
 ### Feather source
 
-The stable Floe feed is published at `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`. Tap a badge above (or open the same official quick-add endpoints from the [download page](https://www.floe-agent.com/#download)). Each endpoint tries the exact route on your device and then shows the manual steps and download links:
+Tap the Feather or AltStore icon above to open the corresponding app and add the Floe source through [AltDirect](https://github.com/StikDebug/altdirect). Install the corresponding app first.
 
-- Feather: `https://www.floe-agent.com/add/feather` → `feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
-- AltStore: `https://www.floe-agent.com/add/altstore` → `altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json`
+You can also paste this URL into the app’s Sources screen:
 
-You can also paste the source URL directly into the app's Sources screen. GitHub's Markdown sanitizer removes `feather://` and `altstore://` links, so the README badges point at the official HTTPS endpoints, which perform the custom-scheme launch and always render a readable fallback instead of a dead link. The independently verified publishing process and manual source URL are described in the [source guide](docs/FEATHER_SOURCE.md). Check [current channel status](docs/CURRENT_STATUS.md) before installation.
+```text
+https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json
+```
+
+See the [source guide](docs/FEATHER_SOURCE.md) for installation and signing instructions. Check [current channel status](docs/CURRENT_STATUS.md) before installation.
 
 ### Build from source
 
