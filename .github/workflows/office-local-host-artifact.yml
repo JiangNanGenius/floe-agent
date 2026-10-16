@@ -1,0 +1,71 @@
+name: Store locally qualified Office device host
+
+on:
+  workflow_dispatch:
+    inputs:
+      transport_release_tag:
+        description: Private unpublished DRAFT containing OfficeNativeHost-local.zip
+        required: true
+        type: string
+      archive_sha256:
+        description: Exact SHA256 of the original local OfficeNativeHost ZIP
+        required: true
+        type: string
+      source_commit:
+        description: Exact local source commit (must equal this workflow ref)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: office-local-host-storage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  store:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Refuse mismatched workflow/source input
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          source = os.environ['SOURCE_COMMIT']
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+          require(re.fullmatch('[0-9a-f]{40}', source), 'Exact source SHA required')
+          require(re.fullmatch('[0-9a-f]{64}', os.environ['ARCHIVE_SHA256']), 'Exact ZIP SHA256 required')
+          require(source == os.environ['GITHUB_SHA'] == os.environ['GITHUB_WORKFLOW_SHA'], 'Workflow ref and source differ')
+          PY
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, repository pin
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Read draft, transfer original ZIP and validate exact device evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRANSPORT_TAG: ${{ inputs.transport_release_tag }}
+          ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          python3 FloeAgent/scripts/validate_local_office_transport.py \
+            --release-tag "$TRANSPORT_TAG" --sha256 "$ARCHIVE_SHA256" \
+            --source-commit "$SOURCE_COMMIT" \
+            --output-dir "$RUNNER_TEMP/office-local-host-transport"
+      - name: Store original bytes and separate transport provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2, repository pin
+        with:
+          name: office-native-host-unsigned
+          path: |
+            ${{ runner.temp }}/office-local-host-transport/OfficeNativeHost.zip
+            ${{ runner.temp }}/office-local-host-transport/transport-provenance.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
