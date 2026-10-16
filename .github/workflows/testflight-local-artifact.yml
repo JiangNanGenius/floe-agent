@@ -59,10 +59,25 @@ jobs:
         ]
         for path in paths:
             target = pathlib.Path('..') / path
-            if not target.exists():
-                data = subprocess.check_output(['git', 'show', os.environ['RELEASE_METADATA_SHA'] + ':' + path])
-                target.write_bytes(data)
-                print('Release metadata:', os.environ['RELEASE_METADATA_SHA'], path)
+            # Copy/date evidence may be corrected in a docs commit after the
+            # release tag without changing the frozen App source or rebuilding
+            # the App. Prefer the dispatch ref's copy of these two release
+            # documents when it exists there; the frozen tag copy stays the
+            # fallback so an unreachable ref can never break the upload. The
+            # release-copy preflight below validates whichever copy is used.
+            replacement = None
+            try:
+                replacement = subprocess.check_output(
+                    ['git', 'show', os.environ['RELEASE_METADATA_SHA'] + ':' + path],
+                    stderr=subprocess.DEVNULL)
+            except subprocess.CalledProcessError:
+                replacement = None
+            if replacement is not None:
+                if not target.exists() or target.read_bytes() != replacement:
+                    target.write_bytes(replacement)
+                    print('Release copy from dispatch ref:', os.environ['RELEASE_METADATA_SHA'], path)
+            elif not target.exists():
+                raise SystemExit('release copy missing in the tag and unreachable in the dispatch ref: ' + path)
         METADATA
         scripts/release_preflight.sh "$RELEASE_TAG"
     - name: Download private draft transport and verify local provenance

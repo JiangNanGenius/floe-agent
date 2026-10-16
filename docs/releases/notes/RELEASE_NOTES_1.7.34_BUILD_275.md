@@ -14,7 +14,9 @@ Release candidate. Source freeze, archive, signing, TestFlight upload and Apple 
 - **命令行为说明（与上游 v3.0.2 二进制的差异，明确记录）**：本构建中本地 shell 的原生 `find -fstype` **明确返回“不支持”并说明**（不再调用未声明 API），`wc` 仍按真实字节计数（仅内部缓冲区改为 `fstat().st_blksize`），`tail` 跟随模式统一使用既有轮询回退，`tail -F` 仍每轮重新 stat 文件名。不宣称与原二进制所有行为完全一致；Linux 客体（guest）内对应工具未修改。
 - 其余移动端行为、界面与上一轮（1.7.33/274）一致；本轮不重跑付费模型与完整业务矩阵，仅执行与改动相关的定向验证。
 
-验证边界：本轮以本地 Xcode 27.0（27A266a）完成完整 App Release 归档，并在本地 iOS 模拟器执行相关单元/UI 定向测试；组件、独立 harness、macOS 与模拟器结果分别记录，不代替真机验收。符号与哈希随冻结源码一起留存，可在不重新编译 App 的前提下复用同一精确产物完成签名与上传。
+验证边界：本轮以本地 Xcode 27.0（27A266a）完成完整 App Release 归档（iphoneos/arm64，`CODE_SIGNING_ALLOWED=NO`），并在本地 iOS 模拟器执行 App 宿主单元测试（反馈回归 57 项、语言与存储 31 项）与重建 shell/text 的组件宿主命令冒烟（普通 find、find -fstype 明确失败且宿主存活、wc 字节/行/词、tail 追加读取；tail -f 取消在 pinned 与 patched 上均为既有引擎限制）。未做完整 UI 交互验收；组件宿主与模拟器结果不代替真机验收。签名、上传、Apple 处理与可用状态记录在交付核验文档中。
+
+（修订说明：本文件与 TestFlight 文案在 `v1.7.34` 冻结后按产品文案要求更新了验证措辞与简介；App 源码、资源与归档产物未变，设备包与签名上传均取自不可变 tag `084ef9087fe50752a4ae2212a097a409cca02fdf`。）
 
 ## English
 
@@ -26,4 +28,6 @@ Release candidate. Source freeze, archive, signing, TestFlight upload and Apple 
 - **Command behaviour notes (recorded differences from the upstream v3.0.2 binaries)**: in this build the native local-shell `find -fstype` **reports that it is not supported** (instead of calling an undeclared API), `wc` still counts real bytes (only its internal buffer now comes from `fstat().st_blksize`), and `tail` follow mode uses the existing polling fallback on every volume while `tail -F` keeps re-stat'ing names. Behaviour is not claimed to be identical to the upstream binaries in every respect, and the corresponding Linux guest tools are not modified.
 - Everything else on the mobile side matches the previous round (1.7.33/274); this round does not rerun paid-model or full business matrices, only change-scoped verification.
 
-Qualification limits: this round used local Xcode 27.0 (27A266a) for the full App Release archive and ran the related unit/UI tests on a local iOS Simulator. Component, independent-harness, macOS and Simulator results are recorded separately and do not replace physical-device acceptance. Symbols and hashes are retained with the frozen source so the same exact artifact can be signed and uploaded without rebuilding the App.
+Qualification limits: local Xcode 27.0 (27A266a) completed the full App Release archive (iphoneos/arm64, `CODE_SIGNING_ALLOWED=NO`), and the local iOS Simulator ran the App-host unit suites (feedback regressions 57 tests, locale+storage 31 tests) plus the rebuilt shell/text component-host command smoke (normal find; `find -fstype` failing closed while the host stays alive; wc bytes/lines/words; tail append reads; `tail -f` cancellation is a pre-existing engine limitation on both pinned and patched binaries). No full UI interaction acceptance was performed; component-host and Simulator results do not replace physical-device acceptance. Signing, upload, Apple processing and availability states are recorded in the delivery verification document.
+
+(Revision note: this file and the TestFlight copy were updated after the `v1.7.34` freeze for the product-copy policy and accurate verification wording; App source, resources and archived artifacts are unchanged, and the device package and signing upload used the immutable tag `084ef9087fe50752a4ae2212a097a409cca02fdf`.)
