@@ -106,7 +106,7 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
     /// Verified argument encodings (see `office-ink-implementation` evidence):
     /// - `.uno:XLineColor`        object form `XLineColor.Color`, long, 0xRRGGBB
     ///   (pinned `JSDialog.sendColorCommand` derives `<Command>.Color`).
-    /// - `.uno:LineWidth`         object form `LineWidth`, long, 1/100 mm
+    /// - `.uno:LineWidth`         object form `LineWidth`, long, document core metric
     ///   (`SvxMetricField::ModifyHdl` dispatches exactly this property).
     /// - `.uno:LineTransparence`  string form `?LineTransparence:short=<percent>`
     ///   (pinned `Control.NotebookbarBuilder._lineTransparencyControl`).
@@ -237,6 +237,15 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
                 return { ok: false, reason: 'not-ready' };
             if (selection.hasActiveSelection())
                 return { ok: false, reason: 'object-selected' };
+            // LineWidth is a method slot: TransformParameters passes its
+            // simple argument to PutValue(..., 0), i.e. the document core
+            // metric. Writer uses twips; Calc/Impress/Draw use MM100.
+            // commandstatechanged, conversely, normalizes Writer to MM100.
+            const docType = typeof map.getDocType === 'function' ? map.getDocType() : null;
+            if (!['text', 'spreadsheet', 'presentation', 'drawing'].includes(docType))
+                return { ok: false, reason: 'not-ready' };
+            const coreWidth = docType === 'text' ? Math.round(width * 72 / 127) : width;
+            const reportedWidth = docType === 'text' ? Math.round(coreWidth * 127 / 72) : coreWidth;
             const listener = ensureListener(map);
             const commands = {
                 color: '.uno:XLineColor',
@@ -252,7 +261,7 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
                 map.sendUnoCommand('.uno:XLineColor',
                     { 'XLineColor.Color': { type: 'long', value: color } });
                 map.sendUnoCommand('.uno:LineWidth',
-                    { 'LineWidth': { type: 'long', value: width } });
+                    { 'LineWidth': { type: 'long', value: coreWidth } });
                 map.sendUnoCommand('.uno:LineTransparence?LineTransparence:short=' + transparency);
             } catch (error) {
                 return {
@@ -267,7 +276,8 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
                 listener: listener,
                 before: before,
                 commands: commands,
-                expected: { color: color, width: width, transparency: transparency },
+                expected: { color: color, width: reportedWidth, transparency: transparency },
+                docType: docType, coreWidth: coreWidth,
             };
             return { ok: true, reason: 'dispatched', token: window.__floeOfficeInkLastToken };
         };

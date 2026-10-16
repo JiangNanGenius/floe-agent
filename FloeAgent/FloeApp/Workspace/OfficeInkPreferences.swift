@@ -93,7 +93,7 @@ enum OfficeInkWidthPreset: Double, CaseIterable, Identifiable, Sendable {
 /// One document's native freehand stroke configuration.
 ///
 /// The stored values are user-facing (millimetres, transparency percent). The
-/// `…Value` properties are the exact wire values in the shapes the verified
+/// `…Value` properties are canonical request values in the shapes the verified
 /// Collabora/LibreOffice slots expect; see `OfficeExplicitSaveBridge` for the
 /// command encodings and their evidence.
 struct OfficeInkStroke: Codable, Equatable, Sendable {
@@ -101,7 +101,7 @@ struct OfficeInkStroke: Codable, Equatable, Sendable {
     static let defaultWidthMillimeters = OfficeInkWidthPreset.standard.rawValue
 
     var colorHex: String = OfficeInkColor.black.hex
-    /// Display width in millimetres. `.uno:LineWidth` takes 1/100 mm.
+    /// Display width in millimetres, independent of the document core metric.
     var widthMillimeters: Double = OfficeInkWidthPreset.standard.rawValue
     /// UNO line transparency in percent. `0` is fully opaque/solid.
     var transparencyPercent: Int = 0
@@ -152,7 +152,8 @@ struct OfficeInkStroke: Codable, Equatable, Sendable {
         return Int(value & 0xFFFFFF)
     }
 
-    /// `.uno:LineWidth` receives a `sal_Int32` metric value in 1/100 mm.
+    /// Canonical hundredth-millimetre request. The bridge converts this to
+    /// Writer twips or Calc/Impress/Draw MM100 using the live document type.
     /// Clamp before multiplying so a huge finite value cannot overflow.
     var lineWidthValue: Int {
         let clamped = Self.clampedWidth(widthMillimeters)

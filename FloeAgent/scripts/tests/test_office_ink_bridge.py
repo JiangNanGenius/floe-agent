@@ -49,6 +49,10 @@ Object.defineProperty(window, 'app', {
     get: () => activeApp,
     set: (value) => {
         activeApp = value;
+        // Existing contract cases use a spreadsheet; explicit type tests
+        // below override this to exercise the real document routing.
+        if (value && value.map && !value.map.getDocType)
+            value.map.getDocType = () => 'spreadsheet';
         if (value && !value.definitions)
             value.definitions = { graphicSelection: { hasActiveSelection: () => false } };
     },
@@ -159,6 +163,32 @@ window.app = {
 };
 r = window.__floeApplyOfficeInk({ color: 1, width: 1, transparency: 0 });
 check('dispatch/failure-not-ok', r.ok === false && r.reason === 'dispatch-failed', JSON.stringify(r));
+
+// Writer method arguments are twips, but fresh state is normalized MM100.
+for (const [requested, core, reported] of [[40, 23, 41], [120, 68, 120], [600, 340, 600]]) {
+    const writer = makeMap(null);
+    writer.getDocType = () => 'text';
+    window.app = {map: writer};
+    const result = window.__floeApplyOfficeInk({color: 0xFF0000, width: requested, transparency: 0});
+    check('writer/core-width-' + requested, writer.calls[1][1].LineWidth.value === core);
+    writer.fire('commandstatechanged', {commandName: '.uno:XLineColor', state: 0xFF0000});
+    writer.fire('commandstatechanged', {commandName: '.uno:LineTransparence', state: 0});
+    writer.fire('commandstatechanged', {commandName: '.uno:LineWidth', state: core});
+    check('writer/reject-core-readback-' + requested,
+        !window.__floeOfficeInkVerification(result.token).allFreshMatched);
+    writer.fire('commandstatechanged', {commandName: '.uno:LineWidth', state: String(reported)});
+    check('writer/normalized-readback-' + requested,
+        window.__floeOfficeInkVerification(result.token).allFreshMatched);
+}
+for (const kind of ['spreadsheet', 'presentation', 'drawing']) {
+    const map = makeMap(null); map.getDocType = () => kind; window.app = {map};
+    window.__floeApplyOfficeInk({color: 0, width: 40, transparency: 0});
+    check(kind + '/mm100-width', map.calls[1][1].LineWidth.value === 40);
+}
+const unknown = makeMap(null); unknown.getDocType = () => 'unknown'; window.app = {map: unknown};
+check('unknown-type/no-dispatch',
+    window.__floeApplyOfficeInk({color: 0, width: 40, transparency: 0}).reason === 'not-ready'
+    && unknown.calls.length === 0);
 
 // --- fresh all-attribute acknowledgement ---------------------------------------
 window.app = { map: makeMap((map) => {

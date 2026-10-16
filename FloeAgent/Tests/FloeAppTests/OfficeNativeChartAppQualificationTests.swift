@@ -339,7 +339,17 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
             && left+width<=anchor.myTopLeft[0]+anchor.size[0]+1 && top+height<=anchor.myTopLeft[1]+anchor.size[1]+1
             && width>1 && height>1;
         const part=String(layer.getPartFromIndex(3));
-        const coords=typeof layout.getCurrentCoordList==='function' ? layout.getCurrentCoordList().filter(c=>String(c.part)===part) : [];
+        // File-based layout includes an inclusive extra grid row/column.
+        // TilesSection clips using this same page-local document rectangle;
+        // out-of-page tiles are not drawn and cannot prove visible paint.
+        const pageBounds=layout.documentRectangles && layout.documentRectangles[3];
+        if (!pageBounds || !(pageBounds.pWidth>0 && pageBounds.pHeight>0)) throw new Error('target document bounds unavailable');
+        const candidates=typeof layout.getCurrentCoordList==='function' ? layout.getCurrentCoordList().filter(c=>String(c.part)===part) : [];
+        const tileSize=manager.tileSize;
+        if (!(tileSize>0)) throw new Error('actual tile size unavailable');
+        const intersectsPage=c=>c.x<pageBounds.pWidth && c.y<pageBounds.pHeight && c.x+tileSize>0 && c.y+tileSize>0;
+        const coords=app.file.fileBasedView ? candidates.filter(intersectsPage) : candidates;
+        const excluded=app.file.fileBasedView ? candidates.filter(c=>!intersectsPage(c)).map(c=>c.key()) : [];
         const all=manager.getTiles(); let decoded=0,painted=0; const missing=[];
         for (const coord of coords) {
             const tile=all.get(coord.key());
@@ -351,7 +361,7 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
             else if (missing.length<12) missing.push(coord.key());
         }
         const result={selectedPart:layer._selectedPart,targetPartID:part,fileBased:!!app.file.fileBasedView,
-            layoutType:layout.type,fullyVisible,requiredTargetTiles:coords.length,decodedTargetTiles:decoded,paintedTargetTiles:painted,
+            layoutType:layout.type,fullyVisible,targetDocumentPixels:{width:pageBounds.pWidth,height:pageBounds.pHeight},excludedOutOfPageTiles:excluded,requiredTargetTiles:coords.length,decodedTargetTiles:decoded,paintedTargetTiles:painted,
             targetCSSRect:{x:css.left+left*sx,y:css.top+top*sy,width:width*sx,height:height*sy},missingTargetTiles:missing};
         window.__floeChartTargetObservation=result;
         return result;
