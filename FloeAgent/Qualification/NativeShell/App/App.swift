@@ -151,6 +151,10 @@ func runCommandSmoke() {
  // 2b. The host is still alive right after the failing predicate.
  let (fstypeAliveStatus, _, fstypeAliveOut, _, _) = runOneShot(
    "host-alive-after-fstype", dash("printf host-alive"), workingDirectory: dir.path)
+ // 2c. Standalone find invocation: its own nonzero exit status (the combined
+ // case above continues the shell, so it cannot show the predicate's status).
+ let (_, fstypeExitCode, _, fstypeExitErr, _) = runOneShot(
+   "find-fstype-standalone-exit", dash("find . -fstype apfs -print"), workingDirectory: dir.path)
  // 3. wc byte counts: pipe UTF-8, file UTF-8, > SMALL_BUF_SIZE file, ASCII pipe.
  let wcCommand = dash("printf '中文' | wc -c; wc -c cn.txt; wc -c big.txt; printf abc | wc -c")
  let (_, _, wcOut, _, wcStopped) = runOneShot("wc-bytes", wcCommand, workingDirectory: dir.path)
@@ -227,6 +231,8 @@ func runCommandSmoke() {
     .allSatisfy { findOut.contains($0) },
   "fstypeErrorMentionsUnsupported": fstypeErr.contains("fstype is not supported"),
   "fstypeCaseStopped": fstypeStopped,
+  "fstypeStandaloneNonZeroExit": fstypeExitCode != 0
+    && fstypeExitErr.contains("fstype is not supported"),
   "hostAliveAfterFstype": fstypeAliveStatus == .OK && fstypeAliveOut.contains("host-alive"),
   "shellContinuedAfterFstype": results.contains { $0["case"] as? String == "wc-bytes" },
   "wcByteCountsExact": countTokens(wcOut) == ["6", "7", "320000", "3"],

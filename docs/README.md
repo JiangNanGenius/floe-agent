@@ -5,6 +5,7 @@
 ## 当前阅读入口 / Start here
 
 - [完整中文使用手册](USER_GUIDE.zh-CN.md) / [English user manual](USER_GUIDE.md)：20 章操作步骤、排障与数据保护。
+- [1.7.34（275）本地核验与交付记录](releases/testflight/BUILD_275_LOCAL_VERIFICATION.md)：本地 Xcode 27 归档、最小云端签名上传、Apple 内部可用（Floe QA）与独立只读回读；隐私清单闭环见[隐私修复与验证记录](releases/repairs/FLOE_PRIVACY_MANIFESTS_20261016.md)。
 - [1.7.33（274）本地核验与交付记录](releases/testflight/BUILD_274_LOCAL_VERIFICATION.md)：本地 Xcode 27 归档、最小云端签名上传、Apple 内部可用与 publictest1 已送审的实际状态；[任务生命周期回合记录](releases/repairs/FLOE_TASK_LIFECYCLE_20261015.md)保留实现范围与验证边界。
 - [版本与验证状态](CURRENT_STATUS.md)：已记录交付、当前候选和待验收边界。
 - [官网中文版](https://www.floe-agent.com/docs/zh.html) / [Website English manual](https://www.floe-agent.com/docs/en.html)：与仓库手册同源。
@@ -49,7 +50,7 @@
 
 ## 发布档案（只追加、不回改）
 
-逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。1.7.33（274）为当前交付（[发布说明](releases/notes/RELEASE_NOTES_1.7.33_BUILD_274.md)、[本地核验与交付记录](releases/testflight/BUILD_274_LOCAL_VERIFICATION.md)），内部 Floe QA 可用且已提交 publictest1 等待审核；1.7.32（273）保留为回滚记录。
+逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。1.7.34（275）为当前候选（[发布说明](releases/notes/RELEASE_NOTES_1.7.34_BUILD_275.md)、[本地核验与交付记录](releases/testflight/BUILD_275_LOCAL_VERIFICATION.md)），内部 Floe QA 可用、尚未提交外部审核；1.7.33（274）仍为 publictest1 等待审核状态并保留（[本地核验与交付记录](releases/testflight/BUILD_274_LOCAL_VERIFICATION.md)），1.7.32（273）保留为回滚记录。
 
 ## 历史研究（结论以现行代码为准）
 

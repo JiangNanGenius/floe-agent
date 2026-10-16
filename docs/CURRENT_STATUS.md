@@ -3,6 +3,12 @@
 
 文档更新时间 / Document updated: 2026-10-16. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
 
+## 1.7.34（275）内部可用；未提交外部审核 / Internal available; no external submission
+
+- `project.yml` 声明 **1.7.34 (275)**。2026-10-16 由冻结源码 `084ef9087fe50752a4ae2212a097a409cca02fdf`（标签 `v1.7.34`）完成本地 Xcode 27.0（27A266a）Release 归档，复用已核验的本地产物做最小云端签名上传（未重编 App，[运行 38848176447](https://github.com/JiangNanGenius/floe-agent/actions/runs/38848176447)）；独立只读回读 Apple：构建 `a75934ba…` `VALID`、未过期、`APP_STORE_ELIGIBLE`，现有内部 Floe QA 组 `IN_BETA_TESTING`（[38849845297](https://github.com/JiangNanGenius/floe-agent/actions/runs/38849845297)）——**内部可安装**。签名 IPA 已下载并独立校验（sha256 `f817b0f6…`；codesign 深度严格校验通过；内置重建 shell/text UUID 与归档一致；App、扩展与 16 个 framework 均带隐私清单）。
+- 本轮完成首轮审核所需隐私清单闭环（App、Screen Share、16 个嵌入 framework；`shell`/`text` 以受审 patch 定向重建移除无理由的 statfs 调用），语言解析改用公开 Locale API，反馈图片字段与服务契约一致，存储文件系统门控改用公开 API。测试：打包隐私测试 20/20、App 宿主语言/存储 31 项与反馈回归 57 项通过；重建模拟器切片的 find/wc/tail 组件宿主冒烟如实记录（`tail -f` 取消不停止为 pinned 与 patched 共有的既有引擎限制）。详见[本地核验与交付记录](releases/testflight/BUILD_275_LOCAL_VERIFICATION.md)与[隐私修复与验证记录](releases/repairs/FLOE_PRIVACY_MANIFESTS_20261016.md)。
+- 边界：未加入 publictest1、未提交 App Review、未发布 GitHub/Feather/官网/内容包、未恢复定时任务；正式审核提交、ASC 网页与账户法律动作仍在主协调/用户。实际审核与到期状态以 App Store Connect/TestFlight 为准。
+
 ## 1.7.33（274）内部可用；已送 publictest1 等待审核 / Internal available; submitted to publictest1, waiting for Apple review
 
 - `project.yml` 声明 **1.7.33 (274)**。2026-10-15 由冻结源码 `0de810f08639315ba38ff82607e2da1fcf596f26`（标签 `v1.7.33`）完成本地 Xcode 27 归档，复用已核验的本地产物做最小云端签名上传（未重编 App，[运行 38805969523](https://github.com/JiangNanGenius/floe-agent/actions/runs/38805969523)）；独立只读回读 Apple：构建 `320f0efa…` `VALID`、未过期、`APP_STORE_ELIGIBLE`、现有内部 Floe QA 组 `IN_BETA_TESTING`（[38808283515](https://github.com/JiangNanGenius/floe-agent/actions/runs/38808283515)）——**内部可安装**。签名 IPA 已下载并独立校验（sha256 `2d54b5ad…`，codesign 深度严格校验通过，版本/SDK/UUID 与本地归档一致）。
