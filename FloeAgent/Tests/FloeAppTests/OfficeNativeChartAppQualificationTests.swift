@@ -52,6 +52,7 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
             let nativeOutput = try await session.exportDocument(format: "pptx")
             try fm.copyItem(at: nativeOutput, to: output)
             attach(output, "chart-native-saved-pptx")
+            await capturePostSavePDFDiagnostic(session, root: root, savedPPTX: output)
             let saved = try inspect(output, evidenceRoot: root, stage: "saved")
             XCTAssertEqual(saved.categories, original.categories, "Native save changed/dropped categories")
             XCTAssertEqual(saved.values, original.values, "Native save changed/dropped values")
@@ -132,6 +133,7 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
             try await performChartUI("exitChartWithExistingEscape", web: web, root: root, stage: "07-native-chart-exited", window: window)
             let nativeOutput = try await session.exportDocument(format: "pptx")
             try fm.copyItem(at: nativeOutput, to: output); attach(output, "chart-edited-native-saved-pptx")
+            await capturePostSavePDFDiagnostic(session, root: root, savedPPTX: output)
             let saved = try inspect(output, evidenceRoot: root, stage: "edited-saved")
             XCTAssertEqual(saved.categories, ["场地 QA", "拍摄", "印刷", "茶歇 90人", "体验物料 90人"])
             XCTAssertEqual(saved.values, [2100,900,240,1620,1080])
@@ -394,6 +396,42 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         guard parser.parse() else { throw parser.parserError ?? failure("Invalid actual XML") }
     }
     private func digest(_ url: URL) throws -> String { SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined() }
+    /// Supplementary renderer diagnostic, strictly after the original-format
+    /// save is retained. It never substitutes for PPTX structure/paint gates.
+    private func capturePostSavePDFDiagnostic(_ session: OfficeFileSession, root: URL, savedPPTX: URL) async {
+        var facts: [String: Any] = ["purpose": "compare-native-PDF-with-bitmap-chart-rendering",
+            "timing": "after-retained-PPTX-before-independent-inspect", "visualReview": "pending-primary",
+            "qualifiesPPTX": false]
+        do {
+            let pptxBefore = try digest(savedPPTX)
+            let generated = try await session.exportDocument(format: "pdf")
+            let size = try generated.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? -1
+            guard size > 5, size <= 64 * 1024 * 1024 else { throw CocoaError(.fileReadCorruptFile) }
+            let reader = try FileHandle(forReadingFrom: generated)
+            defer { try? reader.close() }
+            let magic = try reader.read(upToCount: 5)
+            guard magic == Data("%PDF-".utf8) else { throw CocoaError(.fileReadCorruptFile) }
+            let copy = root.appendingPathComponent("native-post-save-diagnostic.pdf")
+            try FileManager.default.copyItem(at: generated, to: copy)
+            facts["pdfBytes"] = size; facts["pdfSHA256"] = try digest(copy)
+            facts["pdfHeaderVerified"] = true; facts["pdfExportSucceeded"] = true
+            facts["retainedPPTXUnchanged"] = (try digest(savedPPTX)) == pptxBefore
+            attach(copy, "chart-post-save-render-diagnostic-PDF")
+        } catch {
+            // A diagnostic export failure must not replace/skip the original
+            // independent PPTX validation or its unchanged strict assertions.
+            facts["error"] = String(String(describing: error).prefix(1024))
+            facts["pdfExportSucceeded"] = false
+        }
+        let receipt = root.appendingPathComponent("post-save-pdf-diagnostic.json")
+        do {
+            try JSONSerialization.data(withJSONObject: facts, options: [.prettyPrinted, .sortedKeys]).write(to: receipt)
+            attach(receipt, "chart-post-save-PDF-diagnostic")
+        } catch {
+            print("Chart supplementary PDF diagnostic receipt unavailable: \(error.localizedDescription.prefix(256))")
+        }
+    }
+
     private func attach(_ url: URL, _ name: String) { let attachment = XCTAttachment(contentsOfFile: url); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment) }
 }
 

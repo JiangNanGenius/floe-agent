@@ -19,6 +19,137 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     func testXLSXTwoNativeVectorStrokesSaveAndReopen() async throws { try await exercise("xlsx") }
     func testPPTXTwoNativeVectorStrokesSaveAndReopen() async throws { try await exercise("pptx") }
 
+    /// Reopen previously saved synthetic assistant outputs with the newly linked
+    /// engine. No model call or edit is performed by this qualification.
+    func testPriorLiveModelArtifactsReopenWithoutAnotherModelCall() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["FLOE_NATIVE_SAVED_ARTIFACTS_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in saved synthetic artifact reopen; not executed")
+        }
+        executionTimeAllowance = 1080
+        continueAfterFailure = false
+        let fm = FileManager.default
+        let inputRoot = URL(fileURLWithPath: try XCTUnwrap(env["FLOE_NATIVE_SAVED_ARTIFACTS_ROOT"]), isDirectory: true)
+        let manifestURL = URL(fileURLWithPath: try XCTUnwrap(env["FLOE_NATIVE_SAVED_ARTIFACTS_MANIFEST"]))
+        let manifestSize = try manifestURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? -1
+        guard (1...65536).contains(manifestSize) else { throw CocoaError(.fileReadCorruptFile) }
+        struct Manifest: Decodable {
+            struct File: Decodable { let path: String; let sha256: String }
+            let schemaVersion: Int; let files: [File]
+        }
+        let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL))
+        guard manifest.schemaVersion == 1, (1...6).contains(manifest.files.count),
+              Set(manifest.files.map(\.path)).count == manifest.files.count else { throw CocoaError(.fileReadCorruptFile) }
+        // Complete every target and hash preflight before mounting any Office UI.
+        var inputs: [(url: URL, path: String, sha256: String)] = []
+        for file in manifest.files {
+            let url = try Self.savedArtifactURL(root: inputRoot, relativePath: file.path)
+            guard file.sha256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+                  try hash(url) == file.sha256 else { throw CocoaError(.fileReadCorruptFile) }
+            inputs.append((url, file.path, file.sha256))
+        }
+        let documents = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let evidence = documents.appendingPathComponent("Qualification/OfficeSavedReopen-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: evidence, withIntermediateDirectories: true)
+        print("FLOE_NATIVE_SAVED_ARTIFACTS_EVIDENCE=\(evidence.path)")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        defer { previous?.makeKey() }
+        for (index, input) in inputs.enumerated() {
+            // Revalidate immediately before each open, including path identity.
+            let source = try Self.savedArtifactURL(root: inputRoot, relativePath: input.path)
+            XCTAssertEqual(source, input.url)
+            XCTAssertEqual(try hash(source), input.sha256)
+            let session = OfficeFileSession()
+            let window = mount(session, in: scene)
+            defer { window.isHidden = true; window.rootViewController = nil }
+            let prefix = String(format: "%02d", index + 1)
+            var receipt: [String: Any] = ["relativePath": input.path, "sha256": input.sha256,
+                "modelCalled": false, "editsPerformed": false, "visualReview": "pending-primary-image-review"]
+            do {
+                await session.open(source)
+                try await wait(120, "saved artifact read-only open") {
+                    session.canAct && session.documentActionsReady && session.controller != nil
+                }
+                XCTAssertTrue(session.readOnly, "Saved artifact qualification must not request editing")
+                let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+                try await waitForPaint(native)
+                // This case specifically requires actual decoded bitmap tiles;
+                // an open-only policy or vector-ready string is insufficient.
+                try await wait(45, "saved artifact decoded visible paint") {
+                    let facts = OfficeFileSession.hostRenderDiagnostics(native)
+                    return facts["stage"] == "visible-render" && facts["docLoaded"] == "1"
+                        && (Int(facts["decodedTiles"] ?? "") ?? 0) > 0
+                }
+                receipt["nativeRenderDiagnostics"] = OfficeFileSession.hostRenderDiagnostics(native)
+                let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+                let config = WKSnapshotConfiguration(); config.afterScreenUpdates = true
+                let image = try await web.takeSnapshot(configuration: config)
+                let png = evidence.appendingPathComponent("\(prefix)-native.png")
+                try XCTUnwrap(image.pngData()).write(to: png); attach(png, name: "saved-artifact-\(prefix)-native")
+                let whole = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                    window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+                }
+                let windowPNG = evidence.appendingPathComponent("\(prefix)-window.png")
+                try XCTUnwrap(whole.pngData()).write(to: windowPNG); attach(windowPNG, name: "saved-artifact-\(prefix)-window")
+                await session.release()
+                XCTAssertEqual(try hash(source), input.sha256, "Read-only reopen changed saved artifact")
+                receipt["sourceUnchangedAfterRelease"] = true
+                receipt["decodedPaintPassed"] = true
+            } catch {
+                receipt["error"] = String(describing: error)
+                if let native = session.controller as? FloeOfficeNativeViewController {
+                    receipt["failureNativeRenderDiagnostics"] = OfficeFileSession.hostRenderDiagnostics(native)
+                    if let web = OfficeExplicitSaveBridge.findWebView(in: native.view),
+                       let image = try? await web.takeSnapshot(configuration: nil), let png = image.pngData() {
+                        let target = evidence.appendingPathComponent("\(prefix)-failed-native.png")
+                        try? png.write(to: target); attach(target, name: "saved-artifact-\(prefix)-failed-native")
+                    }
+                }
+                await session.release()
+                receipt["sourceUnchangedAfterRelease"] = (try? hash(source)) == input.sha256
+                let target = evidence.appendingPathComponent("\(prefix)-receipt.json")
+                try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]).write(to: target)
+                attach(target, name: "saved-artifact-\(prefix)-failure")
+                window.isHidden = true; window.rootViewController = nil
+                throw error
+            }
+            let target = evidence.appendingPathComponent("\(prefix)-receipt.json")
+            try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]).write(to: target)
+            attach(target, name: "saved-artifact-\(prefix)-verification")
+            window.isHidden = true; window.rootViewController = nil
+        }
+    }
+
+    // Foundation-only boundary helper: no path traversal, aliases, symlinked
+    // descendants, nonregular inputs or unbounded media under the allowed root.
+    private static func savedArtifactURL(root: URL, relativePath: String) throws -> URL {
+        guard root.isFileURL, !relativePath.isEmpty, !relativePath.hasPrefix("/"),
+              !relativePath.contains("\\"), !relativePath.contains("\0") else { throw CocoaError(.fileReadInvalidFileName) }
+        let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              ["docx", "xlsx", "pptx"].contains(URL(fileURLWithPath: relativePath).pathExtension.lowercased()) else {
+            throw CocoaError(.fileReadInvalidFileName)
+        }
+        let allowed = root.standardizedFileURL.resolvingSymlinksInPath()
+        let rootFacts = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard rootFacts.isDirectory == true, rootFacts.isSymbolicLink != true else { throw CocoaError(.fileReadNoPermission) }
+        var target = allowed
+        for part in parts {
+            target.appendPathComponent(String(part))
+            let facts = try target.resourceValues(forKeys: [.isSymbolicLinkKey])
+            guard facts.isSymbolicLink != true else { throw CocoaError(.fileReadNoPermission) }
+        }
+        let resolved = target.resolvingSymlinksInPath().standardizedFileURL
+        guard resolved.path.hasPrefix(allowed.path + "/") else { throw CocoaError(.fileReadNoPermission) }
+        let facts = try resolved.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard facts.isRegularFile == true, let size = facts.fileSize, size > 0, size < 16 * 1024 * 1024 else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return resolved
+    }
+
     private func exercise(_ format: String) async throws {
         guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
             throw XCTSkip("Opt-in App drawing + engine synthetic-stroke qualification; not executed")
