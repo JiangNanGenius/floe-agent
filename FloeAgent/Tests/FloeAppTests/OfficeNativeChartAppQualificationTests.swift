@@ -172,6 +172,190 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         } catch { await reopened.release(); throw error }
     }
 
+    func testOriginalChartNativeSeriesInsertDeleteSaveAndReopen() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["FLOE_NATIVE_CHART_SERIES_QUALIFICATION"] == "1" else { throw XCTSkip("Opt-in actual native series insert/delete") }
+        let input = URL(fileURLWithPath: try XCTUnwrap(env["FLOE_NATIVE_CHART_INPUT"]))
+        let originalHash = "6e087c89a1f29cf9b90d891f6d907c3f916fb6ae42b08a6f99a2ea17a067c961"
+        guard try digest(input) == originalHash else { throw failure("Actual original fixture hash mismatch") }
+        let driverURL = URL(fileURLWithPath: try XCTUnwrap(env["FLOE_NATIVE_CHART_UI_DRIVER"]))
+        let driverHash = try XCTUnwrap(env["FLOE_NATIVE_CHART_UI_DRIVER_SHA256"])
+        guard driverHash.count == 64, try digest(driverURL) == driverHash else { throw failure("Actual UI driver hash mismatch") }
+        let driver = try String(contentsOf: driverURL, encoding: .utf8)
+        executionTimeAllowance = 1200; continueAfterFailure = false
+        let fm = FileManager.default
+        let docs = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let root = docs.appendingPathComponent("Qualification/OfficeChartSeries-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        print("FLOE_NATIVE_CHART_SERIES_ROOT=\(root.path)")
+        let original = root.appendingPathComponent("original.pptx"); try fm.copyItem(at: input, to: original)
+        let originalTexts = try slideAndNoteTexts(original)
+        let originalSecondary = try inspectSecondaryChart(original, root: root)
+        _ = try inspect(original, evidenceRoot: root, stage: "original")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first(where: \.isKeyWindow); defer { previous?.makeKey() }
+        var nextInput = original
+        for (phase, operation, expectedCount) in [("added", "addVerifiedSeries", 2), ("deleted", "deleteVerifiedAddedSeries", 1)] {
+            let phaseRoot = root.appendingPathComponent(phase, isDirectory: true)
+            try fm.createDirectory(at: phaseRoot, withIntermediateDirectories: true)
+            let session = OfficeFileSession(); let window = mount(session, scene)
+            defer { window.isHidden = true; window.rootViewController = nil }
+            let output = phaseRoot.appendingPathComponent("native-saved.pptx")
+            do {
+                await session.open(nextInput); try await waitReady(session)
+                if session.readOnly { guard await session.requestEditing() else { throw failure("Native series edit rejected") } }
+                try await wait(150, "editable native series document") { !session.readOnly && session.canAct && session.documentActionsReady }
+                let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+                let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+                _ = try await web.evaluateJavaScript(driver)
+                try await performChartUI("navigateOriginalSlide4", web: web, root: phaseRoot, stage: "01-target", window: window)
+                try await performChartUI("activateOriginalChart", web: web, root: phaseRoot, stage: "02-chart", window: window)
+                try await performChartUI("openDataDialog", web: web, root: phaseRoot, stage: "03-grid-before", window: window)
+                try await performChartUI(operation, web: web, root: phaseRoot, stage: "04-grid-after", window: window)
+                try await performChartUI("closeDataDialog", web: web, root: phaseRoot, stage: "05-dialog-closed", window: window)
+                try await performChartUI("exitChartWithExistingEscape", web: web, root: phaseRoot, stage: "06-chart-exited", window: window)
+                let produced = try await session.exportDocument(format: "pptx")
+                try fm.copyItem(at: produced, to: output); attach(output, "chart-series-\(phase)-saved")
+                let facts = try inspectSeriesRoundtrip(output, expectedCount: expectedCount, root: phaseRoot)
+                XCTAssertEqual(try inspectSecondaryChart(output, root: phaseRoot), originalSecondary, "Second chart data/formulas/workbook changed during first-chart transaction")
+                let texts = try slideAndNoteTexts(output)
+                for (part, text) in originalTexts { XCTAssertEqual(texts[part], text, "Original slide/notes changed: \(part)") }
+                XCTAssertEqual(try digest(original), originalHash)
+                let receipt = phaseRoot.appendingPathComponent("series-verification.json")
+                var report = facts; report["driverSHA256"] = driverHash; report["outputSHA256"] = try digest(output)
+                report["actualNativeUIAction"] = operation; report["visualReview"] = "pending-primary"
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: receipt)
+                attach(receipt, "chart-series-\(phase)-verification")
+                await session.release()
+            } catch { await session.release(); throw error }
+            window.isHidden = true; window.rootViewController = nil
+            let reopened = OfficeFileSession(); let reopenWindow = mount(reopened, scene)
+            defer { reopenWindow.isHidden = true; reopenWindow.rootViewController = nil }
+            do {
+                await reopened.open(output); try await waitReady(reopened)
+                try await captureChart(reopened, root: phaseRoot, stage: "07-fresh-reopen", window: reopenWindow)
+                await reopened.release()
+            } catch { await reopened.release(); throw error }
+            nextInput = output
+        }
+        XCTAssertEqual(try digest(input), originalHash, "Private original fixture changed")
+    }
+
+    /// Independent unchanged-second-chart check: resolves its own actual
+    /// relationship and reads the embedded workbook rather than copying it.
+    private func inspectSecondaryChart(_ url: URL, root: URL) throws -> String {
+        let archive = try Archive(url: url, accessMode: .read)
+        let chart = ChartSeriesTransactionXML()
+        let parser = XMLParser(data: try bytes("ppt/charts/chart2.xml", archive))
+        parser.shouldResolveExternalEntities = false; parser.delegate = chart
+        guard parser.parse(), !chart.series.isEmpty else { throw failure("Original second chart missing/invalid") }
+        let relationID = try XCTUnwrap(chart.externalID, "Second chart externalData missing")
+        let rels = NativeChartSeries(); try parse(try bytes("ppt/charts/_rels/chart2.xml.rels", archive), rels)
+        let relation = try XCTUnwrap(rels.relationships[relationID]); let target = try XCTUnwrap(relation["Target"])
+        guard relation["TargetMode"] != "External", (relation["Type"] ?? "").hasSuffix("/package"),
+              !target.hasPrefix("/"), !target.contains(":"), !target.contains("\\"), !target.contains("%") else { throw failure("Invalid second chart workbook reference") }
+        var parts = ["ppt", "charts"]
+        for part in target.split(separator: "/") {
+            if part == ".." { guard !parts.isEmpty else { throw failure("Second workbook escapes package") }; parts.removeLast() }
+            else if part != "." { parts.append(String(part)) }
+        }
+        guard parts.starts(with: ["ppt", "embeddings"]) else { throw failure("Second chart workbook not embedded") }
+        let bookURL = root.appendingPathComponent("actual-secondary-workbook.xlsx")
+        try bytes(parts.joined(separator: "/"), archive).write(to: bookURL); attach(bookURL, "actual-second-chart-workbook")
+        let workbook = try Archive(url: bookURL, accessMode: .read)
+        let book = NativeChartSeries(); try parse(try bytes("xl/workbook.xml", workbook), book)
+        let sheetName = try XCTUnwrap(book.sheetNames.first)
+        let strings = NativeChartSeries(); if workbook["xl/sharedStrings.xml"] != nil { try parse(try bytes("xl/sharedStrings.xml", workbook), strings) }
+        let sheet = NativeChartSeries(); try parse(try bytes("xl/worksheets/sheet1.xml", workbook), sheet)
+        func text(_ key: String) -> String {
+            let value = sheet.cells[key] ?? ""
+            if sheet.cellTypes[key] == "s", let i = Int(value), strings.sharedStrings.indices.contains(i) { return strings.sharedStrings[i] }
+            return value
+        }
+        var summaries: [[String: Any]] = []
+        for (index, series) in chart.series.enumerated() {
+            guard index < 25, !series.categories.isEmpty, series.categories.count == series.values.count else { throw failure("Second chart series shape invalid") }
+            let column = String(UnicodeScalar(66 + index)!)
+            let finalRow = series.categories.count + 1
+            XCTAssertEqual((2...finalRow).map { text("A\($0)") }, series.categories)
+            XCTAssertEqual((2...finalRow).compactMap { Double(text("\(column)\($0)")) }, series.values)
+            XCTAssertEqual(text("\(column)1"), series.name)
+            XCTAssertTrue(series.nameFormula.contains(sheetName) && series.nameFormula.hasSuffix("$\(column)$1"))
+            XCTAssertTrue(series.categoryFormula.contains(sheetName) && series.categoryFormula.hasSuffix("$A$2:$A$\(finalRow)"))
+            XCTAssertTrue(series.valueFormula.contains(sheetName) && series.valueFormula.hasSuffix("$\(column)$2:$\(column)$\(finalRow)"))
+            summaries.append(["name": series.name, "categories": series.categories, "values": series.values,
+                "nameFormula": series.nameFormula, "categoryFormula": series.categoryFormula, "valueFormula": series.valueFormula])
+        }
+        let cells = Dictionary(uniqueKeysWithValues: sheet.cells.keys.compactMap { key -> (String, String)? in
+            let value = text(key); return value.isEmpty ? nil : (key, value)
+        })
+        let semantic: [String: Any] = ["series": summaries, "workbookSheets": book.sheetNames, "actualWorkbookCells": cells]
+        return String(decoding: try JSONSerialization.data(withJSONObject: semantic, options: [.sortedKeys]), as: UTF8.self)
+    }
+
+    private func inspectSeriesRoundtrip(_ url: URL, expectedCount: Int, root: URL) throws -> [String: Any] {
+        let archive = try Archive(url: url, accessMode: .read)
+        let expectedCategories = ["场地", "拍摄", "印刷", "茶歇 90人", "体验物料 90人"]
+        for entry in archive where entry.path.hasPrefix("ppt/charts/chart") && entry.path.hasSuffix(".xml") {
+            let reader = ChartSeriesTransactionXML()
+            let parser = XMLParser(data: try bytes(entry.path, archive)); parser.shouldResolveExternalEntities = false; parser.delegate = reader
+            guard parser.parse() else { throw parser.parserError ?? failure("Series chart XML invalid") }
+            guard reader.series.first?.categories == expectedCategories else { continue }
+            XCTAssertEqual(reader.series.count, expectedCount, "Added/deleted native series count differs")
+            guard reader.series.count == expectedCount else { throw failure("Actual series count mismatch") }
+            XCTAssertEqual(reader.series[0].values, [1800,900,240,1620,1080], "Original series modified")
+            XCTAssertEqual(reader.series[0].name, "金额（元）", "Original series name changed")
+            let relID = try XCTUnwrap(reader.externalID, "c:externalData missing after series edit")
+            let relations = NativeChartSeries()
+            try parse(try bytes("ppt/charts/_rels/" + (entry.path as NSString).lastPathComponent + ".rels", archive), relations)
+            let relation = try XCTUnwrap(relations.relationships[relID]); let target = try XCTUnwrap(relation["Target"])
+            XCTAssertNotEqual(relation["TargetMode"], "External"); XCTAssertTrue((relation["Type"] ?? "").hasSuffix("/package"))
+            guard !target.hasPrefix("/"), !target.contains(":"), !target.contains("\\"), !target.contains("%") else { throw failure("Invalid workbook reference") }
+            var components = ["ppt", "charts"]
+            for part in target.split(separator: "/") {
+                if part == ".." { guard !components.isEmpty else { throw failure("Escaped workbook path") }; components.removeLast() }
+                else if part != "." { components.append(String(part)) }
+            }
+            guard components.starts(with: ["ppt", "embeddings"]) else { throw failure("Workbook outside actual embedding") }
+            let workbookURL = root.appendingPathComponent("actual-series-workbook.xlsx")
+            try bytes(components.joined(separator: "/"), archive).write(to: workbookURL); attach(workbookURL, "actual-series-workbook")
+            let workbook = try Archive(url: workbookURL, accessMode: .read)
+            let book = NativeChartSeries(); try parse(try bytes("xl/workbook.xml", workbook), book)
+            let sheetName = try XCTUnwrap(book.sheetNames.first)
+            let strings = NativeChartSeries(); if workbook["xl/sharedStrings.xml"] != nil { try parse(try bytes("xl/sharedStrings.xml", workbook), strings) }
+            let sheet = NativeChartSeries(); try parse(try bytes("xl/worksheets/sheet1.xml", workbook), sheet)
+            func text(_ cell: String) -> String {
+                let value = sheet.cells[cell] ?? ""
+                if sheet.cellTypes[cell] == "s", let i = Int(value), strings.sharedStrings.indices.contains(i) { return strings.sharedStrings[i] }
+                return value
+            }
+            XCTAssertEqual((2...6).map { text("A\($0)") }, expectedCategories)
+            for (index, series) in reader.series.enumerated() {
+                let column = index == 0 ? "B" : "C"
+                XCTAssertEqual(series.categories, expectedCategories)
+                XCTAssertEqual(text("\(column)1"), series.name, "Series name cache/workbook mismatch")
+                XCTAssertEqual(series.values, (2...6).compactMap { Double(text("\(column)\($0)")) }, "Native cache/workbook mismatch")
+                XCTAssertTrue(series.categoryFormula.contains(sheetName) && series.categoryFormula.hasSuffix("$A$2:$A$6"))
+                XCTAssertTrue(series.valueFormula.contains(sheetName) && series.valueFormula.hasSuffix("$\(column)$2:$\(column)$6"))
+                XCTAssertTrue(series.nameFormula.contains(sheetName) && series.nameFormula.hasSuffix("$\(column)$1"), "Series title formula must address its actual workbook header")
+                XCTAssertFalse(series.formulas.contains { $0.isEmpty || Double($0) != nil || $0.hasPrefix("label ") })
+                if index == 1 {
+                    XCTAssertEqual(series.values, [101,202,303,404,505])
+                    XCTAssertEqual(series.name, "FLOE QA Added"); XCTAssertEqual(text("C1"), "FLOE QA Added")
+                }
+            }
+            if expectedCount == 1 {
+                XCTAssertFalse(sheet.cells.keys.contains { text($0) == "FLOE QA Added" }, "Deleted label is still referenced by a workbook cell")
+                // Unreferenced shared-string pool entries may legitimately
+                // survive; only active cells/caches/series define deletion.
+            }
+            return ["seriesCount": reader.series.count, "categories": expectedCategories,
+                "seriesValues": reader.series.map(\.values), "nativeWorkbookAndFormulasVerified": true]
+        }
+        throw failure("Original five-category chart missing after series transaction")
+    }
+
     private func performChartUI(_ operation: String, parameters: [String] = [], web: WKWebView,
                                 root: URL, stage: String, window: UIWindow) async throws {
         do {
@@ -463,6 +647,37 @@ private final class NativeChartSeries: NSObject, XMLParserDelegate {
         if !cell.isEmpty, local == "v" || local == "t" { cells[cell] = buffer }
         if local == "c" { cell = "" }
         if local == "si" { sharedStrings.append(shared) }
+        stack.removeLast(); buffer = ""
+    }
+}
+/// Separate multi-series inspector: original single-series validator is unchanged.
+private final class ChartSeriesTransactionXML: NSObject, XMLParserDelegate {
+    struct Series {
+        var categories: [String] = [], values: [Double] = [], name = ""
+        var categoryFormula = "", valueFormula = "", nameFormula = "", formulas: [String] = []
+    }
+    var series: [Series] = []; var externalID: String?
+    private var current: Series?, stack: [String] = [], buffer = ""
+    func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
+        let local = String(name.split(separator: ":").last ?? ""); stack.append(local); buffer = ""
+        if local == "ser" { current = Series() }
+        if local == "externalData" { externalID = attributes["r:id"] }
+    }
+    func parser(_ parser: XMLParser, foundCharacters string: String) { buffer += string }
+    func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+        let local = String(name.split(separator: ":").last ?? "")
+        if local == "v", current != nil {
+            if stack.contains("cat"), stack.contains("pt") { current?.categories.append(buffer) }
+            if stack.contains("val"), stack.contains("pt"), let value = Double(buffer) { current?.values.append(value) }
+            if stack.contains("tx") { current?.name = buffer }
+        }
+        if local == "f", current != nil {
+            current?.formulas.append(buffer)
+            if stack.contains("cat") { current?.categoryFormula = buffer }
+            if stack.contains("val") { current?.valueFormula = buffer }
+            if stack.contains("tx") { current?.nameFormula = buffer }
+        }
+        if local == "ser", let value = current { series.append(value); current = nil }
         stack.removeLast(); buffer = ""
     }
 }
