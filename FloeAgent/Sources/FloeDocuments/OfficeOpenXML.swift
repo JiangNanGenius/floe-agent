@@ -501,7 +501,7 @@ extension Archive {
     }
 }
 
-private enum OfficePathOrder {
+enum OfficePathOrder {
     static func trailingNumber(_ path: String) -> Int? {
         let stem = (path as NSString).deletingPathExtension
         let digits = stem.reversed().prefix(while: \.isNumber).reversed()
@@ -559,19 +559,19 @@ private enum XLSXWorkbookPreviewReader {
         }
         var shapes: [SheetShape] = []
         var referenced = Set<String>()
-        for range in XMLTextCodec.elementRanges(workbookXML, tag: "sheet") {
-            let block = String(workbookXML[range])
-            guard let name = XMLText.attribute("name", inOpeningElement: block),
-                  let relationship = XMLText.attribute("r:id", inOpeningElement: block),
-                  let target = targetsByID[relationship] else { return nil }
-            let state = XMLText.attribute("state", inOpeningElement: block)
-                ?? OfficeSheetVisibility.visible.rawValue
-            guard let visibility = OfficeSheetVisibility(rawValue: state) else { return nil }
+        // Use the same XML parser as readSheet so numeric character references
+        // and quoted names resolve identically in both tool catalogs.
+        let workbookParser = WorkbookXMLParser()
+        guard (try? workbookParser.parse(Data(workbookXML.utf8))) != nil,
+              !workbookParser.invalidSheet else { return nil }
+        for sheet in workbookParser.sheets {
+            guard let target = targetsByID[sheet.relationshipID],
+                  let visibility = OfficeSheetVisibility(rawValue: sheet.visibility) else { return nil }
             guard worksheetMembers.contains(target) else { return nil }
             guard !referenced.contains(target) else { return nil }
             referenced.insert(target)
             shapes.append(SheetShape(
-                name: name,
+                name: sheet.name,
                 visibility: visibility,
                 target: target,
                 section: "Sheet \(OfficePathOrder.trailingNumber(target) ?? 0)"

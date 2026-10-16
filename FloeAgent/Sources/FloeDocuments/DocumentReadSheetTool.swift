@@ -30,7 +30,7 @@ public struct DocumentReadSheetTool: AgentTool {
 
     public static let name = "document.readSheet"
     public static let toolDescription =
-        "Read an .xlsx spreadsheet's cell values as a tab-separated text grid. Pass a workspace-relative path and optionally a sheet name (defaults to the first sheet). Row output is capped to avoid huge responses. When you need editable text/fields/formulas or stable field IDs for document.office.updateText, use document.office.inspect instead."
+        "Read an .xlsx spreadsheet's cell values as a tab-separated text grid. Returns a bounded worksheets JSON catalog with exact tab names, section/part and visibility; use these names rather than guessing. Pass a workspace-relative path and optionally an exact sheet name (omitting it selects the first sheet; a missing name fails, never falls back). Row output is capped. For editable fields/formulas and stable updateText IDs, use document.office.inspect."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -76,7 +76,10 @@ public struct DocumentReadSheetTool: AgentTool {
             try pathGuard.assertReadableSize(url)
             let limit = min(max(1, args.maxRows ?? 200), 1000)
             let grid = try XLSXValueReader(url: url).read(sheetNamed: args.sheet, maxRows: limit)
-            var summary = "sheet=\(grid.sheetName) rows=\(grid.rowCount) shown=\(grid.rows.count)\n"
+            let quotedName = OfficeWorksheetToolMetadata.quoted(grid.sheetName)
+            let selectedSheet = quotedName.utf8.count <= 2_048 ? "sheet=\(quotedName)" : "sheetNameOmitted=true"
+            var summary = "\(selectedSheet) rows=\(grid.rowCount) shown=\(grid.rows.count)\n"
+            summary += grid.worksheetMetadata + "\n"
             summary += grid.rows.map { $0.joined(separator: "\t") }.joined(separator: "\n")
             return Self.output(summary, exitStatus: 0)
         } catch {
@@ -91,6 +94,7 @@ public struct DocumentReadSheetTool: AgentTool {
 
 private struct XLSXGrid {
     let sheetName: String
+    let worksheetMetadata: String
     let rowCount: Int
     let rows: [[String]]
 }
@@ -98,11 +102,13 @@ private struct XLSXGrid {
 private enum XLSXReadError: LocalizedError {
     case invalidWorkbook(String)
     case oversizedEntry(String)
+    case sheetNotFound(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidWorkbook(let detail): "Invalid .xlsx workbook: \(detail)"
         case .oversizedEntry(let path): "Workbook entry is too large: \(path)"
+        case .sheetNotFound(let metadata): "Worksheet not found. Use an exact name from worksheets.items; no other sheet was read.\n\(metadata)"
         }
     }
 }
@@ -125,23 +131,32 @@ private struct XLSXValueReader {
         let workbookData = try data(at: "xl/workbook.xml", limit: Self.metadataLimit)
         let workbookParser = WorkbookXMLParser()
         try workbookParser.parse(workbookData)
-        guard !workbookParser.sheets.isEmpty else {
+        guard !workbookParser.sheets.isEmpty, !workbookParser.invalidSheet else {
             throw XLSXReadError.invalidWorkbook("workbook has no sheets")
         }
 
+        let relationsData = try data(at: "xl/_rels/workbook.xml.rels", limit: Self.metadataLimit)
+        let relationsParser = WorkbookRelationsXMLParser()
+        try relationsParser.parse(relationsData)
+        let metadata = OfficeWorksheetToolMetadata.line(workbookParser.sheets.map { sheet in
+            let part = relationsParser.targets[sheet.relationshipID].flatMap(Self.normalizedWorksheetPath)
+            return .init(
+                name: sheet.name,
+                section: part.map { "Sheet \(OfficePathOrder.trailingNumber($0) ?? 0)" },
+                part: part,
+                visibility: sheet.visibility
+            )
+        })
         let selected: WorkbookSheet
         if let requestedName {
             guard let match = workbookParser.sheets.first(where: { $0.name == requestedName }) else {
-                throw XLSXReadError.invalidWorkbook("sheet '\(requestedName)' not found")
+                throw XLSXReadError.sheetNotFound(metadata)
             }
             selected = match
         } else {
             selected = workbookParser.sheets[0]
         }
 
-        let relationsData = try data(at: "xl/_rels/workbook.xml.rels", limit: Self.metadataLimit)
-        let relationsParser = WorkbookRelationsXMLParser()
-        try relationsParser.parse(relationsData)
         guard let rawTarget = relationsParser.targets[selected.relationshipID],
               let worksheetPath = Self.normalizedWorksheetPath(rawTarget) else {
             throw XLSXReadError.invalidWorkbook("worksheet relationship is missing or unsafe")
@@ -164,6 +179,7 @@ private struct XLSXValueReader {
         try worksheetParser.parse(worksheetData)
         return XLSXGrid(
             sheetName: selected.name,
+            worksheetMetadata: metadata,
             rowCount: worksheetParser.rowCount,
             rows: worksheetParser.renderedRows()
         )
@@ -201,12 +217,13 @@ private struct XLSXValueReader {
     }
 }
 
-private struct WorkbookSheet {
+struct WorkbookSheet {
     let name: String
     let relationshipID: String
+    let visibility: String
 }
 
-private class XMLCollector: NSObject, XMLParserDelegate {
+class XMLCollector: NSObject, XMLParserDelegate {
     private var parseError: Error?
 
     final func parse(_ data: Data) throws {
@@ -248,8 +265,9 @@ private class XMLCollector: NSObject, XMLParserDelegate {
     ) {}
 }
 
-private final class WorkbookXMLParser: XMLCollector {
+final class WorkbookXMLParser: XMLCollector {
     private(set) var sheets: [WorkbookSheet] = []
+    private(set) var invalidSheet = false
 
     override func parser(
         _ parser: XMLParser,
@@ -258,10 +276,13 @@ private final class WorkbookXMLParser: XMLCollector {
         qualifiedName qName: String?,
         attributes attributeDict: [String: String] = [:]
     ) {
-        guard elementName == "sheet",
-              let name = attributeDict["name"],
-              let relationshipID = attributeDict["r:id"] ?? attributeDict["id"] else { return }
-        sheets.append(WorkbookSheet(name: name, relationshipID: relationshipID))
+        guard elementName == "sheet" else { return }
+        guard let name = attributeDict["name"], !name.isEmpty,
+              let relationshipID = attributeDict["r:id"] ?? attributeDict["id"] else {
+            invalidSheet = true
+            return
+        }
+        sheets.append(WorkbookSheet(name: name, relationshipID: relationshipID, visibility: attributeDict["state"] ?? "visible"))
     }
 }
 

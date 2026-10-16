@@ -6,6 +6,49 @@ import FloeCore
 import FloeTools
 import FloeWorkspace
 
+/// A shared bounded catalog for the two Office read tools. JSON quoting keeps
+/// workbook-controlled names and paths from creating extra protocol lines.
+enum OfficeWorksheetToolMetadata {
+    struct Sheet: Encodable {
+        var name: String
+        var section: String?
+        var part: String?
+        var visibility: String
+    }
+
+    private struct Catalog: Encodable {
+        var total: Int
+        var shown: Int
+        var truncated: Bool
+        var items: [Sheet]
+    }
+
+    static let maximumSheets = 32
+    static let maximumBytes = 16 * 1_024
+
+    static func quoted(_ value: String) -> String {
+        // A single String is always JSON-encodable.
+        String(decoding: try! JSONEncoder().encode(value), as: UTF8.self)
+    }
+
+    static func line(_ sheets: [Sheet]) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        func encode(_ items: [Sheet]) -> String {
+            let catalog = Catalog(total: sheets.count, shown: items.count,
+                                  truncated: items.count < sheets.count, items: items)
+            return "worksheets=" + String(decoding: try! encoder.encode(catalog), as: UTF8.self)
+        }
+        var items: [Sheet] = []
+        for sheet in sheets.prefix(maximumSheets) {
+            let candidate = items + [sheet]
+            guard encode(candidate).utf8.count <= maximumBytes else { break }
+            items = candidate
+        }
+        return encode(items)
+    }
+}
+
 private enum OfficeToolSupport {
     static let maximumOfficeBytes = 128 * 1_024 * 1_024
 
@@ -59,7 +102,7 @@ public struct OfficeInspectTool: AgentTool {
     public struct Arguments: Decodable, Sendable { public var path: String }
     public static let name = "document.office.inspect"
     public static let toolDescription =
-        "Inspect editable text, slide text, notes, formulas and cells in a workspace .docx, .pptx or .xlsx file. Returns stable field IDs for document.office.updateText and preserves the original package. For a quick read-only dump of spreadsheet cell values use document.readSheet instead."
+        "Inspect editable text, slide text, notes, formulas and cells in a workspace .docx, .pptx or .xlsx file. For workbooks, returns a bounded worksheets JSON catalog mapping exact tab names to field sections, package parts and visibility; do not guess names from Sheet sections. Returns stable field IDs for document.office.updateText and preserves the original package. For a read-only spreadsheet grid use document.readSheet."
     public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative .docx, .pptx or .xlsx path"}},"required":["path"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.readsFiles]
     public static let isSideEffecting = false
@@ -80,8 +123,20 @@ public struct OfficeInspectTool: AgentTool {
             let note = snapshot.fields.isEmpty
                 ? "note=This document has no editable text fields. It may contain only images, drawings, charts, form controls or protected content; document.office.updateText will report unknownField for guessed IDs.\n"
                 : ""
+            let worksheets: String
+            if let preview = snapshot.workbookPreview {
+                worksheets = OfficeWorksheetToolMetadata.line(preview.sheets.map {
+                    .init(name: $0.name, section: $0.section, part: $0.target, visibility: $0.visibility.rawValue)
+                }) + "\n"
+            } else {
+                worksheets = snapshot.kind == .workbook
+                    ? "worksheetsUnavailable=true note=Workbook tab metadata could not be resolved; section keys are not tab names.\n"
+                    : ""
+            }
             return OfficeToolSupport.output(
                 "kind=\(snapshot.kind.rawValue) sha256=\(digest) fields=\(snapshot.fields.count) entries=\(snapshot.packageEntries) bytes=\(snapshot.packageBytes)\n"
+                    + worksheets
+                    + "fieldsShown=\(lines.count) fieldsTruncated=\(lines.count < snapshot.fields.count || snapshot.workbookPreview?.fieldsTruncated == true)\n"
                     + note
                     + lines.joined(separator: "\n")
             )
