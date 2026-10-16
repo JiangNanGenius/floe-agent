@@ -6,6 +6,41 @@
 
 Learn to use AI tasks, Notes, Office, Drawing Assistant, Canvas and media, and local and remote development in Floe. Designed for iPad and also available on iPhone, Floe requires iOS/iPadOS 26 or later.
 
+## Contents
+
+**Getting started**
+
+- [1. Installation and first use](#1-installation-and-first-use)
+- [2. Models and auxiliary capabilities](#2-models-and-auxiliary-capabilities)
+- [3. Tasks and workspace ownership](#3-tasks-and-workspace-ownership)
+- [4. Conversation, Plan, Goal and recovery](#4-conversation-plan-goal-and-recovery)
+- [5. Permissions and verification](#5-permissions-and-verification)
+- [6. Files, editors and concurrent changes](#6-files-editors-and-concurrent-changes)
+
+**Documents & creative work**
+
+- [7. Notes: import, search and handwriting](#7-notes-import-search-and-handwriting)
+- [8. Office: edit, annotate, save and reopen](#8-office-edit-annotate-save-and-reopen)
+- [14. Engineering drawings and AI review](#14-engineering-drawings-and-ai-review)
+- [15. Canvas, images, audio and video](#15-canvas-images-audio-and-video)
+- [16. Voice input and transcription](#16-voice-input-and-transcription)
+
+**Development & connections**
+
+- [9. Local terminal and Linux performance](#9-local-terminal-and-linux-performance)
+- [10. Python, Node, packages and code execution](#10-python-node-packages-and-code-execution)
+- [11. Git and GitHub Actions](#11-git-and-github-actions)
+- [12. Remote hosts, desktops and diagnostics](#12-remote-hosts-desktops-and-diagnostics)
+- [13. Browser, web previews and login](#13-browser-web-previews-and-login)
+
+**More tools & help**
+
+- [17. Skills, MCP, mail and automation](#17-skills-mcp-mail-and-automation)
+- [18. Background work, PiP, notifications and data](#18-background-work-pip-notifications-and-data)
+- [19. Temporary chat (RAM-only)](#19-temporary-chat-ram-only)
+- [20. Troubleshooting](#20-troubleshooting)
+- [21. Useful feedback](#21-useful-feedback)
+
 <!-- doc-anchor: section-2 -->
 ## 1. Installation and first use
 
@@ -20,6 +55,8 @@ Learn to use AI tasks, Notes, Office, Drawing Assistant, Canvas and media, and l
 5. Find the installed version in Settings → Diagnostics & About and include it in feedback.
 
 For a first task, configure a model, create a test conversation, attach a synthetic text file and request a summary. Inspect tool receipts and open the output file. Use sample material before important documents.
+
+[↑ Back to contents](#contents)
 
 <!-- doc-anchor: section-3 -->
 ## 2. Models and auxiliary capabilities
@@ -53,6 +90,8 @@ Apple's system model is managed by the OS. Follow the availability reason shown 
 
 Downloaded MLX models are Beta. Download, load and inference are separate stages; start with short text before multi-turn work. The local path uses text and bounded OCR of attachments, not semantic image understanding. Linux guests and local models share device memory. Review any request to release resources; cancelling does not authorize stopping another task. Disabling keeps files; deleting removes downloads. Preserve current diagnostics after a crash instead of clearing all data.
 
+[↑ Back to contents](#contents)
+
 <!-- doc-anchor: section-7 -->
 ## 3. Tasks and workspace ownership
 
@@ -61,6 +100,8 @@ On New Task, check the model, project, execution target, Skills and permissions 
 Example: “Read this attachment, create a one-page summary and action list in the current workspace, and give me links to the finished files.” The draft becomes a continuing task. Later messages use the same task context.
 
 Authorize external folders through the system file picker; writing a path in chat does not grant access. Deleting a private task may remove its private workspace. Deleting a project task differs from deleting project files. Export important results first. Notes stores its own documents independently of chat deletion.
+
+[↑ Back to contents](#contents)
 
 <!-- doc-anchor: section-8 -->
 ## 4. Conversation, Plan, Goal and recovery
@@ -76,6 +117,8 @@ Return inserts a new line; Command+Return sends where supported. Expand the comp
 After background interruption, return to the original task, inspect the last tool receipt and use Resume or send “Continue.” Verify uncertain uploads, submissions or other side effects before repeating them. Returning to the foreground does not mean an old process survived. A bounded pause or an unknown side-effect outcome needs deliberate recovery: inspect or reconcile the last receipt, then resume. A read-only check alone does not automatically re-arm paused work.
 
 Scroll up to read history without following new output; return to the bottom to resume following. Long-press (or right-click) a task to open **Manage Tasks** with it selected, or use **Manage** on Home; the same screen opens from Settings → Data management → Manage tasks. Selection and Select All apply only to the tasks visible under the current filter and search. Archiving asks for confirmation, states that it stops the selected tasks' own running work first, and archived tasks can be restored later from the same screen (switch to Archived) or the archive list; deleting also stops their own work and removes each task's private workspace while shared project files stay. Each task reports its own result — failed or unverified tasks stay selected for retry — and a running batch can be stopped without touching unprocessed tasks.
+
+[↑ Back to contents](#contents)
 
 <!-- doc-anchor: section-9 -->
 ## 5. Permissions and verification
@@ -100,6 +143,8 @@ A subagent can independently use `tools.list` / `tools.search` and `skill.list` 
 
 Several task clients — the parent run and its children — may share one Linux environment through separate processes and execution sessions. Results, working directories, standard input/output and cancellation belong to the requesting session: cancelling one child does not stop the other consumers, and stopping the whole environment is a separate lifecycle action. Writes to the same known target follow the same coordination as ordinary task edits.
 
+[↑ Back to contents](#contents)
+
 <!-- doc-anchor: section-10 -->
 ## 6. Files, editors and concurrent changes
 
@@ -110,6 +155,8 @@ Several task clients — the parent run and its children — may share one Linux
 Browse the task/project file panel, open text in the editor and save before running or sharing. Review conflicts: non-overlapping changes may merge; overlapping edits need a decision. A recovery copy does not mean the original was saved.
 
 For text, resolve save errors before running. For Office, preserve and compare both versions. Notes can keep conflicting content as a recovery document. Keep Recovered Edits until the accepted file has been checked. Archives have bounded preview/extraction and format limits; their contents are untrusted. See [concurrent editing](FLOE_CONCURRENT_EDITING.md).
+
+[↑ Back to contents](#contents)
 
 <!-- doc-anchor: section-11 -->
 ## 7. Notes: import, search and handwriting
@@ -130,6 +177,8 @@ Check save status before closing or switching. Use Trash for recovery and review
 
 **Reading mode.** Text files and text-only Notes documents have an alternate read-only **Reading Mode** of the same file; the original is never changed and its editor stays available. Reading mode offers text size, line spacing, column width, appearance (including a warm-paper theme), a contents list and in-document search, and restores your last reading position only when the file still matches (files in a task's private workspace keep no position). It shows text only — a notebook with ink or images is read as text while those stay untouched. Encoding is detected automatically (UTF-8, UTF-16 and, when the platform provides the codec, GB18030); when detection is unclear you can choose Automatic, UTF-8, UTF-16 LE/BE or GB18030 (only when available) manually, and a choice that cannot decode the whole file is refused instead of showing replacement characters. Files over 64 MiB are refused rather than partially loaded, and very long files may stop showing line numbers once the line index is full. Other formats keep their existing native viewers (PDF, Office, CAD, images, media) — reading mode never converts them into text.
 
+[↑ Back to contents](#contents)
+
 <!-- doc-anchor: section-12 -->
 ## 8. Office: edit, annotate, save and reopen
 
@@ -142,6 +191,8 @@ Check save status before closing or switching. Use Trash for recovery and review
 Available operations depend on the file format; unavailable options explain why. If loading or saving fails, keep the original and check the error. Compare conflicting versions before saving.
 
 An AI edit that was not confirmed in the editor can still run as an authorized automatic copy: only after the task's runtime approves that exact tool call, the engine works on an isolated copy and publishes a new `<name>.edited.<ext>` — the original is never overwritten, the output is reopened and verified (formula cells check their persisted cached value/type/error), and an existing different file at the output path is refused. A user-confirmed edit (the editor's confirmation) keeps its existing path. Long Office/media work can be submitted as a background job: the job freezes the workspace, revision and command payload at submission, reports real progress, keeps running when you close the page, and cancellation only becomes terminal after the processor acknowledges and cleans its staging.
+
+[↑ Back to contents](#contents)
 
 <!-- doc-anchor: section-13 -->
 ## 9. Local terminal and Linux performance
@@ -178,6 +229,8 @@ Choose the environment in port management before adding or editing a rule. The g
 
 A saved rule is not a live listener. The VM must be running and the service must listen on the guest port. Stopping the VM retains rules but makes their addresses unavailable. The agent should list rules before using `linux.port` to modify its scoped environment. Forwarding alone is not evidence that a web service started.
 
+[↑ Back to contents](#contents)
+
 <!-- doc-anchor: section-14 -->
 ## 10. Python, Node, packages and code execution
 
@@ -187,6 +240,8 @@ Local Python/Node primarily run inside Linux. Packages must support that guest a
 
 Use `pip list`, `python3 --version` and `node --version` to verify real state. Check network and package compatibility after installation failures. See [local shell](ARCHITECTURE_LOCAL_SHELL.md) and [IDE/languages](FLOE_IDE_AND_LANGUAGES.md).
 
+[↑ Back to contents](#contents)
+
 <!-- doc-anchor: section-15 -->
 ## 11. Git and GitHub Actions
 
@@ -195,6 +250,8 @@ Open Source Control in the file inspector. Confirm repository and branch, inspec
 Connect an account in Settings → GitHub & Source Control using device authorization or a token kept in secure storage. In IDE Run → GitHub Actions, choose repository, branch and workflow; inspect the file snapshot before submitting. Installing a workflow template writes to the repository and requires an explicit action.
 
 Read status, logs and artifacts in the run panel. Closing the App does not cancel GitHub work; cancellation needs server confirmation. Linux/macOS build outputs are not iOS executables. Recovery copies are not long-term backups. See [cloud builds](IDE_GITHUB_ACTIONS.md).
+
+[↑ Back to contents](#contents)
 
 <!-- doc-anchor: section-16 -->
 ## 12. Remote hosts, desktops and diagnostics
@@ -206,6 +263,8 @@ Configure devices in Settings → Hosts & Remote Sessions. SSH, VNC, SSH-tunnel 
 Diagnose in order: reachability, DNS, port, authentication, then command/directory permissions. Query a long command using its returned task ID instead of launching it again. Temporary connections differ from saved hosts. BLE GATT support is not arbitrary classic Bluetooth serial support.
 
 Bluetooth initializes only when you explicitly scan or connect. A GATT UUID must be 4 or 8 hexadecimal digits, or a standard 128-bit UUID; malformed input returns an error before the system Bluetooth API.
+
+[↑ Back to contents](#contents)
 
 <!-- doc-anchor: section-17 -->
 ## 13. Browser, web previews and login
@@ -222,6 +281,8 @@ The address field shows the real URL, including the scheme, host, port and path 
 
 During takeover, the agent may continue analysis and other authorized tools, but cannot click, type or navigate the browser. Choose **Return to agent** when finished. **Original task notified** means the original task's input channel accepted the notification, not that the subsequent work is complete. The agent must observe the page again before acting. A finished task offers **Continue task** instead of restarting silently. Retry a failed notification; do not create a replacement conversation. The notification excludes passwords and form contents.
 
+[↑ Back to contents](#contents)
+
 <!-- doc-anchor: section-18 -->
 ## 14. Engineering drawings and AI review
 
@@ -234,6 +295,8 @@ Open **Drawing Assistant** to ask about the current drawing or selection, measur
 For native `.floecad` work (the 3D workbench's drawing and assembly services), the assistant must name the operation it wants — for example `drawing.addPage` or `assembly.addInstance`. A request without a recognizable operation now fails with a clear structured error that lists the known operations, instead of silently falling back to a read; a close guess is answered with a suggestion such as `Did you mean 'addPage'?`. When exact arguments are unclear, ask the assistant to use `capabilities` discovery for that service (`drawing`, `assembly`, `script` or `mesh`) — the full operation catalog is served on demand and paged, not loaded into every request. Mutating drawing/assembly changes keep the ordinary propose → apply path under the task's own authorization (no extra per-edit workbench grant for an ordinary authorized document), and a drawing PDF/SVG/DXF export needs the page id returned by a drawings query. The engineering chain is page → project → save → export: accept a result only after the real engine has saved and reopened it, and only for export formats the engine actually writes.
 
 <!-- doc-anchor: section-30 -->
+
+[↑ Back to contents](#contents)
 
 <!-- doc-anchor: section-19 -->
 ## 15. Canvas, images, audio and video
@@ -309,6 +372,8 @@ What to check in the panel:
 
 See [design workflow](FLOE_DESIGN_WORKFLOW.md) and [design workflow tool contract](DESIGN_WORKFLOW_TOOLS.md).
 
+[↑ Back to contents](#contents)
+
 <!-- doc-anchor: section-20 -->
 ## 16. Voice input and transcription
 
@@ -317,6 +382,8 @@ Tap the chat microphone, grant OS permission and wait for preparation before spe
 If startup remains grey/unresponsive, stop and retry once. If it fails again, record the time, device, audio route and build. Manage recognition resources in Settings; choose resources suited to your language.
 
 Live input, file transcription and video subtitles are separate paths. Check text and timing after SRT/VTT/JSON export.
+
+[↑ Back to contents](#contents)
 
 <!-- doc-anchor: section-21 -->
 ## 17. Skills, MCP, mail and automation
@@ -333,6 +400,8 @@ Calendar and reminder lists (`apple.calendar.list`, `apple.reminders.list`) acce
 
 Web search results (`web.search`/`web.searchAI`) are search-index metadata, not page verification. Titles, URLs, excerpts, source/profile and index dates are returned as the provider supplies them; `pageAge` is “published OR last modified”, with relative age and crawl date kept separate and never relabeled as a publication date. Empty metadata is reported as empty, never fabricated, and is not the same as a failed search. Use `web.fetch` before relying on page contents or exact dates. The payload is bounded to valid JSON within the tool boundary — including very long queries, long citation URLs (an oversize row is omitted rather than returned with a changed URL) and large provider error text — and states explicitly when fields or results were shortened.
 
+[↑ Back to contents](#contents)
+
 <!-- doc-anchor: section-22 -->
 ## 18. Background work, PiP, notifications and data
 
@@ -343,6 +412,8 @@ Large downloads and Python data jobs are durable background jobs. A task that de
 **Data management** (Settings) manages only Floe's own data: it does not show device-wide storage or a total/free-capacity overview, and it never shows a guessed cap for the app. When Floe's files share APFS clone blocks (VM/runtime images and shared resources), the overview reports **App space** as **Managed by iOS Storage** — use iOS Storage for the app's system-accounted size — and Floe's shared data appears in its own **Shared files** section; that figure is file capacity and may count shared blocks more than once, so it is not additional physical usage and not free space that can be reclaimed. When sharing is detected, per-category file figures are one tap away under **File capacity details**. A cached snapshot renders the last valid totals immediately, an explicit pull-to-refresh always rescans, and real changes invalidate the cache. **Manage tasks** opens the same task-management screen as Home (see §4). Cleanup removes only registered rebuildable caches under Floe's own roots after owner checks; its estimate is labelled file capacity, not promised reclaimed bytes, and results report deleted, skipped and failed items separately.
 
 Manage fonts, documents, environments and diagnostics in Settings. Imported fonts do not guarantee identical Office layout. Export important files/recovery copies before upgrades and preserve environments/models still in use. Log-level changes affect future collection, not missing past events. Redact private text, addresses, tokens and attachments before sharing diagnostics.
+
+[↑ Back to contents](#contents)
 
 <!-- doc-anchor: section-19 -->
 ## 19. Temporary chat (RAM-only)
@@ -356,6 +427,8 @@ The New Task launchpad is the only entry that starts a temporary chat; ordinary 
 - Rotation, fullscreen editing, backgrounding and locking preserve the same live conversation and draft. Switching chats, New Task or another destination immediately cancels and destroys temporary work; late tool or voice callbacks cannot bring it back. A conversation already kept as saved follows the normal saved-chat rules.
 
 Temporary content — including the results of any paged read queries — lives only in the live session: it stays out of Floe history, persistent drafts, memory writes, notifications and the shared on-disk caches. Force-quitting or system termination does not restore them. Model and speech providers still process the content under their own policies — temporary chat is not a provider zero-retention promise.
+
+[↑ Back to contents](#contents)
 
 <!-- doc-anchor: section-23 -->
 ## 20. Troubleshooting
@@ -376,9 +449,13 @@ Temporary content — including the results of any paged read queries — lives 
 | 3D drawing file not editable in the workbench | Imported drawing vs native 3D model | Only Canvas 3D model nodes open the workbench; drawing 3D entities stay read-only |
 | App crashes | Build, time and reproduction | Supply matching device diagnostics |
 
+[↑ Back to contents](#contents)
+
 <!-- doc-anchor: section-24 -->
 ## 21. Useful feedback
 
 Include device, OS, App version/build, entry point, minimal steps, expected/actual behavior and redacted screenshots or a synthetic sample. For crashes, include diagnostics from the matching time. For save issues, state whether save completed, whether the file was reopened and whether the original changed.
 
 [Support](../SUPPORT.md) · [Security](../SECURITY.md)
+
+[↑ Back to contents](#contents)

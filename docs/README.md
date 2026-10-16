@@ -1,16 +1,31 @@
 # Floe Agent 文档索引 / Documentation Index
 
-仓库文档分四类：**当前有效**（描述现状）、**发布档案**（逐版本，不可改）、**历史研究**（结论可能已过时）、**实施跟踪**。改动代码行为时同步更新"当前有效"文档；发布档案只追加、不回改。
+先按主题阅读使用手册；需要构建、集成或追踪发布时，再查看下方工程与档案索引。 / Start with the user manual by topic; use the engineering and archive index below for development and delivery records.
 
-## 当前阅读入口 / Start here
+## 使用手册 / User manuals
 
-- [完整中文使用手册](USER_GUIDE.zh-CN.md) / [English user manual](USER_GUIDE.md)：20 章操作步骤、排障与数据保护。
-- [1.7.34（275）本地核验与交付记录](releases/testflight/BUILD_275_LOCAL_VERIFICATION.md)：本地 Xcode 27 归档、最小云端签名上传、Apple 内部可用（Floe QA）与独立只读回读；隐私清单闭环见[隐私修复与验证记录](releases/repairs/FLOE_PRIVACY_MANIFESTS_20261016.md)。
-- [1.7.33（274）本地核验与交付记录](releases/testflight/BUILD_274_LOCAL_VERIFICATION.md)：本地 Xcode 27 归档、最小云端签名上传、Apple 内部可用与 publictest1 已送审的实际状态；[任务生命周期回合记录](releases/repairs/FLOE_TASK_LIFECYCLE_20261015.md)保留实现范围与验证边界。
-- [版本与验证状态](CURRENT_STATUS.md)：已记录交付、当前候选和待验收边界。
-- [官网中文版](https://www.floe-agent.com/docs/zh.html) / [Website English manual](https://www.floe-agent.com/docs/en.html)：与仓库手册同源。
-- [文档更新清单](DOCUMENTATION_REFRESH_20261009.md)：本次覆盖范围；[旧版手册](history/USER_GUIDE.zh-CN.pre-20261005.md)保留旧截图和记录。
-- [发布档案](releases/README.md)：逐版本原始证据，不作为当前可安装状态的实时查询。
+[**中文图文手册**](USER_GUIDE.zh-CN.md) · [**English illustrated manual**](USER_GUIDE.md) · [官网中文](https://www.floe-agent.com/docs/zh.html) · [Website English](https://www.floe-agent.com/docs/en.html)
+
+| 阅读主题 / Topic | 简体中文 | English |
+| --- | --- | --- |
+| 安装与模型 / Install & models | [阅读](USER_GUIDE.zh-CN.md#1-安装与首次使用) | [Read](USER_GUIDE.md#1-installation-and-first-use) |
+| 任务与文件 / Tasks & files | [阅读](USER_GUIDE.zh-CN.md#3-新建任务与选择工作区) | [Read](USER_GUIDE.md#3-tasks-and-workspace-ownership) |
+| 手记与阅读 / Notes & reading | [阅读](USER_GUIDE.zh-CN.md#7-手记导入搜索与书写) | [Read](USER_GUIDE.md#7-notes-import-search-and-handwriting) |
+| Office | [阅读](USER_GUIDE.zh-CN.md#8-office编辑批注保存和重新打开) | [Read](USER_GUIDE.md#8-office-edit-annotate-save-and-reopen) |
+| 画布与媒体 / Canvas & media | [阅读](USER_GUIDE.zh-CN.md#15-画布图像音视频) | [Read](USER_GUIDE.md#15-canvas-images-audio-and-video) |
+| 图纸与 3D / Drawings & 3D | [阅读](USER_GUIDE.zh-CN.md#14-工程图纸与图纸助手) | [Read](USER_GUIDE.md#14-engineering-drawings-and-ai-review) |
+| 开发与连接 / Code & connections | [阅读](USER_GUIDE.zh-CN.md#9-本地终端与-linux-性能配置) | [Read](USER_GUIDE.md#9-local-terminal-and-linux-performance) |
+| 常见问题 / Troubleshooting | [阅读](USER_GUIDE.zh-CN.md#20-常见问题与排查顺序) | [Read](USER_GUIDE.md#20-troubleshooting) |
+
+## 安装与帮助 / Installation & help
+
+[安装渠道与版本状态 / Channel status](CURRENT_STATUS.md) · [Feather / AltStore](FEATHER_SOURCE.md) · [支持 / Support](../SUPPORT.zh-CN.md) · [安全 / Security](../SECURITY.zh-CN.md)
+
+## 开发与档案 / Engineering & archives
+
+[工程指南 / Engineering guide](../FloeAgent/README.md) · [架构 / Architecture](ARCHITECTURE_OVERVIEW.md) · [发布档案 / Release archive](releases/README.md)
+
+以下目录包括现行工程说明、历史研究和实施记录。历史文件只代表记录当时的状态。 / The index below includes current engineering guides, historical research and implementation records; dated records describe their recorded state.
 
 ## 当前有效（阅读与维护入口）
 
