@@ -116,6 +116,188 @@ import FloeTools
         return (data, http)
     }
 
+    // Separate opt-in from offline/service qualification: public network is
+    // not a prerequisite for those already-proven lifecycle tests. This uses
+    // controlled public PyPI, never copies an account's configured index.
+    @Test("real guest diagnoses public package network stages and imports an installed Office package set",
+          .enabled(if: ProcessInfo.processInfo.environment["FLOE_REALVM_NETWORK_PIP_QUALIFICATION"] == "1"))
+    func networkOfficePipStagedDiagnosis() async throws {
+        let app = AppEnvironment.live()
+        await app.bootstrap()
+        try #require(app.persistenceReady)
+        let jobs = try #require(app.backgroundJobService)
+        let services = FloePlatformServices.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("network-pip-real-vm-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let conversationID = UUID(), runID = UUID()
+        var environmentID: String?
+        var jobIDs: [UUID] = []
+        var recordsCreated = false
+        var evidence = ["kind": "real-network-pip-stages-not-model-not-ui",
+                        "root": root.path, "index": "https://pypi.org/simple",
+                        "versions": "python-pptx==1.0.2 openpyxl==3.1.5 python-docx==1.2.0",
+                        "limit": "binary wheels only; no source build or implicit retry; not the unknown original index"]
+        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                  appropriateFor: nil, create: true)
+        let evidenceDirectory = support.appendingPathComponent("FloeAgent/QualificationEvidence/NetworkPip", isDirectory: true)
+        try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
+        let evidenceURL = evidenceDirectory.appendingPathComponent(conversationID.uuidString + ".json")
+        func retain(_ stage: String) throws {
+            evidence["stage"] = stage
+            evidence["observedAt"] = ISO8601DateFormatter().string(from: Date())
+            try JSONEncoder().encode(evidence).write(to: evidenceURL, options: .atomic)
+        }
+        func stage(_ name: String, command: String, timeout: Int) async throws {
+            let id = try #require(environmentID)
+            evidence[name + ".effectiveTimeoutRequested"] = String(timeout)
+            try retain(name + ".submitting-once")
+            let started = Date()
+            let job = try await jobs.submit(runID: runID,
+                toolCallID: "network-pip-" + name + "-" + UUID().uuidString,
+                targetTool: "exec.shell",
+                payloadJSON: JSONSerialization.data(withJSONObject: ["command": command, "cwd": ".",
+                    "timeout": timeout, "maxOutputBytes": 24_576]),
+                scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
+                environmentID: id, waitForCompletion: false)
+            jobIDs.append(job.id)
+            evidence[name + ".jobID"] = job.id.uuidString
+            try retain(name + ".running")
+            let terminal = try await waitForTerminal(jobs, id: job.id, seconds: Double(timeout) + 45)
+            evidence[name + ".durationSeconds"] = String(Date().timeIntervalSince(started))
+            evidence[name + ".state"] = terminal.state.rawValue
+            // Production shell output has already passed its bounded redactor
+            // before BackgroundJobService stores this result. No raw env/config.
+            evidence[name + ".output"] = terminal.resultSummary ?? terminal.lastError ?? "No output"
+            try retain(name + ".terminal")
+            try #require(terminal.state == .completed,
+                "Network pip stage failed: \(name); retained evidence: \(evidenceURL.path)")
+            try #require(terminal.resultSummary?.contains("effectiveTimeoutSeconds=\(timeout)") == true,
+                "Stage did not report its real effective command limit")
+        }
+        func cleanup() async throws {
+            for id in jobIDs {
+                guard let job = try await jobs.job(id: id) else {
+                    throw FloeError.validationFailed("Network qualification job missing; preserve owned guest until reconciled")
+                }
+                if !job.state.isTerminal { _ = try await jobs.cancel(id: id) }
+                _ = try await waitForTerminal(jobs, id: id)
+            }
+            let ownID: String?
+            if let id = environmentID { ownID = id }
+            else { ownID = try await ownedEnvironment(root: root, app: app) }
+            if let id = ownID {
+                try await services.stopEnvironment(id: id)
+                guard let status = await services.linuxGuestStatus(id: id), !status.running else {
+                    throw FloeError.validationFailed("Network qualification guest stop unconfirmed; preserve owned layer")
+                }
+                try await services.deleteEnvironment(id: id)
+            }
+            if recordsCreated { try await app.conversationStore.deleteConversation(id: conversationID) }
+            let center = UNUserNotificationCenter.current()
+            let notificationIDs = jobIDs.map { "jobs." + $0.uuidString }
+            center.removePendingNotificationRequests(withIdentifiers: notificationIDs)
+            center.removeDeliveredNotifications(withIdentifiers: notificationIDs)
+            try FileManager.default.removeItem(at: root)
+        }
+        do {
+            let date = Date()
+            try await app.conversationStore.saveConversation(ConversationRecord(id: conversationID,
+                title: "Network package qualification", createdAt: date, updatedAt: date, titleOrigin: .manual))
+            recordsCreated = true
+            try await app.database.writer { database in
+                try database.execute(sql: "INSERT INTO runs (id, conversation_id, state, goal, started_at) VALUES (?, ?, 'running', 'Synthetic network package diagnosis', ?)",
+                    arguments: [runID.uuidString, conversationID.uuidString, ISO8601DateFormatter().string(from: date)])
+            }
+            try retain("preparing-own-guest")
+            try await services.prepareWorkspaceEnvironment(root: root)
+            environmentID = try await ownedEnvironment(root: root, app: app)
+            let id = try #require(environmentID)
+            evidence["environmentID"] = id
+            try await services.activateLinuxGuestWithPreparation(id: id, cancellation: CancellationToken())
+            try await stage("prerequisites", command: #"""
+            set -e
+            mkdir -p /workspace/qualification/home /workspace/qualification/wheels /workspace/qualification/site
+            python3 -u -c 'import sys,platform,ssl;print("PYTHON",sys.version);print("ARCH",platform.machine());print("TLS",ssl.OPENSSL_VERSION)'
+            python3 -m pip --version
+            """#, timeout: 30)
+            try await stage("dns", command: #"""
+            python3 -u - <<'PY'
+            import socket,time
+            for host in ('pypi.org','files.pythonhosted.org'):
+                start=time.monotonic()
+                addresses=socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)
+                assert addresses,'DNS returned no addresses'
+                print('DNS_OK',host,'addressCount',len(addresses),'seconds',round(time.monotonic()-start,3),flush=True)
+            PY
+            """#, timeout: 30)
+            try await stage("tls", command: #"""
+            python3 -u - <<'PY'
+            import socket,ssl,time
+            context=ssl.create_default_context()
+            for host in ('pypi.org','files.pythonhosted.org'):
+                start=time.monotonic()
+                with socket.create_connection((host,443),timeout=10) as raw:
+                    with context.wrap_socket(raw,server_hostname=host) as connection:
+                        print('TLS_VERIFIED',host,connection.version(),'seconds',round(time.monotonic()-start,3),flush=True)
+            PY
+            """#, timeout: 30)
+            try await stage("index", command: #"""
+            python3 -u - <<'PY'
+            import urllib.request,time
+            opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            for package in ('python-pptx','openpyxl','python-docx'):
+                start=time.monotonic()
+                request=urllib.request.Request('https://pypi.org/simple/'+package+'/',headers={'Accept':'application/vnd.pypi.simple.v1+html'})
+                with opener.open(request,timeout=12) as response:
+                    prefix=response.read(8192)
+                    assert response.status==200 and b'href=' in prefix,'Unexpected index response'
+                    print('INDEX_OK',package,'status',response.status,'sampleBytes',len(prefix),'seconds',round(time.monotonic()-start,3),flush=True)
+            PY
+            """#, timeout: 60)
+            // Clear inherited index/proxy settings without reading or printing
+            // them. --only-binary prohibits a lengthy riscv64 lxml source build.
+            let pip = "env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/workspace/qualification/home PIP_CONFIG_FILE=/dev/null python3 -u -m pip --isolated --disable-pip-version-check --no-input --no-cache-dir"
+            let pins = "python-pptx==1.0.2 openpyxl==3.1.5 python-docx==1.2.0"
+            try await stage("direct-wheel-download", command: pip + " download --index-url https://pypi.org/simple --retries 0 --timeout 15 --progress-bar off --only-binary=:all: --no-deps --dest /workspace/qualification/wheels " + pins, timeout: 180)
+            // This stage may honestly fail with a missing compatible dependency
+            // wheel. Do not retry, compile a replacement, or call that a network
+            // timeout. Its real pip error is preserved in the stage receipt.
+            try await stage("dependency-wheel-download", command: pip + " download --index-url https://pypi.org/simple --retries 0 --timeout 15 --progress-bar off --only-binary=:all: --find-links /workspace/qualification/wheels --dest /workspace/qualification/wheels " + pins, timeout: 300)
+            try await stage("install", command: pip + " install --no-index --only-binary=:all: --find-links /workspace/qualification/wheels --target /workspace/qualification/site " + pins, timeout: 180)
+            // Separate process: installation success alone does not prove usable
+            // modules or that the requested versions resolve from our target.
+            try await stage("independent-import", command: #"""
+            python3 -u - <<'PY'
+            import sys,pathlib,importlib,importlib.metadata,hashlib
+            target=pathlib.Path('/workspace/qualification/site').resolve()
+            sys.path.insert(0,str(target))
+            for module,distribution,version in (('pptx','python-pptx','1.0.2'),('openpyxl','openpyxl','3.1.5'),('docx','python-docx','1.2.0')):
+                imported=importlib.import_module(module)
+                path=pathlib.Path(imported.__file__).resolve()
+                assert target in path.parents,'Import resolved outside own install target'
+                actual=importlib.metadata.version(distribution)
+                assert actual==version,(distribution,actual,version)
+                print('IMPORT_VERIFIED',distribution,actual,'sha256',hashlib.sha256(path.read_bytes()).hexdigest(),flush=True)
+            for path in sorted(pathlib.Path('/workspace/qualification/wheels').glob('*.whl')):
+                print('WHEEL_SHA256',path.name,hashlib.sha256(path.read_bytes()).hexdigest(),flush=True)
+            PY
+            """#, timeout: 60)
+            try retain("all-stages-verified")
+            try await cleanup()
+            evidence["cleanup"] = "own jobs terminal; own guest stopped/deleted; synthetic conversation/root removed"
+            try retain("completed-and-cleaned")
+            print("FLOE_NETWORK_PIP_EVIDENCE=" + evidenceURL.path)
+        } catch {
+            evidence["failure"] = String(describing: error)
+            try? retain("failed-preserved")
+            do { try await cleanup(); evidence["cleanup"] = "completed" }
+            catch { evidence["cleanupFailure"] = String(describing: error); Issue.record("Own network pip cleanup incomplete; preserve workspace: \(root.path)") }
+            try? retain("failed-cleanup-recorded")
+            print("FLOE_NETWORK_PIP_FAILURE_EVIDENCE=" + evidenceURL.path)
+            throw error
+        }
+    }
+
     @Test("offline tiny wheel installs through the real job and timed-out shell preserves output after child cleanup",
           .enabled(if: ProcessInfo.processInfo.environment["FLOE_REALVM_QUALIFICATION"] == "1"))
     func offlinePipAndTimeoutOutputLifecycle() async throws {
