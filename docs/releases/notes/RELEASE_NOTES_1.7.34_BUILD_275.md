@@ -2,7 +2,7 @@
 
 Release candidate. Source freeze, archive, signing, TestFlight upload and Apple processing states are recorded separately from the qualification results below.
 
-本候选完成首轮正式审核所需的隐私清单闭环：App、Screen Share 扩展和全部嵌入 framework 都带有与真实调用一致的必需理由（required-reason）隐私清单；评审相关的语言解析改为公开 API；反馈图片字段与服务契约一致。此前 1.7.33（274）已内部可用并送 publictest1 等待审核，本版不替代其状态。
+本候选完成首轮正式审核所需的隐私清单闭环：App、Screen Share 扩展和需要声明的 16 个嵌入 framework 都带有与真实调用一致的必需理由（required-reason）隐私清单；评审相关的语言解析改为公开 API；反馈图片字段与服务契约一致。此前 1.7.33（274）已内部可用并送 publictest1 等待审核，本版不替代其状态。
 
 ## 简体中文
 
