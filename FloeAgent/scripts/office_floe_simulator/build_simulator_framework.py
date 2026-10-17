@@ -139,6 +139,11 @@ def variant_lock(variant, workdir):
     shutil.copytree(tracked_root / 'patches', staged / 'patches',
                     dirs_exist_ok=True)
     shutil.copyfile(tracked_root / FONT_OVERLAY_NAME, staged / FONT_OVERLAY_NAME)
+    # The existing native producer resolves its platform compile contract
+    # beside this selected lock, including for the diagnostic nokit variant.
+    repair_lock = tracked_root / 'engine.patch.lock.json'
+    if repair_lock.is_file():
+        shutil.copyfile(repair_lock, staged / repair_lock.name)
     lock = copy.deepcopy(tracked_lock)
     lock.pop('kitCallbackLifecycleOverlay', None)
     path = staged / 'engine.lock.json'
@@ -225,6 +230,7 @@ def package_host(build_report, restored_dir, output_dir, *, variant,
         'kitCallbackLifecycle': build_report.get('kitCallbackLifecycle'),
         'embeddedLifecycle': build_report.get('embeddedLifecycle'),
         'embeddedLifecycleMember': build_report.get('embeddedLifecycleMember'),
+        'buildInputs': build_report.get('buildInputs'),
         'platformOriginalArchives': build_report.get('platformOriginalArchives'),
         'filterOverlay': (
             {**build_report['filterOverlay'], 'applied': True}
@@ -269,21 +275,78 @@ def zip_bundle(bundle, output_dir):
     return zip_path
 
 
+def validate_build_inputs(lock_path, *, engine_source=None, filter_overlay=None):
+    """Cheap input checks; the existing producer verifies real members/linking."""
+    import office_compiled_lifecycle as lifecycle
+    from build_office_filter_overlay import FILTER_LOCK
+    lock = json.loads(Path(lock_path).read_text())
+    selected = lifecycle.contract(lock, 'IOSSIMULATOR')
+    source = Path(engine_source).expanduser().resolve() if engine_source is not None else None
+    overlay = Path(filter_overlay).expanduser().resolve() if filter_overlay is not None else None
+    metadata = {}
+    if selected is not None and source is None:
+        raise SimulatorHostBuildError('--engine-source is required: provide the pinned online.mirror checkout containing engine/ sources; the restored engine archives are not a source checkout')
+    if source is not None:
+        if not source.is_dir() or not (source / '.git').exists():
+            raise SimulatorHostBuildError('--engine-source must be an existing pinned Git checkout')
+        try:
+            commit = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+        except subprocess.CalledProcessError as error:
+            raise SimulatorHostBuildError('--engine-source Git identity could not be read') from error
+        if commit != lock['commit']:
+            raise SimulatorHostBuildError('--engine-source HEAD differs from the selected engine lock; select the pinned checkout')
+        specs = [selected, *(selected or {}).get('additionalArchives', {}).values()] if selected else []
+        for spec in specs:
+            path = source / spec['sourceFile']
+            if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(source) or digest(path) != spec['originalSHA256']:
+                raise SimulatorHostBuildError('--engine-source contains missing/modified lifecycle source: ' + spec['sourceFile'])
+        metadata['engineSourceCommit'] = commit
+    filter_lock = json.loads(FILTER_LOCK.read_text()) if FILTER_LOCK.is_file() else {}
+    if filter_lock.get('simulator') and overlay is None:
+        raise SimulatorHostBuildError('--filter-overlay is required: provide the existing iphonesimulator filter overlay output containing filter-overlay.json; build it separately with the existing filter producer --sdk iphonesimulator')
+    if overlay is not None:
+        receipt_path = overlay / 'filter-overlay.json'
+        if not overlay.is_dir() or not receipt_path.is_file() or receipt_path.is_symlink():
+            raise SimulatorHostBuildError('--filter-overlay must contain a regular filter-overlay.json from the existing filter producer')
+        try:
+            receipt = json.loads(receipt_path.read_text())
+        except (ValueError, OSError) as error:
+            raise SimulatorHostBuildError('--filter-overlay has an unreadable filter-overlay.json') from error
+        if (receipt.get('platform') != 'IOSSIMULATOR' or receipt.get('sdk') != SDK
+                or receipt.get('sourceCommit') != lock['commit']
+                or receipt.get('patchSHA256') != filter_lock.get('patchSHA256')
+                or receipt.get('compilePassed') is not True
+                or receipt.get('archiveReplacementPassed') is not True):
+            raise SimulatorHostBuildError('--filter-overlay is not a successful current-source iphonesimulator overlay; do not pass a device overlay')
+        required_archives = {'libscfiltlo.a', *filter_lock.get('simulator', {}).get('additionalArchives', {})}
+        for name in required_archives:
+            path = overlay / name
+            if Path(name).name != name or not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(overlay):
+                raise SimulatorHostBuildError('--filter-overlay is missing a regular simulator replacement archive: ' + name)
+        metadata['filterOverlayReportSHA256'] = digest(receipt_path)
+    return source, overlay, metadata
+
+
 def build_framework(restored_dir, output_dir, *, variant, base_run_id,
-                    github_run_id=None):
+                    github_run_id=None, engine_source=None, filter_overlay=None):
     if variant not in VARIANTS:
         raise SimulatorHostBuildError(f'unknown variant {variant!r}; expected one of {VARIANTS}')
     output_dir = Path(output_dir).resolve()
     if output_dir.exists():
         raise SimulatorHostBuildError(f'output exists: {output_dir}')
-    output_dir.mkdir(parents=True)
-    # qualify() requires a fresh build directory and creates it itself.
-    build_dir = output_dir / 'build'
-    identity = sdk_identity()
     with tempfile.TemporaryDirectory(prefix='floe-sim-lock-') as temporary:
         lock_path, kit_applied = variant_lock(variant, temporary)
+        source, overlay, metadata = validate_build_inputs(lock_path, engine_source=engine_source,
+                                                         filter_overlay=filter_overlay)
+        output_dir.mkdir(parents=True)
+        # Existing producer owns source compilation, archive/member validation
+        # and final linking. This wrapper does not rebuild SDK/filter inputs.
+        build_dir = output_dir / 'build'
+        identity = sdk_identity()
         report = build_host(Path(restored_dir).resolve(), build_dir, build=True,
-                            sdk=SDK, lock_path=lock_path)
+                            sdk=SDK, lock_path=lock_path, engine_source=source,
+                            filter_overlay=overlay)
+        report['buildInputs'] = metadata
     if github_run_id:
         report['simulatorHostWorkflowRunID'] = str(github_run_id)
     (output_dir / 'native-host-build-report.json').write_text(
@@ -313,10 +376,15 @@ def main():
     parser.add_argument('--base-run-id', required=True,
                         help='office-real-simulator build-stage run that produced the engine')
     parser.add_argument('--github-run-id', default=None)
+    parser.add_argument('--engine-source', type=Path,
+                        help='Pinned online.mirror Git checkout with pristine engine sources (required for compiled lifecycle repairs)')
+    parser.add_argument('--filter-overlay', type=Path,
+                        help='Existing verified simulator filter producer output; create it separately with --sdk iphonesimulator')
     args = parser.parse_args()
     manifest = build_framework(args.restored, args.output, variant=args.variant,
                                base_run_id=args.base_run_id,
-                               github_run_id=args.github_run_id)
+                               github_run_id=args.github_run_id,
+                               engine_source=args.engine_source, filter_overlay=args.filter_overlay)
     print(json.dumps(manifest, indent=2))
 
 

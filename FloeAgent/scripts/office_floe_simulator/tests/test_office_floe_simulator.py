@@ -1504,6 +1504,96 @@ class VariantLockTests(unittest.TestCase):
                 variant='bogus', base_run_id='1')
 
 
+class SimulatorBuildArgumentTests(unittest.TestCase):
+    """Input/wiring fixtures only: never invoke native build, SDK or Simulator."""
+    def setUp(self):
+        from unittest import mock
+        self.mock = mock
+        temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name); self.source = self.root / 'source'; self.source.mkdir()
+        (self.source / '.git').mkdir()
+        source = self.source / 'engine/vcl/source/app/svdata.cxx'; source.parent.mkdir(parents=True)
+        source.write_text('synthetic original')
+        selected = {'sourceFile':str(source.relative_to(self.source)), 'originalSHA256':hashlib.sha256(source.read_bytes()).hexdigest(),
+                    'patchedSHA256':'2'*64, 'patchSHA256':'3'*64, 'patch':'patches/compiled.patch',
+                    'archive':'source/engine/instdir/program/libvcllo.a', 'members':{'svdata.o':str(source.relative_to(self.source))}}
+        self.lock = {'commit':'a'*40, 'embeddedLifecycleOverlay':{'sha256':'b'*64, 'compiledMembers':{'IOSSIMULATOR':selected}}}
+        self.lock_path = self.root / 'engine.lock.json'; self.lock_path.write_text(json.dumps(self.lock))
+        self.filter_lock = self.root / 'filter.lock.json'
+        self.filter_lock.write_text(json.dumps({'simulator':{'archive':'fixture'}, 'patchSHA256':'c'*64}))
+        self.overlay = self.root / 'filter'; self.overlay.mkdir()
+        (self.overlay / 'libscfiltlo.a').write_bytes(b'synthetic archive, never linked')
+        self.filter_receipt = {'platform':'IOSSIMULATOR','sdk':'iphonesimulator','sourceCommit':'a'*40,
+                               'patchSHA256':'c'*64,'compilePassed':True,'archiveReplacementPassed':True}
+        self.receipt = self.overlay / 'filter-overlay.json'; self.receipt.write_text(json.dumps(self.filter_receipt))
+        import build_office_filter_overlay
+        patcher = mock.patch.object(build_office_filter_overlay, 'FILTER_LOCK', self.filter_lock)
+        patcher.start(); self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(build_simulator_framework.subprocess, 'check_output', return_value='a'*40)
+        self.git = patcher.start(); self.addCleanup(patcher.stop)
+
+    def inputs(self, **kwargs):
+        return build_simulator_framework.validate_build_inputs(self.lock_path, **kwargs)
+
+    def test_missing_engine_source_is_actionable_and_no_sdk_or_build(self):
+        with self.assertRaisesRegex(ValueError, '--engine-source is required'):
+            self.inputs(filter_overlay=self.overlay)
+        self.git.assert_not_called()
+
+    def test_wrong_git_or_modified_source_is_rejected(self):
+        self.git.return_value = 'd'*40
+        with self.assertRaisesRegex(ValueError, 'HEAD differs'):
+            self.inputs(engine_source=self.source, filter_overlay=self.overlay)
+        self.git.return_value = 'a'*40
+        (self.source / 'engine/vcl/source/app/svdata.cxx').write_text('modified')
+        with self.assertRaisesRegex(ValueError, 'missing/modified lifecycle source'):
+            self.inputs(engine_source=self.source, filter_overlay=self.overlay)
+
+    def test_missing_device_or_forged_filter_receipt_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, '--filter-overlay is required'):
+            self.inputs(engine_source=self.source)
+        for field, value in [('platform','IOS'),('sdk','iphoneos'),('sourceCommit','d'*40),
+                             ('patchSHA256','0'*64),('compilePassed',1),('archiveReplacementPassed',False)]:
+            with self.subTest(field=field):
+                bad={**self.filter_receipt,field:value}; self.receipt.write_text(json.dumps(bad))
+                with self.assertRaisesRegex(ValueError, 'not a successful current-source iphonesimulator'):
+                    self.inputs(engine_source=self.source, filter_overlay=self.overlay)
+
+        self.receipt.write_text(json.dumps(self.filter_receipt))
+        (self.overlay / 'libscfiltlo.a').unlink()
+        with self.assertRaisesRegex(ValueError, 'missing a regular simulator replacement archive'):
+            self.inputs(engine_source=self.source, filter_overlay=self.overlay)
+
+    def test_wrapper_forwards_explicit_inputs_and_records_real_input_identity(self):
+        m=self.mock; output=self.root/'output'; fake_zip=self.root/'fixture.zip'; fake_zip.write_bytes(b'fixture')
+        with m.patch.object(build_simulator_framework,'variant_lock',return_value=(self.lock_path,True)), \
+             m.patch.object(build_simulator_framework,'sdk_identity',return_value={}), \
+             m.patch.object(build_simulator_framework,'build_host',return_value={}) as build, \
+             m.patch.object(build_simulator_framework,'package_host',return_value=(self.root/'bundle',{'kind':'fixture'})) as package, \
+             m.patch.object(build_simulator_framework,'zip_bundle',return_value=fake_zip):
+            build_simulator_framework.build_framework(self.root/'restored',output,variant='kit',base_run_id='123',
+                                                      engine_source=self.source,filter_overlay=self.overlay)
+        args=build.call_args.kwargs
+        self.assertEqual(args['engine_source'],self.source.resolve())
+        self.assertEqual(args['filter_overlay'],self.overlay.resolve())
+        self.assertEqual(args['sdk'],'iphonesimulator')
+        self.assertEqual(args['lock_path'],self.lock_path)
+        expected={'engineSourceCommit':'a'*40,'filterOverlayReportSHA256':hashlib.sha256(self.receipt.read_bytes()).hexdigest()}
+        self.assertEqual(package.call_args.args[0]['buildInputs'],expected)
+        saved=json.loads((output/'native-host-build-report.json').read_text()); self.assertEqual(saved['buildInputs'],expected)
+
+    def test_cli_passes_explicit_arguments_to_existing_wrapper(self):
+        m=self.mock
+        with m.patch.object(sys,'argv',['build_simulator_framework.py','--restored',str(self.root/'restored'),
+                         '--output',str(self.root/'out'),'--base-run-id','123','--engine-source',str(self.source),
+                         '--filter-overlay',str(self.overlay)]), \
+             m.patch.object(build_simulator_framework,'build_framework',return_value={}) as build, \
+             m.patch('sys.stdout',new_callable=io.StringIO):
+            build_simulator_framework.main()
+        self.assertEqual(build.call_args.kwargs['engine_source'],self.source)
+        self.assertEqual(build.call_args.kwargs['filter_overlay'],self.overlay)
+
+
 class BuiltModuleReceiptTests(unittest.TestCase):
     def probe(self, output, framework, sdk, returncode=0):
         from unittest import mock
