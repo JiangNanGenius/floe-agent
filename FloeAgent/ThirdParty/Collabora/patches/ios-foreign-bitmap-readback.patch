@@ -1,0 +1,61 @@
+--- a/engine/vcl/ios/salios.cxx
++++ b/engine/vcl/ios/salios.cxx
+@@ -138,8 +138,58 @@
+     mrShared.applyXorContext();
+     if (!bSameGraphics)
+         pSrcShared->applyXorContext();
+ 
++    // Foreign bitmap render targets keep an auxiliary layer which is not their pixel source.
++    // Limit this experiment to the observed top-left bitmap -> internal layer copy.
++    if (!bSameGraphics && pSrcShared->mbVirDev && pSrcShared->mnBitmapDepth == 0
++        && pSrcShared->maContextHolder.isSet() && pSrcShared->maLayer.isSet()
++        && pSrcShared->maContextHolder.get() != CGLayerGetContext(pSrcShared->maLayer.get())
++        && mrShared.maLayer.isSet()
++        && mrShared.maContextHolder.get() == CGLayerGetContext(mrShared.maLayer.get())
++        && (!pSrcShared->mpXorEmulation || !pSrcShared->mpXorEmulation->IsEnabled()))
++    {
++        const CGAffineTransform aSourceCTM = CGContextGetCTM(pSrcShared->maContextHolder.get());
++        if (aSourceCTM.a == 1 && aSourceCTM.b == 0 && aSourceCTM.c == 0
++            && aSourceCTM.d == -1 && aSourceCTM.tx == 0)
++        {
++            CGImageRef xSnapshot = CGBitmapContextCreateImage(pSrcShared->maContextHolder.get());
++            if (xSnapshot)
++            {
++                const double nImageWidth = static_cast<double>(CGImageGetWidth(xSnapshot));
++                const double nImageHeight = static_cast<double>(CGImageGetHeight(xSnapshot));
++                // The observed CTM maps source user-space top-left directly to image rows.
++                const bool bInside = aSourceCTM.ty == nImageHeight
++                    && rPosAry.mnSrcX >= 0 && rPosAry.mnSrcY >= 0
++                    && rPosAry.mnSrcX <= nImageWidth && rPosAry.mnSrcY <= nImageHeight
++                    && rPosAry.mnSrcWidth <= nImageWidth - rPosAry.mnSrcX
++                    && rPosAry.mnSrcHeight <= nImageHeight - rPosAry.mnSrcY;
++                CGImageRef xCrop = bInside ? CGImageCreateWithImageInRect(xSnapshot,
++                    CGRectMake(rPosAry.mnSrcX, rPosAry.mnSrcY,
++                               rPosAry.mnSrcWidth, rPosAry.mnSrcHeight)) : nullptr;
++                CGImageRelease(xSnapshot);
++                if (xCrop)
++                {
++                    const CGRect aDestRect = CGRectMake(rPosAry.mnDestX, rPosAry.mnDestY,
++                        rPosAry.mnDestWidth, rPosAry.mnDestHeight);
++                    mrShared.maContextHolder.saveState();
++                    CGContextClipToRect(mrShared.maContextHolder.get(), aDestRect);
++                    // Preserve VCL source-user Y order when drawing a top-left image into a layer.
++                    CGContextTranslateCTM(mrShared.maContextHolder.get(),
++                        static_cast<CGFloat>(rPosAry.mnDestX),
++                        static_cast<CGFloat>(rPosAry.mnDestY) + static_cast<CGFloat>(rPosAry.mnDestHeight));
++                    CGContextScaleCTM(mrShared.maContextHolder.get(), 1, -1);
++                    CGContextDrawImage(mrShared.maContextHolder.get(),
++                        CGRectMake(0, 0, rPosAry.mnDestWidth, rPosAry.mnDestHeight), xCrop);
++                    mrShared.maContextHolder.restoreState();
++                    CGImageRelease(xCrop);
++                    refreshRect(aDestRect);
++                    return;
++                }
++            }
++        }
++    }
++
+     SAL_WARN_IF (!pSrcShared->maLayer.isSet(), "vcl.quartz",
+                  "AquaSalGraphics::copyBits() from non-layered graphics this=" << this);
+ 
+     const CGPoint aDstPoint = CGPointMake(+rPosAry.mnDestX - rPosAry.mnSrcX, rPosAry.mnDestY - rPosAry.mnSrcY);
