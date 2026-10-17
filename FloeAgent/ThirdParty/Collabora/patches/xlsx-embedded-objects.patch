@@ -1388,7 +1388,6 @@ index 0960883e..6ebdc6ea 100644
  }
  
 diff --git a/engine/sd/source/ui/unoidl/unomodel.cxx b/engine/sd/source/ui/unoidl/unomodel.cxx
-index 4e635ddc..42ae47d4 100644
 --- a/engine/sd/source/ui/unoidl/unomodel.cxx
 +++ b/engine/sd/source/ui/unoidl/unomodel.cxx
 @@ -19,6 +19,8 @@
@@ -1400,7 +1399,15 @@ index 4e635ddc..42ae47d4 100644
  
  #include <com/sun/star/presentation/XPresentation2.hpp>
  
-@@ -4907,6 +4909,49 @@ DrawViewShell* SdXImpressDocument::GetViewShell()
+@@ -117,6 +119,7 @@
+ #include <svx/svdomedia.hxx>
+ #include <svx/svdograf.hxx>
+ #include <svx/svditer.hxx>
++#include <svx/svdoole2.hxx>
+ #include <svx/unoapi.hxx>
+ #include <svx/unofill.hxx>
+ #include <svx/sdrpagewindow.hxx>
+@@ -4907,6 +4910,66 @@
      return pViewSh;
  }
  
@@ -1418,31 +1425,48 @@ index 4e635ddc..42ae47d4 100644
 +    return bEnabled;
 +}
 +
-+constexpr sal_Int32 FLOE_A3_MAX_SCANS = 16;
 +constexpr sal_Int32 FLOE_A3_MAX_MOUSE_LOGS = 256;
++constexpr sal_Int32 FLOE_A3_MAX_CHART_TILES = 8;
 +
-+// A3 bounded render observation: sample chart bar-blue pixels in device
-+// pixels around the chart tile repaint. Numbers only; no document content,
-+// no behaviour change, no cache or tile-state mutation. Logic coordinates
-+// are converted to device pixels before reading so a non-default MapMode
-+// with a non-zero origin cannot silently sample the wrong location.
-+sal_Int32 floeA3CountBarBlue(const VirtualDevice& rDevice)
++// Diagnostic only: five equal horizontal bands of the actual chart object,
++// not assumed chart values/bar positions. At most 8192 reads per stage.
++void floeA3ChartPixels(const VirtualDevice& rDevice, const tools::Rectangle& rChart,
++                       sal_Int32 nAdmission, sal_uInt16 nPage, sal_Int32 nObject,
++                       const char* pStage, int nTileX, int nTileY,
++                       tools::Long nTileWidth, tools::Long nTileHeight)
 +{
-+    static sal_Int32 nScans = 0;
-+    if (!floeA3ProbeEnabled() || nScans >= FLOE_A3_MAX_SCANS)
-+        return -1;
-+    ++nScans;
-+    const Size aSize(rDevice.GetOutputSizePixel());
-+    sal_Int32 nCount = 0;
-+    for (tools::Long y = 0; y < aSize.Height(); y += 3)
-+        for (tools::Long x = 0; x < aSize.Width(); x += 3)
++    const tools::Rectangle aChart = rDevice.LogicToPixel(rChart);
++    const Size aSize = rDevice.GetOutputSizePixel();
++    const tools::Rectangle aOutput(Point(0, 0), aSize);
++    const tools::Rectangle aVisible = aChart.GetIntersection(aOutput);
++    if (aVisible.IsEmpty() || aChart.GetWidth() <= 0)
++        return;
++    sal_Int32 nBlue[5] = {}, nSamples[5] = {};
++    // Uniform bounded grid covers the whole visible region, including the
++    // right edge; no early read cap that silently samples only the left side.
++    const tools::Long nColumns = std::min<tools::Long>(128, aVisible.GetWidth());
++    const tools::Long nRows = std::min<tools::Long>(64, aVisible.GetHeight());
++    for (tools::Long row = 0; row < nRows; ++row)
++        for (tools::Long col = 0; col < nColumns; ++col)
 +        {
++            const tools::Long x = aVisible.Left() + (2 * col + 1) * aVisible.GetWidth() / (2 * nColumns);
++            const tools::Long y = aVisible.Top() + (2 * row + 1) * aVisible.GetHeight() / (2 * nRows);
++            const int bin = static_cast<int>(std::min<tools::Long>(4,
++                std::max<tools::Long>(0, (x - aChart.Left()) * 5 / aChart.GetWidth())));
++            ++nSamples[bin];
 +            const Color aColor = rDevice.GetPixel(rDevice.PixelToLogic(Point(x, y)));
 +            if (aColor.GetRed() < 90 && aColor.GetGreen() > 60 && aColor.GetGreen() < 160
 +                && aColor.GetBlue() > 180)
-+                ++nCount;
++                ++nBlue[bin];
 +        }
-+    return nCount;
++    ::fprintf(stderr, "[floeA3] chartstage admission=%d page=%u object=%d stage=%s tile=%d,%d,%ld,%ld chartpx=%ld,%ld,%ld,%ld blue=%d,%d,%d,%d,%d samples=%d,%d,%d,%d,%d\n",
++        static_cast<int>(nAdmission), static_cast<unsigned>(nPage), static_cast<int>(nObject), pStage,
++        nTileX, nTileY, static_cast<long>(nTileWidth), static_cast<long>(nTileHeight),
++        static_cast<long>(aChart.Left()), static_cast<long>(aChart.Top()),
++        static_cast<long>(aChart.GetWidth()), static_cast<long>(aChart.GetHeight()),
++        nBlue[0], nBlue[1], nBlue[2], nBlue[3], nBlue[4],
++        nSamples[0], nSamples[1], nSamples[2], nSamples[3], nSamples[4]);
++    ::fflush(stderr);
 +}
 +
 +} // namespace
@@ -1450,29 +1474,76 @@ index 4e635ddc..42ae47d4 100644
  void SdXImpressDocument::paintTile( VirtualDevice& rDevice,
                              int nOutputWidth, int nOutputHeight,
                              int nTilePosX, int nTilePosY,
-@@ -4982,8 +5027,21 @@ void SdXImpressDocument::paintTile( VirtualDevice& rDevice,
+@@ -4977,13 +5040,58 @@
+     if (comphelper::COKit::isActive())
+         pView->SetPaintTextEdit(mbPaintTextEdit);
+ 
++    // Spend no diagnostic budget on blank/thumbnail pages or tiles that do
++    // not intersect a chart. Select from the real current page/view, never a
++    // fixed slide index or a filename. Ordinary rendering is unchanged.
++    static sal_Int32 nFloeA3ChartAdmissions = 0;
++    bool bFloeA3ChartAdmitted = false;
++    sal_uInt16 nFloeA3Page = 0;
++    sal_Int32 nFloeA3Object = -1;
++    tools::Rectangle aFloeA3Chart;
++    if (floeA3ProbeEnabled() && nFloeA3ChartAdmissions < FLOE_A3_MAX_CHART_TILES)
++    {
++        SdrPageView* pProbeView = pView->GetSdrPageView();
++        SdrPage* pProbePage = pProbeView ? pProbeView->GetPage() : nullptr;
++        if (pProbePage && pProbePage == pViewSh->GetActualPage())
++        {
++            SdrObjListIter aProbeObjects(pProbePage, SdrIterMode::DeepNoGroups);
++            sal_Int32 nObject = 0;
++            while (aProbeObjects.IsMore())
++            {
++                SdrObject* pObject = aProbeObjects.Next();
++                auto* pChart = dynamic_cast<SdrOle2Obj*>(pObject);
++                const tools::Rectangle aBounds = pObject->GetCurrentBoundRect();
++                if (pChart && pChart->IsChart() && !aBounds.IsEmpty() && aBounds.Overlaps(aRect))
++                {
++                    const tools::Rectangle aPixels = rDevice.LogicToPixel(aBounds);
++                    if (!aPixels.GetIntersection(tools::Rectangle(Point(0, 0), rDevice.GetOutputSizePixel())).IsEmpty())
++                    {
++                        aFloeA3Chart = aBounds;
++                        nFloeA3Page = pProbePage->GetPageNum();
++                        nFloeA3Object = nObject;
++                        ++nFloeA3ChartAdmissions;
++                        bFloeA3ChartAdmitted = true;
++                        break;
++                    }
++                }
++                ++nObject;
++            }
++        }
++    }
++
+     pViewSh->GetView()->CompleteRedraw(&rDevice, vcl::Region(aRect));
++    if (bFloeA3ChartAdmitted)
++        floeA3ChartPixels(rDevice, aFloeA3Chart, nFloeA3ChartAdmissions, nFloeA3Page,
++            nFloeA3Object, "complete-redraw", nTilePosX, nTilePosY, nTileWidth, nTileHeight);
+ 
      if (comphelper::COKit::isActive())
          pView->SetPaintTextEdit(true);
  
-+    const sal_Int32 nFloeA3BlueBefore = floeA3CountBarBlue(rDevice);
      KitChartHelper::PaintAllChartsOnTile(rDevice, nOutputWidth, nOutputHeight,
                                           nTilePosX, nTilePosY, nTileWidth, nTileHeight);
-+    if (nFloeA3BlueBefore >= 0)
-+    {
-+        // Not SAL_WARN: this engine is built without -DSAL_LOG_WARN, where
-+        // SAL_WARN expands to a no-op. fprintf(stderr) is captured by the
-+        // simulator test runner, gated and budget-capped above.
-+        const sal_Int32 nFloeA3BlueAfter = floeA3CountBarBlue(rDevice);
-+        ::fprintf(stderr, "[floeA3] charttile out=%dx%d tile=%d,%d,%ld,%ld blue_before=%d blue_after=%d\n",
-+                  nOutputWidth, nOutputHeight, nTilePosX, nTilePosY,
-+                  static_cast<long>(nTileWidth), static_cast<long>(nTileHeight),
-+                  static_cast<int>(nFloeA3BlueBefore), static_cast<int>(nFloeA3BlueAfter));
-+        ::fflush(stderr);
-+    }
++    if (bFloeA3ChartAdmitted)
++        floeA3ChartPixels(rDevice, aFloeA3Chart, nFloeA3ChartAdmissions, nFloeA3Page,
++            nFloeA3Object, "active-chart-overlay", nTilePosX, nTilePosY, nTileWidth, nTileHeight);
      KitStarMathHelper::PaintAllInPlaceOnTile(rDevice, nOutputWidth, nOutputHeight, nTilePosX,
                                               nTilePosY, nTileWidth, nTileHeight);
  
-@@ -5621,6 +5679,19 @@ void SdXImpressDocument::postKeyEvent(COKitKeyEventType eType, int nCharCode, in
+@@ -5001,6 +5109,9 @@
+         Size aOutputSize(nOutputWidth, nOutputHeight);
+         KitControlHandler::paintControlTile(pPage, pDrawView, *pActiveWin, rDevice, aOutputSize, aTileRect);
+     }
++    if (bFloeA3ChartAdmitted)
++        floeA3ChartPixels(rDevice, aFloeA3Chart, nFloeA3ChartAdmissions, nFloeA3Page,
++            nFloeA3Object, "tile-return", nTilePosX, nTilePosY, nTileWidth, nTileHeight);
+ }
+ 
+ OString SdXImpressDocument::getViewRenderState(const SfxViewShell* pViewShell)
+@@ -5621,6 +5732,19 @@
  void SdXImpressDocument::postMouseEvent(COKitMouseEventType eType, int nX, int nY, int nCount,
                                          int nButtons, int nModifier)
  {
@@ -1492,7 +1563,7 @@ index 4e635ddc..42ae47d4 100644
      SolarMutexGuard aGuard;
  
      DrawViewShell* pViewShell = GetViewShell();
-@@ -5644,6 +5715,12 @@ void SdXImpressDocument::postMouseEvent(COKitMouseEventType eType, int nX, int n
+@@ -5644,6 +5768,12 @@
      }
  
      SdrPage* pPage = pPageView->GetPage();
@@ -1564,3 +1635,74 @@ index f5d79634..319cb50d 100644
              rReq.Done();
          }
          break;
+diff --git a/engine/sd/source/ui/func/fuconbez.cxx b/engine/sd/source/ui/func/fuconbez.cxx
+--- a/engine/sd/source/ui/func/fuconbez.cxx
++++ b/engine/sd/source/ui/func/fuconbez.cxx
+@@ -49,6 +49,10 @@
+ 
+ #include <CustomAnimationEffect.hxx>
+ 
++#include <atomic>
++#include <cstdio>
++#include <cstdlib>
++
+ using namespace ::com::sun::star::uno;
+ using namespace cpo::uno;
+ 
+@@ -282,6 +286,56 @@
+         mrViewShell.GetViewFrame()->GetDispatcher()->Execute(SID_OBJECT_SELECT, SfxCallMode::ASYNCHRON);
+     }
+ 
++    // Diagnostic only: observe the completed core handler, never pen coordinates.
++    static const bool bFloeProbeEnabled = [] {
++        const char* pValue = std::getenv("FLOE_A3_PROBE");
++        return pValue && pValue[0] == '1' && pValue[1] == '\0';
++    }();
++    if (bFloeProbeEnabled)
++    {
++        static std::atomic<unsigned> nFloeRemaining{64};
++        unsigned nRemaining = nFloeRemaining.load(std::memory_order_relaxed);
++        while (nRemaining != 0 && !nFloeRemaining.compare_exchange_weak(
++                   nRemaining, nRemaining - 1, std::memory_order_relaxed))
++        {
++        }
++        if (nRemaining != 0)
++        {
++            // Admission precedes all diagnostic object/path queries. The tail may
++            // have been inserted on down, so do not equate it with bCreated.
++            const auto* pPageView = mpView->GetSdrPageView();
++            const auto* pList = pPageView ? pPageView->GetObjList() : nullptr;
++            const size_t nAfter = pList ? pList->GetObjCount() : 0;
++            const SdrObject* pTail = nAfter ? pList->GetObj(nAfter - 1) : nullptr;
++            const auto* pPath = dynamic_cast<const SdrPathObj*>(pTail);
++            const auto* pPage = dynamic_cast<const SdPage*>(
++                pTail ? pTail->getSdrPageFromSdrObject() : nullptr);
++            sal_uInt32 nPolygons = 0;
++            unsigned long long nPoints = 0;
++            bool bPointCountTruncated = false;
++            if (pPath)
++            {
++                const auto& rPoly = pPath->GetPathPoly();
++                nPolygons = rPoly.count();
++                const sal_uInt32 nLimit = nPolygons < 8 ? nPolygons : 8;
++                bPointCountTruncated = nPolygons > nLimit;
++                for (sal_uInt32 n = 0; n < nLimit; ++n)
++                    nPoints += rPoly.getB2DPolygon(n).count();
++            }
++            std::fprintf(stderr,
++                "[floeA3] sdbezier-up sid=%u event=%d before=%zu after=%zu "
++                "created=%d deleted=%d list=%d tailkind=%d path=%d "
++                "polygons=%u points=%llu truncated=%d pagekind=%d\n",
++                static_cast<unsigned>(nSlotId), static_cast<int>(aVEvt.meEvent),
++                nCount, nAfter, bCreated ? 1 : 0, bDeleted ? 1 : 0,
++                pList ? 1 : 0, pTail ? static_cast<int>(pTail->GetObjIdentifier()) : -1,
++                pPath ? 1 : 0, static_cast<unsigned>(nPolygons), nPoints,
++                bPointCountTruncated ? 1 : 0,
++                pPage ? static_cast<int>(pPage->GetPageKind()) : -1);
++            std::fflush(stderr);
++        }
++    }
++
+     return bReturn;
+ }
+ 

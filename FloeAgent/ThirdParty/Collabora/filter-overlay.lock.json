@@ -1,7 +1,7 @@
 {
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "patch": "patches/xlsx-embedded-objects.patch",
-  "patchSHA256": "f70d441ece76fa64ed5e8c1da72bbe07ab9aef57968721e079bab11350b7b87a",
+  "patchSHA256": "78795acc4dd36f112051fa611f9c06967997f4890f1983109966bc3c7ac0ca62",
   "files": {
     "engine/sc/source/filter/inc/xcl97rec.hxx": {
       "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
@@ -53,7 +53,11 @@
     },
     "engine/sd/source/ui/unoidl/unomodel.cxx": {
       "originalSHA256": "ea2306df724d398e4428bbfcb89b3b32632cec2e1ac907f47432834823458aca",
-      "patchedSHA256": "4c9504a163994bf655b3a560b35f15e16c34256555b1d49a3da9f8fbb90b35bb"
+      "patchedSHA256": "44b3a58316d49ff02072a93ec4f297d026cee71a823d715d30032fd494443b37"
+    },
+    "engine/sd/source/ui/func/fuconbez.cxx": {
+      "originalSHA256": "acf7ce56db8fc17fe14ea145eba509d4dc87d5c0a6a7f433139df494298a1ddd",
+      "patchedSHA256": "378fb7e6f6e741297395ee3c694dbd0f7b63a557b3c3ac686f3cb4f7bfa9a83d"
     }
   },
   "archive": "source/engine/instdir/program/libscfiltlo.a",
@@ -82,7 +86,8 @@
       "originalArchiveSHA256": "7228330d1d6ca820c86e88fb09025f30e6c42c377b13dc578c8ec53bc92119d9",
       "members": {
         "drviewse.o": "engine/sd/source/ui/view/drviewse.cxx",
-        "unomodel.o": "engine/sd/source/ui/unoidl/unomodel.cxx"
+        "unomodel.o": "engine/sd/source/ui/unoidl/unomodel.cxx",
+        "fuconbez.o": "engine/sd/source/ui/func/fuconbez.cxx"
       }
     }
   },
@@ -137,7 +142,8 @@
         "archive": "source/engine/instdir/program/libsdlo.a",
         "members": {
           "drviewse.o": "engine/sd/source/ui/view/drviewse.cxx",
-          "unomodel.o": "engine/sd/source/ui/unoidl/unomodel.cxx"
+          "unomodel.o": "engine/sd/source/ui/unoidl/unomodel.cxx",
+          "fuconbez.o": "engine/sd/source/ui/func/fuconbez.cxx"
         }
       }
     },
