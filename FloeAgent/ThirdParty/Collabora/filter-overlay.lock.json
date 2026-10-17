@@ -1,7 +1,7 @@
 {
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "patch": "patches/xlsx-embedded-objects.patch",
-  "patchSHA256": "e1e4031de5cc86baa25b555bffa56587805157e7931909c7d473fe6428686e77",
+  "patchSHA256": "f70d441ece76fa64ed5e8c1da72bbe07ab9aef57968721e079bab11350b7b87a",
   "files": {
     "engine/sc/source/filter/inc/xcl97rec.hxx": {
       "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
@@ -49,7 +49,11 @@
     },
     "engine/sd/source/ui/view/drviewse.cxx": {
       "originalSHA256": "0585ec290509acecd1deb90267c77023ede02f4357c7f29cbafcb20809d83c99",
-      "patchedSHA256": "a134d42296b2d9c04dd815484cb8b202c834f36e9caeb2ee05c03d5be8bf85a9"
+      "patchedSHA256": "559d86e2902b174ffd0bb21020931c22cd20df2283b43bdaba6881b4d3d55217"
+    },
+    "engine/sd/source/ui/unoidl/unomodel.cxx": {
+      "originalSHA256": "ea2306df724d398e4428bbfcb89b3b32632cec2e1ac907f47432834823458aca",
+      "patchedSHA256": "4c9504a163994bf655b3a560b35f15e16c34256555b1d49a3da9f8fbb90b35bb"
     }
   },
   "archive": "source/engine/instdir/program/libscfiltlo.a",
@@ -77,7 +81,8 @@
       "archive": "source/engine/instdir/program/libsdlo.a",
       "originalArchiveSHA256": "7228330d1d6ca820c86e88fb09025f30e6c42c377b13dc578c8ec53bc92119d9",
       "members": {
-        "drviewse.o": "engine/sd/source/ui/view/drviewse.cxx"
+        "drviewse.o": "engine/sd/source/ui/view/drviewse.cxx",
+        "unomodel.o": "engine/sd/source/ui/unoidl/unomodel.cxx"
       }
     }
   },
@@ -108,5 +113,35 @@
       "maxArchiveBytes": 33554432,
       "maxExtractBytes": 268435456
     }
-  }
+  },
+  "simulator": {
+    "archive": "source/engine/instdir/program/libscfiltlo.a",
+    "member": "xcl97rec.o",
+    "members": {
+      "xcl97rec.o": "engine/sc/source/filter/xcl97/xcl97rec.cxx",
+      "xlroot.o": "engine/sc/source/filter/excel/xlroot.cxx",
+      "unitconverter.o": "engine/sc/source/filter/oox/unitconverter.cxx",
+      "drawingfragment.o": "engine/sc/source/filter/oox/drawingfragment.cxx",
+      "worksheetfragment.o": "engine/sc/source/filter/oox/worksheetfragment.cxx",
+      "worksheethelper.o": "engine/sc/source/filter/oox/worksheethelper.cxx"
+    },
+    "additionalArchives": {
+      "libooxlo.a": {
+        "archive": "source/engine/instdir/program/libooxlo.a",
+        "members": {
+          "vmlshape.o": "engine/oox/source/vml/vmlshape.cxx",
+          "chartexport.o": "engine/oox/source/export/chartexport.cxx"
+        }
+      },
+      "libsdlo.a": {
+        "archive": "source/engine/instdir/program/libsdlo.a",
+        "members": {
+          "drviewse.o": "engine/sd/source/ui/view/drviewse.cxx",
+          "unomodel.o": "engine/sd/source/ui/unoidl/unomodel.cxx"
+        }
+      }
+    },
+    "note": "Simulator member contract: identical locked sources/members compiled for iphonesimulator. Archive/member OBJECT hashes are platform specific and are recorded per build in the overlay report and host receipt; they are never taken from the device (IOS) entries above."
+  },
+  "probeSourceNote": "FLOE_A3_PROBE exactly 1 opts into bounded fprintf(stderr)/fflush probes: at most 16 pixel scans, 256 paired mouse admissions and 64 freehand slot admissions per process. Original f70d441ece76fa64ed5e8c1da72bbe07ab9aef57968721e079bab11350b7b87a A4 draft; source apply/hash checks only, new native compilation and runtime evidence pending. No renderer algorithm change."
 }

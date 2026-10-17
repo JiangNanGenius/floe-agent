@@ -331,7 +331,7 @@
         "preparedSHA256": "3754d754f819140a75bca4cd2f9865588096672ba5338e45df77ddc053d7e1a5"
       }
     },
-    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered — including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
+    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered \u2014 including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
   },
   "kitCallbackLifecycleOverlay": {
     "patch": "patches/ios-kit-callback-lifecycle.patch",
@@ -347,5 +347,92 @@
       }
     },
     "note": "Source-defect fix candidate for the kit-side callback push lifetime under DOCS_SHARE_PROCESS (the shipped iOS build). The pinned defect: KitSocketPoll::pushToMainThread queues a callback only while the static mainPoll exists and its recorded owner differs from the caller, and otherwise runs the Document/ChildSession body inline on the calling thread; every poll's destructor clears mainPoll unconditionally, so a document that outlives a closed sibling can have a null mainPoll for its whole remaining lifetime and engine callbacks flushed on the VCL main thread then execute inline concurrently with the kit servicing thread on the same Document/socket state. This overlay records the one shared kit servicing thread where pollCallback actually services the polls (atomic kitThreadId), authorizes inline execution for that thread alone (the body still runs exactly once, with no self-requeue), resolves the callback's document and queues the callback to the document's own poll (which shares Document ownership, so a pending callback dies with its poll instead of running against a torn-down document), and drops the callback when no live poll owns the document instead of executing it on a foreign thread. The non-DOCS_SHARE_PROCESS branch is byte-identical to the pinned source. This is the primary-reviewed v3 candidate (private sha256 881a5924...); this tracked patch differs from it only in the review-corrected comment wording (the null window CAN occur with a sibling teardown; it does not assert every preview->edit device flow died because of it). The null window is a demonstrated source defect, not a proven cause of any specific device termination: no matching native stack exists. Applies after the embedding/scheme/forwarding overlays and does not overlap their files. Regression: scripts/test_office_kit_lifecycle.py (byte-faithful extraction of the pinned function, mocked ownership lifecycle; not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts a new-overlay claim only once a future host pin records kitCallbackOverlaySHA256."
+  },
+  "embeddedLifecycleOverlay": {
+    "patch": "patches/ios-embedded-lifecycle.patch",
+    "sha256": "75213b77748152b5e44fb4792c44c6d2e2e0361cea1dfbf1f12a15b7cf7db971",
+    "files": {
+      "net/FakeSocket.cpp": {
+        "originalSHA256": "8b45453c7c28c3dec3a1a9710abb3a241d593a3d72b7f9e2f619531b0eae87dc",
+        "preparedSHA256": "c5167ebc2131998c25d549d7484efcf93bb870a8e81ef815fd4a99d622c09ec2"
+      },
+      "wsd/COOLWSD.cpp": {
+        "originalSHA256": "b913176634edc140e673a772a5b14b830aab03ac125c5bac9865dceb52168278",
+        "preparedSHA256": "7c2392b1d2649067e93c68aff0e8eb5bcbbc5401c7f201c69468d8a91e26bfc9"
+      },
+      "kit/Kit.cpp": {
+        "originalSHA256": "813ee3d3cde3b18058cda1666dc333a1a616d708075d3c7f2a1122fca6b970da",
+        "preparedSHA256": "f3ec03aca544ad3b0a1b54eeb9c8af80a6c01629c3a11c8b2167b2fb3360d871"
+      }
+    },
+    "scopeNote": "Exit-lifetime consistency for iOS engine builds (device + simulator): the shared FakeSocket backend and the three VCL SV roots (ImplSVData plus its help/win fallback holders, all fallback references sharing one stable holder) are kept for the process lifetime, because the detached kit VCL loop outlives __cxa_finalize and DeInitVCL skips Kit teardown. Observed aborts: FakeSocket mutex EINVAL at COOLWSDServer teardown; osl_setCondition/AquaSalInstance yield frames from Application::Execute on the kit thread. No lock skips, no assert suppression, no _exit, no COOLWSD stop machinery. Desktop and non-IOS keep rtl::Static semantics; explicit DeInitVCL deinit-hook teardown must not run while the detached loop lives (unchanged). A3 addition: on IOS the wsd DocBrokers container and DocBrokersMutex carry [[clang::no_destroy]] so exit-time static destruction on a foreign thread cannot release live DocumentBrokers into their socket-poll owner-thread assert (observed ProcUtil::assertCorrectThread at XCTest exit); value-object ABI, extern declarations, runtime dispose/erase/save paths and the assert are unchanged. iOS Kit poll registry lifetime: KSPollsMutex/KSPollsCV/KSPolls remain class-static value objects with no exit-time destruction; normal polling, locking and weak-reference cleanup are unchanged.",
+    "compiledMembers": {
+      "IOS": {
+        "sourceFile": "engine/vcl/source/app/svdata.cxx",
+        "originalSHA256": "d4134c6ccd979fb0ad3ac2e46484c5715c2e5ba86d50c45f26778784b95b3fb8",
+        "patchedSHA256": "b41f80bdd46c8c1a3bdad684e6eba9730470b912e3529fee3cac3ffdcb394397",
+        "archive": "source/engine/instdir/program/libvcllo.a",
+        "members": {
+          "svdata.o": "engine/vcl/source/app/svdata.cxx"
+        },
+        "patch": "patches/ios-embedded-lifecycle-compiled.patch",
+        "patchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
+        "additionalArchives": {
+          "libsallo.a": {
+            "sourceFile": "engine/sal/osl/unx/thread.cxx",
+            "originalSHA256": "8ac07b16f8298185bb876268ebc6c2e96440ac27f3a2fb7011d8ced0f2c70e71",
+            "patchedSHA256": "1d5de5f98a7b6f654bb5bd434efddb0ceafeacb44b5fc97131092bf0b1a1ef19",
+            "archive": "source/engine/instdir/program/libsallo.a",
+            "members": {
+              "thread.o": "engine/sal/osl/unx/thread.cxx"
+            },
+            "patch": "patches/ios-embedded-lifecycle-compiled.patch",
+            "patchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
+            "compileOverrides": {
+              "flags": [
+                "-DSAL_DLLIMPLEMENTATION"
+              ],
+              "sourceIncludes": [
+                "engine/sal/inc",
+                "engine/sal/osl/unx"
+              ]
+            }
+          }
+        }
+      },
+      "IOSSIMULATOR": {
+        "sourceFile": "engine/vcl/source/app/svdata.cxx",
+        "originalSHA256": "d4134c6ccd979fb0ad3ac2e46484c5715c2e5ba86d50c45f26778784b95b3fb8",
+        "patchedSHA256": "b41f80bdd46c8c1a3bdad684e6eba9730470b912e3529fee3cac3ffdcb394397",
+        "archive": "source/engine/instdir/program/libvcllo.a",
+        "members": {
+          "svdata.o": "engine/vcl/source/app/svdata.cxx"
+        },
+        "patch": "patches/ios-embedded-lifecycle-compiled.patch",
+        "patchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
+        "additionalArchives": {
+          "libsallo.a": {
+            "sourceFile": "engine/sal/osl/unx/thread.cxx",
+            "originalSHA256": "8ac07b16f8298185bb876268ebc6c2e96440ac27f3a2fb7011d8ced0f2c70e71",
+            "patchedSHA256": "1d5de5f98a7b6f654bb5bd434efddb0ceafeacb44b5fc97131092bf0b1a1ef19",
+            "archive": "source/engine/instdir/program/libsallo.a",
+            "members": {
+              "thread.o": "engine/sal/osl/unx/thread.cxx"
+            },
+            "patch": "patches/ios-embedded-lifecycle-compiled.patch",
+            "patchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
+            "compileOverrides": {
+              "flags": [
+                "-DSAL_DLLIMPLEMENTATION"
+              ],
+              "sourceIncludes": [
+                "engine/sal/inc",
+                "engine/sal/osl/unx"
+              ]
+            }
+          }
+        }
+      }
+    }
   }
 }

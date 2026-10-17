@@ -1,928 +1,5 @@
-diff --git a/engine/oox/source/vml/vmlshape.cxx b/engine/oox/source/vml/vmlshape.cxx
-index 1e69133..ca5bd8d 100644
---- a/engine/oox/source/vml/vmlshape.cxx
-+++ b/engine/oox/source/vml/vmlshape.cxx
-@@ -540,6 +540,56 @@ awt::Rectangle ShapeBase::calcShapeRectangle( const ShapeParentAnchor* pParentAn
-     const ClientData* pClientData = getClientData();
-     if( !pClientData || !mrDrawing.convertClientAnchor( aShapeRect, pClientData->maAnchor ) )
-         aShapeRect = getRectangle( pParentAnchor );
-+    else if (!pParentAnchor && mrDrawing.getOleObjectInfo(getShapeId())
-+             && (!pClientData->mbMoveWithCells || !pClientData->mbSizeWithCells)
-+             && maTypeModel.maPosition == "absolute"
-+             && !maTypeModel.maWidth.isEmpty() && !maTypeModel.maHeight.isEmpty()
-+             && maTypeModel.maWidthPercent.isEmpty() && maTypeModel.maHeightPercent.isEmpty())
-+    {
-+        // Legacy cell anchors quantize offsets to whole pixels. For an OLE
-+        // object that does not resize with cells, retain its explicit VML
-+        // dimensions before applying rotations and inserting the live shape.
-+        // A moving object still takes its position from the cell anchor.
-+        const GraphicHelper& rHelper = mrDrawing.getFilter().getGraphicHelper();
-+        const sal_Int32 nWidth = ConversionHelper::decodeMeasureToHmm(
-+            rHelper, maTypeModel.maWidth, -1, true, true);
-+        const sal_Int32 nHeight = ConversionHelper::decodeMeasureToHmm(
-+            rHelper, maTypeModel.maHeight, -1, false, true);
-+        if (nWidth > 0 && nHeight > 0)
-+        {
-+            aShapeRect.Width = nWidth;
-+            aShapeRect.Height = nHeight;
-+            if (!pClientData->mbMoveWithCells)
-+            {
-+                sal_Int32 nLeft, nTop;
-+                // Unlike Word's getAbsRectangle fallback, a worksheet may
-+                // place the object exactly at zero; do not add a model unit.
-+                const bool bOverflowX = o3tl::checked_add<sal_Int32>(
-+                    ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maLeft, 0, true, true),
-+                    ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maMarginLeft, 0, true, true), nLeft);
-+                const bool bOverflowY = o3tl::checked_add<sal_Int32>(
-+                    ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maTop, 0, false, true),
-+                    ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maMarginTop, 0, false, true), nTop);
-+                if (!bOverflowX && !bOverflowY)
-+                {
-+                    aShapeRect.X = nLeft;
-+                    aShapeRect.Y = nTop;
-+                }
-+            }
-+        }
-+    }
-+    if (!pParentAnchor && pClientData && pClientData->maAnchor.isEmpty()
-+        && mrDrawing.getOleObjectInfo(getShapeId()) && maTypeModel.maPosition == "absolute")
-+    {
-+        // Modern worksheet anchors can start at exactly zero. The historical
-+        // Word-oriented absolute style fallback shifts zero X to one model unit.
-+        const GraphicHelper& rHelper = mrDrawing.getFilter().getGraphicHelper();
-+        sal_Int32 nLeft;
-+        if (!o3tl::checked_add<sal_Int32>(
-+                ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maLeft, 0, true, true),
-+                ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maMarginLeft, 0, true, true), nLeft))
-+            aShapeRect.X = nLeft;
-+    }
-     return aShapeRect;
- }
- 
-diff --git a/engine/sc/source/filter/excel/xlroot.cxx b/engine/sc/source/filter/excel/xlroot.cxx
-index dd58d60..a795c15 100644
---- a/engine/sc/source/filter/excel/xlroot.cxx
-+++ b/engine/sc/source/filter/excel/xlroot.cxx
-@@ -21,7 +21,11 @@
- #include <utility>
- #include <xlroot.hxx>
- #include <sal/log.hxx>
-+#include <rtl/tencinfo.h>
- #include <com/sun/star/awt/XDevice.hpp>
-+#include <com/sun/star/awt/XFont.hpp>
-+#include <com/sun/star/awt/FontFamily.hpp>
-+#include <com/sun/star/awt/FontWeight.hpp>
- #include <com/sun/star/frame/Desktop.hpp>
- #include <com/sun/star/frame/XFrame.hpp>
- #include <com/sun/star/i18n/ScriptType.hpp>
-@@ -62,6 +66,9 @@
- #include <comphelper/configuration.hxx>
- #include <unotools/useroptions.hxx>
- #include <root.hxx>
-+#include <stylesbuffer.hxx>
-+#include <unitconverter.hxx>
-+#include <toolkit/helper/vclunohelper.hxx>
- 
- namespace ApiScriptType = ::com::sun::star::i18n::ScriptType;
- 
-@@ -215,6 +222,68 @@ void XclRoot::SetTextEncoding( rtl_TextEncoding eTextEnc )
- 
- void XclRoot::SetCharWidth( const XclFontData& rFontData )
- {
-+    // The reference-font candidate did not fix repeated-save width drift.
-+    // Keep it only as an opt-in measurement control, not as export behavior.
-+    if (mrData.mbExport && mrData.meOutput == EXC_OUTPUT_XML_2007
-+        && oox::xls::UnitConverter::fontMetricTraceEnabled())
-+    {
-+        try
-+        {
-+            ScModelObj* pModel = GetDocModelObj();
-+            Reference<XDevice> xDevice;
-+            if (pModel)
-+                pModel->getPropertyValue(u"ReferenceDevice"_ustr) >>= xDevice;
-+            if (xDevice.is())
-+            {
-+                oox::xls::ApiFontData aData;
-+                auto& rDesc = aData.maDesc;
-+                // Match XclXmlUtils::WriteFontData's serialized font name.
-+                rDesc.Name = rFontData.maName;
-+                if (rDesc.Name.getLength() > 31)
-+                {
-+                    rDesc.Name = rDesc.Name.copy(0, 31);
-+                    if (rFontData.maName[31] != ';')
-+                    {
-+                        const sal_Int32 nSeparator = rDesc.Name.lastIndexOf(';');
-+                        if (nSeparator != -1)
-+                            rDesc.Name = rDesc.Name.copy(0, nSeparator);
-+                    }
-+                }
-+                rDesc.Height = static_cast<sal_Int16>(rFontData.mnHeight);
-+                // OOXML family numbers differ from the VCL FontFamily enum.
-+                switch (rFontData.mnFamily)
-+                {
-+                    case EXC_FONTFAM_ROMAN: rDesc.Family = awt::FontFamily::ROMAN; break;
-+                    case EXC_FONTFAM_SWISS: rDesc.Family = awt::FontFamily::SWISS; break;
-+                    case EXC_FONTFAM_MODERN: rDesc.Family = awt::FontFamily::MODERN; break;
-+                    case EXC_FONTFAM_SCRIPT: rDesc.Family = awt::FontFamily::SCRIPT; break;
-+                    case EXC_FONTFAM_DECORATIVE: rDesc.Family = awt::FontFamily::DECORATIVE; break;
-+                    default: break;
-+                }
-+                rDesc.CharSet = static_cast<sal_Int16>(
-+                    rtl_getTextEncodingFromWindowsCharset(rFontData.mnCharSet));
-+                rDesc.Weight = rFontData.mnWeight > 400
-+                    ? awt::FontWeight::BOLD : awt::FontWeight::NORMAL;
-+                rDesc.Slant = rFontData.GetApiPosture();
-+                rDesc.Underline = rFontData.GetApiUnderline();
-+                rDesc.Strikeout = rFontData.GetApiStrikeout();
-+                Reference<awt::XFont> xFont = xDevice->getFont(rDesc);
-+                if (xFont.is())
-+                {
-+                    tools::Long nDigitWidth = 0;
-+                    for (sal_Unicode cChar = '0'; cChar <= '9'; ++cChar)
-+                        nDigitWidth = std::max(nDigitWidth,
-+                            static_cast<tools::Long>(xFont->getCharWidth(cChar)));
-+                    oox::xls::UnitConverter::traceFontMetrics("export-reference-control",
-+                        VCLUnoHelper::GetOutputDevice(xDevice), &rDesc, xFont, nDigitWidth);
-+                }
-+            }
-+        }
-+        catch (const Exception&)
-+        {
-+            SAL_WARN("sc", "XLSX reference-font measurement unavailable");
-+        }
-+    }
-     mrData.mnCharWidth = 0;
-     bool bIsKit = comphelper::COKit::isActive();
-     if( OutputDevice* pPrinter = GetPrinter( bIsKit ) )
-@@ -244,6 +313,10 @@ void XclRoot::SetCharWidth( const XclFontData& rFontData )
-         SAL_WARN( "sc", "XclRoot::SetCharWidth - invalid character width (no printer?)" );
-         mrData.mnSpaceWidth = 45;
-     }
-+    if (mrData.mbExport && mrData.meOutput == EXC_OUTPUT_XML_2007
-+        && oox::xls::UnitConverter::fontMetricTraceEnabled())
-+        oox::xls::UnitConverter::traceFontMetrics("export-legacy",
-+            GetPrinter(bIsKit), nullptr, {}, mrData.mnCharWidth);
- }
- 
- sal_Int32 XclRoot::GetHmmFromPixelX( double fPixelX ) const
-diff --git a/engine/sc/source/filter/inc/drawingfragment.hxx b/engine/sc/source/filter/inc/drawingfragment.hxx
-index fa49d43..641fea5 100644
---- a/engine/sc/source/filter/inc/drawingfragment.hxx
-+++ b/engine/sc/source/filter/inc/drawingfragment.hxx
-@@ -20,6 +20,7 @@
- #pragma once
- 
- #include <memory>
-+#include <unordered_map>
- #include <oox/drawingml/shapegroupcontext.hxx>
- #include <oox/drawingml/color.hxx>
- #include <oox/ole/axcontrol.hxx>
-@@ -148,6 +149,18 @@ public:
-     using NoteShapesMap = std::unordered_map<std::pair<sal_Int32,sal_Int32>, const ::oox::vml::ShapeBase*, NoteShapesMapHash>;
- 
-     explicit            VmlDrawing( const WorksheetHelper& rHelper );
-+    virtual ~VmlDrawing() override;
-+
-+    struct OleAnchorRecord
-+    {
-+        std::shared_ptr<ShapeAnchor> anchor;
-+        sal_Int32 column = 0;
-+        sal_Int32 row = 0;
-+        bool moveWithCells = false;
-+        bool sizeWithCells = false;
-+    };
-+    void registerOleAnchor(const OUString& rShapeId, OleAnchorRecord aRecord);
-+    void applyOleAnchors();
- 
-     /** Returns the drawing shape for a cell note at the specified position. */
-     const ::oox::vml::ShapeBase* getNoteShape( const ScAddress& rPos ) const;
-@@ -198,6 +211,7 @@ private:
- private:
-     ::oox::ole::ControlConverter maControlConv;
-     ::oox::vml::TextFontModel maListBoxFont;
-+    std::unordered_map<OUString, OleAnchorRecord> maPreciseOleAnchors;
- };
- 
- class VmlDrawingFragment final : public ::oox::vml::DrawingFragment, public WorksheetHelper
-diff --git a/engine/sc/source/filter/inc/unitconverter.hxx b/engine/sc/source/filter/inc/unitconverter.hxx
-index 6149962..761116a 100644
---- a/engine/sc/source/filter/inc/unitconverter.hxx
-+++ b/engine/sc/source/filter/inc/unitconverter.hxx
-@@ -26,7 +26,9 @@
- 
- namespace com::sun::star {
-     namespace util { struct Date; struct DateTime; }
-+    namespace awt { struct FontDescriptor; class XFont; }
- }
-+class OutputDevice;
- 
- namespace oox::xls {
- 
-@@ -59,6 +61,13 @@ class UnitConverter : public WorkbookHelper
- public:
-     explicit            UnitConverter( const WorkbookHelper& rHelper );
- 
-+    // Opt-in synthetic-probe diagnostics; never changes conversion state.
-+    static bool         fontMetricTraceEnabled();
-+    static void         traceFontMetrics(const char* phase, OutputDevice* device,
-+                            const css::awt::FontDescriptor* requested,
-+                            const css::uno::Reference<css::awt::XFont>& font,
-+                            sal_Int64 measuredDigitWidth);
-+
-     /** Final processing after import of all style settings. */
-     void                finalizeImport();
-     /** Updates internal nulldate for date/serial conversion. */
-diff --git a/engine/sc/source/filter/inc/xcl97rec.hxx b/engine/sc/source/filter/inc/xcl97rec.hxx
-index 0eb5408..a5fdebd 100644
---- a/engine/sc/source/filter/inc/xcl97rec.hxx
-+++ b/engine/sc/source/filter/inc/xcl97rec.hxx
-@@ -251,6 +251,8 @@ public:
-                                 XclObjOle( XclExpObjectManager& rObjMgr, const SdrOle2Obj& rObj );
-     virtual                     ~XclObjOle() override;
- 
-+    const SdrOle2Obj& GetOleObject() const { return rOleObj; }
-+
-     virtual void                Save( XclExpStream& rStrm ) override;
- };
- 
-diff --git a/engine/sc/source/filter/oox/drawingfragment.cxx b/engine/sc/source/filter/oox/drawingfragment.cxx
-index 859e321..90676d4 100644
---- a/engine/sc/source/filter/oox/drawingfragment.cxx
-+++ b/engine/sc/source/filter/oox/drawingfragment.cxx
-@@ -535,6 +535,59 @@ VmlDrawing::VmlDrawing( const WorksheetHelper& rHelper ) :
-     maListBoxFont.monSize = 160;
- }
- 
-+VmlDrawing::~VmlDrawing() = default;
-+
-+void VmlDrawing::registerOleAnchor(const OUString& rShapeId, OleAnchorRecord aRecord)
-+{
-+    const auto [it, inserted] = maPreciseOleAnchors.emplace(rShapeId, std::move(aRecord));
-+    // Duplicate shape identifiers are ambiguous. Keep a tombstone so a later
-+    // duplicate cannot silently revive a conflicting geometry record.
-+    if (!inserted)
-+        it->second.anchor.reset();
-+}
-+
-+void VmlDrawing::applyOleAnchors()
-+{
-+    // Styles are projected only after row/column metrics and VML templates are
-+    // loaded, and before shape creation/rotation. No saved ZIP is rewritten.
-+    for (const auto& xShape : getShapes().getAllShapes())
-+    {
-+        const auto it = maPreciseOleAnchors.find(xShape->getShapeId());
-+        if (it == maPreciseOleAnchors.end() || !it->second.anchor
-+            || !getOleObjectInfo(xShape->getShapeId()))
-+            continue;
-+        auto& rModel = xShape->getShapeModel();
-+        if (!rModel.mxClientData)
-+            continue;
-+        const auto& rAnchor = it->second;
-+        const Rectangle aRect = rAnchor.anchor->calcAnchorRectHmm(getDrawPageSize());
-+        if (aRect.X < 0 || aRect.Y < 0 || aRect.Width <= 0 || aRect.Height <= 0
-+            || sal_Int64(aRect.X) + aRect.Width > SAL_MAX_INT32
-+            || sal_Int64(aRect.Y) + aRect.Height > SAL_MAX_INT32)
-+            continue;
-+        auto& rType = xShape->getTypeModel();
-+        const auto measure = [](sal_Int32 n) { return OUString::number(double(n) / 100.0) + u"mm"_ustr; };
-+        rType.maLeft = measure(aRect.X);
-+        rType.maTop = measure(aRect.Y);
-+        rType.maMarginLeft = u"0"_ustr;
-+        rType.maMarginTop = u"0"_ustr;
-+        rType.maWidth = measure(aRect.Width);
-+        rType.maHeight = measure(aRect.Height);
-+        rType.maWidthPercent.clear();
-+        rType.maHeightPercent.clear();
-+        rType.maPosition = u"absolute"_ustr;
-+        auto& rClient = *rModel.mxClientData;
-+        // The modern EMU coordinates are now represented by exact model units.
-+        // Avoid reparsing the obsolete integer-pixel anchor during creation.
-+        rClient.maAnchor.clear();
-+        rClient.mnCol = rAnchor.column;
-+        rClient.mnRow = rAnchor.row;
-+        rClient.mbMoveWithCells = rAnchor.moveWithCells;
-+        rClient.mbSizeWithCells = rAnchor.sizeWithCells;
-+    }
-+    maPreciseOleAnchors.clear();
-+}
-+
- const ::oox::vml::ShapeBase* VmlDrawing::getNoteShape( const ScAddress& rPos ) const
- {
-     return getShapes().findShape( VmlFindNoteFunc( rPos ) );
-@@ -863,7 +916,8 @@ void VmlDrawing::notifyXShapeInserted( const Reference< XShape >& rxShape,
-                 o3tl::getToken(pClientData->maAnchor, 0, ',', nIndex);
-                 nRow = o3tl::toInt32(o3tl::getToken(pClientData->maAnchor, 0, ',', nIndex));
- 
--                bResizeWithCell = true;
-+                // Keep the explicit VML SizeWithCells mode. Having a cell
-+                // anchor does not turn a move-only object into a resizing one.
-             }
- 
-             if ( nCol >= 0 && nRow >= 0 )
-@@ -999,6 +1053,7 @@ VmlDrawingFragment::VmlDrawingFragment( const WorksheetHelper& rHelper, const OU
- void VmlDrawingFragment::finalizeImport()
- {
-     ::oox::vml::DrawingFragment::finalizeImport();
-+    getVmlDrawing().applyOleAnchors();
-     getVmlDrawing().convertAndInsert();
- }
- 
-diff --git a/engine/sc/source/filter/oox/unitconverter.cxx b/engine/sc/source/filter/oox/unitconverter.cxx
-index 0922569..6f84642 100644
---- a/engine/sc/source/filter/oox/unitconverter.cxx
-+++ b/engine/sc/source/filter/oox/unitconverter.cxx
-@@ -18,6 +18,15 @@
-  */
- 
- #include <unitconverter.hxx>
-+#include <cstdio>
-+#include <cstdlib>
-+#include <comphelper/kit.hxx>
-+#include <document.hxx>
-+#include <toolkit/awt/vclxdevice.hxx>
-+#include <toolkit/helper/vclunohelper.hxx>
-+#include <tools/json_writer.hxx>
-+#include <vcl/outdev.hxx>
-+#include <vcl/metric.hxx>
- 
- #include <com/sun/star/awt/DeviceInfo.hpp>
- #include <com/sun/star/awt/XDevice.hpp>
-@@ -112,8 +121,21 @@ UnitConverter::UnitConverter( const WorkbookHelper& rHelper ) :
- 
- void UnitConverter::finalizeImport()
- {
--    PropertySet aDocProps(( Reference< css::beans::XPropertySet >(getDocument()) ));
--    Reference< XDevice > xDevice( aDocProps.getAnyProperty( PROP_ReferenceDevice ), UNO_QUERY );
-+    Reference< XDevice > xDevice;
-+    if (comphelper::COKit::isActive())
-+    {
-+        // Match XclRoot::SetCharWidth on export. The model ReferenceDevice
-+        // property may switch to a 96-DPI printer after the first save, which
-+        // changes digit widths and shrinks untouched columns on each reopen.
-+        rtl::Reference<VCLXDevice> xVirtualDevice = new VCLXDevice;
-+        xVirtualDevice->SetOutputDevice(getScDocument().GetRefDevice(true));
-+        xDevice = Reference<XDevice>(xVirtualDevice);
-+    }
-+    else
-+    {
-+        PropertySet aDocProps(( Reference< css::beans::XPropertySet >(getDocument()) ));
-+        xDevice.set(aDocProps.getAnyProperty(PROP_ReferenceDevice), UNO_QUERY);
-+    }
-     if( !xDevice.is() )
-         return;
- 
-@@ -140,6 +162,86 @@ void UnitConverter::finalizeImport()
-         = o3tl::convert(xFont->getCharWidth(' '), o3tl::Length::twip, o3tl::Length::emu);
-     if( nSpaceWidth > 0 )
-         maCoeffs[ Unit::Space ] = nSpaceWidth;
-+    traceFontMetrics("import-reference", VCLUnoHelper::GetOutputDevice(xDevice),
-+                     &aDesc, xFont, static_cast<sal_Int64>(
-+                         o3tl::convert(nDigitWidth, o3tl::Length::emu, o3tl::Length::twip)));
-+}
-+
-+bool UnitConverter::fontMetricTraceEnabled()
-+{
-+    const char* path = std::getenv("FLOE_OFFICE_FONT_METRICS_TRACE");
-+    return path && path[0] == '/';
-+}
-+
-+void UnitConverter::traceFontMetrics(const char* phase, OutputDevice* device,
-+        const awt::FontDescriptor* requested, const Reference<awt::XFont>& font,
-+        sal_Int64 measuredDigitWidth)
-+{
-+    if (!fontMetricTraceEnabled() || !device)
-+        return;
-+    // Explicitly enabled only by the independent synthetic-file probe. No
-+    // document text, cell contents, file names, or credentials enter this log.
-+    try
-+    {
-+        tools::JsonWriter json;
-+        json.put("phase", phase);
-+        json.put("measuredDigitWidth", measuredDigitWidth);
-+        const auto descriptor = [&](const char* name, const awt::FontDescriptor& d)
-+        {
-+            auto node = json.startNode(name);
-+            json.put("name", d.Name);
-+            json.put("style", d.StyleName);
-+            json.put("height", d.Height);
-+            json.put("width", d.Width);
-+            json.put("family", d.Family);
-+            json.put("charset", d.CharSet);
-+            json.put("pitch", d.Pitch);
-+            json.put("characterWidth", d.CharacterWidth);
-+            json.put("weight", d.Weight);
-+            json.put("slant", static_cast<int>(d.Slant));
-+            json.put("underline", d.Underline);
-+            json.put("strikeout", d.Strikeout);
-+            json.put("orientation", d.Orientation);
-+            json.put("kerning", d.Kerning);
-+            json.put("wordLineMode", d.WordLineMode);
-+        };
-+        if (requested)
-+            descriptor("requested", *requested);
-+        if (font.is())
-+            descriptor("effective", font->getFontDescriptor());
-+        descriptor("deviceFont", VCLUnoHelper::CreateFontDescriptor(device->GetFont()));
-+        descriptor("deviceMetric", VCLUnoHelper::CreateFontDescriptor(device->GetFontMetric()));
-+        json.put("dpiX", device->GetDPIX());
-+        json.put("dpiY", device->GetDPIY());
-+        json.put("layoutMode", static_cast<int>(device->GetLayoutMode()));
-+        const auto& map = device->GetMapMode();
-+        json.put("mapUnit", static_cast<int>(map.GetMapUnit()));
-+        json.put("scaleX", map.GetScaleX());
-+        json.put("scaleY", map.GetScaleY());
-+        json.put("deviceDigitsWidth", device->GetTextWidth(u"0123456789"_ustr));
-+        {
-+            auto node = json.startArray("individualDigitWidths");
-+            for (sal_Unicode c = '0'; c <= '9'; ++c)
-+                json.putSimpleValue(font.is() ? font->getCharWidth(c)
-+                    : device->GetTextWidth(OUString(c)));
-+        }
-+        const OString line = json.finishAndGetAsOString();
-+        if (std::FILE* out = std::fopen(std::getenv("FLOE_OFFICE_FONT_METRICS_TRACE"), "a"))
-+        {
-+            std::fseek(out, 0, SEEK_END);
-+            const auto length = std::ftell(out);
-+            if (length >= 0 && length < 1024 * 1024)
-+            {
-+                std::fwrite(line.getStr(), 1, line.getLength(), out);
-+                std::fputc('\n', out);
-+            }
-+            std::fclose(out);
-+        }
-+    }
-+    catch (...)
-+    {
-+        // Diagnostics must never turn a successful open/save into a failure.
-+    }
- }
- 
- void UnitConverter::finalizeNullDate( const util::Date& rNullDate )
-diff --git a/engine/sc/source/filter/oox/worksheetfragment.cxx b/engine/sc/source/filter/oox/worksheetfragment.cxx
-index 4f33af4..5374871 100644
---- a/engine/sc/source/filter/oox/worksheetfragment.cxx
-+++ b/engine/sc/source/filter/oox/worksheetfragment.cxx
-@@ -22,6 +22,7 @@
- 
- #include <osl/diagnose.h>
- #include <oox/core/filterbase.hxx>
-+#include <oox/core/contexthandler.hxx>
- #include <oox/core/relations.hxx>
- #include <oox/helper/attributelist.hxx>
- #include <oox/token/namespaces.hxx>
-@@ -71,6 +72,144 @@ const sal_Int32 BIFF12_OLEOBJECT_ALWAYS     = 1;
- const sal_uInt16 BIFF12_OLEOBJECT_LINKED    = 0x0001;
- const sal_uInt16 BIFF12_OLEOBJECT_AUTOLOAD  = 0x0002;
- 
-+// objectPr is intentionally handled by name: extending the global fast-token
-+// table would renumber tokens throughout the precompiled engine.
-+class OleObjectAnchorContext final : public ContextHandler
-+{
-+    enum class Part { Object, Properties, Anchor, From, To, Value };
-+    struct State
-+    {
-+        VmlDrawing::OleAnchorRecord record;
-+        OUString shapeId;
-+        unsigned fields = 0;
-+        unsigned containers = 0;
-+        bool invalid = false;
-+    };
-+    std::shared_ptr<State> mxState;
-+    VmlDrawing& mrDrawing;
-+    Part mePart;
-+    unsigned mnField = 0;
-+    OUString maText;
-+
-+    OleObjectAnchorContext(const OleObjectAnchorContext& rParent, Part ePart, unsigned nField = 0)
-+        : ContextHandler(rParent), mxState(rParent.mxState), mrDrawing(rParent.mrDrawing),
-+          mePart(ePart), mnField(nField) {}
-+
-+public:
-+    OleObjectAnchorContext(const ContextHandler& rParent, const WorksheetHelper& rHelper, sal_Int32 nShapeId)
-+        : ContextHandler(rParent), mxState(std::make_shared<State>()),
-+          mrDrawing(rHelper.getVmlDrawing()), mePart(Part::Object)
-+    {
-+        ::oox::vml::OleObjectInfo aInfo;
-+        aInfo.setShapeId(nShapeId);
-+        mxState->shapeId = aInfo.maShapeId;
-+        mxState->invalid = nShapeId <= 0;
-+        mxState->record.anchor = std::make_shared<ShapeAnchor>(rHelper);
-+    }
-+
-+    css::uno::Reference<css::xml::sax::XFastContextHandler> createUnknownChildContext(
-+        const OUString& rNamespace, const OUString& rName,
-+        const css::uno::Reference<css::xml::sax::XFastAttributeList>&) override
-+    {
-+        if (mePart == Part::Object && rName == "objectPr"
-+            && (rNamespace == "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-+                || rNamespace == "http://purl.oclc.org/ooxml/spreadsheetml/main"))
-+        {
-+            if (mxState->containers & 1U) mxState->invalid = true;
-+            mxState->containers |= 1U;
-+            return new OleObjectAnchorContext(*this, Part::Properties);
-+        }
-+        return nullptr;
-+    }
-+
-+    css::uno::Reference<css::xml::sax::XFastContextHandler> createFastChildContext(
-+        sal_Int32 nElement,
-+        const css::uno::Reference<css::xml::sax::XFastAttributeList>& rxAttributes) override
-+    {
-+        if (mePart == Part::Properties && nElement == XLS_TOKEN(anchor))
-+        {
-+            if (mxState->containers & 2U) mxState->invalid = true;
-+            mxState->containers |= 2U;
-+            AttributeList aAttributes(rxAttributes);
-+            mxState->record.anchor->importAnchor(XDR_TOKEN(twoCellAnchor), aAttributes);
-+            mxState->record.moveWithCells = aAttributes.getBool(XML_moveWithCells, false);
-+            mxState->record.sizeWithCells = aAttributes.getBool(XML_sizeWithCells, false);
-+            return new OleObjectAnchorContext(*this, Part::Anchor);
-+        }
-+        if (mePart == Part::Anchor && (nElement == XLS_TOKEN(from) || nElement == XLS_TOKEN(to)))
-+        {
-+            const bool bFrom = nElement == XLS_TOKEN(from);
-+            const unsigned nMask = bFrom ? 4U : 8U;
-+            if (mxState->containers & nMask) mxState->invalid = true;
-+            mxState->containers |= nMask;
-+            return new OleObjectAnchorContext(*this, bFrom ? Part::From : Part::To);
-+        }
-+        if (mePart == Part::From || mePart == Part::To)
-+        {
-+            unsigned nField;
-+            switch (nElement)
-+            {
-+                case XDR_TOKEN(col): nField = 0; break;
-+                case XDR_TOKEN(colOff): nField = 1; break;
-+                case XDR_TOKEN(row): nField = 2; break;
-+                case XDR_TOKEN(rowOff): nField = 3; break;
-+                default: return nullptr;
-+            }
-+            return new OleObjectAnchorContext(*this, Part::Value, nField + (mePart == Part::To ? 4 : 0));
-+        }
-+        return nullptr;
-+    }
-+
-+    void characters(const OUString& rText) override
-+    {
-+        if (mePart != Part::Value) return;
-+        if (rText.getLength() > 64 || maText.getLength() > 64 - rText.getLength())
-+            mxState->invalid = true;
-+        else
-+            maText += rText;
-+    }
-+
-+    void endFastElement(sal_Int32) override
-+    {
-+        if (mePart == Part::Value)
-+        {
-+            const unsigned nMask = 1U << mnField;
-+            if (mxState->fields & nMask) mxState->invalid = true;
-+            mxState->fields |= nMask;
-+            OUString aValue = maText.trim();
-+            sal_Int32 nIndex = 0;
-+            bool bNegative = false;
-+            if (!aValue.isEmpty() && (aValue[0] == '-' || aValue[0] == '+'))
-+            {
-+                bNegative = aValue[0] == '-';
-+                ++nIndex;
-+            }
-+            if (nIndex == aValue.getLength()) { mxState->invalid = true; return; }
-+            const unsigned nKind = mnField % 4;
-+            const sal_Int64 nLimit = nKind == 0 ? 16383 : nKind == 2 ? 1048575 : sal_Int64(SAL_MAX_INT32) * 360;
-+            sal_Int64 nValue = 0;
-+            for (; nIndex < aValue.getLength(); ++nIndex)
-+            {
-+                const sal_Int32 nDigit = aValue[nIndex] - '0';
-+                if (nDigit < 0 || nDigit > 9 || nValue > (nLimit - nDigit) / 10)
-+                { mxState->invalid = true; return; }
-+                nValue = nValue * 10 + nDigit;
-+            }
-+            if (bNegative) nValue = -nValue;
-+            if ((nKind == 0 || nKind == 2) && nValue < 0)
-+            { mxState->invalid = true; return; }
-+            static constexpr sal_Int32 aTokens[] = {XDR_TOKEN(col), XDR_TOKEN(colOff), XDR_TOKEN(row), XDR_TOKEN(rowOff)};
-+            mxState->record.anchor->setCellPos(aTokens[nKind], mnField < 4 ? XDR_TOKEN(from) : XDR_TOKEN(to), OUString::number(nValue));
-+            if (mnField == 0) mxState->record.column = static_cast<sal_Int32>(nValue);
-+            if (mnField == 2) mxState->record.row = static_cast<sal_Int32>(nValue);
-+        }
-+        else if (mePart == Part::Object && mxState->fields == 255U
-+                 && mxState->containers == 15U && !mxState->invalid
-+                 && mxState->record.anchor->isAnchorValid())
-+            mrDrawing.registerOleAnchor(mxState->shapeId, mxState->record);
-+    }
-+};
-+
- } // namespace
- 
- void DataValidationsContextBase::SetValidation( WorksheetHelper& rTarget )
-@@ -478,7 +617,11 @@ ContextHandlerRef WorksheetFragment::onCreateContext( sal_Int32 nElement, const
-             if( isMCEStateEmpty() || getMCEState() == MCE_STATE::Started )
-             {
-                 if ( getCurrentElement() == XLS_TOKEN( oleObjects ) )
-+                {
-                     importOleObject( rAttribs );
-+                    if (nElement == XLS_TOKEN(oleObject))
-+                        return new OleObjectAnchorContext(*this, *this, rAttribs.getInteger(XML_shapeId, 0));
-+                }
-                 else
-                     importControl( rAttribs );
-             }
-diff --git a/engine/sc/source/filter/xcl97/xcl97rec.cxx b/engine/sc/source/filter/xcl97/xcl97rec.cxx
-index 0960883..6ebdc6e 100644
---- a/engine/sc/source/filter/xcl97/xcl97rec.cxx
-+++ b/engine/sc/source/filter/xcl97/xcl97rec.cxx
-@@ -76,6 +76,12 @@
- #include <detfunc.hxx>
- 
- #include <memory>
-+#include <cmath>
-+#include <comphelper/storagehelper.hxx>
-+#include <com/sun/star/container/XChild.hpp>
-+#include <com/sun/star/embed/XEmbedPersist.hpp>
-+#include <com/sun/star/embed/XEmbeddedObject.hpp>
-+#include <com/sun/star/io/IOException.hpp>
- 
- using namespace ::com::sun::star;
- using ::com::sun::star::uno::Reference;
-@@ -230,6 +236,222 @@ bool IsValidObject( const XclObj& rObj )
-     return true;
- }
- 
-+// Floe: serialize live embedded objects through SpreadsheetML and its VML
-+// fallback. Calc's importer registers worksheet OLE records against VML IDs;
-+// a DrawingML picture alone is not an editable embedded object.
-+struct XclOleXmlRecord
-+{
-+    const XclObjOle* pObject;
-+    sal_Int32 nShapeId;
-+    OUString aRelation;
-+    OUString aProgId;
-+    OUString aSheetImageRelation;
-+};
-+
-+OUString GetOleProgId(const Reference<embed::XEmbeddedObject>& xObject)
-+{
-+    Reference<container::XChild> xChild(xObject, uno::UNO_QUERY_THROW);
-+    Reference<beans::XPropertySet> xParent(xChild->getParent(), UNO_QUERY);
-+    Reference<embed::XEmbedPersist> xPersist(xObject, UNO_QUERY);
-+    cpo::uno::Sequence<beans::PropertyValue> aBag;
-+    if (xParent && xPersist)
-+    {
-+        xParent->getPropertyValue(u"InteropGrabBag"_ustr) >>= aBag;
-+        const OUString aEntry = xPersist->getEntryName();
-+        for (const auto& rEntry : aBag)
-+        {
-+            if (rEntry.Name != "EmbeddedObjects")
-+                continue;
-+            cpo::uno::Sequence<beans::PropertyValue> aObjects;
-+            rEntry.Value >>= aObjects;
-+            for (const auto& rObject : aObjects)
-+            {
-+                if (rObject.Name != aEntry)
-+                    continue;
-+                cpo::uno::Sequence<beans::PropertyValue> aProperties;
-+                rObject.Value >>= aProperties;
-+                for (const auto& rProperty : aProperties)
-+                {
-+                    if (rProperty.Name == "ProgID")
-+                    {
-+                        OUString aProgId;
-+                        rProperty.Value >>= aProgId;
-+                        return aProgId;
-+                    }
-+                }
-+            }
-+        }
-+    }
-+    return {};
-+}
-+
-+std::vector<XclOleXmlRecord> PrepareOleObjects(XclExpObjList& rList, XclExpXmlStream& rStrm)
-+{
-+    std::vector<XclOleXmlRecord> aRecords;
-+    for (const auto& rxObject : rList)
-+    {
-+        const auto* pObject = dynamic_cast<const XclObjOle*>(rxObject.get());
-+        if (!pObject)
-+            continue;
-+        const auto& rOle = pObject->GetOleObject();
-+        const auto& xObject = rOle.GetObjRef();
-+        if (!xObject.is())
-+            throw io::IOException(u"Cannot save a spreadsheet embedded object without its data"_ustr);
-+        OUString aProgId = GetOleProgId(xObject);
-+        OUString aMediaType, aRelationType, aSuffix;
-+        const char* pConvertedProgId = nullptr;
-+        auto xInput = oox::GetOLEObjectStream(xObject, aProgId, aMediaType,
-+                                            aRelationType, aSuffix, pConvertedProgId);
-+        if (!xInput.is())
-+            throw io::IOException(u"Cannot export spreadsheet embedded object data"_ustr);
-+        if (pConvertedProgId)
-+            aProgId = OUString::createFromAscii(pConvertedProgId);
-+        const OUString aName = u"embeddings/oleObject"_ustr
-+            + OUString::number(rStrm.getNewOLEUniqueId()) + u"."_ustr + aSuffix;
-+        auto xOutput = rStrm.openFragmentStream(u"xl/"_ustr + aName, aMediaType);
-+        // Propagate copy/close failures: never report a successful save that lost data.
-+        comphelper::OStorageHelper::CopyInputToOutput(xInput, xOutput);
-+        xOutput->closeOutput();
-+        const OUString aRelation = rStrm.addRelation(rStrm.GetCurrentStream()->getOutputStream(),
-+                                                     aRelationType, OUString(u"../"_ustr + aName));
-+        const Graphic* pGraphic = rOle.GetGraphic();
-+        if (!pGraphic || pGraphic->GetType() == GraphicType::NONE)
-+            throw io::IOException(u"Cannot export spreadsheet embedded object preview"_ustr);
-+        oox::drawingml::DrawingML aDrawing(rStrm.GetCurrentStream(), &rStrm,
-+                                          oox::drawingml::DOCUMENT_XLSX);
-+        const OUString aImage = aDrawing.writeGraphicToStorage(*pGraphic, true);
-+        if (aImage.isEmpty())
-+            throw io::IOException(u"Cannot write spreadsheet embedded object preview"_ustr);
-+        // Keep these IDs outside legacy Escher/form-control numbering. The shared
-+        // document allocator makes multiple sheets/objects unique in this range.
-+        const sal_Int32 nUnique = rStrm.GetUniqueId();
-+        if (nUnique < 0 || nUnique >= 0x40000000)
-+            throw io::IOException(u"Spreadsheet drawing identifier range exhausted"_ustr);
-+        aRecords.push_back({pObject, 0x40000000 + nUnique, aRelation, aProgId, aImage});
-+    }
-+    return aRecords;
-+}
-+
-+void SaveOleVml(const std::vector<XclOleXmlRecord>& rRecords, XclExpXmlStream& rStrm)
-+{
-+    if (rRecords.empty())
-+        return;
-+    auto pXml = rStrm.GetCurrentStream();
-+    pXml->write(VMLExport::GetVMLShapeTypeDefinition("75", true));
-+    for (const auto& rRecord : rRecords)
-+    {
-+        const auto& rOle = rRecord.pObject->GetOleObject();
-+        Reference<XShape> xShape = const_cast<SdrOle2Obj&>(rOle).getUnoShape();
-+        if (!xShape.is())
-+            throw io::IOException(u"Spreadsheet embedded object has no shape"_ustr);
-+        const auto aPosition = xShape->getPosition();
-+        const auto aSize = xShape->getSize();
-+        const tools::Rectangle aRect(aPosition.X, aPosition.Y,
-+                                    aPosition.X + aSize.Width, aPosition.Y + aSize.Height);
-+        const auto& rDoc = rStrm.GetRoot().GetDoc();
-+        const SCTAB nTab = rRecord.pObject->GetTab();
-+        const ScRange aRange = rDoc.GetRange(nTab, aRect);
-+        const tools::Rectangle aCellRect = rDoc.GetMMRect(aRange.aStart.Col(), aRange.aStart.Row(),
-+                                                        aRange.aEnd.Col() - 1, aRange.aEnd.Row() - 1, nTab);
-+        const auto toPixel = [](tools::Long nHmm) { return std::llround(nHmm * 96.0 / 2540.0); };
-+        const OUString aAnchor = OUString::number(aRange.aStart.Col()) + u", "_ustr
-+            + OUString::number(toPixel(aRect.Left() - aCellRect.Left())) + u", "_ustr
-+            + OUString::number(aRange.aStart.Row()) + u", "_ustr
-+            + OUString::number(toPixel(aRect.Top() - aCellRect.Top())) + u", "_ustr
-+            + OUString::number(aRange.aEnd.Col()) + u", "_ustr
-+            + OUString::number(toPixel(aRect.Right() - aCellRect.Right())) + u", "_ustr
-+            + OUString::number(aRange.aEnd.Row()) + u", "_ustr
-+            + OUString::number(toPixel(aRect.Bottom() - aCellRect.Bottom()));
-+        const auto point = [](sal_Int32 nHmm) { return OUString::number(nHmm * 72.0 / 2540.0); };
-+        const OUString aStyle = u"position:absolute;margin-left:"_ustr + point(aPosition.X)
-+            + u"pt;margin-top:"_ustr + point(aPosition.Y) + u"pt;width:"_ustr + point(aSize.Width)
-+            + u"pt;height:"_ustr + point(aSize.Height) + u"pt;z-index:1"_ustr;
-+        oox::drawingml::DrawingML aDrawing(pXml, &rStrm, oox::drawingml::DOCUMENT_XLSX);
-+        const OUString aImage = aDrawing.writeGraphicToStorage(*rOle.GetGraphic(), true);
-+        if (aImage.isEmpty())
-+            throw io::IOException(u"Cannot write spreadsheet embedded object VML preview"_ustr);
-+        // VML identifiers contain a literal _x0000_ prefix. Match VMLExport's
-+        // legacy-ID handling so the sheet shapeId and VML type remain linked.
-+        pXml->setAllowXEscape(false);
-+        pXml->startElement(FSNS(XML_v, XML_shape), XML_id,
-+            u"_x0000_s"_ustr + OUString::number(rRecord.nShapeId), XML_type, "#_x0000_t75",
-+            XML_style, aStyle, FSNS(XML_o, XML_ole), "");
-+        pXml->setAllowXEscape(true);
-+        pXml->singleElement(FSNS(XML_v, XML_imagedata), FSNS(XML_r, XML_id), aImage,
-+                            FSNS(XML_o, XML_title), rOle.GetName());
-+        pXml->startElement(FSNS(XML_x, XML_ClientData), XML_ObjectType, "Pict");
-+        const auto eAnchor = ScDrawLayer::GetAnchorType(rOle);
-+        // Excel's VML convention is inverse to the generic schema wording:
-+        // a blank element disables movement/resize; an omitted element enables
-+        // it. Match ClientDataContext and keep modern objectPr flags positive.
-+        if (eAnchor == SCA_PAGE)
-+            pXml->singleElement(FSNS(XML_x, XML_MoveWithCells));
-+        if (eAnchor != SCA_CELL_RESIZE)
-+            pXml->singleElement(FSNS(XML_x, XML_SizeWithCells));
-+        XclXmlUtils::WriteElement(pXml, FSNS(XML_x, XML_Anchor), aAnchor.toUtf8());
-+        XclXmlUtils::WriteElement(pXml, FSNS(XML_x, XML_AutoFill), "False");
-+        XclXmlUtils::WriteElement(pXml, FSNS(XML_x, XML_PrintObject), rOle.IsPrintable() ? "True" : "False");
-+        pXml->endElement(FSNS(XML_x, XML_ClientData));
-+        pXml->endElement(FSNS(XML_v, XML_shape));
-+    }
-+}
-+
-+void SaveOleWorksheetObjects(const std::vector<XclOleXmlRecord>& rRecords, XclExpXmlStream& rStrm)
-+{
-+    if (rRecords.empty())
-+        return;
-+    auto pXml = rStrm.GetCurrentStream();
-+    pXml->startElement(XML_oleObjects);
-+    for (const auto& rRecord : rRecords)
-+    {
-+        const auto& rOle = rRecord.pObject->GetOleObject();
-+        const bool bIcon = rOle.GetAspect() == embed::Aspects::MSOLE_ICON;
-+        pXml->startElement(XML_oleObject, XML_progId, rRecord.aProgId,
-+                          XML_dvAspect, bIcon ? "DVASPECT_ICON" : "DVASPECT_CONTENT",
-+                          XML_shapeId, OString::number(rRecord.nShapeId),
-+                          FSNS(XML_r, XML_id), rRecord.aRelation);
-+        // The VML fallback is required by Calc's importer. objectPr additionally
-+        // retains precise EMU anchors for Office's modern embedded-object UI.
-+        // objectPr is absent from the pinned token table; keep the table ABI unchanged.
-+        pXml->write("<objectPr defaultSize=\"0\" autoPict=\"0\" xmlns:xdr=\"");
-+        pXml->writeEscaped(rStrm.getNamespaceURL(OOX_NS(dmlSpreadDr)));
-+        pXml->write("\" r:id=\"");
-+        pXml->writeEscaped(rRecord.aSheetImageRelation);
-+        pXml->write("\">");
-+        const auto eAnchor = ScDrawLayer::GetAnchorType(rOle);
-+        pXml->startElement(XML_anchor, XML_moveWithCells, eAnchor != SCA_PAGE ? "1" : "0",
-+                          XML_sizeWithCells, eAnchor == SCA_CELL_RESIZE ? "1" : "0");
-+        Reference<XShape> xShape = const_cast<SdrOle2Obj&>(rOle).getUnoShape();
-+        if (!xShape.is())
-+            throw io::IOException(u"Spreadsheet embedded object has no shape"_ustr);
-+        const auto aPos = xShape->getPosition();
-+        const auto aSize = xShape->getSize();
-+        const tools::Rectangle aRect(aPos.X, aPos.Y, aPos.X + aSize.Width, aPos.Y + aSize.Height);
-+        const auto& rDoc = rStrm.GetRoot().GetDoc();
-+        const SCTAB nTab = rRecord.pObject->GetTab();
-+        const ScRange aRange = rDoc.GetRange(nTab, aRect);
-+        const auto aCellRect = rDoc.GetMMRect(aRange.aStart.Col(), aRange.aStart.Row(),
-+                                            aRange.aEnd.Col()-1, aRange.aEnd.Row()-1, nTab);
-+        auto marker = [&](sal_Int32 nToken, sal_Int32 nCol, sal_Int32 nRow,
-+                          tools::Long nX, tools::Long nY) {
-+            pXml->startElement(nToken);
-+            XclXmlUtils::WriteElement(pXml, FSNS(XML_xdr, XML_col), nCol);
-+            XclXmlUtils::WriteElement(pXml, FSNS(XML_xdr, XML_colOff), oox::drawingml::convertHmmToEmu(nX));
-+            XclXmlUtils::WriteElement(pXml, FSNS(XML_xdr, XML_row), nRow);
-+            XclXmlUtils::WriteElement(pXml, FSNS(XML_xdr, XML_rowOff), oox::drawingml::convertHmmToEmu(nY));
-+            pXml->endElement(nToken);
-+        };
-+        marker(XML_from, aRange.aStart.Col(), aRange.aStart.Row(),
-+               aRect.Left()-aCellRect.Left(), aRect.Top()-aCellRect.Top());
-+        marker(XML_to, aRange.aEnd.Col(), aRange.aEnd.Row(),
-+               aRect.Right()-aCellRect.Right(), aRect.Bottom()-aCellRect.Bottom());
-+        pXml->endElement(XML_anchor);
-+        pXml->write("</objectPr>");
-+        pXml->endElement(XML_oleObject);
-+    }
-+    pXml->endElement(XML_oleObjects);
-+}
-+
- void SaveDrawingMLObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
- {
-     std::vector<XclObj*> aList;
-@@ -241,7 +463,7 @@ void SaveDrawingMLObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
-     for (const auto& rxObj : rList)
-     {
-         // FIXME: Can DrawingML objects be grouped with VML or not valid objects?
--        if (IsVmlObject(rxObj.get()) || !IsValidObject(*rxObj))
-+        if (IsVmlObject(rxObj.get()) || dynamic_cast<const XclObjOle*>(rxObj.get()) || !IsValidObject(*rxObj))
-             continue;
- 
-         const auto pObj = dynamic_cast<XclObjAny*>(rxObj.get());
-@@ -351,9 +573,10 @@ void SaveFormControlObjects(XclExpObjList& rList, XclExpXmlStream& rStrm)
-     rWorksheet->endElement(FSNS(XML_mc, XML_AlternateContent));
- }
- 
--void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
-+void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm,
-+                     const std::vector<XclOleXmlRecord>& rOleRecords )
- {
--    if( GetVmlObjectCount( rList ) == 0 )
-+    if( GetVmlObjectCount( rList ) == 0 && rOleRecords.empty() )
-         return;
- 
-     sal_Int32 nDrawing = rStrm.getNewVMLUniqueId();
-@@ -374,7 +597,8 @@ void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
-             FSNS(XML_xmlns, XML_v),   rStrm.getNamespaceURL(OOX_NS(vml)).toUtf8(),
-             FSNS(XML_xmlns, XML_o),   rStrm.getNamespaceURL(OOX_NS(vmlOffice)).toUtf8(),
-             FSNS(XML_xmlns, XML_x),   rStrm.getNamespaceURL(OOX_NS(vmlExcel)).toUtf8(),
--            FSNS(XML_xmlns, XML_w10), rStrm.getNamespaceURL(OOX_NS(vmlWord)).toUtf8() );
-+            FSNS(XML_xmlns, XML_w10), rStrm.getNamespaceURL(OOX_NS(vmlWord)).toUtf8(),
-+            FSNS(XML_xmlns, XML_r), rStrm.getNamespaceURL(OOX_NS(officeRel)).toUtf8() );
- 
-     for ( const auto& rxObj : rList )
-     {
-@@ -392,6 +616,7 @@ void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
-         rxObj->SaveXml( rStrm );
-     }
- 
-+    SaveOleVml(rOleRecords, rStrm);
-     pVmlDrawing->endElement( XML_xml );
- 
-     rStrm.PopStream();
-@@ -411,10 +636,12 @@ void XclExpObjList::SaveXml( XclExpXmlStream& rStrm )
-         return;
-     }
- 
-+    const auto aOleRecords = PrepareOleObjects(*this, rStrm);
-     SaveDrawingMLObjects( *this, rStrm );
--    SaveVmlObjects( *this, rStrm );
-+    SaveVmlObjects( *this, rStrm, aOleRecords );
-     if (m_pImgData)
-         m_pImgData->SaveXml(rStrm);
-+    SaveOleWorksheetObjects(aOleRecords, rStrm);
-     SaveFormControlObjects( *this, rStrm );
- }
- 
 diff --git a/engine/oox/source/export/chartexport.cxx b/engine/oox/source/export/chartexport.cxx
-index dfca8cd..866eaef 100644
+index dfca8cdd..866eaef9 100644
 --- a/engine/oox/source/export/chartexport.cxx
 +++ b/engine/oox/source/export/chartexport.cxx
 @@ -22,6 +22,12 @@
@@ -1387,9 +464,1062 @@ index dfca8cd..866eaef 100644
      // TODO: need to handle XML_multiLvlStrRef according to aCellRange
      pFS->startElement(FSNS(XML_c, XML_numRef));
  
+diff --git a/engine/oox/source/vml/vmlshape.cxx b/engine/oox/source/vml/vmlshape.cxx
+index 1e69133c..ca5bd8d6 100644
+--- a/engine/oox/source/vml/vmlshape.cxx
++++ b/engine/oox/source/vml/vmlshape.cxx
+@@ -540,6 +540,56 @@ awt::Rectangle ShapeBase::calcShapeRectangle( const ShapeParentAnchor* pParentAn
+     const ClientData* pClientData = getClientData();
+     if( !pClientData || !mrDrawing.convertClientAnchor( aShapeRect, pClientData->maAnchor ) )
+         aShapeRect = getRectangle( pParentAnchor );
++    else if (!pParentAnchor && mrDrawing.getOleObjectInfo(getShapeId())
++             && (!pClientData->mbMoveWithCells || !pClientData->mbSizeWithCells)
++             && maTypeModel.maPosition == "absolute"
++             && !maTypeModel.maWidth.isEmpty() && !maTypeModel.maHeight.isEmpty()
++             && maTypeModel.maWidthPercent.isEmpty() && maTypeModel.maHeightPercent.isEmpty())
++    {
++        // Legacy cell anchors quantize offsets to whole pixels. For an OLE
++        // object that does not resize with cells, retain its explicit VML
++        // dimensions before applying rotations and inserting the live shape.
++        // A moving object still takes its position from the cell anchor.
++        const GraphicHelper& rHelper = mrDrawing.getFilter().getGraphicHelper();
++        const sal_Int32 nWidth = ConversionHelper::decodeMeasureToHmm(
++            rHelper, maTypeModel.maWidth, -1, true, true);
++        const sal_Int32 nHeight = ConversionHelper::decodeMeasureToHmm(
++            rHelper, maTypeModel.maHeight, -1, false, true);
++        if (nWidth > 0 && nHeight > 0)
++        {
++            aShapeRect.Width = nWidth;
++            aShapeRect.Height = nHeight;
++            if (!pClientData->mbMoveWithCells)
++            {
++                sal_Int32 nLeft, nTop;
++                // Unlike Word's getAbsRectangle fallback, a worksheet may
++                // place the object exactly at zero; do not add a model unit.
++                const bool bOverflowX = o3tl::checked_add<sal_Int32>(
++                    ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maLeft, 0, true, true),
++                    ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maMarginLeft, 0, true, true), nLeft);
++                const bool bOverflowY = o3tl::checked_add<sal_Int32>(
++                    ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maTop, 0, false, true),
++                    ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maMarginTop, 0, false, true), nTop);
++                if (!bOverflowX && !bOverflowY)
++                {
++                    aShapeRect.X = nLeft;
++                    aShapeRect.Y = nTop;
++                }
++            }
++        }
++    }
++    if (!pParentAnchor && pClientData && pClientData->maAnchor.isEmpty()
++        && mrDrawing.getOleObjectInfo(getShapeId()) && maTypeModel.maPosition == "absolute")
++    {
++        // Modern worksheet anchors can start at exactly zero. The historical
++        // Word-oriented absolute style fallback shifts zero X to one model unit.
++        const GraphicHelper& rHelper = mrDrawing.getFilter().getGraphicHelper();
++        sal_Int32 nLeft;
++        if (!o3tl::checked_add<sal_Int32>(
++                ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maLeft, 0, true, true),
++                ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maMarginLeft, 0, true, true), nLeft))
++            aShapeRect.X = nLeft;
++    }
+     return aShapeRect;
+ }
+ 
+diff --git a/engine/sc/source/filter/excel/xlroot.cxx b/engine/sc/source/filter/excel/xlroot.cxx
+index dd58d601..a795c15f 100644
+--- a/engine/sc/source/filter/excel/xlroot.cxx
++++ b/engine/sc/source/filter/excel/xlroot.cxx
+@@ -21,7 +21,11 @@
+ #include <utility>
+ #include <xlroot.hxx>
+ #include <sal/log.hxx>
++#include <rtl/tencinfo.h>
+ #include <com/sun/star/awt/XDevice.hpp>
++#include <com/sun/star/awt/XFont.hpp>
++#include <com/sun/star/awt/FontFamily.hpp>
++#include <com/sun/star/awt/FontWeight.hpp>
+ #include <com/sun/star/frame/Desktop.hpp>
+ #include <com/sun/star/frame/XFrame.hpp>
+ #include <com/sun/star/i18n/ScriptType.hpp>
+@@ -62,6 +66,9 @@
+ #include <comphelper/configuration.hxx>
+ #include <unotools/useroptions.hxx>
+ #include <root.hxx>
++#include <stylesbuffer.hxx>
++#include <unitconverter.hxx>
++#include <toolkit/helper/vclunohelper.hxx>
+ 
+ namespace ApiScriptType = ::com::sun::star::i18n::ScriptType;
+ 
+@@ -215,6 +222,68 @@ void XclRoot::SetTextEncoding( rtl_TextEncoding eTextEnc )
+ 
+ void XclRoot::SetCharWidth( const XclFontData& rFontData )
+ {
++    // The reference-font candidate did not fix repeated-save width drift.
++    // Keep it only as an opt-in measurement control, not as export behavior.
++    if (mrData.mbExport && mrData.meOutput == EXC_OUTPUT_XML_2007
++        && oox::xls::UnitConverter::fontMetricTraceEnabled())
++    {
++        try
++        {
++            ScModelObj* pModel = GetDocModelObj();
++            Reference<XDevice> xDevice;
++            if (pModel)
++                pModel->getPropertyValue(u"ReferenceDevice"_ustr) >>= xDevice;
++            if (xDevice.is())
++            {
++                oox::xls::ApiFontData aData;
++                auto& rDesc = aData.maDesc;
++                // Match XclXmlUtils::WriteFontData's serialized font name.
++                rDesc.Name = rFontData.maName;
++                if (rDesc.Name.getLength() > 31)
++                {
++                    rDesc.Name = rDesc.Name.copy(0, 31);
++                    if (rFontData.maName[31] != ';')
++                    {
++                        const sal_Int32 nSeparator = rDesc.Name.lastIndexOf(';');
++                        if (nSeparator != -1)
++                            rDesc.Name = rDesc.Name.copy(0, nSeparator);
++                    }
++                }
++                rDesc.Height = static_cast<sal_Int16>(rFontData.mnHeight);
++                // OOXML family numbers differ from the VCL FontFamily enum.
++                switch (rFontData.mnFamily)
++                {
++                    case EXC_FONTFAM_ROMAN: rDesc.Family = awt::FontFamily::ROMAN; break;
++                    case EXC_FONTFAM_SWISS: rDesc.Family = awt::FontFamily::SWISS; break;
++                    case EXC_FONTFAM_MODERN: rDesc.Family = awt::FontFamily::MODERN; break;
++                    case EXC_FONTFAM_SCRIPT: rDesc.Family = awt::FontFamily::SCRIPT; break;
++                    case EXC_FONTFAM_DECORATIVE: rDesc.Family = awt::FontFamily::DECORATIVE; break;
++                    default: break;
++                }
++                rDesc.CharSet = static_cast<sal_Int16>(
++                    rtl_getTextEncodingFromWindowsCharset(rFontData.mnCharSet));
++                rDesc.Weight = rFontData.mnWeight > 400
++                    ? awt::FontWeight::BOLD : awt::FontWeight::NORMAL;
++                rDesc.Slant = rFontData.GetApiPosture();
++                rDesc.Underline = rFontData.GetApiUnderline();
++                rDesc.Strikeout = rFontData.GetApiStrikeout();
++                Reference<awt::XFont> xFont = xDevice->getFont(rDesc);
++                if (xFont.is())
++                {
++                    tools::Long nDigitWidth = 0;
++                    for (sal_Unicode cChar = '0'; cChar <= '9'; ++cChar)
++                        nDigitWidth = std::max(nDigitWidth,
++                            static_cast<tools::Long>(xFont->getCharWidth(cChar)));
++                    oox::xls::UnitConverter::traceFontMetrics("export-reference-control",
++                        VCLUnoHelper::GetOutputDevice(xDevice), &rDesc, xFont, nDigitWidth);
++                }
++            }
++        }
++        catch (const Exception&)
++        {
++            SAL_WARN("sc", "XLSX reference-font measurement unavailable");
++        }
++    }
+     mrData.mnCharWidth = 0;
+     bool bIsKit = comphelper::COKit::isActive();
+     if( OutputDevice* pPrinter = GetPrinter( bIsKit ) )
+@@ -244,6 +313,10 @@ void XclRoot::SetCharWidth( const XclFontData& rFontData )
+         SAL_WARN( "sc", "XclRoot::SetCharWidth - invalid character width (no printer?)" );
+         mrData.mnSpaceWidth = 45;
+     }
++    if (mrData.mbExport && mrData.meOutput == EXC_OUTPUT_XML_2007
++        && oox::xls::UnitConverter::fontMetricTraceEnabled())
++        oox::xls::UnitConverter::traceFontMetrics("export-legacy",
++            GetPrinter(bIsKit), nullptr, {}, mrData.mnCharWidth);
+ }
+ 
+ sal_Int32 XclRoot::GetHmmFromPixelX( double fPixelX ) const
+diff --git a/engine/sc/source/filter/inc/drawingfragment.hxx b/engine/sc/source/filter/inc/drawingfragment.hxx
+index fa49d43d..641fea5d 100644
+--- a/engine/sc/source/filter/inc/drawingfragment.hxx
++++ b/engine/sc/source/filter/inc/drawingfragment.hxx
+@@ -20,6 +20,7 @@
+ #pragma once
+ 
+ #include <memory>
++#include <unordered_map>
+ #include <oox/drawingml/shapegroupcontext.hxx>
+ #include <oox/drawingml/color.hxx>
+ #include <oox/ole/axcontrol.hxx>
+@@ -148,6 +149,18 @@ public:
+     using NoteShapesMap = std::unordered_map<std::pair<sal_Int32,sal_Int32>, const ::oox::vml::ShapeBase*, NoteShapesMapHash>;
+ 
+     explicit            VmlDrawing( const WorksheetHelper& rHelper );
++    virtual ~VmlDrawing() override;
++
++    struct OleAnchorRecord
++    {
++        std::shared_ptr<ShapeAnchor> anchor;
++        sal_Int32 column = 0;
++        sal_Int32 row = 0;
++        bool moveWithCells = false;
++        bool sizeWithCells = false;
++    };
++    void registerOleAnchor(const OUString& rShapeId, OleAnchorRecord aRecord);
++    void applyOleAnchors();
+ 
+     /** Returns the drawing shape for a cell note at the specified position. */
+     const ::oox::vml::ShapeBase* getNoteShape( const ScAddress& rPos ) const;
+@@ -198,6 +211,7 @@ private:
+ private:
+     ::oox::ole::ControlConverter maControlConv;
+     ::oox::vml::TextFontModel maListBoxFont;
++    std::unordered_map<OUString, OleAnchorRecord> maPreciseOleAnchors;
+ };
+ 
+ class VmlDrawingFragment final : public ::oox::vml::DrawingFragment, public WorksheetHelper
+diff --git a/engine/sc/source/filter/inc/unitconverter.hxx b/engine/sc/source/filter/inc/unitconverter.hxx
+index 61499625..761116a6 100644
+--- a/engine/sc/source/filter/inc/unitconverter.hxx
++++ b/engine/sc/source/filter/inc/unitconverter.hxx
+@@ -26,7 +26,9 @@
+ 
+ namespace com::sun::star {
+     namespace util { struct Date; struct DateTime; }
++    namespace awt { struct FontDescriptor; class XFont; }
+ }
++class OutputDevice;
+ 
+ namespace oox::xls {
+ 
+@@ -59,6 +61,13 @@ class UnitConverter : public WorkbookHelper
+ public:
+     explicit            UnitConverter( const WorkbookHelper& rHelper );
+ 
++    // Opt-in synthetic-probe diagnostics; never changes conversion state.
++    static bool         fontMetricTraceEnabled();
++    static void         traceFontMetrics(const char* phase, OutputDevice* device,
++                            const css::awt::FontDescriptor* requested,
++                            const css::uno::Reference<css::awt::XFont>& font,
++                            sal_Int64 measuredDigitWidth);
++
+     /** Final processing after import of all style settings. */
+     void                finalizeImport();
+     /** Updates internal nulldate for date/serial conversion. */
+diff --git a/engine/sc/source/filter/inc/xcl97rec.hxx b/engine/sc/source/filter/inc/xcl97rec.hxx
+index 0eb54088..a5fdebdd 100644
+--- a/engine/sc/source/filter/inc/xcl97rec.hxx
++++ b/engine/sc/source/filter/inc/xcl97rec.hxx
+@@ -251,6 +251,8 @@ public:
+                                 XclObjOle( XclExpObjectManager& rObjMgr, const SdrOle2Obj& rObj );
+     virtual                     ~XclObjOle() override;
+ 
++    const SdrOle2Obj& GetOleObject() const { return rOleObj; }
++
+     virtual void                Save( XclExpStream& rStrm ) override;
+ };
+ 
+diff --git a/engine/sc/source/filter/oox/drawingfragment.cxx b/engine/sc/source/filter/oox/drawingfragment.cxx
+index 859e3219..90676d46 100644
+--- a/engine/sc/source/filter/oox/drawingfragment.cxx
++++ b/engine/sc/source/filter/oox/drawingfragment.cxx
+@@ -535,6 +535,59 @@ VmlDrawing::VmlDrawing( const WorksheetHelper& rHelper ) :
+     maListBoxFont.monSize = 160;
+ }
+ 
++VmlDrawing::~VmlDrawing() = default;
++
++void VmlDrawing::registerOleAnchor(const OUString& rShapeId, OleAnchorRecord aRecord)
++{
++    const auto [it, inserted] = maPreciseOleAnchors.emplace(rShapeId, std::move(aRecord));
++    // Duplicate shape identifiers are ambiguous. Keep a tombstone so a later
++    // duplicate cannot silently revive a conflicting geometry record.
++    if (!inserted)
++        it->second.anchor.reset();
++}
++
++void VmlDrawing::applyOleAnchors()
++{
++    // Styles are projected only after row/column metrics and VML templates are
++    // loaded, and before shape creation/rotation. No saved ZIP is rewritten.
++    for (const auto& xShape : getShapes().getAllShapes())
++    {
++        const auto it = maPreciseOleAnchors.find(xShape->getShapeId());
++        if (it == maPreciseOleAnchors.end() || !it->second.anchor
++            || !getOleObjectInfo(xShape->getShapeId()))
++            continue;
++        auto& rModel = xShape->getShapeModel();
++        if (!rModel.mxClientData)
++            continue;
++        const auto& rAnchor = it->second;
++        const Rectangle aRect = rAnchor.anchor->calcAnchorRectHmm(getDrawPageSize());
++        if (aRect.X < 0 || aRect.Y < 0 || aRect.Width <= 0 || aRect.Height <= 0
++            || sal_Int64(aRect.X) + aRect.Width > SAL_MAX_INT32
++            || sal_Int64(aRect.Y) + aRect.Height > SAL_MAX_INT32)
++            continue;
++        auto& rType = xShape->getTypeModel();
++        const auto measure = [](sal_Int32 n) { return OUString::number(double(n) / 100.0) + u"mm"_ustr; };
++        rType.maLeft = measure(aRect.X);
++        rType.maTop = measure(aRect.Y);
++        rType.maMarginLeft = u"0"_ustr;
++        rType.maMarginTop = u"0"_ustr;
++        rType.maWidth = measure(aRect.Width);
++        rType.maHeight = measure(aRect.Height);
++        rType.maWidthPercent.clear();
++        rType.maHeightPercent.clear();
++        rType.maPosition = u"absolute"_ustr;
++        auto& rClient = *rModel.mxClientData;
++        // The modern EMU coordinates are now represented by exact model units.
++        // Avoid reparsing the obsolete integer-pixel anchor during creation.
++        rClient.maAnchor.clear();
++        rClient.mnCol = rAnchor.column;
++        rClient.mnRow = rAnchor.row;
++        rClient.mbMoveWithCells = rAnchor.moveWithCells;
++        rClient.mbSizeWithCells = rAnchor.sizeWithCells;
++    }
++    maPreciseOleAnchors.clear();
++}
++
+ const ::oox::vml::ShapeBase* VmlDrawing::getNoteShape( const ScAddress& rPos ) const
+ {
+     return getShapes().findShape( VmlFindNoteFunc( rPos ) );
+@@ -863,7 +916,8 @@ void VmlDrawing::notifyXShapeInserted( const Reference< XShape >& rxShape,
+                 o3tl::getToken(pClientData->maAnchor, 0, ',', nIndex);
+                 nRow = o3tl::toInt32(o3tl::getToken(pClientData->maAnchor, 0, ',', nIndex));
+ 
+-                bResizeWithCell = true;
++                // Keep the explicit VML SizeWithCells mode. Having a cell
++                // anchor does not turn a move-only object into a resizing one.
+             }
+ 
+             if ( nCol >= 0 && nRow >= 0 )
+@@ -999,6 +1053,7 @@ VmlDrawingFragment::VmlDrawingFragment( const WorksheetHelper& rHelper, const OU
+ void VmlDrawingFragment::finalizeImport()
+ {
+     ::oox::vml::DrawingFragment::finalizeImport();
++    getVmlDrawing().applyOleAnchors();
+     getVmlDrawing().convertAndInsert();
+ }
+ 
+diff --git a/engine/sc/source/filter/oox/unitconverter.cxx b/engine/sc/source/filter/oox/unitconverter.cxx
+index 09225697..6f84642f 100644
+--- a/engine/sc/source/filter/oox/unitconverter.cxx
++++ b/engine/sc/source/filter/oox/unitconverter.cxx
+@@ -18,6 +18,15 @@
+  */
+ 
+ #include <unitconverter.hxx>
++#include <cstdio>
++#include <cstdlib>
++#include <comphelper/kit.hxx>
++#include <document.hxx>
++#include <toolkit/awt/vclxdevice.hxx>
++#include <toolkit/helper/vclunohelper.hxx>
++#include <tools/json_writer.hxx>
++#include <vcl/outdev.hxx>
++#include <vcl/metric.hxx>
+ 
+ #include <com/sun/star/awt/DeviceInfo.hpp>
+ #include <com/sun/star/awt/XDevice.hpp>
+@@ -112,8 +121,21 @@ UnitConverter::UnitConverter( const WorkbookHelper& rHelper ) :
+ 
+ void UnitConverter::finalizeImport()
+ {
+-    PropertySet aDocProps(( Reference< css::beans::XPropertySet >(getDocument()) ));
+-    Reference< XDevice > xDevice( aDocProps.getAnyProperty( PROP_ReferenceDevice ), UNO_QUERY );
++    Reference< XDevice > xDevice;
++    if (comphelper::COKit::isActive())
++    {
++        // Match XclRoot::SetCharWidth on export. The model ReferenceDevice
++        // property may switch to a 96-DPI printer after the first save, which
++        // changes digit widths and shrinks untouched columns on each reopen.
++        rtl::Reference<VCLXDevice> xVirtualDevice = new VCLXDevice;
++        xVirtualDevice->SetOutputDevice(getScDocument().GetRefDevice(true));
++        xDevice = Reference<XDevice>(xVirtualDevice);
++    }
++    else
++    {
++        PropertySet aDocProps(( Reference< css::beans::XPropertySet >(getDocument()) ));
++        xDevice.set(aDocProps.getAnyProperty(PROP_ReferenceDevice), UNO_QUERY);
++    }
+     if( !xDevice.is() )
+         return;
+ 
+@@ -140,6 +162,86 @@ void UnitConverter::finalizeImport()
+         = o3tl::convert(xFont->getCharWidth(' '), o3tl::Length::twip, o3tl::Length::emu);
+     if( nSpaceWidth > 0 )
+         maCoeffs[ Unit::Space ] = nSpaceWidth;
++    traceFontMetrics("import-reference", VCLUnoHelper::GetOutputDevice(xDevice),
++                     &aDesc, xFont, static_cast<sal_Int64>(
++                         o3tl::convert(nDigitWidth, o3tl::Length::emu, o3tl::Length::twip)));
++}
++
++bool UnitConverter::fontMetricTraceEnabled()
++{
++    const char* path = std::getenv("FLOE_OFFICE_FONT_METRICS_TRACE");
++    return path && path[0] == '/';
++}
++
++void UnitConverter::traceFontMetrics(const char* phase, OutputDevice* device,
++        const awt::FontDescriptor* requested, const Reference<awt::XFont>& font,
++        sal_Int64 measuredDigitWidth)
++{
++    if (!fontMetricTraceEnabled() || !device)
++        return;
++    // Explicitly enabled only by the independent synthetic-file probe. No
++    // document text, cell contents, file names, or credentials enter this log.
++    try
++    {
++        tools::JsonWriter json;
++        json.put("phase", phase);
++        json.put("measuredDigitWidth", measuredDigitWidth);
++        const auto descriptor = [&](const char* name, const awt::FontDescriptor& d)
++        {
++            auto node = json.startNode(name);
++            json.put("name", d.Name);
++            json.put("style", d.StyleName);
++            json.put("height", d.Height);
++            json.put("width", d.Width);
++            json.put("family", d.Family);
++            json.put("charset", d.CharSet);
++            json.put("pitch", d.Pitch);
++            json.put("characterWidth", d.CharacterWidth);
++            json.put("weight", d.Weight);
++            json.put("slant", static_cast<int>(d.Slant));
++            json.put("underline", d.Underline);
++            json.put("strikeout", d.Strikeout);
++            json.put("orientation", d.Orientation);
++            json.put("kerning", d.Kerning);
++            json.put("wordLineMode", d.WordLineMode);
++        };
++        if (requested)
++            descriptor("requested", *requested);
++        if (font.is())
++            descriptor("effective", font->getFontDescriptor());
++        descriptor("deviceFont", VCLUnoHelper::CreateFontDescriptor(device->GetFont()));
++        descriptor("deviceMetric", VCLUnoHelper::CreateFontDescriptor(device->GetFontMetric()));
++        json.put("dpiX", device->GetDPIX());
++        json.put("dpiY", device->GetDPIY());
++        json.put("layoutMode", static_cast<int>(device->GetLayoutMode()));
++        const auto& map = device->GetMapMode();
++        json.put("mapUnit", static_cast<int>(map.GetMapUnit()));
++        json.put("scaleX", map.GetScaleX());
++        json.put("scaleY", map.GetScaleY());
++        json.put("deviceDigitsWidth", device->GetTextWidth(u"0123456789"_ustr));
++        {
++            auto node = json.startArray("individualDigitWidths");
++            for (sal_Unicode c = '0'; c <= '9'; ++c)
++                json.putSimpleValue(font.is() ? font->getCharWidth(c)
++                    : device->GetTextWidth(OUString(c)));
++        }
++        const OString line = json.finishAndGetAsOString();
++        if (std::FILE* out = std::fopen(std::getenv("FLOE_OFFICE_FONT_METRICS_TRACE"), "a"))
++        {
++            std::fseek(out, 0, SEEK_END);
++            const auto length = std::ftell(out);
++            if (length >= 0 && length < 1024 * 1024)
++            {
++                std::fwrite(line.getStr(), 1, line.getLength(), out);
++                std::fputc('\n', out);
++            }
++            std::fclose(out);
++        }
++    }
++    catch (...)
++    {
++        // Diagnostics must never turn a successful open/save into a failure.
++    }
+ }
+ 
+ void UnitConverter::finalizeNullDate( const util::Date& rNullDate )
+diff --git a/engine/sc/source/filter/oox/worksheetfragment.cxx b/engine/sc/source/filter/oox/worksheetfragment.cxx
+index 4f33af4f..53748713 100644
+--- a/engine/sc/source/filter/oox/worksheetfragment.cxx
++++ b/engine/sc/source/filter/oox/worksheetfragment.cxx
+@@ -22,6 +22,7 @@
+ 
+ #include <osl/diagnose.h>
+ #include <oox/core/filterbase.hxx>
++#include <oox/core/contexthandler.hxx>
+ #include <oox/core/relations.hxx>
+ #include <oox/helper/attributelist.hxx>
+ #include <oox/token/namespaces.hxx>
+@@ -71,6 +72,144 @@ const sal_Int32 BIFF12_OLEOBJECT_ALWAYS     = 1;
+ const sal_uInt16 BIFF12_OLEOBJECT_LINKED    = 0x0001;
+ const sal_uInt16 BIFF12_OLEOBJECT_AUTOLOAD  = 0x0002;
+ 
++// objectPr is intentionally handled by name: extending the global fast-token
++// table would renumber tokens throughout the precompiled engine.
++class OleObjectAnchorContext final : public ContextHandler
++{
++    enum class Part { Object, Properties, Anchor, From, To, Value };
++    struct State
++    {
++        VmlDrawing::OleAnchorRecord record;
++        OUString shapeId;
++        unsigned fields = 0;
++        unsigned containers = 0;
++        bool invalid = false;
++    };
++    std::shared_ptr<State> mxState;
++    VmlDrawing& mrDrawing;
++    Part mePart;
++    unsigned mnField = 0;
++    OUString maText;
++
++    OleObjectAnchorContext(const OleObjectAnchorContext& rParent, Part ePart, unsigned nField = 0)
++        : ContextHandler(rParent), mxState(rParent.mxState), mrDrawing(rParent.mrDrawing),
++          mePart(ePart), mnField(nField) {}
++
++public:
++    OleObjectAnchorContext(const ContextHandler& rParent, const WorksheetHelper& rHelper, sal_Int32 nShapeId)
++        : ContextHandler(rParent), mxState(std::make_shared<State>()),
++          mrDrawing(rHelper.getVmlDrawing()), mePart(Part::Object)
++    {
++        ::oox::vml::OleObjectInfo aInfo;
++        aInfo.setShapeId(nShapeId);
++        mxState->shapeId = aInfo.maShapeId;
++        mxState->invalid = nShapeId <= 0;
++        mxState->record.anchor = std::make_shared<ShapeAnchor>(rHelper);
++    }
++
++    css::uno::Reference<css::xml::sax::XFastContextHandler> createUnknownChildContext(
++        const OUString& rNamespace, const OUString& rName,
++        const css::uno::Reference<css::xml::sax::XFastAttributeList>&) override
++    {
++        if (mePart == Part::Object && rName == "objectPr"
++            && (rNamespace == "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
++                || rNamespace == "http://purl.oclc.org/ooxml/spreadsheetml/main"))
++        {
++            if (mxState->containers & 1U) mxState->invalid = true;
++            mxState->containers |= 1U;
++            return new OleObjectAnchorContext(*this, Part::Properties);
++        }
++        return nullptr;
++    }
++
++    css::uno::Reference<css::xml::sax::XFastContextHandler> createFastChildContext(
++        sal_Int32 nElement,
++        const css::uno::Reference<css::xml::sax::XFastAttributeList>& rxAttributes) override
++    {
++        if (mePart == Part::Properties && nElement == XLS_TOKEN(anchor))
++        {
++            if (mxState->containers & 2U) mxState->invalid = true;
++            mxState->containers |= 2U;
++            AttributeList aAttributes(rxAttributes);
++            mxState->record.anchor->importAnchor(XDR_TOKEN(twoCellAnchor), aAttributes);
++            mxState->record.moveWithCells = aAttributes.getBool(XML_moveWithCells, false);
++            mxState->record.sizeWithCells = aAttributes.getBool(XML_sizeWithCells, false);
++            return new OleObjectAnchorContext(*this, Part::Anchor);
++        }
++        if (mePart == Part::Anchor && (nElement == XLS_TOKEN(from) || nElement == XLS_TOKEN(to)))
++        {
++            const bool bFrom = nElement == XLS_TOKEN(from);
++            const unsigned nMask = bFrom ? 4U : 8U;
++            if (mxState->containers & nMask) mxState->invalid = true;
++            mxState->containers |= nMask;
++            return new OleObjectAnchorContext(*this, bFrom ? Part::From : Part::To);
++        }
++        if (mePart == Part::From || mePart == Part::To)
++        {
++            unsigned nField;
++            switch (nElement)
++            {
++                case XDR_TOKEN(col): nField = 0; break;
++                case XDR_TOKEN(colOff): nField = 1; break;
++                case XDR_TOKEN(row): nField = 2; break;
++                case XDR_TOKEN(rowOff): nField = 3; break;
++                default: return nullptr;
++            }
++            return new OleObjectAnchorContext(*this, Part::Value, nField + (mePart == Part::To ? 4 : 0));
++        }
++        return nullptr;
++    }
++
++    void characters(const OUString& rText) override
++    {
++        if (mePart != Part::Value) return;
++        if (rText.getLength() > 64 || maText.getLength() > 64 - rText.getLength())
++            mxState->invalid = true;
++        else
++            maText += rText;
++    }
++
++    void endFastElement(sal_Int32) override
++    {
++        if (mePart == Part::Value)
++        {
++            const unsigned nMask = 1U << mnField;
++            if (mxState->fields & nMask) mxState->invalid = true;
++            mxState->fields |= nMask;
++            OUString aValue = maText.trim();
++            sal_Int32 nIndex = 0;
++            bool bNegative = false;
++            if (!aValue.isEmpty() && (aValue[0] == '-' || aValue[0] == '+'))
++            {
++                bNegative = aValue[0] == '-';
++                ++nIndex;
++            }
++            if (nIndex == aValue.getLength()) { mxState->invalid = true; return; }
++            const unsigned nKind = mnField % 4;
++            const sal_Int64 nLimit = nKind == 0 ? 16383 : nKind == 2 ? 1048575 : sal_Int64(SAL_MAX_INT32) * 360;
++            sal_Int64 nValue = 0;
++            for (; nIndex < aValue.getLength(); ++nIndex)
++            {
++                const sal_Int32 nDigit = aValue[nIndex] - '0';
++                if (nDigit < 0 || nDigit > 9 || nValue > (nLimit - nDigit) / 10)
++                { mxState->invalid = true; return; }
++                nValue = nValue * 10 + nDigit;
++            }
++            if (bNegative) nValue = -nValue;
++            if ((nKind == 0 || nKind == 2) && nValue < 0)
++            { mxState->invalid = true; return; }
++            static constexpr sal_Int32 aTokens[] = {XDR_TOKEN(col), XDR_TOKEN(colOff), XDR_TOKEN(row), XDR_TOKEN(rowOff)};
++            mxState->record.anchor->setCellPos(aTokens[nKind], mnField < 4 ? XDR_TOKEN(from) : XDR_TOKEN(to), OUString::number(nValue));
++            if (mnField == 0) mxState->record.column = static_cast<sal_Int32>(nValue);
++            if (mnField == 2) mxState->record.row = static_cast<sal_Int32>(nValue);
++        }
++        else if (mePart == Part::Object && mxState->fields == 255U
++                 && mxState->containers == 15U && !mxState->invalid
++                 && mxState->record.anchor->isAnchorValid())
++            mrDrawing.registerOleAnchor(mxState->shapeId, mxState->record);
++    }
++};
++
+ } // namespace
+ 
+ void DataValidationsContextBase::SetValidation( WorksheetHelper& rTarget )
+@@ -478,7 +617,11 @@ ContextHandlerRef WorksheetFragment::onCreateContext( sal_Int32 nElement, const
+             if( isMCEStateEmpty() || getMCEState() == MCE_STATE::Started )
+             {
+                 if ( getCurrentElement() == XLS_TOKEN( oleObjects ) )
++                {
+                     importOleObject( rAttribs );
++                    if (nElement == XLS_TOKEN(oleObject))
++                        return new OleObjectAnchorContext(*this, *this, rAttribs.getInteger(XML_shapeId, 0));
++                }
+                 else
+                     importControl( rAttribs );
+             }
+diff --git a/engine/sc/source/filter/xcl97/xcl97rec.cxx b/engine/sc/source/filter/xcl97/xcl97rec.cxx
+index 0960883e..6ebdc6ea 100644
+--- a/engine/sc/source/filter/xcl97/xcl97rec.cxx
++++ b/engine/sc/source/filter/xcl97/xcl97rec.cxx
+@@ -76,6 +76,12 @@
+ #include <detfunc.hxx>
+ 
+ #include <memory>
++#include <cmath>
++#include <comphelper/storagehelper.hxx>
++#include <com/sun/star/container/XChild.hpp>
++#include <com/sun/star/embed/XEmbedPersist.hpp>
++#include <com/sun/star/embed/XEmbeddedObject.hpp>
++#include <com/sun/star/io/IOException.hpp>
+ 
+ using namespace ::com::sun::star;
+ using ::com::sun::star::uno::Reference;
+@@ -230,6 +236,222 @@ bool IsValidObject( const XclObj& rObj )
+     return true;
+ }
+ 
++// Floe: serialize live embedded objects through SpreadsheetML and its VML
++// fallback. Calc's importer registers worksheet OLE records against VML IDs;
++// a DrawingML picture alone is not an editable embedded object.
++struct XclOleXmlRecord
++{
++    const XclObjOle* pObject;
++    sal_Int32 nShapeId;
++    OUString aRelation;
++    OUString aProgId;
++    OUString aSheetImageRelation;
++};
++
++OUString GetOleProgId(const Reference<embed::XEmbeddedObject>& xObject)
++{
++    Reference<container::XChild> xChild(xObject, uno::UNO_QUERY_THROW);
++    Reference<beans::XPropertySet> xParent(xChild->getParent(), UNO_QUERY);
++    Reference<embed::XEmbedPersist> xPersist(xObject, UNO_QUERY);
++    cpo::uno::Sequence<beans::PropertyValue> aBag;
++    if (xParent && xPersist)
++    {
++        xParent->getPropertyValue(u"InteropGrabBag"_ustr) >>= aBag;
++        const OUString aEntry = xPersist->getEntryName();
++        for (const auto& rEntry : aBag)
++        {
++            if (rEntry.Name != "EmbeddedObjects")
++                continue;
++            cpo::uno::Sequence<beans::PropertyValue> aObjects;
++            rEntry.Value >>= aObjects;
++            for (const auto& rObject : aObjects)
++            {
++                if (rObject.Name != aEntry)
++                    continue;
++                cpo::uno::Sequence<beans::PropertyValue> aProperties;
++                rObject.Value >>= aProperties;
++                for (const auto& rProperty : aProperties)
++                {
++                    if (rProperty.Name == "ProgID")
++                    {
++                        OUString aProgId;
++                        rProperty.Value >>= aProgId;
++                        return aProgId;
++                    }
++                }
++            }
++        }
++    }
++    return {};
++}
++
++std::vector<XclOleXmlRecord> PrepareOleObjects(XclExpObjList& rList, XclExpXmlStream& rStrm)
++{
++    std::vector<XclOleXmlRecord> aRecords;
++    for (const auto& rxObject : rList)
++    {
++        const auto* pObject = dynamic_cast<const XclObjOle*>(rxObject.get());
++        if (!pObject)
++            continue;
++        const auto& rOle = pObject->GetOleObject();
++        const auto& xObject = rOle.GetObjRef();
++        if (!xObject.is())
++            throw io::IOException(u"Cannot save a spreadsheet embedded object without its data"_ustr);
++        OUString aProgId = GetOleProgId(xObject);
++        OUString aMediaType, aRelationType, aSuffix;
++        const char* pConvertedProgId = nullptr;
++        auto xInput = oox::GetOLEObjectStream(xObject, aProgId, aMediaType,
++                                            aRelationType, aSuffix, pConvertedProgId);
++        if (!xInput.is())
++            throw io::IOException(u"Cannot export spreadsheet embedded object data"_ustr);
++        if (pConvertedProgId)
++            aProgId = OUString::createFromAscii(pConvertedProgId);
++        const OUString aName = u"embeddings/oleObject"_ustr
++            + OUString::number(rStrm.getNewOLEUniqueId()) + u"."_ustr + aSuffix;
++        auto xOutput = rStrm.openFragmentStream(u"xl/"_ustr + aName, aMediaType);
++        // Propagate copy/close failures: never report a successful save that lost data.
++        comphelper::OStorageHelper::CopyInputToOutput(xInput, xOutput);
++        xOutput->closeOutput();
++        const OUString aRelation = rStrm.addRelation(rStrm.GetCurrentStream()->getOutputStream(),
++                                                     aRelationType, OUString(u"../"_ustr + aName));
++        const Graphic* pGraphic = rOle.GetGraphic();
++        if (!pGraphic || pGraphic->GetType() == GraphicType::NONE)
++            throw io::IOException(u"Cannot export spreadsheet embedded object preview"_ustr);
++        oox::drawingml::DrawingML aDrawing(rStrm.GetCurrentStream(), &rStrm,
++                                          oox::drawingml::DOCUMENT_XLSX);
++        const OUString aImage = aDrawing.writeGraphicToStorage(*pGraphic, true);
++        if (aImage.isEmpty())
++            throw io::IOException(u"Cannot write spreadsheet embedded object preview"_ustr);
++        // Keep these IDs outside legacy Escher/form-control numbering. The shared
++        // document allocator makes multiple sheets/objects unique in this range.
++        const sal_Int32 nUnique = rStrm.GetUniqueId();
++        if (nUnique < 0 || nUnique >= 0x40000000)
++            throw io::IOException(u"Spreadsheet drawing identifier range exhausted"_ustr);
++        aRecords.push_back({pObject, 0x40000000 + nUnique, aRelation, aProgId, aImage});
++    }
++    return aRecords;
++}
++
++void SaveOleVml(const std::vector<XclOleXmlRecord>& rRecords, XclExpXmlStream& rStrm)
++{
++    if (rRecords.empty())
++        return;
++    auto pXml = rStrm.GetCurrentStream();
++    pXml->write(VMLExport::GetVMLShapeTypeDefinition("75", true));
++    for (const auto& rRecord : rRecords)
++    {
++        const auto& rOle = rRecord.pObject->GetOleObject();
++        Reference<XShape> xShape = const_cast<SdrOle2Obj&>(rOle).getUnoShape();
++        if (!xShape.is())
++            throw io::IOException(u"Spreadsheet embedded object has no shape"_ustr);
++        const auto aPosition = xShape->getPosition();
++        const auto aSize = xShape->getSize();
++        const tools::Rectangle aRect(aPosition.X, aPosition.Y,
++                                    aPosition.X + aSize.Width, aPosition.Y + aSize.Height);
++        const auto& rDoc = rStrm.GetRoot().GetDoc();
++        const SCTAB nTab = rRecord.pObject->GetTab();
++        const ScRange aRange = rDoc.GetRange(nTab, aRect);
++        const tools::Rectangle aCellRect = rDoc.GetMMRect(aRange.aStart.Col(), aRange.aStart.Row(),
++                                                        aRange.aEnd.Col() - 1, aRange.aEnd.Row() - 1, nTab);
++        const auto toPixel = [](tools::Long nHmm) { return std::llround(nHmm * 96.0 / 2540.0); };
++        const OUString aAnchor = OUString::number(aRange.aStart.Col()) + u", "_ustr
++            + OUString::number(toPixel(aRect.Left() - aCellRect.Left())) + u", "_ustr
++            + OUString::number(aRange.aStart.Row()) + u", "_ustr
++            + OUString::number(toPixel(aRect.Top() - aCellRect.Top())) + u", "_ustr
++            + OUString::number(aRange.aEnd.Col()) + u", "_ustr
++            + OUString::number(toPixel(aRect.Right() - aCellRect.Right())) + u", "_ustr
++            + OUString::number(aRange.aEnd.Row()) + u", "_ustr
++            + OUString::number(toPixel(aRect.Bottom() - aCellRect.Bottom()));
++        const auto point = [](sal_Int32 nHmm) { return OUString::number(nHmm * 72.0 / 2540.0); };
++        const OUString aStyle = u"position:absolute;margin-left:"_ustr + point(aPosition.X)
++            + u"pt;margin-top:"_ustr + point(aPosition.Y) + u"pt;width:"_ustr + point(aSize.Width)
++            + u"pt;height:"_ustr + point(aSize.Height) + u"pt;z-index:1"_ustr;
++        oox::drawingml::DrawingML aDrawing(pXml, &rStrm, oox::drawingml::DOCUMENT_XLSX);
++        const OUString aImage = aDrawing.writeGraphicToStorage(*rOle.GetGraphic(), true);
++        if (aImage.isEmpty())
++            throw io::IOException(u"Cannot write spreadsheet embedded object VML preview"_ustr);
++        // VML identifiers contain a literal _x0000_ prefix. Match VMLExport's
++        // legacy-ID handling so the sheet shapeId and VML type remain linked.
++        pXml->setAllowXEscape(false);
++        pXml->startElement(FSNS(XML_v, XML_shape), XML_id,
++            u"_x0000_s"_ustr + OUString::number(rRecord.nShapeId), XML_type, "#_x0000_t75",
++            XML_style, aStyle, FSNS(XML_o, XML_ole), "");
++        pXml->setAllowXEscape(true);
++        pXml->singleElement(FSNS(XML_v, XML_imagedata), FSNS(XML_r, XML_id), aImage,
++                            FSNS(XML_o, XML_title), rOle.GetName());
++        pXml->startElement(FSNS(XML_x, XML_ClientData), XML_ObjectType, "Pict");
++        const auto eAnchor = ScDrawLayer::GetAnchorType(rOle);
++        // Excel's VML convention is inverse to the generic schema wording:
++        // a blank element disables movement/resize; an omitted element enables
++        // it. Match ClientDataContext and keep modern objectPr flags positive.
++        if (eAnchor == SCA_PAGE)
++            pXml->singleElement(FSNS(XML_x, XML_MoveWithCells));
++        if (eAnchor != SCA_CELL_RESIZE)
++            pXml->singleElement(FSNS(XML_x, XML_SizeWithCells));
++        XclXmlUtils::WriteElement(pXml, FSNS(XML_x, XML_Anchor), aAnchor.toUtf8());
++        XclXmlUtils::WriteElement(pXml, FSNS(XML_x, XML_AutoFill), "False");
++        XclXmlUtils::WriteElement(pXml, FSNS(XML_x, XML_PrintObject), rOle.IsPrintable() ? "True" : "False");
++        pXml->endElement(FSNS(XML_x, XML_ClientData));
++        pXml->endElement(FSNS(XML_v, XML_shape));
++    }
++}
++
++void SaveOleWorksheetObjects(const std::vector<XclOleXmlRecord>& rRecords, XclExpXmlStream& rStrm)
++{
++    if (rRecords.empty())
++        return;
++    auto pXml = rStrm.GetCurrentStream();
++    pXml->startElement(XML_oleObjects);
++    for (const auto& rRecord : rRecords)
++    {
++        const auto& rOle = rRecord.pObject->GetOleObject();
++        const bool bIcon = rOle.GetAspect() == embed::Aspects::MSOLE_ICON;
++        pXml->startElement(XML_oleObject, XML_progId, rRecord.aProgId,
++                          XML_dvAspect, bIcon ? "DVASPECT_ICON" : "DVASPECT_CONTENT",
++                          XML_shapeId, OString::number(rRecord.nShapeId),
++                          FSNS(XML_r, XML_id), rRecord.aRelation);
++        // The VML fallback is required by Calc's importer. objectPr additionally
++        // retains precise EMU anchors for Office's modern embedded-object UI.
++        // objectPr is absent from the pinned token table; keep the table ABI unchanged.
++        pXml->write("<objectPr defaultSize=\"0\" autoPict=\"0\" xmlns:xdr=\"");
++        pXml->writeEscaped(rStrm.getNamespaceURL(OOX_NS(dmlSpreadDr)));
++        pXml->write("\" r:id=\"");
++        pXml->writeEscaped(rRecord.aSheetImageRelation);
++        pXml->write("\">");
++        const auto eAnchor = ScDrawLayer::GetAnchorType(rOle);
++        pXml->startElement(XML_anchor, XML_moveWithCells, eAnchor != SCA_PAGE ? "1" : "0",
++                          XML_sizeWithCells, eAnchor == SCA_CELL_RESIZE ? "1" : "0");
++        Reference<XShape> xShape = const_cast<SdrOle2Obj&>(rOle).getUnoShape();
++        if (!xShape.is())
++            throw io::IOException(u"Spreadsheet embedded object has no shape"_ustr);
++        const auto aPos = xShape->getPosition();
++        const auto aSize = xShape->getSize();
++        const tools::Rectangle aRect(aPos.X, aPos.Y, aPos.X + aSize.Width, aPos.Y + aSize.Height);
++        const auto& rDoc = rStrm.GetRoot().GetDoc();
++        const SCTAB nTab = rRecord.pObject->GetTab();
++        const ScRange aRange = rDoc.GetRange(nTab, aRect);
++        const auto aCellRect = rDoc.GetMMRect(aRange.aStart.Col(), aRange.aStart.Row(),
++                                            aRange.aEnd.Col()-1, aRange.aEnd.Row()-1, nTab);
++        auto marker = [&](sal_Int32 nToken, sal_Int32 nCol, sal_Int32 nRow,
++                          tools::Long nX, tools::Long nY) {
++            pXml->startElement(nToken);
++            XclXmlUtils::WriteElement(pXml, FSNS(XML_xdr, XML_col), nCol);
++            XclXmlUtils::WriteElement(pXml, FSNS(XML_xdr, XML_colOff), oox::drawingml::convertHmmToEmu(nX));
++            XclXmlUtils::WriteElement(pXml, FSNS(XML_xdr, XML_row), nRow);
++            XclXmlUtils::WriteElement(pXml, FSNS(XML_xdr, XML_rowOff), oox::drawingml::convertHmmToEmu(nY));
++            pXml->endElement(nToken);
++        };
++        marker(XML_from, aRange.aStart.Col(), aRange.aStart.Row(),
++               aRect.Left()-aCellRect.Left(), aRect.Top()-aCellRect.Top());
++        marker(XML_to, aRange.aEnd.Col(), aRange.aEnd.Row(),
++               aRect.Right()-aCellRect.Right(), aRect.Bottom()-aCellRect.Bottom());
++        pXml->endElement(XML_anchor);
++        pXml->write("</objectPr>");
++        pXml->endElement(XML_oleObject);
++    }
++    pXml->endElement(XML_oleObjects);
++}
++
+ void SaveDrawingMLObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
+ {
+     std::vector<XclObj*> aList;
+@@ -241,7 +463,7 @@ void SaveDrawingMLObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
+     for (const auto& rxObj : rList)
+     {
+         // FIXME: Can DrawingML objects be grouped with VML or not valid objects?
+-        if (IsVmlObject(rxObj.get()) || !IsValidObject(*rxObj))
++        if (IsVmlObject(rxObj.get()) || dynamic_cast<const XclObjOle*>(rxObj.get()) || !IsValidObject(*rxObj))
+             continue;
+ 
+         const auto pObj = dynamic_cast<XclObjAny*>(rxObj.get());
+@@ -351,9 +573,10 @@ void SaveFormControlObjects(XclExpObjList& rList, XclExpXmlStream& rStrm)
+     rWorksheet->endElement(FSNS(XML_mc, XML_AlternateContent));
+ }
+ 
+-void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
++void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm,
++                     const std::vector<XclOleXmlRecord>& rOleRecords )
+ {
+-    if( GetVmlObjectCount( rList ) == 0 )
++    if( GetVmlObjectCount( rList ) == 0 && rOleRecords.empty() )
+         return;
+ 
+     sal_Int32 nDrawing = rStrm.getNewVMLUniqueId();
+@@ -374,7 +597,8 @@ void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
+             FSNS(XML_xmlns, XML_v),   rStrm.getNamespaceURL(OOX_NS(vml)).toUtf8(),
+             FSNS(XML_xmlns, XML_o),   rStrm.getNamespaceURL(OOX_NS(vmlOffice)).toUtf8(),
+             FSNS(XML_xmlns, XML_x),   rStrm.getNamespaceURL(OOX_NS(vmlExcel)).toUtf8(),
+-            FSNS(XML_xmlns, XML_w10), rStrm.getNamespaceURL(OOX_NS(vmlWord)).toUtf8() );
++            FSNS(XML_xmlns, XML_w10), rStrm.getNamespaceURL(OOX_NS(vmlWord)).toUtf8(),
++            FSNS(XML_xmlns, XML_r), rStrm.getNamespaceURL(OOX_NS(officeRel)).toUtf8() );
+ 
+     for ( const auto& rxObj : rList )
+     {
+@@ -392,6 +616,7 @@ void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
+         rxObj->SaveXml( rStrm );
+     }
+ 
++    SaveOleVml(rOleRecords, rStrm);
+     pVmlDrawing->endElement( XML_xml );
+ 
+     rStrm.PopStream();
+@@ -411,10 +636,12 @@ void XclExpObjList::SaveXml( XclExpXmlStream& rStrm )
+         return;
+     }
+ 
++    const auto aOleRecords = PrepareOleObjects(*this, rStrm);
+     SaveDrawingMLObjects( *this, rStrm );
+-    SaveVmlObjects( *this, rStrm );
++    SaveVmlObjects( *this, rStrm, aOleRecords );
+     if (m_pImgData)
+         m_pImgData->SaveXml(rStrm);
++    SaveOleWorksheetObjects(aOleRecords, rStrm);
+     SaveFormControlObjects( *this, rStrm );
+ }
+ 
+diff --git a/engine/sd/source/ui/unoidl/unomodel.cxx b/engine/sd/source/ui/unoidl/unomodel.cxx
+index 4e635ddc..42ae47d4 100644
+--- a/engine/sd/source/ui/unoidl/unomodel.cxx
++++ b/engine/sd/source/ui/unoidl/unomodel.cxx
+@@ -19,6 +19,8 @@
+ 
+ #include <memory>
+ #include <set>
++#include <cstdio>
++#include <cstdlib>
+ 
+ #include <com/sun/star/presentation/XPresentation2.hpp>
+ 
+@@ -4907,6 +4909,49 @@ DrawViewShell* SdXImpressDocument::GetViewShell()
+     return pViewSh;
+ }
+ 
++namespace {
++
++// Floe diagnostic probe, OFF by default. Enabled only when the embedding
++// host sets FLOE_A3_PROBE=1 in the environment before engine start.
++// Budget-capped: at most this many pixel scans / event logs per process.
++bool floeA3ProbeEnabled()
++{
++    static const bool bEnabled = [] {
++        const char* p = getenv("FLOE_A3_PROBE");
++        return p != nullptr && p[0] == '1' && p[1] == '\0';
++    }();
++    return bEnabled;
++}
++
++constexpr sal_Int32 FLOE_A3_MAX_SCANS = 16;
++constexpr sal_Int32 FLOE_A3_MAX_MOUSE_LOGS = 256;
++
++// A3 bounded render observation: sample chart bar-blue pixels in device
++// pixels around the chart tile repaint. Numbers only; no document content,
++// no behaviour change, no cache or tile-state mutation. Logic coordinates
++// are converted to device pixels before reading so a non-default MapMode
++// with a non-zero origin cannot silently sample the wrong location.
++sal_Int32 floeA3CountBarBlue(const VirtualDevice& rDevice)
++{
++    static sal_Int32 nScans = 0;
++    if (!floeA3ProbeEnabled() || nScans >= FLOE_A3_MAX_SCANS)
++        return -1;
++    ++nScans;
++    const Size aSize(rDevice.GetOutputSizePixel());
++    sal_Int32 nCount = 0;
++    for (tools::Long y = 0; y < aSize.Height(); y += 3)
++        for (tools::Long x = 0; x < aSize.Width(); x += 3)
++        {
++            const Color aColor = rDevice.GetPixel(rDevice.PixelToLogic(Point(x, y)));
++            if (aColor.GetRed() < 90 && aColor.GetGreen() > 60 && aColor.GetGreen() < 160
++                && aColor.GetBlue() > 180)
++                ++nCount;
++        }
++    return nCount;
++}
++
++} // namespace
++
+ void SdXImpressDocument::paintTile( VirtualDevice& rDevice,
+                             int nOutputWidth, int nOutputHeight,
+                             int nTilePosX, int nTilePosY,
+@@ -4982,8 +5027,21 @@ void SdXImpressDocument::paintTile( VirtualDevice& rDevice,
+     if (comphelper::COKit::isActive())
+         pView->SetPaintTextEdit(true);
+ 
++    const sal_Int32 nFloeA3BlueBefore = floeA3CountBarBlue(rDevice);
+     KitChartHelper::PaintAllChartsOnTile(rDevice, nOutputWidth, nOutputHeight,
+                                          nTilePosX, nTilePosY, nTileWidth, nTileHeight);
++    if (nFloeA3BlueBefore >= 0)
++    {
++        // Not SAL_WARN: this engine is built without -DSAL_LOG_WARN, where
++        // SAL_WARN expands to a no-op. fprintf(stderr) is captured by the
++        // simulator test runner, gated and budget-capped above.
++        const sal_Int32 nFloeA3BlueAfter = floeA3CountBarBlue(rDevice);
++        ::fprintf(stderr, "[floeA3] charttile out=%dx%d tile=%d,%d,%ld,%ld blue_before=%d blue_after=%d\n",
++                  nOutputWidth, nOutputHeight, nTilePosX, nTilePosY,
++                  static_cast<long>(nTileWidth), static_cast<long>(nTileHeight),
++                  static_cast<int>(nFloeA3BlueBefore), static_cast<int>(nFloeA3BlueAfter));
++        ::fflush(stderr);
++    }
+     KitStarMathHelper::PaintAllInPlaceOnTile(rDevice, nOutputWidth, nOutputHeight, nTilePosX,
+                                              nTilePosY, nTileWidth, nTileHeight);
+ 
+@@ -5621,6 +5679,19 @@ void SdXImpressDocument::postKeyEvent(COKitKeyEventType eType, int nCharCode, in
+ void SdXImpressDocument::postMouseEvent(COKitMouseEventType eType, int nX, int nY, int nCount,
+                                         int nButtons, int nModifier)
+ {
++    // A3 bounded observation: does the frontend mouse wire message reach the
++    // Impress document layer at all, and does the page object inventory change
++    // across the forwarded events? Numbers/phase only, no document content,
++    // no continuous coordinate stream. Gated + budget-capped, off by default.
++    static sal_Int32 nFloeA3MouseLogs = 0;
++    const bool bFloeA3Admit = floeA3ProbeEnabled() && nFloeA3MouseLogs < FLOE_A3_MAX_MOUSE_LOGS;
++    if (bFloeA3Admit)
++    {
++        ++nFloeA3MouseLogs;
++        ::fprintf(stderr, "[floeA3] sdmouse type=%d count=%d buttons=%d mod=%d\n",
++                  static_cast<int>(eType), nCount, nButtons, nModifier);
++        ::fflush(stderr);
++    }
+     SolarMutexGuard aGuard;
+ 
+     DrawViewShell* pViewShell = GetViewShell();
+@@ -5644,6 +5715,12 @@ void SdXImpressDocument::postMouseEvent(COKitMouseEventType eType, int nX, int n
+     }
+ 
+     SdrPage* pPage = pPageView->GetPage();
++    if (bFloeA3Admit)
++    {
++        ::fprintf(stderr, "[floeA3] sdmouse pageobjs=%lu\n",
++                  static_cast<unsigned long>(pPage->GetObjCount()));
++        ::fflush(stderr);
++    }
+     ::sd::Window* pActiveWin = pViewShell->GetActiveWindow();
+     if (!pActiveWin)
+     {
+diff --git a/engine/sd/source/ui/view/drviewse.cxx b/engine/sd/source/ui/view/drviewse.cxx
+index f5d79634..319cb50d 100644
 --- a/engine/sd/source/ui/view/drviewse.cxx
 +++ b/engine/sd/source/ui/view/drviewse.cxx
-@@ -517,6 +517,16 @@
+@@ -19,6 +19,9 @@
+ 
+ #include <config_features.h>
+ 
++#include <cstdio>
++#include <cstdlib>
++
+ #include <com/sun/star/presentation/XPresentation2.hpp>
+ #include <com/sun/star/form/FormButtonType.hpp>
+ #include <com/sun/star/beans/XPropertySet.hpp>
+@@ -517,8 +520,44 @@ void DrawViewShell::FuPermanent(SfxRequest& rReq)
              // Direct mode means no interactive drawing, just insert the shape with reasonable
              // defaults -- to be consistent with the line insert case above.
              bCreateDirectly = comphelper::COKit::isActive();
@@ -1403,6 +1533,34 @@ index dfca8cd..866eaef 100644
 +                bPermanent = true;
 +            }
 +#endif
++            // A3 bounded observation: slot execution facts for the interactive
++            // freehand tool in the embedded Impress host. Numbers only.
++            // Gated + budget-capped, off by default (FLOE_A3_PROBE=1).
++            // Not SAL_WARN: this engine is built without -DSAL_LOG_WARN, where
++            // SAL_WARN expands to a no-op; stderr is captured by the runner.
++            static const bool bFloeA3Probe = [] {
++                const char* p = getenv("FLOE_A3_PROBE");
++                return p != nullptr && p[0] == '1' && p[1] == '\0';
++            }();
++            static sal_Int32 nFloeA3SlotLogs = 0;
++            constexpr sal_Int32 nFloeA3MaxSlotLogs = 64;
++            const bool bFloeA3Log = bFloeA3Probe && nFloeA3SlotLogs < nFloeA3MaxSlotLogs;
++            if (bFloeA3Log)
++            {
++                ++nFloeA3SlotLogs;
++                ::fprintf(stderr, "[floeA3] sdfreeline sid=%lu direct=%d permanent=%d\n",
++                          static_cast<unsigned long>(nSId), bCreateDirectly ? 1 : 0,
++                          bPermanent ? 1 : 0);
++                ::fflush(stderr);
++            }
  
              SetCurrentFunction( FuConstructBezierPolygon::Create(*this, GetActiveWindow(), mpDrawView.get(), *GetDoc(), rReq, bPermanent) );
++            if (bFloeA3Log)
++            {
++                ::fprintf(stderr, "[floeA3] sdfreeline funcset=%d\n",
++                          GetCurrentFunction() != nullptr ? 1 : 0);
++                ::fflush(stderr);
++            }
              rReq.Done();
+         }
+         break;

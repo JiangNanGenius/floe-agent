@@ -1,0 +1,151 @@
+--- a/engine/vcl/source/app/svdata.cxx
++++ b/engine/vcl/source/app/svdata.cxx
+@@ -72,8 +72,49 @@
+ 
+ }
+ 
++namespace {
++
++// Embedded iOS hosts (device and simulator) run the kit VCL execute loop on a
++// detached thread that outlives exit-time static destruction: kit
++// runKitLoopInAThread is documented never to return, and DeInitVCL skips Kit
++// teardown, so nothing orderly ends that loop before __cxa_finalize destroys
++// the rtl::Static roots below. A live Application::Execute/DoYield then reads
++// m_inExecuteCondtion, the yield mutex and mpWinData/mpHelpData of already
++// destroyed roots and throws std::system_error (pthread EINVAL) out of the
++// loop thread, aborting the process (observed at XCTest/NSApplication exit).
++// Keep the three typed roots alive for the whole process on IOS instead of
++// destroying them under a live thread. Every fallback reference shares the
++// same stable holder, per-view override semantics are untouched, and
++// desktop/unit-test teardown keeps the original rtl::Static behaviour.
++// Scope note: defined(IOS) covers every iOS engine build, including the
++// simulator and iOS standalone harnesses; an explicit DeInitVCL deinit-hook
++// teardown must not run while the detached loop lives (unchanged policy).
++#if defined(IOS)
++ImplSVData& floeSVRoot()
++{
++    static ImplSVData* p = new ImplSVData;
++    return *p;
++}
++ImplSVHelpData& floeSVHelpRoot()
++{
++    static ImplSVHelpData* p = new ImplSVHelpData;
++    return *p;
++}
++ImplSVWinData& floeSVWinRoot()
++{
++    static ImplSVWinData* p = new ImplSVWinData;
++    return *p;
++}
++#else
++ImplSVData& floeSVRoot() { return private_aImplSVData::get(); }
++ImplSVHelpData& floeSVHelpRoot() { return private_aImplSVHelpData::get(); }
++ImplSVWinData& floeSVWinRoot() { return private_aImplSVWinData::get(); }
++#endif
++
++} // namespace
++
+ ImplSVData* ImplGetSVData() {
+-    return &private_aImplSVData::get();
++    return &floeSVRoot();
+ }
+ 
+ SalSystem* ImplGetSalSystem()
+@@ -404,7 +445,7 @@
+         return;
+ 
+     // If current one is the static, clean it up to avoid having lingering references.
+-    if (pSVData->mpWinData == &private_aImplSVWinData::get())
++    if (pSVData->mpWinData == &floeSVWinRoot())
+     {
+         pSVData->mpWinData->mpFocusWin.reset();
+     }
+@@ -412,14 +453,14 @@
+     pSVData->mpWinData = pSVWinData;
+     if (pSVData->mpWinData == nullptr)
+     {
+-        pSVData->mpWinData = &private_aImplSVWinData::get(); // Never leave it null.
++        pSVData->mpWinData = &floeSVWinRoot(); // Never leave it null.
+     }
+ }
+ 
+ ImplSVData::ImplSVData()
+ {
+-    mpHelpData = &private_aImplSVHelpData::get();
+-    mpWinData = &private_aImplSVWinData::get();
++    mpHelpData = &floeSVHelpRoot();
++    mpWinData = &floeSVWinRoot();
+ }
+ 
+ void ImplSVData::registerCacheOwner(CacheOwner& rCacheOwner)
+@@ -496,7 +537,7 @@
+     ImplSVHelpData* pNewData = new ImplSVHelpData;
+ 
+     // Set options set globally
+-    ImplSVHelpData& aStaticHelpData = private_aImplSVHelpData::get();
++    ImplSVHelpData& aStaticHelpData = floeSVHelpRoot();
+     pNewData->mbContextHelp = aStaticHelpData.mbContextHelp;
+     pNewData->mbExtHelp = aStaticHelpData.mbExtHelp;
+     pNewData->mbExtHelpMode = aStaticHelpData.mbExtHelpMode;
+@@ -515,7 +556,7 @@
+     // Change the SVData's help date if necessary
+     if(ImplGetSVData()->mpHelpData == pSVHelpData)
+     {
+-        ImplGetSVData()->mpHelpData = &private_aImplSVHelpData::get();
++        ImplGetSVData()->mpHelpData = &floeSVHelpRoot();
+     }
+ 
+     if(pSVHelpData)
+@@ -535,7 +576,7 @@
+         return;
+ 
+     // If current one is the static, clean it up to avoid having lingering references.
+-    if (pSVData->mpHelpData == &private_aImplSVHelpData::get())
++    if (pSVData->mpHelpData == &floeSVHelpRoot())
+     {
+         pSVData->mpHelpData->mpHelpWin.reset();
+     }
+@@ -543,7 +584,7 @@
+     pSVData->mpHelpData = pSVHelpData;
+     if (pSVData->mpHelpData == nullptr)
+     {
+-        pSVData->mpHelpData = &private_aImplSVHelpData::get(); // Never leave it null.
++        pSVData->mpHelpData = &floeSVHelpRoot(); // Never leave it null.
+     }
+ }
+ 
+@@ -556,7 +597,7 @@
+     }
+     else
+     {
+-        return private_aImplSVHelpData::get();
++        return floeSVHelpRoot();
+     }
+ }
+ 
+diff --git a/engine/sal/osl/unx/thread.cxx b/engine/sal/osl/unx/thread.cxx
+--- a/engine/sal/osl/unx/thread.cxx
++++ b/engine/sal/osl/unx/thread.cxx
+@@ -600,7 +600,22 @@
+ static HashEntry* HashTable[31];
+ const auto HashSize = std::ssize(HashTable);
+ 
++// Embedded iOS hosts keep the kit VCL execute loop on a detached thread that
++// outlives exit-time static destruction (runKitLoopInAThread never returns;
++// DeInitVCL skips Kit teardown). A live osl_getThreadIdentifier from that loop
++// after __cxa_finalize destroyed this mutex throws std::system_error (pthread
++// EINVAL) and aborts the process (observed first throw at XCTest exit:
++// std::mutex::lock <- osl_getThreadIdentifier <- AquaSalInstance::IsMainThread
++// <- SvpSalYieldMutex::doAcquire <- AquaSalInstance::ImplYield). Keep the
++// registry lock for the whole process on IOS instead of destroying it under a
++// live thread. The three lookup/insert/remove paths, the HashTable, the
++// identifier values and the thread cleanup are unchanged; non-IOS keeps the
++// original static storage and destruction.
++#if defined(IOS)
++static std::mutex& HashLock = *new std::mutex;
++#else
+ static std::mutex HashLock;
++#endif
+ 
+ #if ! ((defined LINUX && !defined __FreeBSD_kernel__) || defined MACOSX || defined IOS)
+ static oslThreadIdentifier LastIdent = 0;

@@ -346,6 +346,18 @@ static NSString *FloeBundledFontCatalogFingerprint(NSBundle *bundle) {
 // pointer events are stopped so a finger keeps navigating the document.
 // WKWebView's own gesture recognizers are untouched, so pinching/scrolling
 // stays native.
+//
+// The pinned frontend has no pen/touch freehand path at all: its canvas routes
+// touch drags into view scrolling (CanvasSectionContainer onTouchMove ->
+// MouseControl.onMouseMove's touchmove branch posts no core button events),
+// and iOS delivers Apple Pencil as touch events, so a pen stroke never
+// reaches the core freehand tool in any document type. While annotation mode
+// is armed, pen strokes are therefore replayed as ordinary DOM mouse events
+// on the engine canvas so the frontend's own section routing and coordinate
+// math forwards buttondown/move/buttonup to the core. The freehand slot is
+// re-armed only from the engine's own reported command state (or before the
+// first stroke), never blindly: in Writer/Calc re-executing the same slot
+// while it is active deselects the tool.
 static NSString *FloeInkInputGatingScript() {
     return [NSString stringWithUTF8String:R"FLOE_JS(
 (() => {
@@ -365,6 +377,190 @@ static NSString *FloeInkInputGatingScript() {
         for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
             window.addEventListener(type, blockFinger, { capture: true, passive: false });
         }
+
+        // ---- pen strokes as core mouse input ----
+        const state = window.__floePenState = window.__floePenState || {
+            strokes: 0, coreEvents: 0, armedDispatches: 0, activeStroke: false, toolState: null
+        };
+        let strokeActive = false;
+        // null = never observed, true = armed, false = observed inactive.
+        // 'enabled'/'disabled' describe availability, never activity.
+        let toolActive = null;
+        let pencilOnly = false;
+        const FREEHAND = ['.uno:Freeline_Unfilled', '.uno:Freeline'];
+        const isCheckState = (value) => value === true || value === 'true' || value === 'checked';
+        const isUncheckState = (value) => value === false || value === 'false' || value === 'unchecked';
+
+        // The App arms the slot through setDrawingMode by assigning
+        // __floePencilOnly; observe that transition as the authoritative
+        // "already armed" signal so the first pen stroke never re-dispatches
+        // the same slot (which deselects the tool in Writer/Calc).
+        try {
+            Object.defineProperty(window, '__floePencilOnly', {
+                configurable: true,
+                get: () => pencilOnly,
+                set: (value) => {
+                    const next = value === true;
+                    if (next && !pencilOnly) toolActive = true;
+                    if (!next && pencilOnly) toolActive = null;
+                    pencilOnly = next;
+                }
+            });
+        } catch (error) {
+            // A host that redefines the flag keeps the polling-free fallback:
+            // isDrawing() above reads the plain property.
+        }
+
+        const canvasOf = () => {
+            const container = window.app && window.app.sectionContainer;
+            if (container && container.canvas) return container.canvas;
+            const map = window.app && window.app.map;
+            const host = map && typeof map.getContainer === 'function' ? map.getContainer() : null;
+            return (host && host.querySelector('canvas')) || document.querySelector('canvas');
+        };
+        const blockStrokeTouches = (event) => {
+            if (!strokeActive) return;
+            if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+            if (typeof event.stopPropagation === 'function') event.stopPropagation();
+            if (typeof event.preventDefault === 'function') event.preventDefault();
+        };
+        for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
+            window.addEventListener(type, blockStrokeTouches, { capture: true, passive: false });
+        }
+
+        const recordToolState = (event) => {
+            if (!event || typeof event.commandName !== 'string') return;
+            const raw = event.commandName;
+            const name = raw.substring(0, 5) === '.uno:' ? raw : '.uno:' + raw;
+            if (FREEHAND.indexOf(name) === -1) return;
+            state.slots = state.slots || {};
+            state.slots[name] = event.state;
+            recomputeToolState();
+        };
+        // The armed slot is exactly the one this bridge dispatches
+        // (.uno:Freeline_Unfilled, SID_DRAW_FREELINE_NOFILL). The filled alias
+        // reports false while the unfilled tool is active, so a later generic
+        // false must never deactivate an observed-active unfilled slot; the
+        // generic alias only arms when the unfilled slot was never observed.
+        const recomputeToolState = () => {
+            const slots = state.slots || {};
+            const specific = slots['.uno:Freeline_Unfilled'];
+            const generic = slots['.uno:Freeline'];
+            state.toolState = JSON.stringify(slots);
+            if (isCheckState(specific)) toolActive = true;
+            else if (isUncheckState(specific)) toolActive = false;
+            else if (isCheckState(generic)) toolActive = true;
+            // generic false with an unobserved specific slot stays unknown:
+            // availability/other-slot reports are not this slot's activity.
+        };
+        const subscribeToolState = () => {
+            const map = window.app && window.app.map;
+            if (!map || typeof map.on !== 'function') return false;
+            if (state.listenerMap === map) return true;
+            try {
+                if (state.listenerMap && typeof state.listenerMap.off === 'function' && state.listener)
+                    state.listenerMap.off('commandstatechanged', state.listener);
+                state.listener = recordToolState;
+                map.on('commandstatechanged', state.listener);
+                state.listenerMap = map;
+            } catch (error) { return false; }
+            // Seed from the engine's current state so an activation that
+            // happened before this subscription (the App's own toggleDrawing
+            // dispatch) is visible to the first stroke.
+            try {
+                const handler = map.stateChangeHandler;
+                if (handler && typeof handler.getItemValue === 'function') {
+                    for (const name of FREEHAND) {
+                        const current = handler.getItemValue(name);
+                        if (current !== undefined && current !== null) {
+                            state.slots = state.slots || {};
+                            state.slots[name] = current;
+                        }
+                    }
+                    recomputeToolState();
+                }
+            } catch (error) { /* stay unobserved */ }
+            return true;
+        };
+        // The map appears after document start. One bounded progressive retry
+        // chain (each timer schedules the next only while still unsubscribed)
+        // instead of a burst of timers that would all fire together.
+        const scheduleSubscribe = (delay) => {
+            state.subscribeAttempts = (state.subscribeAttempts || 0) + 1;
+            if (state.listenerMap || state.subscribeAttempts > 40) return;
+            setTimeout(() => {
+                if (!subscribeToolState()) scheduleSubscribe(Math.min(delay * 2, 4000));
+            }, delay);
+        };
+        if (!subscribeToolState()) scheduleSubscribe(250);
+
+        const armTool = () => {
+            if (toolActive === true) return true;
+            // Unknown state with no App arming observed: one dispatch is safe
+            // because nothing armed the slot yet. A known-inactive tool is
+            // re-armed exactly once per stroke start.
+            const map = window.app && window.app.map;
+            if (!map || typeof map.sendUnoCommand !== 'function') return false;
+            try {
+                map.sendUnoCommand('.uno:Freeline_Unfilled');
+            } catch (error) {
+                return false;
+            }
+            state.armedDispatches += 1;
+            toolActive = true;
+            return true;
+        };
+        const mouseEvent = (type, source, buttons) => new MouseEvent(type, {
+            bubbles: true, cancelable: true, view: window,
+            clientX: source.clientX, clientY: source.clientY,
+            button: 0, buttons: buttons
+        });
+
+        const onPointerDown = (event) => {
+            if (!isDrawing() || event.pointerType !== 'pen' || strokeActive) return;
+            // Only a pen stroke that actually begins on the document canvas
+            // becomes ink: a Pencil tap on the toolbar, a colour panel or any
+            // overlay keeps its normal UI behaviour. An in-progress stroke may
+            // still end outside the canvas.
+            const canvas = canvasOf();
+            if (!canvas || typeof canvas.contains !== 'function' || !canvas.contains(event.target)) return;
+            subscribeToolState();
+            if (!armTool()) return;
+            strokeActive = true;
+            state.activeStroke = true;
+            // Taking over this contact: cancel its default so WebKit emits no
+            // compatibility mouse events for the same pen contact (which the
+            // frontend would forward a second time). Scoped to taken-over
+            // canvas strokes only; toolbar and finger input stay untouched.
+            if (typeof event.preventDefault === 'function') event.preventDefault();
+            canvas.dispatchEvent(mouseEvent('mousedown', event, 1));
+            state.coreEvents += 1;
+        };
+        const onPointerMove = (event) => {
+            if (!strokeActive || event.pointerType !== 'pen') return;
+            document.dispatchEvent(mouseEvent('mousemove', event, 1));
+            state.coreEvents += 1;
+        };
+        const endStroke = (event) => {
+            if (!strokeActive) return;
+            if (event && event.pointerType && event.pointerType !== 'pen') return;
+            strokeActive = false;
+            state.activeStroke = false;
+            state.strokes += 1;
+            document.dispatchEvent(mouseEvent('mouseup', event, 0));
+            state.coreEvents += 1;
+        };
+        window.addEventListener('pointerdown', onPointerDown, { capture: true, passive: false });
+        window.addEventListener('pointermove', onPointerMove, { capture: true, passive: true });
+        window.addEventListener('pointerup', endStroke, { capture: true, passive: true });
+        window.addEventListener('pointercancel', endStroke, { capture: true, passive: true });
+
+        window.__floeOfficePenState = () => ({
+            drawing: isDrawing(), strokes: state.strokes, coreEvents: state.coreEvents,
+            armedDispatches: state.armedDispatches, activeStroke: state.activeStroke,
+            toolState: state.toolState, toolActive: toolActive === null ? null : (toolActive === true),
+            subscribeAttempts: state.subscribeAttempts || 0
+        });
     };
     if (document.readyState === 'loading')
         document.addEventListener('DOMContentLoaded', install, { once: true });

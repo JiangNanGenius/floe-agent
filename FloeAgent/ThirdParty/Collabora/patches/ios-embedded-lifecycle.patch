@@ -1,0 +1,89 @@
+--- a/net/FakeSocket.cpp
++++ b/net/FakeSocket.cpp
+@@ -87,14 +87,31 @@
+ static thread_local std::ostringstream loggingBuffer;
+ static void (*loggingCallback)(const std::string&) = nullptr;
+ 
+-static std::mutex theMutex;
+-static std::condition_variable theCV;
++// The fake-socket backend is the single in-process transport of the embedded
++// (MOBILEAPP) server: SocketPoll wakeup pipes, kit connections and the accept
++// poll all share theMutex/theCV/fds. Those objects are translation-unit
++// statics, so exit-time static destruction tears them down in an order that is
++// unrelated to the threads still using them: SocketPoll::joinThread -> stop ->
++// wakeup -> fakeSocketWrite and a finishing pollingThreadEntry -> removeSockets
++// -> Socket::closeFD -> fakeSocketClose all lock theMutex. If the mutex was
++// already destroyed, pthread_mutex_lock returns EINVAL, std::mutex::lock throws
++// std::system_error, and because the throw escapes a noexcept destructor the
++// process aborts (observed at XCTest/NSApplication exit: COOLWSDServer dtor ->
++// stop -> joinThread, plus a concurrent polling thread on the same mutex).
++// net/Socket.cpp already keeps its cross-translation-unit wakeup state alive
++// for exactly this reason (getPollWakeupsMutex/getWakeupsArray are heap
++// objects that are intentionally never destroyed). Give the whole shared
++// backend the same process lifetime instead of relying on an unspecified
++// cross-TU destruction order; the leak is bounded and ends with the process.
++static std::mutex& theMutex = *new std::mutex;
++static std::condition_variable& theCV = *new std::condition_variable;
+ 
+ static int fakeSocketLogLevel = -1;
+ 
+ static void fakeSocketDumpStateImpl();
+ 
+-static std::vector<std::unique_ptr<FakeSocketPair>> fds;
++static std::vector<std::unique_ptr<FakeSocketPair>>& fds =
++    *new std::vector<std::unique_ptr<FakeSocketPair>>;
+ 
+ static std::string flush()
+ {
+diff --git a/wsd/COOLWSD.cpp b/wsd/COOLWSD.cpp
+--- a/wsd/COOLWSD.cpp
++++ b/wsd/COOLWSD.cpp
+@@ -139,8 +139,25 @@
+ #endif
+ 
+ /// The DocBrokers container; used from elsewhere as well.
+-std::map<std::string, std::shared_ptr<DocumentBroker>> DocBrokers;
+-std::mutex DocBrokersMutex; ///< Protects DocBrokers.
++// Embedded iOS hosts keep the kit VCL execute loop and the wsd server thread
++// alive across process exit (runKitLoopInAThread never returns, DeInitVCL
++// skips Kit teardown, the native server is deliberately process-wide). The
++// exit-time destruction of this map on another thread releases live
++// DocumentBrokers whose destructor asserts its socket-poll owner thread
++// (observed at XCTest exit: __assert_rtn ProcUtil::assertCorrectThread <-
++// SocketPoll::assertCorrectThread <- DocumentBroker::~DocumentBroker <-
++// ~map via static destruction). Keep the container and its protecting mutex
++// for the whole process on IOS instead of destroying them under live owner
++// threads. Value-object ABI, extern declarations, runtime dispose/owner-thread
++// erase/save paths and the thread assert itself are untouched; non-IOS keeps
++// ordinary static destruction.
++#if defined(IOS)
++#define FLOE_IOS_NO_DESTROY [[clang::no_destroy]]
++#else
++#define FLOE_IOS_NO_DESTROY
++#endif
++FLOE_IOS_NO_DESTROY std::map<std::string, std::shared_ptr<DocumentBroker>> DocBrokers;
++FLOE_IOS_NO_DESTROY std::mutex DocBrokersMutex; ///< Protects DocBrokers.
+ 
+ namespace
+ {
+--- a/kit/Kit.cpp
++++ b/kit/Kit.cpp
+@@ -3489,9 +3489,18 @@
+ 
+ #if DOCS_SHARE_PROCESS
+ 
++// The detached iOS kit loop continues polling during process finalization.
++// Keep its shared poll registry, mutex and condition alive together; ordinary
++// poll/weak-reference cleanup and all class-static value types stay unchanged.
++#if defined(IOS)
++[[clang::no_destroy]] std::mutex KitSocketPoll::KSPollsMutex;
++[[clang::no_destroy]] std::condition_variable KitSocketPoll::KSPollsCV;
++[[clang::no_destroy]] std::vector<std::weak_ptr<KitSocketPoll>> KitSocketPoll::KSPolls;
++#else
+ std::mutex KitSocketPoll::KSPollsMutex;
+ std::condition_variable KitSocketPoll::KSPollsCV;
+ std::vector<std::weak_ptr<KitSocketPoll>> KitSocketPoll::KSPolls;
++#endif
+ 
+ #endif
+ 
