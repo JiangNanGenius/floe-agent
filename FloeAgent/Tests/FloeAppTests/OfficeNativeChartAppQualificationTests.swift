@@ -287,11 +287,62 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
             summaries.append(["name": series.name, "categories": series.categories, "values": series.values,
                 "nameFormula": series.nameFormula, "categoryFormula": series.categoryFormula, "valueFormula": series.valueFormula])
         }
-        let cells = Dictionary(uniqueKeysWithValues: sheet.cells.keys.compactMap { key -> (String, String)? in
-            let value = text(key); return value.isEmpty ? nil : (key, value)
-        })
+        let cells = try secondaryWorkbookCellSemantics(sheet, sharedStrings: strings.sharedStrings)
         let semantic: [String: Any] = ["series": summaries, "workbookSheets": book.sheetNames, "actualWorkbookCells": cells]
         return String(decoding: try JSONSerialization.data(withJSONObject: semantic, options: [.sortedKeys]), as: UTF8.self)
+    }
+
+    /// Compare numeric values as numbers, while retaining text/error types and
+    /// formulas. Saving may serialize 4740 as 4740.000000; this is not a data edit.
+    private func secondaryWorkbookCellSemantics(_ sheet: NativeChartSeries, sharedStrings: [String]) throws -> [String: [String: String]] {
+        var result: [String: [String: String]] = [:]
+        for key in Set(sheet.cells.keys).union(sheet.cellFormulas.keys) {
+            let raw = sheet.cells[key] ?? ""
+            let formula = sheet.cellFormulas[key] ?? ""
+            let formulaAttributes = sheet.cellFormulaAttributes[key] ?? [:]
+            if raw.isEmpty && formula.isEmpty && formulaAttributes.isEmpty { continue }
+            var value = raw
+            let kind: String
+            switch sheet.cellTypes[key] ?? "n" {
+            case "n":
+                kind = "number"
+                if !raw.isEmpty {
+                    guard raw.range(of: #"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"#, options: .regularExpression) != nil,
+                          let decimal = Decimal(string: raw, locale: Locale(identifier: "en_US_POSIX")), !decimal.isNaN else {
+                        throw failure("Invalid second chart workbook numeric cell: \(key)")
+                    }
+                    value = NSDecimalNumber(decimal: decimal).stringValue
+                }
+            case "s":
+                guard let index = Int(raw), sharedStrings.indices.contains(index) else { throw failure("Invalid second chart shared-string reference") }
+                kind = "text"; value = sharedStrings[index]
+            case "inlineStr", "str": kind = "text"
+            case "b":
+                guard raw == "0" || raw == "1" else { throw failure("Invalid second chart boolean cell") }
+                kind = "boolean"
+            case "e": kind = "error"
+            default: throw failure("Unsupported second chart workbook cell type")
+            }
+            let attributes = String(decoding: try JSONSerialization.data(withJSONObject: formulaAttributes, options: [.sortedKeys]), as: UTF8.self)
+            result[key] = ["type": kind, "value": value, "formula": formula, "formulaAttributes": attributes]
+        }
+        return result
+    }
+
+    func testSecondaryChartWorkbookComparisonRetainsValuesTypesAndFormulas() throws {
+        func semantic(_ type: String, _ value: String, _ formula: String = "", _ attributes: String = "") throws -> [String: [String: String]] {
+            let xml = "<worksheet><sheetData><row><c r=\"B2\" t=\"\(type)\">" +
+                (formula.isEmpty ? "" : "<f\(attributes)>\(formula)</f>") + "<v>\(value)</v></c></row></sheetData></worksheet>"
+            let sheet = NativeChartSeries(); try parse(Data(xml.utf8), sheet)
+            return try secondaryWorkbookCellSemantics(sheet, sharedStrings: [])
+        }
+        let original = try semantic("n", "4740", "SUM(A1:A2)")
+        XCTAssertEqual(try semantic("n", "4740.000000", "SUM(A1:A2)"), original)
+        XCTAssertNotEqual(try semantic("n", "4741", "SUM(A1:A2)"), original, "A real numeric change must be rejected")
+        XCTAssertNotEqual(try semantic("str", "4740", "SUM(A1:A2)"), original, "Numeric-looking text is not a number")
+        XCTAssertNotEqual(try semantic("n", "4740", "SUM(A1:A3)"), original, "A formula change must be rejected")
+        XCTAssertNotEqual(try semantic("n", "4740"), original, "Removing a formula must be rejected")
+        XCTAssertNotEqual(try semantic("n", "4740", "SUM(A1:A2)", #" t="shared" si="0" ref="B2:B3""#), original, "Formula properties must be retained")
     }
 
     private func inspectSeriesRoundtrip(_ url: URL, expectedCount: Int, root: URL) throws -> [String: Any] {
@@ -770,6 +821,8 @@ private final class NativeChartSeries: NSObject, XMLParserDelegate {
     var categories: [String] = [], values: [Double] = [], formulas: [String] = []
     var categoryFormula = "", valueFormula = "", externalID: String?
     var relationships: [String: [String: String]] = [:], cells: [String: String] = [:], cellTypes: [String: String] = [:]
+    var cellFormulas: [String: String] = [:]
+    var cellFormulaAttributes: [String: [String: String]] = [:]
     var sharedStrings: [String] = [], sheetNames: [String] = [], visibleText = ""
     private var stack: [String] = [], buffer = "", cell = "", shared = ""
     func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
@@ -778,6 +831,7 @@ private final class NativeChartSeries: NSObject, XMLParserDelegate {
         if local == "Relationship", let id = attributes["Id"] { relationships[id] = attributes }
         if local == "sheet", let name = attributes["name"] { sheetNames.append(name) }
         if local == "c" { cell = attributes["r"] ?? ""; cellTypes[cell] = attributes["t"] ?? "n" }
+        if local == "f", !cell.isEmpty { cellFormulaAttributes[cell] = attributes }
         if local == "si" { shared = "" }
     }
     func parser(_ parser: XMLParser, foundCharacters string: String) {
@@ -790,6 +844,7 @@ private final class NativeChartSeries: NSObject, XMLParserDelegate {
         if local == "v", stack.contains("cat"), stack.contains("pt") { categories.append(buffer) }
         if local == "v", stack.contains("val"), stack.contains("pt"), let value = Double(buffer) { values.append(value) }
         if local == "f" { formulas.append(buffer); if stack.contains("cat") { categoryFormula = buffer }; if stack.contains("val") { valueFormula = buffer } }
+        if !cell.isEmpty, local == "f" { cellFormulas[cell] = buffer }
         if !cell.isEmpty, local == "v" || local == "t" { cells[cell] = buffer }
         if local == "c" { cell = "" }
         if local == "si" { sharedStrings.append(shared) }
