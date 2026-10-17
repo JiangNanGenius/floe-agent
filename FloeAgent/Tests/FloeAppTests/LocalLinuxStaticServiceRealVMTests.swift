@@ -568,6 +568,31 @@ import FloeTools
                 "apt-get -s --no-install-recommends install python3-pil python3-lxml", timeout: 120)
             try await stage("apt-install", command:
                 "env DEBIAN_FRONTEND=noninteractive apt-get -y --no-install-recommends -o APT::Get::AllowUnauthenticated=false -o Acquire::AllowInsecureRepositories=false -o Acquire::AllowDowngradeToInsecureRepositories=false -o Acquire::Retries=0 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install python3-pil python3-lxml", timeout: 600)
+            // Independently verify dpkg finished configuring the real packages.
+            // The install log may be bounded before its last progress line.
+            try await stage("apt-installed-verification", command: #"""
+            set -e
+            python3 -u - <<'PY'
+            import subprocess
+            audit=subprocess.run(['dpkg','--audit'],text=True,capture_output=True)
+            print('DPKG_AUDIT_EXIT',audit.returncode,flush=True)
+            if audit.stdout: print(audit.stdout,flush=True)
+            if audit.stderr: print(audit.stderr,flush=True)
+            assert audit.returncode==0 and not audit.stdout.strip(),'dpkg reports incomplete package configuration'
+            check=subprocess.run(['apt-get','check'],text=True,capture_output=True)
+            print('APT_DEPENDENCY_CHECK_EXIT',check.returncode,flush=True)
+            print(check.stdout,flush=True)
+            if check.stderr: print(check.stderr,flush=True)
+            assert check.returncode==0,'apt dependency consistency failed'
+            for package in ('python3-pil','python3-lxml'):
+                result=subprocess.run(['dpkg-query','-W','-f=${db:Status-Status}|${Version}|${Architecture}',package],text=True,capture_output=True)
+                print('CONFIGURED_PACKAGE',package,result.returncode,result.stdout.strip(),flush=True)
+                if result.stderr: print(result.stderr,flush=True)
+                fields=result.stdout.strip().split('|')
+                assert result.returncode==0 and len(fields)==3 and fields[0]=='installed' and fields[1] and fields[2]=='riscv64',package
+            print('APT_REAL_CONFIGURATION_VERIFIED',flush=True)
+            PY
+            """#, timeout: 120)
             guard let runner = services.linuxCommandRunner() else {
                 throw FloeError.validationFailed("Production Linux command runner is unavailable")
             }
@@ -576,25 +601,51 @@ import FloeTools
                 runner: runner, cancellation: provisioningCancellation)
             try #require(venv.environmentID == id && venv.venvPath == "/floe/env/python/venv")
             evidence["venvPath"] = venv.venvPath
-            try #require(FileManager.default.fileExists(atPath: layer.appendingPathComponent("python/venv/pyvenv.cfg").path),
-                         "Shared venv was not created in this qualification's own writable layer")
+            evidence["venvPythonPath"] = venv.pythonPath
+            evidence["venvSitePackages"] = venv.sitePackages
+            try #require(venv.pythonPath == venv.venvPath + "/bin/python3"
+                         && venv.sitePackages.hasPrefix(venv.venvPath + "/"))
+            // RuntimeV2 exports its own environment data directory over 9p,
+            // not EnvironmentRegistry's legacy host container layer. Inspect
+            // the actual guest mount/config/interpreter, never assume the
+            // obsolete host <container>/python/venv mirror exists.
+            evidence["venvVerificationContract"] = "owned project environment; actual guest floe-env 9p mount and independent interpreter"
             try await stage("distro-extension-imports", command: #"""
             set -e
             dpkg-query -W -f='${Package} ${Version} ${Architecture} ${db:Status-Status}
             ' python3-pil python3-lxml
             /floe/env/python/venv/bin/python3 -u - <<'PY'
-            import sys,pathlib,importlib.metadata
+            import sys,pathlib,sysconfig,site,importlib.metadata
+            venv=pathlib.Path('/floe/env/python/venv').resolve()
+            print('VENV_INTERPRETER',sys.executable,'PREFIX',sys.prefix,'BASE',sys.base_prefix,flush=True)
+            assert sys.prefix!=sys.base_prefix
+            assert pathlib.Path(sys.prefix).resolve()==venv
+            assert pathlib.Path(sysconfig.get_path('purelib')).resolve().is_relative_to(venv)
+            configPath=venv/'pyvenv.cfg'
+            config=dict(line.split('=',1) for line in configPath.read_text().splitlines() if '=' in line)
+            config={key.strip().lower():value.strip().lower() for key,value in config.items()}
+            print('VENV_CONFIG',str(configPath),'systemSitePackages',config.get('include-system-site-packages'),flush=True)
+            assert config.get('include-system-site-packages')=='true'
+            mounts=[]
+            for line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines():
+                fields=line.split()
+                if len(fields)>6 and fields[4]=='/floe/env':
+                    separator=fields.index('-')
+                    mounts.append((fields[separator+1],fields[separator+2]))
+            print('ACTUAL_ENVIRONMENT_MOUNT',mounts,flush=True)
+            assert ('9p','floe-env') in mounts,'production venv is not in the actual environment 9p data share'
+            systemSite=pathlib.Path('/usr/lib/python3/dist-packages').resolve()
+            sitePaths=[pathlib.Path(path).resolve() for path in site.getsitepackages()]
+            print('SYSTEM_SITE_VISIBLE',str(systemSite),systemSite in sitePaths,flush=True)
+            assert systemSite in sitePaths
             from PIL import _imaging
             from lxml import etree
-            print('VENV',sys.prefix,'BASE',sys.base_prefix)
-            assert sys.prefix!=sys.base_prefix
-            assert pathlib.Path(sys.prefix).resolve()==pathlib.Path('/floe/env/python/venv').resolve()
-            config=pathlib.Path('/floe/env/python/venv/pyvenv.cfg').read_text()
-            assert 'include-system-site-packages = true' in config.lower()
             for module,distribution in ((_imaging,'Pillow'),(etree,'lxml')):
-                print('DISTRO_EXTENSION',distribution,importlib.metadata.version(distribution),module.__file__)
-                assert pathlib.Path(module.__file__).suffix=='.so'
+                modulePath=pathlib.Path(module.__file__).resolve()
+                print('DISTRO_EXTENSION',distribution,importlib.metadata.version(distribution),str(modulePath),flush=True)
+                assert modulePath.suffix=='.so' and modulePath.is_file() and modulePath.is_relative_to(systemSite)
             assert etree.fromstring(b'<root><value>real-extension</value></root>').findtext('value')=='real-extension'
+            print('PRODUCTION_VENV_DISTRO_EXTENSIONS_VERIFIED',flush=True)
             PY
             """#, timeout: 120)
             try await stage("shared-venv-pip-install", command: #"""

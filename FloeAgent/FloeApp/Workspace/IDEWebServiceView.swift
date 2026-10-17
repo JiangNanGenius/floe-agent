@@ -105,7 +105,9 @@ struct IDEWebServiceView: View {
             if let job {
                 Section(IDELanguageRunText.t("服务状态与日志", "Service status and logs")) {
                     Text(IDEWebServicePolicy.stateTitle(job.state))
-                    if job.state != .cancelled, let error = job.lastError { Text(error).textSelection(.enabled) }
+                    if job.state == .failed || job.state == .interrupted, let error = job.lastError {
+                        Text(error).textSelection(.enabled)
+                    }
                     if let progress {
                         if !progress.stdout.isEmpty || !progress.stderr.isEmpty {
                             DisclosureGroup("services.logs") {
