@@ -259,16 +259,33 @@ def prepare_header_dependencies(lock, output, cache=None):
     return includes
 
 
-def generate_headers(source, generated):
+def generate_officecfg_headers(source, generated, components):
+    """Use the pinned upstream stylesheet and namespace algorithm, never shell code."""
+    import re
+    source, generated = Path(source).resolve(), Path(generated).resolve()
+    commands = []
+    for component in components:
+        parts = component.split('/')
+        if not 1 <= len(parts) <= 3 or not all(re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*', p) for p in parts):
+            raise ValueError('Invalid officecfg namespace')
+        output = generated / ('officecfg/' + component + '.hxx')
+        output.parent.mkdir(parents=True, exist_ok=True)
+        command = ['xsltproc', '--nonet']
+        for i, part in enumerate(parts, 1):
+            command += ['--stringparam', 'ns' + str(i), part]
+        command += ['-o', output,
+                    (source / 'engine/officecfg/registry/cppheader.xsl').as_uri(),
+                    (source / ('engine/officecfg/registry/schema/org/openoffice/' + component + '.xcs')).as_uri()]
+        run(command)
+        commands.append(list(map(str, command)))
+    return commands
+
+
+def generate_headers(source, generated, officecfg_components=('Office/Common', 'Office/Draw', 'Office/Impress')):
     engine = source / 'engine'
-    (generated / 'officecfg/Office').mkdir(parents=True)
+    generate_officecfg_headers(source, generated, officecfg_components)
     (generated / 'oox/token').mkdir(parents=True)
     (generated / 'misc').mkdir()
-    for component in ('Common', 'Draw', 'Impress'):
-        run(['xsltproc', '--nonet', '--stringparam', 'ns1', 'Office',
-             '--stringparam', 'ns2', component, '-o', generated / ('officecfg/Office/' + component + '.hxx'),
-             engine / 'officecfg/registry/cppheader.xsl',
-             engine / ('officecfg/registry/schema/org/openoffice/Office/' + component + '.xcs')])
     tokens = engine / 'oox/source/token'
     generators = [
         ('tokens', 'token', engine / 'solenv/bin/generate-tokens.py',

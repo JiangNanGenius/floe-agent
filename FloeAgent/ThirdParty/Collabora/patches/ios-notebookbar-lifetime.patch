@@ -1,0 +1,14 @@
+--- a/engine/sfx2/source/notebookbar/SfxNotebookBar.cxx
++++ b/engine/sfx2/source/notebookbar/SfxNotebookBar.cxx
+@@ -136,6 +136,11 @@
+     // Singleton get method - creates an instance on first get() call
+     static NotebookBarViewManager& get()
+     {
++#if defined(IOS)
++        // The embedded kit loop outlives exit-time static destruction. Keep the
++        // view registry alive; normal removeViewData/erase still disposes views.
++        [[clang::no_destroy]]
++#endif
+         static NotebookBarViewManager gNotebookBarManager;
+         return gNotebookBarManager;
+     }

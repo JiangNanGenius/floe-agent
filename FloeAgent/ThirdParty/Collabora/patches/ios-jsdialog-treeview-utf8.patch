@@ -1,0 +1,24 @@
+--- a/engine/vcl/jsdialog/executor.cxx
++++ b/engine/vcl/jsdialog/executor.cxx
+@@ -749,9 +749,9 @@
+                     OUString sDataJSON = rtl::Uri::decode(
+                         rData.at(u"data"_ustr), rtl_UriDecodeMechanism::rtl_UriDecodeWithCharset,
+                         RTL_TEXTENCODING_UTF8);
+                     StringMap aMap(jsonToStringMap(
+-                        OUStringToOString(sDataJSON, RTL_TEXTENCODING_ASCII_US).getStr()));
++                        OUStringToOString(sDataJSON, RTL_TEXTENCODING_UTF8).getStr()));
+ 
+                     sal_Int32 nRow = o3tl::toInt32(aMap[u"row"_ustr]);
+                     sal_Int32 nColumn = o3tl::toInt32(aMap[u"column"_ustr]);
+                     OUString sValue = aMap[u"value"_ustr];
+@@ -770,9 +770,9 @@
+                     OUString sDataJSON = rtl::Uri::decode(
+                         rData.at(u"data"_ustr), rtl_UriDecodeMechanism::rtl_UriDecodeWithCharset,
+                         RTL_TEXTENCODING_UTF8);
+                     StringMap aMap(jsonToStringMap(
+-                        OUStringToOString(sDataJSON, RTL_TEXTENCODING_ASCII_US).getStr()));
++                        OUStringToOString(sDataJSON, RTL_TEXTENCODING_UTF8).getStr()));
+ 
+                     sal_Int32 nColumn = o3tl::toInt32(aMap[u"column"_ustr]);
+                     OUString sValue = aMap[u"value"_ustr];
+ 

@@ -76,9 +76,20 @@ def contract(lock, platform, *, spec=None):
         contract(lock, platform, spec=child)
         require(Path(child['archive']).name == name, 'additional archive path/name differ')
     overrides = selected.get('compileOverrides', {})
-    require(isinstance(overrides, dict) and set(overrides) <= {'flags', 'sourceIncludes', 'bundleIncludes'},
+    require(isinstance(overrides, dict) and set(overrides) <= {'flags', 'sourceIncludes', 'bundleIncludes', 'auxiliaryIncludes', 'officecfgHeaders'},
             'invalid compile overrides')
     for key, values in overrides.items():
+        if key == 'officecfgHeaders':
+            require(isinstance(values, dict) and bool(values), 'invalid officecfg header contracts')
+            for component, header in values.items():
+                require(isinstance(component, str) and 1 <= len(component.split('/')) <= 3
+                        and all(re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*', part) for part in component.split('/')),
+                        'invalid officecfg component namespace')
+                require(isinstance(header, dict) and set(header) == {
+                    'schemaSHA256', 'stylesheetSHA256', 'dtdSHA256', 'generatedSHA256'}
+                    and all(isinstance(value, str) and HEX64.fullmatch(value) for value in header.values()),
+                    'invalid officecfg input/output hashes')
+            continue
         require(isinstance(values, list) and all(isinstance(v, str) and v and '\x00' not in v for v in values),
                 'invalid compile override values')
         if key == 'flags':
@@ -87,6 +98,7 @@ def contract(lock, platform, *, spec=None):
             for value in values:
                 relative(value)
                 if key == 'sourceIncludes': require(value.startswith('engine/'), 'source include must belong to pinned engine')
+                if key == 'auxiliaryIncludes': require(value.startswith('source/engine/workdir/'), 'auxiliary root must belong to verified engine headers')
     return selected
 
 

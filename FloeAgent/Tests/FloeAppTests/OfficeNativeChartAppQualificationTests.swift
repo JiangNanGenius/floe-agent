@@ -342,11 +342,11 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
                 XCTAssertFalse(series.formulas.contains { $0.isEmpty || Double($0) != nil || $0.hasPrefix("label ") })
                 if index == 1 {
                     XCTAssertEqual(series.values, [101,202,303,404,505])
-                    XCTAssertEqual(series.name, "FLOE QA Added"); XCTAssertEqual(text("C1"), "FLOE QA Added")
+                    XCTAssertEqual(series.name, "FLOE QA 新系列"); XCTAssertEqual(text("C1"), "FLOE QA 新系列")
                 }
             }
             if expectedCount == 1 {
-                XCTAssertFalse(sheet.cells.keys.contains { text($0) == "FLOE QA Added" }, "Deleted label is still referenced by a workbook cell")
+                XCTAssertFalse(sheet.cells.keys.contains { text($0) == "FLOE QA 新系列" }, "Deleted label is still referenced by a workbook cell")
                 // Unreferenced shared-string pool entries may legitimately
                 // survive; only active cells/caches/series define deletion.
             }
@@ -359,6 +359,11 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
     private func performChartUI(_ operation: String, parameters: [String] = [], web: WKWebView,
                                 root: URL, stage: String, window: UIWindow) async throws {
         do {
+            guard web.window === window else { throw failure("Chart UI is not attached to its qualification window") }
+            // Activate the real native editing surface; the driver still requires
+            // document.hasFocus() before input and never overrides its result.
+            window.makeKey()
+            _ = web.becomeFirstResponder()
             _ = try await web.callAsyncJavaScript(
                 "if (!window.__floeChartQA || typeof window.__floeChartQA[operation] !== 'function') throw new Error('verified chart UI driver unavailable'); return JSON.stringify(await window.__floeChartQA[operation](...parameters));",
                 arguments: ["operation":operation,"parameters":parameters], in: nil, contentWorld: .page)

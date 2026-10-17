@@ -195,8 +195,39 @@ def check_built_framework_import(output, framework, sdk):
             'swiftModuleImportPassed': result.returncode == 0}
 
 
+def prepare_lifecycle_officecfg(sources, stage, contracts, commit):
+    """Generate only SHA-locked officecfg headers using the existing producer."""
+    import office_compiled_lifecycle as lifecycle
+    from build_office_filter_overlay import generate_officecfg_headers
+    source_stage = stage / 'officecfg-inputs'
+    generated = stage / 'officecfg-generated'
+    inputs = {}
+    for component, spec in contracts.items():
+        fixed = {
+            'engine/officecfg/registry/cppheader.xsl': spec['stylesheetSHA256'],
+            'engine/officecfg/registry/component-schema.dtd': spec['dtdSHA256'],
+            'engine/officecfg/registry/schema/org/openoffice/' + component + '.xcs': spec['schemaSHA256'],
+        }
+        for name, checksum in fixed.items():
+            data = lifecycle.source_bytes(sources, {'sourceFile': name, 'originalSHA256': checksum}, commit)
+            target = source_stage / name
+            if name in inputs and inputs[name] != checksum:
+                raise ValueError('Conflicting officecfg input hashes')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            inputs[name] = checksum
+    commands = generate_officecfg_headers(source_stage, generated, contracts)
+    headers = {}
+    for component, spec in contracts.items():
+        path = generated / ('officecfg/' + component + '.hxx')
+        if path.is_symlink() or digest(path) != spec['generatedSHA256']:
+            raise ValueError('Generated officecfg header differs from contract')
+        headers[str(path)] = spec['generatedSHA256']
+    return generated, {'inputSHA256': inputs, 'commands': commands, 'headerSHA256': headers}
+
+
 def _select_lifecycle_archive_single(root, output, platform, lock_path=DEFAULT_LOCK,
-                             engine_source=None, selected=None, primary=True):
+                             engine_source=None, selected=None, primary=True, aux_bundle=None):
     """Compile the embedded lifecycle overlay's engine member for this platform.
 
     The patched svdata.cxx is not part of the Mobile project sources: the VCL
@@ -228,6 +259,12 @@ def _select_lifecycle_archive_single(root, output, platform, lock_path=DEFAULT_L
     repair_lock = json.loads(
         (Path(lock_path).parent / 'engine.patch.lock.json').read_text())
     compile_spec = repair_lock['platforms'][platform]['compile']
+    aux_evidence = None
+    if aux_bundle is not None and (compile_spec.get('auxiliaryIncludes') or any(
+            s.get('compileOverrides', {}).get('auxiliaryIncludes') for s in lifecycle.member_specs(contract).values())):
+        aux_bundle = Path(aux_bundle).resolve()
+        aux_evidence = repair.check_aux_bundle(repair_lock['platforms'][platform],
+            aux_bundle, repair_lock, Path(lock_path).parent / 'engine.patch.lock.json')
     if compiled_identity['schemaVersion'] == 3:
         expected_sdk = {'IOS': 'iphoneos', 'IOSSIMULATOR': 'iphonesimulator'}[platform]
         expected_target = 'arm64-apple-ios26.0' + ('-simulator' if platform == 'IOSSIMULATOR' else '')
@@ -285,11 +322,47 @@ def _select_lifecycle_archive_single(root, output, platform, lock_path=DEFAULT_L
         vcl_spec['compile']['flags'] = list(compile_spec['flags']) + default_flags + additions.get('flags', [])
         vcl_spec['compile']['sourceIncludes'] = default_includes + additions.get('sourceIncludes', []) + list(compile_spec['sourceIncludes'])
         vcl_spec['compile']['bundleIncludes'] = additions.get('bundleIncludes', []) + list(compile_spec.get('bundleIncludes', []))
+        extra_aux = additions.get('auxiliaryIncludes', [])
+        if extra_aux and aux_evidence is None:
+            raise ValueError('Lifecycle auxiliary overrides require verified --aux-bundle')
+        if any(name not in vcl_spec['compile']['bundleIncludes'] for name in extra_aux):
+            raise ValueError('Lifecycle auxiliary override is outside the member bundle include recipe')
+        for name in extra_aux:
+            aux_root = aux_bundle / name
+            if aux_root.is_symlink() or not aux_root.is_dir() or not aux_root.resolve().is_relative_to(aux_bundle):
+                raise ValueError('Lifecycle auxiliary override escapes verified header bundle')
+        vcl_spec['compile']['auxiliaryIncludes'] = list(compile_spec.get('auxiliaryIncludes', [])) + extra_aux
+        generation = None
+        if additions.get('officecfgHeaders'):
+            generated, generation = prepare_lifecycle_officecfg(sources, stage, additions['officecfgHeaders'], lock['commit'])
         obj = owned / member
-        command = repair.build_compile_command(vcl_spec, sources, root, staged, obj)
+        depfile = owned / (member + '.d') if aux_evidence is not None or generation is not None else None
+        if depfile is not None:
+            command = repair.build_compile_command(vcl_spec, sources, root, staged, obj,
+                                                  aux_bundle=aux_bundle, depfile=depfile)
+        else:
+            command = repair.build_compile_command(vcl_spec, sources, root, staged, obj)
+        if generation is not None:
+            command.insert(command.index('-c'), '-I' + str(generated))
         with (owned / (member + '.compile.log')).open('w') as log:
             subprocess.run(list(map(str, command)), check=True,
                            stdout=log, stderr=subprocess.STDOUT)
+        if depfile is not None:
+            roots = [(aux_bundle / name).resolve() for name in vcl_spec['compile']['auxiliaryIncludes']] if aux_bundle is not None else []
+            used = any(any(path.is_relative_to(root) for root in roots)
+                       for path in repair.parse_depfile(depfile))
+            closure = repair.verify_auxiliary_closure(vcl_spec, aux_bundle, depfile) if used else []
+            if generation is not None:
+                dependencies = set(repair.parse_depfile(depfile))
+                for name, checksum in generation['headerSHA256'].items():
+                    path = Path(name)
+                    if path.resolve() not in dependencies or path.is_symlink() or digest(path) != checksum:
+                        raise ValueError('Compile did not consume the exact generated officecfg header')
+            (owned / (member + '.compile-evidence.json')).write_text(json.dumps({
+                'command': list(map(str, command)), 'auxiliaryInputEvidence': aux_evidence,
+                'depfileSHA256': repair.digest(depfile), 'auxiliaryHeaders': closure,
+                'officecfgGeneration': generation,
+                'objectSHA256': repair.digest(obj)}, indent=2) + '\n')
         objects[member] = repair.digest(obj)
         if compiled_identity['schemaVersion'] == 3:
             abi[member] = lifecycle.object_abi(obj, platform)
@@ -340,7 +413,7 @@ def _select_lifecycle_archive_single(root, output, platform, lock_path=DEFAULT_L
 
 
 def select_lifecycle_archive(root, output, platform, lock_path=DEFAULT_LOCK,
-                             engine_source=None):
+                             engine_source=None, aux_bundle=None):
     """Apply every tracked archive repair to one linker list; no source-only claims."""
     import office_compiled_lifecycle as lifecycle
     lock = json.loads(Path(lock_path).read_text())
@@ -352,11 +425,11 @@ def select_lifecycle_archive(root, output, platform, lock_path=DEFAULT_LOCK,
     for spec in selected.get('additionalArchives', {}).values():
         lifecycle.identity(lifecycle.single_lock(lock, platform, spec), platform, lock_path=lock_path)
     result = _select_lifecycle_archive_single(root, output, platform, lock_path,
-                                             engine_source, selected, True)
+                                             engine_source, selected, True, aux_bundle=aux_bundle)
     extras = {}
     for name, spec in selected.get('additionalArchives', {}).items():
         extras[name] = _select_lifecycle_archive_single(root, output, platform, lock_path,
-                                                       engine_source, spec, False)
+                                                       engine_source, spec, False, aux_bundle=aux_bundle)
     if extras:
         result['schemaVersion'] = lifecycle.schema_version(selected)
         result['additionalArchives'] = extras
@@ -408,7 +481,7 @@ def lifecycle_link_ownership(report, root, output, lock, platform, linker):
 
 
 def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
-               lock_path=DEFAULT_LOCK, engine_source=None):
+               lock_path=DEFAULT_LOCK, engine_source=None, aux_bundle=None):
     """Build the Floe native Office framework for one Apple platform SDK.
 
     The pinned device qualification keeps the ``iphoneos`` default. The cloud
@@ -513,7 +586,7 @@ def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
     project_path = output / 'source/ios/Mobile.xcodeproj/project.pbxproj'
     project = framework_project(plistlib.loads(project_path.read_bytes()), host)
     lifecycle_report = select_lifecycle_archive(root, output, platform, lock_path,
-                                                 engine_source=engine_source)
+                                                 engine_source=engine_source, aux_bundle=aux_bundle)
     if lifecycle_report is not None:
         report['embeddedLifecycleMember'] = lifecycle_report
     linker = output / 'ios-lifecycle-static-libs.list' if lifecycle_report is not None else root / 'prepared/ios-all-static-libs.list'
@@ -621,6 +694,8 @@ if __name__ == '__main__':
     parser.add_argument('--engine-source', type=Path, default=None,
                         help='Pinned git checkout supplying lifecycle members that the '
                              'built engine bundle does not carry as source')
+    parser.add_argument('--aux-bundle', type=Path, default=None,
+                        help='Verified same-commit auxiliary bundle providing headers only')
     parser.add_argument('--verify-swift-import-probe', action='store_true',
                         help='type-check the generated ImportProbe against the real header without a build')
     args = parser.parse_args()
@@ -631,5 +706,5 @@ if __name__ == '__main__':
             parser.error('bundle and output are required unless --verify-swift-import-probe is set')
         result = build_host(args.bundle, args.output, build=not args.prepare_only,
                             filter_overlay=args.filter_overlay,
-                            engine_source=args.engine_source)
+                            engine_source=args.engine_source, aux_bundle=args.aux_bundle)
         print(json.dumps({key: value for key, value in result.items() if key != 'runtimeResourceSHA256'}, indent=2))

@@ -159,6 +159,120 @@ class MultiSourceLifecycleTests(unittest.TestCase):
         base=next(recipe for recipe,source,obj in self.commands if obj.name=='svdata.o')
         self.assertIn('-DSECOND_IMPLEMENTATION',extra['compile']['flags']);self.assertNotIn('-DSECOND_IMPLEMENTATION',base['compile']['flags'])
 
+    def auxiliary_fixture(self, used=True):
+        root,out,src,command,run,ar=self.producer_fixture()
+        recipe=self.f.base/'engine.patch.lock.json';data=json.loads(recipe.read_text())
+        data['platforms']['IOS']['compile']['auxiliaryIncludes']=['source/aux']
+        recipe.write_text(json.dumps(data));aux=self.f.root/'aux';(aux/'source/aux').mkdir(parents=True)
+        def with_dependencies(section,source,bundle,staged,obj,**kwargs):
+            self.assertEqual(kwargs['aux_bundle'],aux.resolve())
+            header=aux/'source/aux/header.h' if used else staged
+            kwargs['depfile'].write_text('object: '+str(header)+'\n')
+            return command(section,source,bundle,staged,obj)
+        return root,out,src,with_dependencies,run,aux
+
+    def test_auxiliary_headers_forwarded_verified_and_recorded_per_member(self):
+        root,out,src,command,run,aux=self.auxiliary_fixture()
+        closure=[{'path':'source/aux/header.h','sha256':'1'*64,'size':1}]
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command),patch.object(repair,'check_aux_bundle',return_value={'verified':True}) as check,patch.object(repair,'verify_auxiliary_closure',return_value=closure) as verify:
+            block=producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec,aux_bundle=aux)
+        self.assertEqual(check.call_count,1);self.assertEqual(verify.call_count,2)
+        evidence=list((out/'lifecycle').rglob('*.compile-evidence.json'))
+        self.assertEqual(len(evidence),2)
+        self.assertTrue(all(json.loads(p.read_text())['auxiliaryHeaders']==closure for p in evidence))
+        self.assertNotIn('auxiliaryInputEvidence',block)
+
+    def test_unused_auxiliary_headers_record_empty_without_fabricated_closure(self):
+        root,out,src,command,run,aux=self.auxiliary_fixture(used=False)
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command),patch.object(repair,'check_aux_bundle',return_value={'verified':True}),patch.object(repair,'verify_auxiliary_closure') as verify:
+            producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec,aux_bundle=aux)
+        verify.assert_not_called()
+        self.assertTrue(all(json.loads(p.read_text())['auxiliaryHeaders']==[] for p in (out/'lifecycle').rglob('*.compile-evidence.json')))
+
+    def test_changed_auxiliary_header_rejected_before_archive_replacement(self):
+        root,out,src,command,run,aux=self.auxiliary_fixture();ar=root/self.spec['archive'];original=ar.read_bytes()
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command),patch.object(repair,'check_aux_bundle',return_value={'verified':True}),patch.object(repair,'verify_auxiliary_closure',side_effect=ValueError('header SHA differs')):
+            with self.assertRaisesRegex(ValueError,'header SHA differs'):
+                producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec,aux_bundle=aux)
+        self.assertEqual(ar.read_bytes(),original)
+
+    def test_unverified_auxiliary_input_rejected_before_compiler(self):
+        root,out,src,command,run,aux=self.auxiliary_fixture()
+        with patch.object(repair,'check_aux_bundle',side_effect=ValueError('bad auxiliary manifest')),patch.object(repair,'build_compile_command') as compiler:
+            with self.assertRaisesRegex(ValueError,'bad auxiliary manifest'):
+                producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec,aux_bundle=aux)
+        compiler.assert_not_called()
+
+    def test_member_auxiliary_override_isolated_from_other_member(self):
+        root,out,src,command,run,aux=self.auxiliary_fixture()
+        extra='source/engine/workdir/frozen/include'
+        (aux/extra).mkdir(parents=True)
+        self.spec['additionalMembers']['second.o']['compileOverrides']['auxiliaryIncludes']=[extra]
+        recipe=self.f.base/'engine.patch.lock.json';data=json.loads(recipe.read_text())
+        data['platforms']['IOS']['compile']['bundleIncludes']=[extra];recipe.write_text(json.dumps(data))
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command),patch.object(repair,'check_aux_bundle',return_value={'verified':True}),patch.object(repair,'verify_auxiliary_closure',return_value=[]):
+            producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec,aux_bundle=aux)
+        recipes={obj.name:recipe['compile'] for recipe,source,obj in self.commands}
+        self.assertIn(extra,recipes['second.o']['auxiliaryIncludes'])
+        self.assertNotIn(extra,recipes['svdata.o']['auxiliaryIncludes'])
+
+    def test_officecfg_and_auxiliary_contracts_reject_unsafe_or_unknown_fields(self):
+        valid={k:'1'*64 for k in ['schemaSHA256','stylesheetSHA256','dtdSHA256','generatedSHA256']}
+        for component in ['../../evil','Office/UI/ToolbarMode/Extra','Office/x;evil','/Office','Office//Mode']:
+            with self.subTest(component=component):
+                spec=copy.deepcopy(self.spec);spec['compileOverrides']={'officecfgHeaders':{component:valid}}
+                with self.assertRaises(ValueError):lifecycle.contract(self.f.lock,'IOS',spec=spec)
+        for roots in [['/tmp/header'],['source/engine/../header'],['unverified/header']]:
+            spec=copy.deepcopy(self.spec);spec['compileOverrides']={'auxiliaryIncludes':roots}
+            with self.assertRaises(ValueError):lifecycle.contract(self.f.lock,'IOS',spec=spec)
+        for value in [{**valid,'command':'bad'}, {k:v for k,v in valid.items() if k!='dtdSHA256'}, {**valid,'generatedSHA256':'not-a-hash'}]:
+            spec=copy.deepcopy(self.spec);spec['compileOverrides']={'officecfgHeaders':{'Office/UI/Mode':value}}
+            with self.assertRaises(ValueError):lifecycle.contract(self.f.lock,'IOS',spec=spec)
+
+    def test_officecfg_output_hash_is_checked_before_compilation(self):
+        from build_office_filter_overlay import generate_officecfg_headers
+        stage=self.f.root/'generation';component='Office/UI/ToolbarMode'
+        contract={component:{k:'1'*64 for k in ['schemaSHA256','stylesheetSHA256','dtdSHA256','generatedSHA256']}}
+        def generate(source,output,components):
+            p=output/('officecfg/'+component+'.hxx');p.parent.mkdir(parents=True);p.write_bytes(b'wrong')
+            return []
+        with patch.object(lifecycle,'source_bytes',return_value=b'input'),patch('build_office_filter_overlay.generate_officecfg_headers',side_effect=generate):
+            with self.assertRaisesRegex(ValueError,'Generated officecfg header differs'):
+                producer.prepare_lifecycle_officecfg(self.f.root,stage,contract,self.f.lock['commit'])
+
+    def test_compile_must_consume_exact_declared_generated_header(self):
+        for consume in [False,True]:
+            with self.subTest(consume=consume):
+                root,out,src,command,run,ar=self.producer_fixture()
+                # producer_fixture uses a stable output path within this test; retain inputs while clearing only the previous owned result.
+                if out.exists():
+                    import shutil
+                    shutil.rmtree(out)
+                header=self.f.root/'generated/header.hxx';header.parent.mkdir(exist_ok=True);header.write_bytes(b'expected')
+                generation={'headerSHA256':{str(header):sha(b'expected')},'commands':[],'inputSHA256':{}}
+                self.spec['additionalMembers']['second.o']['compileOverrides']['officecfgHeaders']={'Office/Mode':{k:'1'*64 for k in ['schemaSHA256','stylesheetSHA256','dtdSHA256','generatedSHA256']}}
+                def compile_command(recipe,source,bundle,staged,obj,**kwargs):
+                    if kwargs.get('depfile'):
+                        return ['generated-compiler','-c',str(staged),'-o',str(obj),'-MF',str(kwargs['depfile'])]
+                    return command(recipe,source,bundle,staged,obj)
+                def compile_run(argv,**kwargs):
+                    if argv[0]=='generated-compiler':
+                        obj=Path(argv[argv.index('-o')+1]);obj.write_bytes(macho(tag=b'generated'))
+                        Path(argv[argv.index('-MF')+1]).write_text('object: '+(str(header) if consume else '/different/header.hxx')+'\n')
+                        return type('Done',(),{'returncode':0})()
+                    return run(argv,**kwargs)
+                with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=compile_run),patch.object(repair,'build_compile_command',side_effect=compile_command),patch.object(producer,'prepare_lifecycle_officecfg',return_value=(header.parent,generation)):
+                    if consume:
+                        block=producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+                        self.assertIn('officecfgHeaders',block['memberSources']['second.o']['compileOverrides'])
+                    else:
+                        with self.assertRaisesRegex(ValueError,'Compile did not consume'):
+                            producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+                # Only failed/successful owned compilation output is reused; reset fixture-owned input paths for the next subcase.
+                if not consume:
+                    import shutil
+                    shutil.rmtree(root);shutil.rmtree(src);shutil.rmtree(out)
+
     def test_producer_rejects_wrong_original_member_before_any_compiler(self):
         root,out,src,command,run,ar=self.producer_fixture();self.spec['additionalMembers']['second.o']['originalMemberSHA256']='0'*64
         with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command):
