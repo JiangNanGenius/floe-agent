@@ -651,8 +651,88 @@ import FloeTools
             try await stage("shared-venv-pip-install", command: #"""
             env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/workspace/qualification/home PIP_CONFIG_FILE=/dev/null /floe/env/python/venv/bin/python3 -u -m pip --isolated --disable-pip-version-check --no-input --no-cache-dir install --index-url https://pypi.org/simple --retries 0 --timeout 15 --progress-bar off --only-binary=:all: python-pptx==1.0.2 openpyxl==3.1.5 python-docx==1.2.0
             """#, timeout: 600)
-            try await stage("shared-venv-pip-check", command:
-                "/floe/env/python/venv/bin/python3 -u -m pip --isolated --disable-pip-version-check check", timeout: 120)
+            // Keep the global pip check and its exact result. Debian 13's
+            // apt-listchanges 4.8 declares the distro-only debconf module as
+            // a Python distribution (Debian #1145641). Classify only that
+            // exact diagnostic after independently proving its real owner,
+            // import and apt state; every other pip error remains fatal.
+            try await stage("shared-venv-pip-check", command: #"""
+            /floe/env/python/venv/bin/python3 -u - <<'PY'
+            import importlib.metadata as metadata
+            import json,os,pathlib,subprocess,sys,tempfile
+            from pip._vendor.packaging.requirements import Requirement
+            from pip._vendor.packaging.utils import canonicalize_name
+            from pip._vendor.packaging.markers import default_environment
+            from pip._vendor.packaging.specifiers import SpecifierSet
+            prefix=pathlib.Path('/floe/env/python/venv').resolve()
+            assert pathlib.Path(sys.prefix).resolve()==prefix and sys.prefix!=sys.base_prefix
+            # Verify all active transitive dependencies, including extras if
+            # requested by any edge. Missing distributions and mismatched
+            # versions fail here independently of global pip's diagnostic.
+            pending=[('python-pptx',frozenset(), '==1.0.2'),('openpyxl',frozenset(), '==3.1.5'),('python-docx',frozenset(), '==1.2.0')]
+            visited=set()
+            while pending:
+                name,extras,specifier=pending.pop()
+                dist=metadata.distribution(name)
+                requirement=Requirement(name+specifier)
+                assert requirement.specifier.contains(dist.version,prereleases=True),(name,specifier,dist.version)
+                pythonRequirement=dist.metadata.get('Requires-Python')
+                if pythonRequirement:
+                    assert SpecifierSet(pythonRequirement).contains(default_environment()['python_full_version'],prereleases=True),(name,pythonRequirement,sys.version)
+                key=(canonicalize_name(name),extras)
+                if key in visited: continue
+                visited.add(key)
+                print('VERIFIED_DEPENDENCY',name,dist.version,str(dist.locate_file('')),sorted(extras),flush=True)
+                for text in dist.requires or ():
+                    dependency=Requirement(text)
+                    active=dependency.marker is None or any(dependency.marker.evaluate(dict(default_environment(),extra=extra)) for extra in ({''}|set(extras)))
+                    if active:
+                        assert dependency.url is None,('unverified direct-URL dependency',text)
+                        print('REQUIRED_DEPENDENCY',name,text,flush=True)
+                        pending.append((dependency.name,frozenset(dependency.extras),str(dependency.specifier)))
+            assert {'python-pptx','openpyxl','python-docx','pillow','lxml','typing-extensions','xlsxwriter','et-xmlfile'} <= {name for name,_ in visited}
+            print('OFFICE_FULL_DEPENDENCY_CLOSURE_VERIFIED',len(visited),flush=True)
+            # Isolated pip ignores PIP_CACHE_DIR and chooses XDG's pip cache.
+            # A host-backed 9p UID can fail pip's owner check despite being
+            # writable. Probe actual writes without changing ownership/modes.
+            from pip._internal.utils.filesystem import check_path_owner
+            for cache in (pathlib.Path(os.environ['PIP_CACHE_DIR']),pathlib.Path(os.environ['XDG_CACHE_HOME'])/'pip'):
+                cache.mkdir(parents=True,exist_ok=True)
+                stat=cache.stat()
+                with tempfile.TemporaryFile(dir=cache) as handle:
+                    assert handle.write(b'cache-write-probe')==17
+                    handle.seek(0);assert handle.read()==b'cache-write-probe'
+                print('CACHE_WRITE_VERIFIED',str(cache),'uid',stat.st_uid,'euid',os.geteuid(),'pipOwnerAccepted',check_path_owner(str(cache)),flush=True)
+            # No cache is needed for this read-only check. This does not
+            # modify installed packages, their metadata or pip's resolver.
+            check=subprocess.run([sys.executable,'-u','-m','pip','--isolated','--disable-pip-version-check','--no-cache-dir','check'],text=True,capture_output=True)
+            print('GLOBAL_PIP_CHECK_RAW',json.dumps({'exit':check.returncode,'stdout':check.stdout,'stderr':check.stderr},sort_keys=True),flush=True)
+            if check.returncode==0:
+                assert check.stdout.strip()=='No broken requirements found.' and not check.stderr.strip()
+                print('GLOBAL_PIP_CHECK_CLEAN',flush=True)
+            else:
+                assert check.returncode==1 and check.stdout.strip()=='apt-listchanges 4.8 requires debconf, which is not installed.' and not check.stderr.strip(),'unexpected pip dependency failure'
+                systemSite=pathlib.Path('/usr/lib/python3/dist-packages').resolve()
+                distro=metadata.distribution('apt-listchanges')
+                assert distro.version=='4.8' and pathlib.Path(distro.locate_file('')).resolve()==systemSite
+                assert any(Requirement(text).name=='debconf' for text in distro.requires or ())
+                import debconf
+                module=pathlib.Path(debconf.__file__).resolve()
+                assert module==systemSite/'debconf.py' and callable(debconf.Debconf)
+                for package in ('apt-listchanges','debconf','python3-debconf'):
+                    result=subprocess.run(['dpkg-query','-W','-f=${db:Status-Status}|${Version}',package],text=True,capture_output=True)
+                    print('SYSTEM_DEPENDENCY_PACKAGE',package,result.returncode,result.stdout.strip(),flush=True)
+                    assert result.returncode==0 and result.stdout.startswith('installed|')
+                owner=subprocess.run(['dpkg-query','-S',str(module)],text=True,capture_output=True)
+                assert owner.returncode==0 and owner.stdout.strip()=='python3-debconf: '+str(module)
+                for argv in (['dpkg','--audit'],['apt-get','check']):
+                    result=subprocess.run(argv,text=True,capture_output=True)
+                    print('SYSTEM_DEPENDENCY_AUDIT',json.dumps({'argv':argv,'exit':result.returncode,'stdout':result.stdout,'stderr':result.stderr},sort_keys=True),flush=True)
+                    assert result.returncode==0
+                    if argv[0]=='dpkg': assert not result.stdout.strip()
+                print('SYSTEM_METADATA_COMPATIBILITY_DEBIAN_1145641_VERIFIED',str(module),flush=True)
+            PY
+            """#, timeout: 120)
             try await stage("independent-imports-and-three-format-roundtrip", command: #"""
             /floe/env/python/venv/bin/python3 -u - <<'PY'
             import sys,pathlib,importlib,importlib.metadata,hashlib,json

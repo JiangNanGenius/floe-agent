@@ -240,7 +240,7 @@
   "sourcePatchSHA256": "09517b9a2dd4002a767491976762410d4cefd45172ea8cf401196268f5817ad7",
   "embeddingOverlay": {
     "patch": "patches/ios-embedding-boundaries.patch",
-    "sha256": "4e19eaed07d32a948384b6b8033e2907c4544831c9da0b6f442bee29a7281a26",
+    "sha256": "807aa8b89514fa81652b45440a6cb0258183580687378e4ab916ec5a62e8884a",
     "requiredFrameworks": [
       "GameController"
     ],
@@ -303,7 +303,7 @@
       },
       "common/RenderTiles.hpp": {
         "originalSHA256": "b7d7434a533b712514f51b0c87a5b2039a2393588d6ec49a7b94ce8c9ebb23cf",
-        "preparedSHA256": "9a6061068f674fcf484a72a25640538e3a9035651ef6720e1a7285652e1a1974"
+        "preparedSHA256": "2ad183e1acb355ee67043e59ffbac60f7a7ee06dc8fbff8758f857f5c75b192c"
       }
     }
   },

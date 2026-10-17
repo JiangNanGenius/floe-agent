@@ -746,10 +746,21 @@
 diff --git a/common/RenderTiles.hpp b/common/RenderTiles.hpp
 --- a/common/RenderTiles.hpp
 +++ b/common/RenderTiles.hpp
-@@ -20,6 +20,14 @@
+@@ -12,6 +12,8 @@
+ #pragma once
+ 
+ #include <common/Png.hpp>
++#include <common/JsonUtil.hpp>
++#include <Poco/JSON/Array.h>
+ #include <common/Rectangle.hpp>
+ #include <common/ThreadPool.hpp>
+ #include <kit/Delta.hpp>
+@@ -20,6 +22,16 @@
  #include <COKit/COKit.hxx>
  
  #include <cassert>
++#include <cmath>
++#include <sstream>
 +#include <algorithm>
 +#include <array>
 +#include <cstdio>
@@ -761,14 +772,15 @@ diff --git a/common/RenderTiles.hpp b/common/RenderTiles.hpp
  #include <memory>
  #include <vector>
  namespace RenderTiles
-@@ -143,6 +151,107 @@
-                    " took " << elapsedUs << " (" << area / elapsedUs.count() << " MP/s).");
+@@ -144,6 +156,172 @@
  
          const auto mode = document->getTileMode();
-+
+ 
 +        // Private opt-in observation at the real tile caller boundary, after
 +        // paintPartTile and before watermark/delta/PNG. Never sample previews
 +        // or infer their phase from aspect ratio, page index or pixel color.
++        bool bRawProbeAdmitted = false;
++        std::ostringstream aRawProbeRecord;
 +        const char* pRawProbe = std::getenv("FLOE_A3_CHART_RAW_PROBE");
 +        if (!isPreview && pixmapWidth > 0 && pixmapHeight > 0 && pRawProbe && pRawProbe[0] == '1' && pRawProbe[1] == '\0'
 +            && (mode == COKitTileMode::RGBA || mode == COKitTileMode::BGRA))
@@ -819,53 +831,143 @@ diff --git a/common/RenderTiles.hpp b/common/RenderTiles.hpp
 +            }
 +            if (bAdmitted)
 +            {
-+                std::size_t nBlue[5] = {}, nSamples[5] = {};
-+                std::size_t nOpaque = 0, nAlphaZero = 0, nNonBlack = 0;
-+                unsigned nMinR = 255, nMinG = 255, nMinB = 255;
-+                unsigned nMaxR = 0, nMaxG = 0, nMaxB = 0;
-+                const std::size_t nCols = std::min<std::size_t>(128, pixmapWidth);
-+                const std::size_t nRows = std::min<std::size_t>(64, pixmapHeight);
-+                for (std::size_t row = 0; row < nRows; ++row)
-+                    for (std::size_t col = 0; col < nCols; ++col)
++                bRawProbeAdmitted = true;
++                const int partIndex = document->getPartIndex(aPart.c_str(), tileCombined.getEditMode());
++                long pageWidth = 0, pageHeight = 0;
++                // Use the same per-part TWIP sizes as KitHelper::documentStatus.
++                // getDocumentSize is the CURRENT page and is not safe for preloads.
++                if (document->getDocumentType() == COKitDocumentType::PRESENTATION
++                    && tileCombined.getEditMode() == 0 && partIndex >= 0)
++                {
++                    try
 +                    {
-+                        const std::size_t x = (2 * col + 1) * pixmapWidth / (2 * nCols);
-+                        const std::size_t y = (2 * row + 1) * pixmapHeight / (2 * nRows);
-+                        const unsigned char* p = pixmap.data() + (y * pixmapWidth + x) * 4;
-+                        const unsigned alpha = p[3];
-+                        unsigned red = mode == COKitTileMode::RGBA ? p[0] : p[2];
-+                        unsigned green = p[1];
-+                        unsigned blue = mode == COKitTileMode::RGBA ? p[2] : p[0];
-+                        // Match the actual PNG encoder's premultiplied input
-+                        // contract. Report alpha-zero independently, never
-+                        // interpret its arbitrary RGB bytes as visible blue.
-+                        if (alpha > 0 && alpha < 255)
++                        Poco::JSON::Object::Ptr sizes;
++                        if (JsonUtil::parseJSON(document->getCommandValues(".uno:AllPageSize"), sizes)
++                            && sizes && sizes->has("parts"))
 +                        {
-+                            red = std::min(255u, (red * 255 + alpha / 2) / alpha);
-+                            green = std::min(255u, (green * 255 + alpha / 2) / alpha);
-+                            blue = std::min(255u, (blue * 255 + alpha / 2) / alpha);
++                            const auto parts = sizes->getArray("parts");
++                            if (parts && static_cast<std::size_t>(partIndex) < parts->size())
++                            {
++                                const auto page = parts->getObject(partIndex);
++                                if (page)
++                                {
++                                    pageWidth = page->getValue<long>("width");
++                                    pageHeight = page->getValue<long>("height");
++                                }
++                            }
 +                        }
-+                        if (alpha == 255) ++nOpaque;
-+                        if (alpha == 0) ++nAlphaZero;
-+                        if (alpha > 0 && (red || green || blue)) ++nNonBlack;
-+                        nMinR = std::min(nMinR, red); nMaxR = std::max(nMaxR, red);
-+                        nMinG = std::min(nMinG, green); nMaxG = std::max(nMaxG, green);
-+                        nMinB = std::min(nMinB, blue); nMaxB = std::max(nMaxB, blue);
-+                        const std::size_t bin = std::min<std::size_t>(4, x * 5 / pixmapWidth);
-+                        ++nSamples[bin];
-+                        if (alpha > 0 && red < 90 && green > 60 && green < 160 && blue > 180)
-+                            ++nBlue[bin];
 +                    }
-+                std::fprintf(stderr,
-+                    "[floeA3] rawtile phase=post-paint-pre-encode preview=0 part=%s editmode=%d area=%d,%d,%d,%d out=%zux%zu mode=%s tiles=%zu blue=%zu,%zu,%zu,%zu,%zu samples=%zu,%zu,%zu,%zu,%zu opaque=%zu alpha0=%zu nonblack=%zu minrgb=%u,%u,%u maxrgb=%u,%u,%u\n",
-+                    aPart.c_str(), tileCombined.getEditMode(), aGeometry[0], aGeometry[1], aGeometry[2], aGeometry[3],
-+                    pixmapWidth, pixmapHeight, mode == COKitTileMode::RGBA ? "RGBA" : "BGRA", tiles.size(),
-+                    nBlue[0], nBlue[1], nBlue[2], nBlue[3], nBlue[4],
-+                    nSamples[0], nSamples[1], nSamples[2], nSamples[3], nSamples[4],
-+                    nOpaque, nAlphaZero, nNonBlack, nMinR, nMinG, nMinB, nMaxR, nMaxG, nMaxB);
-+                std::fflush(stderr);
++                    catch (...) { pageWidth = pageHeight = 0; }
++                }
++                const double scaleX = double(pixmapWidth) / renderArea.getWidth();
++                const double scaleY = double(pixmapHeight) / renderArea.getHeight();
++                const long pagePixelsX = std::lround(pageWidth * scaleX);
++                const long pagePixelsY = std::lround(pageHeight * scaleY);
++                const long originX = std::lround(renderArea.getLeft() * scaleX);
++                const long originY = std::lround(renderArea.getTop() * scaleY);
++                const auto capturedUs = std::chrono::duration_cast<std::chrono::microseconds>(
++                    std::chrono::system_clock::now().time_since_epoch()).count();
++                aRawProbeRecord << "[floeA3] rawroi phase=post-paint-pre-watermark preview=0 part=" << aPart
++                    << " editmode=" << tileCombined.getEditMode() << " partIndex=" << partIndex
++                    << " area=" << aGeometry[0] << ',' << aGeometry[1] << ',' << aGeometry[2] << ',' << aGeometry[3]
++                    << " out=" << pixmapWidth << 'x' << pixmapHeight
++                    << " mode=" << (mode == COKitTileMode::RGBA ? "RGBA" : "BGRA")
++                    << " tileTwips=" << tileCombined.getTileWidth() << ',' << tileCombined.getTileHeight()
++                    << " tilePixels=" << pixelWidth << ',' << pixelHeight
++                    << " pageTwips=" << pageWidth << ',' << pageHeight
++                    << " pagePixels=" << pagePixelsX << ',' << pagePixelsY << " capturedUnixUs=" << capturedUs;
++                // Fixed semantic interiors are ONLY meaningful for the original,
++                // hash-locked five-category slide4 fixture in the App test.
++                // Keep <= 8192 reads per admitted geometry (5 * 1638 = 8190).
++                if (pagePixelsX <= 0 || pagePixelsY <= 0 || pagePixelsX > 100000 || pagePixelsY > 100000)
++                    aRawProbeRecord << " observation=incomplete reason=per-part-size-unavailable";
++                else
++                {
++                    const double centers[5] = { 0.1554, 0.2532, 0.3511, 0.4490, 0.5470 };
++                    const double values[5] = { 1800, 900, 240, 1620, 1080 };
++                    for (std::size_t bar = 0; bar < 5; ++bar)
++                    {
++                        const long x1 = std::max(0L, long(std::ceil((centers[bar] - 0.0135) * pagePixelsX)));
++                        const long x2 = std::min(pagePixelsX, long(std::floor((centers[bar] + 0.0135) * pagePixelsX)));
++                        const long y1 = std::max(0L, long(std::ceil((0.7376 - 0.3070 * values[bar] / 2000 + 0.004) * pagePixelsY)));
++                        const long y2 = std::min(pagePixelsY, long(std::floor((0.7376 - 0.004) * pagePixelsY)));
++                        const std::size_t width = x2 > x1 ? x2 - x1 : 0;
++                        const std::size_t height = y2 > y1 ? y2 - y1 : 0;
++                        const std::size_t expected = std::min<std::size_t>(1638, width * height);
++                        std::size_t samples = 0, blueCount = 0, opaque = 0, alphaZero = 0;
++                        for (std::size_t i = 0; i < expected; ++i)
++                        {
++                            const std::size_t pos = (2 * i + 1) * width * height / (2 * expected);
++                            const long pageX = x1 + pos % width, pageY = y1 + pos / width;
++                            const long x = pageX - originX, y = pageY - originY;
++                            if (x < 0 || y < 0 || x >= long(pixmapWidth) || y >= long(pixmapHeight))
++                                continue;
++                            // A combined render's bounding box may contain holes;
++                            // count only pixels belonging to an actual returned tile.
++                            bool requested = false;
++                            for (const auto& rect : tileRecs)
++                            {
++                                const long tx = std::lround(rect.getLeft() * scaleX);
++                                const long ty = std::lround(rect.getTop() * scaleY);
++                                if (pageX >= tx && pageX < tx + pixelWidth && pageY >= ty && pageY < ty + pixelHeight)
++                                { requested = true; break; }
++                            }
++                            if (!requested) continue;
++                            const unsigned char* p = pixmap.data() + (y * pixmapWidth + x) * 4;
++                            const unsigned alpha = p[3];
++                            unsigned red = mode == COKitTileMode::RGBA ? p[0] : p[2];
++                            unsigned green = p[1];
++                            unsigned blue = mode == COKitTileMode::RGBA ? p[2] : p[0];
++                            if (alpha > 0 && alpha < 255)
++                            {
++                                red = std::min(255u, (red * 255 + alpha / 2) / alpha);
++                                green = std::min(255u, (green * 255 + alpha / 2) / alpha);
++                                blue = std::min(255u, (blue * 255 + alpha / 2) / alpha);
++                            }
++                            ++samples;
++                            if (alpha == 255) ++opaque;
++                            if (alpha == 0) ++alphaZero;
++                            if (alpha > 0 && red <= 85 && green >= 60 && green <= 155 && blue >= 170 && int(blue) - int(red) >= 90)
++                                ++blueCount;
++                        }
++                        // bar,x,y,w,h,blue,samples,expected,opaque,alpha0.
++                        // samples==expected>0 means this geometry covers the ROI;
++                        // alpha0 must still be checked before diagnosing missing fill.
++                        aRawProbeRecord << " roi=" << bar + 1 << ',' << x1 << ',' << y1 << ',' << width << ',' << height
++                            << ',' << blueCount << ',' << samples << ',' << expected << ',' << opaque << ',' << alphaZero;
++                    }
++                }
++                aRawProbeRecord << " responseCount=" << tiles.size() << " assignedResponses=";
 +            }
 +        }
 +
- 
++
          const size_t pixmapSize = 4 * pixmapWidth * pixmapHeight;
          std::vector<char> output;
+         output.reserve(pixmapSize);
+@@ -175,6 +353,11 @@
+ 
+             // FIXME: share the same wireId for all tiles concurrently rendered.
+             TileWireId wireId = getCurrentWireId(true);
++            // Associate the pre-watermark samples with the IDs the real response
++            // builder uses below. Metadata is bounded independently of pixels.
++            if (bRawProbeAdmitted && tileIndex < 64)
++                aRawProbeRecord << (tileIndex ? ";" : "") << tileRect.getLeft() << ',' << tileRect.getTop()
++                    << ',' << wireId << ',' << tiles[tileIndex].getVersion();
+ 
+             bool skipCompress = false;
+             if (!skipCompress)
+@@ -233,6 +416,13 @@
+         }
+ 
+         pngPool.run();
++        if (bRawProbeAdmitted)
++        {
++            if (tiles.size() > 64) aRawProbeRecord << " responseIdentity=incomplete";
++            const auto record = aRawProbeRecord.str();
++            std::fprintf(stderr, "%s\n", record.c_str());
++            std::fflush(stderr);
++        }
+ 
+         duration = std::chrono::steady_clock::now() - start;
+         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(duration);

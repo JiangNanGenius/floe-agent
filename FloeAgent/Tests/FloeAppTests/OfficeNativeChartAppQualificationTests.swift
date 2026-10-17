@@ -470,7 +470,29 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         let targetConfiguration = WKSnapshotConfiguration(); targetConfiguration.afterScreenUpdates = true
         targetConfiguration.rect = CGRect(x: try XCTUnwrap(rect["x"]).doubleValue, y: try XCTUnwrap(rect["y"]).doubleValue,
             width: try XCTUnwrap(rect["width"]).doubleValue, height: try XCTUnwrap(rect["height"]).doubleValue)
+        let captureStartedAt = Date().timeIntervalSince1970
         let targetImage = try await web.takeSnapshot(configuration: targetConfiguration)
+        let captureFinishedAt = Date().timeIntervalSince1970
+        // wireId is latest RECEIVED response, not an ImageBitmap version. Preserve
+        // both sides of the snapshot plus bitmap identity; do not invent a
+        // same-version claim across the asynchronous decoder/bitmap pipeline.
+        if let afterJSON = try? await web.evaluateJavaScript("JSON.stringify(window.__floeChartTargetObserve())") as? String,
+           let afterData = afterJSON.data(using: .utf8),
+           let afterFacts = try? JSONSerialization.jsonObject(with: afterData) as? [String: Any] {
+            let beforeIdentity = facts["targetResponseIdentity"] as? String
+            let afterIdentity = afterFacts["targetResponseIdentity"] as? String
+            let receipt: [String: Any] = [
+                "before": facts, "after": afterFacts,
+                "snapshotStartedUnixSeconds": captureStartedAt, "snapshotFinishedUnixSeconds": captureFinishedAt,
+                "candidateIdentityStable": beforeIdentity != nil && beforeIdentity == afterIdentity
+                    && (facts["targetResponseIdentityComplete"] as? Bool) == true
+                    && (afterFacts["targetResponseIdentityComplete"] as? Bool) == true,
+                "identityBoundary": "latest-received-wireId-and-bitmap-object-only; not-proven-image-response-version"
+            ]
+            let receiptURL = root.appendingPathComponent(stage + "-target-response-observation.json")
+            try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]).write(to: receiptURL)
+            attach(receiptURL, stage + "-target-response-observation")
+        }
         let targetURL = root.appendingPathComponent(stage + "-target-slide.png")
         try XCTUnwrap(targetImage.pngData()).write(to: targetURL); attach(targetURL, stage + "-actual-target-slide")
         if requireOriginalFiveBars {
@@ -562,6 +584,7 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
     const manager = window.RenderManager || (app && app.definitions && app.definitions.RenderManager);
     if (!layer || !container || !manager || typeof manager.getTiles !== 'function') throw new Error('actual target-part tile observation unavailable');
     const started = performance.now(), deadline = Date.now() + 45000;
+    const imageIdentities = new WeakMap(); let nextImageIdentity = 1;
     const waitState = async predicate => {
         while (Date.now() < deadline) { const value = predicate(); if (value) return value; await new Promise(r=>setTimeout(r,50)); }
         throw new Error('target slide visibility/paint deadline: ' + JSON.stringify(window.__floeChartTargetObservation || {}));
@@ -630,17 +653,37 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         const intersectsPage=c=>c.x<pageBounds.pWidth && c.y<pageBounds.pHeight && c.x+tileSize>0 && c.y+tileSize>0;
         const coords=app.file.fileBasedView ? candidates.filter(intersectsPage) : candidates;
         const excluded=app.file.fileBasedView ? candidates.filter(c=>!intersectsPage(c)).map(c=>c.key()) : [];
-        const all=manager.getTiles(); let decoded=0,painted=0; const missing=[];
+        const all=manager.getTiles(); let decoded=0,painted=0; const missing=[],targetTileResponses=[];
         for (const coord of coords) {
             const tile=all.get(coord.key());
             const ready=!!tile && typeof tile.isReadyToDraw==='function' && tile.isReadyToDraw();
             if (ready) decoded++;
+            if (tile && targetTileResponses.length<16) {
+                const image=tile.image;
+                if (image && !imageIdentities.has(image)) imageIdentities.set(image,nextImageIdentity++);
+                const raw=Array.isArray(tile.rawDeltas) ? tile.rawDeltas : [];
+                targetTileResponses.push({key:coord.key(),x:coord.x,y:coord.y,
+                    latestReceivedWireId:Number.isFinite(tile.wireId) ? tile.wireId:null,
+                    deltaId:tile.deltaId,lastPendingId:tile.lastPendingId,decompressedId:tile.decompressedId,
+                    lastRawDeltaId:raw.length ? raw[raw.length-1].id:null,
+                    bitmapIdentity:image ? imageIdentities.get(image):null,
+                    bitmapWidth:image ? image.width:null,bitmapHeight:image ? image.height:null,
+                    lastRendered:tile.lastRendered,readyToDraw:ready,
+                    needsRehydration:typeof tile.needsRehydration==='function' ? tile.needsRehydration():null});
+            }
             // lastRendered starts as epoch time, not a paint. touchImage sets the
             // monotonic value immediately before real canvas.drawImage in TilesSection.
             if (ready && Number.isFinite(tile.lastRendered) && tile.lastRendered>=started && tile.lastRendered<=performance.now()+1) painted++;
             else if (missing.length<12) missing.push(coord.key());
         }
-        const result={selectedPart:layer._selectedPart,targetPartID:part,fileBased:!!app.file.fileBasedView,
+        const targetResponseIdentity=JSON.stringify(targetTileResponses.map(t=>[t.key,t.latestReceivedWireId,
+            t.deltaId,t.lastPendingId,t.decompressedId,t.lastRawDeltaId,t.bitmapIdentity]));
+        const partSize=Array.isArray(layer._partDimensions) ? layer._partDimensions[3]:null;
+        const result={observedUnixMs:Date.now(),observedPerformanceMs:performance.now(),
+            targetTileResponses,targetResponseIdentity,targetResponseIdentityComplete:targetTileResponses.length===coords.length,
+            identityBoundary:'latest-received-wireId; asynchronous-bitmap-version-unproven',
+            targetPartTwips:partSize ? {width:partSize.x,height:partSize.y}:null,twipsToPixels:app.twipsToPixels,
+            selectedPart:layer._selectedPart,targetPartID:part,fileBased:!!app.file.fileBasedView,
             layoutType:layout.type,fullyVisible,resolvedTargetIndex,
             layoutCandidateCount:layoutCoords.length,layoutCandidatePartIDs:Array.from(new Set(layoutCoords.map(c=>String(c.part)))).slice(0,16),
             rendererCandidateCount:renderedCoords.length,rendererCandidatePartIDs:Array.from(new Set(renderedCoords.map(c=>String(c.part)))).slice(0,16),
@@ -649,9 +692,10 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         window.__floeChartTargetObservation=result;
         return result;
     };
+    window.__floeChartTargetObserve=observe;
     const result=await waitState(()=>{const r=observe();return r.selectedPart===3 && r.resolvedTargetIndex===3 && r.fullyVisible && r.requiredTargetTiles>0 && r.decodedTargetTiles===r.requiredTargetTiles && r.paintedTargetTiles===r.requiredTargetTiles ? r:null;});
     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-    return JSON.stringify(result);
+    return JSON.stringify(observe());
     """#
 
     private func mount(_ session: OfficeFileSession, _ scene: UIWindowScene) -> UIWindow {
