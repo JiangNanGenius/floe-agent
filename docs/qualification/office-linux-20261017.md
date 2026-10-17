@@ -3,6 +3,24 @@
 Status: implementation and local qualification in progress. This is not a release or physical-device acceptance record.
 状态：实现及本地验证中。本记录不代表已发布或实机验收通过。
 
+## Latest verified status / 最新验证状态（2026-10-18）
+
+Actual Simulator App checks closed the earlier ink, exit, attachment and Linux gates. DOCX/XLSX/PPTX vector ink retained its colors and widths after save/reopen in all three formats, without the former native fatal exits. Later App runs also remained free of those exit failures. Six previously saved live-model Office outputs reopened with the newer component; no paid Office model calls were repeated. Manual Word attachment opening returned from the native editor to its original task and draft. HTML attachment → IDE → task-owned Linux service returned HTTP 200 with the exact 145-byte working file; stopping that service closed its listener without changing messages or starting a model run.
+
+实际模拟器 App 已闭环此前的笔迹、退出、附件及 Linux 检查：DOCX/XLSX/PPTX 三格式矢量笔迹的颜色、线宽及保存重开全部通过，未再出现原生致命退出；后续 App 执行也未复现原退出故障。六份已留存的真实模型 Office 文件在新组件中重开通过，未重复付费调用 Office 模型。手动 Word 附件经原生编辑器返回原任务及草稿；HTML 附件经 IDE 启动任务所属 Linux 服务，HTTP 200 正文与 145 字节工作文件完全一致，停止后监听关闭、消息未变，也未启动模型。
+
+The actual Linux guest completed signed distribution-package installation, apt/dpkg audits, Pillow/lxml imports, ordinary pip installation of three pinned packages and the full eight-node recursive dependency closure. Generated DOCX, XLSX, PPTX and PNG files reopened successfully; the owned environment and working state were cleaned up. A real model answered `2+2=` with `4` through the ordinary composer. Navigating to Notes while waiting and returning did not restore the consumed draft; a new unsent draft survived. Temporary QA configuration was removed.
+
+真实 Linux 来宾已完成签名发行版软件包安装、apt/dpkg 核验、Pillow/lxml 导入、三个固定版本包的普通 pip 安装及完整八节点递归依赖检查；实际生成 DOCX、XLSX、PPTX、PNG 并重开通过，所属环境及工作状态已清理。普通输入框经真实模型完成 `2+2=` → `4`；等待时切换手记再返回，已发送草稿未恢复，新未发送草稿保留，临时 QA 配置已清理。
+
+Native PPT chart rendering remains the only open code defect: the five-category source data and diagnostic PDF are complete, but actual painting before encoding still omits the first four bars. Chart value/series editing and save/reopen are therefore not accepted. The latest bitmap metadata experiment compiled as a native component and a locally signed full App, but did not improve rendering; its source changes were reverted and its binary is rejected for release. Graphics diagnosis continues with the existing binary. Compilation is not final component or release acceptance.
+
+原生 PPT 图表显示仍是唯一未闭环的代码缺陷：五类别源数据和诊断 PDF 完整，但实际绘制在编码前已缺前四根柱；修改数值／系列及保存重开也尚未验收。最新位图元数据实验虽完成原生组件及本地签名完整 App 编译，显示未改善，源码改动已撤回，实验二进制不得用于发布；继续使用现有二进制观察图形行为。编译通过不代表最终组件或发布验收通过。
+
+Earlier failures below are historical observations, superseded only where the latest status above records a completed check. Suites overlap and are not summed into a total. Physical Pencil pressure, palm rejection and feel remain user acceptance.
+
+下文原失败均为历史时点记录，已闭环项目以本节为准；各组测试有重叠，不合计总数。实体 Pencil 的压感、掌拒及手感仍由用户验收。
+
 ## Scope / 范围
 
 - Office Pencil, chart preservation and converted DOCX East Asian text; keyboard handoff without recreating editor sessions.
@@ -18,7 +36,7 @@ Model code runs through `exec.shell` in the resolved task-owned Linux environmen
 
 模型代码统一通过任务所属 Linux 环境的 `exec.shell` 执行；Python、Node 和安装包使用来宾命令。六个退役工具及其历史名称不再注册或发现；历史记录可读，旧任务不自动重放。文档与媒体仍引用的内部处理服务继续保留，旧审批记录不能授权新的 Shell 命令。
 
-## Evidence recorded so far / 已完成验证
+## Earlier qualification observations / 历史验证记录（后续闭环前）
 
 Toolchain: local Xcode 27, arm64 iOS 27 Simulator, Swift 6 object compilation. Full App test-build succeeds. A failed generic dual-architecture build exposed unavailable x86_64 CAD symbols; qualification uses the host-supported arm64 architecture. Original failures are retained.
 
@@ -41,8 +59,12 @@ Toolchain: local Xcode 27, arm64 iOS 27 Simulator, Swift 6 object compilation. F
 | Installed Linux guide | The actual App upgraded the managed shell guide to 1.1.1 and read back the Linux execution instructions. / 实际 App 将受管理的 Shell 指南升级至 1.1.1，并回读确认 Linux 执行说明。 |
 | Package installation | Offline installation and independent import passed in the actual Linux guest. The network diagnostic stopped during cold pip startup before reaching DNS, TLS or the package index; the separated-stage diagnostic still needs App execution. / 实际来宾离线安装及独立导入通过；网络诊断停在 pip 冷启动，尚未进入 DNS、TLS 或包索引阶段，分阶段诊断仍待 App 执行。 |
 
-## Remaining / 待完成
+Historical failures included an early blank conversion capture taken before native paint, the OSL thread-identifier lock exception and document-broker destruction failure. The corrected conversion check later confirmed readable Chinese, and later native exit checks passed as recorded above. The original failures remain distinct from those later results.
 
-PPT drawing, chart display, native teardown, the original chat-to-Office/HTML attachment transition, final saved-file reopening, final device packaging and Apple distribution still require current acceptance evidence. Attachment buttons and task-owned editor routing are implemented and pushed, but their new App tests and actual UI flow have not run. The initial open-only conversion snapshot was blank. The corrected test waits for native paint and visual inspection now confirms readable Chinese. Actual debugger captures identified separate shutdown failures in the OSL thread-identifier lock and document-broker destruction; repairs are not yet qualified. Future qualification rejects either native failure even when the test command returns success. Compilation, a dispatched engine command and a successful upload are separate states. Simulator finger drawing does not prove Apple Pencil pressure, latency or physical-device behavior. No physical-device result is claimed.
+历史失败包括原生绘制前过早截图导致的转换空白、OSL 线程标识锁异常及文档代理析构故障。后续转换检查已确认中文可读，原生退出检查也按上文通过；原失败与后续通过结果分别保留。
 
-PPT 笔迹、图表显示、原生退出、原聊天至 Office／HTML 附件的入口切换、最终产物重开、设备打包与 Apple 分发仍需当前验收证据。附件按钮及原任务编辑器路径已实现推送，新增 App 测试和实际界面流程尚未执行。首次转换快照过早而为空白；补充等待实际绘制后，中文截图检查已通过。调试器分别捕获线程标识锁和文档代理析构的退出故障，修复尚未验证；后续即使测试命令成功，出现任一原生异常也拒绝通过。编译、命令下发和上传是不同状态；模拟器手指书写不代表实体 Pencil 压感、延迟或真机表现。
+## Remaining / 当前待完成
+
+Complete native PPT five-bar display and real value/series edit → save → reopen acceptance, then qualify the final device component and App from exact source. A new unused beta version/build, internal and external TestFlight checks, and the separately authorized stable GitHub release for the existing App Store review version remain with the primary release owner. The existing App Store submission is unchanged. No final device, all-Simulator or release acceptance is claimed; no website deployment or follow-up timer is authorized by this record.
+
+完成原生 PPT 五柱图显示及真实修改数值／系列后的保存重开，再对最终设备组件和 App 做同源验证。新的未使用测试版本／构建号、内外 TestFlight 状态核验，以及另行授权的既有正式审核版本 GitHub 稳定发布，仍由主协调完成。现有 App Store 审核保持不变。本记录不声称最终设备、全模拟器或发布验收通过，不涉及网站部署或恢复跟进定时任务。

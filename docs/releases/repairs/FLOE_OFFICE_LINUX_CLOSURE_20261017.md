@@ -6,6 +6,24 @@ Date: 2026-10-17. This is a source and qualification record, not a release annou
 
 The existing App Store review build remains unchanged. Any new beta requires its own build, upload and Apple status checks. The evidence levels below are distinct.
 
+## Latest verified status / 最新验证状态（2026-10-18）
+
+Actual Simulator App checks closed the earlier ink, exit, attachment and Linux gates. DOCX/XLSX/PPTX vector ink retained its colors and widths after save/reopen in all three formats, without the former native fatal exits. Later App runs also remained free of those exit failures. Six previously saved live-model Office outputs reopened with the newer component; no paid Office model calls were repeated. Manual Word attachment opening returned from the native editor to its original task and draft. HTML attachment → IDE → task-owned Linux service returned HTTP 200 with the exact 145-byte working file; stopping that service closed its listener without changing messages or starting a model run.
+
+实际模拟器 App 已闭环此前的笔迹、退出、附件及 Linux 检查：DOCX/XLSX/PPTX 三格式矢量笔迹的颜色、线宽及保存重开全部通过，未再出现原生致命退出；后续 App 执行也未复现原退出故障。六份已留存的真实模型 Office 文件在新组件中重开通过，未重复付费调用 Office 模型。手动 Word 附件经原生编辑器返回原任务及草稿；HTML 附件经 IDE 启动任务所属 Linux 服务，HTTP 200 正文与 145 字节工作文件完全一致，停止后监听关闭、消息未变，也未启动模型。
+
+The actual Linux guest completed signed distribution-package installation, apt/dpkg audits, Pillow/lxml imports, ordinary pip installation of three pinned packages and the full eight-node recursive dependency closure. Generated DOCX, XLSX, PPTX and PNG files reopened successfully; the owned environment and working state were cleaned up. A real model answered `2+2=` with `4` through the ordinary composer. Navigating to Notes while waiting and returning did not restore the consumed draft; a new unsent draft survived. Temporary QA configuration was removed.
+
+真实 Linux 来宾已完成签名发行版软件包安装、apt/dpkg 核验、Pillow/lxml 导入、三个固定版本包的普通 pip 安装及完整八节点递归依赖检查；实际生成 DOCX、XLSX、PPTX、PNG 并重开通过，所属环境及工作状态已清理。普通输入框经真实模型完成 `2+2=` → `4`；等待时切换手记再返回，已发送草稿未恢复，新未发送草稿保留，临时 QA 配置已清理。
+
+Native PPT chart rendering remains the only open code defect: the five-category source data and diagnostic PDF are complete, but actual painting before encoding still omits the first four bars. Chart value/series editing and save/reopen are therefore not accepted. The latest bitmap metadata experiment compiled as a native component and a locally signed full App, but did not improve rendering; its source changes were reverted and its binary is rejected for release. Graphics diagnosis continues with the existing binary. Compilation is not final component or release acceptance.
+
+原生 PPT 图表显示仍是唯一未闭环的代码缺陷：五类别源数据和诊断 PDF 完整，但实际绘制在编码前已缺前四根柱；修改数值／系列及保存重开也尚未验收。最新位图元数据实验虽完成原生组件及本地签名完整 App 编译，显示未改善，源码改动已撤回，实验二进制不得用于发布；继续使用现有二进制观察图形行为。编译通过不代表最终组件或发布验收通过。
+
+Earlier failures below are historical observations, superseded only where the latest status above records a completed check. Suites overlap and are not summed into a total. Physical Pencil pressure, palm rejection and feel remain user acceptance.
+
+下文原失败均为历史时点记录，已闭环项目以本节为准；各组测试有重叠，不合计总数。实体 Pencil 的压感、掌拒及手感仍由用户验收。
+
 ## 已完成的修复 / Implemented repairs
 
 - **输入框与草稿：** iPad 长输入换行和展开；发送接受后仅清除已消费的草稿版本，保留随后输入的文字及附件。覆盖视图重建、延迟启动及相同文字重新输入。
@@ -13,18 +31,18 @@ The existing App Store review build remains unchanged. Any new beta requires its
 - **执行入口：** 模型代码统一使用任务所属 Linux 环境中的 `exec.shell`；耗时命令使用现有 jobs，网页服务使用现有 service/port 生命周期。旧的 App 内语言及重复包管理工具不再注册，旧任务不自动重放，不回退到宿主执行。
 - **取消与清理：** 确认来宾命令组退出后再报告超时或取消，有界保留已捕获输出并脱敏；删除环境时清除该环境的残留工作区绑定，保留其他环境。
 - **文件和预览：** 应用管理的设计文件使用明确归属及修订；首次读取保留实际源文件。HTML 从 IDE 接入已有静态网页服务，支持相对资源。
-- **聊天附件：** 普通打开动作接入既有文件编辑器及 IDE，绑定原任务与具体附件；保留原件和已编辑副本。用户文件采用流式导入，模型写入大小限制保持不变。HTML 服务保留原任务归属；真实入口验收待下节完成。
-- **Office：** 修复编辑器容器与键盘布局；实际转换器输出补齐中英文字体声明。原生笔输入、图表和退出生命周期的最终验收仍见下节。
+- **聊天附件：** 普通打开动作接入既有文件编辑器及 IDE，绑定原任务与具体附件；保留原件和已编辑副本。用户文件采用流式导入，模型写入大小限制保持不变。HTML 服务保留原任务归属；真实入口验收见最新状态。
+- **Office：** 修复编辑器容器与键盘布局；实际转换器输出补齐中英文字体声明。原生笔输入及退出已通过本轮模拟器检查，图表验收仍待完成。
 
 - **Composer and drafts:** iPad wrapping and expansion; an accepted send clears only its consumed draft generation. Later text and attachments survive, including view reconstruction, delayed launch and retyping the same text.
 - **Notes:** saved answers retain explicit Markdown and their full source. Editing, pagination, reading, export and AI changes share the document state; existing plain notes remain plain. Highlighter updates no longer require another tap.
 - **Execution:** model code uses the task-owned Linux guest through `exec.shell`, existing jobs and service/port lifecycles. Retired in-App language and duplicate package tools are not registered or replayed. There is no host-execution fallback.
 - **Cancellation and cleanup:** timeout/cancellation completion follows confirmed guest process-group termination. Captured output is bounded and sanitized. Environment removal clears its workspace bindings while preserving neighbours.
 - **Files and preview:** app-managed design files carry explicit ownership and revision, with the actual initial source retained. IDE HTML preview uses the existing static service and relative assets.
-- **Chat attachments:** ordinary opening reuses existing file editors and the IDE, bound to the original task and exact attachment. Originals and edited working copies remain intact. User imports stream from disk without relaxing model payload limits. HTML services retain task ownership; actual entry acceptance remains pending below.
-- **Office:** editor containment/keyboard layout and the actual converter's CJK font declarations are repaired. Final native drawing, chart and teardown acceptance remains pending below.
+- **Chat attachments:** ordinary opening reuses existing file editors and the IDE, bound to the original task and exact attachment. Originals and edited working copies remain intact. User imports stream from disk without relaxing model payload limits. HTML services retain task ownership; actual entry acceptance is recorded in the latest status above.
+- **Office:** editor containment/keyboard layout and the actual converter's CJK font declarations are repaired. Native ink and teardown passed this round's Simulator checks; chart acceptance remains open.
 
-## 已观察的验证 / Observed qualification
+## 历史验证观察 / Earlier qualification observations（后续闭环前）
 
 | 范围 / Scope | 实际证据 / Actual evidence |
 | --- | --- |
@@ -45,7 +63,17 @@ The existing App Store review build remains unchanged. Any new beta requires its
 
 Suites may overlap and are not summed into a total. Simulator strokes do not establish physical Pencil pressure, palm rejection or feel.
 
-## 尚未闭环 / Remaining acceptance
+## 当前待完成 / Current remaining acceptance
+
+- 原生 PPT 五柱图完整显示，以及真实修改数值／系列后的保存重开；保留现有保存保护，诊断 PDF 不替代源文件编辑验收。
+- 最终设备组件与完整 App 的同源验证、新的未使用测试版本／构建号及内外 TestFlight 核验，由主协调完成；之后另行完成已授权的既有正式审核版本 GitHub 稳定发布。现有 App Store 审核不变。
+- 实体 Pencil 压感、掌拒及手感由用户验收。最新实验编译成功不代表最终设备、全模拟器或发布验收通过；不部署网站、不恢复跟进定时任务。
+
+- Complete the native five-bar PPT display and actual value/series edit → save → reopen checks. Keep the existing save guards; the diagnostic PDF does not replace source-document acceptance.
+- The primary owner must qualify the final device component and full App from exact source, use a new unused beta version/build and verify internal/external TestFlight availability, then complete the separately authorized stable GitHub release for the existing review version. Its App Store submission stays unchanged.
+- Physical Pencil pressure, palm rejection and feel remain user acceptance. The latest experiment's successful build is not final device, all-Simulator or release acceptance; no website deployment or follow-up timer is included.
+
+## 原失败与当时待验收项 / Historical failures and pending checks
 
 - 匹配后续修复的原生组件仍需构建。已完成编译、链接和严格校验的新模拟器组件，在真实 App 测试结束时仍出现原生 mutex 异常，保留为失败，不能用 Xcode 的成功退出码忽略。
 - 实际调试在首次异常处确认调用来自线程登记服务；该诊断已收窄退出生命周期调查范围，但不是修复或正常验收通过。
@@ -67,7 +95,7 @@ The compiled, linked and strictly verified Simulator component still produced an
 
 No new beta upload or installability is asserted by these source checkpoints.
 
-## 后续本地检查 / Subsequent local checks
+## 历史后续本地检查 / Earlier subsequent local checks（后续闭环前）
 
 - 新的完整 App 已通过本地 Xcode 27 对象构建。Word、Excel 各两笔的颜色、线宽、保存及重开检查通过；PPT 未保存新增笔迹，仍在修复。
 - 先前真实模型生成的六份 Office 文件在新组件中重开检查通过，未重复调用模型。图表文件的数据保留与图表显示分开判断：原生页面仍只显示最后一根柱，尚未通过显示验收。
@@ -81,7 +109,7 @@ No new beta upload or installability is asserted by these source checkpoints.
 - Actual guest checks passed interpreter startup, DNS, TLS, index access and downloads of the three pinned primary packages. Dependency installation stopped because the target platform has no compatible Pillow binary package. Synthetic packages and weakened assertions do not substitute for this installation.
 - Six owned synthetic Office fixture directories were removed after per-file export verification. Other documents and environments were preserved. No new beta has been uploaded.
 
-## 分项集成检查 / Bounded integration checks
+## 历史分项集成检查 / Earlier bounded integration checks（后续闭环前）
 
 - 新原生组件已完成本地编译、链接、产物留存和严格校验，随后完整 App 对象构建通过。
 - 同一模拟器 App 执行中，Word、Excel 笔迹保存重开通过，未再检测到此前的退出异常；PPT 笔迹和图表前四根柱仍失败，整体验收未通过。两项按独立故障继续处理。
