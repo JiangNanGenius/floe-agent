@@ -241,7 +241,7 @@ def _select_lifecycle_archive_single(root, output, platform, lock_path=DEFAULT_L
     specs = lifecycle.member_specs(contract)
     snapshots = repair.snapshot_members(archive)
     names = [item['name'] for item in snapshots]
-    if len(set(names)) != len(names):
+    if any(names.count(member) != 1 for member in specs):
         raise ValueError('Duplicate lifecycle archive member names')
     by_name = lambda snap: {entry['name']: entry['sha256'] for entry in snap
                             if not entry['name'].startswith('__.SYMDEF')
@@ -305,7 +305,14 @@ def _select_lifecycle_archive_single(root, output, platform, lock_path=DEFAULT_L
     after = by_name(after_snapshot)
     if [entry['name'] for entry in snapshots] != [entry['name'] for entry in after_snapshot]:
         raise ValueError('Lifecycle archive replacement changed member order/count')
-    changed = {name for name in before if before[name] != after[name]}
+    # Archive basenames may repeat across upstream modules. Compare every
+    # payload at its original position, including every duplicate occurrence.
+    for prior_member, next_member in zip(snapshots, after_snapshot):
+        name = prior_member['name']
+        if name not in specs and not name.startswith('__.SYMDEF') and name not in ('/', '//'):
+            if prior_member['sha256'] != next_member['sha256']:
+                raise ValueError('Lifecycle archive replacement changed unexpected members')
+    changed = {name for name in specs if before[name] != after[name]}
     if set(before) != set(after) or changed != set(specs) \
             or any(after[name] != objects[name] for name in specs):
         raise ValueError('Lifecycle archive replacement changed unexpected members')

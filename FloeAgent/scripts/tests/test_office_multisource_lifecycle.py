@@ -218,6 +218,29 @@ class MultiSourceLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Duplicate lifecycle archive'):producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
         self.assertEqual(self.compiled,[])
 
+    def test_unselected_duplicate_members_preserved_positionally(self):
+        root,out,src,command,run,ar=self.producer_fixture();items=repair.read_ar_members(ar)
+        contents=[(m.name,repair.read_member(ar,m)) for m in items]
+        archive(ar,contents+[('untouched.o',b'second-distinct-payload')])
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command):
+            block=producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+        selected=out/'lifecycle'/ar.name/ar.name
+        got=[repair.read_member(selected,m) for m in repair.read_ar_members(selected) if m.name=='untouched.o']
+        self.assertEqual(got,[data for name,data in contents if name=='untouched.o']+[b'second-distinct-payload'])
+
+    def test_changed_one_unselected_duplicate_rejected(self):
+        root,out,src,command,run,ar=self.producer_fixture();items=repair.read_ar_members(ar)
+        archive(ar,[(m.name,repair.read_member(ar,m)) for m in items]+[('untouched.o',b'distinct-last')])
+        def tamper(argv,**kw):
+            result=run(argv,**kw)
+            if list(argv)[1:2]==['ranlib']:
+                p=Path(argv[-1]);items=repair.read_ar_members(p)
+                first=next(i for i,m in enumerate(items) if m.name=='untouched.o')
+                archive(p,[(m.name,b'changed' if i==first else repair.read_member(p,m)) for i,m in enumerate(items)])
+            return result
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=tamper),patch.object(repair,'build_compile_command',side_effect=command):
+            with self.assertRaisesRegex(ValueError,'unexpected members'):producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+
     def test_archive_order_tampering_rejected_after_replacement(self):
         root,out,src,command,run,ar=self.producer_fixture();original=ar.read_bytes()
         def reorder(argv,**kw):
