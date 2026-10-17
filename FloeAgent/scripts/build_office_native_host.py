@@ -333,7 +333,13 @@ def lifecycle_link_ownership(report, root, output, lock, platform, linker):
     maps = list((Path(output) / 'objects').rglob('FloeOfficeNative-LinkMap-normal-arm64.txt'))
     if len(maps) != 1:
         raise ValueError('Expected exactly one native lifecycle linkmap')
-    linkmap = maps[0]; text = linkmap.read_text()
+    linkmap = maps[0]
+    # A4: ld64 linkmaps embed raw object literal-string bytes (observed
+    # invalid UTF-8 at offset 69188717 in a genuine sim link), so strict
+    # read_text() can never pass. Replace-decoding keeps every ownership
+    # count identical: the needles are pure ASCII archive/member/object
+    # paths and U+FFFD substitution cannot create or destroy ASCII matches.
+    text = linkmap.read_bytes().decode('utf-8', errors='replace')
     inputs = [Path(line).resolve() for line in Path(linker).read_text().splitlines() if line.strip()]
     archives = {}
     for name, item in {Path(block['archive']).name: block, **block['additionalArchives']}.items():

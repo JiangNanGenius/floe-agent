@@ -2,6 +2,7 @@
 """Small synthetic receipt tests; never Office compile/render evidence."""
 import copy
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -207,7 +208,7 @@ class MultiArchiveLifecycleTests(unittest.TestCase):
                 producer.select_lifecycle_archive(f.root, f.root / 'producer', 'IOS', self.case.lock_path, engine_source=f.root)
             run.assert_not_called()
 
-    def test_actual_linkmap_paths_and_objects_measured_not_boolean_claim(self):
+    def make_linkmap_fixture(self):
         f = self.f; output = f.root / 'native-synthetic'; output.mkdir()
         objects = output / 'objects/Native.build/Objects-normal/arm64'; objects.mkdir(parents=True)
         lines=[]; inputs=[]
@@ -222,11 +223,61 @@ class MultiArchiveLifecycleTests(unittest.TestCase):
         linkmap = output / 'objects/FloeOfficeNative-LinkMap-normal-arm64.txt'; linkmap.write_text('\n'.join(lines))
         linker = output / 'linker.list'; linker.write_text('\n'.join(inputs))
         report = {'embeddedLifecycleMember':self.block, 'platformOriginalArchives':f.manifest['platformOriginalArchives']}
-        producer.lifecycle_link_ownership(report, f.root, output, f.lock, 'IOS', linker)
+        return output, linkmap, linker, report, lines, inputs
+
+    def test_actual_linkmap_paths_and_objects_measured_not_boolean_claim(self):
+        output, linkmap, linker, report, _, _ = self.make_linkmap_fixture()
+        producer.lifecycle_link_ownership(report, self.f.root, output, self.f.lock, 'IOS', linker)
         self.assertEqual(self.block['linkOwnership']['linkMapSHA256'], pinning.digest(linkmap))
         linkmap.write_text('missing actual archive member')
         with self.assertRaisesRegex(ValueError, 'absent/ambiguous'):
-            producer.lifecycle_link_ownership(report, f.root, output, f.lock, 'IOS', linker)
+            producer.lifecycle_link_ownership(report, self.f.root, output, self.f.lock, 'IOS', linker)
+
+    def test_non_utf8_literal_bytes_preserve_ownership_and_raw_file_hash(self):
+        output, linkmap, linker, report, _, _ = self.make_linkmap_fixture()
+        clean = linkmap.read_bytes()
+        # ld64 symbol/literal text can include bytes that are not UTF-8;
+        # actual archive(member) and object owner lines remain intact.
+        raw = clean + b'\n# Symbols:\n0x1 0x2 [  1] literal: \xff\xfe\xc3(\xe2\x82\n'
+        with self.assertRaises(UnicodeDecodeError): raw.decode('utf-8')
+        linkmap.write_bytes(raw)
+        producer.lifecycle_link_ownership(report, self.f.root, output, self.f.lock, 'IOS', linker)
+        proof = self.block['linkOwnership']
+        self.assertEqual(proof['linkMapSHA256'], hashlib.sha256(raw).hexdigest())
+        self.assertNotEqual(proof['linkMapSHA256'], hashlib.sha256(clean).hexdigest())
+        self.assertEqual(proof['archives']['libsallo.a']['objectSHA256ByMember'], self.child['objectSHA256ByMember'])
+        self.assertEqual(proof['linkerListSHA256'], pinning.digest(linker))
+
+    def test_non_utf8_text_never_excuses_wrong_ambiguous_or_missing_inputs(self):
+        output, linkmap, linker, report, lines, inputs = self.make_linkmap_fixture()
+        bad_literal = b'\n# unrelated literal: \xff\xfe\n'
+        # Invalid bytes are outside the owner lines in every negative fixture.
+        variants = [
+            ('missing archive member', lines[1:], 'absent/ambiguous'),
+            ('duplicate archive member', lines + [lines[0]], 'absent/ambiguous'),
+            ('wrong archive owner', [lines[0].replace('libvcllo.a(', 'other-libvcllo.a(')] + lines[1:], 'absent/ambiguous'),
+            ('missing prepared object', lines[:-1], 'Prepared source object absent/ambiguous'),
+            ('duplicate prepared object', lines + [lines[-1]], 'Prepared source object absent/ambiguous')]
+        for name, changed, error in variants:
+            with self.subTest(case=name):
+                linkmap.write_bytes('\n'.join(changed).encode() + bad_literal)
+                with self.assertRaisesRegex(ValueError, error):
+                    producer.lifecycle_link_ownership(report, self.f.root, output, self.f.lock, 'IOS', linker)
+        linkmap.write_bytes('\n'.join(lines).encode() + bad_literal)
+        linker.write_text('\n'.join(inputs + [inputs[0]]))
+        with self.assertRaisesRegex(ValueError, 'Final lifecycle linker input differs'):
+            producer.lifecycle_link_ownership(report, self.f.root, output, self.f.lock, 'IOS', linker)
+        linker.write_text('\n'.join(inputs))
+        original = self.block['archiveSHA256']; self.block['archiveSHA256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'Final lifecycle linker input differs'):
+            producer.lifecycle_link_ownership(report, self.f.root, output, self.f.lock, 'IOS', linker)
+        self.block['archiveSHA256'] = original
+        with self.assertRaisesRegex(ValueError, 'platform'):
+            producer.lifecycle_link_ownership(report, self.f.root, output, self.f.lock, 'IOSSIMULATOR', linker)
+        duplicate_map = linkmap.parent / 'duplicate' / linkmap.name
+        duplicate_map.parent.mkdir(); duplicate_map.write_bytes(linkmap.read_bytes())
+        with self.assertRaisesRegex(ValueError, 'exactly one native lifecycle linkmap'):
+            producer.lifecycle_link_ownership(report, self.f.root, output, self.f.lock, 'IOS', linker)
 
 
 if __name__ == '__main__':
