@@ -1,7 +1,7 @@
 {
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "patch": "patches/xlsx-embedded-objects.patch",
-  "patchSHA256": "78795acc4dd36f112051fa611f9c06967997f4890f1983109966bc3c7ac0ca62",
+  "patchSHA256": "7abbae7c4018ba810db3bc423b6433513698dda88fb9c9620b60e92758561ef0",
   "files": {
     "engine/sc/source/filter/inc/xcl97rec.hxx": {
       "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
@@ -58,6 +58,10 @@
     "engine/sd/source/ui/func/fuconbez.cxx": {
       "originalSHA256": "acf7ce56db8fc17fe14ea145eba509d4dc87d5c0a6a7f433139df494298a1ddd",
       "patchedSHA256": "378fb7e6f6e741297395ee3c694dbd0f7b63a557b3c3ac686f3cb4f7bfa9a83d"
+    },
+    "engine/oox/source/export/shapes.cxx": {
+      "originalSHA256": "025fd73bd88ea82ae0f81e092e62f1dc36d9ab37f9c5ed38482b9e197c3bcb03",
+      "patchedSHA256": "f9ec6ef8b837c7f1a2f704f051f998be207463eb395badd9a090236084d99c12"
     }
   },
   "archive": "source/engine/instdir/program/libscfiltlo.a",
@@ -78,7 +82,8 @@
       "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
       "members": {
         "vmlshape.o": "engine/oox/source/vml/vmlshape.cxx",
-        "chartexport.o": "engine/oox/source/export/chartexport.cxx"
+        "chartexport.o": "engine/oox/source/export/chartexport.cxx",
+        "shapes.o": "engine/oox/source/export/shapes.cxx"
       }
     },
     "libsdlo.a": {
@@ -135,7 +140,8 @@
         "archive": "source/engine/instdir/program/libooxlo.a",
         "members": {
           "vmlshape.o": "engine/oox/source/vml/vmlshape.cxx",
-          "chartexport.o": "engine/oox/source/export/chartexport.cxx"
+          "chartexport.o": "engine/oox/source/export/chartexport.cxx",
+          "shapes.o": "engine/oox/source/export/shapes.cxx"
         }
       },
       "libsdlo.a": {

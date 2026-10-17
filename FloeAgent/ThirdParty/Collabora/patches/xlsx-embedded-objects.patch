@@ -1706,3 +1706,22 @@ diff --git a/engine/sd/source/ui/func/fuconbez.cxx b/engine/sd/source/ui/func/fu
      return bReturn;
  }
  
+diff --git a/engine/oox/source/export/shapes.cxx b/engine/oox/source/export/shapes.cxx
+--- a/engine/oox/source/export/shapes.cxx
++++ b/engine/oox/source/export/shapes.cxx
+@@ -2213,6 +2213,7 @@
+ {
+     { u"com.sun.star.drawing.CaptionShape", &ShapeExport::WriteTextShape },
+     { u"com.sun.star.drawing.ClosedBezierShape", &ShapeExport::WriteClosedPolyPolygonShape },
++    { u"com.sun.star.drawing.ClosedFreeHandShape", &ShapeExport::WriteClosedPolyPolygonShape },
+     { u"com.sun.star.drawing.ConnectorShape", &ShapeExport::WriteConnectorShape },
+     { u"com.sun.star.drawing.CustomShape", &ShapeExport::WriteCustomShape },
+     { u"com.sun.star.drawing.EllipseShape", &ShapeExport::WriteEllipseShape },
+@@ -2220,6 +2221,7 @@
+     { u"com.sun.star.drawing.LineShape", &ShapeExport::WriteLineShape },
+     { u"com.sun.star.drawing.MediaShape", &ShapeExport::WriteGraphicObjectShape },
+     { u"com.sun.star.drawing.OpenBezierShape", &ShapeExport::WriteOpenPolyPolygonShape },
++    { u"com.sun.star.drawing.OpenFreeHandShape", &ShapeExport::WriteOpenPolyPolygonShape },
+     { u"com.sun.star.drawing.PolyPolygonShape", &ShapeExport::WriteClosedPolyPolygonShape },
+     { u"com.sun.star.drawing.PolyLineShape", &ShapeExport::WriteOpenPolyPolygonShape },
+     { u"com.sun.star.drawing.RectangleShape", &ShapeExport::WriteRectangleShape },

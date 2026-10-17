@@ -403,6 +403,10 @@ def build(bundle, source, output, header_cache=None, sdk='iphoneos'):
                                '-I', str(source / 'engine/sd/source/ui/inc'),
                                '-I', str(source / 'engine/sd/source/ui/slidesorter/inc'),
                                '-DSD_DLLIMPLEMENTATION']
+        elif source_file.startswith('engine/oox/'):
+            # Match the pinned oox library's implementation visibility. The
+            # shared command already supplies the module's oox/inc headers.
+            module_includes = ['-DOOX_DLLIMPLEMENTATION']
         compile_command = command[:4] + module_includes + command[4:] + [str(source / source_file), '-o', str(replacement)]
         report['compileCommands'][name] = compile_command
         if name == lock['member']:

@@ -743,3 +743,129 @@
                  {
                      LOG_DBG("Setting session [" << sessionId << "] as readonly");
                      session->setReadOnly(true);
+diff --git a/common/RenderTiles.hpp b/common/RenderTiles.hpp
+--- a/common/RenderTiles.hpp
++++ b/common/RenderTiles.hpp
+@@ -20,6 +20,14 @@
+ #include <COKit/COKit.hxx>
+ 
+ #include <cassert>
++#include <algorithm>
++#include <array>
++#include <cstdio>
++#include <cstdlib>
++#include <map>
++#include <mutex>
++#include <set>
++#include <string>
+ #include <memory>
+ #include <vector>
+ namespace RenderTiles
+@@ -143,6 +151,107 @@
+                    " took " << elapsedUs << " (" << area / elapsedUs.count() << " MP/s).");
+ 
+         const auto mode = document->getTileMode();
++
++        // Private opt-in observation at the real tile caller boundary, after
++        // paintPartTile and before watermark/delta/PNG. Never sample previews
++        // or infer their phase from aspect ratio, page index or pixel color.
++        const char* pRawProbe = std::getenv("FLOE_A3_CHART_RAW_PROBE");
++        if (!isPreview && pixmapWidth > 0 && pixmapHeight > 0 && pRawProbe && pRawProbe[0] == '1' && pRawProbe[1] == '\0'
++            && (mode == COKitTileMode::RGBA || mode == COKitTileMode::BGRA))
++        {
++            // Bound by distinct real part + tile geometry, not first-N generic
++            // paint calls. Duplicate preload requests cannot exhaust a part's
++            // quota, and another page cannot consume its reserved allowance.
++#if defined(IOS) && defined(__clang__)
++            [[clang::no_destroy]]
++#endif
++            static std::mutex aProbeMutex;
++#if defined(IOS) && defined(__clang__)
++            [[clang::no_destroy]]
++#endif
++            static std::map<std::string, std::set<std::array<int, 6>>> aProbeTiles;
++            static bool bProbeLimitReported = false;
++#if defined(IOS) && defined(__clang__)
++            [[clang::no_destroy]]
++#endif
++            static std::set<std::string> aProbePartLimitReported;
++            const std::string aPart = tileCombined.getPart();
++            const std::array<int, 6> aGeometry = {
++                renderArea.getLeft(), renderArea.getTop(), renderArea.getWidth(), renderArea.getHeight(),
++                static_cast<int>(pixmapWidth), static_cast<int>(pixmapHeight) };
++            bool bAdmitted = false;
++            {
++                std::lock_guard<std::mutex> aLock(aProbeMutex);
++                auto it = aProbeTiles.find(aPart);
++                if (!aPart.empty() && aPart.size() <= 128
++                    && (it != aProbeTiles.end() || aProbeTiles.size() < 16))
++                {
++                    auto& rSeen = aProbeTiles[aPart];
++                    if (rSeen.size() < 4 && rSeen.insert(aGeometry).second)
++                        bAdmitted = true;
++                    else if (rSeen.size() >= 4 && rSeen.find(aGeometry) == rSeen.end()
++                        && aProbePartLimitReported.insert(aPart).second)
++                    {
++                        std::fprintf(stderr, "[floeA3] rawtile limit=geometry-cap part=%s observation=incomplete\n", aPart.c_str());
++                        std::fflush(stderr);
++                    }
++                }
++                else if (!bProbeLimitReported)
++                {
++                    bProbeLimitReported = true;
++                    std::fprintf(stderr, "[floeA3] rawtile limit=part-cap observation=incomplete\n");
++                    std::fflush(stderr);
++                }
++            }
++            if (bAdmitted)
++            {
++                std::size_t nBlue[5] = {}, nSamples[5] = {};
++                std::size_t nOpaque = 0, nAlphaZero = 0, nNonBlack = 0;
++                unsigned nMinR = 255, nMinG = 255, nMinB = 255;
++                unsigned nMaxR = 0, nMaxG = 0, nMaxB = 0;
++                const std::size_t nCols = std::min<std::size_t>(128, pixmapWidth);
++                const std::size_t nRows = std::min<std::size_t>(64, pixmapHeight);
++                for (std::size_t row = 0; row < nRows; ++row)
++                    for (std::size_t col = 0; col < nCols; ++col)
++                    {
++                        const std::size_t x = (2 * col + 1) * pixmapWidth / (2 * nCols);
++                        const std::size_t y = (2 * row + 1) * pixmapHeight / (2 * nRows);
++                        const unsigned char* p = pixmap.data() + (y * pixmapWidth + x) * 4;
++                        const unsigned alpha = p[3];
++                        unsigned red = mode == COKitTileMode::RGBA ? p[0] : p[2];
++                        unsigned green = p[1];
++                        unsigned blue = mode == COKitTileMode::RGBA ? p[2] : p[0];
++                        // Match the actual PNG encoder's premultiplied input
++                        // contract. Report alpha-zero independently, never
++                        // interpret its arbitrary RGB bytes as visible blue.
++                        if (alpha > 0 && alpha < 255)
++                        {
++                            red = std::min(255u, (red * 255 + alpha / 2) / alpha);
++                            green = std::min(255u, (green * 255 + alpha / 2) / alpha);
++                            blue = std::min(255u, (blue * 255 + alpha / 2) / alpha);
++                        }
++                        if (alpha == 255) ++nOpaque;
++                        if (alpha == 0) ++nAlphaZero;
++                        if (alpha > 0 && (red || green || blue)) ++nNonBlack;
++                        nMinR = std::min(nMinR, red); nMaxR = std::max(nMaxR, red);
++                        nMinG = std::min(nMinG, green); nMaxG = std::max(nMaxG, green);
++                        nMinB = std::min(nMinB, blue); nMaxB = std::max(nMaxB, blue);
++                        const std::size_t bin = std::min<std::size_t>(4, x * 5 / pixmapWidth);
++                        ++nSamples[bin];
++                        if (alpha > 0 && red < 90 && green > 60 && green < 160 && blue > 180)
++                            ++nBlue[bin];
++                    }
++                std::fprintf(stderr,
++                    "[floeA3] rawtile phase=post-paint-pre-encode preview=0 part=%s editmode=%d area=%d,%d,%d,%d out=%zux%zu mode=%s tiles=%zu blue=%zu,%zu,%zu,%zu,%zu samples=%zu,%zu,%zu,%zu,%zu opaque=%zu alpha0=%zu nonblack=%zu minrgb=%u,%u,%u maxrgb=%u,%u,%u\n",
++                    aPart.c_str(), tileCombined.getEditMode(), aGeometry[0], aGeometry[1], aGeometry[2], aGeometry[3],
++                    pixmapWidth, pixmapHeight, mode == COKitTileMode::RGBA ? "RGBA" : "BGRA", tiles.size(),
++                    nBlue[0], nBlue[1], nBlue[2], nBlue[3], nBlue[4],
++                    nSamples[0], nSamples[1], nSamples[2], nSamples[3], nSamples[4],
++                    nOpaque, nAlphaZero, nNonBlack, nMinR, nMinG, nMinB, nMaxR, nMaxG, nMaxB);
++                std::fflush(stderr);
++            }
++        }
++
+ 
+         const size_t pixmapSize = 4 * pixmapWidth * pixmapHeight;
+         std::vector<char> output;
