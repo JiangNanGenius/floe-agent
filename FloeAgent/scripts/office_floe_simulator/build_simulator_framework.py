@@ -67,6 +67,9 @@ def overlay_patch_refs(lock):
         overlay = lock.get(section) if isinstance(lock.get(section), dict) else None
         if overlay and overlay.get(key):
             refs.append(overlay[key])
+    for spec in (lock.get('embeddedLifecycleOverlay', {}).get('compiledMembers') or {}).values():
+        refs.append(spec['patch'])
+        refs.extend(child['patch'] for child in spec.get('additionalArchives', {}).values())
     source_patch = lock.get('sourcePatch')
     if source_patch:
         refs.append(source_patch)
@@ -97,6 +100,11 @@ def validate_lock_resources(lock_path):
         if digest(patch) != overlay['sha256']:
             raise SimulatorHostBuildError(
                 f'adjacent overlay patch checksum mismatch: {patch}')
+    import office_compiled_lifecycle as lifecycle
+    for platform, spec in (lock.get('embeddedLifecycleOverlay', {}).get('compiledMembers') or {}).items():
+        lifecycle.identity(lock, platform, lock_path=lock_path)
+        for child in spec.get('additionalArchives', {}).values():
+            lifecycle.identity(lifecycle.single_lock(lock, platform, child), platform, lock_path=lock_path)
     font_overlay = root / FONT_OVERLAY_NAME
     if not font_overlay.is_file() or font_overlay.is_symlink():
         raise SimulatorHostBuildError(
@@ -215,10 +223,14 @@ def package_host(build_report, restored_dir, output_dir, *, variant,
         'schemeTaskLifecycle': build_report.get('schemeTaskLifecycle'),
         'forwardingLifecycle': build_report.get('forwardingLifecycle'),
         'kitCallbackLifecycle': build_report.get('kitCallbackLifecycle'),
-        'filterOverlay': {
-            'applied': False,
-            'reason': 'device-only linker archives; never applied to a simulator host',
-        },
+        'embeddedLifecycle': build_report.get('embeddedLifecycle'),
+        'embeddedLifecycleMember': build_report.get('embeddedLifecycleMember'),
+        'platformOriginalArchives': build_report.get('platformOriginalArchives'),
+        'filterOverlay': (
+            {**build_report['filterOverlay'], 'applied': True}
+            if (build_report.get('filterOverlay') or {}).get('patchSHA256') else
+            {'applied': False,
+             'reason': 'no simulator filter overlay was selected for this build'}),
         'hostSourceSHA256': build_report['hostSourceSHA256'],
         'executableSHA256': build_report['executableSHA256'],
         'frameworkAuxiliarySHA256': framework_aux,

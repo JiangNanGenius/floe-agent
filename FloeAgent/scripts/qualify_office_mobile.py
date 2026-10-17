@@ -13,6 +13,33 @@ from prepare_office_native_sources import prepare, DEFAULT_LOCK
 from office_release_gates import false_capabilities
 
 
+def materialize(shadow, source, relative):
+    """Replace alias links along one path with owned real directories.
+
+    The engine tree is referenced immutably instead of copied (it carries the
+    built archives and workdir), so overlay files under it are materialized
+    path by path while every sibling stays an alias into the verified bundle.
+    """
+    current_shadow, current_source = shadow, source
+    parts = Path(relative).parts
+    for part in parts[:-1]:
+        nxt_shadow = current_shadow / part
+        nxt_source = current_source / part
+        if nxt_shadow.is_symlink():
+            target = nxt_shadow.resolve(strict=True)
+            nxt_shadow.unlink()
+            nxt_shadow.mkdir()
+            for child in sorted(target.iterdir()):
+                (nxt_shadow / child.name).symlink_to(child.resolve(strict=True))
+        elif not nxt_shadow.exists():
+            nxt_shadow.mkdir()
+        current_shadow, current_source = nxt_shadow, nxt_source
+    leaf_shadow = current_shadow / parts[-1]
+    if leaf_shadow.is_symlink():
+        leaf_shadow.unlink()
+    shutil.copyfile(current_source / parts[-1], leaf_shadow)
+
+
 def shadow_sources(root, shadow, overlay, extra_overlays=None):
     """Give every patched subtree an owned copy; never write through aliases."""
     root, shadow = Path(root).resolve(), Path(shadow).resolve()
@@ -28,7 +55,7 @@ def shadow_sources(root, shadow, overlay, extra_overlays=None):
     shadow.mkdir()
     for child in source.iterdir():
         target = shadow / child.name
-        if child.name in copied_roots:
+        if child.name in copied_roots and child.name != "engine":
             if child.is_symlink() or not child.is_dir():
                 raise ValueError("Patched subtree must be a real source directory")
             shutil.copytree(child, target, symlinks=True)
@@ -40,7 +67,13 @@ def shadow_sources(root, shadow, overlay, extra_overlays=None):
                     link.unlink()
                     link.symlink_to(resolved)
         else:
+            # The engine tree (built archives, workdir, resources) stays an
+            # immutable alias; overlay files inside it are materialized only
+            # for their exact paths instead of copying gigabytes.
             target.symlink_to(child.resolve(strict=True))
+    for name in names + extra_files:
+        if Path(name).parts[0] == "engine":
+            materialize(shadow, source, name)
     # prepared/native already holds the final state of every overlapping file.
     # Merge expected hashes before checking; comparing the final DVC against
     # the intermediate embedding hash would reject every forwarding build.
@@ -50,7 +83,9 @@ def shadow_sources(root, shadow, overlay, extra_overlays=None):
                          for name, spec in extra["files"].items()})
     for name, checksum in expected.items():
         path = shadow / name
-        if any(parent.is_symlink() for parent in path.parents if parent != shadow and parent.is_relative_to(shadow)):
+        if Path(name).parts[0] != "engine" and any(
+                parent.is_symlink() for parent in path.parents
+                if parent != shadow and parent.is_relative_to(shadow)):
             raise ValueError("Native overlay parent is a source alias")
         if path.is_symlink():
             path.unlink()
@@ -136,7 +171,8 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK, sdk='iphon
     shadow = destination / "source"
     lifecycle_overlays = [entry for entry in (lock.get("schemeTaskLifecycleOverlay"),
                                               lock.get("forwardingLifecycleOverlay"),
-                                              lock.get("kitCallbackLifecycleOverlay"))
+                                              lock.get("kitCallbackLifecycleOverlay"),
+                                              lock.get("embeddedLifecycleOverlay"))
                           if entry is not None]
     shadow_sources(root, shadow, overlay, lifecycle_overlays)
     scheme_overlay = lock.get("schemeTaskLifecycleOverlay")
@@ -148,6 +184,9 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK, sdk='iphon
     kit_overlay = lock.get("kitCallbackLifecycleOverlay")
     if kit_overlay is not None:
         report["kitCallbackLifecycleOverlaySHA256"] = kit_overlay["sha256"]
+    embedded_overlay = lock.get("embeddedLifecycleOverlay")
+    if embedded_overlay is not None:
+        report["embeddedLifecycleOverlaySHA256"] = embedded_overlay["sha256"]
     # configure normally creates this root alias; the old qualified archive
     # retained the ICU data but omitted the alias. Use its one actual data file.
     icu = shadow / "ICU.dat"
@@ -165,6 +204,23 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK, sdk='iphon
                                     lock["minimumIOS"], overlay["requiredFrameworks"])
     project_path.write_bytes(plistlib.dumps(project))
     report["projectSHA256"] = digest(project_path)
+    # Per-SDK original archive identity. filter-overlay.lock.json records the
+    # DEVICE bundle's archive/member hashes, which can never validate a
+    # simulator archive (platform objects differ), so each receipt records the
+    # exact originals its own bundle contributes. A simulator receipt without a
+    # filterOverlay block therefore proves it linked unpatched chart/ink
+    # archives of its own verified identity instead of silently reusing device
+    # hashes or device objects.
+    platform_archives = {}
+    for relative in ("source/engine/instdir/program/libscfiltlo.a",
+                     "source/engine/instdir/program/libooxlo.a",
+                     "source/engine/instdir/program/libsdlo.a",
+                     "source/engine/instdir/program/libsallo.a",
+                     "source/engine/instdir/program/libvcllo.a"):
+        archive = root / relative
+        if archive.is_file():
+            platform_archives[Path(relative).name] = digest(archive)
+    report["platformOriginalArchives"] = {"sdk": sdk, "archives": platform_archives}
     command = ["xcodebuild", "-project", str(project_path.parent), "-target", "Mobile",
         "-configuration", "Release", "-sdk", sdk, "-jobs", "2",
         "-resultBundlePath", str(destination / "Mobile.xcresult"),

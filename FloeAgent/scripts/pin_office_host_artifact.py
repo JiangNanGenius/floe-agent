@@ -32,6 +32,7 @@ compatibility.
 
 import argparse
 import hashlib
+import office_compiled_lifecycle as compiled_lifecycle
 import json
 import sys
 import tempfile
@@ -65,6 +66,8 @@ LIFECYCLE_OVERLAYS = (
      "forwarding lifecycle overlay"),
     ("kitCallbackLifecycleOverlay", "kitCallbackOverlaySHA256", "kitCallbackLifecycle",
      "kit callback lifecycle overlay"),
+    ("embeddedLifecycleOverlay", "embeddedLifecycleOverlaySHA256", "embeddedLifecycle",
+     "embedded lifecycle overlay"),
 )
 
 
@@ -194,6 +197,17 @@ def check(lock_path: Path) -> int:
             continue
         if claim != overlay["sha256"]:
             mismatched.append(label)
+    # A retained local-component storage run is provenance for WHERE the
+    # artifact bytes are kept, never for what they contain: a recorded block
+    # with a non-numeric run, a non-hex commit, or a run id equal to the native
+    # build run is a corrupt or recycled claim and fails the read-only check.
+    storage = pin.get("localStorageArtifact")
+    if storage is not None:
+        if (not isinstance(storage, dict)
+                or not str(storage.get("runID", "")).isdigit()
+                or len(str(storage.get("workflowCommit", ""))) != 40
+                or str(storage.get("runID")) == str(pin.get("runID"))):
+            mismatched.append("local storage artifact provenance")
     pending = pin.get("pendingHostRebuild") is True
     # The tracked single-member engine repair (blank iOS slideshow fix) is
     # part of the host sources now: a pin that does not claim the exact
@@ -204,6 +218,15 @@ def check(lock_path: Path) -> int:
     # corrupt pin, not a rebuild request, and is rejected outright.
     repair_claim = engine_repair_claim(lock_path)
     rejected = []
+    if compiled_lifecycle.contract(lock, 'IOS') is not None:
+        block = pin.get('embeddedLifecycleMember')
+        if block is None:
+            mismatched.append('compiled embedded lifecycle member')
+        else:
+            try:
+                compiled_lifecycle.validate(block, lock, 'IOS', lock_path=lock_path)
+            except ValueError as error:
+                rejected.append(str(error))
     if repair_claim is not None:
         pin_block = pin.get("engineRepair")
         if pin_block is None:
@@ -320,6 +343,11 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
             continue
         failures.extend(lifecycle_provenance_failures(manifest, overlay, lock["commit"], block, label))
         claimed_overlay_shas[claim_key] = overlay["sha256"]
+    compiled_claim = None
+    try:
+        compiled_claim = compiled_lifecycle.validate_manifest(manifest, lock, 'IOS', lock_path=lock_path)
+    except ValueError as error:
+        failures.append(str(error))
     # The engine single-member repair: the manifest must carry the exact
     # patch/object/archive identity the tracked contract expects.
     repair_claim = engine_repair_claim(lock_path)
@@ -365,6 +393,10 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
         return 1
 
     updated = dict(pin)
+    if compiled_claim is not None:
+        updated['embeddedLifecycleMember'] = compiled_claim
+    else:
+        updated.pop('embeddedLifecycleMember', None)
     updated["archiveSHA256"] = digest(Path(artifact_zip))
     updated["manifestSHA256"] = hashes["manifestSHA256"]
     updated["executableSHA256"] = hashes["executableSHA256"]
@@ -388,6 +420,32 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
     updated["workflowCommit"] = manifest.get("workflowCommit", pin.get("workflowCommit"))
     if artifact_id:
         updated["artifactID"] = artifact_id
+    if arguments.artifact_run_id or arguments.artifact_commit:
+        if not (arguments.artifact_run_id and arguments.artifact_commit):
+            print("pin: --artifact-run-id and --artifact-commit must be given together",
+                  file=sys.stderr)
+            return 1
+        storage_run = arguments.artifact_run_id.strip()
+        storage_commit = arguments.artifact_commit.strip()
+        if not storage_run.isdigit():
+            print("pin: --artifact-run-id must be a numeric Actions run id", file=sys.stderr)
+            return 1
+        if len(storage_commit) != 40 or any(c not in "0123456789abcdef" for c in storage_commit):
+            print("pin: --artifact-commit must be a 40-character hex commit", file=sys.stderr)
+            return 1
+        if storage_run == str(updated.get("runID")):
+            print("pin: the storage run id must differ from the native build run id",
+                  file=sys.stderr)
+            return 1
+        updated["localStorageArtifact"] = {
+            "kind": "office-local-host-artifact-storage",
+            "runID": storage_run,
+            "workflowCommit": storage_commit,
+            "artifactName": manifest.get("artifactName", pin.get("artifactName")),
+            "note": "Storage-only provenance: the component bytes and native build "
+                    "identity above are unchanged; this names the Actions run that "
+                    "retains the locally built artifact for download.",
+        }
     updated["note"] = note
     updated["capabilityQualification"] = manifest_claims
     updated.pop("pendingHostRebuild", None)
@@ -413,6 +471,12 @@ def main() -> int:
                         help="the uploaded artifact id (gh run view --json artifacts)")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--check", action="store_true", help="read-only pin check (default)")
+    parser.add_argument("--artifact-run-id", default=None,
+                        help="Actions run that STORED this local component artifact "
+                             "(office-local-host-artifact storage); recorded separately "
+                             "from the native build run and never reused as one")
+    parser.add_argument("--artifact-commit", default=None,
+                        help="workflow commit of the storage run named by --artifact-run-id")
     parser.add_argument(
         "--note",
         default=("Rebuilt and re-qualified from the source in this revision "

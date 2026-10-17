@@ -22,6 +22,7 @@ import zipfile
 import bootstrap_office_host as bootstrap
 import pin_office_host_artifact as pinning
 import office_engine_repair
+import office_compiled_lifecycle as compiled_lifecycle
 from office_release_gates import CAPABILITY_FLAGS, validate_capability_claims
 
 ARCHIVE_NAME = 'OfficeNativeHost-local.zip'
@@ -172,6 +173,11 @@ def validate_archive(archive, expected_sha256, repo, source_commit):
                 expected = pinning.lifecycle_provenance(lock[section], lock['commit'])
                 require(manifest.get(block) == expected, 'Missing/forged lifecycle evidence: ' + block)
                 candidate[claim_key] = lock[section]['sha256']
+        compiled_member = compiled_lifecycle.validate_manifest(manifest, lock, 'IOS', lock_path=lock_path)
+        if compiled_member is not None:
+            candidate['embeddedLifecycleMember'] = compiled_member
+        else:
+            candidate.pop('embeddedLifecycleMember', None)
         repair = pinning.engine_repair_claim(lock_path)
         if repair is not None:
             repair_lock, _ = office_engine_repair.tracked_contract(base / 'engine.patch.lock.json', platform='IOS')
@@ -230,6 +236,9 @@ def validate_archive(archive, expected_sha256, repo, source_commit):
         paths = {'engine.lock.json'}
         paths.update('FloeOfficeNative/' + name for name in sources)
         paths.update(lock[section]['patch'] for section in ('embeddingOverlay', *(x[0] for x in LIFECYCLES)) if section in lock)
+        for spec in (lock.get('embeddedLifecycleOverlay', {}).get('compiledMembers') or {}).values():
+            paths.add(spec['patch'])
+            paths.update(child['patch'] for child in spec.get('additionalArchives', {}).values())
         if filters_path.exists():
             paths.update(('filter-overlay.lock.json', filters['patch']))
             paths.update(spec['patch'] for spec in filters.get('headerDependencies', {}).values() if spec.get('patch'))

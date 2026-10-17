@@ -39,16 +39,26 @@ class PinEngineRepairClaim(unittest.TestCase):
         self.repair_lock, self.section, _ = repair.load_lock(
             PATCH_LOCK, "IOS")
         self.claim = repair.expected_manifest_block(self.repair_lock, self.section)
+        self.write_pin(lambda block: block.pop("engineRepair", None))
 
     def run_check(self, lock_path=None):
         return subprocess.run(
-            [sys.executable, str(SCRIPTS / "pin_office_host_artifact.py"),
+            [sys.executable, "-B", str(SCRIPTS / "pin_office_host_artifact.py"),
              "--lock", str(lock_path or self.lock), "--check"],
             capture_output=True, text=True, check=False, timeout=120)
 
     def write_pin(self, mutate):
         lock = json.loads(TRACKED_LOCK.read_text())
-        mutate(lock["qualifiedHostArtifact"])
+        # This suite isolates the engineRepair contract, not the live checkout's
+        # pending source rebuild. Compiled lifecycle has its own strict tests.
+        lock.get("embeddedLifecycleOverlay", {}).pop("compiledMembers", None)
+        block = lock["qualifiedHostArtifact"]
+        block.pop("embeddedLifecycleMember", None)
+        block["hostSourceSHA256"] = {name: pin.source_hashes()[name] for name in block["hostSourceSHA256"]}
+        for section, claim_key, _, _ in pin.LIFECYCLE_OVERLAYS:
+            if section in lock: block[claim_key] = lock[section]["sha256"]
+        block.pop("pendingHostRebuild", None)
+        mutate(block)
         self.lock.write_text(json.dumps(lock, indent=2) + "\n")
 
     def test_missing_claim_reports_source_ahead(self):

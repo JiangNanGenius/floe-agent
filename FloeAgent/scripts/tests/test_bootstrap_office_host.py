@@ -44,6 +44,12 @@ class BootstrapEngineRepairClaim(unittest.TestCase):
 
     def write_pin(self, engine_repair):
         lock = json.loads(TRACKED_LOCK.read_text())
+        # The engineRepair-only fixture must not accidentally depend on the
+        # repository's currently pending host source rebuild.
+        lock["qualifiedHostArtifact"]["hostSourceSHA256"] = {
+            name: bootstrap.digest(COLLAB / "FloeOfficeNative" / name)
+            for name in lock["qualifiedHostArtifact"]["hostSourceSHA256"]}
+        lock["qualifiedHostArtifact"].pop("embeddedLifecycleMember", None)
         if engine_repair is None:
             lock["qualifiedHostArtifact"].pop("engineRepair", None)
         else:

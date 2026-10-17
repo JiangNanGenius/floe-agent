@@ -968,7 +968,14 @@ class NokitLockPathContractTests(unittest.TestCase):
             lock = json.loads(path.read_text())
             self.assertNotIn('kitCallbackLifecycleOverlay', lock)
             facts = build_simulator_framework.validate_lock_resources(path)
-            self.assertEqual(facts['patchCount'], 4)
+            required = {lock[name]['patch'] for name in ('embeddingOverlay',
+                        'schemeTaskLifecycleOverlay', 'forwardingLifecycleOverlay', 'embeddedLifecycleOverlay')}
+            if lock.get('sourcePatch'): required.add(lock['sourcePatch'])
+            for spec in lock['embeddedLifecycleOverlay'].get('compiledMembers', {}).values():
+                required.add(spec['patch'])
+                required.update(child['patch'] for child in spec.get('additionalArchives', {}).values())
+            self.assertEqual(facts['patchCount'], len(required))
+            self.assertEqual(set(build_simulator_framework.overlay_patch_refs(lock)), required)
             # Every referenced overlay input resolves next to the copied lock.
             tracked = json.loads(build_simulator_framework.LOCK_PATH.read_text())
             tracked_root = build_simulator_framework.LOCK_PATH.parent
@@ -1096,6 +1103,41 @@ def make_fake_host_bundle(root, *, variant='kit', kit_applied=True):
         'runtimeResourceSHA256': resource_hashes,
         'runtimeResourceDirectories': resource_dirs,
     }
+    receipt['embeddedLifecycle'] = {
+        'patchSHA256': LOCK['embeddedLifecycleOverlay']['sha256'],
+        'sourceCommit': LOCK['commit'],
+        'files': {n: spec['preparedSHA256'] for n, spec in
+                  LOCK['embeddedLifecycleOverlay']['files'].items()}}
+    receipt['platformOriginalArchives'] = {'sdk': 'iphonesimulator',
+                                           'archives': {'libscfiltlo.a': 's' * 64,
+                                                        'libvcllo.a': '6' * 64}}
+    if (LOCK.get('embeddedLifecycleOverlay', {}).get('compiledMembers') or {}
+            ).get('IOSSIMULATOR'):
+        import office_compiled_lifecycle as lifecycle
+        receipt['embeddedLifecycleMember'] = {
+            **lifecycle.identity(LOCK, 'IOSSIMULATOR'),
+            'originalArchiveSHA256': '6' * 64,
+            'archiveSHA256': '7' * 64,
+            'objectSHA256ByMember': {'svdata.o': '8' * 64},
+            'linkerListSHA256': '9' * 64}
+    selected = (LOCK.get('embeddedLifecycleOverlay', {}).get('compiledMembers') or {}).get('IOSSIMULATOR', {})
+    extras = selected.get('additionalArchives', {})
+    if extras:
+        block = receipt['embeddedLifecycleMember']
+        block['additionalArchives'] = {}
+        for name, spec in extras.items():
+            block['additionalArchives'][name] = {
+                **lifecycle.identity(lifecycle.single_lock(LOCK, 'IOSSIMULATOR', spec), 'IOSSIMULATOR'),
+                'originalArchiveSHA256': 'a' * 64, 'archiveSHA256': 'b' * 64,
+                'objectSHA256ByMember': {member: 'c' * 64 for member in spec['members']},
+                'linkerListSHA256': 'd' * 64}
+            receipt['platformOriginalArchives']['archives'][name] = 'a' * 64
+        block['linkOwnership'] = {'linkMapSHA256': 'e' * 64, 'linkerListSHA256': 'f' * 64,
+            'archives': {name: {'archiveSHA256': item['archiveSHA256'], 'objectSHA256ByMember': item['objectSHA256ByMember']}
+                         for name, item in {Path(block['archive']).name:block, **block['additionalArchives']}.items()},
+            'preparedObjects': {name: {'preparedSourceSHA256': spec['preparedSHA256'], 'objectSHA256': '0' * 64,
+                                      'objectName': Path(name).stem + '.o'}
+                                for name, spec in LOCK['embeddedLifecycleOverlay']['files'].items()}}
     if kit_applied:
         receipt['kitCallbackLifecycle'] = {
             'patchSHA256': LOCK['kitCallbackLifecycleOverlay']['sha256'],
@@ -1115,6 +1157,44 @@ def make_fake_host_bundle(root, *, variant='kit', kit_applied=True):
 
 
 class SimulatorHostVerifyTests(unittest.TestCase):
+    def test_missing_embedded_lifecycle_provenance_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = make_fake_host_bundle(tmp)
+            path = bundle / 'native-host-simulator.json'
+            receipt = json.loads(path.read_text())
+            del receipt['embeddedLifecycle']
+            path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(ValueError, 'embedded lifecycle'):
+                bootstrap_office_host.verify_simulator_host(bundle)
+
+    def test_false_and_stale_embedded_lifecycle_rejected(self):
+        for mutate in (lambda r: r['embeddedLifecycle'].update({'patchSHA256': '0' * 64}),
+                       lambda r: r['embeddedLifecycle'].update({'sourceCommit': 'f' * 40}),
+                       lambda r: r['embeddedLifecycle']['files'].update(
+                           {'net/FakeSocket.cpp': '1' * 64}),
+                       lambda r: r['embeddedLifecycle'].update({'files': {}})):
+            with self.subTest(mutate=mutate), tempfile.TemporaryDirectory() as tmp:
+                bundle = make_fake_host_bundle(tmp)
+                path = bundle / 'native-host-simulator.json'
+                receipt = json.loads(path.read_text())
+                mutate(receipt)
+                path.write_text(json.dumps(receipt))
+                with self.assertRaisesRegex(ValueError, 'embedded lifecycle'):
+                    bootstrap_office_host.verify_simulator_host(bundle)
+
+    def test_missing_platform_archive_identity_rejected(self):
+        for mutate in (lambda r: r.pop('platformOriginalArchives'),
+                       lambda r: r['platformOriginalArchives'].update({'sdk': 'iphoneos'}),
+                       lambda r: r['platformOriginalArchives'].update({'archives': {}})):
+            with self.subTest(mutate=mutate), tempfile.TemporaryDirectory() as tmp:
+                bundle = make_fake_host_bundle(tmp)
+                path = bundle / 'native-host-simulator.json'
+                receipt = json.loads(path.read_text())
+                mutate(receipt)
+                path.write_text(json.dumps(receipt))
+                with self.assertRaisesRegex(ValueError, 'platform original archive'):
+                    bootstrap_office_host.verify_simulator_host(bundle)
+
     def test_stale_host_sources_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             bundle = make_fake_host_bundle(tmp)
@@ -1204,6 +1284,43 @@ class SimulatorHostVerifyTests(unittest.TestCase):
                 bootstrap_office_host.verify_simulator_host(bundle)
 
 
+    def test_compiled_lifecycle_missing_or_forged_never_downgrades(self):
+        for field, value in [('schemaVersion', 0), ('compiledPatchSHA256', '0' * 64),
+                             ('patchedSourceSHA256', '0' * 64), ('platform', 'IOS'),
+                             ('members', {}), ('compilePassed', 1)]:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                bundle = make_fake_host_bundle(tmp)
+                path = bundle / 'native-host-simulator.json'
+                receipt = json.loads(path.read_text())
+                receipt['embeddedLifecycleMember'][field] = value
+                path.write_text(json.dumps(receipt))
+                with self.assertRaisesRegex(ValueError, 'Compiled embedded lifecycle'):
+                    bootstrap_office_host.verify_simulator_host(bundle)
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = make_fake_host_bundle(tmp)
+            path = bundle / 'native-host-simulator.json'
+            receipt = json.loads(path.read_text());receipt.pop('embeddedLifecycleMember')
+            path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(ValueError, 'Compiled embedded lifecycle'):
+                bootstrap_office_host.verify_simulator_host(bundle)
+
+    def test_historical_receipt_remains_explicitly_noncanonical(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = make_fake_host_bundle(tmp)
+            path = bundle / 'native-host-simulator.json'
+            receipt = json.loads(path.read_text())
+            keys = {'platform', 'archive', 'originalArchiveSHA256', 'archiveSHA256',
+                    'objectSHA256ByMember', 'members', 'linkerListSHA256', 'patchSHA256', 'sourceCommit'}
+            receipt['embeddedLifecycleMember'] = {k: v for k, v in receipt['embeddedLifecycleMember'].items() if k in keys}
+            path.write_text(json.dumps(receipt))
+            result = bootstrap_office_host.verify_simulator_host(bundle)
+            self.assertEqual(result['compiledLifecycleContract'], 'historical-pre-schema-not-canonical')
+            receipt['embeddedLifecycleMember']['schemaVersion'] = 0
+            path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(ValueError, 'Compiled embedded lifecycle'):
+                bootstrap_office_host.verify_simulator_host(bundle)
+
+
 class InstallSimulatorHostTests(unittest.TestCase):
     def test_xcconfig_rewrite_preserves_device_line(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1256,9 +1373,29 @@ class InstallSimulatorHostTests(unittest.TestCase):
                         archive.write(path, path.relative_to(bundle.parent))
             # Use the real lock from the checkout for verification.
             facts = install_simulator_host.install(zip_path, repo, set_xcconfig=False)
-            self.assertEqual(facts['installKey'], 'simulator-36704184429-kit')
-            self.assertTrue((repo / 'FloeAgent/Vendor/Office/simulator-36704184429-kit'
+            execsha = hashlib.sha256(
+                (bundle / 'FloeOfficeNative.framework' / 'FloeOfficeNative').read_bytes()
+            ).hexdigest()[:12]
+            expected = f'simulator-36704184429-kit-{execsha}'
+            self.assertEqual(facts['installKey'], expected)
+            self.assertFalse(facts['alreadyInstalled'])
+            self.assertTrue((repo / 'FloeAgent/Vendor/Office' / expected
                              / 'OfficeNativeHostSimulator/FloeOfficeNative.framework/FloeOfficeNative').is_file())
+            # The exact same component re-installs into the verified target.
+            bundle2 = make_fake_host_bundle(Path(tmp) / 'stage2')
+            zip2 = Path(tmp) / 'second.zip'
+            with zipfile.ZipFile(zip2, 'w') as archive:
+                for path in sorted(bundle2.rglob('*')):
+                    if path.is_dir():
+                        archive.write(path, path.relative_to(bundle2.parent).as_posix() + '/')
+                for path in sorted(bundle2.rglob('*')):
+                    if path.is_file():
+                        archive.write(path, path.relative_to(bundle2.parent))
+            facts2 = install_simulator_host.install(zip2, repo, set_xcconfig=False)
+            self.assertTrue(facts2['alreadyInstalled'])
+            self.assertEqual(facts2['installedAt'], facts['installedAt'])
+            installed = list((repo / 'FloeAgent/Vendor/Office').iterdir())
+            self.assertEqual([d.name for d in installed], [expected])
 
 
 class EmbedSimulatorPathTests(unittest.TestCase):

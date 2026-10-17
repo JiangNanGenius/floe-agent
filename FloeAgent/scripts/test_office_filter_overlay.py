@@ -129,7 +129,8 @@ class LinkerSelectionTests(unittest.TestCase):
                 'files': {'one.cxx': {'originalSHA256': 'source', 'patchedSHA256': 'patched'}},
                 'archive': 'libscfiltlo.a', 'member': 'export.o', 'members': {'export.o': 'one.cxx'}}
         report = {'sourceCommit': lock['commit'], 'patchSHA256': lock['patchSHA256'],
-                  'sourceFiles': lock['files'], 'compilePassed': True, 'archiveReplacementPassed': True}
+                  'sourceFiles': lock['files'], 'compilePassed': True, 'archiveReplacementPassed': True,
+                  'platform': 'IOS'}
         specs = {}
         for name, obj in [('libscfiltlo.a', 'export.o'), ('libooxlo.a', 'shape.o')]:
             before = b'!<arch>\n' + member(obj, b'old') + member('unrelated.o', b'unchanged')
@@ -137,10 +138,12 @@ class LinkerSelectionTests(unittest.TestCase):
             (bundle / name).write_bytes(before)
             (overlay / name).write_bytes(after)
             spec = {'archive': name, 'originalArchiveSHA256': digest(before), 'members': {obj: 'one.cxx'}}
-            result = {'archiveSHA256': digest(after), 'objectSHA256ByMember': {obj: digest(b'new')}}
+            result = {'archiveSHA256': digest(after), 'objectSHA256ByMember': {obj: digest(b'new')},
+                      'originalArchiveSHA256': digest(before)}
             if name == 'libscfiltlo.a':
                 lock['originalArchiveSHA256'] = spec['originalArchiveSHA256']
-                report.update(result, objectSHA256=digest(b'new'))
+                report.update(result, objectSHA256=digest(b'new'),
+                              originalArchiveSHA256=digest(before))
             else:
                 specs[name] = spec
                 report['additionalArchives'] = {name: result}
@@ -151,6 +154,61 @@ class LinkerSelectionTests(unittest.TestCase):
         (bundle / 'prepared/ios-all-static-libs.list').write_text(
             '\n'.join(str(bundle / name) for name in ('libscfiltlo.a', 'libooxlo.a', 'untouched.a')) + '\n')
         return lock_file, bundle, overlay, output
+
+    def simulator_lock(self, lock):
+        lock['simulator'] = {'archive': lock['archive'], 'member': lock['member'],
+                             'members': dict(lock['members']),
+                             'additionalArchives': {name: {'archive': spec['archive'],
+                                                           'members': dict(spec['members'])}
+                                                    for name, spec in lock['additionalArchives'].items()}}
+        return lock
+
+    def test_simulator_selection_uses_its_own_archive_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_file, bundle, overlay, output = self.fixture(Path(directory))
+            lock = self.simulator_lock(json.loads(lock_file.read_text()))
+            report = json.loads((overlay / 'filter-overlay.json').read_text())
+            report['platform'] = 'IOSSIMULATOR'
+            (overlay / 'filter-overlay.json').write_text(json.dumps(report))
+            lock_file.write_text(json.dumps(lock))
+            with patch('build_office_filter_overlay.FILTER_LOCK', lock_file):
+                linker, selected = select_linker_archive(bundle, overlay, output,
+                                                         platform='IOSSIMULATOR')
+            self.assertEqual(selected['platform'], 'IOSSIMULATOR')
+            self.assertEqual(selected['originalArchiveSHA256ByName']['libscfiltlo.a'],
+                             report['originalArchiveSHA256'])
+
+    def test_device_objects_can_never_satisfy_a_simulator_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_file, bundle, overlay, output = self.fixture(Path(directory))
+            lock = self.simulator_lock(json.loads(lock_file.read_text()))
+            lock_file.write_text(json.dumps(lock))
+            with patch('build_office_filter_overlay.FILTER_LOCK', lock_file):
+                with self.assertRaises(ValueError):
+                    select_linker_archive(bundle, overlay, output, platform='IOSSIMULATOR')
+
+    def test_simulator_report_cannot_satisfy_a_device_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_file, bundle, overlay, output = self.fixture(Path(directory))
+            report = json.loads((overlay / 'filter-overlay.json').read_text())
+            report['platform'] = 'IOSSIMULATOR'
+            (overlay / 'filter-overlay.json').write_text(json.dumps(report))
+            with patch('build_office_filter_overlay.FILTER_LOCK', lock_file):
+                with self.assertRaises(ValueError):
+                    select_linker_archive(bundle, overlay, output)
+
+    def test_simulator_originals_must_match_the_linked_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_file, bundle, overlay, output = self.fixture(Path(directory))
+            lock = self.simulator_lock(json.loads(lock_file.read_text()))
+            lock_file.write_text(json.dumps(lock))
+            report = json.loads((overlay / 'filter-overlay.json').read_text())
+            report['platform'] = 'IOSSIMULATOR'
+            report['originalArchiveSHA256'] = '0' * 64
+            (overlay / 'filter-overlay.json').write_text(json.dumps(report))
+            with patch('build_office_filter_overlay.FILTER_LOCK', lock_file):
+                with self.assertRaises(ValueError):
+                    select_linker_archive(bundle, overlay, output, platform='IOSSIMULATOR')
 
     def test_both_owned_archives_selected_without_changing_other_inputs(self):
         with tempfile.TemporaryDirectory() as directory:

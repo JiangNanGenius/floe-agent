@@ -2,6 +2,7 @@
 """Prepare pinned Office binaries at build time, never from the running app."""
 import argparse
 import hashlib
+import office_compiled_lifecycle as compiled_lifecycle
 import json
 from pathlib import Path, PurePosixPath
 import stat
@@ -74,6 +75,8 @@ def checked_lock(lock_path):
         expected = office_engine_repair.expected_manifest_block(repair_lock, repair_section)
         if json.dumps(repair_claim, sort_keys=True) != json.dumps(expected, sort_keys=True):
             raise ValueError('Native host engine repair claim does not match its lock')
+    if pin.get('embeddedLifecycleMember') is not None:
+        compiled_lifecycle.validate(pin['embeddedLifecycleMember'], lock, 'IOS', lock_path=lock_path)
     for name, checksum in pin['hostSourceSHA256'].items():
         relative(name)
         if digest(lock_path.parent / 'FloeOfficeNative' / name) != checksum:
@@ -177,6 +180,38 @@ def verify_simulator_host(folder, lock_path=LOCK):
               and provenance.get('files') == {name: spec['preparedSHA256']
                                                for name, spec in kit['files'].items()},
               'simulator host kit callback overlay provenance mismatch')
+    embedded = lock.get('embeddedLifecycleOverlay')
+    provenance = receipt.get('embeddedLifecycle')
+    if embedded is not None:
+        check(isinstance(provenance, dict)
+              and provenance.get('patchSHA256') == embedded['sha256']
+              and provenance.get('sourceCommit') == lock['commit']
+              and provenance.get('files') == {name: spec['preparedSHA256']
+                                               for name, spec in embedded['files'].items()},
+              'simulator host embedded lifecycle overlay provenance mismatch')
+    else:
+        check(provenance is None,
+              'simulator host carries an embedded lifecycle receipt the pin does not track')
+    archives = receipt.get('platformOriginalArchives') or {}
+    check(archives.get('sdk') == 'iphonesimulator' and bool(archives.get('archives')),
+          'simulator host must record its own platform original archive hashes')
+    member_block = receipt.get('embeddedLifecycleMember')
+    compiled_contract_status = 'untracked'
+    try:
+        if compiled_lifecycle.contract(lock, 'IOSSIMULATOR') is not None:
+            originals = archives.get('archives') or {}
+            if isinstance(member_block, dict) and 'schemaVersion' not in member_block:
+                # Historical f033 simulator only; never canonical evidence and
+                # never reachable for a producer carrying a schema version.
+                compiled_lifecycle.validate_legacy_simulator(member_block, lock, originals)
+                compiled_contract_status = 'historical-pre-schema-not-canonical'
+            else:
+                compiled_lifecycle.validate_manifest(receipt, lock, 'IOSSIMULATOR', lock_path=lock_path)
+                compiled_contract_status = 'canonical-v' + str(member_block['schemaVersion'])
+        elif member_block is not None:
+            raise ValueError('untracked simulator compiled lifecycle member')
+    except ValueError as error:
+        failures.append(str(error))
     staged = receipt.get('stagedEngine') or {}
     check(bool(staged.get('runID')), 'simulator host staged engine run ID missing')
     check(staged.get('sourceCommit') == lock['commit'],
@@ -186,8 +221,35 @@ def verify_simulator_host(folder, lock_path=LOCK):
         check(bool(receipt.get(field)), f'simulator host {field} missing')
     for field in ('nativeCompilePassed', 'nativeLinkPassed', 'swiftModuleImportPassed'):
         check(receipt.get(field) is True, f'simulator host {field} is not true')
-    check((receipt.get('filterOverlay') or {}).get('applied') is False,
-          'simulator host must not apply the device-only filter overlay')
+    filter_block = receipt.get('filterOverlay') or {}
+    if filter_block.get('applied'):
+        # A simulator host may carry the chart/freehand filter overlay only as
+        # simulator-compiled objects with its own verified provenance: same
+        # patch and member contract as the lock, platform IOSSIMULATOR, and
+        # originals identical to the pre-overlay platform archives recorded by
+        # the same receipt. Device bytes or device hashes can never satisfy it.
+        import json as _json
+        filter_lock = _json.loads((Path(lock_path).parent / 'filter-overlay.lock.json').read_text())
+        originals = (receipt.get('platformOriginalArchives') or {}).get('archives') or {}
+        recorded = filter_block.get('originalArchiveSHA256ByName') or {}
+        check(filter_block.get('platform') == 'IOSSIMULATOR',
+              'simulator host filter overlay was not compiled for the simulator')
+        check(filter_block.get('patchSHA256') == filter_lock['patchSHA256'],
+              'simulator host filter overlay patch differs from the tracked lock')
+        locked_members = set(filter_lock['simulator']['members']) | {
+            m for spec in filter_lock['simulator']['additionalArchives'].values()
+            for m in spec['members']}
+        built_members = set(filter_block.get('objectSHA256ByMember') or {})
+        for extra in (filter_block.get('additionalArchives') or {}).values():
+            built_members |= set(extra.get('objectSHA256ByMember') or {})
+        check(built_members == locked_members,
+              'simulator host filter overlay member set differs from the tracked lock')
+        check(bool(originals) and all(originals.get(name) == sha
+                                      for name, sha in recorded.items()),
+              'simulator host filter overlay originals differ from its platform archives')
+    else:
+        check(filter_block.get('applied') is False,
+              'simulator host filter overlay block is malformed')
     import office_engine_repair
     repair_lock, repair_section = office_engine_repair.tracked_contract(
         lock_path=Path(lock_path).parent / 'engine.patch.lock.json',
@@ -225,6 +287,7 @@ def verify_simulator_host(folder, lock_path=LOCK):
     return {'verifiedFiles': len(actual_files), 'verifiedDirectories': len(actual_directories),
             'variant': receipt.get('variant'),
             'kitCallbackOverlayApplied': receipt.get('kitCallbackOverlayApplied'),
+            'compiledLifecycleContract': compiled_contract_status,
             'stagedEngineRunID': staged.get('runID'),
             'platform': receipt.get('platform'), 'arch': receipt.get('arch')}
 
@@ -268,6 +331,18 @@ def inventory(folder, lock, pin):
                 or provenance.get('sourceCommit') != lock['commit']
                 or provenance.get('files') != expected_files):
             raise ValueError('Native Office host lacks the pinned kit callback overlay provenance')
+    embedded_claim = pin.get('embeddedLifecycleOverlaySHA256')
+    if embedded_claim is not None:
+        overlay = lock['embeddedLifecycleOverlay']
+        provenance = report.get('embeddedLifecycle', {})
+        expected_files = {name: spec['preparedSHA256']
+                          for name, spec in overlay['files'].items()}
+        if (provenance.get('patchSHA256') != embedded_claim
+                or provenance.get('sourceCommit') != lock['commit']
+                or provenance.get('files') != expected_files):
+            raise ValueError('Native Office host lacks the pinned embedded lifecycle overlay provenance')
+    if pin.get('embeddedLifecycleMember') is not None:
+        compiled_lifecycle.validate_manifest(report, lock, 'IOS', expected=pin['embeddedLifecycleMember'])
     if 'engineRepair' in pin:
         block = report.get('engineRepair', {})
         if json.dumps(block, sort_keys=True) != json.dumps(pin['engineRepair'], sort_keys=True):

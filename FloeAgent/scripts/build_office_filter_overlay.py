@@ -99,22 +99,44 @@ def verify_replacements(before, after, objects):
         raise ValueError('Replacement changed an unexpected archive member')
 
 
-def select_linker_archive(bundle, overlay, destination):
-    """Revalidate every locked archive before selecting owned linker inputs."""
+def select_linker_archive(bundle, overlay, destination, platform='IOS'):
+    """Revalidate every locked archive before selecting owned linker inputs.
+
+    ``platform`` selects which bundle identity the overlay must match: the
+    tracked top-level lock entries are the DEVICE (IOS) archive hashes, while
+    ``lock['simulator']`` names the same member set for simulator bundles whose
+    archive/member bytes are necessarily different. Simulator selections are
+    validated against the overlay report's own recorded originals (which the
+    build took from the very bundle being linked) plus the member/patch/source
+    identity from the lock, so device bytes can never enter a simulator host
+    and a simulator report can never satisfy a device selection.
+    """
     bundle, overlay, destination = (Path(p).resolve() for p in (bundle, overlay, destination))
     lock = json.loads(FILTER_LOCK.read_text())
     report = json.loads((overlay / 'filter-overlay.json').read_text())
-    original, replacement = bundle / lock['archive'], overlay / 'libscfiltlo.a'
+    if platform not in ('IOS', 'IOSSIMULATOR'):
+        raise ValueError('Unsupported filter overlay platform: ' + str(platform))
+    if report.get('platform', 'IOS') != platform:
+        raise ValueError('Filter overlay was compiled for a different platform')
+    section = lock if platform == 'IOS' else lock.get('simulator', {})
+    if platform == 'IOSSIMULATOR' and not section:
+        raise ValueError('The filter lock carries no simulator member contract')
+    archive_path = section.get('archive', lock['archive'])
+    member_map = section.get('members', lock.get('members', {lock['member']: ''}))
+    original, replacement = bundle / archive_path, overlay / 'libscfiltlo.a'
+    expected_original = (lock['originalArchiveSHA256'] if platform == 'IOS'
+                         else report.get('originalArchiveSHA256'))
     if (report.get('sourceCommit') != lock['commit']
             or report.get('patchSHA256') != lock['patchSHA256']
             or digest(FILTER_LOCK.parent / lock['patch']) != lock['patchSHA256']
             or report.get('sourceFiles') != lock['files']
             or report.get('headerDependencies', {}) != lock.get('headerDependencies', {})
             or not report.get('compilePassed') or not report.get('archiveReplacementPassed')
-            or digest(original) != lock['originalArchiveSHA256']
+            or digest(original) != expected_original
+            or digest(original) != report.get('originalArchiveSHA256')
             or digest(replacement) != report.get('archiveSHA256')):
         raise ValueError('Filter overlay is not the current verified build')
-    expected = set(lock.get('members', {lock['member']: ''}))
+    expected = set(member_map)
     for spec in lock.get('headerDependencies', {}).values():
         if spec.get('patch') and digest(FILTER_LOCK.parent / spec['patch']) != spec['patchSHA256']:
             raise ValueError('Filter header dependency patch differs from lock')
@@ -123,22 +145,29 @@ def select_linker_archive(bundle, overlay, destination):
         raise ValueError('Filter overlay does not contain every locked replacement')
     verify_replacements(archive_members(original), archive_members(replacement), objects)
     additional = report.get('additionalArchives', {})
-    if set(additional) != set(lock.get('additionalArchives', {})):
+    additional_contract = section.get('additionalArchives', lock.get('additionalArchives', {}))
+    if set(additional) != set(additional_contract):
         raise ValueError('Filter overlay additional archive set differs from lock')
     selections = [(original, replacement, 'libscfiltlo.a')]
-    for name, spec in lock.get('additionalArchives', {}).items():
+    for name, spec in additional_contract.items():
         if Path(name).name != name or name == 'libscfiltlo.a':
             raise ValueError('Invalid additional archive name')
         current = additional[name]
         source_archive, patched_archive = bundle / spec['archive'], overlay / name
-        if (digest(source_archive) != spec['originalArchiveSHA256']
+        expected_extra_original = (spec['originalArchiveSHA256'] if platform == 'IOS'
+                                   else current.get('originalArchiveSHA256'))
+        if (digest(source_archive) != expected_extra_original
+                or digest(source_archive) != current.get('originalArchiveSHA256')
                 or digest(patched_archive) != current.get('archiveSHA256')
                 or set(current.get('objectSHA256ByMember', {})) != set(spec['members'])):
             raise ValueError('Additional archive is not the locked verified build')
         verify_replacements(archive_members(source_archive), archive_members(patched_archive),
                             current['objectSHA256ByMember'])
         selections.append((source_archive, patched_archive, name))
-    lines = (bundle / 'prepared/ios-all-static-libs.list').read_text().splitlines()
+    list_source = destination / 'ios-lifecycle-static-libs.list'
+    if not list_source.is_file():
+        list_source = bundle / 'prepared/ios-all-static-libs.list'
+    lines = list_source.read_text().splitlines()
     replacements = []
     for source_archive, patched_archive, name in selections:
         matches = [i for i, line in enumerate(lines) if Path(line).resolve() == source_archive.resolve()]
@@ -157,6 +186,11 @@ def select_linker_archive(bundle, overlay, destination):
     return linker, {**report, 'selectedArchive': str(owned),
                     'selectedArchiveSHA256': digest(owned),
                     'selectedArchiveSHA256ByName': selected_hashes,
+                    'platform': platform,
+                    'originalArchiveSHA256ByName': {
+                        'libscfiltlo.a': digest(original),
+                        **{name: digest(bundle / spec['archive'])
+                           for name, spec in additional_contract.items()}},
                     'linkerListSHA256': digest(linker)}
 
 
@@ -253,12 +287,22 @@ def generate_headers(source, generated):
             + (tokens / (plural + '.hxx.tail')).read_bytes())
 
 
-def build(bundle, source, output, header_cache=None):
+def build(bundle, source, output, header_cache=None, sdk='iphoneos'):
     bundle, source, output = (Path(p).resolve() for p in (bundle, source, output))
     lock = json.loads(FILTER_LOCK.read_text())
     engine_lock = json.loads(DEFAULT_LOCK.read_text())
     if lock['commit'] != engine_lock['commit']:
         raise ValueError('Filter and embedded engine commits differ')
+    if sdk not in ('iphoneos', 'iphonesimulator'):
+        raise ValueError('Unsupported filter overlay SDK: ' + str(sdk))
+    platform = 'IOS' if sdk == 'iphoneos' else 'IOSSIMULATOR'
+    # The top-level lock entries are the DEVICE archive identity. A simulator
+    # build selects its member contract from lock['simulator'] and validates
+    # its originals against the staged bundle itself (already manifest
+    # verified by prepare_office_native_sources), never against device hashes.
+    section = lock if platform == 'IOS' else lock.get('simulator')
+    if platform == 'IOSSIMULATOR' and not section:
+        raise ValueError('The filter lock carries no simulator member contract')
     actual = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
     if actual != lock['commit']:
         raise ValueError('Unexpected filter source commit')
@@ -266,13 +310,25 @@ def build(bundle, source, output, header_cache=None):
     patch = FILTER_LOCK.parent / lock['patch']
     if digest(patch) != lock['patchSHA256']:
         raise ValueError('Filter patch digest differs from lock')
-    archive = bundle / lock['archive']
-    if digest(archive) != lock['originalArchiveSHA256']:
-        raise ValueError('Unexpected original filter archive')
-    for name, spec in lock.get('additionalArchives', {}).items():
-        if (Path(name).name != name or name == archive.name
-                or digest(bundle / spec['archive']) != spec['originalArchiveSHA256']):
-            raise ValueError('Unexpected additional filter archive')
+    archive = bundle / section.get('archive', lock['archive'])
+    measured_original = digest(archive)
+    if platform == 'IOS':
+        if measured_original != lock['originalArchiveSHA256']:
+            raise ValueError('Unexpected original filter archive')
+    elif measured_original == lock['originalArchiveSHA256']:
+        raise ValueError('A simulator build must not consume device archive bytes')
+    additional_contract = section.get('additionalArchives', lock.get('additionalArchives', {}))
+    measured_extra = {}
+    for name, spec in additional_contract.items():
+        if Path(name).name != name or name == archive.name:
+            raise ValueError('Invalid additional archive name')
+        measured_extra[name] = digest(bundle / spec['archive'])
+        device_spec = lock['additionalArchives'][name]
+        if platform == 'IOS':
+            if measured_extra[name] != device_spec['originalArchiveSHA256']:
+                raise ValueError('Unexpected additional filter archive')
+        elif measured_extra[name] == device_spec['originalArchiveSHA256']:
+            raise ValueError('A simulator build must not consume device archive bytes')
     # Never apply onto unrelated source edits or silently double-apply a patch.
     for name, hashes in lock['files'].items():
         if digest(source / name) != hashes['originalSHA256']:
@@ -280,8 +336,11 @@ def build(bundle, source, output, header_cache=None):
     output.mkdir(parents=True)
     receipt = output / 'filter-overlay.json'
     report = {'sourceCommit': actual, 'patchSHA256': lock['patchSHA256'],
-              'originalArchiveSHA256': digest(archive), 'compilePassed': False,
-              'archiveReplacementPassed': False, 'runtimeRoundtripPassed': False}
+              'originalArchiveSHA256': measured_original, 'compilePassed': False,
+              'archiveReplacementPassed': False, 'runtimeRoundtripPassed': False,
+              'platform': platform, 'sdk': sdk,
+              'originalArchiveSHA256ByName': {'libscfiltlo.a': measured_original,
+                                              **measured_extra}}
 
     def save():
         receipt.write_text(json.dumps(report, indent=2) + '\n')
@@ -299,11 +358,17 @@ def build(bundle, source, output, header_cache=None):
     generated = output / 'generated'
     generate_headers(source, generated)
     engine = bundle / 'source/engine'
-    sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
-    command = ['xcrun', '--sdk', 'iphoneos', 'clang++', '-std=c++20', '-c',
-               '-target', 'arm64-apple-ios' + engine_lock['minimumIOS'], '-isysroot', sdk,
+    target_triple = ('arm64-apple-ios' if sdk == 'iphoneos'
+                     else 'arm64-apple-ios' + engine_lock['minimumIOS'] + '-simulator')
+    sdk_path = subprocess.check_output(['xcrun', '--sdk', sdk, '--show-sdk-path'], text=True).strip()
+    command = ['xcrun', '--sdk', sdk, 'clang++', '-std=c++20', '-c',
+               '-target', target_triple, '-isysroot', sdk_path,
                '-DLIBO_INTERNAL_ONLY', '-DCPPU_ENV=gcc3', '-DIOS', '-DDISABLE_DYNLOADING=1',
                '-O2', '-fPIC', '-fvisibility=hidden', '-fvisibility-inlines-hidden', '-DNDEBUG']
+    if platform == 'IOS':
+        # Keep the historical device triple byte-identical.
+        command[command.index('-target') + 1] = 'arm64-apple-ios' + engine_lock['minimumIOS']
+    report['compileTarget'] = command[command.index('-target') + 1]
     includes = [engine / 'config_host', engine / 'include', generated,
                 source / 'engine/sc/inc', source / 'engine/sc/source/filter/inc',
                 source / 'engine/sc/source/ui/inc',
@@ -358,7 +423,7 @@ def build(bundle, source, output, header_cache=None):
     run(['xcrun', 'ranlib', patched_archive])
     after = archive_members(patched_archive)
     verify_replacements(before, after, objects)
-    if digest(archive) != lock['originalArchiveSHA256']:
+    if digest(archive) != measured_original:
         raise ValueError('Original archive was modified')
     report.update(archiveSHA256=digest(patched_archive),
                   archive=str(patched_archive), replacedMember=lock['member'],
@@ -373,10 +438,10 @@ def build(bundle, source, output, header_cache=None):
         run(['xcrun', 'ar', '-r', patched, *(output / member for member in spec['members'])])
         run(['xcrun', 'ranlib', patched])
         verify_replacements(before_extra, archive_members(patched), extra_objects)
-        if digest(original) != spec['originalArchiveSHA256']:
+        if digest(original) != measured_extra[name]:
             raise ValueError('Original additional archive was modified')
         report['additionalArchives'][name] = {
-            'originalArchiveSHA256': spec['originalArchiveSHA256'],
+            'originalArchiveSHA256': measured_extra[name],
             'archiveSHA256': digest(patched), 'objectSHA256ByMember': extra_objects,
             'replacedMembers': list(extra_objects),
             'preservedMemberCount': len(before_extra) - len(extra_objects)}
@@ -391,5 +456,10 @@ if __name__ == '__main__':
     parser.add_argument('source', type=Path)
     parser.add_argument('output', type=Path)
     parser.add_argument('--header-cache', type=Path, help='Optional local archives keyed by verified SHA-256')
+    parser.add_argument('--sdk', choices=('iphoneos', 'iphonesimulator'), default='iphoneos',
+                        help='Platform the replacement objects are compiled for; simulator '
+                             'objects carry their own archive/member hashes and never reuse '
+                             'device bytes')
     args = parser.parse_args()
-    print(json.dumps(build(args.bundle, args.source, args.output, args.header_cache), indent=2))
+    print(json.dumps(build(args.bundle, args.source, args.output, args.header_cache,
+                           sdk=args.sdk), indent=2))

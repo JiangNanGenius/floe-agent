@@ -77,9 +77,26 @@ def install(zip_path, repo_root=REPO_ROOT, *, set_xcconfig=True):
         bundle = stage / HOST_BUNDLE_NAME
         receipt = json.loads((bundle / SIMULATOR_RECEIPT).read_text())
         key = f"simulator-{receipt['stagedEngine']['runID']}-{receipt['variant']}"
+        # The owned path identifies the ACTUAL component, not just the base run
+        # and overlay set: a later host.mm/chart rebuild with the same overlay
+        # patch SHA must land in a fresh directory, while the exact same
+        # component reuses its verified target instead of duplicating it.
+        identity = receipt.get('executableSHA256') or ''
+        if len(identity) < 12:
+            raise InstallSimulatorHostError('simulator receipt lacks an executable identity')
+        key += '-' + identity[:12]
         destination = repo_root / 'FloeAgent' / 'Vendor' / 'Office' / key / HOST_BUNDLE_NAME
         if destination.exists() or destination.is_symlink():
-            raise InstallSimulatorHostError(f'destination already exists: {destination}')
+            # Same exact component already installed and verified: reuse it.
+            facts = verify_simulator_host(destination, LOCK)
+            facts['installedAt'] = str(destination)
+            facts['installKey'] = key
+            facts['alreadyInstalled'] = True
+            if set_xcconfig:
+                rewrite_xcconfig(
+                    repo_root / 'FloeAgent' / 'Vendor' / 'Office' / 'native-host.xcconfig',
+                    destination, repo_root=repo_root)
+            return facts
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(bundle), str(destination))
         facts = verify_simulator_host(destination, LOCK)
@@ -89,6 +106,7 @@ def install(zip_path, repo_root=REPO_ROOT, *, set_xcconfig=True):
                 destination, repo_root=repo_root)
         facts['installedAt'] = str(destination)
         facts['installKey'] = key
+        facts['alreadyInstalled'] = False
         return facts
 
 

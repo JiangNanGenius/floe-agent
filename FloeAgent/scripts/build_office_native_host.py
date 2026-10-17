@@ -195,8 +195,171 @@ def check_built_framework_import(output, framework, sdk):
             'swiftModuleImportPassed': result.returncode == 0}
 
 
+def _select_lifecycle_archive_single(root, output, platform, lock_path=DEFAULT_LOCK,
+                             engine_source=None, selected=None, primary=True):
+    """Compile the embedded lifecycle overlay's engine member for this platform.
+
+    The patched svdata.cxx is not part of the Mobile project sources: the VCL
+    code ships inside the pinned engine archives, so the overlay only reaches
+    the binary as a same-platform archive member replacement, exactly like the
+    filter overlay. The compile uses the tracked per-platform engine compile
+    contract (engine.patch.lock.json), the object replaces only the locked
+    member of an owned copy of this platform's libvcllo.a, and the linker list
+    is rewritten to the owned copy. Original archive hashes are measured from
+    the bundle being linked (already manifest verified by prepare), never
+    copied from another platform.
+    """
+    import office_engine_repair as repair
+    import office_compiled_lifecycle as lifecycle
+    root, output = Path(root).resolve(), Path(output).resolve()
+    lock = json.loads(Path(lock_path).read_text())
+    overlay = lock.get('embeddedLifecycleOverlay') or {}
+    contract = selected if selected is not None else (overlay.get('compiledMembers') or {}).get(platform)
+    if contract is None:
+        return None
+    # Validate actual compiled patch bytes before applying or compiling them.
+    single = lifecycle.single_lock(lock, platform, contract)
+    compiled_identity = lifecycle.identity(single, platform, lock_path=lock_path)
+    if engine_source is None:
+        raise ValueError('the lifecycle member is compiled from the pinned git '
+                         'checkout; --engine-source is required')
+    repair_lock = json.loads(
+        (Path(lock_path).parent / 'engine.patch.lock.json').read_text())
+    compile_spec = repair_lock['platforms'][platform]['compile']
+    owned = output / 'lifecycle' / Path(contract['archive']).name
+    owned.mkdir(parents=True, exist_ok=True)
+    archive = root / contract['archive']
+    original = repair.digest(archive)
+    objects = {}
+    source_name = contract['sourceFile']
+    pristine = Path(engine_source) / source_name
+    if repair.digest(pristine) != contract['originalSHA256']:
+        raise ValueError('Lifecycle member source checkout differs from the lock')
+    stage = owned / 'source-stage'
+    stage.mkdir(parents=True, exist_ok=True)
+    staged = stage / source_name
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(pristine, staged)
+    subprocess.run(['git', 'apply', '--include=' + source_name,
+                    str(Path(lock_path).parent / contract['patch'])],
+                   cwd=stage, check=True, capture_output=True)
+    if repair.digest(staged) != contract['patchedSHA256']:
+        raise ValueError('Lifecycle member patched source differs from the lock')
+    head = subprocess.check_output(
+        ['git', '-C', str(engine_source), 'rev-parse', 'HEAD'], text=True).strip()
+    if head != lock['commit']:
+        raise ValueError('Lifecycle member engine source is not the pinned commit')
+    # The VCL module build defines its dllapi macro and puts the module inc
+    # first; the tracked per-platform compile spec alone targets filter TUs.
+    vcl_spec = {'compile': dict(compile_spec)}
+    additions = contract.get('compileOverrides', {})
+    default_flags = ['-DVCL_DLLIMPLEMENTATION'] if primary else []
+    default_includes = ['engine/vcl/inc', 'engine/vcl/source/app'] if primary else []
+    vcl_spec['compile']['flags'] = list(compile_spec['flags']) + default_flags + additions.get('flags', [])
+    vcl_spec['compile']['sourceIncludes'] = default_includes + additions.get('sourceIncludes', []) + list(compile_spec['sourceIncludes'])
+    vcl_spec['compile']['bundleIncludes'] = additions.get('bundleIncludes', []) + list(compile_spec.get('bundleIncludes', []))
+    for member in contract['members']:
+        obj = owned / member
+        # sourceIncludes resolve against the pinned git checkout (the built
+        # bundle carries no VCL sources); bundleIncludes against the bundle.
+        command = repair.build_compile_command(
+            vcl_spec, Path(engine_source), root, staged, obj)
+        with (owned / (member + '.compile.log')).open('w') as log:
+            subprocess.run(list(map(str, command)), check=True,
+                           stdout=log, stderr=subprocess.STDOUT)
+        objects[member] = repair.digest(obj)
+    patched = owned / Path(contract['archive']).name
+    # Regenerated symbol indexes are excluded, like the filter overlay audit.
+    by_name = lambda snap: {entry['name']: entry['sha256'] for entry in snap
+                            if not entry['name'].startswith('__.SYMDEF')
+                            and entry['name'] not in ('/', '//')}
+    before = by_name(repair.snapshot_members(archive))
+    shutil.copyfile(archive, patched)
+    subprocess.run(['xcrun', 'ar', '-r', str(patched),
+                    *(owned / member for member in contract['members'])],
+                   check=True, capture_output=True)
+    subprocess.run(['xcrun', 'ranlib', str(patched)], check=True, capture_output=True)
+    after = by_name(repair.snapshot_members(patched))
+    changed = {name for name in before if before[name] != after[name]}
+    if set(before) != set(after) or changed != set(contract['members']) \
+            or any(after[name] != objects[name] for name in contract['members']):
+        raise ValueError('Lifecycle archive replacement changed unexpected members')
+    list_path = output / 'ios-lifecycle-static-libs.list'
+    source_list = list_path if list_path.exists() else root / 'prepared' / 'ios-all-static-libs.list'
+    lines = source_list.read_text().splitlines()
+    matches = [i for i, line in enumerate(lines) if Path(line).resolve() == archive]
+    if len(matches) != 1:
+        raise ValueError('Expected exactly one original lifecycle linker input')
+    # The owned patched archive is itself the linker input; copying it again
+    # would only create a second mutable alias of the same bytes.
+    lines[matches[0]] = str(patched)
+    list_path.write_text('\n'.join(lines) + '\n')
+    block = {**compiled_identity,
+             'originalArchiveSHA256': original, 'archiveSHA256': repair.digest(patched),
+             'objectSHA256ByMember': objects, 'linkerListSHA256': repair.digest(list_path)}
+    return lifecycle.validate(block, single, platform, lock_path=lock_path)
+
+
+def select_lifecycle_archive(root, output, platform, lock_path=DEFAULT_LOCK,
+                             engine_source=None):
+    """Apply every tracked archive repair to one linker list; no source-only claims."""
+    import office_compiled_lifecycle as lifecycle
+    lock = json.loads(Path(lock_path).read_text())
+    selected = lifecycle.contract(lock, platform)
+    if selected is None:
+        return None
+    # Check all actual patch bytes before executing any compiler.
+    lifecycle.identity(lock, platform, lock_path=lock_path)
+    for spec in selected.get('additionalArchives', {}).values():
+        lifecycle.identity(lifecycle.single_lock(lock, platform, spec), platform, lock_path=lock_path)
+    result = _select_lifecycle_archive_single(root, output, platform, lock_path,
+                                             engine_source, selected, True)
+    extras = {}
+    for name, spec in selected.get('additionalArchives', {}).items():
+        extras[name] = _select_lifecycle_archive_single(root, output, platform, lock_path,
+                                                       engine_source, spec, False)
+    if extras:
+        result['schemaVersion'] = 2
+        result['additionalArchives'] = extras
+    return result
+
+
+def lifecycle_link_ownership(report, root, output, lock, platform, linker):
+    """Bind real linkmap inputs and produced objects after successful native link."""
+    import office_compiled_lifecycle as lifecycle
+    block = report.get('embeddedLifecycleMember')
+    if not block or block['schemaVersion'] != 2:
+        return
+    maps = list((Path(output) / 'objects').rglob('FloeOfficeNative-LinkMap-normal-arm64.txt'))
+    if len(maps) != 1:
+        raise ValueError('Expected exactly one native lifecycle linkmap')
+    linkmap = maps[0]; text = linkmap.read_text()
+    inputs = [Path(line).resolve() for line in Path(linker).read_text().splitlines() if line.strip()]
+    archives = {}
+    for name, item in {Path(block['archive']).name: block, **block['additionalArchives']}.items():
+        candidates = [path for path in inputs if path.name == name]
+        if len(candidates) != 1 or digest(candidates[0]) != item['archiveSHA256']:
+            raise ValueError('Final lifecycle linker input differs: ' + name)
+        for member in item['members']:
+            if text.count(str(candidates[0]) + '(' + member + ')') != 1:
+                raise ValueError('Lifecycle archive member absent/ambiguous in linkmap: ' + name + '(' + member + ')')
+        archives[name] = {'archiveSHA256': item['archiveSHA256'], 'objectSHA256ByMember': item['objectSHA256ByMember']}
+    prepared = {}
+    for source, spec in lock['embeddedLifecycleOverlay']['files'].items():
+        path = Path(output) / 'source' / source
+        if digest(path) != spec['preparedSHA256']:
+            raise ValueError('Compiled prepared source differs: ' + source)
+        object_name = Path(source).stem + '.o'
+        objects = list((Path(output) / 'objects').rglob('Objects-normal/arm64/' + object_name))
+        if len(objects) != 1 or text.count(str(objects[0])) != 1:
+            raise ValueError('Prepared source object absent/ambiguous in linkmap: ' + source)
+        prepared[source] = {'preparedSourceSHA256': digest(path), 'objectSHA256': digest(objects[0]), 'objectName': object_name}
+    block['linkOwnership'] = {'linkMapSHA256': digest(linkmap), 'linkerListSHA256': digest(linker), 'archives': archives, 'preparedObjects': prepared}
+    lifecycle.validate_manifest(report, lock, platform, lock_path=None)
+
+
 def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
-               lock_path=DEFAULT_LOCK):
+               lock_path=DEFAULT_LOCK, engine_source=None):
     """Build the Floe native Office framework for one Apple platform SDK.
 
     The pinned device qualification keeps the ``iphoneos`` default. The cloud
@@ -254,6 +417,16 @@ def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
             'sourceCommit': lock['commit'],
             'files': {name: spec['preparedSHA256']
                       for name, spec in kit_overlay['files'].items()}}
+    # Same contract for the embedded lifecycle overlay (fake-socket backend
+    # lifetime plus ordered server shutdown): a host built without it cannot
+    # satisfy a pin carrying embeddedLifecycleOverlaySHA256.
+    embedded_overlay = lock.get("embeddedLifecycleOverlay")
+    if embedded_overlay is not None:
+        report['embeddedLifecycle'] = {
+            'patchSHA256': embedded_overlay['sha256'],
+            'sourceCommit': lock['commit'],
+            'files': {name: spec['preparedSHA256']
+                      for name, spec in embedded_overlay['files'].items()}}
     # Engine single-member archive repair (blank iOS slideshow fix): once the
     # tracked engine.patch.lock.json carries a contract for this SDK's
     # platform, the bundle being linked MUST carry the matching repair
@@ -290,16 +463,23 @@ def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
         'CFBundleShortVersionString': '1.0', 'MinimumOSVersion': '26.0'}))
     project_path = output / 'source/ios/Mobile.xcodeproj/project.pbxproj'
     project = framework_project(plistlib.loads(project_path.read_bytes()), host)
+    lifecycle_report = select_lifecycle_archive(root, output, platform, lock_path,
+                                                 engine_source=engine_source)
+    if lifecycle_report is not None:
+        report['embeddedLifecycleMember'] = lifecycle_report
+    linker = output / 'ios-lifecycle-static-libs.list' if lifecycle_report is not None else root / 'prepared/ios-all-static-libs.list'
     if filter_overlay is not None:
         from build_office_filter_overlay import select_linker_archive
-        linker, filter_report = select_linker_archive(root, filter_overlay, output)
+        linker, filter_report = select_linker_archive(root, filter_overlay, output,
+                                                       platform=platform)
         report['filterOverlay'] = filter_report
-        for settings in (obj.get('buildSettings', {}) for obj in project['objects'].values()):
-            flags = settings.get('OTHER_LDFLAGS', [])
-            if '-filelist' in flags:
-                if flags.count('-filelist') != 1:
-                    raise ValueError('Ambiguous native host linker input list')
-                flags[flags.index('-filelist') + 1] = str(linker)
+    for settings in (obj.get('buildSettings', {}) for obj in project['objects'].values()):
+        settings['LD_GENERATE_MAP_FILE'] = 'YES'
+        flags = settings.get('OTHER_LDFLAGS', [])
+        if '-filelist' in flags:
+            if flags.count('-filelist') != 1:
+                raise ValueError('Ambiguous native host linker input list')
+            flags[flags.index('-filelist') + 1] = str(linker)
     project_path.write_bytes(plistlib.dumps(project))
     command = list(base['command'])
     command[command.index('-target') + 1] = NAME
@@ -321,6 +501,7 @@ def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
     save()
     if not passed:
         raise RuntimeError('Native host failed; inspect native-host-build.log')
+    lifecycle_link_ownership(report, root, output, lock, platform, linker)
     report['executableSHA256'] = digest(executable)
     report['platformLoadCommands'] = subprocess.check_output(['xcrun', 'vtool', '-show-build', str(executable)], text=True)
     report['dynamicLibraries'] = subprocess.check_output(['xcrun', 'otool', '-L', str(executable)], text=True)
@@ -388,6 +569,9 @@ if __name__ == '__main__':
     parser.add_argument('output', nargs='?', type=Path)
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--filter-overlay', type=Path)
+    parser.add_argument('--engine-source', type=Path, default=None,
+                        help='Pinned git checkout supplying lifecycle members that the '
+                             'built engine bundle does not carry as source')
     parser.add_argument('--verify-swift-import-probe', action='store_true',
                         help='type-check the generated ImportProbe against the real header without a build')
     args = parser.parse_args()
@@ -397,5 +581,6 @@ if __name__ == '__main__':
         if args.bundle is None or args.output is None:
             parser.error('bundle and output are required unless --verify-swift-import-probe is set')
         result = build_host(args.bundle, args.output, build=not args.prepare_only,
-                            filter_overlay=args.filter_overlay)
+                            filter_overlay=args.filter_overlay,
+                            engine_source=args.engine_source)
         print(json.dumps({key: value for key, value in result.items() if key != 'runtimeResourceSHA256'}, indent=2))
