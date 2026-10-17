@@ -426,6 +426,12 @@ import FloeTools
                          "Tool-only qualification unexpectedly created another run")
             try #require(messages.isEmpty, "Tool-only qualification unexpectedly generated chat messages")
         }
+        func reportsEffectiveTimeout(_ result: String, timeout: Int) -> Bool {
+            let header = result.components(separatedBy: "\n--- stdout ---\n").first ?? result
+            let fields = header.split(whereSeparator: { $0.isWhitespace })
+                .filter { $0.hasPrefix("effectiveTimeoutSeconds=") }
+            return fields.count == 1 && fields[0] == "effectiveTimeoutSeconds=\(Double(timeout))"
+        }
         @discardableResult
         func stage(_ name: String, command: String, timeout: Int) async throws -> String {
             try Task.checkCancellation()
@@ -463,9 +469,9 @@ import FloeTools
                          "Owned native-service terminal callback was not observed")
             try await assertNoModelTurn()
             try #require(terminal.state == .completed,
-                         "Shared venv Office stage failed: (name); evidence: (evidenceURL.path)")
-            try #require(result.contains("effectiveTimeoutSeconds=(timeout)"),
-                         "Stage did not report the actual effective command limit")
+                         "Shared venv Office stage failed: \(name); evidence: \(evidenceURL.path)")
+            try #require(reportsEffectiveTimeout(result, timeout: timeout),
+                         "Stage \(name) did not report the actual effective command limit \(Double(timeout)); evidence: \(evidenceURL.path)")
             return result
         }
         func cleanup() async throws {
