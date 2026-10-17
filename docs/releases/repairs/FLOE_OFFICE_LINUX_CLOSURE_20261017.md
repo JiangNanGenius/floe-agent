@@ -80,3 +80,15 @@ No new beta upload or installability is asserted by these source checkpoints.
 - A captured termination stack identifies the Office polling registry mutex. A run with that termination is not accepted merely because its test assertions pass. Original failures remain separate from later fixes.
 - Actual guest checks passed interpreter startup, DNS, TLS, index access and downloads of the three pinned primary packages. Dependency installation stopped because the target platform has no compatible Pillow binary package. Synthetic packages and weakened assertions do not substitute for this installation.
 - Six owned synthetic Office fixture directories were removed after per-file export verification. Other documents and environments were preserved. No new beta has been uploaded.
+
+## 分项集成检查 / Bounded integration checks
+
+- 新原生组件已完成本地编译、链接、产物留存和严格校验，随后完整 App 对象构建通过。
+- 同一模拟器 App 执行中，Word、Excel 笔迹保存重开通过，未再检测到此前的退出异常；PPT 笔迹和图表前四根柱仍失败，整体验收未通过。两项按独立故障继续处理。
+- 附件身份、原任务归属、编辑副本、越界路径和导入上限的五项实际 App 测试全部通过。手动聊天入口和网页服务仍需单独验收。
+- 任务已拆为限定补丁、独立复核、组件构建及主协调集成；云端 CI 不作为本轮等待门槛。未上传新的测试版。
+
+- The new native component was locally compiled, linked, retained and strictly verified, followed by a successful full App object build.
+- In the same Simulator App run, Word and Excel ink save/reopen passed without the previous termination markers. PPT ink and the first four chart bars still failed; overall acceptance remains open. They are investigated as separate defects.
+- All five actual App checks for attachment identity, task ownership, edited copies, unsafe paths and import limits passed. Manual chat entry and web-service acceptance remain separate.
+- Work is split into bounded patches, independent review, component building and primary integration. Cloud CI is supplementary, not a waiting gate. No new beta has been uploaded.
