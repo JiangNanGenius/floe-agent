@@ -975,6 +975,51 @@ struct SubagentSimulatorExecutionTests {
 
     // MARK: - Autonomous child workflow through the real App catalog
 
+    // No guest/network/model needed. Reads the real installed App guide
+    // through its normal version-aware seeder; never writes a synthetic Skill
+    // over user data. A newer/locally modified install is preserved explicitly.
+    @Test("installed shell guide reads current Linux instructions without downgrading protected content",
+          .enabled(if: ProcessInfo.processInfo.environment["FLOE_BUNDLED_SKILL_QUALIFICATION"] == "1"))
+    func installedShellGuideRetirementRead() async throws {
+        let environment = AppEnvironment.live()
+        await environment.bootstrap()
+        try #require(environment.persistenceReady)
+        let before = try await environment.skillStore.all().first { $0.id == "floe-shell" }
+        let rows = try await environment.skillsCenter.readSkills(id: "floe-shell")
+        let guide = try #require(rows.first { $0.id == "floe-shell" })
+        let after = try #require(try await environment.skillStore.all().first { $0.id == "floe-shell" })
+        let currentVersion = "1.1.1"
+        if let before,
+           before.version.compare(currentVersion, options: .numeric) == .orderedDescending
+             || before.sourceURL != "floe-builtin://floe-shell"
+             || before.rewrittenDigest != before.sourceDigest {
+            // Version/source/local-revision protection is acceptance too; do
+            // not assert that user-authored Markdown equals our bundled text.
+            #expect(after.version == before.version)
+            #expect(after.sourceURL == before.sourceURL)
+            #expect(after.sourceDigest == before.sourceDigest)
+            #expect(after.rewrittenDigest == before.rewrittenDigest)
+            #expect(guide.version == after.version && guide.currentDigest == after.rewrittenDigest)
+            print("FLOE_SHELL_GUIDE_PROTECTED version=\(after.version) digest=\(after.rewrittenDigest) currentBundledBodyVerified=false")
+            return
+        }
+        try #require(guide.version == currentVersion, "App-owned shell guide must upgrade to the current bundle")
+        try #require(after.version == currentVersion)
+        let markdown = try #require(guide.markdown)
+        #expect(markdown.contains("selected task Linux guest"))
+        #expect(markdown.contains("Python is `python3`, JavaScript is `node`"))
+        #expect(markdown.contains("at most 120 seconds") && markdown.contains("at most 600 seconds"))
+        #expect(markdown.contains("runtime=static"))
+        for retired in ["exec.localPython", "exec.javascript", "exec.compatEvaluator", "exec.wasm", "python.packages"] {
+            #expect(!markdown.contains(retired), "Installed guide still recommends retired executor: \(retired)")
+        }
+        #expect(!markdown.contains("bundled CPython") && !markdown.contains("native ELF binaries and daemons are unavailable"))
+        #expect(guide.digest == after.rewrittenDigest && guide.currentDigest == after.rewrittenDigest)
+        #expect(guide.requiredToolNames?.contains("exec.shell") == true)
+        #expect(after.sourceDigest == after.rewrittenDigest)
+        print("FLOE_SHELL_GUIDE_CURRENT version=\(guide.version) digest=\(guide.digest) linuxBodyVerified=true")
+    }
+
     /// The App-level acceptance for the child autonomy contract: a delegated
     /// child starts from a small seed against the App's REAL catalog (hundreds
     /// of descriptors, far above the 48 KiB frozen schema allowance), discovers
