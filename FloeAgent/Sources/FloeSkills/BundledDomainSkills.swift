@@ -168,7 +168,7 @@ public enum BundledDomainSkills {
             id: "floe-shell",
             name: "Local Shell & Packages",
             description: "On-device POSIX commands, environment package managers, interactive sessions and owned preview services.",
-            version: "1.1.0",
+            version: "1.1.1",
             exposed: false,
             markdown: """
             ## Local shell substrate
