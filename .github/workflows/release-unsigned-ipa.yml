@@ -14,6 +14,11 @@ on:
         required: false
         default: ''
         type: string
+      transport_tag:
+        description: Optional private draft release tag that holds the local-device.zip transport; empty reuses tag
+        required: false
+        default: ''
+        type: string
       direct_testflight:
         description: Build the existing tag and upload directly without simulator qualification (explicit user request)
         required: false
@@ -1966,5 +1971,6 @@ jobs:
     uses: ./.github/workflows/testflight-local-artifact.yml
     with:
       tag: ${{ inputs.tag }}
+      transport_tag: ${{ inputs.transport_tag }}
       artifact_sha256: ${{ inputs.local_artifact_sha256 }}
     secrets: inherit

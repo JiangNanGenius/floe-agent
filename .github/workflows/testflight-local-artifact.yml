@@ -5,6 +5,11 @@ name: Sign and upload verified local device artifact
       tag:
         required: true
         type: string
+      transport_tag:
+        description: Optional private draft release tag holding the local-device transport; empty reuses the source tag
+        required: false
+        default: ''
+        type: string
       artifact_sha256:
         required: true
         type: string
@@ -80,6 +85,28 @@ jobs:
                 raise SystemExit('release copy missing in the tag and unreachable in the dispatch ref: ' + path)
         METADATA
         scripts/release_preflight.sh "$RELEASE_TAG"
+    - name: Resolve private draft transport tag
+      env:
+        TRANSPORT_TAG_INPUT: ${{ inputs.transport_tag }}
+      run: |
+        set -euo pipefail
+        TRANSPORT_TAG="$RELEASE_TAG"
+        if [ -n "$TRANSPORT_TAG_INPUT" ]; then
+          TRANSPORT_TAG="$TRANSPORT_TAG_INPUT"
+          # A private transport tag is one bounded Git ref, never evaluated as
+          # shell input: reject control characters, whitespace, path parts,
+          # option prefixes and other ref punctuation before it reaches gh.
+          if [[ ! "$TRANSPORT_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "Invalid transport tag: expected 1-128 characters matching [A-Za-z0-9][A-Za-z0-9._-]*" >&2
+            exit 1
+          fi
+          if [[ "$TRANSPORT_TAG" == *..* || "$TRANSPORT_TAG" == *.lock || "$TRANSPORT_TAG" == *. ]]; then
+            echo "Invalid transport tag: Git ref punctuation is not allowed" >&2
+            exit 1
+          fi
+          git check-ref-format "refs/tags/$TRANSPORT_TAG"
+        fi
+        echo "TRANSPORT_TAG=$TRANSPORT_TAG" >> "$GITHUB_ENV"
     - name: Download private draft transport and verify local provenance
       env:
         EXPECTED_SHA: ${{ inputs.artifact_sha256 }}
@@ -87,13 +114,13 @@ jobs:
         set -euo pipefail
         [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]]
         mkdir -p "$RUNNER_TEMP/local-input"
-        gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -x true
-        if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -qx local-device.zip; then
-          gh release download "$RELEASE_TAG" -p local-device.zip -D "$RUNNER_TEMP/local-input"
+        gh release view "$TRANSPORT_TAG" --json isDraft --jq .isDraft | grep -x true
+        if gh release view "$TRANSPORT_TAG" --json assets --jq '.assets[].name' | grep -qx local-device.zip; then
+          gh release download "$TRANSPORT_TAG" -p local-device.zip -D "$RUNNER_TEMP/local-input"
         else
           # Bounded resumable transport: each immutable chunk can be retried
           # independently. The original archive digest remains authoritative.
-          gh release download "$RELEASE_TAG" -p 'local-device.zip.part??' -D "$RUNNER_TEMP/local-input"
+          gh release download "$TRANSPORT_TAG" -p 'local-device.zip.part??' -D "$RUNNER_TEMP/local-input"
           for index in 00 01 02 03 04 05 06 07; do
             test -s "$RUNNER_TEMP/local-input/local-device.zip.part$index"
             cat "$RUNNER_TEMP/local-input/local-device.zip.part$index" >> "$RUNNER_TEMP/local-input/local-device.zip"
