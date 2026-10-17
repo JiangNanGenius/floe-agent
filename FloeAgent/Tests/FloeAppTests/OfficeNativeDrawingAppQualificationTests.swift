@@ -323,7 +323,7 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         var stage = "call-actual-pen-bridge"
         do {
             let receipt: Any? = try await web.callAsyncJavaScript(Self.strokeScript,
-                arguments: ["strokeID": index], in: nil, contentWorld: .page)
+                arguments: ["strokeID": index, "probeEnabled": ProcessInfo.processInfo.environment["FLOE_A3_PROBE"] == "1"], in: nil, contentWorld: .page)
             resultType = receipt.map { String(reflecting: type(of: $0)) } ?? "nil"
             stage = "decode-WK-JSON-string"
             guard let json = receipt as? String else {
@@ -440,7 +440,8 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     const canvas = window.app && window.app.sectionContainer && window.app.sectionContainer.canvas;
     const rect = canvas && canvas.getBoundingClientRect();
     const pen = typeof window.__floeOfficePenState === 'function' ? window.__floeOfficePenState() : null;
-    return JSON.stringify({readyState:document.readyState, visibility:document.visibilityState,
+    return JSON.stringify({socketObservation:window.__floePenSocketQualification || null,
+        readyState:document.readyState, visibility:document.visibilityState,
         hasApp:!!window.app, hasMap:!!map, hasPenBridge:typeof window.__floeOfficePenState === 'function',
         docType:map && typeof map.getDocType === 'function' ? String(map.getDocType()).slice(0,32) : null,
         selectedPart:finite(map && map._docLayer && map._docLayer._selectedPart),
@@ -484,6 +485,100 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     const fractions = strokeID === 0 ? [[.28,.45],[.37,.40],[.47,.49],[.57,.43]]
                                      : [[.30,.66],[.39,.73],[.49,.64],[.59,.71]];
     const points = fractions.map(([x,y]) => [x1 + x * (x2-x1), y1 + y * (y2-y1)]);
+    // BEGIN boundedSocketObservation — qualification-only, no payload retention.
+    const observeSocket = (enabled, app) => {
+        const facts = {enabled: enabled === true, limit: 32, events: [], budgetExceeded: false,
+            hooks: {}, restored: false, socketReplaced: false};
+        const socket = app && app.socket;
+        const transport = socket && socket.socket;
+        const classifyState = (value) => {
+            if (value === undefined) return 'missing';
+            if (value === null) return 'null';
+            if (value === true || value === 'true' || value === 'checked') return 'checked';
+            if (value === false || value === 'false' || value === 'unchecked') return 'unchecked';
+            if (value === 'enabled' || value === 'disabled') return value;
+            return 'other-' + typeof value;
+        };
+        const readState = () => {
+            const map = app && app.map, handler = map && map.stateChangeHandler;
+            const available = !!handler && typeof handler.getItemValue === 'function';
+            const result = {available, unfilled:'unavailable', filled:'unavailable'};
+            if (available) {
+                try {
+                    result.unfilled = classifyState(handler.getItemValue('.uno:Freeline_Unfilled'));
+                    result.filled = classifyState(handler.getItemValue('.uno:Freeline'));
+                } catch (_) { result.readFailed = true; }
+            }
+            return result;
+        };
+        const restores = [];
+        const recordType = (payload) => {
+            if (typeof payload !== 'string') return null;
+            const mouse = /^mouse type=(buttondown|buttonup|move)(?:\s|$)/.exec(payload);
+            if (mouse) return mouse[1];
+            const uno = /^uno (\.uno:Freeline_Unfilled|\.uno:Freeline|\.uno:SelectObject)(?:\s|$)/.exec(payload);
+            return uno ? uno[1] : null;
+        };
+        const install = (target, key, phase) => {
+            if (!target || typeof target[key] !== 'function') { facts.hooks[phase] = 'unavailable'; return; }
+            const original = target[key];
+            const descriptor = Object.getOwnPropertyDescriptor(target, key);
+            const wrapped = function(...args) {
+                // Inspect only known message kind, never coordinates/args/text.
+                const type = recordType(args[0]);
+                let entry;
+                if (type) {
+                    if (facts.events.length < facts.limit) {
+                        entry = {phase, type, outcome:'entered'};
+                        facts.events.push(entry);
+                    } else facts.budgetExceeded = true;
+                }
+                try {
+                    const result = Reflect.apply(original, this, args);
+                    if (entry) entry.outcome = 'returned';
+                    return result;
+                } catch (error) {
+                    if (entry) entry.outcome = 'threw';
+                    throw error;
+                }
+            };
+            try {
+                target[key] = wrapped;
+                if (target[key] !== wrapped) { facts.hooks[phase] = 'not-writable'; return; }
+                facts.hooks[phase] = 'installed';
+                restores.push(() => {
+                    if (target[key] !== wrapped) { facts.hooks[phase] = 'changed-during-observation'; return; }
+                    if (descriptor) Object.defineProperty(target, key, descriptor);
+                    else delete target[key];
+                });
+            } catch (_) { facts.hooks[phase] = 'unavailable'; }
+        };
+        if (facts.enabled) {
+            facts.toolStateBefore = readState();
+            // Pinned Socket.sendMessage may return early or queue; transport.send
+            // is the distinct actual frontend transport dispatch boundary.
+            install(socket, 'sendMessage', 'frontend-sendMessage');
+            install(transport, 'send', 'transport-send');
+        }
+        let finished = false;
+        return {finish: () => {
+            if (finished) return facts;
+            finished = true;
+            if (facts.enabled) {
+                facts.toolStateAfter = readState();
+                facts.socketReplaced = !!socket && socket.socket !== transport;
+                for (const restore of restores.reverse()) {
+                    try { restore(); } catch (_) { facts.restoreFailed = true; }
+                }
+            }
+            facts.restored = !facts.restoreFailed;
+            window.__floePenSocketQualification = facts;
+            return facts;
+        }};
+    };
+    // END boundedSocketObservation
+    const observation = observeSocket(probeEnabled === true, app);
+    try {
     const post = (type, p, buttons) => canvas.dispatchEvent(new PointerEvent(type, {
         bubbles:true, cancelable:true, composed:true, pointerType:'pen', pointerId:41 + strokeID,
         isPrimary:true, clientX:p[0], clientY:p[1], button:0, buttons, pressure: buttons ? .5 : 0
@@ -501,7 +596,9 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     return JSON.stringify({strokeID, strokeDelta, coreEventDelta, activeAfter:after.activeStroke,
         before, after, canvasRect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},
         visibleDocumentRect:{x1,y1,x2,y2}, clientPoints:points,
-        hardwarePointerInput:'not-tested', pressure:'synthetic-not-hardware-tested'});
+        hardwarePointerInput:'not-tested', pressure:'synthetic-not-hardware-tested',
+        socketObservation:observation.finish()});
+    } finally { observation.finish(); }
     """#
 
     private func mount(_ session: OfficeFileSession, in scene: UIWindowScene) -> UIWindow {

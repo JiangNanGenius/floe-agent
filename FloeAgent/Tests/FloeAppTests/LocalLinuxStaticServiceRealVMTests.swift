@@ -351,6 +351,314 @@ import FloeTools
         }
     }
 
+    private actor SharedVenvTerminalEvidence {
+        private var deliveries: [UUID: (UUID, UUID, String)] = [:]
+        func record(_ job: BackgroundJob) {
+            deliveries[job.id] = (job.conversationID, job.runID, job.state.rawValue)
+        }
+        func matches(jobID: UUID, conversationID: UUID, runID: UUID, state: String) -> Bool {
+            guard let value = deliveries[jobID] else { return false }
+            return value.0 == conversationID && value.1 == runID && value.2 == state
+        }
+    }
+
+    // This is separate from the unchanged strict PyPI wheel-set probe above.
+    // Native-service QA owns real jobs and their terminal evidence; it never
+    // invokes ConversationCenter's model-continuation callback.
+    @Test("real guest installs distro extensions and fixed Office packages into its own shared venv",
+          .enabled(if: ProcessInfo.processInfo.environment["FLOE_REALVM_SHARED_VENV_OFFICE_QUALIFICATION"] == "1"))
+    func sharedVenvOfficeDistroDependenciesRoundtrip() async throws {
+        let app = try await appQualificationEnvironment()
+        let services = FloePlatformServices.shared
+        let terminalEvidence = SharedVenvTerminalEvidence()
+        let jobs = BackgroundJobService(store: BackgroundJobStore(database: app.database),
+            onTerminal: { job in await terminalEvidence.record(job) })
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shared-venv-office-real-vm-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let conversationID = UUID(), runID = UUID()
+        var environmentID: String?
+        var jobIDs: [UUID] = []
+        var recordsCreated = false
+        var runCreated = false
+        let provisioningCancellation = CancellationToken()
+        var evidence = ["kind": "real-shared-venv-office-native-service-not-model-not-ui",
+                        "root": root.path,
+                        "versions": "python-pptx==1.0.2 openpyxl==3.1.5 python-docx==1.2.0",
+                        "dependencyStrategy": "signed guest distro Pillow/lxml; normal dependency-resolving pip in production system-site-enabled venv",
+                        "terminalDelivery": "production BackgroundJobService with test-owned native-service evidence sink; not App model continuation",
+                        "budgetPolicy": "exec.shell foreground unchanged; distinct background jobs at reported limits up to 600s; no implicit retry"]
+        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                  appropriateFor: nil, create: true)
+        let evidenceDirectory = support.appendingPathComponent("FloeAgent/QualificationEvidence/SharedVenvOffice")
+            .appendingPathComponent(conversationID.uuidString)
+        try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
+        let evidenceURL = evidenceDirectory.appendingPathComponent("qualification.json")
+        func retain(_ stage: String) throws {
+            evidence["stage"] = stage
+            evidence["observedAt"] = ISO8601DateFormatter().string(from: Date())
+            try JSONEncoder().encode(evidence).write(to: evidenceURL, options: .atomic)
+        }
+        func retainArtifacts(requireAll: Bool) throws {
+            let retained = evidenceDirectory.appendingPathComponent("artifacts")
+            try FileManager.default.createDirectory(at: retained, withIntermediateDirectories: true)
+            for name in ["real.docx", "real.xlsx", "real.pptx", "dependency.png"] {
+                let source = root.appendingPathComponent("qualification/artifacts/" + name)
+                guard FileManager.default.fileExists(atPath: source.path) else {
+                    if requireAll { throw FloeError.notFound("Missing qualification artifact: " + name) }
+                    continue
+                }
+                let values = try source.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
+                guard values.isRegularFile == true, values.isSymbolicLink != true,
+                      let size = values.fileSize, size > 0, size <= 16 * 1024 * 1024 else {
+                    throw FloeError.validationFailed("Qualification artifact is not a bounded regular file: " + name)
+                }
+                let bytes = try Data(contentsOf: source)
+                evidence["artifact." + name + ".sha256"] = FloeDigest.sha256Hex(bytes)
+                evidence["artifact." + name + ".bytes"] = String(bytes.count)
+                try bytes.write(to: retained.appendingPathComponent(name), options: .atomic)
+            }
+        }
+        func assertNoModelTurn() async throws {
+            let runs = try await app.runStore.runs(conversationID: conversationID)
+            let messages = try await app.conversationStore.messages(conversationID: conversationID)
+            try #require(runs.count == 1 && runs.first?.id == runID,
+                         "Tool-only qualification unexpectedly created another run")
+            try #require(messages.isEmpty, "Tool-only qualification unexpectedly generated chat messages")
+        }
+        @discardableResult
+        func stage(_ name: String, command: String, timeout: Int) async throws -> String {
+            try Task.checkCancellation()
+            let id = try #require(environmentID)
+            evidence[name + ".effectiveTimeoutRequested"] = String(timeout)
+            try retain(name + ".submitting-once")
+            let started = Date()
+            let job = try await jobs.submit(runID: runID,
+                toolCallID: "shared-venv-office-" + name + "-" + UUID().uuidString,
+                targetTool: "exec.shell",
+                payloadJSON: JSONSerialization.data(withJSONObject: ["command": command, "cwd": ".",
+                    "timeout": timeout, "maxOutputBytes": 24_576]),
+                scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
+                environmentID: id, allowedToolNames: ["exec.shell"],
+                submissionSource: .nativeService, waitForCompletion: false)
+            jobIDs.append(job.id)
+            try #require(job.runID == runID && job.conversationID == conversationID && job.environmentID == id)
+            evidence[name + ".jobID"] = job.id.uuidString
+            try retain(name + ".running")
+            let terminal = try await waitForTerminal(jobs, id: job.id, seconds: Double(timeout) + 45)
+            let result = terminal.resultSummary ?? terminal.lastError ?? "No output"
+            evidence[name + ".durationSeconds"] = String(Date().timeIntervalSince(started))
+            evidence[name + ".state"] = terminal.state.rawValue
+            // Registered production shell runner already bounded/redacted this.
+            evidence[name + ".output"] = result
+            try retain(name + ".terminal")
+            let notificationDeadline = Date().addingTimeInterval(5)
+            while !(await terminalEvidence.matches(jobID: job.id, conversationID: conversationID,
+                                                    runID: runID, state: terminal.state.rawValue)),
+                  Date() < notificationDeadline {
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            try #require(await terminalEvidence.matches(jobID: job.id, conversationID: conversationID,
+                                                        runID: runID, state: terminal.state.rawValue),
+                         "Owned native-service terminal callback was not observed")
+            try await assertNoModelTurn()
+            try #require(terminal.state == .completed,
+                         "Shared venv Office stage failed: (name); evidence: (evidenceURL.path)")
+            try #require(result.contains("effectiveTimeoutSeconds=(timeout)"),
+                         "Stage did not report the actual effective command limit")
+            return result
+        }
+        func cleanup() async throws {
+            provisioningCancellation.cancel()
+            for id in jobIDs {
+                guard let job = try await jobs.job(id: id) else {
+                    throw FloeError.validationFailed("Owned shared venv job missing; preserve its workspace/layer")
+                }
+                if !job.state.isTerminal { _ = try await jobs.cancel(id: id) }
+                _ = try await waitForTerminal(jobs, id: id)
+            }
+            let ownID = try await ownedEnvironment(root: root, app: app)
+            if let expected = environmentID {
+                try #require(expected == ownID, "Qualification ownership changed or disappeared; preserve its layer and workspace")
+            }
+            if let id = ownID {
+                try await services.stopEnvironment(id: id)
+                guard let status = await services.linuxGuestStatus(id: id), !status.running else {
+                    throw FloeError.validationFailed("Owned shared venv guest stop unconfirmed; preserve its layer")
+                }
+                try await services.deleteEnvironment(id: id)
+            }
+            if recordsCreated {
+                if runCreated { try await assertNoModelTurn() }
+                try await app.conversationStore.deleteConversation(id: conversationID)
+            }
+            try FileManager.default.removeItem(at: root)
+        }
+        do {
+            let now = Date()
+            try await app.conversationStore.saveConversation(ConversationRecord(id: conversationID,
+                title: "Shared venv Office tool qualification", createdAt: now, updatedAt: now, titleOrigin: .manual))
+            recordsCreated = true
+            try await app.database.writer { database in
+                try database.execute(sql: "INSERT INTO runs (id, conversation_id, state, goal, started_at) VALUES (?, ?, 'running', 'Native-service Office package qualification; no model', ?)",
+                    arguments: [runID.uuidString, conversationID.uuidString, ISO8601DateFormatter().string(from: now)])
+            }
+            runCreated = true
+            try retain("preparing-own-project-guest")
+            try await services.prepareWorkspaceEnvironment(root: root)
+            let id = try #require(try await ownedEnvironment(root: root, app: app))
+            environmentID = id
+            let record = try #require(await app.environmentRegistry.record(id: id))
+            let expectedOwner = FloeDigest.sha256Hex(Data(root.resolvingSymlinksInPath().standardizedFileURL.path.utf8))
+            try #require(record.kind == .project && record.ownerID == expectedOwner,
+                         "Qualification must own a project layer, never shared/base/user layers")
+            let layer = try #require(await app.environmentRegistry.layerURL(for: id))
+            try #require(layer.lastPathComponent == id)
+            evidence["environmentID"] = id
+            evidence["ownedLayer"] = layer.path
+            try await services.activateLinuxGuestWithPreparation(id: id, cancellation: provisioningCancellation)
+            try await stage("guest-identity", command: #"""
+            set -e
+            mkdir -p /workspace/qualification/home /workspace/qualification/artifacts
+            cat /etc/os-release
+            printf 'DPKG_ARCH '; dpkg --print-architecture
+            python3 -u - <<'PY'
+            import platform,sys
+            print('PYTHON',sys.version)
+            print('ARCH',platform.machine())
+            release=platform.freedesktop_os_release()
+            assert release.get('ID')=='debian' and release.get('VERSION_ID')=='13',release
+            assert platform.machine()=='riscv64'
+            assert sys.version_info[:2]==(3,13)
+            PY
+            test "$(dpkg --print-architecture)" = riscv64
+            """#, timeout: 120)
+            let aptProbe = #"""
+            set -e
+            python3 -u - <<'PY'
+            import subprocess
+            missing=[]
+            for package in ('python3-pil','python3-lxml'):
+                result=subprocess.run(['apt-cache','policy',package],text=True,capture_output=True)
+                print('APT_POLICY',package,'exit',result.returncode,flush=True)
+                print(result.stdout,flush=True)
+                if result.stderr: print(result.stderr,flush=True)
+                assert result.returncode==0,'apt-cache failed'
+                candidate=next((line.split(':',1)[1].strip() for line in result.stdout.splitlines() if line.strip().startswith('Candidate:')),None)
+                if not candidate or candidate=='(none)': missing.append(package)
+                else: print('APT_CANDIDATE',package,candidate,flush=True)
+            print('APT_NEEDS_INDEX_UPDATE' if missing else 'APT_CANDIDATES_READY',*missing,flush=True)
+            PY
+            """#
+            let policy = try await stage("apt-policy-before", command: aptProbe, timeout: 120)
+            if policy.contains("APT_NEEDS_INDEX_UPDATE") {
+                try await stage("apt-index-update-once", command:
+                    "apt-get -o APT::Get::AllowUnauthenticated=false -o Acquire::AllowInsecureRepositories=false -o Acquire::AllowDowngradeToInsecureRepositories=false -o Acquire::Retries=0 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update", timeout: 600)
+            }
+            let verifiedPolicy = try await stage("apt-policy-verified", command: aptProbe, timeout: 120)
+            try #require(verifiedPolicy.contains("APT_CANDIDATES_READY"),
+                         "Signed guest repository has no Pillow/lxml candidate; retain original apt output")
+            try await stage("apt-simulate", command:
+                "apt-get -s --no-install-recommends install python3-pil python3-lxml", timeout: 120)
+            try await stage("apt-install", command:
+                "env DEBIAN_FRONTEND=noninteractive apt-get -y --no-install-recommends -o APT::Get::AllowUnauthenticated=false -o Acquire::AllowInsecureRepositories=false -o Acquire::AllowDowngradeToInsecureRepositories=false -o Acquire::Retries=0 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install python3-pil python3-lxml", timeout: 600)
+            guard let runner = services.linuxCommandRunner() else {
+                throw FloeError.validationFailed("Production Linux command runner is unavailable")
+            }
+            try retain("production-shared-venv-provisioning")
+            let venv = try await LinuxGuestPythonProvisioner.shared.ensure(environmentID: id,
+                runner: runner, cancellation: provisioningCancellation)
+            try #require(venv.environmentID == id && venv.venvPath == "/floe/env/python/venv")
+            evidence["venvPath"] = venv.venvPath
+            try #require(FileManager.default.fileExists(atPath: layer.appendingPathComponent("python/venv/pyvenv.cfg").path),
+                         "Shared venv was not created in this qualification's own writable layer")
+            try await stage("distro-extension-imports", command: #"""
+            set -e
+            dpkg-query -W -f='${Package} ${Version} ${Architecture} ${db:Status-Status}
+            ' python3-pil python3-lxml
+            /floe/env/python/venv/bin/python3 -u - <<'PY'
+            import sys,pathlib,importlib.metadata
+            from PIL import _imaging
+            from lxml import etree
+            print('VENV',sys.prefix,'BASE',sys.base_prefix)
+            assert sys.prefix!=sys.base_prefix
+            assert pathlib.Path(sys.prefix).resolve()==pathlib.Path('/floe/env/python/venv').resolve()
+            config=pathlib.Path('/floe/env/python/venv/pyvenv.cfg').read_text()
+            assert 'include-system-site-packages = true' in config.lower()
+            for module,distribution in ((_imaging,'Pillow'),(etree,'lxml')):
+                print('DISTRO_EXTENSION',distribution,importlib.metadata.version(distribution),module.__file__)
+                assert pathlib.Path(module.__file__).suffix=='.so'
+            assert etree.fromstring(b'<root><value>real-extension</value></root>').findtext('value')=='real-extension'
+            PY
+            """#, timeout: 120)
+            try await stage("shared-venv-pip-install", command: #"""
+            env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/workspace/qualification/home PIP_CONFIG_FILE=/dev/null /floe/env/python/venv/bin/python3 -u -m pip --isolated --disable-pip-version-check --no-input --no-cache-dir install --index-url https://pypi.org/simple --retries 0 --timeout 15 --progress-bar off --only-binary=:all: python-pptx==1.0.2 openpyxl==3.1.5 python-docx==1.2.0
+            """#, timeout: 600)
+            try await stage("shared-venv-pip-check", command:
+                "/floe/env/python/venv/bin/python3 -u -m pip --isolated --disable-pip-version-check check", timeout: 120)
+            try await stage("independent-imports-and-three-format-roundtrip", command: #"""
+            /floe/env/python/venv/bin/python3 -u - <<'PY'
+            import sys,pathlib,importlib,importlib.metadata,hashlib,json
+            from PIL import Image,_imaging
+            from lxml import etree
+            prefix=pathlib.Path('/floe/env/python/venv').resolve()
+            assert pathlib.Path(sys.prefix).resolve()==prefix and sys.prefix!=sys.base_prefix
+            for module,distribution,version in (('pptx','python-pptx','1.0.2'),('openpyxl','openpyxl','3.1.5'),('docx','python-docx','1.2.0')):
+                imported=importlib.import_module(module)
+                actual=importlib.metadata.version(distribution)
+                path=pathlib.Path(imported.__file__).resolve()
+                assert actual==version,(distribution,actual,version)
+                assert prefix in path.parents,(distribution,str(path))
+                print('VERIFIED_IMPORT',distribution,actual,str(path),flush=True)
+            for module in (_imaging,etree):
+                assert pathlib.Path(module.__file__).suffix=='.so'
+                print('VERIFIED_NATIVE_EXTENSION',module.__file__,flush=True)
+            target=pathlib.Path('/workspace/qualification/artifacts');target.mkdir(parents=True,exist_ok=True)
+            image=target/'dependency.png';Image.new('RGB',(3,2),(12,34,56)).save(image)
+            with Image.open(image) as reopened:
+                assert reopened.size==(3,2) and reopened.getpixel((0,0))==(12,34,56)
+            from docx import Document
+            word=Document();word.add_paragraph('SHARED-VENV-DOCX-中文');word.save(target/'real.docx')
+            word2=Document(target/'real.docx');assert any(p.text=='SHARED-VENV-DOCX-中文' for p in word2.paragraphs)
+            from openpyxl import Workbook,load_workbook
+            book=Workbook();sheet=book.active;sheet['A1']='SHARED-VENV-XLSX';sheet['B1']=17;sheet['B2']=25;sheet['B3']='=SUM(B1:B2)';book.save(target/'real.xlsx')
+            book2=load_workbook(target/'real.xlsx',data_only=False)
+            assert book2.active['A1'].value=='SHARED-VENV-XLSX' and book2.active['B1'].value==17 and book2.active['B2'].value==25
+            assert book2.active['B3'].value=='=SUM(B1:B2)'  # formula persistence, not an Excel recalc claim
+            from pptx import Presentation
+            deck=Presentation();slide=deck.slides.add_slide(deck.slide_layouts[6]);box=slide.shapes.add_textbox(0,0,2000000,500000)
+            box.text_frame.text='SHARED-VENV-PPTX-中文';slide.shapes.add_picture(str(image),0,600000);deck.save(target/'real.pptx')
+            deck2=Presentation(target/'real.pptx')
+            assert len(deck2.slides)==1
+            assert any(shape.has_text_frame and shape.text_frame.text=='SHARED-VENV-PPTX-中文' for shape in deck2.slides[0].shapes)
+            assert any(shape.shape_type==13 for shape in deck2.slides[0].shapes),'picture missing on reopen'
+            assert etree.fromstring(b'<real>parsed</real>').text=='parsed'
+            for name in ('real.docx','real.xlsx','real.pptx','dependency.png'):
+                path=target/name;data=path.read_bytes();assert data
+                print('ROUNDTRIP_FILE',json.dumps({'name':name,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()},sort_keys=True),flush=True)
+            print('SHARED_VENV_OFFICE_ROUNDTRIP_VERIFIED',flush=True)
+            PY
+            """#, timeout: 180)
+            try retainArtifacts(requireAll: true)
+            try await assertNoModelTurn()
+            try retain("actual-install-imports-roundtrip-verified")
+            try await cleanup()
+            evidence["cleanup"] = "owned jobs terminal; own project guest stopped/deleted; synthetic records/workspace removed; artifacts retained"
+            try retain("completed-and-cleaned")
+            print("FLOE_SHARED_VENV_OFFICE_EVIDENCE=" + evidenceURL.path)
+        } catch {
+            evidence["failure"] = String(describing: error)
+            do { try retainArtifacts(requireAll: false) }
+            catch { evidence["artifactRetentionFailure"] = String(describing: error) }
+            try? retain("failed-preserved")
+            do { try await cleanup(); evidence["cleanup"] = "completed" }
+            catch { evidence["cleanupFailure"] = String(describing: error); Issue.record("Shared venv qualification cleanup incomplete; preserve owned workspace: \(root.path)") }
+            try? retain("failed-cleanup-recorded")
+            print("FLOE_SHARED_VENV_OFFICE_FAILURE_EVIDENCE=" + evidenceURL.path)
+            throw error
+        }
+    }
+
     @Test("offline tiny wheel installs through the real job and timed-out shell preserves output after child cleanup",
           .enabled(if: ProcessInfo.processInfo.environment["FLOE_REALVM_QUALIFICATION"] == "1"))
     func offlinePipAndTimeoutOutputLifecycle() async throws {

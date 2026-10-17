@@ -41,7 +41,7 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         do {
             await session.open(source)
             try await waitReady(session)
-            try await captureChart(session, root: root, stage: "original-preview", window: window)
+            try await captureChart(session, root: root, stage: "original-preview", window: window, requireOriginalFiveBars: true)
             if session.readOnly {
                 let accepted = await session.requestEditing()
                 XCTAssertTrue(accepted, "Native edit entry rejected")
@@ -75,7 +75,7 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         defer { reopenedWindow.isHidden = true; reopenedWindow.rootViewController = nil }
         do {
             await reopened.open(output); try await waitReady(reopened)
-            try await captureChart(reopened, root: root, stage: "native-saved-reopened", window: reopenedWindow)
+            try await captureChart(reopened, root: root, stage: "native-saved-reopened", window: reopenedWindow, requireOriginalFiveBars: true)
             await reopened.release()
         } catch { await reopened.release(); throw error }
     }
@@ -440,7 +440,7 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         throw failure("No actual five-category chart survived in native PPTX")
     }
 
-    private func captureChart(_ session: OfficeFileSession, root: URL, stage: String, window: UIWindow) async throws {
+    private func captureChart(_ session: OfficeFileSession, root: URL, stage: String, window: UIWindow, requireOriginalFiveBars: Bool = false) async throws {
         let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
         try await wait(45, "native chart paint") { OfficeFileSession.hostRenderDiagnostics(native)["stage"] == "visible-render" }
         let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
@@ -473,6 +473,24 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         let targetImage = try await web.takeSnapshot(configuration: targetConfiguration)
         let targetURL = root.appendingPathComponent(stage + "-target-slide.png")
         try XCTUnwrap(targetImage.pngData()).write(to: targetURL); attach(targetURL, stage + "-actual-target-slide")
+        if requireOriginalFiveBars {
+            // Only the hash-locked original five-category fixture, never the
+            // edited/series scenarios. Actual target snapshot is preserved even
+            // on failure; PDF pixels are not used for native acceptance.
+            let visibility = Self.originalFiveBarVisibility(targetImage)
+            let numeric = root.appendingPathComponent(stage + "-five-bar-visibility.json")
+            try JSONSerialization.data(withJSONObject: visibility, options: [.prettyPrinted,.sortedKeys]).write(to: numeric)
+            attach(numeric, stage + "-five-bar-visibility")
+            XCTAssertEqual(visibility["geometryValid"] as? Bool, true, "Fixed original slide geometry could not be checked")
+            if let bars = visibility["bars"] as? [[String: Any]] {
+                XCTAssertEqual(bars.count, 5)
+                for bar in bars {
+                    XCTAssertEqual(bar["visible"] as? Bool, true,
+                        "Original chart column \(bar["index"] ?? "?") is not visibly filled in actual native target snapshot")
+                }
+            }
+            XCTAssertEqual(visibility["allFiveVisible"] as? Bool, true, "Native chart must visibly render all five original bars")
+        }
         let config = WKSnapshotConfiguration(); config.afterScreenUpdates = true
         let image = try await web.takeSnapshot(configuration: config)
         let surface = root.appendingPathComponent(stage + "-surface.png")
@@ -480,6 +498,62 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         let whole = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
         let windowURL = root.appendingPathComponent(stage + "-window.png")
         try XCTUnwrap(whole.pngData()).write(to: windowURL); attach(windowURL, stage + "-window")
+    }
+
+    /// Bounded pixel qualification for this exact fixed slide4 fixture only.
+    /// Plot x/y geometry was independently checked against its native PDF
+    /// reference and actual slide snapshots, with the original data hash gate.
+    /// Read bar interiors; no OCR, axes/legend text or generic blue-pixel total.
+    private static func originalFiveBarVisibility(_ image: UIImage) -> [String: Any] {
+        guard image.imageOrientation == .up, let source = image.cgImage else {
+            return ["geometryValid": false, "allFiveVisible": false, "reason": "unsupported-image-orientation", "bars": []]
+        }
+        let ratio = Double(source.width) / Double(source.height)
+        guard source.width >= 320, source.height >= 180, abs(ratio - 16.0 / 9.0) < 0.012 else {
+            return ["geometryValid": false, "allFiveVisible": false, "reason": "unexpected-slide-bounds",
+                "sourceWidth": source.width, "sourceHeight": source.height, "bars": []]
+        }
+        let width = min(source.width, 1600)
+        let height = max(1, Int((Double(source.height) * Double(width) / Double(source.width)).rounded()))
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+            // CGBitmapContext memory rows from this CGImage draw match the
+            // source image's top-left raster rows; no UIKit view transform.
+            context.interpolationQuality = .high
+            context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return ["geometryValid": false, "allFiveVisible": false, "reason": "pixel-buffer-unavailable", "bars": []] }
+        let values = [1800.0, 900, 240, 1620, 1080]
+        let centers = [0.1554, 0.2532, 0.3511, 0.4490, 0.5470]
+        let baseline = 0.7376, plotHeight = 0.3070, halfWidth = 0.0135, inset = 0.004
+        var bars: [[String: Any]] = []
+        for index in values.indices {
+            let x1 = max(0, Int(((centers[index] - halfWidth) * Double(width)).rounded(.up)))
+            let x2 = min(width, Int(((centers[index] + halfWidth) * Double(width)).rounded(.down)))
+            let y1 = max(0, Int(((baseline - plotHeight * values[index] / 2000 + inset) * Double(height)).rounded(.up)))
+            let y2 = min(height, Int(((baseline - inset) * Double(height)).rounded(.down)))
+            var blue = 0, count = 0
+            if x2 > x1, y2 > y1 {
+                for y in y1..<y2 { for x in x1..<x2 {
+                    let offset = (y * width + x) * 4
+                    let r = Int(pixels[offset]), g = Int(pixels[offset + 1]), b = Int(pixels[offset + 2])
+                    if r <= 85 && g >= 60 && g <= 155 && b >= 170 && b - r >= 90 { blue += 1 }
+                    count += 1
+                }}
+            }
+            let fill = count > 0 ? Double(blue) / Double(count) : 0
+            bars.append(["index": index + 1, "expectedValue": values[index], "x": x1, "y": y1,
+                "width": max(0,x2-x1), "height": max(0,y2-y1), "samplePixels": count,
+                "bluePixels": blue, "fillFraction": fill, "visible": count >= 24 && fill >= 0.65])
+        }
+        return ["geometryValid": true, "allFiveVisible": bars.allSatisfy { ($0["visible"] as? Bool) == true },
+            "sourceWidth": source.width, "sourceHeight": source.height, "sampleWidth": width, "sampleHeight": height,
+            "minimumBlueFillFraction": 0.65, "minimumSamplePixels": 24, "bars": bars,
+            "scope": "hash-locked-original-slide4-five-bars; native-snapshot-only"]
     }
 
     private static let targetSlideNavigationScript = #"""
