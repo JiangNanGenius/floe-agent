@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -800,6 +801,10 @@ class OfficeReleaseGateTests(unittest.TestCase):
         self.assertFalse(status['releaseReady'])
         self.assertEqual(capability_status({})['unproven'], status['unproven'])
         with tempfile.TemporaryDirectory() as folder:
+            # check() resolves the compiled-patch and lifecycle contracts
+            # contained beside the lock (the real pin now records them), so the
+            # read-only copy must mirror that contract layout.
+            shutil.copytree(Path(LOCK).parent, folder, dirs_exist_ok=True)
             copy_path = Path(folder) / 'engine.lock.json'
             copy_path.write_text(json.dumps(lock))
             # Read-only: reports 0 (matches the pin) or 1 (source ahead);
