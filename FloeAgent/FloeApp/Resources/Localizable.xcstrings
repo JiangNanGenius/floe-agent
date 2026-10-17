@@ -48161,6 +48161,142 @@
         }
       }
     },
+    "settings.licenses.document.office_engine_license.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online engine — licensing and legal information"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online 引擎 — 许可与法律信息"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.office_engine_mpl.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online engine — Mozilla Public License 2.0"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online 引擎 — Mozilla Public License 2.0"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.office_engine_lgpl.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online engine — GNU Lesser General Public License 3.0"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online 引擎 — GNU Lesser General Public License 3.0"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.office_engine_gpl.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online engine — GNU General Public License 3.0"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online 引擎 — GNU General Public License 3.0"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.office_engine_source_notice.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online engine — MPL source notice"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online 引擎 — MPL 源码声明"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.office_engine_third_party.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online engine — third-party licenses"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online 引擎 — 第三方许可"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.office_engine_notice.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online engine — NOTICE"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online 引擎 — NOTICE"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.office_engine_source_offer.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online engine source offer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collabora Online 引擎源码提供说明"
+          }
+        }
+      }
+    },
     "settings.licenses.document.oniguruma.title": {
       "extractionState": "manual",
       "localizations": {
@@ -48660,13 +48796,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The native Office engine is Collabora Online (LibreOffice-based) at the pinned commit, MPL-2.0. The qualified engine bundle retains its upstream third-party license files; the complete engine notice inventory remains a separate office qualification gate."
+            "value": "The native Office engine is Collabora Online (LibreOffice-based) at commit 27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc, MPL-2.0. Its complete upstream legal files ship in this app under Licenses/OfficeEngine/: the licensing and legal information statement with the MPL 2.0 text and third-party library notices, the MPL 2.0, LGPL 3.0 and GPL 3.0 license texts, the MPL source notice, the third-party license file and the Apache NOTICE. Licenses/OfficeEngine-SOURCE-OFFER.txt records where the exact source and Floe patches are available. The texts are copied byte-for-byte from the verified engine build; Floe makes no relicensing claim."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "原生 Office 引擎为固定提交的 Collabora Online（基于 LibreOffice），采用 MPL-2.0。合格引擎包中保留了上游第三方许可文件；完整的引擎声明清单仍是独立的 Office 资格门禁。"
+            "value": "原生 Office 引擎为 Collabora Online（基于 LibreOffice），固定提交 27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc，采用 MPL-2.0。其完整上游法律文件随 App 提供于 Licenses/OfficeEngine/：含 MPL 2.0 文本与第三方库声明的许可与法律信息、MPL 2.0、LGPL 3.0 与 GPL 3.0 许可文本、MPL 源码声明、第三方许可文件及 Apache NOTICE。Licenses/OfficeEngine-SOURCE-OFFER.txt 记录了确切源码与 Floe 补丁的获取位置。这些文本逐字节复制自已验证的引擎构建；Floe 不作重新许可声明。"
           }
         }
       }

@@ -107,6 +107,110 @@
       "noteKey": null
     },
     {
+      "id": "office-engine-license",
+      "repositoryPath": "FloeApp/Resources/Licenses/OfficeEngine/LICENSE",
+      "bundlePath": "Licenses/OfficeEngine/LICENSE",
+      "titleKey": "settings.licenses.document.office_engine_license.title",
+      "titleFallback": "Collabora Online engine — licensing and legal information",
+      "titleArgument": null,
+      "license": "MPL-2.0 and bundled third-party licenses",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "office",
+      "noteKey": null
+    },
+    {
+      "id": "office-engine-mpl",
+      "repositoryPath": "FloeApp/Resources/Licenses/OfficeEngine/COPYING.MPL",
+      "bundlePath": "Licenses/OfficeEngine/COPYING.MPL",
+      "titleKey": "settings.licenses.document.office_engine_mpl.title",
+      "titleFallback": "Collabora Online engine — Mozilla Public License 2.0",
+      "titleArgument": null,
+      "license": "MPL-2.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "office",
+      "noteKey": null
+    },
+    {
+      "id": "office-engine-lgpl",
+      "repositoryPath": "FloeApp/Resources/Licenses/OfficeEngine/COPYING.LGPL",
+      "bundlePath": "Licenses/OfficeEngine/COPYING.LGPL",
+      "titleKey": "settings.licenses.document.office_engine_lgpl.title",
+      "titleFallback": "Collabora Online engine — GNU Lesser General Public License 3.0",
+      "titleArgument": null,
+      "license": "LGPL-3.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "office",
+      "noteKey": null
+    },
+    {
+      "id": "office-engine-gpl",
+      "repositoryPath": "FloeApp/Resources/Licenses/OfficeEngine/COPYING",
+      "bundlePath": "Licenses/OfficeEngine/COPYING",
+      "titleKey": "settings.licenses.document.office_engine_gpl.title",
+      "titleFallback": "Collabora Online engine — GNU General Public License 3.0",
+      "titleArgument": null,
+      "license": "GPL-3.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "office",
+      "noteKey": null
+    },
+    {
+      "id": "office-engine-source-notice",
+      "repositoryPath": "FloeApp/Resources/Licenses/OfficeEngine/SOURCE-COPYING.txt",
+      "bundlePath": "Licenses/OfficeEngine/SOURCE-COPYING.txt",
+      "titleKey": "settings.licenses.document.office_engine_source_notice.title",
+      "titleFallback": "Collabora Online engine — MPL source notice",
+      "titleArgument": null,
+      "license": "MPL-2.0",
+      "kindKey": "settings.licenses.kind.notices",
+      "required": true,
+      "section": "office",
+      "noteKey": null
+    },
+    {
+      "id": "office-engine-third-party",
+      "repositoryPath": "FloeApp/Resources/Licenses/OfficeEngine/THIRDPARTYLICENSES",
+      "bundlePath": "Licenses/OfficeEngine/THIRDPARTYLICENSES",
+      "titleKey": "settings.licenses.document.office_engine_third_party.title",
+      "titleFallback": "Collabora Online engine — third-party licenses",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.notices",
+      "required": true,
+      "section": "office",
+      "noteKey": null
+    },
+    {
+      "id": "office-engine-notice",
+      "repositoryPath": "FloeApp/Resources/Licenses/OfficeEngine/NOTICE",
+      "bundlePath": "Licenses/OfficeEngine/NOTICE",
+      "titleKey": "settings.licenses.document.office_engine_notice.title",
+      "titleFallback": "Collabora Online engine — NOTICE",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.notices",
+      "required": true,
+      "section": "office",
+      "noteKey": null
+    },
+    {
+      "id": "office-engine-source-offer",
+      "repositoryPath": "FloeApp/Resources/Licenses/OfficeEngine-SOURCE-OFFER.txt",
+      "bundlePath": "Licenses/OfficeEngine-SOURCE-OFFER.txt",
+      "titleKey": "settings.licenses.document.office_engine_source_offer.title",
+      "titleFallback": "Collabora Online engine source offer",
+      "titleArgument": null,
+      "license": "MPL-2.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "office",
+      "noteKey": null
+    },
+    {
       "id": "pdfium",
       "repositoryPath": "FloeApp/Resources/PDFiumLicenses/LICENSE",
       "bundlePath": "PDFiumLicenses/LICENSE",
@@ -1093,7 +1197,7 @@
       "source": "https://github.com/CollaboraOnline/online.mirror",
       "section": "office",
       "noteKey": "settings.licenses.note.office",
-      "evidence": "ThirdParty/Collabora/engine.lock.json pin; upstream COPYING at the pinned commit (MPL-2.0)"
+      "evidence": "ThirdParty/Collabora/engine.lock.json pin; upstream LICENSE and COPYING.MPL at the pinned commit (MPL-2.0); legal files copied under FloeApp/Resources/Licenses/OfficeEngine"
     },
     {
       "name": "mdds (Office chart filter headers)",
@@ -2674,7 +2778,7 @@
     {
       "id": "office",
       "textKey": "settings.licenses.note.office",
-      "fallback": "The native Office engine is Collabora Online (LibreOffice-based) at the pinned commit, MPL-2.0. The qualified engine bundle retains its upstream third-party license files; the complete engine notice inventory remains a separate office qualification gate."
+      "fallback": "The native Office engine is Collabora Online (LibreOffice-based) at commit 27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc, MPL-2.0. Its complete upstream legal files ship in this app under Licenses/OfficeEngine/: the licensing and legal information statement with the MPL 2.0 text and third-party library notices, the MPL 2.0, LGPL 3.0 and GPL 3.0 license texts, the MPL source notice, the third-party license file and the Apache NOTICE. Licenses/OfficeEngine-SOURCE-OFFER.txt records where the exact source and Floe patches are available. The texts are copied byte-for-byte from the verified engine build; Floe makes no relicensing claim."
     },
     {
       "id": "verification",
@@ -2689,7 +2793,7 @@
   ],
   "counts": {
     "components": 234,
-    "documents": 36,
+    "documents": 44,
     "pins": 38
   }
 }

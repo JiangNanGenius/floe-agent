@@ -1,0 +1,72 @@
+Collabora Online native Office engine - source and patch record
+===============================================================
+
+The Floe app embeds a compiled native Office engine based on Collabora Online
+(LibreOffice-based). The engine is built from the public upstream repository at
+the pinned commit below together with the Floe patches recorded in this
+repository. Its upstream licensing and third-party notices are distributed with
+the app under Licenses/OfficeEngine/.
+
+This page records where the exact source and the Floe modifications are
+available. It is an engineering record, not a legal certification and not a
+relicensing statement; the shipped license texts govern.
+
+Complete source for the exact linked version
+--------------------------------------------
+  Project:  https://github.com/CollaboraOnline/online.mirror
+  Commit:   27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc
+  Archive:  https://github.com/CollaboraOnline/online.mirror/archive/27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc.tar.gz
+
+The source is public at the repository and archive URLs above.
+
+Floe modifications and build inputs
+-----------------------------------
+Repository: https://github.com/JiangNanGenius/floe-agent
+Paths below are relative to FloeAgent/ in that repository.
+
+The engine changes are tracked as patch files and lock records in this repository:
+
+  ThirdParty/Collabora/patches/            engine patch files
+  ThirdParty/Collabora/engine.lock.json    upstream pin, source patch and embedding inputs
+  ThirdParty/Collabora/engine.patch.lock.json
+                                           per-platform patch selection and SHA-256 values
+  ThirdParty/Collabora/filter-overlay.lock.json
+                                           chart/filter member patch and header pins
+  ThirdParty/Collabora/EMBEDDING_INPUTS.md
+                                           embedding input inventory and preparation notes
+
+The scripts that verify, prepare and build the host from the pinned source are
+tracked in the same public repository:
+
+  scripts/prepare_office_native_sources.py
+  scripts/build_office_native_host.py
+  scripts/bootstrap_office_host.py
+
+The lock files name the patch files and their SHA-256 values, so a recipient can
+reconstruct the exact build source from the upstream commit. The patches cover
+the iOS embedding and lifecycle work, chart/filter corrections and the pinned
+header dependencies and are applied to the upstream source by the preparation
+scripts above.
+
+Where the texts ship
+--------------------
+  Licenses/OfficeEngine/LICENSE              upstream licensing and legal information
+  Licenses/OfficeEngine/COPYING.MPL          Mozilla Public License 2.0
+  Licenses/OfficeEngine/COPYING.LGPL         GNU Lesser General Public License 3.0
+  Licenses/OfficeEngine/COPYING              GNU General Public License 3.0
+  Licenses/OfficeEngine/SOURCE-COPYING.txt   MPL source-code notice
+  Licenses/OfficeEngine/THIRDPARTYLICENSES   bundled third-party licenses
+  Licenses/OfficeEngine/NOTICE               Apache NOTICE for included portions
+
+These files are byte-identical copies of the upstream legal files retained
+with the verified engine build; the app's third-party inventory lists them with
+the engine component.
+
+Status and limits
+-----------------
+- This record describes the source and patch state tracked by this repository.
+  It does not replace the license texts and does not certify license
+  compatibility.
+- The source offer is made by publishing the upstream commit and the Floe
+  patch/build records above; no private credentials or local build paths are
+  needed to obtain them.
