@@ -122,9 +122,7 @@ import FloeTools
     @Test("real guest diagnoses public package network stages and imports an installed Office package set",
           .enabled(if: ProcessInfo.processInfo.environment["FLOE_REALVM_NETWORK_PIP_QUALIFICATION"] == "1"))
     func networkOfficePipStagedDiagnosis() async throws {
-        let app = AppEnvironment.live()
-        await app.bootstrap()
-        try #require(app.persistenceReady)
+        let app = try await appQualificationEnvironment()
         let jobs = try #require(app.backgroundJobService)
         let services = FloePlatformServices.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("network-pip-real-vm-" + UUID().uuidString)

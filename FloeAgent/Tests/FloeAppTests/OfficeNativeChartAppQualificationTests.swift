@@ -528,8 +528,17 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         // File-based layout includes an inclusive extra grid row/column.
         // TilesSection clips using this same page-local document rectangle;
         // out-of-page tiles are not drawn and cannot prove visible paint.
-        const pageBounds=layout.documentRectangles && layout.documentRectangles[3];
-        if (!pageBounds || !(pageBounds.pWidth>0 && pageBounds.pHeight>0)) throw new Error('target document bounds unavailable');
+        const pageBounds=app.file.fileBasedView
+            ? (layout.documentRectangles && layout.documentRectangles[3])
+            : {pWidth:app.activeDocument.fileSize.pX,pHeight:app.activeDocument.fileSize.pY};
+        if (!pageBounds || !(pageBounds.pWidth>0 && pageBounds.pHeight>0)) {
+            window.__floeChartTargetObservation={stage:'target-bounds-unavailable',layoutType:layout.type,
+                fileBased:!!app.file.fileBasedView,selectedPart:layer._selectedPart,
+                documentRectangleCount:layout.documentRectangles ? layout.documentRectangles.length : null,
+                fileSizePixels:{width:app.activeDocument.fileSize.pX,height:app.activeDocument.fileSize.pY},
+                targetBounds:pageBounds || null};
+            throw new Error('target document bounds unavailable');
+        }
         const candidates=typeof layout.getCurrentCoordList==='function' ? layout.getCurrentCoordList().filter(c=>String(c.part)===part) : [];
         const tileSize=manager.tileSize;
         if (!(tileSize>0)) throw new Error('actual tile size unavailable');

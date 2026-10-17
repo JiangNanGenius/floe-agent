@@ -981,9 +981,7 @@ struct SubagentSimulatorExecutionTests {
     @Test("installed shell guide reads current Linux instructions without downgrading protected content",
           .enabled(if: ProcessInfo.processInfo.environment["FLOE_BUNDLED_SKILL_QUALIFICATION"] == "1"))
     func installedShellGuideRetirementRead() async throws {
-        let environment = AppEnvironment.live()
-        await environment.bootstrap()
-        try #require(environment.persistenceReady)
+        let environment = try await appQualificationEnvironment()
         let before = try await environment.skillStore.all().first { $0.id == "floe-shell" }
         let rows = try await environment.skillsCenter.readSkills(id: "floe-shell")
         let guide = try #require(rows.first { $0.id == "floe-shell" })

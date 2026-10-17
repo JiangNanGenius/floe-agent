@@ -40,6 +40,12 @@ import FloeOfficeNative
 @MainActor
 final class AppEnvironment: ObservableObject {
 
+    #if DEBUG
+    // Hosted qualification joins the actual launch instance instead of
+    // opening a second database pool and replacing app-owned service routing.
+    static weak var qualificationLaunchEnvironment: AppEnvironment?
+    #endif
+
     // MARK: Persistence
 
     let database: DatabaseManager

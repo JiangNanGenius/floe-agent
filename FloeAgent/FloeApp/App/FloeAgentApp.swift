@@ -73,6 +73,9 @@ struct FloeAgentApp: App {
             UIView.setAnimationsEnabled(false)
         }
         let environment = AppEnvironment.live()
+        #if DEBUG
+        AppEnvironment.qualificationLaunchEnvironment = environment
+        #endif
         let router = AppRouter()
         _environment = StateObject(wrappedValue: environment)
         _router = StateObject(wrappedValue: router)
