@@ -130,6 +130,37 @@ def qualification_project(project, linker_list, minimum_ios, frameworks):
     return project
 
 
+def platform_original_archives(root, lock, sdk):
+    """Measure all original filter/lifecycle archives against the cold manifest."""
+    import office_compiled_lifecycle as lifecycle
+    if sdk not in ('iphoneos', 'iphonesimulator'):
+        raise ValueError('Unsupported original archive SDK: ' + str(sdk))
+    root = Path(root).resolve()
+    manifest = json.loads((root / 'bundle-manifest.json').read_text())
+    if manifest.get('sourceCommit') != lock['commit']:
+        raise ValueError('Original archive manifest has a different engine commit')
+    entries = {item['path']: item for item in manifest['files']}
+    paths = ['source/engine/instdir/program/' + name for name in
+             ('libscfiltlo.a', 'libooxlo.a', 'libsdlo.a')]
+    selected = lifecycle.contract(lock, 'IOS' if sdk == 'iphoneos' else 'IOSSIMULATOR')
+    if selected is not None:
+        paths += [item['archive'] for item in [selected, *selected.get('additionalArchives', {}).values()]]
+    originals = {}
+    for relative in dict.fromkeys(paths):
+        archive = root / relative
+        entry = entries.get(relative)
+        if archive.is_symlink() or not archive.is_file() or not archive.resolve().is_relative_to(root):
+            raise ValueError('Original archive is missing or aliased: ' + relative)
+        measured = digest(archive)
+        if entry is None or entry.get('sha256') != measured or entry.get('size') != archive.stat().st_size:
+            raise ValueError('Original archive differs from cold manifest: ' + relative)
+        name = Path(relative).name
+        if name in originals:
+            raise ValueError('Ambiguous original archive name: ' + name)
+        originals[name] = measured
+    return {'sdk': sdk, 'archives': originals}
+
+
 def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK, sdk='iphoneos'):
     """Compile/link the pinned Mobile UI for one Apple platform SDK.
 
@@ -211,16 +242,8 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK, sdk='iphon
     # filterOverlay block therefore proves it linked unpatched chart/ink
     # archives of its own verified identity instead of silently reusing device
     # hashes or device objects.
-    platform_archives = {}
-    for relative in ("source/engine/instdir/program/libscfiltlo.a",
-                     "source/engine/instdir/program/libooxlo.a",
-                     "source/engine/instdir/program/libsdlo.a",
-                     "source/engine/instdir/program/libsallo.a",
-                     "source/engine/instdir/program/libvcllo.a"):
-        archive = root / relative
-        if archive.is_file():
-            platform_archives[Path(relative).name] = digest(archive)
-    report["platformOriginalArchives"] = {"sdk": sdk, "archives": platform_archives}
+    report["platformOriginalArchives"] = platform_original_archives(root, lock, sdk)
+
     command = ["xcodebuild", "-project", str(project_path.parent), "-target", "Mobile",
         "-configuration", "Release", "-sdk", sdk, "-jobs", "2",
         "-resultBundlePath", str(destination / "Mobile.xcresult"),
