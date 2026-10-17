@@ -91,7 +91,7 @@ public struct NativeJobOrigin: Sendable, Equatable, Codable {
 /// is the explicit in-process API for trusted app actions (restarting a
 /// stopped local service, the shell `floe-service` command, the IDE run-service
 /// action) that are not model/tool calls to `jobs.submit`.
-public enum NativeJobSubmissionSource: Sendable, Equatable {
+public enum NativeJobSubmissionSource: String, Sendable, Equatable, Codable {
     /// A runtime-dispatched `jobs.submit` call. The context MUST carry BOTH
     /// the provider call id and the runtime call origin bound to `jobs.submit`
     /// for that exact call; a missing call id, a missing/legacy origin without
@@ -105,6 +105,42 @@ public enum NativeJobSubmissionSource: Sendable, Equatable {
     /// run/handoff. The `jobs.submit` tool-name binding is not required
     /// because no such call exists.
     case nativeService
+}
+
+/// Durable presentation/continuation metadata for an independently requested
+/// native service. This is not an authorization or a model-issued payload.
+/// Existing run status events carry it; no parallel run/job storage is used.
+public struct NativeServiceRunMetadata: Sendable, Codable, Equatable {
+    public let activity: String
+    public let version: Int
+    public let source: NativeJobSubmissionSource
+    public let runID: UUID
+    public let conversationID: UUID
+    public let targetTool: String
+
+    public init(runID: UUID, conversationID: UUID) {
+        activity = "standaloneService"
+        version = 1
+        source = .nativeService
+        self.runID = runID
+        self.conversationID = conversationID
+        targetTool = "exec.localService"
+    }
+
+    public func payloadJSON() throws -> String {
+        String(decoding: try JSONEncoder().encode(self), as: UTF8.self)
+    }
+
+    public static func matches(_ event: RunEventRecord, runID: UUID,
+                               conversationID: UUID, targetTool: String = "exec.localService") -> Bool {
+        guard event.kind == .status, event.runID == runID,
+              targetTool == "exec.localService",
+              let data = event.payloadJSON.data(using: .utf8),
+              let metadata = try? JSONDecoder().decode(Self.self, from: data) else { return false }
+        return metadata.activity == "standaloneService" && metadata.version == 1
+            && metadata.source == .nativeService && metadata.runID == runID
+            && metadata.conversationID == conversationID && metadata.targetTool == targetTool
+    }
 }
 
 /// Verification of the runtime-issued provenance for one `jobs.submit` call.

@@ -842,29 +842,45 @@ final class AppEnvironment: ObservableObject {
     /// Terminal-state hook for jobs.* background work. A live run is steered
     /// with the outcome; a finished run leaves a durable queued input the user
     /// can see and act on. A local notification always mirrors the outcome.
-    private func handleBackgroundJobTerminal(_ job: BackgroundJob) async {        let evidence = job.resultSummary ?? job.lastError ?? job.state.rawValue
+    private func handleBackgroundJobTerminal(_ job: BackgroundJob) async {
+        let evidence = job.resultSummary ?? job.lastError ?? job.state.rawValue
+        let events = (try? await runStore.events(runID: job.runID, afterSequence: 0, limit: 32)) ?? []
+        let isStandaloneService = events.contains {
+            NativeServiceRunMetadata.matches($0, runID: job.runID,
+                conversationID: job.conversationID, targetTool: job.targetTool)
+        }
         let content = "[Floe background job \(job.id.uuidString)] \(job.targetTool) finished with state=\(job.state.rawValue). "
             + "Evidence excerpt: \(String(evidence.prefix(1_000))). "
             + "Use jobs.result with this jobID for the full output; do not resubmit an unchanged payload."
-        do {
-            try await conversationCenter.submitRunningInput(
-                content: content,
-                in: job.conversationID,
-                expectedRunID: job.runID,
-                mode: .steer,
-                selectedModelID: nil,
-                workspaceID: nil,
-                executionMode: .agent,
-                attachments: []
-            )
-        } catch {
-            FloeLogger(category: .app).info(
-                "backgroundJob terminal steer failed jobID=\(job.id.uuidString) error=\(error.localizedDescription)"
-            )
+        // A native IDE service is independently requested work, not an
+        // unanswered model turn. Keep its job/notification, without injecting
+        // an unsolicited model input on stop/failure/completion.
+        if !isStandaloneService {
+            do {
+                try await conversationCenter.submitRunningInput(
+                    content: content,
+                    in: job.conversationID,
+                    expectedRunID: job.runID,
+                    mode: .steer,
+                    selectedModelID: nil,
+                    workspaceID: nil,
+                    executionMode: .agent,
+                    attachments: []
+                )
+            } catch {
+                FloeLogger(category: .app).info(
+                    "backgroundJob terminal steer failed jobID=\(job.id.uuidString) error=\(error.localizedDescription)"
+                )
+            }
         }
         let notification = UNMutableNotificationContent()
         notification.title = job.state == .completed ? FloeL10n.l("app.app_environment.background_task_complete") : FloeL10n.l("app.app_environment.background_task_ended", job.state.rawValue)
-        notification.body = "\(job.targetTool) · \(String(evidence.prefix(160)))"
+        notification.body = isStandaloneService && job.state == .cancelled
+            ? (Locale.current.language.languageCode?.identifier == "zh" ? "服务已停止" : "Service stopped")
+            : "\(job.targetTool) · \(String(evidence.prefix(160)))"
+        if isStandaloneService && job.state == .cancelled {
+            notification.title = notification.body
+        }
         notification.userInfo = ["conversationID": job.conversationID.uuidString, "jobID": job.id.uuidString]
         try? await UNUserNotificationCenter.current().add(UNNotificationRequest(
             identifier: "jobs.\(job.id.uuidString)", content: notification, trigger: nil

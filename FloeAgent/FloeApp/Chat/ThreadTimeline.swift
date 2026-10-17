@@ -29,6 +29,7 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeAgentRuntime
+import FloeExecution
 
 /// One compact decision record projected onto the tool invocation that
 /// produced the proposal. The durable decision message is never deleted or
@@ -551,6 +552,11 @@ enum ThreadTimelineBuilder {
             let callID = payload["callID"] ?? payload["id"] ?? ""
             return callID.isEmpty ? nil : callID
         })
+        let isStandaloneNativeService = run.map { run in
+            sortedEvents.contains {
+                NativeServiceRunMetadata.matches($0, runID: run.id, conversationID: run.conversationID)
+            }
+        } ?? false
         let terminalEvent = sortedEvents.last(where: { $0.kind == .terminal })
         let hasReachedTerminal = terminalEvent != nil
             || run.map { RunStateLocalizer.isTerminal($0.state) } == true
@@ -560,17 +566,20 @@ enum ThreadTimelineBuilder {
         let lastToolSequence = sortedEvents
             .last(where: { $0.kind == .toolRequest || $0.kind == .toolResult })?
             .sequence
-        let nonTerminalEvents = sortedEvents.filter {
-            $0.kind != .terminal
-                && !isTerminalStatusEvent($0, payloadCache: payloadCache)
-                && !isStaleStatusEvent($0, currentState: run?.state, payloadCache: payloadCache)
+        let nonTerminalEvents = sortedEvents.filter { event in
+            event.kind != .terminal
+                && !(run.map { run in
+                    NativeServiceRunMetadata.matches(event, runID: run.id, conversationID: run.conversationID)
+                } ?? false)
+                && !isTerminalStatusEvent(event, payloadCache: payloadCache)
+                && !isStaleStatusEvent(event, currentState: run?.state, payloadCache: payloadCache)
                 && !isSuppressedToolProtocolEvent(
-                    $0,
+                    event,
                     suppressedCallIDs: suppressedToolCallIDs,
                     payloadCache: payloadCache
                 )
                 && !isTrailingVerificationReasoning(
-                    $0,
+                    event,
                     hasReachedTerminal: hasReachedTerminal,
                     lastAssistantTextSequence: lastAssistantTextSequence,
                     lastToolSequence: lastToolSequence
@@ -680,6 +689,7 @@ enum ThreadTimelineBuilder {
         //    surface — never a silent success.
         if !finalReplyRendered,
            let run, run.state == "completed",
+           !isStandaloneNativeService,
            !isRunning {
             items.append(.missingFinalMessage(idSuffix: run.id.uuidString))
         }

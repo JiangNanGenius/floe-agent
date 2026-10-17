@@ -482,6 +482,7 @@
 		CA48FBFF18E0D21F5BBB7477 /* ProviderCatalogAddView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09192A54F67E7B8EFAB89CC /* ProviderCatalogAddView.swift */; };
 		CAC163D56D73A655CB67AC34 /* CanvasCADStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEFD6884204D3C555BA87EED /* CanvasCADStorage.swift */; };
 		CB7295DE2A5C7C6004B32A6D /* OfficeExplicitSaveBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DC88801BD9F456C4B11FB97 /* OfficeExplicitSaveBridge.swift */; };
+		CC059FAA8C5FC2AEB77E2401 /* NativeJobPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3195240E7F98D70A42B085B3 /* NativeJobPolicyTests.swift */; };
 		CC44EFAFC16BB15E726B3333 /* PDFUnlockTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AA5FE75929315E529714A75 /* PDFUnlockTool.swift */; };
 		CC580BC854A9C66E1B364607 /* LinuxUnknownOutcomeReconcilerBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBB9CB972B719483B9E44DC8 /* LinuxUnknownOutcomeReconcilerBridge.swift */; };
 		CD1194126440A9ED929AC910 /* OfficeAttachmentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC3E986891CA3776E2C72939 /* OfficeAttachmentListView.swift */; };
@@ -780,6 +781,7 @@
 		30E546884B42CDF2BB96931B /* UserMessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMessageBubble.swift; sourceTree = "<group>"; };
 		3140A589CB280EA648135829 /* office-native-real-budget.xlsx */ = {isa = PBXFileReference; path = "office-native-real-budget.xlsx"; sourceTree = "<group>"; };
 		316DA0723AA58D762AD5EF3E /* floe-sim-qual.pptx */ = {isa = PBXFileReference; path = "floe-sim-qual.pptx"; sourceTree = "<group>"; };
+		3195240E7F98D70A42B085B3 /* NativeJobPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeJobPolicyTests.swift; sourceTree = "<group>"; };
 		31D98DFED3D114A699F77361 /* AssistantMessageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageView.swift; sourceTree = "<group>"; };
 		32AFFE629DB45CB58B683A86 /* NotesMarkdownLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesMarkdownLayout.swift; sourceTree = "<group>"; };
 		3319E3323937D58167E59374 /* MemoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryView.swift; sourceTree = "<group>"; };
@@ -2451,6 +2453,7 @@
 				539F31408E05AE89AC0A3FA5 /* LinuxGuestBackendTests.swift */,
 				7E9DE1B1F43C125C8CFCDDDE /* LinuxGuestConsoleSinkTests.swift */,
 				2A584E0DC8FB3226A9FB3E98 /* LinuxGuestPythonFastProvisionTests.swift */,
+				3195240E7F98D70A42B085B3 /* NativeJobPolicyTests.swift */,
 				951E4559DE7BAC0CAEB76029 /* TaskScheduleToolTests.swift */,
 			);
 			path = FloeExecutionTests;
@@ -3274,6 +3277,7 @@
 				9D30838BE3C60286C9A0DC32 /* NativeCADDrawingAssemblyClosureTests.swift in Sources */,
 				54A7367EFE8A55E2EA781F61 /* NativeCADProposalAuthorityTests.swift in Sources */,
 				5EC3F62807E3D0C3C3F7B6FE /* NativeCADProposalPersistenceTests.swift in Sources */,
+				CC059FAA8C5FC2AEB77E2401 /* NativeJobPolicyTests.swift in Sources */,
 				09E8FD60A0B1F4D0E72F141C /* NativeMediaRoutingTests.swift in Sources */,
 				2C371A5C3BDB48A939B1CDCA /* NoteCoverStoreTests.swift in Sources */,
 				117AC7D40AFCF5CC5CB4A4D3 /* NotesCoverPickerLifecycleTests.swift in Sources */,

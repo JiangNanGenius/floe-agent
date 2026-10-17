@@ -7,6 +7,12 @@ import FloeExecution
 import FloePersistence
 
 enum IDEWebServicePolicy {
+    static func stateTitle(_ state: BackgroundJobState) -> String {
+        if state == .cancelled { return IDELanguageRunText.t("服务已停止", "Service stopped") }
+        // Build a dynamic key, not a LocalizedStringKey format interpolation.
+        return FloeL10n.l("services.state." + state.rawValue)
+    }
+
     static func runtime(for path: String?) -> String? {
         guard let path else { return nil }
         switch (path as NSString).pathExtension.lowercased() {
@@ -98,11 +104,15 @@ struct IDEWebServiceView: View {
             if let failure { Text(failure).foregroundStyle(.red).textSelection(.enabled) }
             if let job {
                 Section(IDELanguageRunText.t("服务状态与日志", "Service status and logs")) {
-                    Text(LocalizedStringKey("services.state.\(job.state.rawValue)"))
-                    if let error = job.lastError { Text(error).textSelection(.enabled) }
+                    Text(IDEWebServicePolicy.stateTitle(job.state))
+                    if job.state != .cancelled, let error = job.lastError { Text(error).textSelection(.enabled) }
                     if let progress {
-                        Text(progress.stdout + "\n" + progress.stderr)
-                            .font(.caption.monospaced()).textSelection(.enabled)
+                        if !progress.stdout.isEmpty || !progress.stderr.isEmpty {
+                            DisclosureGroup("services.logs") {
+                                Text(progress.stdout + "\n" + progress.stderr)
+                                    .font(.caption.monospaced()).textSelection(.enabled)
+                            }
+                        }
                         if progress.state == "running", progress.previewURL != nil, !job.state.isTerminal {
                             Button("services.preview") { preview = true }
                         }
@@ -198,12 +208,15 @@ struct IDEWebServiceView: View {
             guard currentOwners.contains(owner) else { throw FloeError.validationFailed(IDELanguageRunText.t("该任务已无法访问这些文件。", "This task can no longer access these files.")) }
             try await center.environment.runStore.saveRun(RunRecord(id: runID, conversationID: owner,
                 state: "completed", goal: "IDE web service", startedAt: Date(), endedAt: Date()))
+            try await center.environment.runStore.appendEvent(
+                runID: runID, kind: .status,
+                payloadJSON: NativeServiceRunMetadata(runID: runID, conversationID: owner).payloadJSON())
             let directory = (entry as NSString).deletingLastPathComponent
             let args = LocalServiceTool.Arguments(runtime: runtime, entry: entry, arguments: [],
                                                  cwd: directory.isEmpty ? "." : directory, port: number)
             job = try await service.submit(runID: runID, toolCallID: nil, targetTool: "exec.localService",
                 payloadJSON: JSONEncoder().encode(args), scope: .local, workspaceRootURL: root,
-                allowedWorkspacePaths: [], environmentID: environmentID)
+                allowedWorkspacePaths: [], environmentID: environmentID, submissionSource: .nativeService)
         } catch { failure = error.localizedDescription }
     }
 }

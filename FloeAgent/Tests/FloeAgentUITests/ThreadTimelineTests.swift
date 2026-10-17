@@ -18,9 +18,45 @@ import FloePersistence
 import FloeAgentRuntime
 import FloeSecurity
 import FloeTools
+import FloeExecution
 
 @Suite("FloeApp.ThreadTimeline")
 struct ThreadTimelineTests {
+    @Test("Native service runs never demand a model final reply; model and cross-owner runs still do")
+    func nativeServiceRunHasNoMissingModelReply() throws {
+        let conversation = UUID()
+        // Deliberately use the same goal/no-provider shape for ordinary runs:
+        // neither field is allowed to decide this behavior.
+        let run = makeRun(state: "completed", conversationID: conversation, goal: "IDE web service")
+        let marker = RunEventRecord(runID: run.id, sequence: 1, kind: .status,
+            payloadJSON: try NativeServiceRunMetadata(runID: run.id, conversationID: conversation).payloadJSON())
+        func items(_ events: [RunEventRecord]) -> [ThreadTimelineItem] {
+            ThreadTimelineBuilder.build(messages: [], events: events, run: run,
+                isRunning: false, liveStreamedText: "", liveReasoningText: "", pendingApprovals: [])
+        }
+        func missing(_ events: [RunEventRecord]) -> Bool {
+            items(events).contains { if case .missingFinalMessage = $0 { true } else { false } }
+        }
+        #expect(!missing([marker]))
+        #expect(!items([marker]).contains { if case .event(let event) = $0 { event.id == marker.id } else { false } })
+        #expect(missing([]))
+        let otherOwner = RunEventRecord(runID: run.id, sequence: 1, kind: .status,
+            payloadJSON: try NativeServiceRunMetadata(runID: run.id, conversationID: UUID()).payloadJSON())
+        #expect(missing([otherOwner]))
+        let otherRun = RunEventRecord(runID: UUID(), sequence: 1, kind: .status, payloadJSON: marker.payloadJSON)
+        #expect(missing([otherRun]))
+    }
+
+    @Test("IDE service states use translated concrete keys and a plain stopped label")
+    func ideServiceStateLabels() {
+        for state in [BackgroundJobState.queued, .running, .completed, .failed, .interrupted, .cancelled] {
+            let title = IDEWebServicePolicy.stateTitle(state)
+            #expect(!title.isEmpty)
+            #expect(!title.contains("services.state."))
+            #expect(!title.contains("Cancellation acknowledged"))
+        }
+    }
+
     @MainActor @Test("Folded reasoning keeps its height across short and wrapped streaming fragments")
     func foldedReasoningHeightIsStable() {
         for width in [CGFloat(280), CGFloat(620)] {

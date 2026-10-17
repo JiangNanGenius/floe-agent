@@ -4,12 +4,43 @@
 import Foundation
 import Testing
 import FloeTools
+import FloeModels
 import FloeCore
 @testable import FloePersistence
 @testable import FloeExecution
 
 @Suite("Native job policy and adapters")
 struct NativeJobPolicyTests {
+    @Test("Standalone service metadata persists exact run/task/tool identity without marking model jobs")
+    func standaloneServiceOriginMetadata() async throws {
+        let (db, conversation, run, workspace) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        let store = SQLiteRunStore(database: db)
+        let event = try await store.appendEvent(runID: run, kind: .status,
+            payloadJSON: NativeServiceRunMetadata(runID: run, conversationID: conversation).payloadJSON())
+        let reopened = SQLiteRunStore(database: db)
+        let events = try await reopened.events(runID: run)
+        #expect(events.count == 1)
+        #expect(NativeServiceRunMetadata.matches(events[0], runID: run, conversationID: conversation))
+        #expect(!NativeServiceRunMetadata.matches(event, runID: UUID(), conversationID: conversation))
+        #expect(!NativeServiceRunMetadata.matches(event, runID: run, conversationID: UUID()))
+        #expect(!NativeServiceRunMetadata.matches(event, runID: run, conversationID: conversation, targetTool: "exec.shell"))
+        var wrongKind = event; wrongKind.kind = .assistantText
+        #expect(!NativeServiceRunMetadata.matches(wrongKind, runID: run, conversationID: conversation))
+        var payload = try #require(JSONSerialization.jsonObject(with: Data(event.payloadJSON.utf8)) as? [String: Any])
+        for (field, value) in [("source", "runtime"), ("targetTool", "exec.shell"), ("activity", "other")] {
+            var changed = payload; changed[field] = value
+            var invalid = event
+            invalid.payloadJSON = String(decoding: try JSONSerialization.data(withJSONObject: changed), as: UTF8.self)
+            #expect(!NativeServiceRunMetadata.matches(invalid, runID: run, conversationID: conversation))
+        }
+        payload["version"] = 2
+        var newer = event; newer.payloadJSON = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+        #expect(!NativeServiceRunMetadata.matches(newer, runID: run, conversationID: conversation))
+        let ordinary = RunEventRecord(runID: run, sequence: 2, kind: .status, payloadJSON: "{\"state\":\"completed\"}")
+        #expect(!NativeServiceRunMetadata.matches(ordinary, runID: run, conversationID: conversation))
+    }
+
     private func fixture() async throws -> (DatabaseManager, UUID, UUID, URL) {
         let db = try DatabaseManager.inMemory()
         try await db.migrate()
