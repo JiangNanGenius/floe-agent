@@ -953,6 +953,100 @@ class OwnedSimulatorSafetyTests(unittest.TestCase):
         self.assertFalse(any('delete' in part for command in commands
                              for part in command))
 
+    def test_provision_guard_honours_single_device_policy(self):
+        import os
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {'policy': 'single-existing-device',
+                      'deviceUDID': 'canon-udid-1', 'deviceName': 'Synthetic Canonical iPad'}
+            path = Path(tmp) / 'device.json'
+            path.write_text(json.dumps(config))
+            with mock.patch.dict(os.environ, {'FLOE_SIMULATOR_CONFIG': str(path)}):
+                blocker = provision_owned_simulator.single_device_policy_blocker()
+                self.assertIn('single-simulator policy pins device', blocker)
+                self.assertIn('CANON-UDID-1', provision_owned_simulator.canonical_pinned_udid().upper())
+                self.assertEqual(provision_owned_simulator.canonical_pinned_udid(),
+                                 'CANON-UDID-1')
+            absent = str(Path(tmp) / 'absent-device.json')
+            with mock.patch.dict(os.environ, {'FLOE_SIMULATOR_CONFIG': absent}):
+                self.assertIsNone(provision_owned_simulator.single_device_policy_blocker())
+                self.assertIsNone(provision_owned_simulator.canonical_pinned_udid())
+            path.write_text(json.dumps({'policy': 'other', 'deviceUDID': 'x'}))
+            with mock.patch.dict(os.environ, {'FLOE_SIMULATOR_CONFIG': str(path)}):
+                self.assertIsNone(provision_owned_simulator.single_device_policy_blocker())
+            path.write_text('{not json')
+            with mock.patch.dict(os.environ, {'FLOE_SIMULATOR_CONFIG': str(path)}):
+                self.assertIn('unreadable',
+                              provision_owned_simulator.single_device_policy_blocker())
+            path.write_text('[{"policy": "single-existing-device"}]')
+            with mock.patch.dict(os.environ, {'FLOE_SIMULATOR_CONFIG': str(path)}):
+                self.assertIn('JSON object',
+                              provision_owned_simulator.single_device_policy_blocker())
+                self.assertIsNone(provision_owned_simulator.canonical_pinned_udid())
+
+    def test_provision_main_refuses_creation_under_policy(self):
+        import os
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {'policy': 'single-existing-device',
+                      'deviceUDID': 'canon-udid-1', 'deviceName': 'Synthetic Canonical iPad'}
+            path = Path(tmp) / 'device.json'
+            path.write_text(json.dumps(config))
+            attempted = []
+
+            def fake_run(command):
+                attempted.append(command)
+                raise AssertionError('must not reach simctl under the policy')
+            original = provision_owned_simulator._run
+            provision_owned_simulator._run = fake_run
+            try:
+                argv = ['provision_owned_simulator.py', '--run-id', '9',
+                        '--variant', 'kit']
+                with mock.patch.dict(os.environ, {'FLOE_SIMULATOR_CONFIG': str(path)}), \
+                        mock.patch('sys.argv', argv), \
+                        mock.patch('sys.stderr', new_callable=io.StringIO):
+                    with self.assertRaises(SystemExit) as exit_state:
+                        provision_owned_simulator.main()
+                    self.assertEqual(exit_state.exception.code, 1)
+                self.assertEqual(attempted, [])
+            finally:
+                provision_owned_simulator._run = original
+
+    def test_release_refuses_canonical_device_even_with_owned_name(self):
+        import os
+        from unittest import mock
+        pinned = 'CANON-UDID-9'
+        owned = provision_owned_simulator.owned_name('777', 'kit')
+        inventory = {'devices': {'r': [{'udid': pinned, 'name': owned,
+                                        'state': 'Shutdown'}]}}
+        commands = []
+        original_list = release_owned_simulator._list_devices
+        release_owned_simulator._list_devices = lambda: inventory
+
+        def fake_run(command, capture_output=True, text=True):
+            commands.append(command)
+
+            class Result:
+                returncode = 0
+                stderr = ''
+            return Result()
+        original_run = subprocess.run
+        subprocess.run = fake_run
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / 'device.json'
+                path.write_text(json.dumps({'policy': 'single-existing-device',
+                                            'deviceUDID': pinned}))
+                with mock.patch.dict(os.environ, {'FLOE_SIMULATOR_CONFIG': str(path)}):
+                    with self.assertRaisesRegex(
+                            release_owned_simulator.SimulatorReleaseError,
+                            'canonical single device'):
+                        release_owned_simulator.release(pinned, expected_name=owned)
+        finally:
+            release_owned_simulator._list_devices = original_list
+            subprocess.run = original_run
+        self.assertEqual(commands, [])
+
 
 class NokitLockPathContractTests(unittest.TestCase):
     def test_kit_uses_tracked_lock(self):

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -175,6 +176,369 @@ class SimulatorCreationTests(unittest.TestCase):
         ]})
         with self.assertRaisesRegex(ValueError, 'No available iPhone simulator device type'):
             module.create_family_device('iPhone 17 Pro', 27, 'iPhone', runner=runner)
+
+
+MINI_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPad-mini-A17-Pro'
+CANON_UDID = '00000000-0000-4000-8000-000000000001'
+
+
+def canonical_config(tmpdir, **overrides):
+    import json
+    from pathlib import Path
+    config = {
+        'policy': module.CANONICAL_POLICY,
+        'deviceUDID': CANON_UDID,
+        'deviceName': 'Synthetic Canonical iPad',
+        'deviceType': MINI_TYPE,
+        'sdkMajor': 27,
+        'family': 'iPad',
+    }
+    config.update(overrides)
+    path = Path(tmpdir) / 'device.json'
+    path.write_text(json.dumps(config))
+    return path
+
+
+def live_inventory(udid=CANON_UDID, *, available=True, deleted=False,
+                   runtime=IPHONE27, device_type=MINI_TYPE):
+    return {'devices': {runtime: [{
+        'udid': udid, 'name': 'Synthetic Canonical iPad', 'state': 'Shutdown',
+        'isAvailable': available, 'isDeleted': deleted,
+        'deviceTypeIdentifier': device_type,
+    }]}}
+
+
+class CanonicalSingleDeviceTests(unittest.TestCase):
+    def test_resolve_returns_pinned_existing_device(self):
+        config = dict(policy=module.CANONICAL_POLICY, deviceUDID=CANON_UDID,
+                      sdkMajor=27, deviceType=MINI_TYPE)
+        self.assertEqual(module.resolve_canonical_device(
+            config, live_inventory()), CANON_UDID)
+
+    def test_missing_pinned_device_is_actionable_and_never_creates(self):
+        config = dict(policy=module.CANONICAL_POLICY, deviceUDID=CANON_UDID,
+                      sdkMajor=27)
+        with self.assertRaisesRegex(ValueError, 'not present.*Do not create'):
+            module.resolve_canonical_device(
+                config, {'devices': {IPHONE27: [{'udid': 'OTHER',
+                                                 'isAvailable': True}]}})
+
+    def test_unavailable_or_deleted_pinned_device_is_rejected(self):
+        config = dict(policy=module.CANONICAL_POLICY, deviceUDID=CANON_UDID,
+                      sdkMajor=27)
+        for kwargs in ({'available': False}, {'deleted': True}):
+            with self.subTest(**kwargs):
+                with self.assertRaisesRegex(ValueError, 'unavailable'):
+                    module.resolve_canonical_device(
+                        config, live_inventory(**kwargs))
+
+    def test_pinned_device_on_wrong_sdk_major_is_not_resolved(self):
+        config = dict(policy=module.CANONICAL_POLICY, deviceUDID=CANON_UDID,
+                      sdkMajor=27)
+        with self.assertRaisesRegex(ValueError, 'not present on an iOS 27'):
+            module.resolve_canonical_device(
+                config, live_inventory(
+                    runtime='com.apple.CoreSimulator.SimRuntime.iOS-26-6'))
+
+    def test_device_type_change_is_rejected(self):
+        config = dict(policy=module.CANONICAL_POLICY, deviceUDID=CANON_UDID,
+                      sdkMajor=27, deviceType=MINI_TYPE)
+        with self.assertRaisesRegex(ValueError, 'device type changed'):
+            module.resolve_canonical_device(
+                config, live_inventory(device_type='com.apple.CoreSimulator'
+                                                  '.SimDeviceType.iPad-9th-generation'))
+
+    def test_missing_config_fails_with_creation_prohibition(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, 'nothing is created'):
+                module.load_canonical_config(Path(tmp) / 'device.json')
+
+    def test_bad_config_is_rejected(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = canonical_config(tmp, policy='anything-else')
+            with self.assertRaisesRegex(ValueError, 'expected'):
+                module.load_canonical_config(path)
+            path = canonical_config(tmp)
+            path.write_text(json.dumps({'deviceUDID': 'x'}))
+            with self.assertRaisesRegex(ValueError, 'policy'):
+                module.load_canonical_config(path)
+            path = canonical_config(tmp)
+            config = json.loads(path.read_text())
+            del config['deviceUDID']
+            path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(ValueError, 'missing deviceUDID'):
+                module.load_canonical_config(path)
+            path = canonical_config(tmp)
+            path.write_text('[1, 2, 3]')
+            with self.assertRaisesRegex(ValueError, 'JSON object'):
+                module.load_canonical_config(path)
+
+    def test_legacy_create_blocker_states(self):
+        import json
+        import os
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'device.json'
+            with mock.patch.dict(os.environ, {module.CANONICAL_CONFIG_ENV: str(path)}):
+                path.write_text('"just a string"')
+                self.assertIn('JSON object', module.legacy_create_blocker())
+                path.write_text(json.dumps({'policy': module.CANONICAL_POLICY,
+                                            'deviceUDID': 'X', 'deviceName': 'Y'}))
+                self.assertIn('disabled on this host', module.legacy_create_blocker())
+                path.write_text(json.dumps({'policy': 'other'}))
+                self.assertIsNone(module.legacy_create_blocker())
+            with mock.patch.dict(os.environ,
+                                 {module.CANONICAL_CONFIG_ENV:
+                                  str(Path(tmp) / 'absent.json')}):
+                self.assertIsNone(module.legacy_create_blocker())
+
+    def test_config_path_priority(self):
+        import os
+        from pathlib import Path
+        from unittest import mock
+        explicit = Path('/tmp/explicit-device.json')
+        with mock.patch.dict(os.environ,
+                             {module.CANONICAL_CONFIG_ENV: '/tmp/env-device.json'}):
+            self.assertEqual(module.canonical_config_path(explicit), explicit)
+            self.assertEqual(str(module.canonical_config_path(None)),
+                             '/tmp/env-device.json')
+        with mock.patch.dict(os.environ, clear=False):
+            os.environ.pop(module.CANONICAL_CONFIG_ENV, None)
+            self.assertTrue(
+                str(module.canonical_config_path(None)).endswith(
+                    'Local/Private/simulator-single-device-20261018/device.json'))
+
+    def test_lock_is_exclusive_and_released_on_close(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = canonical_config(tmp)
+            config = module.load_canonical_config(path)
+            fd = module.acquire_device_lock(config, path)
+            try:
+                with self.assertRaisesRegex(ValueError, 'held by another'):
+                    module.acquire_device_lock(config, path)
+            finally:
+                os.close(fd)
+            fd2 = module.acquire_device_lock(config, path)
+            os.close(fd2)
+
+    def test_lock_wait_polls_with_bounded_sleep_and_succeeds_after_release(self):
+        import os
+        import threading
+        import time
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = canonical_config(tmp)
+            config = module.load_canonical_config(path)
+            holder_fd = module.acquire_device_lock(config, path)
+            real_sleep = time.sleep
+            durations = []
+
+            def recording_sleep(seconds):
+                durations.append(seconds)
+                real_sleep(0.05)
+
+            def release_soon():
+                real_sleep(0.3)
+                os.close(holder_fd)
+
+            thread = threading.Thread(target=release_soon)
+            thread.start()
+            try:
+                with mock.patch.object(time, 'sleep', recording_sleep):
+                    started = time.monotonic()
+                    fd = module.acquire_device_lock(config, path, wait_seconds=4)
+                    elapsed = time.monotonic() - started
+                os.close(fd)
+            finally:
+                thread.join()
+            self.assertTrue(
+                durations, 'the retry branch must sleep between polls, not busy-spin')
+            self.assertTrue(all(duration == 0.5 for duration in durations),
+                            durations)
+            self.assertGreaterEqual(elapsed, 0.2)
+            self.assertLess(elapsed, 4)
+
+class FakeSimctlListRunner:
+    """Answers only the read-only 'simctl list devices -j' call."""
+
+    def __init__(self, inventory):
+        self.inventory = inventory
+        self.calls = []
+
+    def __call__(self, command):
+        self.calls.append(list(command))
+        if command[:4] == ['xcrun', 'simctl', 'list', 'devices']:
+            return 0, json.dumps(self.inventory)
+        raise AssertionError(f'unexpected simctl call: {command}')
+
+
+class CanonicalMainModeTests(unittest.TestCase):
+    def test_canonical_prints_pinned_udid_from_piped_inventory(self):
+        import io
+        import json
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = canonical_config(tmp)
+            captured = io.StringIO()
+            with mock.patch('sys.stdin', io.StringIO(json.dumps(live_inventory()))), \
+                    mock.patch('sys.stdout', captured):
+                code = module.main(argv=['--canonical', '--config', str(path)])
+            self.assertEqual(code, 0)
+            self.assertEqual(captured.getvalue().strip(), CANON_UDID)
+
+    def test_canonical_rejects_mixed_flags(self):
+        import io
+        from unittest import mock
+        with mock.patch('sys.stderr', new_callable=io.StringIO) as err:
+            with self.assertRaises(SystemExit) as exit_state:
+                module.main(argv=['--canonical', '--sdk-major', '27',
+                                  '--name', 'iPad mini (A17 Pro)'])
+        self.assertEqual(exit_state.exception.code, 1)
+        self.assertIn('used alone', err.getvalue())
+
+    def test_with_lock_validates_live_inventory_then_exports_udid(self):
+        import os
+        import sys
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = canonical_config(tmp)
+            out_file = Path(tmp) / 'udid.txt'
+            runner = FakeSimctlListRunner(live_inventory())
+            with mock.patch.dict(os.environ, {'FLOE_TEST_UDID_FILE': str(out_file)}):
+                code = module.main(
+                    argv=['--canonical', '--config', str(path), '--with-lock',
+                          sys.executable, '-c',
+                          'import os,pathlib;'
+                          'pathlib.Path(os.environ["FLOE_TEST_UDID_FILE"]).write_text('
+                          'os.environ["FLOE_SIMULATOR_UDID"])'],
+                    runner=runner)
+            self.assertEqual(code, 0)
+            self.assertEqual(out_file.read_text(), CANON_UDID)
+            # Only the read-only inventory call was issued: never create/boot.
+            self.assertEqual(runner.calls,
+                             [['xcrun', 'simctl', 'list', 'devices', '-j']])
+
+    def test_with_lock_fails_before_child_when_device_missing(self):
+        import io
+        import sys
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = canonical_config(tmp)
+            marker = Path(tmp) / 'child-ran'
+            runner = FakeSimctlListRunner({'devices': {}})
+            captured = io.StringIO()
+            with mock.patch('sys.stderr', captured):
+                with self.assertRaises(SystemExit) as exit_state:
+                    module.main(
+                        argv=['--canonical', '--config', str(path), '--with-lock',
+                              sys.executable, '-c',
+                              f'import pathlib;pathlib.Path({str(marker)!r}).touch()'],
+                        runner=runner)
+            self.assertEqual(exit_state.exception.code, 1)
+            self.assertIn('not present', captured.getvalue())
+            self.assertFalse(marker.exists())
+
+    def test_with_lock_fails_before_child_when_device_unavailable(self):
+        import io
+        import sys
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = canonical_config(tmp)
+            marker = Path(tmp) / 'child-ran'
+            runner = FakeSimctlListRunner(live_inventory(available=False))
+            captured = io.StringIO()
+            with mock.patch('sys.stderr', captured):
+                with self.assertRaises(SystemExit) as exit_state:
+                    module.main(
+                        argv=['--canonical', '--config', str(path), '--with-lock',
+                              sys.executable, '-c',
+                              f'import pathlib;pathlib.Path({str(marker)!r}).touch()'],
+                        runner=runner)
+            self.assertEqual(exit_state.exception.code, 1)
+            self.assertIn('unavailable', captured.getvalue())
+            self.assertFalse(marker.exists())
+
+    def test_with_lock_blocks_while_another_holder_holds_the_lock(self):
+        import io
+        import os
+        import sys
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = canonical_config(tmp)
+            config = module.load_canonical_config(path)
+            holder_fd = module.acquire_device_lock(config, path)
+            runner = FakeSimctlListRunner(live_inventory())
+            try:
+                captured = io.StringIO()
+                with mock.patch('sys.stderr', captured):
+                    with self.assertRaises(SystemExit) as exit_state:
+                        module.main(argv=['--canonical', '--config', str(path),
+                                          '--with-lock', sys.executable,
+                                          '-c', 'pass'], runner=runner)
+                self.assertEqual(exit_state.exception.code, 1)
+                self.assertIn('held by another', captured.getvalue())
+            finally:
+                os.close(holder_fd)
+            # After release the same wrapper proceeds.
+            self.assertEqual(module.main(
+                argv=['--canonical', '--config', str(path), '--with-lock',
+                      sys.executable, '-c', 'pass'], runner=runner), 0)
+
+    def test_legacy_create_fails_closed_when_local_policy_exists(self):
+        import io
+        import os
+        import json
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = canonical_config(tmp)
+            runner = FakeSimctlListRunner(live_inventory())
+            captured = io.StringIO()
+            with mock.patch.dict(os.environ, {module.CANONICAL_CONFIG_ENV: str(path)}), \
+                    mock.patch('sys.stdin', io.StringIO(json.dumps(
+                        {'devices': {}}))), \
+                    mock.patch('sys.stderr', captured):
+                with self.assertRaises(SystemExit) as exit_state:
+                    module.main(argv=['--sdk-major', '27',
+                                      '--name', 'iPad mini (A17 Pro)',
+                                      '--family', 'iPad', '--create'], runner=runner)
+            self.assertEqual(exit_state.exception.code, 1)
+            self.assertIn('disabled on this host', captured.getvalue())
+            self.assertEqual(runner.calls, [])
+
+    def test_legacy_create_still_works_without_a_policy_file(self):
+        import io
+        import json
+        import os
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            absent = str(Path(tmp) / 'absent-device.json')
+            runner = FakeRunner()
+            captured = io.StringIO()
+            with mock.patch.dict(os.environ, {module.CANONICAL_CONFIG_ENV: absent}), \
+                    mock.patch('sys.stdin', io.StringIO(json.dumps({'devices': {}}))):
+                with mock.patch('sys.stdout', captured):
+                    code = module.main(argv=['--sdk-major', '27',
+                                             '--name', 'iPad mini (A17 Pro)',
+                                             '--family', 'iPad', '--create'],
+                                       runner=runner)
+            self.assertEqual(code, 0)
+            self.assertEqual(captured.getvalue().strip(), 'created-udid')
+            self.assertEqual(len(runner.create_attempts), 1)
 
 
 if __name__ == '__main__':

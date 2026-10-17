@@ -19,7 +19,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from provision_owned_simulator import OWNED_NAME_PREFIX, is_owned_name  # noqa: E402
+from provision_owned_simulator import (  # noqa: E402
+    OWNED_NAME_PREFIX,
+    canonical_pinned_udid,
+    is_owned_name,
+)
 
 
 class SimulatorReleaseError(ValueError):
@@ -50,6 +54,10 @@ def release(udid, *, run_id=None, variant=None, expected_name=None,
         if allow_missing:
             return {'udid': udid, 'released': False, 'reason': 'already absent'}
         raise SimulatorReleaseError(f'owned simulator {udid} is not in the live device list')
+    if str(udid).upper() == canonical_pinned_udid():
+        raise SimulatorReleaseError(
+            f'REFUSING to release {udid}: it is the canonical single device '
+            'pinned by the local single-simulator policy')
     name = device.get('name', '')
     if not is_owned_name(name):
         raise SimulatorReleaseError(

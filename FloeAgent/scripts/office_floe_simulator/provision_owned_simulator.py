@@ -10,19 +10,77 @@ available runtime of the requested iOS major, boots it and prints its UDID.
 Only the created device is ever shut down or deleted (see
 ``release_owned_simulator.py``); existing user/test simulators are never
 listed for reuse and never touched.
+
+Local hosts: the project now pins a single reusable canonical simulator via a
+Git-ignored private config (see ``select_test_simulator.py --canonical``).
+When that policy file exists this script refuses to create fresh devices;
+concurrent matrix variants must serialize on the canonical device
+(``--with-lock``) or, only for an explicit user-approved exception, pass
+``--allow-owned-creation``. Cloud ephemeral runners have no private config,
+so the CI contract is unchanged.
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 
 OWNED_NAME_PREFIX = 'Floe Office Real SIM'
+SINGLE_DEVICE_POLICY = 'single-existing-device'
+SINGLE_DEVICE_CONFIG_ENV = 'FLOE_SIMULATOR_CONFIG'
+DEFAULT_SINGLE_DEVICE_CONFIG = (
+    Path(__file__).resolve().parents[3]
+    / 'Local' / 'Private' / 'simulator-single-device-20261018' / 'device.json')
 
 
 class SimulatorProvisionError(ValueError):
     pass
+
+
+def single_device_policy_blocker():
+    """Return an actionable error string when the local single-device policy
+    is active, else None. A missing config (ephemeral CI runner) is inert; a
+    present-but-corrupt one fails closed."""
+    raw = os.environ.get(SINGLE_DEVICE_CONFIG_ENV) or None
+    path = Path(raw) if raw else DEFAULT_SINGLE_DEVICE_CONFIG
+    if not path.is_file():
+        return None
+    try:
+        config = json.loads(path.read_text())
+    except (OSError, ValueError) as error:
+        return (f'single-simulator config {path} is unreadable, refusing to '
+                f'create a substitute device: {error}')
+    if not isinstance(config, dict):
+        return (f'single-simulator config {path} must contain one JSON object; '
+                'refusing to create a substitute device')
+    if config.get('policy') != SINGLE_DEVICE_POLICY:
+        return None
+    return (
+        f'the local single-simulator policy pins device '
+        f'{config.get("deviceUDID", "?")} ("{config.get("deviceName", "?")}"): '
+        f'new device creation is disabled. Reuse the canonical device through '
+        f'`scripts/select_test_simulator.py --canonical [--with-lock ...]`; '
+        f'an exception matrix run requires explicit user approval and '
+        f'--allow-owned-creation')
+
+
+def canonical_pinned_udid():
+    """UDID pinned by the local single-simulator config, else None."""
+    raw = os.environ.get(SINGLE_DEVICE_CONFIG_ENV) or None
+    path = Path(raw) if raw else DEFAULT_SINGLE_DEVICE_CONFIG
+    if not path.is_file():
+        return None
+    try:
+        config = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(config, dict) or config.get('policy') != SINGLE_DEVICE_POLICY:
+        return None
+    pinned = str(config.get('deviceUDID') or '').upper()
+    return pinned or None
 
 
 def _run(command):
@@ -115,8 +173,16 @@ def main():
     parser.add_argument('--variant', required=True)
     parser.add_argument('--output', default=None,
                         help='Write the provisioning receipt JSON here')
+    parser.add_argument('--allow-owned-creation', action='store_true',
+                        help='Exception path: create despite the local '
+                             'single-simulator policy (explicit user approval '
+                             'required; inert when no policy file exists)')
     args = parser.parse_args()
     try:
+        if not args.allow_owned_creation:
+            blocker = single_device_policy_blocker()
+            if blocker:
+                raise SimulatorProvisionError(blocker)
         receipt = provision(args.sdk_major, args.run_id, args.variant)
     except SimulatorProvisionError as error:
         print(f'OWNED SIMULATOR PROVISION FAILED: {error}', file=sys.stderr)

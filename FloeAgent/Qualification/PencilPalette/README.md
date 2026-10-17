@@ -11,9 +11,24 @@ import, document persistence, full-App routing or physical Pencil gesture
 delivery. The complete App Notes UI gate must still pass before distribution.
 
 Generate with `xcodegen generate --spec project.yml`. Run the generated
-`FloePencilPaletteQualification` scheme against a chosen simulator using
-`xcodebuild test -parallel-testing-enabled NO`; use a fresh result-bundle path
-and a task-owned DerivedData directory. Repeat on an iPad and an iPhone.
+`FloePencilPaletteQualification` scheme on the project's ONE canonical
+existing iPad through the serialized single-device wrapper (it validates the
+pinned device read-only, holds the exclusive lock for the whole run and
+exports `FLOE_SIMULATOR_UDID`; never creates, clones or substitutes):
+
+```sh
+python3 FloeAgent/scripts/select_test_simulator.py --canonical --with-lock /bin/sh -c \
+  'cd FloeAgent/Qualification/PencilPalette && xcodebuild test \
+     -scheme FloePencilPaletteQualification \
+     -destination "platform=iOS Simulator,id=$FLOE_SIMULATOR_UDID" \
+     -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 \
+     -resultBundlePath "$PWD/qual-$(date +%s).xcresult"'
+```
+
+Use a task-owned DerivedData directory. The historical second iPhone
+compact-control leg is deferred under the single-device policy: it may run
+only as an explicit user-approved exception with its own named device, not
+silently as a required extra simulator.
 The test saves an original screenshot for each anchor.
 
 The Feedback component UI workflow accepts `palette_only=true` for this small

@@ -13,9 +13,16 @@ fixture. Host `EnvironmentManagementTests` exercise the actual lifecycle API.
 ```sh
 cd FloeAgent/Qualification/NativeManagement
 xcodegen generate
-xcodebuild -project FloeManagementSmoke.xcodeproj -scheme FloeManagementSmoke \
-  -destination 'platform=iOS Simulator,id=<owned-simulator-id>' \
-  -derivedDataPath /tmp/FloeManagementDerived CODE_SIGNING_ALLOWED=NO test
+# Run inside the project's ONE canonical existing simulator through the
+# serialized single-device wrapper (validates the pinned device read-only,
+# holds the exclusive lock for the whole xcodebuild run, exports
+# FLOE_SIMULATOR_UDID to the child; never creates, clones or substitutes —
+# see the repository AGENTS single-simulator policy):
+python3 ../../scripts/select_test_simulator.py --canonical --with-lock /bin/sh -c \
+  'xcodebuild -project FloeManagementSmoke.xcodeproj -scheme FloeManagementSmoke \
+     -destination "platform=iOS Simulator,id=$FLOE_SIMULATOR_UDID" \
+     -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 \
+     -derivedDataPath /tmp/FloeManagementDerived CODE_SIGNING_ALLOWED=NO test'
 ```
 
 Launch with `--appearance` for General's theme section, `--thread` for the
