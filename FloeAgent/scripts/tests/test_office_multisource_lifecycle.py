@@ -57,10 +57,10 @@ class MultiSourceLifecycleTests(unittest.TestCase):
     def test_v3_transport_pin_restore_exact_and_v2_cannot_masquerade(self):
         import bootstrap_office_host as bootstrap
         import pin_office_host_artifact as pinning
-        import types
         f = self.f; original = f.pack(); f.validate(original)
-        with patch.object(pinning,'HOST_SOURCES',f.base/'FloeOfficeNative'), patch.object(pinning,'arguments',types.SimpleNamespace(artifact_run_id=None,artifact_commit=None),create=True):
-            self.assertEqual(pinning.apply(self.prior.case.lock_path,f.archive,'synthetic multi-source'),0)
+        with patch.object(pinning,'HOST_SOURCES',f.base/'FloeOfficeNative'):
+            self.assertEqual(pinning.apply(self.prior.case.lock_path,f.archive,'synthetic multi-source',
+                                           artifact_run_id='9000000001',artifact_commit='a'*40),0)
         lock, pin = bootstrap.checked_lock(self.prior.case.lock_path)
         bootstrap.verify_installed(f.host, lock, pin)
         self.assertEqual(pin['embeddedLifecycleMember']['schemaVersion'],3)

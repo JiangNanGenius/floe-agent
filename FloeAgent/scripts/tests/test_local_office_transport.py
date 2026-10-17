@@ -266,13 +266,90 @@ class LocalOfficeTransportTests(unittest.TestCase):
         with self.assertRaises(zipfile.BadZipFile): self.validate()
 
     def test_private_draft_exact_asset_selection(self):
+        digest = 'a' * 64
         release = {'id': 1, 'draft': True, 'published_at': None, 'tag_name': 'office-local-fixture',
-                   'target_commitish': self.source, 'assets': [{'id': 2, 'name': transport.ARCHIVE_NAME, 'state': 'uploaded', 'size': 1024}]}
+                   'target_commitish': self.source, 'assets': [{'id': 2, 'name': transport.ARCHIVE_NAME,
+                   'state': 'uploaded', 'size': 1024, 'digest': 'sha256:' + digest,
+                   'url': 'https://api.github.com/repos/octo/fixture/releases/assets/2'}]}
         self.assertEqual(transport.select_draft_asset(release, 'office-local-fixture', self.source)['id'], 2)
+        self.assertEqual(transport.select_draft_asset(
+            release, 'office-local-fixture', self.source, digest, 'octo/fixture')['id'], 2)
+        with self.assertRaisesRegex(ValueError, 'digest differs'):
+            transport.select_draft_asset(release, 'office-local-fixture', self.source, 'b' * 64)
+        wrong_origin = copy.deepcopy(release)
+        wrong_origin['assets'][0]['url'] = 'https://evil.invalid/releases/assets/2'
+        with self.assertRaisesRegex(ValueError, 'origin'):
+            transport.select_draft_asset(wrong_origin, 'office-local-fixture', self.source, digest, 'octo/fixture')
         for changes in ({'draft': False}, {'published_at': 'today'}, {'target_commitish': 'main'},
                         {'assets': []}, {'assets': release['assets'] * 2}):
             with self.subTest(changes=changes):
                 with self.assertRaises(ValueError): transport.select_draft_asset({**release, **changes}, 'office-local-fixture', self.source)
+
+    def test_transport_resolves_the_numeric_draft_by_id_and_never_by_tag(self):
+        sha = self.pack()
+        binary = self.root / 'bin'
+        binary.mkdir()
+        shim = binary / 'gh'
+        shim.write_text(
+            '#!/usr/bin/env python3\n'
+            'import json, os, sys\n'
+            'endpoint = sys.argv[-1]\n'
+            'with open(os.environ["GH_CALL_LOG"], "a") as log:\n'
+            '    log.write(endpoint + "\\n")\n'
+            'if "releases/tags/" in endpoint:\n'
+            '    sys.exit("by-tag lookup must never be used for a draft")\n'
+            'if "releases/assets/" in endpoint:\n'
+            '    sys.stdout.buffer.write(open(os.environ["GH_FIXTURE_ZIP"], "rb").read())\n'
+            '    sys.exit(0)\n'
+            'release = json.load(open(os.environ["GH_FIXTURE_RELEASE"]))\n'
+            'if endpoint.rsplit("/", 1)[-1] != str(release["id"]):\n'
+            '    sys.exit("unknown release id")\n'
+            'print(json.dumps(release))\n')
+        shim.chmod(0o755)
+        release_path = self.root / 'release.json'
+        release_path.write_text(json.dumps({
+            'id': 415971006, 'url': 'https://api.github.com/repos/octo/fixture/releases/415971006',
+            'draft': True, 'published_at': None, 'tag_name': 'office-local-fixture',
+            'target_commitish': self.source,
+            'assets': [{'id': 651161706, 'name': transport.ARCHIVE_NAME, 'state': 'uploaded',
+                        'size': self.archive.stat().st_size, 'digest': 'sha256:' + sha,
+                        'url': 'https://api.github.com/repos/octo/fixture/releases/assets/651161706'}]}))
+        log = self.root / 'gh-calls.log'
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ('GITHUB_ACTIONS', 'GITHUB_SHA', 'GITHUB_WORKFLOW_SHA')}
+        environment.update(PATH=str(binary) + os.pathsep + environment.get('PATH', ''),
+                           GITHUB_REPOSITORY='octo/fixture', GH_CALL_LOG=str(log),
+                           GH_FIXTURE_ZIP=str(self.archive), GH_FIXTURE_RELEASE=str(release_path))
+        output = self.root / 'transport-output'
+        result = subprocess.run([sys.executable, '-B', str(SCRIPTS / 'validate_local_office_transport.py'),
+            '--release-tag', 'office-local-fixture', '--release-id', '415971006',
+            '--sha256', sha, '--source-commit', self.source,
+            '--repo-root', str(self.repo), '--output-dir', str(output)],
+            env=environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((output / 'OfficeNativeHost.zip').read_bytes(), self.archive.read_bytes())
+        provenance = json.loads((output / 'transport-provenance.json').read_text())
+        self.assertEqual(provenance['draftReleaseID'], 415971006)
+        self.assertEqual(provenance['draftAssetID'], 651161706)
+        self.assertEqual(provenance['draftTransportTag'], 'office-local-fixture')
+        calls = log.read_text().splitlines()
+        self.assertTrue(calls)
+        self.assertFalse([call for call in calls if 'releases/tags/' in call])
+        self.assertEqual(calls[0], 'repos/octo/fixture/releases/415971006')
+        self.assertIn('repos/octo/fixture/releases/assets/651161706', calls)
+
+    def test_transport_requires_the_numeric_release_id(self):
+        sha = self.pack()
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ('GITHUB_ACTIONS', 'GITHUB_SHA', 'GITHUB_WORKFLOW_SHA')}
+        environment['GITHUB_REPOSITORY'] = 'octo/fixture'
+        result = subprocess.run([sys.executable, '-B', str(SCRIPTS / 'validate_local_office_transport.py'),
+            '--release-tag', 'office-local-fixture', '--sha256', sha,
+            '--source-commit', self.source, '--repo-root', str(self.repo),
+            '--output-dir', str(self.root / 'no-release-id')],
+            env=environment, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('numeric --release-id', result.stderr)
 
 
 if __name__ == '__main__':

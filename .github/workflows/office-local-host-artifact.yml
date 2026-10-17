@@ -7,6 +7,10 @@ on:
         description: Private unpublished DRAFT containing OfficeNativeHost-local.zip
         required: true
         type: string
+      transport_release_id:
+        description: Numeric id of that private unpublished DRAFT (by-tag lookups never return drafts)
+        required: true
+        type: string
       archive_sha256:
         description: Exact SHA256 of the original local OfficeNativeHost ZIP
         required: true
@@ -17,7 +21,12 @@ on:
         type: string
 
 permissions:
-  contents: read
+  # Draft releases are only visible to tokens with push access, so reading the
+  # exact numeric draft by id needs contents: write. This job never writes
+  # repository content: git is checked out with persist-credentials: false, the
+  # release is never published or modified, and the only write is the Actions
+  # artifact holding the exact verified bytes.
+  contents: write
 
 concurrency:
   group: office-local-host-storage-${{ github.ref }}
@@ -32,6 +41,7 @@ jobs:
         env:
           SOURCE_COMMIT: ${{ inputs.source_commit }}
           ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+          RELEASE_ID: ${{ inputs.transport_release_id }}
         run: |
           python3 - <<'PY'
           import os, re
@@ -41,6 +51,7 @@ jobs:
                   raise SystemExit(message)
           require(re.fullmatch('[0-9a-f]{40}', source), 'Exact source SHA required')
           require(re.fullmatch('[0-9a-f]{64}', os.environ['ARCHIVE_SHA256']), 'Exact ZIP SHA256 required')
+          require(re.fullmatch('[1-9][0-9]{0,18}', os.environ['RELEASE_ID']), 'Exact numeric draft release id required')
           require(source == os.environ['GITHUB_SHA'] == os.environ['GITHUB_WORKFLOW_SHA'], 'Workflow ref and source differ')
           PY
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, repository pin
@@ -52,11 +63,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TRANSPORT_TAG: ${{ inputs.transport_release_tag }}
+          RELEASE_ID: ${{ inputs.transport_release_id }}
           ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
         run: |
           python3 FloeAgent/scripts/validate_local_office_transport.py \
-            --release-tag "$TRANSPORT_TAG" --sha256 "$ARCHIVE_SHA256" \
+            --release-tag "$TRANSPORT_TAG" --release-id "$RELEASE_ID" \
+            --sha256 "$ARCHIVE_SHA256" \
             --source-commit "$SOURCE_COMMIT" \
             --output-dir "$RUNNER_TEMP/office-local-host-transport"
       - name: Store original bytes and separate transport provenance

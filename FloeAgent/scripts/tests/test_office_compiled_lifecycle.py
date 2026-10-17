@@ -6,7 +6,6 @@ import hashlib
 import json
 from pathlib import Path
 import sys
-import types
 import unittest
 from unittest.mock import patch
 
@@ -94,9 +93,9 @@ class CompiledLifecycleTests(unittest.TestCase):
     def test_pin_records_full_block_and_bootstrap_requires_exact_restored_block(self):
         f = self.fixture
         f.pack()
-        with patch.object(pinning, 'HOST_SOURCES', f.base / 'FloeOfficeNative'), \
-             patch.object(pinning, 'arguments', types.SimpleNamespace(artifact_run_id=None, artifact_commit=None), create=True):
-            self.assertEqual(pinning.apply(self.lock_path, f.archive, 'synthetic test, not Office qualification'), 0)
+        with patch.object(pinning, 'HOST_SOURCES', f.base / 'FloeOfficeNative'):
+            self.assertEqual(pinning.apply(self.lock_path, f.archive, 'synthetic test, not Office qualification',
+                                           artifact_run_id='9000000001', artifact_commit='a' * 40), 0)
         lock, pin = bootstrap.checked_lock(self.lock_path)
         self.assertEqual(pin['embeddedLifecycleMember'], self.block)
         bootstrap.verify_installed(f.host, lock, pin)
@@ -173,8 +172,9 @@ class MultiArchiveLifecycleTests(unittest.TestCase):
     def test_multi_archive_transport_pin_and_restore_are_exact(self):
         f = self.f; sha = f.pack(); original = f.archive.read_bytes()
         f.validate(sha); self.assertEqual(original, f.archive.read_bytes())
-        with patch.object(pinning, 'HOST_SOURCES', f.base / 'FloeOfficeNative'), patch.object(pinning, 'arguments', types.SimpleNamespace(artifact_run_id=None, artifact_commit=None), create=True):
-            self.assertEqual(pinning.apply(self.case.lock_path, f.archive, 'synthetic multi archive'), 0)
+        with patch.object(pinning, 'HOST_SOURCES', f.base / 'FloeOfficeNative'):
+            self.assertEqual(pinning.apply(self.case.lock_path, f.archive, 'synthetic multi archive',
+                                           artifact_run_id='9000000001', artifact_commit='a' * 40), 0)
         lock, pin = bootstrap.checked_lock(self.case.lock_path)
         self.assertEqual(pin['embeddedLifecycleMember'], self.block)
         bootstrap.verify_installed(f.host, lock, pin)

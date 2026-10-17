@@ -17,6 +17,12 @@ Usage:
   python3 FloeAgent/scripts/pin_office_host_artifact.py \
       --artifact-zip ./host/OfficeNativeHost.zip [--artifact-id <id>] [--apply]
 
+  # From the local device build retained by the storage-only workflow
+  # (the manifest has no cloud run identity; the explicit pair names the run):
+  python3 FloeAgent/scripts/pin_office_host_artifact.py \
+      --artifact-zip ./host/OfficeNativeHost.zip --artifact-id <id> \
+      --artifact-run-id <storage-run-id> --artifact-commit <storage-run-commit> --apply
+
 `--apply` refuses any artifact whose manifest was not built from the current
 host sources, whose embedding or scheme/forwarding/kit-callback lifecycle
 overlays differ or lack exact provenance (patch sha, engine commit, prepared
@@ -50,6 +56,14 @@ REBUILD_WORKFLOW = ".github/workflows/office-native-host.yml"
 SOURCE_AHEAD_MARKER = "SOURCE AHEAD OF ARTIFACT"
 
 QUALIFICATION_KEYS = ("hostCompilePassed", "hostLinkPassed", "swiftModuleImportPassed")
+
+# The storage-only workflow keeps a locally qualified device host
+# downloadable; its artifact name and the local-producer marker are part of
+# the pinned transport identity (bootstrap_office_host.py downloads by the
+# resolved top-level runID/artifactName, so a local pin records the storage
+# run there instead of inheriting the previous cloud build's run).
+STORAGE_ARTIFACT_NAME = "office-native-host-unsigned"
+LOCAL_PRODUCER = "local-device-host-build"
 
 # Lifecycle overlays recorded by a host build, in application order. Each entry
 # maps the tracked engine-lock overlay section to the claim key the host pin
@@ -117,6 +131,45 @@ def engine_repair_claim_failures(block, claim: dict, label: str) -> list:
 def engine_repair_provenance_failures(manifest: dict, claim: dict) -> list:
     return engine_repair_claim_failures(
         manifest.get("engineRepair"), claim, "artifact")
+
+
+def storage_provenance_failures(pin: dict) -> list:
+    """Fail-closed validation of the pinned storage transport identity.
+
+    Locally produced bytes have no native Actions build: the storage run that
+    retains them is the only real run identity, so it becomes the resolved
+    top-level transport (bootstrap destination/download) and the
+    localStorageArtifact block repeats that exact identity. A cloud-produced
+    host keeps its native build identity at the top level and may add a
+    storage run only when it differs from the build run; recycling the native
+    run as its own storage (or the reverse) stays rejected.
+    """
+    block = pin.get("localStorageArtifact")
+    if block is None:
+        return []
+    if not isinstance(block, dict):
+        return ["the local storage artifact provenance is not an object"]
+    failures = []
+    run_id = str(block.get("runID", ""))
+    if not run_id.isdigit():
+        failures.append("the storage runID is not a numeric Actions run id")
+    commit = str(block.get("workflowCommit", ""))
+    if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
+        failures.append("the storage workflowCommit is not a 40-character hex commit")
+    if block.get("nativeProducer") == LOCAL_PRODUCER:
+        if run_id != str(pin.get("runID")):
+            failures.append("the storage run differs from the resolved transport run")
+        if block.get("workflowCommit") != pin.get("workflowCommit"):
+            failures.append("the storage workflow commit differs from the resolved transport commit")
+        if block.get("artifactName") != pin.get("artifactName"):
+            failures.append("the storage artifact name differs from the resolved transport artifact name")
+        if "artifactID" in block and "artifactID" in pin and block["artifactID"] != pin["artifactID"]:
+            failures.append("the storage artifact id differs from the resolved transport artifact id")
+        if block.get("archiveSHA256") != pin.get("archiveSHA256"):
+            failures.append("the storage archive hash differs from the pinned archive")
+    elif run_id == str(pin.get("runID")):
+        failures.append("the storage run recycles the native build run identity")
+    return failures
 
 
 def lifecycle_provenance(overlay: dict, commit: str) -> dict:
@@ -197,17 +250,20 @@ def check(lock_path: Path) -> int:
             continue
         if claim != overlay["sha256"]:
             mismatched.append(label)
+    # The pin must record the embedding overlay of the lock contract it was
+    # verified against; a pin predating an overlay change is SOURCE AHEAD.
+    if pin.get("overlaySHA256") != lock["embeddingOverlay"]["sha256"]:
+        mismatched.append("embedding overlay")
     # A retained local-component storage run is provenance for WHERE the
-    # artifact bytes are kept, never for what they contain: a recorded block
-    # with a non-numeric run, a non-hex commit, or a run id equal to the native
-    # build run is a corrupt or recycled claim and fails the read-only check.
-    storage = pin.get("localStorageArtifact")
-    if storage is not None:
-        if (not isinstance(storage, dict)
-                or not str(storage.get("runID", "")).isdigit()
-                or len(str(storage.get("workflowCommit", ""))) != 40
-                or str(storage.get("runID")) == str(pin.get("runID"))):
-            mismatched.append("local storage artifact provenance")
+    # artifact bytes are kept, never for what they contain. For locally
+    # produced bytes the storage run is the resolved transport identity and
+    # must equal the top-level run/commit/artifact fields exactly; a cloud
+    # build may add a storage run only when it differs from the build run.
+    storage_failures = storage_provenance_failures(pin)
+    if storage_failures:
+        print("pin: local storage artifact provenance is malformed — "
+              + "; ".join(storage_failures), file=sys.stderr)
+        mismatched.append("local storage artifact provenance")
     pending = pin.get("pendingHostRebuild") is True
     # The tracked single-member engine repair (blank iOS slideshow fix) is
     # part of the host sources now: a pin that does not claim the exact
@@ -310,7 +366,8 @@ def artifact_hashes(root: Path) -> dict:
     }
 
 
-def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = None) -> int:
+def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = None,
+          artifact_run_id: str = None, artifact_commit: str = None) -> int:
     lock_path = Path(lock_path)
     lock = json.loads(lock_path.read_text())
     pin = lock["qualifiedHostArtifact"]
@@ -328,8 +385,8 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
         failures.append("the artifact was built from different host sources; rebuild it from this revision")
     if manifest.get("sourceCommit") != lock.get("commit"):
         failures.append("the artifact was built from a different engine commit")
-    if manifest.get("overlaySHA256") != pin["overlaySHA256"]:
-        failures.append("the embedding overlay differs from the locked one")
+    if manifest.get("overlaySHA256") != lock["embeddingOverlay"]["sha256"]:
+        failures.append("the artifact embedding overlay differs from the current locked overlay")
     # Every tracked lifecycle overlay must be present in the host with exact
     # provenance (patch sha, engine commit, prepared file hashes). The kit
     # callback overlay is covered here too: a host missing it, carrying a
@@ -386,6 +443,30 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
                 failures.append("the artifact's filter overlay omits " + ", ".join(omitted))
             else:
                 rebuilt_overlay = {key: declared_overlay[key] for key in pin["filterOverlay"]}
+    # Transport identity: an artifact built by the cloud native workflow
+    # carries its own run/commit and keeps them at the top level. Locally
+    # produced bytes clear GITHUB_* identity, so an explicit storage run/commit
+    # pair must name the run that retains them; the previous pin's run is never
+    # inherited (that would make an old cloud build claim these bytes).
+    native_run = str(manifest.get("runID") or "")
+    native_commit = str(manifest.get("workflowCommit") or "")
+    storage_run = (artifact_run_id or "").strip()
+    storage_commit = (artifact_commit or "").strip()
+    if bool(native_run) != bool(native_commit):
+        failures.append("the artifact manifest carries a partial native cloud run identity")
+    if bool(storage_run) != bool(storage_commit):
+        failures.append("--artifact-run-id and --artifact-commit must be given together")
+    if storage_run and not storage_run.isdigit():
+        failures.append("--artifact-run-id must be a numeric Actions run id")
+    if storage_commit and (len(storage_commit) != 40
+                           or any(char not in "0123456789abcdef" for char in storage_commit)):
+        failures.append("--artifact-commit must be a 40-character hex commit")
+    if not native_run and not storage_run:
+        failures.append("the artifact manifest carries no native cloud run identity; "
+                        "pass --artifact-run-id/--artifact-commit for the storage run "
+                        "instead of inheriting the previous pin")
+    if native_run and storage_run and storage_run == native_run:
+        failures.append("the storage run id must differ from the native build run id")
     if failures:
         print("pin: refusing to pin this artifact", file=sys.stderr)
         for failure in failures:
@@ -416,36 +497,47 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
         updated["engineRepair"] = repair_claim
     if rebuilt_overlay:
         updated["filterOverlay"] = rebuilt_overlay
-    updated["runID"] = manifest.get("runID", pin.get("runID"))
-    updated["workflowCommit"] = manifest.get("workflowCommit", pin.get("workflowCommit"))
+    if native_run:
+        # Cloud-built artifact: its own run/commit stay the top-level identity
+        # exactly as for every existing cloud-produced pin.
+        updated["runID"] = manifest["runID"]
+        updated["workflowCommit"] = manifest["workflowCommit"]
+    else:
+        # Locally produced artifact: the storage run that retains the exact
+        # bytes is the only real Actions run identity, and
+        # bootstrap_office_host.py destinations/downloads by the top-level
+        # fields. The explicit local producer/source identity stays in its own
+        # block below instead of claiming a cloud compilation.
+        updated["runID"] = storage_run
+        updated["workflowCommit"] = storage_commit
+        updated["artifactName"] = STORAGE_ARTIFACT_NAME
     if artifact_id:
         updated["artifactID"] = artifact_id
-    if arguments.artifact_run_id or arguments.artifact_commit:
-        if not (arguments.artifact_run_id and arguments.artifact_commit):
-            print("pin: --artifact-run-id and --artifact-commit must be given together",
-                  file=sys.stderr)
-            return 1
-        storage_run = arguments.artifact_run_id.strip()
-        storage_commit = arguments.artifact_commit.strip()
-        if not storage_run.isdigit():
-            print("pin: --artifact-run-id must be a numeric Actions run id", file=sys.stderr)
-            return 1
-        if len(storage_commit) != 40 or any(c not in "0123456789abcdef" for c in storage_commit):
-            print("pin: --artifact-commit must be a 40-character hex commit", file=sys.stderr)
-            return 1
-        if storage_run == str(updated.get("runID")):
-            print("pin: the storage run id must differ from the native build run id",
-                  file=sys.stderr)
-            return 1
-        updated["localStorageArtifact"] = {
+    elif not native_run:
+        updated.pop("artifactID", None)
+    updated["overlaySHA256"] = lock["embeddingOverlay"]["sha256"]
+    if storage_run:
+        storage_block = {
             "kind": "office-local-host-artifact-storage",
             "runID": storage_run,
             "workflowCommit": storage_commit,
-            "artifactName": manifest.get("artifactName", pin.get("artifactName")),
-            "note": "Storage-only provenance: the component bytes and native build "
-                    "identity above are unchanged; this names the Actions run that "
-                    "retains the locally built artifact for download.",
+            "artifactName": STORAGE_ARTIFACT_NAME,
+            "archiveSHA256": updated["archiveSHA256"],
+            "note": "Storage-only provenance: this Actions run retains the exact "
+                    "verified bytes for download; it did not compile them.",
         }
+        if artifact_id:
+            storage_block["artifactID"] = artifact_id
+        if not native_run:
+            storage_block["nativeProducer"] = LOCAL_PRODUCER
+            storage_block["note"] = (
+                "Storage-only provenance: the device host was produced by the local "
+                "device build (engine source " + str(manifest.get("sourceCommit")) +
+                ", verified by validate_local_office_transport); this Actions run "
+                "retains the exact bytes for download and did not compile them.")
+        updated["localStorageArtifact"] = storage_block
+    else:
+        updated.pop("localStorageArtifact", None)
     updated["note"] = note
     updated["capabilityQualification"] = manifest_claims
     updated.pop("pendingHostRebuild", None)
@@ -472,9 +564,10 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--check", action="store_true", help="read-only pin check (default)")
     parser.add_argument("--artifact-run-id", default=None,
-                        help="Actions run that STORED this local component artifact "
-                             "(office-local-host-artifact storage); recorded separately "
-                             "from the native build run and never reused as one")
+                        help="Actions run that STORED this component artifact "
+                             "(office-local-host-artifact storage). Locally produced bytes "
+                             "have no cloud build run, so this run becomes the resolved "
+                             "transport identity; a cloud build keeps its own run")
     parser.add_argument("--artifact-commit", default=None,
                         help="workflow commit of the storage run named by --artifact-run-id")
     parser.add_argument(
@@ -490,7 +583,8 @@ def main() -> int:
         if args.apply:
             if not args.artifact_zip:
                 parser.error("--apply requires --artifact-zip")
-            return apply(lock_path, Path(args.artifact_zip), args.note, args.artifact_id)
+            return apply(lock_path, Path(args.artifact_zip), args.note, args.artifact_id,
+                         args.artifact_run_id, args.artifact_commit)
         return check(lock_path)
     except ValueError as failure:
         print(f"pin: {failure}", file=sys.stderr)

@@ -49,7 +49,11 @@ class BootstrapEngineRepairClaim(unittest.TestCase):
         lock["qualifiedHostArtifact"]["hostSourceSHA256"] = {
             name: bootstrap.digest(COLLAB / "FloeOfficeNative" / name)
             for name in lock["qualifiedHostArtifact"]["hostSourceSHA256"]}
+        lock["qualifiedHostArtifact"]["overlaySHA256"] = lock["embeddingOverlay"]["sha256"]
         lock["qualifiedHostArtifact"].pop("embeddedLifecycleMember", None)
+        # This fixture isolates the engineRepair contract; the tracked filter
+        # overlay claim is a separate pending-rebuild state with its own tests.
+        lock["qualifiedHostArtifact"].pop("filterOverlay", None)
         if engine_repair is None:
             lock["qualifiedHostArtifact"].pop("engineRepair", None)
         else:

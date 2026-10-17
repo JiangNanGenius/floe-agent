@@ -229,6 +229,11 @@ def validate_archive(archive, expected_sha256, repo, source_commit):
         candidate.update(hostSourceSHA256=sources, overlaySHA256=lock['embeddingOverlay']['sha256'],
                          manifestSHA256=hashes['manifestSHA256'], executableSHA256=hashes['executableSHA256'],
                          frameworkAuxiliarySHA256=auxiliary, archiveSHA256=expected_sha256, runID=manifest.get('runID'))
+        if not manifest.get('runID'):
+            # A local manifest has no cloud run identity, so this private
+            # validation copy must not inherit the previous pin's transport
+            # identity; the real pin records it only from explicit CLI args.
+            candidate.pop('localStorageArtifact', None)
         # Reuse the existing source/overlay/pin checks without writing the real
         # lock. A private validation copy points at byte-identical contracts.
         contracts = Path(temporary) / 'contracts'
@@ -263,7 +268,7 @@ def validate_archive(archive, expected_sha256, repo, source_commit):
                 'capabilityQualification': claims, 'nativeManifestModified': False}
 
 
-def select_draft_asset(release, tag, source_commit):
+def select_draft_asset(release, tag, source_commit, expected_sha256=None, repo=None):
     require(type(release.get('id')) is int and release['id'] > 0, 'Invalid draft release identity')
     require(release.get('draft') is True and release.get('published_at') is None, 'Transport release must remain a private unpublished draft')
     require(release.get('tag_name') == tag and release.get('target_commitish') == source_commit, 'Draft tag/source target differs')
@@ -272,6 +277,14 @@ def select_draft_asset(release, tag, source_commit):
     asset = assets[0]
     require(type(asset.get('id')) is int and asset['id'] > 0 and asset.get('state') == 'uploaded', 'Draft asset is not fully uploaded')
     require(type(asset.get('size')) is int and 0 < asset['size'] <= MAX_ARCHIVE_BYTES, 'Draft asset exceeds single-asset limit; report instead of splitting')
+    if expected_sha256 is not None:
+        require(asset.get('digest') == 'sha256:' + expected_sha256,
+                'Draft asset digest differs from the exact ZIP SHA256')
+    if repo is not None:
+        # Downloads are built from this repo identity and the asset id above,
+        # never from a URL supplied inside the response body.
+        require(str(asset.get('url', '')).startswith('https://api.github.com/repos/' + repo + '/releases/assets/'),
+                'Draft asset origin is not the expected GitHub API')
     return asset
 
 
@@ -286,12 +299,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--archive', type=Path)
     parser.add_argument('--release-tag')
+    parser.add_argument('--release-id',
+                        help='numeric id of the private unpublished draft; '
+                             'the by-tag endpoint never returns drafts')
     parser.add_argument('--sha256', required=True)
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--repo-root', type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args()
     require(bool(args.archive) != bool(args.release_tag), 'Choose local archive or draft transport, not both')
+    require(args.release_tag or not args.release_id, '--release-id only applies to draft transport')
     workflow_sha = os.environ.get('GITHUB_SHA') if os.environ.get('GITHUB_ACTIONS') == 'true' else None
     checkout_identity(args.repo_root, args.source_commit, workflow_sha)
     if workflow_sha:
@@ -301,12 +318,21 @@ def main():
     native = args.archive
     release = asset = None
     if args.release_tag:
-        from urllib.parse import quote
         repo = os.environ.get('GITHUB_REPOSITORY', '')
         require(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo), 'Invalid repository identity')
         require(args.release_tag and len(args.release_tag) <= 200 and not any(ord(c) < 32 for c in args.release_tag), 'Invalid transport tag')
-        release = gh_json('repos/' + repo + '/releases/tags/' + quote(args.release_tag, safe=''))
-        asset = select_draft_asset(release, args.release_tag, args.source_commit)
+        # GitHub's by-tag endpoint returns published releases only, and draft
+        # releases are visible only to tokens with push access. Resolve the
+        # exact numeric draft by id (the job-local contents:write token reads
+        # metadata here and never publishes); the tag/target/draft identity is
+        # still asserted below.
+        require(bool(args.release_id) and args.release_id.isdigit() and int(args.release_id) > 0,
+                'Draft transport needs the numeric --release-id; the by-tag endpoint never returns drafts')
+        release = gh_json('repos/' + repo + '/releases/' + args.release_id)
+        require(release.get('id') == int(args.release_id), 'Draft release identity differs')
+        require(str(release.get('url', '')).startswith('https://api.github.com/repos/' + repo + '/releases/'),
+                'Draft release origin is not the expected GitHub API')
+        asset = select_draft_asset(release, args.release_tag, args.source_commit, args.sha256, repo)
         native = args.output_dir / ARCHIVE_NAME
         with native.open('xb') as stream:
             result = subprocess.run(['gh', 'api', '--method', 'GET', '-H', 'Accept: application/octet-stream',
@@ -315,11 +341,11 @@ def main():
         # Re-read after transfer; do not archive an asset that was swapped or
         # a draft that became public while bytes were downloading.
         fresh = gh_json('repos/' + repo + '/releases/' + str(release['id']))
-        require(select_draft_asset(fresh, args.release_tag, args.source_commit)['id'] == asset['id'], 'Draft asset changed during transfer')
+        require(select_draft_asset(fresh, args.release_tag, args.source_commit, args.sha256, repo)['id'] == asset['id'], 'Draft asset changed during transfer')
     report = validate_archive(native, args.sha256, args.repo_root, args.source_commit)
     if args.release_tag:
         final_release = gh_json('repos/' + repo + '/releases/' + str(release['id']))
-        require(select_draft_asset(final_release, args.release_tag, args.source_commit)['id'] == asset['id'], 'Draft changed during validation')
+        require(select_draft_asset(final_release, args.release_tag, args.source_commit, args.sha256, repo)['id'] == asset['id'], 'Draft changed during validation')
     output = args.output_dir / 'OfficeNativeHost.zip'
     shutil.copyfile(native, output)
     require(pinning.digest(output) == args.sha256, 'Transport changed archive bytes')
