@@ -524,7 +524,8 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
         const fullyVisible=left>=anchor.myTopLeft[0]-1 && top>=anchor.myTopLeft[1]-1
             && left+width<=anchor.myTopLeft[0]+anchor.size[0]+1 && top+height<=anchor.myTopLeft[1]+anchor.size[1]+1
             && width>1 && height>1;
-        const part=String(layer.getPartFromIndex(3));
+        const part=String(app.file.fileBasedView ? layer.getPartFromIndex(3) : layer.getSelectedPart());
+        const resolvedTargetIndex=typeof layer.getIndexFromPart==='function' ? layer.getIndexFromPart(part) : null;
         // File-based layout includes an inclusive extra grid row/column.
         // TilesSection clips using this same page-local document rectangle;
         // out-of-page tiles are not drawn and cannot prove visible paint.
@@ -539,7 +540,17 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
                 targetBounds:pageBounds || null};
             throw new Error('target document bounds unavailable');
         }
-        const candidates=typeof layout.getCurrentCoordList==='function' ? layout.getCurrentCoordList().filter(c=>String(c.part)===part) : [];
+        // Observe the same enumeration the actual TilesSection.onDraw uses.
+        // Single-window Impress painting does not consume layout.currentCoordList.
+        const layoutCoords=typeof layout.getCurrentCoordList==='function' ? layout.getCurrentCoordList() : [];
+        const tilesSection=container.getSectionWithName(app.CSections.Tiles.name);
+        const painter=tilesSection && tilesSection.sectionProperties && tilesSection.sectionProperties.tsManager;
+        if (!tilesSection || typeof tilesSection.forEachTileInView!=='function' || !painter || typeof painter._paintContext!=='function')
+            throw new Error('actual renderer tile enumeration unavailable');
+        const renderedCoords=[];
+        tilesSection.forEachTileInView(Math.round(map.getZoom()),part,app.activeDocument.activeModes[0],painter._paintContext(),
+            (_tile,coord)=>{renderedCoords.push(coord);return true;});
+        const candidates=renderedCoords.filter(c=>String(c.part)===part && manager.isValidTile(c));
         const tileSize=manager.tileSize;
         if (!(tileSize>0)) throw new Error('actual tile size unavailable');
         const intersectsPage=c=>c.x<pageBounds.pWidth && c.y<pageBounds.pHeight && c.x+tileSize>0 && c.y+tileSize>0;
@@ -556,12 +567,15 @@ final class OfficeNativeChartAppQualificationTests: XCTestCase {
             else if (missing.length<12) missing.push(coord.key());
         }
         const result={selectedPart:layer._selectedPart,targetPartID:part,fileBased:!!app.file.fileBasedView,
-            layoutType:layout.type,fullyVisible,targetDocumentPixels:{width:pageBounds.pWidth,height:pageBounds.pHeight},excludedOutOfPageTiles:excluded,requiredTargetTiles:coords.length,decodedTargetTiles:decoded,paintedTargetTiles:painted,
+            layoutType:layout.type,fullyVisible,resolvedTargetIndex,
+            layoutCandidateCount:layoutCoords.length,layoutCandidatePartIDs:Array.from(new Set(layoutCoords.map(c=>String(c.part)))).slice(0,16),
+            rendererCandidateCount:renderedCoords.length,rendererCandidatePartIDs:Array.from(new Set(renderedCoords.map(c=>String(c.part)))).slice(0,16),
+            rendererCandidateKeys:renderedCoords.slice(0,16).map(c=>c.key()),targetDocumentPixels:{width:pageBounds.pWidth,height:pageBounds.pHeight},excludedOutOfPageTiles:excluded,requiredTargetTiles:coords.length,decodedTargetTiles:decoded,paintedTargetTiles:painted,
             targetCSSRect:{x:css.left+left*sx,y:css.top+top*sy,width:width*sx,height:height*sy},missingTargetTiles:missing};
         window.__floeChartTargetObservation=result;
         return result;
     };
-    const result=await waitState(()=>{const r=observe();return r.selectedPart===3 && r.fullyVisible && r.requiredTargetTiles>0 && r.decodedTargetTiles===r.requiredTargetTiles && r.paintedTargetTiles===r.requiredTargetTiles ? r:null;});
+    const result=await waitState(()=>{const r=observe();return r.selectedPart===3 && r.resolvedTargetIndex===3 && r.fullyVisible && r.requiredTargetTiles>0 && r.decodedTargetTiles===r.requiredTargetTiles && r.paintedTargetTiles===r.requiredTargetTiles ? r:null;});
     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
     return JSON.stringify(result);
     """#

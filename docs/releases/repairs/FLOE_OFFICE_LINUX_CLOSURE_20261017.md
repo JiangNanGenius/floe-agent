@@ -66,3 +66,17 @@ The compiled, linked and strictly verified Simulator component still produced an
 - `f533e3d9`: hosted qualification joins the actual App environment; attachment fixtures carry canonical workspace ownership.
 
 No new beta upload or installability is asserted by these source checkpoints.
+
+## 后续本地检查 / Subsequent local checks
+
+- 新的完整 App 已通过本地 Xcode 27 对象构建。Word、Excel 各两笔的颜色、线宽、保存及重开检查通过；PPT 未保存新增笔迹，仍在修复。
+- 先前真实模型生成的六份 Office 文件在新组件中重开检查通过，未重复调用模型。图表文件的数据保留与图表显示分开判断：原生页面仍只显示最后一根柱，尚未通过显示验收。
+- 已捕获退出异常的真实调用栈，定位到 Office 轮询注册表的锁；即使测试断言通过，出现该异常的执行也不计为整轮通过。原始失败和后续修复分别留存。
+- 真实 Linux 网络检查已通过解释器启动、DNS、TLS、索引以及三个固定版本主包的下载；依赖安装因目标平台缺少 Pillow 二进制包而停止。未以本地合成包或放宽断言替代真实安装。
+- 本轮六个合成 Office 检查目录已逐文件核对导出副本后清理；其他文档和环境保持不变。新测试版尚未上传。
+
+- The new full App passed a local Xcode 27 object build. Two-stroke colour, width, save and reopen checks passed for Word and Excel. PPT did not retain its new strokes and remains under repair.
+- Six previously generated live-model Office outputs reopened in the new component without another model call. Chart data preservation is distinct from display acceptance: the native page still displays only its last bar.
+- A captured termination stack identifies the Office polling registry mutex. A run with that termination is not accepted merely because its test assertions pass. Original failures remain separate from later fixes.
+- Actual guest checks passed interpreter startup, DNS, TLS, index access and downloads of the three pinned primary packages. Dependency installation stopped because the target platform has no compatible Pillow binary package. Synthetic packages and weakened assertions do not substitute for this installation.
+- Six owned synthetic Office fixture directories were removed after per-file export verification. Other documents and environments were preserved. No new beta has been uploaded.

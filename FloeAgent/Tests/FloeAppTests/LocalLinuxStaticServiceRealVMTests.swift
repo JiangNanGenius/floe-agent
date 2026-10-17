@@ -134,7 +134,8 @@ import FloeTools
         var evidence = ["kind": "real-network-pip-stages-not-model-not-ui",
                         "root": root.path, "index": "https://pypi.org/simple",
                         "versions": "python-pptx==1.0.2 openpyxl==3.1.5 python-docx==1.2.0",
-                        "limit": "binary wheels only; no source build or implicit retry; not the unknown original index"]
+                        "limit": "binary wheels only; no source build or implicit retry; not the unknown original index",
+                        "budgetPolicy": "python startup 30s; pip cold import 120s; network command 120s including imports, operation DNS12/TLS15/index15s"]
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                   appropriateFor: nil, create: true)
         let evidenceDirectory = support.appendingPathComponent("FloeAgent/QualificationEvidence/NetworkPip", isDirectory: true)
@@ -212,46 +213,100 @@ import FloeTools
             let id = try #require(environmentID)
             evidence["environmentID"] = id
             try await services.activateLinuxGuestWithPreparation(id: id, cancellation: CancellationToken())
-            try await stage("prerequisites", command: #"""
+            try await stage("python-startup", command: #"""
             set -e
             mkdir -p /workspace/qualification/home /workspace/qualification/wheels /workspace/qualification/site
             python3 -u -c 'import sys,platform,ssl;print("PYTHON",sys.version);print("ARCH",platform.machine());print("TLS",ssl.OPENSSL_VERSION)'
-            python3 -m pip --version
             """#, timeout: 30)
+            // The first actual run printed Python/architecture/OpenSSL, then
+            // hit the old shared 30s deadline while pip imported platformdirs.
+            // Isolate that CPU/import work: no network, retry or install here.
+            try await stage("pip-startup", command: #"""
+            env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/workspace/qualification/home PIP_CONFIG_FILE=/dev/null python3 -u - <<'PY'
+            import sys,time
+            start=time.monotonic()
+            print('PIP_STARTUP_BEGIN',flush=True)
+            import runpy
+            sys.argv=['pip','--isolated','--disable-pip-version-check','--version']
+            try:
+                runpy.run_module('pip',run_name='__main__')
+            finally:
+                print('PIP_STARTUP_ELAPSED_SECONDS',round(time.monotonic()-start,3),flush=True)
+            PY
+            """#, timeout: 120)
+            // Each Python network probe has the existing normal 120s command
+            // budget for cold imports plus bounded operations. IMPORT_READY
+            // precedes all DNS/transport work, whose own deadlines are separate.
             try await stage("dns", command: #"""
             python3 -u - <<'PY'
-            import socket,time
+            import time
+            startup=time.monotonic()
+            print('DNS_PYTHON_START',flush=True)
+            import socket,signal
+            print('DNS_IMPORT_READY','startupSeconds',round(time.monotonic()-startup,3),flush=True)
+            def deadline(signum,frame):
+                raise TimeoutError('DNS_LOOKUP_DEADLINE_12_SECONDS')
+            signal.signal(signal.SIGALRM,deadline)
             for host in ('pypi.org','files.pythonhosted.org'):
                 start=time.monotonic()
-                addresses=socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)
-                assert addresses,'DNS returned no addresses'
-                print('DNS_OK',host,'addressCount',len(addresses),'seconds',round(time.monotonic()-start,3),flush=True)
+                print('DNS_LOOKUP_BEGIN',host,'operationBudgetSeconds',12,flush=True)
+                signal.alarm(12)
+                try:
+                    addresses=socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)
+                    assert addresses,'DNS returned no addresses'
+                    print('DNS_OK',host,'addressCount',len(addresses),'seconds',round(time.monotonic()-start,3),flush=True)
+                finally:
+                    signal.alarm(0)
             PY
-            """#, timeout: 30)
+            """#, timeout: 120)
             try await stage("tls", command: #"""
             python3 -u - <<'PY'
-            import socket,ssl,time
+            import time
+            startup=time.monotonic()
+            print('TLS_PYTHON_START',flush=True)
+            import socket,ssl,signal
             context=ssl.create_default_context()
+            print('TLS_IMPORT_AND_CA_READY','startupSeconds',round(time.monotonic()-startup,3),flush=True)
+            def deadline(signum,frame):
+                raise TimeoutError('TLS_OPERATION_DEADLINE_15_SECONDS')
+            signal.signal(signal.SIGALRM,deadline)
             for host in ('pypi.org','files.pythonhosted.org'):
                 start=time.monotonic()
-                with socket.create_connection((host,443),timeout=10) as raw:
-                    with context.wrap_socket(raw,server_hostname=host) as connection:
-                        print('TLS_VERIFIED',host,connection.version(),'seconds',round(time.monotonic()-start,3),flush=True)
+                print('TLS_OPERATION_BEGIN',host,'operationBudgetSeconds',15,'socketTimeoutSeconds',10,flush=True)
+                signal.alarm(15)
+                try:
+                    with socket.create_connection((host,443),timeout=10) as raw:
+                        with context.wrap_socket(raw,server_hostname=host) as connection:
+                            print('TLS_VERIFIED',host,connection.version(),'seconds',round(time.monotonic()-start,3),flush=True)
+                finally:
+                    signal.alarm(0)
             PY
-            """#, timeout: 30)
+            """#, timeout: 120)
             try await stage("index", command: #"""
             python3 -u - <<'PY'
-            import urllib.request,time
+            import time
+            startup=time.monotonic()
+            print('INDEX_PYTHON_START',flush=True)
+            import urllib.request,signal
             opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            print('INDEX_IMPORT_READY','startupSeconds',round(time.monotonic()-startup,3),flush=True)
+            def deadline(signum,frame):
+                raise TimeoutError('INDEX_OPERATION_DEADLINE_15_SECONDS')
+            signal.signal(signal.SIGALRM,deadline)
             for package in ('python-pptx','openpyxl','python-docx'):
                 start=time.monotonic()
+                print('INDEX_REQUEST_BEGIN',package,'operationBudgetSeconds',15,'socketTimeoutSeconds',12,flush=True)
                 request=urllib.request.Request('https://pypi.org/simple/'+package+'/',headers={'Accept':'application/vnd.pypi.simple.v1+html'})
-                with opener.open(request,timeout=12) as response:
-                    prefix=response.read(8192)
-                    assert response.status==200 and b'href=' in prefix,'Unexpected index response'
-                    print('INDEX_OK',package,'status',response.status,'sampleBytes',len(prefix),'seconds',round(time.monotonic()-start,3),flush=True)
+                signal.alarm(15)
+                try:
+                    with opener.open(request,timeout=12) as response:
+                        prefix=response.read(8192)
+                        assert response.status==200 and b'href=' in prefix,'Unexpected index response'
+                        print('INDEX_OK',package,'status',response.status,'sampleBytes',len(prefix),'seconds',round(time.monotonic()-start,3),flush=True)
+                finally:
+                    signal.alarm(0)
             PY
-            """#, timeout: 60)
+            """#, timeout: 120)
             // Clear inherited index/proxy settings without reading or printing
             // them. --only-binary prohibits a lengthy riscv64 lxml source build.
             let pip = "env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/workspace/qualification/home PIP_CONFIG_FILE=/dev/null python3 -u -m pip --isolated --disable-pip-version-check --no-input --no-cache-dir"
