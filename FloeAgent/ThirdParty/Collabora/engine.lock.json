@@ -335,7 +335,7 @@
         "preparedSHA256": "3754d754f819140a75bca4cd2f9865588096672ba5338e45df77ddc053d7e1a5"
       }
     },
-    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered \u2014 including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
+    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered — including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
   },
   "kitCallbackLifecycleOverlay": {
     "patch": "patches/ios-kit-callback-lifecycle.patch",
@@ -402,6 +402,16 @@
               ]
             }
           }
+        },
+        "additionalMembers": {
+          "AquaGraphicsBackend.o": {
+            "sourceFile": "engine/vcl/quartz/AquaGraphicsBackend.cxx",
+            "originalSHA256": "34c806f0c84fdfab9902f953e3625b1744ed5e536112b3dccedb9ce0cc319906",
+            "patchedSHA256": "1ad64b3eadd7eb5525d09eb2165fb7f8ce605eef489f7a56338f21e101e89140",
+            "patch": "patches/ios-aqua-chart-path-probe.patch",
+            "patchSHA256": "8d9ece82809621763db6dbf63c834ddf5197f6be2d77d54b21dcd0d660896ecb",
+            "originalMemberSHA256": "370db84970455dd3bd2222c7702c89d41640aedb4df058725d3adf2b93597254"
+          }
         }
       },
       "IOSSIMULATOR": {
@@ -434,6 +444,16 @@
                 "engine/sal/osl/unx"
               ]
             }
+          }
+        },
+        "additionalMembers": {
+          "AquaGraphicsBackend.o": {
+            "sourceFile": "engine/vcl/quartz/AquaGraphicsBackend.cxx",
+            "originalSHA256": "34c806f0c84fdfab9902f953e3625b1744ed5e536112b3dccedb9ce0cc319906",
+            "patchedSHA256": "1ad64b3eadd7eb5525d09eb2165fb7f8ce605eef489f7a56338f21e101e89140",
+            "patch": "patches/ios-aqua-chart-path-probe.patch",
+            "patchSHA256": "8d9ece82809621763db6dbf63c834ddf5197f6be2d77d54b21dcd0d660896ecb",
+            "originalMemberSHA256": "7eeff76fb151e58fa23e5e96c9b786645da19c785d980d4bf8cc9f0a1387c94c"
           }
         }
       }

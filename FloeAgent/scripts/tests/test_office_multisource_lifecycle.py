@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""Host-only contracts, Mach-O fixtures and mocked compiler; no Native build."""
+import copy
+import hashlib
+import json
+from pathlib import Path
+import struct
+import sys
+import tempfile
+import subprocess
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import office_compiled_lifecycle as lifecycle
+import office_engine_repair as repair
+import build_office_native_host as producer
+import test_office_compiled_lifecycle as previous_tests
+
+sha = lambda b: hashlib.sha256(b).hexdigest()
+
+def macho(platform=2, cpu=0x100000c, tag=b'fixture'):
+    return struct.pack('<8I', 0xfeedfacf, cpu, 0, 1, 1, 24, 0, 0) + struct.pack('<6I', 0x32, 24, platform, 0x1a0000, 0x1b0000, 0) + tag
+
+
+def archive(path, members):
+    value = b'!<arch>\n'
+    for name, data in members:
+        header = (name + '/').ljust(16) + '0'.ljust(12) + '0'.ljust(6) + '0'.ljust(6) + '644'.ljust(8) + str(len(data)).ljust(10) + '`\n'
+        value += header.encode() + data + (b'\n' if len(data) % 2 else b'')
+    path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(value)
+
+
+class MultiSourceLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        prior = previous_tests.MultiArchiveLifecycleTests('test_multi_archive_transport_pin_and_restore_are_exact')
+        prior.setUp(); self.addCleanup(prior.doCleanups)
+        self.prior = prior; self.f = f = prior.f
+        p = f.base / 'patches/second.patch'; p.write_text('synthetic second-source patch')
+        self.addition = {'sourceFile': 'engine/vcl/source/gdi/second.cxx',
+            'originalSHA256': 'a'*64, 'patchedSHA256': 'b'*64,
+            'patch': 'patches/second.patch', 'patchSHA256': sha(p.read_bytes()),
+            'originalMemberSHA256': 'c'*64,
+            'compileOverrides': {'flags': ['-DSECOND_IMPLEMENTATION'], 'sourceIncludes': ['engine/vcl/inc']}}
+        for platform in ('IOS', 'IOSSIMULATOR'):
+            f.lock['embeddedLifecycleOverlay']['compiledMembers'][platform]['additionalMembers'] = {'second.o': copy.deepcopy(self.addition)}
+        self.spec = f.lock['embeddedLifecycleOverlay']['compiledMembers']['IOS']
+        self.block = {**copy.deepcopy(prior.block), **lifecycle.identity(f.lock, 'IOS')}
+        self.block.update(originalObjectSHA256ByMember={'svdata.o':'4'*64, 'second.o':'c'*64},
+            objectABIByMember={n:{'arch':'arm64','platform':'IOS'} for n in ['svdata.o','second.o']},
+            objectSHA256ByMember={'svdata.o':'8'*64,'second.o':'3'*64})
+        self.block['linkOwnership']['archives']['libvcllo.a']['objectSHA256ByMember'] = copy.deepcopy(self.block['objectSHA256ByMember'])
+        f.manifest['embeddedLifecycleMember'] = self.block
+        prior.case.commit_contract()
+
+    def test_v3_transport_pin_restore_exact_and_v2_cannot_masquerade(self):
+        import bootstrap_office_host as bootstrap
+        import pin_office_host_artifact as pinning
+        import types
+        f = self.f; original = f.pack(); f.validate(original)
+        with patch.object(pinning,'HOST_SOURCES',f.base/'FloeOfficeNative'), patch.object(pinning,'arguments',types.SimpleNamespace(artifact_run_id=None,artifact_commit=None),create=True):
+            self.assertEqual(pinning.apply(self.prior.case.lock_path,f.archive,'synthetic multi-source'),0)
+        lock, pin = bootstrap.checked_lock(self.prior.case.lock_path)
+        bootstrap.verify_installed(f.host, lock, pin)
+        self.assertEqual(pin['embeddedLifecycleMember']['schemaVersion'],3)
+        bad=copy.deepcopy(self.block); bad['schemaVersion']=2
+        with self.assertRaises(ValueError): lifecycle.validate(bad,lock,'IOS')
+        legacy={k:v for k,v in self.prior.case.block.items() if k not in ['schemaVersion','compiledPatchSHA256','sourceFile','originalSourceSHA256','patchedSourceSHA256','compilePassed','archiveReplacementPassed']}
+        with self.assertRaisesRegex(ValueError,'historical compatibility'): lifecycle.validate_legacy_simulator(legacy,lock,{'libvcllo.a':'6'*64})
+
+    def test_invalid_additional_member_and_source_contracts_fail_closed(self):
+        for mutation in [
+            lambda s:s['members'].update({'second.o':s['sourceFile']}),
+            lambda s:s['additionalMembers']['second.o'].update(sourceFile=s['sourceFile']),
+            lambda s:s['additionalMembers']['second.o'].pop('sourceFile'),
+            lambda s:s['additionalMembers']['second.o'].update(originalMemberSHA256='wrong'),
+            lambda s:s['additionalMembers']['second.o'].update(patch='../escape'),
+            lambda s:s['additionalMembers']['second.o'].update(compileOverrides={'flags':['-xobjective-c++']}),
+            lambda s:s['additionalMembers']['second.o'].update(compileOverrides={'flags':['@response']}),
+            lambda s:s['additionalMembers']['second.o'].update(compileOverrides={'bundleIncludes':['../escape']}),
+            lambda s:s['additionalMembers']['second.o'].update(members={'another.o':'engine/wrong.cxx'}),
+        ]:
+            lock=copy.deepcopy(self.f.lock); mutation(lock['embeddedLifecycleOverlay']['compiledMembers']['IOS'])
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):lifecycle.identity(lock,'IOS')
+        (self.f.base/'patches/second.patch').write_text('tampered')
+        with patch.object(producer.subprocess,'run') as run:
+            with self.assertRaisesRegex(ValueError,'compiled patch bytes'):producer.select_lifecycle_archive(self.f.root,self.f.root/'unused','IOS',self.prior.case.lock_path,engine_source=self.f.root)
+            run.assert_not_called()
+
+    def test_wrong_original_selected_abi_source_and_link_hash_rejected(self):
+        for mutate in [lambda b:b['originalObjectSHA256ByMember'].update({'second.o':'0'*64}),
+            lambda b:b['objectABIByMember']['second.o'].update(platform='IOSSIMULATOR'),
+            lambda b:b['memberSources']['second.o'].update(patchedSHA256='0'*64),
+            lambda b:b['objectSHA256ByMember'].pop('second.o'),
+            lambda b:b['linkOwnership']['archives']['libvcllo.a']['objectSHA256ByMember'].update({'second.o':'0'*64})]:
+            bad=copy.deepcopy(self.block);mutate(bad)
+            with self.subTest(mutate=mutate),self.assertRaises(ValueError):lifecycle.validate(bad,self.f.lock,'IOS')
+
+    def test_additional_archive_multisource_propagates_v3_without_downgrading_parent(self):
+        lock=copy.deepcopy(self.f.lock);spec=lock['embeddedLifecycleOverlay']['compiledMembers']['IOS']
+        added=spec.pop('additionalMembers');child_spec=spec['additionalArchives']['libsallo.a'];child_spec['additionalMembers']=added
+        block=copy.deepcopy(self.block);block.update(lifecycle.identity(lock,'IOS'))
+        block['objectSHA256ByMember']={'svdata.o':'8'*64};block['originalObjectSHA256ByMember']={'svdata.o':'4'*64};block['objectABIByMember']={'svdata.o':{'arch':'arm64','platform':'IOS'}}
+        child=block['additionalArchives']['libsallo.a'];child.update(lifecycle.identity(lifecycle.single_lock(lock,'IOS',child_spec),'IOS'))
+        child['objectSHA256ByMember'].update({'second.o':'3'*64});child['originalObjectSHA256ByMember']={'thread.o':'a'*64,'second.o':'c'*64};child['objectABIByMember']={n:{'arch':'arm64','platform':'IOS'} for n in child['members']}
+        for name,b in {'libvcllo.a':block,'libsallo.a':child}.items():
+            block['linkOwnership']['archives'][name]={'archiveSHA256':b['archiveSHA256'],'objectSHA256ByMember':copy.deepcopy(b['objectSHA256ByMember'])}
+        child['linkOwnership']={**block['linkOwnership'],'archives':{'libsallo.a':copy.deepcopy(block['linkOwnership']['archives']['libsallo.a'])}}
+        lifecycle.validate(block,lock,'IOS')
+        self.assertEqual(block['schemaVersion'],3);self.assertEqual(child['schemaVersion'],3)
+
+    def test_linkmap_requires_second_member_exact_owner_and_all_original_checks(self):
+        prior=self.prior; prior.block=self.block; prior.child=self.block['additionalArchives']['libsallo.a']
+        output,linkmap,linker,report,lines,inputs=prior.make_linkmap_fixture()
+        producer.lifecycle_link_ownership(report,self.f.root,output,self.f.lock,'IOS',linker)
+        line=next(l for l in lines if '(second.o)' in l)
+        for changed in [[l for l in lines if l!=line],lines+[line], [l.replace('libvcllo.a(second.o)','other.a(second.o)') for l in lines]]:
+            linkmap.write_text('\n'.join(changed))
+            with self.assertRaisesRegex(ValueError,'absent/ambiguous'):producer.lifecycle_link_ownership(report,self.f.root,output,self.f.lock,'IOS',linker)
+
+    def producer_fixture(self):
+        f=self.f; root=f.root/'bundle-v3'; out=f.root/'producer-v3'; src=f.root/'source-v3'; src.mkdir(); out.mkdir()
+        specs=lifecycle.member_specs(self.spec);members=[]
+        for name,spec in specs.items():
+            data=b'original-'+name.encode();p=src/spec['sourceFile'];p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
+            spec['originalSHA256']=sha(data);spec['patchedSHA256']=sha(b'patched-'+data)
+            payload=macho(tag=b'original-'+name.encode());members.append((name,payload))
+            if name=='second.o':self.spec['additionalMembers'][name].update(spec,originalMemberSHA256=sha(payload))
+            else:self.spec.update(originalSHA256=spec['originalSHA256'],patchedSHA256=spec['patchedSHA256'])
+        members.append(('untouched.o',macho(tag=b'untouched')))
+        ar=root/self.spec['archive'];archive(ar,members)
+        (root/'prepared').mkdir();(root/'prepared/ios-all-static-libs.list').write_text(str(ar.resolve())+'\n')
+        self.prior.case.lock_path.write_text(json.dumps(f.lock));repair_path=f.base/'engine.patch.lock.json';repair_path.write_text(json.dumps({'platforms':{'IOS':{'compile':{'sdk':'iphoneos','target':'arm64-apple-ios26.0','flags':[],'sourceIncludes':[],'bundleIncludes':[]}}}}))
+        self.compiled=[];self.commands=[]
+        def command(recipe,source,bundle,staged,obj):
+            self.commands.append((copy.deepcopy(recipe),staged,obj));return ['mock-compiler',str(staged),str(obj)]
+        def run(argv,**kw):
+            argv=list(map(str,argv))
+            if argv[0]=='git':
+                staged=Path(kw['cwd'])/argv[2].split('=',1)[1];staged.write_bytes(b'patched-'+staged.read_bytes())
+            elif argv[0]=='mock-compiler':
+                staged,obj=map(Path,argv[1:]);self.compiled.append(staged);obj.write_bytes(macho(tag=staged.read_bytes()))
+            elif argv[1:3]==['ar','-r']:
+                existing=repair.read_ar_members(ar);payloads={p.name:p.read_bytes() for p in map(Path,argv[4:])};archive(Path(argv[3]),[(m.name,payloads.get(m.name,repair.read_member(ar,m))) for m in existing])
+            return type('Done',(),{'returncode':0})()
+        return root,out,src,command,run,ar
+
+    def test_producer_compiles_each_real_source_and_preserves_unrelated_members(self):
+        root,out,src,command,run,ar=self.producer_fixture()
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command):
+            block=producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+        self.assertEqual({p.name for p in self.compiled},{'svdata.cxx','second.cxx'})
+        self.assertEqual(len(self.compiled),2)
+        self.assertEqual(block['schemaVersion'],3)
+        self.assertEqual(block['originalObjectSHA256ByMember']['second.o'],self.spec['additionalMembers']['second.o']['originalMemberSHA256'])
+        self.assertEqual(set(block['objectABIByMember']),{'svdata.o','second.o'})
+        extra=next(recipe for recipe,source,obj in self.commands if obj.name=='second.o')
+        base=next(recipe for recipe,source,obj in self.commands if obj.name=='svdata.o')
+        self.assertIn('-DSECOND_IMPLEMENTATION',extra['compile']['flags']);self.assertNotIn('-DSECOND_IMPLEMENTATION',base['compile']['flags'])
+
+    def test_producer_rejects_wrong_original_member_before_any_compiler(self):
+        root,out,src,command,run,ar=self.producer_fixture();self.spec['additionalMembers']['second.o']['originalMemberSHA256']='0'*64
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command):
+            with self.assertRaisesRegex(ValueError,'original member hash'):producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+        self.assertEqual(self.compiled,[])
+
+    def test_actual_object_abi_rejects_wrong_cpu_platform_or_missing_build_version(self):
+        self.assertEqual(lifecycle.object_abi(macho(),'IOS'),{'arch':'arm64','platform':'IOS'})
+        self.assertEqual(lifecycle.object_abi(macho(7),'IOSSIMULATOR'),{'arch':'arm64','platform':'IOSSIMULATOR'})
+        for data in [macho(7),macho(cpu=7),b'not an object',macho()[:45],macho().replace(struct.pack('<I',0x32),struct.pack('<I',0x31),1)]:
+            with self.subTest(data=data),self.assertRaises(ValueError):lifecycle.object_abi(data,'IOS')
+
+    def test_missing_second_source_rejected_before_compiler(self):
+        root,out,src,command,run,ar=self.producer_fixture()
+        (src/self.addition['sourceFile']).unlink()
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command):
+            with self.assertRaisesRegex(ValueError,'source checkout'):producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+        self.assertEqual(self.compiled,[])
+
+    def test_wrong_second_source_hash_rejected_before_compiler(self):
+        root,out,src,command,run,ar=self.producer_fixture()
+        self.spec['additionalMembers']['second.o']['originalSHA256']='f'*64
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command):
+            with self.assertRaisesRegex(ValueError,'source checkout'):producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+        self.assertEqual(self.compiled,[])
+
+    def test_wrong_patched_source_hash_rejects_that_source_compilation(self):
+        root,out,src,command,run,ar=self.producer_fixture()
+        self.spec['additionalMembers']['second.o']['patchedSHA256']='f'*64
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command):
+            with self.assertRaisesRegex(ValueError,'patched source differs'):producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+        self.assertNotIn('second.cxx',[p.name for p in self.compiled])
+
+    def test_wrong_compiled_abi_rejected_before_archive_replacement(self):
+        root,out,src,command,run,ar=self.producer_fixture();original=ar.read_bytes()
+        def wrong_abi(argv,**kw):
+            result=run(argv,**kw)
+            if argv[0]=='mock-compiler':Path(argv[-1]).write_bytes(macho(7))
+            return result
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=wrong_abi),patch.object(repair,'build_compile_command',side_effect=command):
+            with self.assertRaisesRegex(ValueError,'ABI platform'):producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+        self.assertEqual(ar.read_bytes(),original)
+
+    def test_matching_hash_cannot_admit_wrong_platform_original_member(self):
+        root,out,src,command,run,ar=self.producer_fixture();items=repair.read_ar_members(ar)
+        wrong=macho(7,tag=b'wrong-original-platform')
+        archive(ar,[(m.name,wrong if m.name=='second.o' else repair.read_member(ar,m)) for m in items])
+        self.spec['additionalMembers']['second.o']['originalMemberSHA256']=sha(wrong)
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command):
+            with self.assertRaisesRegex(ValueError,'ABI platform'):producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+        self.assertEqual(self.compiled,[])
+
+    def test_duplicate_real_archive_members_rejected_before_compilation(self):
+        root,out,src,command,run,ar=self.producer_fixture();items=repair.read_ar_members(ar)
+        contents=[(m.name,repair.read_member(ar,m)) for m in items];archive(ar,contents+[contents[0]])
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=run),patch.object(repair,'build_compile_command',side_effect=command):
+            with self.assertRaisesRegex(ValueError,'Duplicate lifecycle archive'):producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+        self.assertEqual(self.compiled,[])
+
+    def test_archive_order_tampering_rejected_after_replacement(self):
+        root,out,src,command,run,ar=self.producer_fixture();original=ar.read_bytes()
+        def reorder(argv,**kw):
+            result=run(argv,**kw)
+            if list(argv)[1:2]==['ranlib']:
+                p=Path(argv[-1]);items=repair.read_ar_members(p);archive(p,[(m.name,repair.read_member(p,m)) for m in reversed(items)])
+            return result
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=reorder),patch.object(repair,'build_compile_command',side_effect=command):
+            with self.assertRaisesRegex(ValueError,'order/count'):producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+        self.assertEqual(ar.read_bytes(),original)
+
+    def test_unrelated_member_tampering_rejected_after_replacement(self):
+        root,out,src,command,run,ar=self.producer_fixture()
+        def tamper(argv,**kw):
+            result=run(argv,**kw)
+            if list(argv)[1:2]==['ranlib']:
+                p=Path(argv[-1]);items=repair.read_ar_members(p);archive(p,[(m.name,b'changed' if m.name=='untouched.o' else repair.read_member(p,m)) for m in items])
+            return result
+        with patch.object(producer.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'),patch.object(producer.subprocess,'run',side_effect=tamper),patch.object(repair,'build_compile_command',side_effect=command):
+            with self.assertRaisesRegex(ValueError,'unexpected members'):producer._select_lifecycle_archive_single(root,out,'IOS',self.prior.case.lock_path,src,self.spec)
+
+    def test_simulator_wrapper_keeps_additional_patch_and_requires_actual_source(self):
+        sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'office_floe_simulator'))
+        import build_simulator_framework as wrapper
+        self.assertIn('patches/second.patch',wrapper.overlay_patch_refs(self.f.lock))
+        source=self.f.root/'wrapper-source';(source/'.git').mkdir(parents=True)
+        selected=self.f.lock['embeddedLifecycleOverlay']['compiledMembers']['IOSSIMULATOR']
+        selected.pop('additionalArchives')
+        p=source/selected['sourceFile'];p.parent.mkdir(parents=True);p.write_bytes(b'base source')
+        selected['originalSHA256']=sha(p.read_bytes())
+        self.prior.case.lock_path.write_text(json.dumps(self.f.lock))
+        with patch.object(wrapper.subprocess,'check_output',return_value=self.f.lock['commit']+'\n'):
+            with self.assertRaisesRegex(ValueError,'missing/modified lifecycle source: engine/vcl/source/gdi/second.cxx'):
+                wrapper.validate_build_inputs(self.prior.case.lock_path,engine_source=source)
+
+class PinnedSourceFallbackTests(unittest.TestCase):
+    def setUp(self):
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        self.root=Path(temporary.name);self.name='engine/vcl/quartz/missing.cxx';self.path=self.root/self.name
+        self.path.parent.mkdir(parents=True);self.data=b'pinned local Git source\n';self.path.write_bytes(self.data)
+        def git(*args):return subprocess.check_output(['git','-C',str(self.root),*args],stderr=subprocess.PIPE)
+        self.git=git;git('init','-q');git('add','.')
+        git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','pinned fixture')
+        self.commit=git('rev-parse','HEAD').decode().strip();self.spec={'sourceFile':self.name,'originalSHA256':sha(self.data)}
+        git('update-index','--skip-worktree',self.name);self.path.unlink()
+
+    def test_missing_sparse_file_reads_exact_local_object_without_materializing_checkout(self):
+        before=self.git('status','--porcelain')
+        self.assertEqual(lifecycle.source_bytes(self.root,self.spec,self.commit),self.data)
+        self.assertFalse(self.path.exists());self.assertEqual(self.git('status','--porcelain'),before)
+        staged=self.root/'owned-stage'/self.name;staged.parent.mkdir(parents=True);staged.write_bytes(lifecycle.source_bytes(self.root,self.spec,self.commit))
+        self.assertEqual(staged.read_bytes(),self.data);self.assertFalse(self.path.exists())
+
+    def test_changed_existing_source_is_rejected_without_falling_back(self):
+        self.path.write_bytes(b'local change must survive')
+        with patch.object(lifecycle.subprocess,'check_output') as read:
+            with self.assertRaisesRegex(ValueError,'source hash differs'):lifecycle.source_bytes(self.root,self.spec,self.commit)
+            read.assert_not_called()
+        self.assertEqual(self.path.read_bytes(),b'local change must survive')
+
+    def test_missing_blob_and_wrong_blob_hash_fail_without_fetch_or_new_files(self):
+        for spec in [{**self.spec,'sourceFile':'engine/no-such-source.cxx'},{**self.spec,'originalSHA256':'0'*64}]:
+            with self.subTest(spec=spec),self.assertRaises(ValueError):lifecycle.source_bytes(self.root,spec,self.commit)
+        self.assertFalse(self.path.exists())
+
+    def test_fallback_disables_lazy_fetch_and_interactive_authentication(self):
+        actual=subprocess.check_output
+        with patch.object(lifecycle.subprocess,'check_output',wraps=actual) as read:
+            lifecycle.source_bytes(self.root,self.spec,self.commit)
+        self.assertEqual(len(read.call_args_list),2)
+        for call in read.call_args_list:
+            self.assertEqual(call.kwargs['env']['GIT_NO_LAZY_FETCH'],'1')
+            self.assertEqual(call.kwargs['env']['GIT_TERMINAL_PROMPT'],'0')
+            self.assertTrue(call.args[0][-1].startswith(self.commit+':'))
+
+if __name__=='__main__':unittest.main()

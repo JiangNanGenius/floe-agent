@@ -239,6 +239,8 @@ def validate_archive(archive, expected_sha256, repo, source_commit):
         for spec in (lock.get('embeddedLifecycleOverlay', {}).get('compiledMembers') or {}).values():
             paths.add(spec['patch'])
             paths.update(child['patch'] for child in spec.get('additionalArchives', {}).values())
+            for archive in [spec, *spec.get('additionalArchives', {}).values()]:
+                paths.update(member['patch'] for member in archive.get('additionalMembers', {}).values())
         if filters_path.exists():
             paths.update(('filter-overlay.lock.json', filters['patch']))
             paths.update(spec['patch'] for spec in filters.get('headerDependencies', {}).values() if spec.get('patch'))

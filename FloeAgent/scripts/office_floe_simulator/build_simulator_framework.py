@@ -70,6 +70,8 @@ def overlay_patch_refs(lock):
     for spec in (lock.get('embeddedLifecycleOverlay', {}).get('compiledMembers') or {}).values():
         refs.append(spec['patch'])
         refs.extend(child['patch'] for child in spec.get('additionalArchives', {}).values())
+        for archive in [spec, *spec.get('additionalArchives', {}).values()]:
+            refs.extend(member['patch'] for member in archive.get('additionalMembers', {}).values())
     source_patch = lock.get('sourcePatch')
     if source_patch:
         refs.append(source_patch)
@@ -296,10 +298,14 @@ def validate_build_inputs(lock_path, *, engine_source=None, filter_overlay=None)
         if commit != lock['commit']:
             raise SimulatorHostBuildError('--engine-source HEAD differs from the selected engine lock; select the pinned checkout')
         specs = [selected, *(selected or {}).get('additionalArchives', {}).values()] if selected else []
-        for spec in specs:
-            path = source / spec['sourceFile']
-            if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(source) or digest(path) != spec['originalSHA256']:
-                raise SimulatorHostBuildError('--engine-source contains missing/modified lifecycle source: ' + spec['sourceFile'])
+        import office_compiled_lifecycle as lifecycle
+        for archive in specs:
+            for spec in lifecycle.member_specs(archive).values():
+                try:
+                    lifecycle.source_bytes(source, spec, lock['commit'])
+                except ValueError as error:
+                    raise SimulatorHostBuildError('--engine-source contains missing/modified lifecycle source: '
+                                                  + spec['sourceFile']) from error
         metadata['engineSourceCommit'] = commit
     filter_lock = json.loads(FILTER_LOCK.read_text()) if FILTER_LOCK.is_file() else {}
     if filter_lock.get('simulator') and overlay is None:

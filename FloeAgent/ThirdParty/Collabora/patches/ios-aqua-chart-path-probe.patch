@@ -1,0 +1,150 @@
+--- a/engine/vcl/quartz/AquaGraphicsBackend.cxx
++++ b/engine/vcl/quartz/AquaGraphicsBackend.cxx
+@@ -21,6 +21,15 @@
+ #include <sal/log.hxx>
+ 
+ #include <cassert>
++#ifdef IOS
++#include <array>
++#include <chrono>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <mutex>
++#include <limits>
++#endif
+ #include <cstring>
+ #include <numeric>
+ #include <utility>
+@@ -733,7 +742,131 @@
+         // draw path with antialiased polygon
+         CGContextSetShouldAntialias(mrShared.maContextHolder.get(), getAntiAlias());
+         CGContextSetAlpha(mrShared.maContextHolder.get(), 1.0 - fTransparency);
++#ifdef IOS
++        // Private fixed-fixture fact probe, not a drawing workaround. Sampling
++        // lives in RenderTiles; this records only the actual Quartz call state.
++        // Reserve four distinct draw states for EACH of the five bar interiors:
++        // early masters, labels, repeated preloads and context churn cannot
++        // consume a global first-N budget. Zero pixel reads or bitmap output.
++        int floeBar = -1;
++        int floeSlot = -1;
++        const char* floeSpace = "unmatched";
++        const char* floeGate = std::getenv("FLOE_A3_CHART_RAW_PROBE");
++        if (floeGate && floeGate[0] == '1' && floeGate[1] == '\0')
++        {
++            [[clang::no_destroy]] static std::mutex floeMutex;
++            static bool floeActivated = false;
++            using FloeDrawIdentity = std::array<long, 26>;
++            static std::array<std::array<FloeDrawIdentity, 4>, 5> floeDrawIdentities{};
++            static std::array<unsigned, 5> floeCounts{};
++            static std::array<bool, 5> floeLimits{};
++            std::lock_guard<std::mutex> floeLock(floeMutex);
++            if (!floeActivated)
++            {
++                floeActivated = true;
++                std::fprintf(stderr, "[floeA3] quartz-path-probe activated=1 scope=fixed-original-496x279-five-bar-geometry bitmapResponseIdentity=unclaimed\n");
++            }
++            // These are the strict fixture's actual pixel interiors and expected
++            // OUTER column heights at the observed 496x279 page scale. Native
++            // output dimensions/coordinates are logged for independent checking.
++            constexpr double rx[5] = { 71, 119, 168, 217, 265 };
++            constexpr double ry[5] = { 130, 169, 197, 138, 161 };
++            constexpr double rw[5] = { 12, 13, 12, 12, 13 };
++            constexpr double rh[5] = { 74, 35, 7, 66, 43 };
++            constexpr double outerHeight[5] = { 77.0877, 38.54385, 10.27836, 69.37893, 46.25262 };
++            const bool finite = std::isfinite(aRefreshRect.origin.x) && std::isfinite(aRefreshRect.origin.y)
++                && std::isfinite(aRefreshRect.size.width) && std::isfinite(aRefreshRect.size.height);
++            const bool barExtent = finite && aRefreshRect.size.width >= 14 && aRefreshRect.size.width <= 26
++                && std::abs(aRefreshRect.origin.x) < 4096 && std::abs(aRefreshRect.origin.y) < 4096;
++            for (int b = 0; barExtent && b < 5; ++b)
++            {
++                if (std::abs(aRefreshRect.size.height - outerHeight[b]) > 3) continue;
++                const CGRect roi = CGRectMake(rx[b], ry[b], rw[b], rh[b]);
++                const CGRect intersection = CGRectIntersection(aRefreshRect, roi);
++                const bool pageLocal = mrShared.mnWidth >= 496 && mrShared.mnWidth <= 512
++                    && mrShared.mnHeight >= 204 && mrShared.mnHeight <= 512
++                    && !CGRectIsNull(intersection) && intersection.size.width >= rw[b] * 0.8
++                    && intersection.size.height >= rh[b] * 0.8;
++                // Temporary per-column buffers have no page-local origin. Keep
++                // their size-only admission explicit; it is weaker association.
++                const bool tinyLocal = mrShared.mnWidth <= 32 && mrShared.mnHeight <= 100
++                    && aRefreshRect.origin.x >= -1 && aRefreshRect.origin.x <= 3
++                    && aRefreshRect.origin.y >= -1 && aRefreshRect.origin.y <= 3;
++                if (!pageLocal && !tinyLocal) continue;
++                // A stroke/shadow/other fill can have the same extent. Do not
++                // let it hide a later blue fill through geometry-only deduping.
++                // Bound values before lround, including null/infinite CG clips.
++                const auto quantize = [](double value, double units) -> long {
++                    if (!std::isfinite(value)) return std::numeric_limits<long>::min();
++                    const double scaled = value * units;
++                    if (scaled < -1e9) return -1000000000L;
++                    if (scaled > 1e9) return 1000000000L;
++                    return std::lround(scaled);
++                };
++                const auto context = mrShared.maContextHolder.get();
++                const CGRect clip = CGContextGetClipBoundingBox(context);
++                const CGAffineTransform ctm = CGContextGetCTM(context);
++                const auto& fill = mrShared.maFillColor;
++                const FloeDrawIdentity identity = {
++                    quantize(aRefreshRect.origin.x, 16), quantize(aRefreshRect.origin.y, 16),
++                    quantize(aRefreshRect.size.width, 16), quantize(aRefreshRect.size.height, 16),
++                    mrShared.mnWidth, mrShared.mnHeight,
++                    static_cast<long>(eMode), mrShared.isBrushActive(), mrShared.isPenActive(),
++                    quantize(fill.GetRed(), 65535), quantize(fill.GetGreen(), 65535),
++                    quantize(fill.GetBlue(), 65535), quantize(fill.GetAlpha(), 65535),
++                    quantize(fTransparency, 65535),
++                    quantize(clip.origin.x, 16), quantize(clip.origin.y, 16),
++                    quantize(clip.size.width, 16), quantize(clip.size.height, 16),
++                    CGRectIsNull(clip), CGRectIsInfinite(clip),
++                    quantize(ctm.a, 4096), quantize(ctm.b, 4096), quantize(ctm.c, 4096),
++                    quantize(ctm.d, 4096), quantize(ctm.tx, 4096), quantize(ctm.ty, 4096) };
++                bool seen = false;
++                for (unsigned i = 0; i < floeCounts[b]; ++i)
++                    if (floeDrawIdentities[b][i] == identity) { seen = true; break; }
++                if (seen) break;
++                if (floeCounts[b] < 4)
++                {
++                    floeBar = b + 1;
++                    floeSlot = floeCounts[b]++;
++                    floeDrawIdentities[b][floeSlot] = identity;
++                    floeSpace = pageLocal ? "page-local-roi" : "temporary-size-only";
++                }
++                else if (!floeLimits[b])
++                {
++                    floeLimits[b] = true;
++                    std::fprintf(stderr, "[floeA3] quartz-path-probe bar=%d geometry-cap=4 observation=incomplete\n", b + 1);
++                }
++                break;
++            }
++        }
++        const auto floeLog = [&](const char* phase) {
++            if (floeBar < 0) return;
++            const auto context = mrShared.maContextHolder.get();
++            const CGRect clip = CGContextGetClipBoundingBox(context);
++            const CGAffineTransform ctm = CGContextGetCTM(context);
++            const auto unixUs = std::chrono::duration_cast<std::chrono::microseconds>(
++                std::chrono::system_clock::now().time_since_epoch()).count();
++            const auto& fill = mrShared.maFillColor;
++            std::fprintf(stderr,
++                "[floeA3] quartz-bar phase=%s bar=%d slot=%d association=%s unixUs=%lld graphics=%p context=%p layer=%p out=%dx%d bounds=%.4f,%.4f,%.4f,%.4f clip=%.4f,%.4f,%.4f,%.4f clipNull=%d clipInfinite=%d ctm=%.6f,%.6f,%.6f,%.6f,%.6f,%.6f fill=%.6f,%.6f,%.6f,%.6f brush=%d pen=%d transparency=%.6f drawMode=%d foreign=%d vertices=%u\n",
++                phase, floeBar, floeSlot, floeSpace, static_cast<long long>(unixUs),
++                static_cast<const void*>(this), static_cast<const void*>(context), static_cast<const void*>(mrShared.maLayer.get()),
++                mrShared.mnWidth, mrShared.mnHeight,
++                aRefreshRect.origin.x, aRefreshRect.origin.y, aRefreshRect.size.width, aRefreshRect.size.height,
++                clip.origin.x, clip.origin.y, clip.size.width, clip.size.height,
++                CGRectIsNull(clip), CGRectIsInfinite(clip),
++                ctm.a, ctm.b, ctm.c, ctm.d, ctm.tx, ctm.ty,
++                fill.GetRed(), fill.GetGreen(), fill.GetBlue(), fill.GetAlpha(),
++                mrShared.isBrushActive(), mrShared.isPenActive(), fTransparency, static_cast<int>(eMode), mrShared.mbForeignContext,
++                aPolyPolygon.count() ? aPolyPolygon.getB2DPolygon(0).count() : 0);
++            std::fflush(stderr);
++        };
++        floeLog("before-CGContextDrawPath");
++#endif
+         CGContextDrawPath(mrShared.maContextHolder.get(), eMode);
++#ifdef IOS
++        floeLog("after-CGContextDrawPath");
++#endif
+         mrShared.maContextHolder.restoreState();
+ 
+         // mark modified rectangle as updated

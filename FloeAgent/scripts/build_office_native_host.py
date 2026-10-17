@@ -220,70 +220,97 @@ def _select_lifecycle_archive_single(root, output, platform, lock_path=DEFAULT_L
     # Validate actual compiled patch bytes before applying or compiling them.
     single = lifecycle.single_lock(lock, platform, contract)
     compiled_identity = lifecycle.identity(single, platform, lock_path=lock_path)
+    if primary and lifecycle.schema_version(lifecycle.contract(lock, platform)) == 3:
+        compiled_identity.update(schemaVersion=3, memberSources=lifecycle.member_specs(contract))
     if engine_source is None:
         raise ValueError('the lifecycle member is compiled from the pinned git '
                          'checkout; --engine-source is required')
     repair_lock = json.loads(
         (Path(lock_path).parent / 'engine.patch.lock.json').read_text())
     compile_spec = repair_lock['platforms'][platform]['compile']
+    if compiled_identity['schemaVersion'] == 3:
+        expected_sdk = {'IOS': 'iphoneos', 'IOSSIMULATOR': 'iphonesimulator'}[platform]
+        expected_target = 'arm64-apple-ios26.0' + ('-simulator' if platform == 'IOSSIMULATOR' else '')
+        if compile_spec['sdk'] != expected_sdk or compile_spec['target'] != expected_target:
+            raise ValueError('Lifecycle compile ABI platform differs from contract')
     owned = output / 'lifecycle' / Path(contract['archive']).name
     owned.mkdir(parents=True, exist_ok=True)
     archive = root / contract['archive']
     original = repair.digest(archive)
     objects = {}
-    source_name = contract['sourceFile']
-    pristine = Path(engine_source) / source_name
-    if repair.digest(pristine) != contract['originalSHA256']:
-        raise ValueError('Lifecycle member source checkout differs from the lock')
-    stage = owned / 'source-stage'
-    stage.mkdir(parents=True, exist_ok=True)
-    staged = stage / source_name
-    staged.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(pristine, staged)
-    subprocess.run(['git', 'apply', '--include=' + source_name,
-                    str(Path(lock_path).parent / contract['patch'])],
-                   cwd=stage, check=True, capture_output=True)
-    if repair.digest(staged) != contract['patchedSHA256']:
-        raise ValueError('Lifecycle member patched source differs from the lock')
+    specs = lifecycle.member_specs(contract)
+    snapshots = repair.snapshot_members(archive)
+    names = [item['name'] for item in snapshots]
+    if len(set(names)) != len(names):
+        raise ValueError('Duplicate lifecycle archive member names')
+    by_name = lambda snap: {entry['name']: entry['sha256'] for entry in snap
+                            if not entry['name'].startswith('__.SYMDEF')
+                            and entry['name'] not in ('/', '//')}
+    before = by_name(snapshots)
+    sources = Path(engine_source).resolve()
     head = subprocess.check_output(
-        ['git', '-C', str(engine_source), 'rev-parse', 'HEAD'], text=True).strip()
+        ['git', '-C', str(sources), 'rev-parse', 'HEAD'], text=True).strip()
     if head != lock['commit']:
         raise ValueError('Lifecycle member engine source is not the pinned commit')
-    # The VCL module build defines its dllapi macro and puts the module inc
-    # first; the tracked per-platform compile spec alone targets filter TUs.
-    vcl_spec = {'compile': dict(compile_spec)}
-    additions = contract.get('compileOverrides', {})
-    default_flags = ['-DVCL_DLLIMPLEMENTATION'] if primary else []
-    default_includes = ['engine/vcl/inc', 'engine/vcl/source/app'] if primary else []
-    vcl_spec['compile']['flags'] = list(compile_spec['flags']) + default_flags + additions.get('flags', [])
-    vcl_spec['compile']['sourceIncludes'] = default_includes + additions.get('sourceIncludes', []) + list(compile_spec['sourceIncludes'])
-    vcl_spec['compile']['bundleIncludes'] = additions.get('bundleIncludes', []) + list(compile_spec.get('bundleIncludes', []))
-    for member in contract['members']:
+    # Validate every source and locked original member before invoking a compiler.
+    original_sources = {}
+    for member, spec in specs.items():
+        try:
+            original_sources[member] = lifecycle.source_bytes(sources, spec, lock['commit'])
+        except ValueError as error:
+            raise ValueError('Lifecycle member source checkout differs from the lock: ' + str(error)) from error
+        if member not in before or ('originalMemberSHA256' in spec
+                                    and before[member] != spec['originalMemberSHA256']):
+            raise ValueError('Lifecycle original member hash differs from the lock')
+        if compiled_identity['schemaVersion'] == 3:
+            original_member, _ = repair.find_member(repair.read_ar_members(archive), member)
+            lifecycle.object_abi(repair.read_member(archive, original_member), platform)
+    abi = {}
+    for member, spec in specs.items():
+        source_name = spec['sourceFile']
+        # Each member owns a source-stage: patches cannot affect another member.
+        stage = owned / 'source-stage' / member
+        staged = stage / source_name
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        staged.write_bytes(original_sources[member])
+        subprocess.run(['git', 'apply', '--include=' + source_name,
+                        str(Path(lock_path).parent / spec['patch'])],
+                       cwd=stage, check=True, capture_output=True)
+        if repair.digest(staged) != spec['patchedSHA256']:
+            raise ValueError('Lifecycle member patched source differs from the lock')
+        vcl_spec = {'compile': dict(compile_spec)}
+        additions = spec.get('compileOverrides', {})
+        default_flags = ['-DVCL_DLLIMPLEMENTATION'] if primary else []
+        default_includes = ['engine/vcl/inc', 'engine/vcl/source/app'] if primary else []
+        vcl_spec['compile']['flags'] = list(compile_spec['flags']) + default_flags + additions.get('flags', [])
+        vcl_spec['compile']['sourceIncludes'] = default_includes + additions.get('sourceIncludes', []) + list(compile_spec['sourceIncludes'])
+        vcl_spec['compile']['bundleIncludes'] = additions.get('bundleIncludes', []) + list(compile_spec.get('bundleIncludes', []))
         obj = owned / member
-        # sourceIncludes resolve against the pinned git checkout (the built
-        # bundle carries no VCL sources); bundleIncludes against the bundle.
-        command = repair.build_compile_command(
-            vcl_spec, Path(engine_source), root, staged, obj)
+        command = repair.build_compile_command(vcl_spec, sources, root, staged, obj)
         with (owned / (member + '.compile.log')).open('w') as log:
             subprocess.run(list(map(str, command)), check=True,
                            stdout=log, stderr=subprocess.STDOUT)
         objects[member] = repair.digest(obj)
+        if compiled_identity['schemaVersion'] == 3:
+            abi[member] = lifecycle.object_abi(obj, platform)
     patched = owned / Path(contract['archive']).name
-    # Regenerated symbol indexes are excluded, like the filter overlay audit.
-    by_name = lambda snap: {entry['name']: entry['sha256'] for entry in snap
-                            if not entry['name'].startswith('__.SYMDEF')
-                            and entry['name'] not in ('/', '//')}
-    before = by_name(repair.snapshot_members(archive))
+    if repair.digest(archive) != original:
+        raise ValueError('Original lifecycle archive changed during compilation')
     shutil.copyfile(archive, patched)
     subprocess.run(['xcrun', 'ar', '-r', str(patched),
-                    *(owned / member for member in contract['members'])],
+                    *(owned / member for member in specs)],
                    check=True, capture_output=True)
     subprocess.run(['xcrun', 'ranlib', str(patched)], check=True, capture_output=True)
-    after = by_name(repair.snapshot_members(patched))
+    after_snapshot = repair.snapshot_members(patched)
+    after = by_name(after_snapshot)
+    if [entry['name'] for entry in snapshots] != [entry['name'] for entry in after_snapshot]:
+        raise ValueError('Lifecycle archive replacement changed member order/count')
     changed = {name for name in before if before[name] != after[name]}
-    if set(before) != set(after) or changed != set(contract['members']) \
-            or any(after[name] != objects[name] for name in contract['members']):
+    if set(before) != set(after) or changed != set(specs) \
+            or any(after[name] != objects[name] for name in specs):
         raise ValueError('Lifecycle archive replacement changed unexpected members')
+    if repair.digest(archive) != original:
+        raise ValueError('Original lifecycle archive was modified')
     list_path = output / 'ios-lifecycle-static-libs.list'
     source_list = list_path if list_path.exists() else root / 'prepared' / 'ios-all-static-libs.list'
     lines = source_list.read_text().splitlines()
@@ -297,6 +324,11 @@ def _select_lifecycle_archive_single(root, output, platform, lock_path=DEFAULT_L
     block = {**compiled_identity,
              'originalArchiveSHA256': original, 'archiveSHA256': repair.digest(patched),
              'objectSHA256ByMember': objects, 'linkerListSHA256': repair.digest(list_path)}
+    if compiled_identity['schemaVersion'] == 3:
+        block['originalObjectSHA256ByMember'] = {name: before[name] for name in specs}
+        block['objectABIByMember'] = abi
+        # Final link ownership is measured after successful linking, below.
+        return block
     return lifecycle.validate(block, single, platform, lock_path=lock_path)
 
 
@@ -319,7 +351,7 @@ def select_lifecycle_archive(root, output, platform, lock_path=DEFAULT_LOCK,
         extras[name] = _select_lifecycle_archive_single(root, output, platform, lock_path,
                                                        engine_source, spec, False)
     if extras:
-        result['schemaVersion'] = 2
+        result['schemaVersion'] = lifecycle.schema_version(selected)
         result['additionalArchives'] = extras
     return result
 
@@ -328,7 +360,7 @@ def lifecycle_link_ownership(report, root, output, lock, platform, linker):
     """Bind real linkmap inputs and produced objects after successful native link."""
     import office_compiled_lifecycle as lifecycle
     block = report.get('embeddedLifecycleMember')
-    if not block or block['schemaVersion'] != 2:
+    if not block or block['schemaVersion'] not in (2, 3):
         return
     maps = list((Path(output) / 'objects').rglob('FloeOfficeNative-LinkMap-normal-arm64.txt'))
     if len(maps) != 1:
@@ -342,7 +374,7 @@ def lifecycle_link_ownership(report, root, output, lock, platform, linker):
     text = linkmap.read_bytes().decode('utf-8', errors='replace')
     inputs = [Path(line).resolve() for line in Path(linker).read_text().splitlines() if line.strip()]
     archives = {}
-    for name, item in {Path(block['archive']).name: block, **block['additionalArchives']}.items():
+    for name, item in {Path(block['archive']).name: block, **block.get('additionalArchives', {})}.items():
         candidates = [path for path in inputs if path.name == name]
         if len(candidates) != 1 or digest(candidates[0]) != item['archiveSHA256']:
             raise ValueError('Final lifecycle linker input differs: ' + name)
@@ -361,6 +393,10 @@ def lifecycle_link_ownership(report, root, output, lock, platform, linker):
             raise ValueError('Prepared source object absent/ambiguous in linkmap: ' + source)
         prepared[source] = {'preparedSourceSHA256': digest(path), 'objectSHA256': digest(objects[0]), 'objectName': object_name}
     block['linkOwnership'] = {'linkMapSHA256': digest(linkmap), 'linkerListSHA256': digest(linker), 'archives': archives, 'preparedObjects': prepared}
+    for child in block.get('additionalArchives', {}).values():
+        if child['schemaVersion'] == 3:
+            name = Path(child['archive']).name
+            child['linkOwnership'] = {**block['linkOwnership'], 'archives': {name: archives[name]}}
     lifecycle.validate_manifest(report, lock, platform, lock_path=None)
 
 
