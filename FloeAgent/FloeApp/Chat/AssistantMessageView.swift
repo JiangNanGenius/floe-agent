@@ -23,6 +23,7 @@ struct AssistantMessageView: View {
     /// adopted design result renders through this SAME shared chip surface
     /// (image parts keep the image icon), never through a second path.
     var attachments: [AttachmentChipItem] = []
+    var onOpenAttachment: ((AttachmentChipItem) -> Void)? = nil
 
     @EnvironmentObject private var speechService: SpeechService
 
@@ -30,7 +31,7 @@ struct AssistantMessageView: View {
         VStack(alignment: .leading, spacing: 6) {
             MarkdownRendererView(source: text, isStreaming: isStreaming)
             if !attachments.isEmpty {
-                AttachmentChipRow(items: attachments, alignment: .leading)
+                AttachmentChipRow(items: attachments, alignment: .leading, onOpen: onOpenAttachment)
             }
             if !isStreaming, !text.isEmpty {
                 HStack(spacing: 12) {

@@ -698,6 +698,85 @@ public struct WorkspaceFileService: Sendable {
         try fileManager.copyItem(at: source, to: destination)
     }
 
+    /// Imports an already user-selected file without applying the model payload
+    /// limit. This is a trusted UI boundary, not a tool: callers must verify
+    /// attachment/task ownership and hold any security-scoped source access.
+    /// Streams into a same-directory temporary file, validates before a
+    /// no-overwrite move, and preserves both the source and existing edits.
+    @discardableResult
+    public func importUserFile(
+        from source: URL, to path: String, expectedSHA256: String?,
+        cancellation: CancellationToken? = nil
+    ) throws -> WriteOutcome {
+        let lock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        lock.lock(); defer { lock.unlock() }
+        try cancellation?.throwIfCancelled()
+        let destination = try guardResolver.resolve(path)
+        try rejectWorkspaceRootMutation(destination, operation: "import")
+        try guardResolver.assertWritable(destination)
+        try assertNotFrozen(destination)
+        let root = guardResolver.rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard destination.path.hasPrefix(root.path + "/") else { throw WorkspaceToolError.escapesRoot(path) }
+        // Reject symlink components even if their resolved target stays inside
+        // the workspace; importing must not silently select another document.
+        let lexical = root.appendingPathComponent(path).standardizedFileURL
+        var cursor = lexical
+        while cursor.path != root.path && cursor.path.hasPrefix(root.path + "/") {
+            if (try? cursor.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+                throw WorkspaceToolError.escapesRoot(path)
+            }
+            cursor.deleteLastPathComponent()
+        }
+        guard !fileManager.fileExists(atPath: destination.path) else { throw WorkspaceToolError.alreadyExists(path) }
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]
+        let before = try source.resourceValues(forKeys: keys)
+        guard before.isRegularFile == true, before.isSymbolicLink != true,
+              let expectedSize = before.fileSize, expectedSize > 0 else {
+            throw WorkspaceToolError.invalidArguments("Import requires a nonempty regular file")
+        }
+        let parent = destination.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+        if let available = try fileManager.attributesOfFileSystem(forPath: parent.path)[.systemFreeSize] as? NSNumber,
+           available.uint64Value < UInt64(expectedSize) {
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        let staging = parent.appendingPathComponent(".floe-import-" + UUID().uuidString)
+        defer { try? fileManager.removeItem(at: staging) }
+        guard fileManager.createFile(atPath: staging.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
+        let input = try FileHandle(forReadingFrom: source)
+        defer { try? input.close() }
+        let output = try FileHandle(forWritingTo: staging)
+        defer { try? output.close() }
+        var count = 0
+        while true {
+            try cancellation?.throwIfCancelled()
+            guard let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty else { break }
+            guard count <= expectedSize - chunk.count else {
+                throw WorkspaceToolError.conflict(expected: "unchanged attachment", actual: "source grew")
+            }
+            try output.write(contentsOf: chunk)
+            count += chunk.count
+        }
+        try output.synchronize()
+        let after = try source.resourceValues(forKeys: keys)
+        guard count == expectedSize, after.fileSize == before.fileSize,
+              after.contentModificationDate == before.contentModificationDate else {
+            throw WorkspaceToolError.conflict(expected: "unchanged attachment", actual: "source changed")
+        }
+        let digest = try FloeDigest.sha256Hex(ofFileAt: staging, isCancelled: { cancellation?.isCancelled == true })
+        let sourceDigest = try FloeDigest.sha256Hex(ofFileAt: source, isCancelled: { cancellation?.isCancelled == true })
+        guard digest == sourceDigest, expectedSHA256.map({ $0.isEmpty || $0.lowercased() == digest }) ?? true else {
+            throw WorkspaceToolError.conflict(expected: "attachment digest", actual: "source changed")
+        }
+        try cancellation?.throwIfCancelled()
+        try guardResolver.assertWritable(destination)
+        try assertNotFrozen(destination)
+        // FileManager.moveItem never overwrites a destination appearing late.
+        try fileManager.moveItem(at: staging, to: destination)
+        let modified = try destination.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        return WriteOutcome(bytesWritten: count, sha256: digest, mtime: modified?.timeIntervalSince1970 ?? 0)
+    }
+
     /// Deletes a file or directory. Non-empty directories are only removed
     /// when `recursive` is true; otherwise they are refused so a stray path
     /// cannot wipe a subtree silently.

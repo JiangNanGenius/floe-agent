@@ -546,6 +546,7 @@ targets:
       - path: Tests/FloeAppTests/DesignEntryPolicyTests.swift
       - path: Tests/FloeAppTests/CreativeDestinationRouteTests.swift
       - path: Tests/FloeAppTests/DesignAdapterReopenTests.swift
+      - path: Tests/FloeAppTests/ChatAttachmentOpenTests.swift
       - path: Tests/FloeAppTests/AppQualificationEnvironment.swift
       - path: Tests/FloeAppTests/NotesMarkdownPaginationTests.swift
       - path: Tests/FloeAppTests/NotesInkRefreshTests.swift
@@ -697,6 +698,7 @@ targets:
       # G2 integration of the O reader patch: the reader-core suite runs
       # in the App host (the package test path is registered here too).
       - path: Tests/FloeWorkspaceTests/TextReaderTests.swift
+      - path: Tests/FloeWorkspaceTests/WorkspaceUserImportTests.swift
       # O2 encoding override/recovery + the G2 rapid-switch supersession
       # regression (reader-core follow-up).
       - path: Tests/FloeWorkspaceTests/TextReaderEncodingOverrideTests.swift

@@ -54,6 +54,7 @@ struct ThreadDetailView: View {
     /// view while the transition is in flight.
     @State private var presentedUsageSummary: ThreadUsageSummary?
     @State private var selectedImportantFile: ImportantFileShortcut?
+    @State private var selectedAttachment: ChatAttachmentOpenRequest?
     @State private var showsReturnToLatest = false
     @State private var latestFollow = LatestMessageFollowState()
     @State private var isUserScrolling = false
@@ -195,6 +196,9 @@ struct ThreadDetailView: View {
                         }
                 }
                 .presentationDetents([.medium, .large])
+            }
+            .sheet(item: $selectedAttachment) { request in
+                ChatAttachmentOpenSheet(request: request, environment: environment).id(request.id)
             }
             .sheet(item: $selectedImportantFile) { file in
                 NavigationStack {
@@ -492,7 +496,10 @@ struct ThreadDetailView: View {
             .disabled(viewModel.loadingEventRunIDs.contains(runID))
             .accessibilityIdentifier("thread.events.earlier.\(runID.uuidString)")
         case .userMessage(let message):
-            MessageBubble(message: message)
+            MessageBubble(message: message, onOpenAttachment: { item in
+                selectedAttachment = ChatAttachmentOpenRequest(conversationID: message.conversationID,
+                    messageID: message.id, attachmentID: item.attachmentID)
+            })
 
         case .assistantMessage(let text, let idSuffix):
             // A task-level assistant message may carry REAL returned
@@ -503,11 +510,15 @@ struct ThreadDetailView: View {
             let persisted = UUID(uuidString: idSuffix).flatMap { messageID in
                 viewModel.messages.first { $0.id == messageID && $0.role == "assistant" }
             }
-            AssistantMessageView(
-                text: text,
-                isStreaming: false,
-                onSaveToNotes: onSaveToNotes,
-                attachments: persisted.map { AttachmentChipItem.items(in: $0.parts) } ?? [])
+            if let persisted {
+                MessageBubble(message: persisted, displayedText: text, onSaveToNotes: onSaveToNotes,
+                    onOpenAttachment: { item in
+                        selectedAttachment = ChatAttachmentOpenRequest(conversationID: persisted.conversationID,
+                            messageID: persisted.id, attachmentID: item.attachmentID)
+                    })
+            } else {
+                AssistantMessageView(text: text, isStreaming: false, onSaveToNotes: onSaveToNotes)
+            }
 
         case .event(let event):
             ThreadEventView(
@@ -1450,9 +1461,12 @@ private struct MissingFinalMessageRow: View {
 /// Markdown in the left-aligned reading column.
 private struct MessageBubble: View {
     let message: PersistedMessage
+    var displayedText: String? = nil
+    var onSaveToNotes: ((String) -> Void)? = nil
+    var onOpenAttachment: ((AttachmentChipItem) -> Void)? = nil
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
-    /// T6 design entrance: the FIRST attachment of this message as a typed
+    /// Explicit design entrance: one chosen attachment of this message as a typed
     /// chat-attachment target (original task + exact attachment identity).
     @State private var designTarget: DesignTarget?
 
@@ -1483,11 +1497,11 @@ private struct MessageBubble: View {
     var body: some View {
         Group {
             if message.role == "user" {
-                UserMessageBubble(text: message.content, attachments: attachmentItems)
+                UserMessageBubble(text: displayedText ?? message.content, attachments: attachmentItems, onOpenAttachment: onOpenAttachment)
             } else {
                 AssistantMessageView(
-                    text: message.content, isStreaming: false,
-                    attachments: attachmentItems)
+                    text: displayedText ?? message.content, isStreaming: false,
+                    onSaveToNotes: onSaveToNotes, attachments: attachmentItems, onOpenAttachment: onOpenAttachment)
             }
         }
         .contextMenu {

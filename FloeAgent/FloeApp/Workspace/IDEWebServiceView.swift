@@ -182,17 +182,20 @@ struct IDEWebServiceView: View {
                   center.currentWorkspace?.id == workspaceID, center.currentRootURL == root else {
                 throw FloeError.validationFailed(IDELanguageRunText.t("文件未保存或工作区已改变。", "The file was not saved or the workspace changed."))
             }
+            let allowed = try await SQLiteWorkspaceStore(database: center.environment.database).conversations(workspaceID: workspaceID)
+            guard allowed.contains(owner) else { throw FloeError.validationFailed(IDELanguageRunText.t("该任务已无法访问这些文件。", "This task can no longer access these files.")) }
             let runID = UUID()
-            let context = ToolContext(runID: runID, workspaceRootURL: root, cancellation: CancellationToken())
+            let context = ToolContext(runID: runID, workspaceRootURL: root,
+                                      cancellation: CancellationToken(), conversationID: owner)
             let lease = try await ToolEnvironmentRouting.shared.acquire(context)
             let environmentID = lease.context.environment?.id
             await lease.finish()
             guard let environmentID else { throw FloeError.validationFailed("No workspace execution environment") }
             guard center.currentWorkspace?.id == workspaceID, center.currentRootURL == root else {
-                throw FloeError.validationFailed("Workspace changed")
+                throw FloeError.validationFailed(IDELanguageRunText.t("工作区已更改，请重试。", "The workspace changed. Try again."))
             }
-            let allowed = try await SQLiteWorkspaceStore(database: center.environment.database).conversations(workspaceID: workspaceID)
-            guard allowed.contains(owner) else { throw FloeError.validationFailed("Task no longer owns this workspace") }
+            let currentOwners = try await SQLiteWorkspaceStore(database: center.environment.database).conversations(workspaceID: workspaceID)
+            guard currentOwners.contains(owner) else { throw FloeError.validationFailed(IDELanguageRunText.t("该任务已无法访问这些文件。", "This task can no longer access these files.")) }
             try await center.environment.runStore.saveRun(RunRecord(id: runID, conversationID: owner,
                 state: "completed", goal: "IDE web service", startedAt: Date(), endedAt: Date()))
             let directory = (entry as NSString).deletingLastPathComponent

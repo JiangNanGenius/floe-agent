@@ -22,6 +22,7 @@ struct AttachmentChipItem: Identifiable, Hashable {
     let id: String
     let name: String
     let kind: MessagePart.Kind
+    var attachmentID: UUID? = nil
 
     var systemImage: String {
         switch kind {
@@ -41,7 +42,7 @@ struct AttachmentChipItem: Identifiable, Hashable {
             return AttachmentChipItem(
                 id: part.attachmentID?.uuidString ?? part.id.uuidString,
                 name: name,
-                kind: part.kind)
+                kind: part.kind, attachmentID: part.attachmentID)
         }
     }
 }
@@ -51,20 +52,24 @@ struct AttachmentChipItem: Identifiable, Hashable {
 struct AttachmentChipRow: View {
     let items: [AttachmentChipItem]
     var alignment: HorizontalAlignment = .trailing
+    var onOpen: ((AttachmentChipItem) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: alignment, spacing: 4) {
             ForEach(items) { item in
-                Label(item.name, systemImage: item.systemImage)
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        FloeTheme.primary.opacity(0.10),
-                        in: Capsule()
-                    )
-                    .accessibilityIdentifier("thread.attachment.\(item.id)")
+                Button { onOpen?(item) } label: {
+                    Label(item.name, systemImage: item.systemImage)
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                        .background(FloeTheme.primary.opacity(0.10), in: Capsule())
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(onOpen == nil)
+                .accessibilityLabel(Text("chat.attachment.open_named \(item.name)"))
+                .accessibilityIdentifier("thread.attachment.\(item.id)")
             }
         }
     }
@@ -75,6 +80,7 @@ struct UserMessageBubble: View {
     let text: String
     /// Real attachment parts of the message (names + file/image kind).
     var attachments: [AttachmentChipItem] = []
+    var onOpenAttachment: ((AttachmentChipItem) -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .top) {
@@ -84,7 +90,7 @@ struct UserMessageBubble: View {
                     credentialAwareContent
                 }
                 if !attachments.isEmpty {
-                    AttachmentChipRow(items: attachments, alignment: .trailing)
+                    AttachmentChipRow(items: attachments, alignment: .trailing, onOpen: onOpenAttachment)
                 }
             }
         }
