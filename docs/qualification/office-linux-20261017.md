@@ -1,7 +1,7 @@
 # Office, Notes and Linux execution qualification / 验证记录
 
-Status: implementation and local Simulator qualification closed for the Office, Notes and Linux defects; device packaging and distribution acceptance remain pending. This is not a release, TestFlight or physical-device acceptance record.
-状态：Office、手记与 Linux 缺陷的实现及本地模拟器验证已闭环；设备打包与分发验收仍待完成。本记录不代表已发布、已上测试或实机验收通过。
+Status: implementation, local Simulator qualification and the 1.7.35 (276) internal/external beta delivery are complete through the single authorized external submission; external beta review remains pending. This is not an App Store approval, public release or physical-device acceptance record.
+状态：Office、手记与 Linux 缺陷的实现、本地模拟器验证及 1.7.35 (276) 内外部测试版交付已完成至唯一一次授权外部提交；外部测试审核仍在等待。本记录不代表 App Store 批准、公开发布或实机验收通过。
 
 ## Latest verified status / 最新验证状态（2026-10-18）
 
@@ -21,9 +21,19 @@ The actual Linux guest completed signed distribution-package installation, apt/d
 
 真实 Linux 来宾已完成签名发行版软件包安装、apt/dpkg 核验、Pillow/lxml 导入、三个固定版本包的普通 pip 安装及完整八节点递归依赖检查；实际生成 DOCX、XLSX、PPTX、PNG 并重开通过，所属环境及工作状态已清理。普通输入框经真实模型完成 `2+2=` → `4`；等待时切换手记再返回，已发送草稿未恢复，新未发送草稿保留，临时 QA 配置已清理。
 
-The chart result is bounded by the existing engine's save behavior: embedded workbooks rewrite default fonts, unused styles, empty A1 and calcPr. Value, type and formula checks are preserved, but byte or style identity is not claimed. Physical Pencil pressure, palm rejection and feel remain user acceptance. No device, archive, upload, TestFlight or App Store result is claimed here.
+The chart result is bounded by the existing engine's save behavior: embedded workbooks rewrite default fonts, unused styles, empty A1 and calcPr. Value, type and formula checks are preserved, but byte or style identity is not claimed. Physical Pencil pressure, palm rejection and feel remain user acceptance. The delivery record below is separate from these component and Simulator results.
 
-图表结果限于现有引擎的实际保存行为：内嵌工作簿会重写默认字体、未使用样式、空 A1 及 calcPr；数值、类型及公式检查保留，但不声称字节或样式完全一致。实体 Pencil 的压感、掌拒及手感仍由用户验收。本记录不声称设备、归档、上传、测试版或 App Store 结果。
+图表结果限于现有引擎的实际保存行为：内嵌工作簿会重写默认字体、未使用样式、空 A1 及 calcPr；数值、类型及公式检查保留，但不声称字节或样式完全一致。实体 Pencil 的压感、掌拒及手感仍由用户验收。以下交付记录与上述组件及模拟器结果分开。
+
+## Delivery and current Apple state / 交付与当前 Apple 状态（2026-10-18）
+
+The 1.7.35 (276) candidate was built from exact source `06c7f2c833c524dca548821576e1542d76fa4406` (tag `v1.7.35`) with local Xcode 27.0 (27A266a), `iphoneos27.0`, Release, arm64 and minimum iOS 26.0. The unsigned transport ZIP is `bb062033446c404774ba93c00d068f6d721b90fb7834f329b9eb1c02200ac59f`, the raw App export is `fca4893981412cfeb1461eac01c3caeadc0f54358e23a429aa9a22ca7b44cf49`, the signed IPA is `8d6d2d19976b71fa52506b0a69d53bad910700dfbcbd860ed61574540aa39851` (756,713,675 bytes), and the App/Office UUIDs are `EFE41A2D-5099-377D-9AA8-F6FD4024D19B` / `A44EC929-CF87-3678-900C-BFB2D0E73A18`. Signing and upload reused that exact artifact without rebuilding the App. Apple reports build `41557c7e-c971-473d-9242-6f602acadb9c` as `VALID`, unexpired and `APP_STORE_ELIGIBLE`; it is attached to the existing internal `Floe QA` group (`IN_BETA_TESTING`).
+
+The primary submitted build 276 once to the existing external `publictest1` group. An independent GET-only inspect (run [39063023300](https://github.com/JiangNanGenius/floe-agent/actions/runs/39063023300)) read back `WAITING_FOR_BETA_REVIEW`, `publictest1` attached, one submission in `pending_review`, and the prepared 1,359-byte review notes matching (SHA-256 `16f445546aaad6dffe4e7860a21559adfdb42bb65d3ac271457fec66e4d30332`; the helper canonicalizes the file to 1,358 characters for comparison). This is an external beta review submission, not approval, public availability or an App Store review result. No further Apple write, submission or group change was made by this record.
+
+1.7.35 (276) 候选版由精确源码 `06c7f2c833c524dca548821576e1542d76fa4406`（标签 `v1.7.35`）使用本地 Xcode 27.0 (27A266a)、`iphoneos27.0`、Release、arm64、最低 iOS 26.0 构建。未签名传输 ZIP 为 `bb062033446c404774ba93c00d068f6d721b90fb7834f329b9eb1c02200ac59f`，原始 App 导出为 `fca4893981412cfeb1461eac01c3caeadc0f54358e23a429aa9a22ca7b44cf49`，已签名 IPA 为 `8d6d2d19976b71fa52506b0a69d53bad910700dfbcbd860ed61574540aa39851`（756,713,675 字节），App/Office UUID 为 `EFE41A2D-5099-377D-9AA8-F6FD4024D19B` / `A44EC929-CF87-3678-900C-BFB2D0E73A18`。签名和上传复用该精确产物，未重新构建 App。Apple 显示构建 `41557c7e-c971-473d-9242-6f602acadb9c` 为 `VALID`、未过期且 `APP_STORE_ELIGIBLE`，并已加入现有内部 `Floe QA` 组（`IN_BETA_TESTING`）。
+
+主协调已向现有外部 `publictest1` 组提交构建 276 一次。独立只读检查（运行 [39063023300](https://github.com/JiangNanGenius/floe-agent/actions/runs/39063023300)）回读为 `WAITING_FOR_BETA_REVIEW`、已关联 `publictest1`、一份 `pending_review` 提交，且 1,359 字节审核备注与准备文本一致（SHA-256 `16f445546aaad6dffe4e7860a21559adfdb42bb65d3ac271457fec66e4d30332`；检查器比较时会规范化为 1,358 个字符）。这是外部测试审核提交，不代表已批准、已公开或 App Store 审核结果；本记录之后未再写入、提交或更改测试组。
 
 Earlier failures below are historical observations, superseded only where the latest status above records a completed check. Suites overlap and are not summed into a total.
 
@@ -77,6 +87,6 @@ Historical failures included an early blank conversion capture taken before nati
 
 ## Remaining / 当前待完成
 
-Current remaining acceptance is the release chain: qualify the final device component and local App archive from exact source; complete the minimal distribution signing/upload step where local capability is missing; verify Apple `VALID`, unexpired status and internal availability in the existing Floe QA group; then submit once to the existing external beta group and read back the review state. No new beta version/build has been selected or reserved, and no upload or submission has occurred in this round. The existing 1.7.34 (275) App Store review build and its immutable tag remain unchanged. The separately authorized stable GitHub release for 275 is a source-only follow-up after this round. Physical Pencil pressure, palm rejection and feel remain user acceptance. No final device, all-Simulator or release acceptance is claimed; no website deployment or follow-up timer is authorized by this record.
+External TestFlight beta review of build 276 is pending. Approval, rejection, public availability and any App Store release remain separate outcomes and are not claimed here. The existing 1.7.34 (275) App Store review build and its immutable tag remain unchanged. Physical Pencil pressure, palm rejection and feel remain user acceptance. No final device, all-Simulator or release acceptance is claimed; no website deployment or follow-up timer is authorized by this record.
 
-当前剩余验收为发布链路：由同源源码完成最终设备组件及本地 App 归档；在本地缺少分发能力时完成最小必要的分发签名／上传；核验 Apple `VALID`、未过期及现有 Floe QA 内部可用；随后向现有外部测试组提交一次并回读审核状态。本轮尚未选择或预留新的测试版本／构建号，也未发生上传或提交。现有 1.7.34 (275) App Store 审核版本及其不可变标签保持不变；另行授权的 275 GitHub 稳定发布在本轮之后以纯源码方式进行。实体 Pencil 的压感、掌拒及手感仍由用户验收。本记录不声称最终设备、全模拟器或发布验收通过，不涉及网站部署或恢复跟进定时任务。
+构建 276 的外部测试版审核仍在等待。批准、拒绝、公开可用及任何 App Store 发布均为独立结果，本记录不作声明。现有 1.7.34 (275) App Store 审核版本及其不可变标签保持不变。实体 Pencil 的压感、掌拒及手感仍由用户验收。本记录不声称最终设备、全模拟器或发布验收通过，不涉及网站部署或恢复跟进定时任务。
