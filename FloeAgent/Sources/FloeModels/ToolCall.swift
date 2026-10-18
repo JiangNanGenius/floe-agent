@@ -91,6 +91,9 @@ public struct ToolResult: Sendable, Codable, Hashable {
     /// Bounded Floe-owned artifacts produced by this tool. The provider only
     /// receives verified image bytes when the selected model supports vision.
     public var artifacts: [ToolArtifactReference]
+    /// Explicit deliverables captured as immutable files for this execution.
+    /// Evidence, screenshots and input artifacts remain in `artifacts`.
+    public var outputFiles: [ToolArtifactReference]
     /// Harness-authored provenance. Executors may return a value, but the
     /// runtime overwrites it before persistence so model/tool output cannot
     /// spoof resource identity or execution ownership.
@@ -112,6 +115,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
         outputDigest: String,
         exitStatus: Int32? = nil,
         artifacts: [ToolArtifactReference] = [],
+        outputFiles: [ToolArtifactReference] = [],
         provenance: ToolResultProvenance? = nil,
         maximumSummaryCharacters: Int = 4096
     ) {
@@ -122,11 +126,12 @@ public struct ToolResult: Sendable, Codable, Hashable {
         self.outputDigest = outputDigest
         self.exitStatus = exitStatus
         self.artifacts = artifacts
+        self.outputFiles = outputFiles
         self.provenance = provenance
     }
 
     private enum CodingKeys: String, CodingKey {
-        case callID, status, outputSummary, outputDigest, exitStatus, artifacts, provenance, maximumSummaryCharacters
+        case callID, status, outputSummary, outputDigest, exitStatus, artifacts, outputFiles, provenance, maximumSummaryCharacters
     }
 
     public init(from decoder: any Decoder) throws {
@@ -138,6 +143,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
         outputDigest = try values.decode(String.self, forKey: .outputDigest)
         exitStatus = try values.decodeIfPresent(Int32.self, forKey: .exitStatus)
         artifacts = try values.decodeIfPresent([ToolArtifactReference].self, forKey: .artifacts) ?? []
+        outputFiles = try values.decodeIfPresent([ToolArtifactReference].self, forKey: .outputFiles) ?? []
         provenance = try values.decodeIfPresent(ToolResultProvenance.self, forKey: .provenance)
     }
 
@@ -150,6 +156,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
         try values.encode(outputDigest, forKey: .outputDigest)
         try values.encodeIfPresent(exitStatus, forKey: .exitStatus)
         if !artifacts.isEmpty { try values.encode(artifacts, forKey: .artifacts) }
+        if !outputFiles.isEmpty { try values.encode(outputFiles, forKey: .outputFiles) }
         try values.encodeIfPresent(provenance, forKey: .provenance)
     }
 }
