@@ -255,19 +255,21 @@ struct TemporaryChatCeilingTests {
             rootTaskID: UUID(),
             delegateCallID: "call-temp"
         )
+        // The child inherits the parent's ACTUAL temporary name set (fetch,
+        // search and configured AI search), plus private/mixed/write/
+        // execution/delegation names that are deliberately wider than the
+        // ceiling. Deriving the public half from `temporaryCeiling()` keeps the
+        // fixture faithful if the policy ever adds another public web tool.
+        let childAllowedNames = temporaryCeiling().union([
+            "notes.read", "mail.read", "apple.calendar.list", "media.models",
+            "workspace.writeFile", "exec.shell", "delegate", "batch.run",
+            "jobs.submit", "memory.remember",
+        ])
         func childContext() -> ToolContext {
             ToolContext(
                 runID: UUID(),
                 scope: .local,
-                // Deliberately wider than the temporary ceiling: the child
-                // inherits the parent's name set, but the policy must still
-                // refuse every non-public-web descriptor.
-                allowedToolNames: [
-                    "web.fetch", "web.search", "notes.read", "mail.read",
-                    "apple.calendar.list", "media.models", "workspace.writeFile",
-                    "exec.shell", "delegate", "batch.run", "jobs.submit",
-                    "memory.remember",
-                ],
+                allowedToolNames: childAllowedNames,
                 workspaceRootURL: nil,
                 cancellation: CancellationToken(),
                 conversationID: UUID(),
