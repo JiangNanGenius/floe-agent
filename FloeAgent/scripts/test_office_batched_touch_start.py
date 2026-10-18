@@ -23,7 +23,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PATCH = ROOT / 'ThirdParty/Collabora/patches/ios-batched-touch-start.patch'
-DEFAULT_LOCK = ROOT / 'ThirdParty/Collabora/engine.patch.lock.json'
+DEFAULT_LOCK = ROOT / 'ThirdParty/Collabora/browser.patch.lock.json'
 SOURCE_FILE = 'browser/src/canvas/CanvasSectionContainer.ts'
 METHODS = (
     'onTouchStart', 'onTouchMove', 'onTouchEnd', 'onTouchCancel',
@@ -97,11 +97,11 @@ def load_contract(lock_path, patch_path):
             f'missing patch file: {patch_path}')
     lock = json.loads(lock_path.read_text())
     require(lock.get('formatVersion') == 1,
-            'engine.patch.lock.json formatVersion is not 1')
+            'browser.patch.lock.json formatVersion is not 1')
     engine = lock.get('engine') or {}
     entries = lock.get('browserSourcePatches')
     require(isinstance(entries, list) and len(entries) == 1,
-            'engine.patch.lock.json must carry exactly one browserSourcePatches entry')
+            'browser.patch.lock.json must carry exactly one browserSourcePatches entry')
     entry = entries[0]
     require(entry.get('patch') == 'patches/ios-batched-touch-start.patch',
             'browserSourcePatches entry names an unexpected patch')

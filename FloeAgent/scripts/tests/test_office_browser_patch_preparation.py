@@ -95,7 +95,7 @@ class PreparationFixture(unittest.TestCase):
             self.make_patch(SECOND_BROWSER_FILE, SECOND_ORIGINAL,
                             SECOND_PATCHED))
         self.engine_lock = contract / 'engine.lock.json'
-        self.patch_lock = contract / 'engine.patch.lock.json'
+        self.patch_lock = contract / 'browser.patch.lock.json'
         self.write_contracts()
 
     def write(self, *files):

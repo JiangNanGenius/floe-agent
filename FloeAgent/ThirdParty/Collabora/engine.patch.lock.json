@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "kind": "Floe Office engine repair and browser source patch contract (blank iOS slideshow fix, simultaneous two-touch start)",
+  "kind": "Floe Office engine single-member archive repair contract (blank iOS slideshow fix)",
   "engine": {
     "repository": "https://github.com/CollaboraOnline/online.mirror.git",
     "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc"
@@ -635,17 +635,5 @@
         "flagDerivation": "solenv/gbuild/platform/iOS.mk (gb_OSDEFS, gb_CXXFLAGS, gb_COMPILEROPTFLAGS) + gbuild.mk gb_GLOBALDEFS/gb_DEFS_INTERNAL + com_GCC_defs.mk at the pinned commit; reconstructed and proven byte-identical against the pinned archive member before patching; device archive pristine recompile verified byte-identical with this recipe"
       }
     }
-  },
-  "browserSourcePatches": [
-    {
-      "patch": "patches/ios-batched-touch-start.patch",
-      "patchSHA256": "df47d2dad175bb180fd2b736c7707ee424f6f59c93065ce6827a4292647c5a28",
-      "sourceRepository": "https://github.com/CollaboraOnline/online.mirror.git",
-      "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-      "sourceFile": "browser/src/canvas/CanvasSectionContainer.ts",
-      "originalSourceSHA256": "16389cdebe77ddc98e4eddfcdeee6ca0a4432f35dbfd342c17c2d12be2349135",
-      "patchedSourceSHA256": "9c930d4145196acffb6920bfc1573fdd39534dd86a3771bc2a0981d23ca71ec5",
-      "note": "Floe local frontend patch, not an upstream commit. A batched two-finger touchstart initializes the shared start/target from the first touch before entering the existing multi-touch path; retained positions from a completed gesture are discarded for the next batched birth, and touchcancel clears multiTouch. Engine.lock.json artifact and resource pins intentionally stay unchanged until the regenerated browser bundle is rebuilt and verified."
-    }
-  ]
+  }
 }

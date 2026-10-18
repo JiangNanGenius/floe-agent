@@ -7,7 +7,7 @@ say ``pinnedSourceReady``:
 
 * ``engine.lock.json`` pins the upstream repository/commit and the exact
   deployment patch SHA-256;
-* ``engine.patch.lock.json`` may pin browser source patches
+* ``browser.patch.lock.json`` may pin browser source patches
   (``browserSourcePatches``).  Every entry names exactly one source file, its
   patch digest, and the original/patched source SHA-256.
 
@@ -320,7 +320,7 @@ def prepare(build_root, lock_path=None, deployment_patch=None,
     lock_path = Path(lock_path or LOCK_PATH)
     deployment_patch = Path(deployment_patch or DEPLOYMENT_PATCH)
     if patch_lock_path is None:
-        patch_lock_path = lock_path.parent / 'engine.patch.lock.json'
+        patch_lock_path = lock_path.parent / 'browser.patch.lock.json'
     else:
         patch_lock_path = Path(patch_lock_path)
 
@@ -498,7 +498,7 @@ def main():
                         help='Deployment patch (default: pinned patch)')
     parser.add_argument('--patch-lock', default=None,
                         help='Browser patch lock (default: '
-                             'engine.patch.lock.json next to --lock)')
+                             'browser.patch.lock.json next to --lock)')
     args = parser.parse_args()
     receipt = prepare(args.build_root, lock_path=args.lock,
                       deployment_patch=args.deployment_patch,
