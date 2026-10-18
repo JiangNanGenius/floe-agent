@@ -295,6 +295,164 @@ struct TaskLifecycleStoreTests {
         #expect(try await store.child(id: runningChild)?.state == .interrupted)
     }
 
+    @Test("Oversized CJK/escaped entries persist as valid bounded JSON with callID intact")
+    func childRunEntryBudgetIsStructurallyValid() async throws {
+        let database = try await database()
+        let store = SQLiteChildRunStore(database: database)
+        let childID = UUID()
+        _ = try await store.register(ChildRunRecord(
+            id: childID,
+            parentRunID: UUID(),
+            rootRunID: UUID(),
+            conversationID: UUID(),
+            childIndex: 0,
+            kind: "execute",
+            taskSummary: "long transcript"))
+        let callID = "call-中文-😀-1"
+        let arguments = String(
+            repeating: #"{"路径":"文档/😀\".txt","值":"\\"}"#, count: 600)
+        let source = String(decoding: try JSONSerialization.data(
+            withJSONObject: [
+                "tool": "workspace.readFile",
+                "callID": callID,
+                "arguments": arguments,
+            ], options: [.sortedKeys]), as: UTF8.self)
+        #expect(source.utf8.count > ChildRunPayload.maximumEntryBytes)
+
+        try await store.appendEntry(
+            id: childID, kind: .toolRequest, payloadJSON: source)
+        let page = try await store.entries(
+            childRunID: childID, afterSequence: 0, limit: 10)
+        let entry = try #require(page.entries.first)
+        #expect(entry.payloadJSON.utf8.count <= ChildRunPayload.maximumEntryBytes)
+        let object = try #require(
+            try JSONSerialization.jsonObject(
+                with: Data(entry.payloadJSON.utf8)) as? [String: Any])
+        #expect(object["tool"] as? String == "workspace.readFile")
+        #expect(object["callID"] as? String == callID)
+        #expect(object["truncated"] as? Bool == true)
+        let clipped = try #require(object["arguments"] as? String)
+        #expect(clipped.utf8.count < arguments.utf8.count)
+    }
+
+    @Test("A mixed typed result row round-trips through SQLite and decodes for presentation")
+    func childRunTypedResultRoundTrip() async throws {
+        let database = try await database()
+        let store = SQLiteChildRunStore(database: database)
+        let childID = UUID()
+        _ = try await store.register(ChildRunRecord(
+            id: childID,
+            parentRunID: UUID(),
+            rootRunID: UUID(),
+            conversationID: UUID(),
+            childIndex: 0,
+            kind: "research",
+            taskSummary: "typed result"))
+        let payload = try ChildRunPayload.boundedObject([
+            "status": "completed",
+            "iterationsUsed": 3,
+            "findings": "完成：三个页面 😀",
+            "evidence": ["web.fetch d1", "web.fetch d2"],
+            "unfinished": ["未完成：第四页"],
+            "truncated": true,
+        ], requiredKeys: ["status"])
+        try await store.appendEntry(id: childID, kind: .result, payloadJSON: payload)
+        let entry = try #require(
+            try await store.entries(childRunID: childID, afterSequence: 0, limit: 10)
+                .entries.first)
+        let object = try #require(
+            try JSONSerialization.jsonObject(
+                with: Data(entry.payloadJSON.utf8)) as? [String: Any])
+        #expect(object["iterationsUsed"] as? Int == 3)
+        #expect(object["truncated"] as? Bool == true)
+        #expect((object["evidence"] as? [String])?.count == 2)
+        let fields = ChildRunPayload.decodedStringFields(entry.payloadJSON)
+        #expect(fields["status"] == "completed")
+        #expect(fields["iterationsUsed"] == "3")
+        #expect(fields["evidence"] == "web.fetch d1\nweb.fetch d2")
+        #expect(fields["unfinished"] == "未完成：第四页")
+    }
+
+    @Test("Historical corrupt payload rows stay byte-identical and decode to no invented fields")
+    func historicalCorruptPayloadIsNotRewritten() async throws {
+        let database = try await database()
+        let store = SQLiteChildRunStore(database: database)
+        let childID = UUID()
+        _ = try await store.register(ChildRunRecord(
+            id: childID,
+            parentRunID: UUID(),
+            rootRunID: UUID(),
+            conversationID: UUID(),
+            childIndex: 0,
+            kind: "explore",
+            taskSummary: "historical row"))
+        let historical = #"{"tool":"web.fetch","callID":"call-1","arguments":"{\"url\":\"https"#
+        try await database.writer { db in
+            try db.execute(sql: """
+                INSERT INTO child_run_entries (
+                    id, child_run_id, sequence, kind, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    UUID().uuidString,
+                    childID.uuidString,
+                    1,
+                    "toolRequest",
+                    historical,
+                    PersistenceCodec.encode(Date()),
+                ])
+        }
+        let entry = try #require(
+            try await store.entries(childRunID: childID, afterSequence: 0, limit: 10)
+                .entries.first)
+        #expect(entry.payloadJSON == historical)
+        #expect(ChildRunPayload.decodedStringFields(entry.payloadJSON) == [:])
+        #expect(ChildRunPayload.rawFallbackText(entry.payloadJSON) == historical)
+    }
+
+    @Test("Terminal tail pages through every sequence to the final result entry")
+    func terminalTailPagesToEnd() async throws {
+        let database = try await database()
+        let store = SQLiteChildRunStore(database: database)
+        let childID = UUID()
+        _ = try await store.register(ChildRunRecord(
+            id: childID,
+            parentRunID: UUID(),
+            rootRunID: UUID(),
+            conversationID: UUID(),
+            childIndex: 0,
+            kind: "execute",
+            taskSummary: "large tail"))
+        try await store.transition(
+            id: childID, state: .running, iterationCount: 1, endedAt: nil)
+        for index in 1...205 {
+            try await store.appendEntry(
+                id: childID, kind: .toolResult,
+                payloadJSON: #"{"callID":"tail-\#(index)","status":"ok","output":"x"}"#)
+        }
+        try await store.appendEntry(
+            id: childID, kind: .result,
+            payloadJSON: #"{"status":"completed","findings":"tail done","truncated":false}"#)
+        try await store.finish(
+            id: childID, state: .completed, iterationCount: 2,
+            resultSummary: "tail done", errorText: nil, digest: "d")
+
+        var cursor = 0
+        var sequences: [Int] = []
+        var pages = 0
+        while true {
+            let page = try await store.entries(
+                childRunID: childID, afterSequence: cursor, limit: 80)
+            pages += 1
+            sequences.append(contentsOf: page.entries.map(\.sequence))
+            guard let next = page.nextSequence else { break }
+            #expect(next > cursor)
+            cursor = next
+        }
+        #expect(pages > 1)
+        #expect(sequences == Array(1...206))
+        #expect(try await store.child(id: childID)?.state == .completed)
+    }
+
     // MARK: - Promoted title origin
 
     @Test("Promotion persists the title origin: manual survives, autoPending stays eligible once")

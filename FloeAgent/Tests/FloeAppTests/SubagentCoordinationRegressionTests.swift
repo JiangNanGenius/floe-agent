@@ -18,9 +18,10 @@
 // model inference and no Linux guest/VM. The runtime and runner are the REAL
 // production types, driven through PUBLIC API only (`FloeAgentRuntime`,
 // `SubagentRunner`, `CatalogToolExecutor`), so these tests exercise the same
-// canonical dispatch/coordination path the app uses. The integration owner
-// (D) adds this file to the FloeAppTests target and regenerates the project;
-// it never touches internal runtime types (`@testable` is not used).
+// canonical dispatch/coordination path the app uses. The final suite also
+// checks the inspector's app-target presentation projection/pager through
+// `@testable import FloeApp`; it never touches internal runtime types and no
+// real UI is rendered.
 
 #if canImport(UIKit)
 import Foundation
@@ -31,6 +32,8 @@ import FloeProviders
 import FloeSecurity
 import FloeTools
 import FloeAgentRuntime
+import FloePersistence
+@testable import FloeApp
 
 // MARK: - Scripted provider / recording fixtures (never a real model)
 
@@ -632,6 +635,193 @@ struct SubagentDiscoveryFeedbackRegressionTests {
         let feedback = requests[1].toolResults.map { $0.output }.joined(separator: "\n")
         #expect(feedback.contains("Not loadable within the request schema budget"))
         #expect(feedback.contains("test.huge"))
+    }
+}
+
+// MARK: - Durable child transcript presentation
+
+/// App-host checks for the inspector's pure projection/pager used by
+/// `ChildAgentDetailView`: callID pairing, honest unknown status, legacy raw
+/// fallback and terminal tail draining. No SwiftUI rendering is required.
+@Suite("FloeApp.ChildTranscriptProjection")
+struct ChildTranscriptPresentationTests {
+    private func entry(
+        _ sequence: Int,
+        _ kind: ChildRunEntryKind,
+        _ payload: String
+    ) -> ChildRunEntry {
+        ChildRunEntry(
+            childRunID: UUID(),
+            sequence: sequence,
+            kind: kind,
+            payloadJSON: payload
+        )
+    }
+
+    @Test("A request owns its matched result; an orphan result keeps its true status")
+    func pairsByCallID() {
+        let entries = [
+            entry(1, .toolRequest,
+                  #"{"tool":"web.fetch","callID":"c1","arguments":"{}"}"#),
+            entry(2, .toolResult,
+                  #"{"tool":"web.fetch","callID":"c1","status":"ok","output":"body"}"#),
+            entry(3, .toolResult,
+                  #"{"tool":"web.fetch","callID":"c2","status":"failed","output":"denied"}"#),
+        ]
+        let rows = ChildTranscriptProjection.rows(entries: entries, childIsTerminal: true)
+        #expect(rows.count == 2)
+        #expect(rows[0].entry.kind == .toolRequest)
+        #expect(rows[0].toolStatus == "ok")
+        #expect(rows[0].toolOutput == "body")
+        #expect(rows[1].entry.kind == .toolResult)
+        #expect(rows[1].toolStatus == "failed")
+        #expect(rows[1].toolStatus != "ok")
+    }
+
+    @Test("A legacy truncated request is never paired and never defaults a result to ok")
+    func legacyRowsStayUnknown() {
+        let truncatedRequest = #"{"tool":"web.fetch","callID":"call-1","arguments":"{\"url\":\"https"#
+        let entries = [
+            entry(1, .toolRequest, truncatedRequest),
+            entry(2, .toolResult,
+                  #"{"tool":"web.fetch","callID":"call-1","status":"failed","output":"denied"}"#),
+            entry(3, .toolResult, #"{"tool":"web.fetch","callID":"call-2","arguments":"#),
+        ]
+        let rows = ChildTranscriptProjection.rows(entries: entries, childIsTerminal: true)
+        #expect(rows.count == 3)
+        #expect(rows[0].toolStatus == "unknown")
+        #expect(rows[0].toolOutput == nil)
+        #expect(rows[1].toolStatus == "failed")
+        #expect(rows[2].toolStatus == "unknown")
+        #expect(rows[2].toolStatus != "ok")
+    }
+
+    @Test("An unmatched request is pending while live and unknown after terminal")
+    func unmatchedRequestStatusFollowsLifecycle() {
+        let entries = [
+            entry(1, .toolRequest,
+                  #"{"tool":"web.fetch","callID":"c1","arguments":"{}"}"#),
+        ]
+        let live = ChildTranscriptProjection.rows(entries: entries, childIsTerminal: false)
+        #expect(live.first?.toolStatus == "pending")
+        let terminal = ChildTranscriptProjection.rows(entries: entries, childIsTerminal: true)
+        #expect(terminal.first?.toolStatus == "unknown")
+    }
+
+    @Test("Duplicate callIDs keep every row and never attribute a later result to an earlier call")
+    func duplicateCallIDsStayUnpaired() {
+        let entries = [
+            entry(1, .toolRequest,
+                  #"{"tool":"web.fetch","callID":"call_1","arguments":"{\"n\":1}"}"#),
+            entry(2, .toolResult,
+                  #"{"tool":"web.fetch","callID":"call_1","status":"ok","output":"first"}"#),
+            entry(3, .toolRequest,
+                  #"{"tool":"web.fetch","callID":"call_1","arguments":"{\"n\":2}"}"#),
+            entry(4, .toolResult,
+                  #"{"tool":"web.fetch","callID":"call_1","status":"failed","output":"second"}"#),
+        ]
+        let rows = ChildTranscriptProjection.rows(entries: entries, childIsTerminal: true)
+        // No row is folded: both requests and both results remain readable.
+        #expect(rows.count == 4)
+        #expect(rows.map(\.entry.kind) == [.toolRequest, .toolResult, .toolRequest, .toolResult])
+        // The requests cannot be paired honestly, so they carry no result.
+        #expect(rows[0].toolStatus == "unknown")
+        #expect(rows[0].toolOutput == nil)
+        #expect(rows[2].toolStatus == "unknown")
+        #expect(rows[2].toolOutput == nil)
+        // Each result keeps its own true status/output in sequence order.
+        #expect(rows[1].toolStatus == "ok")
+        #expect(rows[1].toolOutput == "first")
+        #expect(rows[3].toolStatus == "failed")
+        #expect(rows[3].toolOutput == "second")
+        #expect(rows[3].toolStatus != rows[1].toolStatus)
+    }
+
+    @Test("One request with repeated results stays unpaired and shows every result")
+    func duplicateResultsAreNotCollapsed() {
+        let entries = [
+            entry(1, .toolRequest,
+                  #"{"tool":"web.fetch","callID":"call_1","arguments":"{}"}"#),
+            entry(2, .toolResult,
+                  #"{"tool":"web.fetch","callID":"call_1","status":"ok","output":"first"}"#),
+            entry(3, .toolResult,
+                  #"{"tool":"web.fetch","callID":"call_1","status":"denied","output":"second"}"#),
+        ]
+        let rows = ChildTranscriptProjection.rows(entries: entries, childIsTerminal: true)
+        #expect(rows.count == 3)
+        #expect(rows[0].toolStatus == "unknown")
+        #expect(rows[1].toolStatus == "ok")
+        #expect(rows[1].toolOutput == "first")
+        #expect(rows[2].toolStatus == "denied")
+        #expect(rows[2].toolOutput == "second")
+    }
+
+    @Test("A normalized legacy wrapper keeps raw evidence visible and status unknown")
+    func normalizedWrapperUsesRawFallback() throws {
+        let historical = #"{"tool":"web.fetch","callID":"call-1","arguments":"{\"url\":\"https"#
+        let wrapped = try ChildRunPayload.boundedPayload(historical, kind: .toolRequest)
+        #expect(wrapped != historical)
+        #expect(!ChildTranscriptProjection.isReadable(wrapped))
+        #expect(ChildRunPayload.rawFallbackText(wrapped) == historical)
+        let resultWrapped = try ChildRunPayload.boundedPayload(historical, kind: .toolResult)
+        #expect(!ChildTranscriptProjection.isReadable(resultWrapped))
+        let rows = ChildTranscriptProjection.rows(
+            entries: [
+                entry(1, .toolRequest, wrapped),
+                entry(2, .toolResult, resultWrapped),
+            ],
+            childIsTerminal: true
+        )
+        #expect(rows.count == 2)
+        #expect(rows[0].toolStatus == "unknown")
+        #expect(rows[0].toolOutput == nil)
+        #expect(rows[1].toolStatus == "unknown")
+        #expect(rows[1].toolStatus != "ok")
+    }
+
+    @Test("Terminal tail draining follows every nextSequence page")
+    @MainActor
+    func terminalTailDrainsEveryPage() async throws {
+        let pages = [
+            0: ChildRunEntryPage(
+                entries: [entry(1, .message, "{}"), entry(2, .message, "{}")],
+                nextSequence: 2),
+            2: ChildRunEntryPage(
+                entries: [entry(3, .message, "{}"), entry(4, .message, "{}")],
+                nextSequence: 4),
+            4: ChildRunEntryPage(
+                entries: [entry(5, .result, #"{"status":"completed"}"#)],
+                nextSequence: nil),
+        ]
+        var fetched: [Int] = []
+        let cursor = try await ChildTranscriptPaging.drain(
+            after: 0,
+            isCancelled: { false },
+            fetch: { sequence in
+                fetched.append(sequence)
+                return try #require(pages[sequence])
+            },
+            apply: { page in page.entries.last?.sequence ?? 0 }
+        )
+        #expect(cursor == 5)
+        #expect(fetched == [0, 2, 4])
+    }
+
+    @Test("Terminal tail draining stops on cancellation before fetching another page")
+    @MainActor
+    func terminalTailHonorsCancellation() async throws {
+        var fetches = 0
+        let cursor = try await ChildTranscriptPaging.drain(
+            after: 7,
+            isCancelled: { true },
+            fetch: { _ in
+                fetches += 1
+                return ChildRunEntryPage(entries: [], nextSequence: nil)
+            },
+            apply: { page in page.entries.last?.sequence ?? 0 }
+        )
+        #expect(fetches == 0)
+        #expect(cursor == 7)
     }
 }
 

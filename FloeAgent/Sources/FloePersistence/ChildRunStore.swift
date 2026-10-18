@@ -291,8 +291,11 @@ public actor SQLiteChildRunStore: ChildRunStoring {
 
     public func appendEntry(id: UUID, kind: ChildRunEntryKind, payloadJSON: String) async throws {
         // Bounded payload: a transcript entry is evidence, never an unbounded
-        // dump. Longer payloads are truncated with an explicit marker.
-        let bounded = Self.boundedPayload(payloadJSON)
+        // dump. Budgeting happens on VALUES and re-encodes real JSON bytes, so
+        // every new row stays structurally valid and the tool/callID/status
+        // pairing metadata survives. An unrepresentable payload throws instead
+        // of being written half-truncated.
+        let bounded = try Self.boundedPayload(payloadJSON, kind: kind)
         try await database.writer { db in
             let next = try Int.fetchOne(
                 db,
@@ -430,17 +433,22 @@ public actor SQLiteChildRunStore: ChildRunStoring {
 
     // MARK: - Bounds
 
-    /// 8 KiB per entry, with an explicit truncation marker (never silent).
-    static func boundedPayload(_ payloadJSON: String, limit: Int = 8 * 1024) -> String {
-        guard payloadJSON.utf8.count > limit else { return payloadJSON }
-        let clipped = String(decoding: payloadJSON.utf8.prefix(limit), as: UTF8.self)
-        return clipped + "\n[truncated: original \(payloadJSON.utf8.count) bytes]"
+    /// 8 KiB per entry, measured on the encoded JSON. Required pairing
+    /// metadata is never clipped; an unrepresentable payload throws.
+    static func boundedPayload(
+        _ payloadJSON: String,
+        kind: ChildRunEntryKind,
+        limit: Int = ChildRunPayload.maximumEntryBytes
+    ) throws -> String {
+        try ChildRunPayload.boundedPayload(payloadJSON, kind: kind, limit: limit)
     }
 
     static func boundedSummary(_ summary: String, limit: Int = 32 * 1024) -> String {
-        guard summary.utf8.count > limit else { return summary }
-        return String(decoding: summary.utf8.prefix(limit), as: UTF8.self)
-            + "\n[truncated: original \(summary.utf8.count) bytes]"
+        let bytes = Array(summary.utf8)
+        guard bytes.count > limit else { return summary }
+        let marker = "\n[truncated: original \(bytes.count) bytes]"
+        let keep = max(0, limit - marker.utf8.count)
+        return String(decoding: bytes.prefix(keep), as: UTF8.self) + marker
     }
 
     private static func decode(_ row: Row) throws -> ChildRunRecord {

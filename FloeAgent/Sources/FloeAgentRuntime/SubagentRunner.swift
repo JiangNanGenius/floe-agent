@@ -238,12 +238,12 @@ public struct SubagentRunner: Sendable {
                 request, context: context, childBudget: childBudget, persistence: persistence
             )
             await childBudget.finish()
-            await persistence?.finish(outcome)
+            if let persistence { return await persistence.finish(outcome) }
             return outcome
         } catch let termination as Termination {
             await childBudget.finish()
             let outcome = Self.terminatedOutcome(termination, request: request)
-            await persistence?.finish(outcome)
+            if let persistence { return await persistence.finish(outcome) }
             return outcome
         } catch {
             await childBudget.finish()
@@ -255,7 +255,7 @@ public struct SubagentRunner: Sendable {
                 iterationsUsed: 0,
                 findings: "Subagent stopped by a harness guard: \(error.localizedDescription)"
             )
-            await persistence?.finish(outcome)
+            if let persistence { return await persistence.finish(outcome) }
             return outcome
         }
     }
@@ -323,48 +323,107 @@ public struct SubagentRunner: Sendable {
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// Per-child persistence helper. Every write is best-effort: a transient
-    /// store error must not change the child's actual outcome or authority.
-    private struct ChildRunPersistence: Sendable {
+    /// Explicit parent-facing marker. A child execution can succeed while a
+    /// later transcript write fails; the outcome keeps the real status and
+    /// findings but says the durable record is incomplete.
+    static let durableIncompleteMarker = "durable transcript incomplete"
+
+    /// Per-child persistence helper. Execution never fails because a
+    /// best-effort transcript write failed, but every failure is captured and
+    /// surfaced to the parent and the terminal notification is only emitted
+    /// after the terminal row is really durable.
+    private actor ChildRunPersistence {
+        struct Failure: Sendable, Equatable {
+            let operation: String
+            let errorType: String
+        }
+
         let store: any ChildRunStoring
         let record: ChildRunRecord
         let observer: (@Sendable (ChildRunSnapshot) async -> Void)?
+        private var failures: [Failure] = []
+
+        init(
+            store: any ChildRunStoring,
+            record: ChildRunRecord,
+            observer: (@Sendable (ChildRunSnapshot) async -> Void)?
+        ) {
+            self.store = store
+            self.record = record
+            self.observer = observer
+        }
 
         func transition(_ state: ChildRunState, iterations: Int?) async {
-            try? await store.transition(id: record.id, state: state, iterationCount: iterations, endedAt: nil)
-            await notify(state: state, iterations: iterations ?? record.iterationCount, result: nil)
-        }
-
-        func append(_ kind: ChildRunEntryKind, _ payload: String) async {
-            try? await store.appendEntry(id: record.id, kind: kind, payloadJSON: payload)
-        }
-
-        func finish(_ outcome: SubagentOutcome) async {
-            let state: ChildRunState = switch outcome.status {
-            case .completed: .completed
-            case .partial: .partial
-            case .budgetExhausted: .budgetExhausted
-            case .cancelled: .cancelled
-            case .providerError: .providerError
-            case .toolError: .toolError
+            do {
+                try await store.transition(
+                    id: record.id, state: state,
+                    iterationCount: iterations, endedAt: nil
+                )
+                await notify(state: state, iterations: iterations ?? record.iterationCount)
+            } catch {
+                recordFailure("transition(\(state.rawValue))", error)
             }
-            try? await store.finish(
-                id: record.id,
-                state: state,
-                iterationCount: outcome.iterationsUsed,
-                resultSummary: outcome.findings,
-                errorText: outcome.status == .completed ? nil : outcome.unfinished.joined(separator: "; "),
-                digest: FloeDigest.sha256Hex(Data(outcome.findings.utf8))
-            )
-            try? await store.appendEntry(
-                id: record.id,
-                kind: .result,
-                payloadJSON: Self.resultPayload(outcome)
-            )
-            await notify(state: state, iterations: outcome.iterationsUsed, result: outcome.findings)
         }
 
-        private func notify(state: ChildRunState, iterations: Int, result: String?) async {
+        @discardableResult
+        func append(_ kind: ChildRunEntryKind, _ payload: String) async -> Bool {
+            do {
+                try await store.appendEntry(id: record.id, kind: kind, payloadJSON: payload)
+                return true
+            } catch {
+                recordFailure("append(\(kind.rawValue))", error)
+                return false
+            }
+        }
+
+        /// Result entry first, then the terminal row. The store's writer is
+        /// serial and both calls are awaited, so a terminal child record
+        /// implies the tail (including `.result`) is already committed. If any
+        /// write failed, an explicit warning entry and the terminal summary
+        /// carry the incomplete state; a failed terminal write never notifies
+        /// the UI as a durable completion.
+        func finish(_ outcome: SubagentOutcome) async -> SubagentOutcome {
+            let resultOutcome = augmented(outcome)
+            do {
+                let payload = try Self.resultPayload(resultOutcome)
+                _ = await append(.result, payload)
+            } catch {
+                recordFailure("encode(result)", error)
+            }
+            if !failures.isEmpty {
+                _ = await append(.error, Self.warningPayload())
+            }
+
+            let terminalOutcome = augmented(outcome)
+            let state = Self.state(for: outcome.status)
+            var terminalWritten = false
+            do {
+                try await store.finish(
+                    id: record.id,
+                    state: state,
+                    iterationCount: outcome.iterationsUsed,
+                    resultSummary: Self.terminalSummary(terminalOutcome, failures: failures),
+                    errorText: outcome.status == .completed
+                        ? nil
+                        : terminalOutcome.unfinished.joined(separator: "; "),
+                    digest: FloeDigest.sha256Hex(Data(outcome.findings.utf8))
+                )
+                terminalWritten = true
+            } catch {
+                recordFailure("finish(\(state.rawValue))", error)
+            }
+            if terminalWritten {
+                await notify(state: state, iterations: outcome.iterationsUsed)
+            } else {
+                // The durable record still says running; append a visible
+                // warning to the tail if the store accepts it, but never emit
+                // a terminal snapshot the database does not contain.
+                _ = await append(.error, Self.warningPayload())
+            }
+            return augmented(outcome)
+        }
+
+        private func notify(state: ChildRunState, iterations: Int) async {
             guard let observer else { return }
             await observer(ChildRunSnapshot(
                 id: record.id,
@@ -373,6 +432,78 @@ public struct SubagentRunner: Sendable {
                 state: Self.harnessState(state),
                 iterationCount: iterations
             ))
+        }
+
+        private func recordFailure(_ operation: String, _ error: Error) {
+            let failure = Failure(
+                operation: operation,
+                errorType: String(describing: type(of: error))
+            )
+            failures.append(failure)
+            // Safe metadata only: no SQL text, tool body, arguments or
+            // credentials ever enter the log or the parent-facing evidence.
+            FloeLogger(category: .persistence).warning(
+                "childRunPersistenceFailed child=\(record.id.uuidString)"
+                    + " operation=\(failure.operation) errorType=\(failure.errorType)"
+            )
+        }
+
+        private func augmented(_ outcome: SubagentOutcome) -> SubagentOutcome {
+            guard !failures.isEmpty else { return outcome }
+            var result = outcome
+            let marker = "\(SubagentRunner.durableIncompleteMarker): \(Self.failureDetail(failures))"
+            if !result.evidence.contains(where: {
+                $0.hasPrefix(SubagentRunner.durableIncompleteMarker)
+            }) {
+                if result.evidence.count >= SubagentRunner.maximumReferenceItems {
+                    result.evidence.removeFirst()
+                }
+                result.evidence.append(marker)
+            }
+            if !result.unfinished.contains(where: {
+                $0.hasPrefix(SubagentRunner.durableIncompleteMarker)
+            }) {
+                if result.unfinished.count >= SubagentRunner.maximumReferenceItems {
+                    result.unfinished.removeFirst()
+                }
+                result.unfinished.append(marker)
+            }
+            return result
+        }
+
+        private static func failureDetail(_ failures: [Failure]) -> String {
+            var seen = Set<String>()
+            let operations = failures.map(\.operation).filter { seen.insert($0).inserted }
+            let listed = operations.prefix(6).joined(separator: ", ")
+            let extra = operations.count > 6 ? " (+\(operations.count - 6) more)" : ""
+            return listed + extra
+        }
+
+        static func terminalSummary(
+            _ outcome: SubagentOutcome,
+            failures: [Failure]
+        ) -> String {
+            guard !failures.isEmpty else { return outcome.findings }
+            return "[\(SubagentRunner.durableIncompleteMarker): \(failureDetail(failures))]\n"
+                + outcome.findings
+        }
+
+        static func warningPayload() -> String {
+            SubagentRunner.jsonPayload([
+                "message": "The durable child transcript is incomplete; the parent result reports what failed to persist.",
+                "incomplete": true,
+            ])
+        }
+
+        private static func state(for status: SubagentOutcome.Status) -> ChildRunState {
+            switch status {
+            case .completed: .completed
+            case .partial: .partial
+            case .budgetExhausted: .budgetExhausted
+            case .cancelled: .cancelled
+            case .providerError: .providerError
+            case .toolError: .toolError
+            }
         }
 
         private static func harnessState(_ state: ChildRunState) -> HarnessState {
@@ -387,19 +518,23 @@ public struct SubagentRunner: Sendable {
             }
         }
 
-        private static func resultPayload(_ outcome: SubagentOutcome) -> String {
-            let object: [String: Any] = [
-                "status": outcome.status.rawValue,
-                "iterationsUsed": outcome.iterationsUsed,
-                "findings": String(outcome.findings.prefix(8 * 1024)),
-                "evidence": Array(outcome.evidence.prefix(24)),
-                "unfinished": Array(outcome.unfinished.prefix(24)),
-                "truncated": outcome.truncated
-            ]
-            guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
-                return "{\"status\":\"\(outcome.status.rawValue)\"}"
-            }
-            return String(decoding: data, as: UTF8.self)
+        /// Strict JSON for the final structured result. Mixed types are kept
+        /// (Int/Bool/[String]) and the entry is bounded on VALUES, so the row
+        /// is always valid JSON and `status` can never be clipped away even
+        /// when the findings contain CJK text or many JSON escapes.
+        static func resultPayload(_ outcome: SubagentOutcome) throws -> String {
+            try ChildRunPayload.boundedObject(
+                [
+                    "status": outcome.status.rawValue,
+                    "iterationsUsed": outcome.iterationsUsed,
+                    "findings": outcome.findings,
+                    "evidence": Array(outcome.evidence.prefix(SubagentRunner.maximumReferenceItems)),
+                    "unfinished": Array(outcome.unfinished.prefix(SubagentRunner.maximumReferenceItems)),
+                    "truncated": outcome.truncated,
+                ],
+                requiredKeys: ["status"],
+                limit: ChildRunPayload.maximumEntryBytes
+            )
         }
     }
 

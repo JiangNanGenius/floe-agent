@@ -1690,8 +1690,21 @@ final class AppEnvironment: ObservableObject {
             }
             // Delegated children left registered/running by a dead process are
             // marked interrupted too; otherwise the child panel would show a
-            // live "working" child forever and keep its 2 s poll alive.
-            _ = try? await SQLiteChildRunStore(database: database).reconcileInterruptedOnLaunch()
+            // live "working" child forever and keep its 2 s poll alive. The
+            // count/error is observable in diagnostics instead of discarded,
+            // because a reconcile failure leaves honest "running" records that
+            // the user should be able to explain.
+            do {
+                let reconciled = try await SQLiteChildRunStore(database: database)
+                    .reconcileInterruptedOnLaunch()
+                if reconciled > 0 {
+                    FloeLogger(category: .persistence).warning(
+                        "childRunReconcileInterrupted count=\(reconciled)")
+                }
+            } catch {
+                FloeLogger(category: .persistence).error(
+                    "childRunReconcileFailed errorType=\(String(describing: type(of: error)))")
+            }
             // Native CAD proposals interrupted mid-apply and decision
             // deliveries that never reached the originating task reconcile
             // from durable records (never from ordering alone).

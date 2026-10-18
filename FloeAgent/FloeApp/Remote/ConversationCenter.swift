@@ -7517,13 +7517,12 @@ final class ConversationCenter: ObservableObject {
 
     /// Pure JSON decode of a persisted payload object. `nonisolated` so the
     /// presentation projections (timeline, step groups, inspector) can parse
-    /// durable payloads off the main actor without hopping.
+    /// durable payloads off the main actor without hopping. Mixed typed values
+    /// (Int/Bool/[String], e.g. a delegated child's `.result`) are normalized
+    /// instead of making the whole object fail the old `[String: String]`
+    /// decode.
     nonisolated static func decodePayload(_ json: String) -> [String: String] {
-        guard let data = json.data(using: .utf8),
-              let object = try? JSONDecoder().decode([String: String].self, from: data) else {
-            return [:]
-        }
-        return object
+        ChildRunPayload.decodedStringFields(json)
     }
 
     private static func isPersistedTerminal(_ state: String) -> Bool {

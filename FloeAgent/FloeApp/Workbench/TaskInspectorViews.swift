@@ -150,6 +150,13 @@ private enum TaskInspectorText {
     static let iterations = ChatBilingualCatalog.localized(
         key: "workbench.task_inspector_views.iterations",
         en: "Iterations", zh: "迭代")
+    static let evidence = ChatBilingualCatalog.localized(
+        key: "workbench.task_inspector_views.evidence",
+        en: "Evidence", zh: "证据")
+    static let payloadUnreadable = ChatBilingualCatalog.localized(
+        key: "workbench.task_inspector_views.payload_unreadable",
+        en: "This record could not be decoded; showing the stored text.",
+        zh: "无法解析此记录，显示已存储的原始文本。")
     static let resultTruncated = ChatBilingualCatalog.localized(
         key: "workbench.task_inspector_views.result_truncated",
         en: "The stored result was explicitly truncated at the size bound.",
@@ -840,6 +847,115 @@ private struct ChildAgentSessionRow: View {
     }
 }
 
+/// One presentation row of the durable child transcript. Tool requests own
+/// their matched result (status/output); unpaired rows keep their own stored
+/// status and an unreadable historical payload is rendered as bounded raw text.
+struct ChildTranscriptRow: Identifiable {
+    let entry: ChildRunEntry
+    let toolStatus: String?
+    let toolOutput: String?
+    var id: UUID { entry.id }
+}
+
+enum ChildTranscriptProjection {
+    static let unknownStatus = "unknown"
+    static let pendingStatus = "pending"
+
+    /// A normalized legacy row (`{legacyRaw, invalidJSON:true}`) is valid JSON
+    /// but NOT a structured entry: it must keep its raw evidence and unknown
+    /// status instead of rendering as an empty tool card.
+    static func isReadable(_ json: String) -> Bool {
+        !ChildRunPayload.requiresRawFallback(json)
+    }
+
+    /// Pairs each tool request with its later result by call id within the
+    /// loaded durable entries; the paired result row is folded into the
+    /// request's evidence (no output shown twice, none dropped).
+    ///
+    /// Historical truncated rows are NOT paired by position or guessed: a
+    /// request without a stored callID stays unknown, and an orphaned result
+    /// shows its own stored status (or unknown), never a default "ok".
+    ///
+    /// Providers may reuse a short call id across turns. A call id is only
+    /// paired when it is unique on BOTH sides (exactly one request and one
+    /// result). Duplicates keep every request and result as a readable orphan
+    /// row with its own stored status/output: no result is swallowed and no
+    /// later result is attributed to an earlier identical-callID request.
+    static func rows(
+        entries: [ChildRunEntry],
+        childIsTerminal: Bool
+    ) -> [ChildTranscriptRow] {
+        var requestCounts: [String: Int] = [:]
+        var resultCounts: [String: Int] = [:]
+        var payloads: [UUID: [String: String]] = [:]
+        for entry in entries {
+            let payload = ChildRunPayload.decodedStringFields(entry.payloadJSON)
+            payloads[entry.id] = payload
+            guard let callID = payload["callID"], !callID.isEmpty else { continue }
+            switch entry.kind {
+            case .toolRequest:
+                requestCounts[callID, default: 0] += 1
+            case .toolResult:
+                resultCounts[callID, default: 0] += 1
+            default:
+                break
+            }
+        }
+        let pairableCallIDs = Set(requestCounts.keys.filter { callID in
+            requestCounts[callID] == 1 && resultCounts[callID] == 1
+        })
+        var uniqueResults: [String: [String: String]] = [:]
+        for entry in entries where entry.kind == .toolResult {
+            guard let payload = payloads[entry.id],
+                  let callID = payload["callID"], !callID.isEmpty,
+                  pairableCallIDs.contains(callID) else { continue }
+            uniqueResults[callID] = payload
+        }
+        return entries.compactMap { entry in
+            let payload = payloads[entry.id] ?? [:]
+            switch entry.kind {
+            case .toolResult:
+                if let callID = payload["callID"], !callID.isEmpty,
+                   pairableCallIDs.contains(callID) {
+                    return nil
+                }
+                return ChildTranscriptRow(
+                    entry: entry,
+                    toolStatus: payload["status"] ?? unknownStatus,
+                    toolOutput: payload["output"]
+                )
+            case .toolRequest:
+                let callID = payload["callID"] ?? ""
+                guard !callID.isEmpty else {
+                    // A historical row truncated before callID can never be
+                    // paired honestly. Do not invent a result for it.
+                    return ChildTranscriptRow(
+                        entry: entry, toolStatus: unknownStatus, toolOutput: nil)
+                }
+                if pairableCallIDs.contains(callID) {
+                    let result = uniqueResults[callID]
+                    return ChildTranscriptRow(
+                        entry: entry,
+                        toolStatus: result?["status"] ?? unknownStatus,
+                        toolOutput: result?["output"]
+                    )
+                }
+                let isAmbiguous = (requestCounts[callID] ?? 0) > 1
+                    || (resultCounts[callID] ?? 0) > 1
+                return ChildTranscriptRow(
+                    entry: entry,
+                    toolStatus: isAmbiguous
+                        ? unknownStatus
+                        : (childIsTerminal ? unknownStatus : pendingStatus),
+                    toolOutput: nil
+                )
+            default:
+                return ChildTranscriptRow(entry: entry, toolStatus: nil, toolOutput: nil)
+            }
+        }
+    }
+}
+
 /// One child session: the durable record plus its paged transcript/tool/result
 /// entries read through `SQLiteChildRunStore`, so reopening the app (or this
 /// inspector) replays the real history instead of an in-memory copy. Live
@@ -944,50 +1060,14 @@ struct ChildAgentDetailView: View {
         }
     }
 
-    private struct ChildTranscriptRow: Identifiable {
-        let entry: ChildRunEntry
-        let toolStatus: String?
-        let toolOutput: String?
-        var id: UUID { entry.id }
-    }
-
     /// Pairs each tool request with its later result by call id within the
     /// loaded durable entries; the paired result row is folded into the
     /// request's evidence (no output shown twice, none dropped).
     private var rows: [ChildTranscriptRow] {
-        var requestCallIDs = Set<String>()
-        for entry in entries where entry.kind == .toolRequest {
-            let payload = ConversationCenter.decodePayload(entry.payloadJSON)
-            if let callID = payload["callID"], !callID.isEmpty { requestCallIDs.insert(callID) }
-        }
-        var resultsByCallID: [String: [String: String]] = [:]
-        for entry in entries where entry.kind == .toolResult {
-            let payload = ConversationCenter.decodePayload(entry.payloadJSON)
-            if let callID = payload["callID"], !callID.isEmpty, requestCallIDs.contains(callID) {
-                resultsByCallID[callID] = payload
-            }
-        }
-        return entries.compactMap { entry in
-            let payload = ConversationCenter.decodePayload(entry.payloadJSON)
-            switch entry.kind {
-            case .toolResult:
-                if let callID = payload["callID"], !callID.isEmpty,
-                   requestCallIDs.contains(callID) {
-                    return nil
-                }
-                return ChildTranscriptRow(
-                    entry: entry, toolStatus: payload["status"], toolOutput: nil)
-            case .toolRequest:
-                let callID = payload["callID"] ?? ""
-                let result = resultsByCallID[callID]
-                return ChildTranscriptRow(
-                    entry: entry,
-                    toolStatus: result?["status"] ?? "pending",
-                    toolOutput: result?["output"])
-            default:
-                return ChildTranscriptRow(entry: entry, toolStatus: nil, toolOutput: nil)
-            }
-        }
+        ChildTranscriptProjection.rows(
+            entries: entries,
+            childIsTerminal: child?.state.isTerminal ?? false
+        )
     }
 
     private func reload() async {
@@ -1012,26 +1092,38 @@ struct ChildAgentDetailView: View {
         isLoadingPage = true
         defer { isLoadingPage = false }
         do {
-            let page = try await SQLiteChildRunStore(database: environment.database)
-                .entries(childRunID: childRunID, afterSequence: cursor, limit: pageSize)
-            for entry in page.entries where !entries.contains(where: { $0.id == entry.id }) {
-                entries.append(entry)
-            }
-            if let last = page.entries.last, last.sequence > cursor {
-                cursor = last.sequence
-            }
-            // `nextSequence` is only returned when the store already knows
-            // more rows exist; polling below handles later appends.
-            hasMorePage = page.nextSequence != nil
-            loadError = nil
+            let page = try await fetchPage(after: cursor)
+            _ = applyPage(page)
         } catch {
             loadError = error.localizedDescription
         }
     }
 
+    private func fetchPage(after sequence: Int) async throws -> ChildRunEntryPage {
+        try await SQLiteChildRunStore(database: environment.database)
+            .entries(childRunID: childRunID, afterSequence: sequence, limit: pageSize)
+    }
+
+    @discardableResult
+    private func applyPage(_ page: ChildRunEntryPage) -> Int {
+        for entry in page.entries where !entries.contains(where: { $0.id == entry.id }) {
+            entries.append(entry)
+        }
+        if let last = page.entries.last, last.sequence > cursor {
+            cursor = last.sequence
+        }
+        // `nextSequence` is only returned when the store already knows more
+        // rows exist; polling below handles later appends.
+        hasMorePage = page.nextSequence != nil
+        loadError = nil
+        return cursor
+    }
+
     /// Bounded visible-panel polling while the child is non-terminal: refreshes
     /// both the durable record (state/iteration) and any newly appended
-    /// entries, then stops as soon as the child reaches a terminal state.
+    /// entries. On terminal, drain the real tail through the store's existing
+    /// cursor paging until `nextSequence` is nil — the terminal row is written
+    /// AFTER `.result`, but a page boundary can still hide a large tail.
     private func pollWhileActive() async {
         while !Task.isCancelled {
             do {
@@ -1041,11 +1133,56 @@ struct ChildAgentDetailView: View {
             } catch {
                 loadError = error.localizedDescription
             }
-            guard let child, !child.state.isTerminal else { return }
+            guard let child else { return }
+            if child.state.isTerminal {
+                await drainTerminalTail()
+                return
+            }
             try? await Task.sleep(for: .seconds(2))
             if Task.isCancelled { return }
             await loadNextPage()
         }
+    }
+
+    private func drainTerminalTail() async {
+        // Always fetch once after terminal detection: the `.result`/warning
+        // tail may have landed after the last poll page.
+        await loadNextPage()
+        guard hasMorePage else { return }
+        do {
+            _ = try await ChildTranscriptPaging.drain(
+                after: cursor,
+                fetch: { sequence in try await fetchPage(after: sequence) },
+                apply: { page in applyPage(page) }
+            )
+        } catch {
+            loadError = error.localizedDescription
+        }
+    }
+}
+
+/// Drains the remaining transcript pages at an existing cursor. Production
+/// uses the same store pagination; the loop stops on `nextSequence == nil`,
+/// a non-advancing cursor or task cancellation, so a terminal view never
+/// invents a fixed "few extra rounds" limit that could drop a large tail.
+@MainActor
+enum ChildTranscriptPaging {
+    @discardableResult
+    static func drain(
+        after cursor: Int,
+        isCancelled: @MainActor () -> Bool = { Task.isCancelled },
+        fetch: @MainActor (Int) async throws -> ChildRunEntryPage,
+        apply: @MainActor (ChildRunEntryPage) -> Int
+    ) async throws -> Int {
+        var current = cursor
+        while !isCancelled() {
+            let page = try await fetch(current)
+            let next = apply(page)
+            guard page.nextSequence != nil else { return next }
+            guard next > current else { return next }
+            current = next
+        }
+        return current
     }
 }
 
@@ -1068,59 +1205,107 @@ private struct ChildRunEntryRow: View {
             if let text = payload["text"], !text.isEmpty {
                 AssistantMessageView(text: text)
             } else {
-                boundedEvidence(entry.payloadJSON)
+                boundedEvidence(ChildRunPayload.rawFallbackText(entry.payloadJSON))
             }
         case .toolRequest:
-            let payload = Self.payload(entry.payloadJSON)
-            ToolCallCardView(
-                name: payload["tool"] ?? "tool",
-                status: toolStatus ?? "pending",
-                inputSummary: payload["arguments"],
-                resultSummary: toolOutput
-            )
-        case .toolResult:
-            let payload = Self.payload(entry.payloadJSON)
-            ToolCallCardView(
-                name: payload["tool"] ?? String(localized: "tool.result"),
-                status: payload["status"] ?? "ok",
-                resultSummary: payload["output"]
-            )
-        case .result:
-            let payload = Self.payload(entry.payloadJSON)
-            VStack(alignment: .leading, spacing: 6) {
-                Label(
-                    TaskInspectorText.childResultStatus(payload["status"] ?? ""),
-                    systemImage: "flag.checkered"
+            if ChildTranscriptProjection.isReadable(entry.payloadJSON) {
+                let payload = Self.payload(entry.payloadJSON)
+                ToolCallCardView(
+                    name: payload["tool"] ?? "tool",
+                    status: toolStatus ?? ChildTranscriptProjection.unknownStatus,
+                    inputSummary: payload["arguments"],
+                    resultSummary: toolOutput
                 )
-                .font(.subheadline.weight(.semibold))
-                if let findings = payload["findings"], !findings.isEmpty {
-                    boundedEvidence(findings)
-                }
-                if let unfinished = payload["unfinished"], !unfinished.isEmpty {
-                    Text(unfinished)
-                        .font(.caption2)
-                        .foregroundStyle(FloeTheme.pending)
-                }
-                if payload["truncated"] == "true" {
-                    Text(TaskInspectorText.resultTruncated)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+            } else {
+                unreadablePayload(entry.payloadJSON, showsStatus: true)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        case .toolResult:
+            if ChildTranscriptProjection.isReadable(entry.payloadJSON) {
+                let payload = Self.payload(entry.payloadJSON)
+                ToolCallCardView(
+                    name: payload["tool"] ?? String(localized: "tool.result"),
+                    status: payload["status"] ?? ChildTranscriptProjection.unknownStatus,
+                    resultSummary: payload["output"]
+                )
+            } else {
+                unreadablePayload(entry.payloadJSON, showsStatus: true)
+            }
+        case .result:
+            if ChildTranscriptProjection.isReadable(entry.payloadJSON) {
+                resultRow(Self.payload(entry.payloadJSON))
+            } else {
+                unreadablePayload(entry.payloadJSON, showsStatus: true)
+            }
         case .error:
             let payload = Self.payload(entry.payloadJSON)
             Label(
-                payload["message"] ?? entry.payloadJSON,
+                payload["message"] ?? ChildRunPayload.rawFallbackText(entry.payloadJSON),
                 systemImage: "exclamationmark.octagon"
             )
             .font(FloeTheme.Typography.metadata)
             .foregroundStyle(FloeTheme.destructive)
         case .state:
             let payload = Self.payload(entry.payloadJSON)
-            Text(TaskInspectorText.childStateName(payload["state"] ?? entry.payloadJSON))
+            Text(TaskInspectorText.childStateName(
+                payload["state"] ?? ChildRunPayload.rawFallbackText(entry.payloadJSON)))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func resultRow(_ payload: [String: String]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(
+                TaskInspectorText.childResultStatus(payload["status"] ?? ""),
+                systemImage: "flag.checkered"
+            )
+            .font(.subheadline.weight(.semibold))
+            if let iterations = payload["iterationsUsed"], !iterations.isEmpty {
+                Text("\(TaskInspectorText.iterations) \(iterations)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if let findings = payload["findings"], !findings.isEmpty {
+                boundedEvidence(findings)
+            }
+            if let evidence = payload["evidence"], !evidence.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(TaskInspectorText.evidence)
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                    boundedEvidence(evidence)
+                }
+            }
+            if let unfinished = payload["unfinished"], !unfinished.isEmpty {
+                Text(unfinished)
+                    .font(.caption2)
+                    .foregroundStyle(FloeTheme.pending)
+            }
+            if payload["truncated"] == "true" {
+                Text(TaskInspectorText.resultTruncated)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Historical/truncated rows are not forced through the typed decode:
+    /// they stay readable as bounded evidence and never default to a success
+    /// status.
+    @ViewBuilder
+    private func unreadablePayload(_ raw: String, showsStatus: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(TaskInspectorText.payloadUnreadable, systemImage: "exclamationmark.triangle")
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(FloeTheme.pending)
+            if showsStatus {
+                Text(TaskInspectorText.childResultStatus(ChildTranscriptProjection.unknownStatus))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            boundedEvidence(ChildRunPayload.rawFallbackText(raw))
         }
     }
 
@@ -1150,6 +1335,7 @@ private struct ChildRunEntryRow: View {
     private static func payload(_ json: String) -> [String: String] {
         ConversationCenter.decodePayload(json)
     }
+
 }
 
 struct TaskPermissionsInspectorView: View {
