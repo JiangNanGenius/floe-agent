@@ -757,6 +757,7 @@ struct ThreadDetailView: View {
                     || environment.backgroundRunCoordinator
                         .shouldOfferVisualSurfaceControl(conversationID: viewModel.conversationID)
             )
+            .pipAudioQuickSettings(center: environment.settingsCenter, audioService: environment.pipAudioService)
         }
         ToolbarItem(placement: .topBarTrailing) {
             if viewModel.isRunning {

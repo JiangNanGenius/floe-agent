@@ -420,6 +420,73 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         return false
     }
 
+    // MARK: - Independent-options policy
+
+    /// Enhanced background processing is an INDEPENDENT capability: it is
+    /// kept/submitted regardless of the visual surfaces, and only its own
+    /// toggle (or unloaded launch preferences) withholds it. Turning it off
+    /// stops/refrains the optional continued-processing task while ordinary
+    /// finite completion/recovery (lease, BGProcessing, refresh) stays.
+    nonisolated static func shouldKeepContinuedProcessing(
+        for options: BackgroundExecutionOptions,
+        launchPreferencesLoaded: Bool
+    ) -> Bool {
+        launchPreferencesLoaded && options.enhancedBackgroundEnabled
+    }
+
+    nonisolated static func shouldSubmitContinuedProcessing(
+        for options: BackgroundExecutionOptions,
+        launchPreferencesLoaded: Bool,
+        origin: ContinuedProcessingStartOrigin,
+        hasAggregateForegroundScene: Bool
+    ) -> Bool {
+        origin.allowsContinuedSubmission
+            && hasAggregateForegroundScene
+            && shouldKeepContinuedProcessing(
+                for: options,
+                launchPreferencesLoaded: launchPreferencesLoaded
+            )
+    }
+
+    /// Independent surface transition: the PiP flag alone prepares/stops the
+    /// PiP surface, and the screen-feedback flag alone stops the broadcast.
+    /// A settings change NEVER requests ReplayKit consent — that stays tied
+    /// to the actual run-start user action in
+    /// `applyBackgroundExecutionPreference`.
+    nonisolated static func visualSurfaceTransition(
+        for options: BackgroundExecutionOptions
+    ) -> BackgroundExecutionSurfaceTransition {
+        BackgroundExecutionSurfaceTransition(
+            stopsPictureInPicture: !options.pictureInPictureEnabled,
+            stopsScreenShare: !options.screenFeedbackEnabled,
+            preparesPictureInPicture: options.pictureInPictureEnabled,
+            requestsScreenShareAuthorization: false
+        )
+    }
+
+    /// Pure gate rule: a disabled status-PiP release gate strips both visual
+    /// capabilities; enhanced background processing is never gated.
+    nonisolated static func honoredOptions(
+        _ options: BackgroundExecutionOptions,
+        statusPiPEnabled: Bool
+    ) -> BackgroundExecutionOptions {
+        guard !statusPiPEnabled else { return options }
+        return BackgroundExecutionOptions(
+            enhancedBackgroundEnabled: options.enhancedBackgroundEnabled
+        )
+    }
+
+    /// Automatic inline arming is owned by the PiP capability ALONE: screen
+    /// feedback runs concurrently and must never downgrade PiP to a
+    /// manual-only surface. The legacy `.screenShare` projection therefore
+    /// must not drive this decision. Existing explicit-origin and batch
+    /// suppression gates are applied by the callers, unchanged.
+    nonisolated static func shouldArmAutomaticInlineStart(
+        for options: BackgroundExecutionOptions
+    ) -> Bool {
+        options.pictureInPictureEnabled
+    }
+
     nonisolated static func visualSurfaceTransition(
         for preference: BackgroundExecutionPreference
     ) -> BackgroundExecutionSurfaceTransition {
@@ -476,16 +543,34 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         )
     }
 
-    /// Settings are live, not just launch defaults. A continued-processing
-    /// task is a system Live Activity, so changing to either visual mode must
-    /// complete an already accepted task immediately.
+    /// Legacy entry point kept for existing callers/tests: projects the old
+    /// mutually-exclusive choice onto the current independent options (the
+    /// stored enhanced flag is preserved) and reconciles through the real
+    /// options path. Production settings now drive
+    /// `backgroundExecutionOptionsDidChange` directly.
     func backgroundExecutionPreferenceDidChange(
         to preference: BackgroundExecutionPreference
     ) {
-        // The release gate may downgrade a PiP choice to the standard path;
-        // reconcile against what the app actually honors.
-        let honored = StatusPiPReleaseGate.effectivePreference(
-            preference,
+        var options = environment.settingsCenter.backgroundExecutionOptions
+        options.setPictureInPictureEnabled(preference != .standard)
+        options.setScreenFeedbackEnabled(preference == .screenShare)
+        backgroundExecutionOptionsDidChange(to: options)
+    }
+
+    /// Settings are live, not just launch defaults. The three capabilities
+    /// reconcile independently: enhanced background keeps/finishes the
+    /// system continued-processing task regardless of the visual surfaces,
+    /// while PiP/screen-feedback only prepare or stop their own surfaces.
+    /// Changing settings never starts PiP playback, never presents ReplayKit
+    /// authorization, and never starts task audio — those stay bound to real
+    /// run/owner actions.
+    func backgroundExecutionOptionsDidChange(
+        to options: BackgroundExecutionOptions
+    ) {
+        // The release gate may downgrade the visual choices to the standard
+        // path; reconcile against what the app actually honors.
+        let honored = Self.honoredOptions(
+            options,
             statusPiPEnabled: StatusPiPReleaseGate.isEnabled
         )
         if #available(iOS 26.0, *) {
@@ -515,7 +600,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             } else {
                 finishContinuedTasks(success: true)
                 FloeLogger(category: .app).info(
-                    "continuedProcessingFinished reason=preferenceChanged preference=\(preference.rawValue)"
+                    "continuedProcessingFinished reason=preferenceChanged enhanced=\(honored.enhancedBackgroundEnabled)"
                 )
             }
         }
@@ -529,10 +614,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             hasRetainedPausedRun: retainedPausedRun != nil
         ) else { return }
 
-        // Reconcile the visual surface in the same main-actor turn as the
-        // preference publication. Changing settings never starts PiP and never
-        // presents ReplayKit authorization; it only prepares/stops surfaces the
-        // user has already selected.
+        // Reconcile the visual surfaces in the same main-actor turn as the
+        // preference publication.
         let transition = Self.visualSurfaceTransition(for: honored)
         if transition.stopsPictureInPicture {
             surfacedRunID = nil
@@ -554,7 +637,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             environment.backgroundVideoService.setRunContext(
                 title: candidate.value.title,
                 progress: candidate.value.presentation(),
-                automaticallyStartsFromInline: true
+                automaticallyStartsFromInline: Self.shouldArmAutomaticInlineStart(for: honored)
             )
         }
         assert(!transition.requestsScreenShareAuthorization)
@@ -566,15 +649,23 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         effectiveScenePhase == .active && scenePhases.values.contains(.active)
     }
 
-    /// The execution preference the app may actually honor. Status PiP is an
+    /// The execution options the app may actually honor. Status PiP is an
     /// opt-in surface behind `StatusPiPReleaseGate`; when the gate is
-    /// disabled, a PiP choice degrades to the compliant standard path (30s
-    /// lease + system continued processing) instead of creating a controller.
-    private var effectiveBackgroundExecutionPreference: BackgroundExecutionPreference {
-        StatusPiPReleaseGate.effectivePreference(
-            environment.settingsCenter.backgroundExecution,
+    /// disabled, the visual capabilities degrade to the compliant standard
+    /// path (30s lease + system continued processing) instead of creating a
+    /// controller. Enhanced background processing is never gated.
+    private var effectiveBackgroundExecutionOptions: BackgroundExecutionOptions {
+        Self.honoredOptions(
+            environment.settingsCenter.backgroundExecutionOptions,
             statusPiPEnabled: StatusPiPReleaseGate.isEnabled
         )
+    }
+
+    /// Compatibility projection of the honored options for the surfaces that
+    /// still reason in the legacy vocabulary (visual-surface batch policy,
+    /// automatic-inline arming, diagnostics).
+    private var effectiveBackgroundExecutionPreference: BackgroundExecutionPreference {
+        effectiveBackgroundExecutionOptions.legacyPreference
     }
 
     func continuedProcessingOrigin(forRunID runID: UUID) -> ContinuedProcessingStartOrigin {
@@ -592,16 +683,16 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         stage: String = FloeL10n.l("platform.background_run_coordinator.running"),
         progress: Int64 = 5
     ) -> Bool {
-        let preference = effectiveBackgroundExecutionPreference
+        let options = effectiveBackgroundExecutionOptions
         let loaded = environment.settingsCenter.launchPreferencesLoaded
         guard Self.shouldSubmitContinuedProcessing(
-            for: preference,
+            for: options,
             launchPreferencesLoaded: loaded,
             origin: origin,
             hasAggregateForegroundScene: hasAggregateForegroundScene
         ) else {
             let keepsConversationTask = Self.shouldKeepContinuedProcessing(
-                for: preference,
+                for: options,
                 launchPreferencesLoaded: loaded
             )
             // An enabled Linux background session keeps its own system task,
@@ -611,7 +702,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 finishContinuedTasks(success: true)
             }
             FloeLogger(category: .app).info(
-                "continuedProcessingSkipped workload=\(workload) origin=\(origin.rawValue) foreground=\(hasAggregateForegroundScene) preference=\(preference.rawValue) loaded=\(loaded)"
+                "continuedProcessingSkipped workload=\(workload) origin=\(origin.rawValue) foreground=\(hasAggregateForegroundScene) enhanced=\(options.enhancedBackgroundEnabled) preference=\(options.legacyPreference.rawValue) loaded=\(loaded)"
             )
             return false
         }
@@ -717,6 +808,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             publishesContent: publishesContent
         )
         activeRuns[runID] = run
+        // A genuinely new run re-arms task ambience inside a continuing PiP
+        // owner session; it never creates the owner itself (that stays bound
+        // to the real PiP surface) and never enables PiP as a side effect.
+        environment.pipAudioService.handleRunStarted()
         if publishesContent {
             _ = continuedEligibility.registerRun(runID, origin: origin)
             publishRunWork(
@@ -778,6 +873,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         FloeLogger(category: .app).info(
             "backgroundMediaStarted work=\(workID.uuidString) activeRuns=\(activeRuns.count)"
         )
+        environment.pipAudioService.handleRunStarted()
         // A continued-processing task is the top-right system Live Activity
         // users reported as a false PiP surface. Canvas media owns a real
         // AVKit PiP context instead and must never submit that request.
@@ -911,6 +1007,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         active.progress = max(active.progress, 60)
         activeRuns[runID] = active
         retainedPausedRun = (runID, active)
+        // A suspension is a real user-action boundary (browser takeover and
+        // friends): the sound surface treats it as "needs input", throttled.
+        environment.pipAudioService.handleTaskEvent(.needsInput, runID: runID)
         if #available(iOS 26.0, *),
            active.allowsContinuedProcessing,
            active.continuedProcessingOrigin.allowsContinuedSubmission {
@@ -999,6 +1098,20 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         FloeLogger(category: .app).info(
             "backgroundRunFinished run=\(runID.uuidString) succeeded=\(succeeded) remainingRuns=\(activeRuns.count)"
         )
+        // Typed terminal stage for the PiP sound surface. Ambient teardown is
+        // decided by the BATCH, not by this run: with parallel runs still
+        // active, run A finishing keeps run B's ambience; only an emptied
+        // batch stops the loop (queued terminal speech/cue stay bounded).
+        let audioStage: PiPAudioTaskStage
+        switch outcome {
+        case .succeeded: audioStage = .completed
+        case .failed: audioStage = .failed
+        case .cancelled: audioStage = .cancelled
+        }
+        environment.pipAudioService.handleTaskEvent(audioStage, runID: runID)
+        if activeRuns.isEmpty {
+            environment.pipAudioService.handleRunBatchTerminal()
+        }
         let conversationID = finished.conversationID
         notifiedApprovalRuns.remove(runID)
         if finished.sendsTerminalNotification, let conversationID {
@@ -2492,27 +2605,30 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // transition in the same batch.
     }
 
-    /// Applies the user's background-execution choice when a run starts.
-    /// `standard` relies on the 30s lease + continued task (no extra UI);
-    /// Both visual modes expose real task-progress content from the existing
-    /// task/canvas toolbar. PiP lets AVKit automatically enter when the user
-    /// leaves an inline player, while scene transitions never call `start`.
-    /// Screen-share mode additionally asks the matching thread to present
-    /// ReplayKit's system consent flow.
+    /// Applies the user's independent background capabilities when a run
+    /// starts. Enhanced processing relies on the 30s lease + continued task
+    /// (requested separately, no extra UI); the PiP capability exposes real
+    /// task-progress content from the existing task/canvas toolbar and lets
+    /// AVKit automatically enter when the user leaves the inline player,
+    /// while scene transitions never call `start`. Screen feedback
+    /// additionally asks the matching thread to present ReplayKit's system
+    /// consent flow — this run-start path is that explicit user action; a
+    /// settings toggle never requests consent.
     private func applyBackgroundExecutionPreference(
         runID: UUID,
         conversationID: UUID?,
         runTitle: String
     ) {
-        let preference = effectiveBackgroundExecutionPreference
+        let options = effectiveBackgroundExecutionOptions
         guard visualSurfacePolicy.allowsVisualSurface(
-            for: preference
+            for: options.legacyPreference
         ) else {
-            if preference == .standard, !linuxBackgroundHold.hasActiveHold {
+            if !options.pictureInPictureEnabled, !linuxBackgroundHold.hasActiveHold {
                 // Mode changes can happen while a failed run's visual surface
-                // is retained. Standard mode owns only its continued task and
-                // must not inherit an earlier PiP controller or broadcast —
-                // but a held Linux VM keeps its own prepared surface.
+                // is retained. A PiP-off configuration owns only its
+                // continued task and must not inherit an earlier PiP
+                // controller or broadcast — but a held Linux VM keeps its
+                // own prepared surface.
                 surfacedRunID = nil
                 environment.backgroundVideoService.stop()
                 if environment.screenShareCenter.isSharing
@@ -2525,41 +2641,40 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             )
             return
         }
-        switch preference {
-        case .standard:
+        // Reaching this point means the PiP capability is enabled (screen
+        // feedback implies PiP through the Core model).
+        surfacedRunID = runID
+        if options.screenFeedbackEnabled {
             FloeLogger(category: .app).info(
-                "backgroundSurfaceSkipped run=\(runID.uuidString) reason=standardPreference"
+                "backgroundSurfaceRequested run=\(runID.uuidString) mode=screenFeedback sharing=\(environment.screenShareCenter.isSharing)"
             )
-            break
-        case .pictureInPicture:
+            environment.backgroundVideoService.setRunContext(
+                title: runTitle,
+                progress: environment.screenShareCenter.isSharing
+                    ? FloeL10n.l("platform.background_run_coordinator.sharing_screen")
+                    : FloeL10n.l("platform.background_run_coordinator.task_is_running"),
+                // Screen feedback runs CONCURRENTLY with automatic PiP
+                // arming; it never downgrades PiP to manual-only.
+                automaticallyStartsFromInline: Self.shouldArmAutomaticInlineStart(for: options)
+            )
+            guard let conversationID else {
+                FloeLogger(category: .app).info(
+                    "backgroundSurfaceScreenShareSkipped run=\(runID.uuidString) reason=canvasMediaHasNoConversationForScreenShare"
+                )
+                return
+            }
+            if !environment.screenShareCenter.isSharing {
+                environment.screenShareCenter.requestBroadcast(for: conversationID)
+            }
+        } else {
             FloeLogger(category: .app).info(
                 "backgroundSurfaceRequested run=\(runID.uuidString) mode=pictureInPicture"
             )
-            surfacedRunID = runID
             environment.backgroundVideoService.setRunContext(
                 title: runTitle,
                 progress: FloeL10n.l("platform.background_run_coordinator.running"),
                 automaticallyStartsFromInline: true
             )
-        case .screenShare:
-            guard let conversationID else {
-                FloeLogger(category: .app).info(
-                    "backgroundSurfaceSkipped run=\(runID.uuidString) reason=canvasMediaHasNoConversationForScreenShare"
-                )
-                break
-            }
-            FloeLogger(category: .app).info(
-                "backgroundSurfaceRequested run=\(runID.uuidString) mode=screenShare sharing=\(environment.screenShareCenter.isSharing)"
-            )
-            surfacedRunID = runID
-            environment.backgroundVideoService.setRunContext(
-                title: runTitle,
-                progress: environment.screenShareCenter.isSharing
-                    ? FloeL10n.l("platform.background_run_coordinator.sharing_screen") : FloeL10n.l("platform.background_run_coordinator.task_is_running")
-            )
-            if !environment.screenShareCenter.isSharing {
-                environment.screenShareCenter.requestBroadcast(for: conversationID)
-            }
         }
     }
 
@@ -2702,6 +2817,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // content. The in-app approval UI still surfaces the request.
         guard activeRuns[runID]?.publishesContent != false else { return }
         guard notifiedApprovalRuns.insert(runID).inserted else { return }
+        // Typed attention event for the PiP sound surface (generic wording,
+        // deduped and throttled inside the audio service).
+        environment.pipAudioService.handleTaskEvent(.needsInput, runID: runID)
         if #available(iOS 26.0, *),
            activeRuns[runID]?.continuedProcessingOrigin.allowsContinuedSubmission == true {
             updateContinuedTask(title: "Floe Agent", stage: FloeL10n.l("platform.background_run_coordinator.waiting_for_your_approval"), progress: 60)
@@ -2744,7 +2862,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
         let launchPreferencesLoaded = environment.settingsCenter.launchPreferencesLoaded
         let keepsConversationTask = Self.shouldKeepContinuedProcessing(
-            for: effectiveBackgroundExecutionPreference,
+            for: effectiveBackgroundExecutionOptions,
             launchPreferencesLoaded: launchPreferencesLoaded
         )
         let keepsLinuxSessionTask = launchPreferencesLoaded && !linuxBackgroundEnabledEnvironmentIDs().isEmpty
@@ -2801,18 +2919,19 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     @available(iOS 26.0, *)
     private func updateContinuedTask(title: String, stage: String, progress: Int64) {
         guard Self.shouldKeepContinuedProcessing(
-            for: environment.settingsCenter.backgroundExecution,
+            for: environment.settingsCenter.backgroundExecutionOptions,
             launchPreferencesLoaded:
                 environment.settingsCenter.launchPreferencesLoaded
         ) else {
             // Every update site shares this last-line gate. A stale callback
             // from progress/suspension/approval therefore cannot resurrect or
-            // keep updating a Live Activity after the mode changed.
+            // keep updating a Live Activity after the user turned enhanced
+            // background processing off.
             finishContinuedTasks(success: true)
             if Date().timeIntervalSince(lastSkippedContinuedUpdateAt) >= 60 {
                 lastSkippedContinuedUpdateAt = Date()
                 FloeLogger(category: .app).debug(
-                    "continuedProcessingUpdateSkipped reason=visualBackgroundPreference preference=\(environment.settingsCenter.backgroundExecution.rawValue)"
+                    "continuedProcessingUpdateSkipped reason=enhancedBackgroundOff enhanced=\(environment.settingsCenter.backgroundExecutionOptions.enhancedBackgroundEnabled)"
                 )
             }
             return
@@ -2946,9 +3065,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         UserDefaults.standard.set(data, forKey: Self.visualSurfacePolicyDefaultsKey)
     }
 
-    /// Keeps the latest run available to the PiP toolbar control. In PiP mode
-    /// the inline host arms AVKit for the user's later Home/app-switch gesture;
-    /// this method itself never starts PiP from a scene-phase callback.
+    /// Keeps the latest run available to the PiP toolbar control. Whenever
+    /// the PiP capability is on, the inline host arms AVKit for the user's
+    /// later Home/app-switch gesture — including while screen feedback runs
+    /// concurrently; this method itself never starts PiP from a scene-phase
+    /// callback.
     private func prepareBackgroundSurfaceIfNeeded() {
         guard visualSurfacePolicy.allowsVisualSurface(
                   for: effectiveBackgroundExecutionPreference
@@ -2961,8 +3082,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         environment.backgroundVideoService.setRunContext(
             title: run.title,
             progress: run.presentation(),
-            automaticallyStartsFromInline:
-                effectiveBackgroundExecutionPreference == .pictureInPicture
+            automaticallyStartsFromInline: Self.shouldArmAutomaticInlineStart(
+                for: effectiveBackgroundExecutionOptions
+            )
         )
     }
 

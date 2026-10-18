@@ -6538,6 +6538,7 @@ struct WorkspaceCanvasView: View {
             videoService: environment.backgroundVideoService,
             isRunActive: environment.backgroundVideoService.shouldOfferManualControl
         )
+        .pipAudioQuickSettings(center: environment.settingsCenter, audioService: environment.pipAudioService)
         Menu {
             CanvasNodeCreationMenu { kind in
                 createNode(kind, at: canvasPoint(visibleCanvasCenter))

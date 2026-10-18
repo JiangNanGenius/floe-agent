@@ -534,6 +534,10 @@ targets:
       Release: Vendor/Office/native-host.xcconfig
     sources:
       - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
+      - path: Tests/FloeAppTests/PiPAudioServiceTests.swift
+      - path: Tests/FloeAppTests/PiPAudioPreferencesTests.swift
+      - path: Tests/FloeAppTests/PiPAudioBackendAppTests.swift
+      - path: Tests/FloeCoreTests/BackgroundExecutionOptionsTests.swift
       - path: Tests/FloeAppTests/TemporaryConversationTests.swift
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
       - path: Tests/FloeAgentRuntimeTests/ToolDiscoveryTests.swift

@@ -24,6 +24,11 @@ final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     @Published var pitch: Float = 1.0
     /// Selected voice identifier (nil = auto by language).
     @Published var voiceIdentifier: String?
+    /// Observation hook for other audio surfaces (the task PiP sound service
+    /// ducks ambient loops while answer speech runs). This service keeps its
+    /// existing behavior with or without an observer; it never takes session
+    /// ownership itself.
+    var onSpeakingChanged: (@MainActor (Bool) -> Void)?
 
     override init() {
         super.init()
@@ -54,9 +59,11 @@ final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelega
         synthesizer.speak(utterance)
         isSpeaking = true
         speakingText = text
+        onSpeakingChanged?(true)
     }
 
     func stop() {
+        let wasSpeaking = isSpeaking
         activeUtterance = nil
         activeUtteranceIdentifier = nil
         if synthesizer.isSpeaking {
@@ -64,6 +71,9 @@ final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelega
         }
         isSpeaking = false
         speakingText = nil
+        if wasSpeaking {
+            onSpeakingChanged?(false)
+        }
     }
 
     private static func preferredLanguage(for text: String) -> String {
@@ -83,10 +93,12 @@ final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelega
         let identifier = ObjectIdentifier(utterance)
         Task { @MainActor in
             guard self.activeUtteranceIdentifier == identifier else { return }
+            let wasSpeaking = self.isSpeaking
             self.activeUtterance = nil
             self.activeUtteranceIdentifier = nil
             self.isSpeaking = false
             self.speakingText = nil
+            if wasSpeaking { self.onSpeakingChanged?(false) }
         }
     }
 
@@ -97,10 +109,12 @@ final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelega
         let identifier = ObjectIdentifier(utterance)
         Task { @MainActor in
             guard self.activeUtteranceIdentifier == identifier else { return }
+            let wasSpeaking = self.isSpeaking
             self.activeUtterance = nil
             self.activeUtteranceIdentifier = nil
             self.isSpeaking = false
             self.speakingText = nil
+            if wasSpeaking { self.onSpeakingChanged?(false) }
         }
     }
 }

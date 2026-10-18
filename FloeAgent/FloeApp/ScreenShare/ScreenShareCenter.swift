@@ -38,6 +38,7 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     private var framePollTask: Task<Void, Never>?
     private var activeSessionID: UUID?
     private var analysisConsentSessionID: UUID?
+    private var guidanceRequestGeneration: UInt64 = 0
     private var lastFrameReceivedAt: Date?
     /// ReplayKit only exposes its system-owned picker view. Keep a tiny host
     /// in the foreground window long enough to invoke that button directly;
@@ -106,6 +107,7 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     }
 
     func stopSharing() {
+        guidanceRequestGeneration &+= 1
         FloeLogger(category: .app).info("screenShareStopped")
         isSharing = false
         isWaitingForBroadcast = false
@@ -191,6 +193,8 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     func analyzeScreenAndGuide(userGoal: String) async {
         guard let snapshot = latestFrameSnapshot(),
               analysisConsentSessionID == snapshot.state.sessionID else { return }
+        guidanceRequestGeneration &+= 1
+        let generation = guidanceRequestGeneration
         latestFrame = snapshot.image
         // Ask for structured hints: the model returns one JSON array whose
         // entries carry the element label and a normalized tap point, so the
@@ -201,6 +205,12 @@ final class ScreenShareCenter: NSObject, ObservableObject {
             "instruction": "what to do", "x": 0.0-1.0, "y": 0.0-1.0} where x,y are \
             the normalized center of the tappable element. No prose outside the JSON.
             """)
+        // An analysis can finish after feedback was disabled or a newer
+        // session/request replaced it. It must not replace the task-status
+        // content with an obsolete screen frame on the shared PiP surface.
+        guard !Task.isCancelled, generation == guidanceRequestGeneration,
+              isSharing, activeSessionID == snapshot.state.sessionID,
+              analysisConsentSessionID == snapshot.state.sessionID else { return }
         guideHints = Self.guideHints(from: description)
         onGuidanceChanged?(snapshot.image, guideHints)
     }
@@ -303,6 +313,11 @@ final class ScreenShareCenter: NSObject, ObservableObject {
             // time the next frame arrived.
             if let lastFrameReceivedAt,
                Date().timeIntervalSince(lastFrameReceivedAt) > 12 {
+                if isSharing {
+                    guidanceRequestGeneration &+= 1
+                    guideHints = []
+                    onGuidanceChanged?(nil, [])
+                }
                 isSharing = false
                 isWaitingForBroadcast = true
                 lifecycleState = .waitingForFirstFrame
@@ -310,6 +325,7 @@ final class ScreenShareCenter: NSObject, ObservableObject {
             return
         }
         if activeSessionID != snapshot.state.sessionID {
+            guidanceRequestGeneration &+= 1
             analysisConsentSessionID = nil
             guideHints = []
             onGuidanceChanged?(nil, [])

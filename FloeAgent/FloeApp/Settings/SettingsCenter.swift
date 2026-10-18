@@ -55,15 +55,34 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var idleDisconnectMinutes: Int = 15
     @Published private(set) var runningInputMode: RunningInputMode = .queue
     @Published private(set) var launchPreferencesLoaded = false
-    @Published private(set) var backgroundExecution: BackgroundExecutionPreference = .standard {
+    /// The three independent background capabilities (enhanced processing,
+    /// PiP, screen feedback). Persisted as ONE atomic JSON object under
+    /// `AppSettingsKey.backgroundExecutionOptions`; every mutation reads the
+    /// latest in-memory state first so rapid toggles never restore a stale
+    /// full object.
+    @Published private(set) var backgroundExecutionOptions: BackgroundExecutionOptions = BackgroundExecutionOptions() {
         didSet {
-            guard backgroundExecution != oldValue else { return }
+            guard backgroundExecutionOptions != oldValue else { return }
             // Both types live in FloeApp and AppEnvironment vends the
             // coordinator lazily, so this does not introduce a package/module
             // dependency cycle. Direct coordination also cannot miss a cold
             // launch preference load the way a transient notification could.
             environment.backgroundRunCoordinator
-                .backgroundExecutionPreferenceDidChange(to: backgroundExecution)
+                .backgroundExecutionOptionsDidChange(to: backgroundExecutionOptions)
+        }
+    }
+    /// Compatibility projection for old callers: `.screenShare` while screen
+    /// feedback is on, else `.pictureInPicture` while PiP is on, else
+    /// `.standard`. Runtime decisions consult the independent flags.
+    var backgroundExecution: BackgroundExecutionPreference {
+        backgroundExecutionOptions.legacyPreference
+    }
+    /// PiP sound surface preferences (ambient loop, task narration, cues).
+    /// One versioned JSON object under `PiPAudioPreferences.settingsKey`.
+    @Published private(set) var pipAudioPreferences = PiPAudioPreferences() {
+        didSet {
+            guard pipAudioPreferences != oldValue else { return }
+            environment.pipAudioService.applyPreferences(pipAudioPreferences)
         }
     }
     /// Self-critique pass on the final answer before the run completes.
@@ -165,7 +184,7 @@ final class SettingsCenter: ObservableObject {
         guard let values = try? await settingsStore.allValues() else {
             launchPreferencesLoaded = false
             environment.backgroundRunCoordinator
-                .backgroundExecutionPreferenceDidChange(to: backgroundExecution)
+                .backgroundExecutionOptionsDidChange(to: backgroundExecutionOptions)
             FloeLogger(category: .app).warning(
                 "launchPreferencesUnavailable backgroundExecutionFailClosed=true"
             )
@@ -176,9 +195,9 @@ final class SettingsCenter: ObservableObject {
         // Reconcile even when the stored value equals the in-memory default:
         // before this point a cold-launch continued task must fail closed.
         environment.backgroundRunCoordinator
-            .backgroundExecutionPreferenceDidChange(to: backgroundExecution)
+            .backgroundExecutionOptionsDidChange(to: backgroundExecutionOptions)
         FloeLogger(category: .app).info(
-            "launchPreferencesLoaded agentMode=\(defaultAgentMode.rawValue) background=\(backgroundExecution.rawValue)"
+            "launchPreferencesLoaded agentMode=\(defaultAgentMode.rawValue) background=\(backgroundExecution.rawValue) enhanced=\(backgroundExecutionOptions.enhancedBackgroundEnabled)"
         )
     }
 
@@ -363,10 +382,21 @@ final class SettingsCenter: ObservableObject {
         if let mode: RunningInputMode = decode(RunningInputMode.self, AppSettingsKey.runningInputMode) {
             runningInputMode = mode
         }
-        if let preference: BackgroundExecutionPreference = decode(
+        // The atomic options object wins; the legacy mutually-exclusive enum
+        // is read only as a one-time migration source.
+        if let options: BackgroundExecutionOptions = decode(
+            BackgroundExecutionOptions.self, AppSettingsKey.backgroundExecutionOptions
+        ) {
+            backgroundExecutionOptions = options.normalized
+        } else if let preference: BackgroundExecutionPreference = decode(
             BackgroundExecutionPreference.self, AppSettingsKey.backgroundExecution
         ) {
-            backgroundExecution = preference
+            backgroundExecutionOptions = BackgroundExecutionOptions(legacy: preference)
+        }
+        if let pipAudio: PiPAudioPreferences = decode(
+            PiPAudioPreferences.self, PiPAudioPreferences.settingsKey
+        ) {
+            pipAudioPreferences = pipAudio.normalized
         }
         if let verify: Bool = decode(Bool.self, AppSettingsKey.verifyFinalAnswer) {
             verifyFinalAnswer = verify
@@ -594,18 +624,74 @@ final class SettingsCenter: ObservableObject {
         await persist(mode, forKey: AppSettingsKey.runningInputMode)
     }
 
+    /// Loads the background capability options (with legacy migration) and
+    /// the PiP sound preferences through the extracted repository so the
+    /// real load/migration/save path is unit-testable with an in-memory
+    /// store.
     func loadBackgroundExecution() async {
-        if let stored = try? await settingsStore.value(
-            forKey: AppSettingsKey.backgroundExecution,
-            as: BackgroundExecutionPreference.self
-        ) {
-            backgroundExecution = stored
+        let repository = BackgroundPreferencesRepository(store: settingsStore)
+        backgroundExecutionOptions = await repository.loadOptions()
+        pipAudioPreferences = await repository.loadPipAudioPreferences()
+    }
+
+    /// Legacy entry point: projects the old mutually-exclusive choice onto
+    /// the independent options and persists the atomic object.
+    func setBackgroundExecution(_ preference: BackgroundExecutionPreference) async {
+        await setBackgroundExecutionOptions(BackgroundExecutionOptions(legacy: preference))
+    }
+
+    func setBackgroundExecutionOptions(_ options: BackgroundExecutionOptions) async {
+        let normalized = options.normalized
+        backgroundExecutionOptions = normalized
+        do {
+            try await BackgroundPreferencesRepository(store: settingsStore)
+                .saveOptions(normalized)
+            settingsSaveError = nil
+        } catch {
+            if let values = try? await settingsStore.allValues() {
+                applyStoredValues(values)
+            }
+            settingsSaveError = SecretRedactor.redact(error.localizedDescription)
         }
     }
 
-    func setBackgroundExecution(_ preference: BackgroundExecutionPreference) async {
-        backgroundExecution = preference
-        await persist(preference, forKey: AppSettingsKey.backgroundExecution)
+    /// Each toggle reads the latest in-memory options inside this MainActor
+    /// call, mutates one capability (with the Core cascade rules), and
+    /// persists the whole normalized object atomically.
+    func setEnhancedBackgroundEnabled(_ enabled: Bool) async {
+        var options = backgroundExecutionOptions
+        options.enhancedBackgroundEnabled = enabled
+        guard options != backgroundExecutionOptions else { return }
+        await setBackgroundExecutionOptions(options)
+    }
+
+    func setPictureInPictureEnabled(_ enabled: Bool) async {
+        var options = backgroundExecutionOptions
+        options.setPictureInPictureEnabled(enabled)
+        guard options != backgroundExecutionOptions else { return }
+        await setBackgroundExecutionOptions(options)
+    }
+
+    func setScreenFeedbackEnabled(_ enabled: Bool) async {
+        var options = backgroundExecutionOptions
+        options.setScreenFeedbackEnabled(enabled)
+        guard options != backgroundExecutionOptions else { return }
+        await setBackgroundExecutionOptions(options)
+    }
+
+    func setPiPAudioPreferences(_ preferences: PiPAudioPreferences) async {
+        let normalized = preferences.normalized
+        pipAudioPreferences = normalized
+        do {
+            try await BackgroundPreferencesRepository(store: settingsStore)
+                .savePipAudioPreferences(normalized)
+            settingsSaveError = nil
+        } catch {
+            if let values = try? await settingsStore.allValues() {
+                applyStoredValues(values)
+            }
+            settingsSaveError = SecretRedactor.redact(error.localizedDescription)
+        }
     }
 
     func setVerifyFinalAnswer(_ value: Bool) async {
@@ -782,6 +868,58 @@ final class SettingsCenter: ObservableObject {
         case .updatable(let installed, let available): return "updatable(\(installed)->\(available))"
         case .unavailable(let reason): return "unavailable(\(reason))"
         }
+    }
+}
+
+/// The background-capability and PiP-sound persistence rules extracted from
+/// `SettingsCenter` so focused tests exercise the real load/migration/save
+/// path against an in-memory `SettingsStore` — without constructing the full
+/// app environment. `SettingsCenter` delegates to this type verbatim.
+struct BackgroundPreferencesRepository: Sendable {
+    let store: any SettingsStore
+
+    /// Options win over the legacy enum; the legacy value is a one-time
+    /// migration source; absence yields the shipping defaults
+    /// (enhanced=true, pip=false, feedback=false).
+    func loadOptions() async -> BackgroundExecutionOptions {
+        if let options = try? await store.value(
+            forKey: AppSettingsKey.backgroundExecutionOptions,
+            as: BackgroundExecutionOptions.self
+        ) {
+            return options.normalized
+        }
+        if let legacy = try? await store.value(
+            forKey: AppSettingsKey.backgroundExecution,
+            as: BackgroundExecutionPreference.self
+        ) {
+            return BackgroundExecutionOptions(legacy: legacy)
+        }
+        return BackgroundExecutionOptions()
+    }
+
+    /// Always persists the normalized object as ONE atomic value.
+    func saveOptions(_ options: BackgroundExecutionOptions) async throws {
+        try await store.setValue(
+            options.normalized,
+            forKey: AppSettingsKey.backgroundExecutionOptions
+        )
+    }
+
+    func loadPipAudioPreferences() async -> PiPAudioPreferences {
+        if let stored = try? await store.value(
+            forKey: PiPAudioPreferences.settingsKey,
+            as: PiPAudioPreferences.self
+        ) {
+            return stored.normalized
+        }
+        return PiPAudioPreferences()
+    }
+
+    func savePipAudioPreferences(_ preferences: PiPAudioPreferences) async throws {
+        try await store.setValue(
+            preferences.normalized,
+            forKey: PiPAudioPreferences.settingsKey
+        )
     }
 }
 

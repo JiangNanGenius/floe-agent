@@ -10,6 +10,7 @@ import UIKit
 import SwiftUI
 import AVKit
 import AVFoundation
+import os
 import FloeCore
 
 /// The AVKit presenting layer must belong to a live UIKit hierarchy. Keeping
@@ -107,6 +108,59 @@ enum BackgroundPiPStopOrigin: String, Sendable, Equatable {
 
     var suppressesCurrentBatch: Bool { self == .manualControl }
     var allowsAutomaticRepreparation: Bool { self == .foregroundRetraction }
+}
+
+/// Events that move the task-PiP sound ownership. The owner is the real
+/// running task's PiP surface (foreground inline source OR system PiP), not
+/// the AVKit window alone: an automatic collapse on foreground return keeps
+/// the same owner and the same audio loop, while an explicit user close, a
+/// system close, or the run-surface teardown releases it.
+enum BackgroundPiPSoundOwnerEvent: Sendable, Equatable {
+    case runContextEstablished
+    case runSurfaceStopped
+    case intentionalStopCompleted(origin: BackgroundPiPStopOrigin)
+    case unexpectedStopCompleted
+    case controllerReplaced
+}
+
+/// Pure reducer behind the sound-owner callback in `BackgroundVideoService`.
+/// Kept separate so contract tests pin the full transition chain (prepare →
+/// collapse → re-prepare → user close → new batch) without an AVKit
+/// controller. `suppressed` mirrors the coordinator's batch rule: after a
+/// user/system close, sound stays off for the current batch until the run
+/// surface is genuinely torn down and re-established.
+enum BackgroundPiPSoundOwnerPolicy {
+    static func transition(
+        active: Bool,
+        suppressed: Bool,
+        event: BackgroundPiPSoundOwnerEvent
+    ) -> (active: Bool, suppressed: Bool) {
+        switch event {
+        case .runContextEstablished:
+            return (!suppressed, suppressed)
+        case .runSurfaceStopped:
+            // Batch end / PiP disabled / gate off: the owner releases and a
+            // later batch may arm sound again.
+            return (false, false)
+        case .intentionalStopCompleted(let origin):
+            switch origin {
+            case .manualControl:
+                // The user explicitly closed PiP: sound ends for this batch.
+                return (false, true)
+            case .foregroundRetraction, .controllerReplacement, .taskBatchEnded, .none:
+                // Automatic foreground-return collapse or a source swap keeps
+                // the same running-task owner — the loop must not restart or
+                // stop here.
+                return (active, suppressed)
+            }
+        case .unexpectedStopCompleted:
+            // AVKit/system closed PiP while Floe still owned the controller:
+            // treated like the user close it is.
+            return (false, true)
+        case .controllerReplaced:
+            return (active, suppressed)
+        }
+    }
 }
 
 struct BackgroundPiPLifecyclePolicy: Sendable, Equatable {
@@ -327,6 +381,78 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     /// Called only when AVKit/system closes PiP while Floe still owns the
     /// controller. Programmatic run teardown clears ownership first.
     var onUserStopped: (() -> Void)?
+    /// Fires on real task-sound ownership transitions (see
+    /// `BackgroundPiPSoundOwnerPolicy`). The PiP audio service starts/stops
+    /// its loop with the running task surface, not with the AVKit window.
+    var onAudioOwnerChange: (@MainActor (Bool) -> Void)?
+    /// Fires with the PiP window's own play/pause control state (real user
+    /// intent on the system PiP transport).
+    var onPiPTransportControl: (@MainActor (Bool) -> Void)?
+    /// Fires when the PiP window goes away (collapse, close or teardown):
+    /// the transport pause dies with the window; interruption/route holds
+    /// in the audio service are separate and stay.
+    var onPiPWindowDismissed: (@MainActor () -> Void)?
+    /// Cross-check consulted before this service deactivates the shared
+    /// audio session: while the task-sound service still holds a loop,
+    /// speech or preview, the activation must not be pulled out from under
+    /// it. Category equality alone is not proof that no other same-category
+    /// owner exists, so both directions consult real state.
+    var externalAudioSessionOwner: (@MainActor () -> Bool)?
+    /// Fires when `deactivateAudioSession` defers to the task-sound service:
+    /// the release lease is handed over so exactly one owner will deactivate
+    /// the shared session later (no leaked activation).
+    var onAudioSessionReleaseDeferred: (@MainActor () -> Void)?
+    /// Synchronous dictation gate consulted before any category change or
+    /// activation: a live voice-input `.record` session must never be
+    /// reconfigured to `.playback` on a lagging publisher event. Consults
+    /// the real voice-input state, so a retained `.record` category after
+    /// recording ended cannot block PiP audio forever.
+    var externalRecordingActive: (@MainActor () -> Bool)?
+
+    /// AVKit asks for the transport pause state synchronously from its own
+    /// callback thread, so the real state lives in an unfair-lock box rather
+    /// than a MainActor-isolated property. Only `setPlaying` writes it; only
+    /// the delegate and MainActor code read it.
+    private let transportPaused = OSAllocatedUnfairLock(initialState: false)
+
+    /// True while the user has the PiP picture paused through its transport
+    /// control. Reset when a PiP window is dismissed or a fresh controller
+    /// is prepared.
+    var isPiPTransportPaused: Bool { transportPaused.withLock { $0 } }
+
+    /// True while this service holds the shared AVAudioSession activation.
+    /// The PiP audio service consults this before releasing the session so
+    /// the two surfaces never deactivate each other.
+    var audioSessionActivationOwned: Bool { ownsAudioSessionActivation }
+
+    /// The session may be released by the PiP audio service only while this
+    /// surface neither owns the activation nor has a live/starting PiP.
+    var audioSessionMayBeReleased: Bool {
+        !ownsAudioSessionActivation && !isPiPActive && preparationState == .idle
+    }
+
+    private var soundOwnerActive = false
+    private var soundOwnerSuppressed = false
+
+    private func applySoundOwnerEvent(_ event: BackgroundPiPSoundOwnerEvent) {
+        let next = BackgroundPiPSoundOwnerPolicy.transition(
+            active: soundOwnerActive,
+            suppressed: soundOwnerSuppressed,
+            event: event
+        )
+        soundOwnerSuppressed = next.suppressed
+        guard next.active != soundOwnerActive else { return }
+        soundOwnerActive = next.active
+        FloeLogger(category: .app).debug(
+            "pipSoundOwnerChanged active=\(next.active) suppressed=\(next.suppressed)"
+        )
+        onAudioOwnerChange?(next.active)
+    }
+
+    private func dismissPiPTransportState() {
+        transportPaused.withLock { $0 = false }
+        onPiPWindowDismissed?()
+    }
 
     private var pipController: AVPictureInPictureController?
     private var sampleBufferLayer: AVSampleBufferDisplayLayer?
@@ -448,6 +574,10 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             deactivateAudioSession()
         }
         scheduleAutomaticPreparationIfNeeded()
+        // The task sound owner follows the running-task surface: the inline
+        // foreground source counts, so ambient is already live (muted by
+        // default) before AVKit ever promotes the source to system PiP.
+        applySoundOwnerEvent(.runContextEstablished)
     }
 
     fileprivate func registerSourceHost(_ hostView: BackgroundPiPSourceHostView) {
@@ -691,6 +821,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         sampleBufferLayer = layer
         activeSourceHostView = hostView
         pipController = controller
+        // A freshly prepared controller always starts unpaused.
+        transportPaused.withLock { $0 = false }
         startFrameHeartbeat(layer: layer, generation: generation)
         installReadinessObservers(controller: controller, layer: layer, generation: generation)
         preparationState = .waitingForMedia
@@ -1003,6 +1135,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         hasRunContext = false
         automaticallyStartsFromInline = false
         lifecyclePolicy.setAutomaticStartEnabled(false, sourceReady: false)
+        // Run-surface teardown releases the task sound owner and re-arms it
+        // for a genuinely new batch.
+        applySoundOwnerEvent(.runSurfaceStopped)
     }
 
     private func stopPiPInternal(origin: BackgroundPiPStopOrigin) {
@@ -1063,6 +1198,12 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         manualStartTracker.reset()
         lifecyclePolicy.clearStartTracking()
         deactivateAudioSession()
+        // The PiP window (if any) is gone: its transport pause dies with it.
+        dismissPiPTransportState()
+        if origin == .controllerReplacement {
+            // A source swap keeps the same running-task sound owner.
+            applySoundOwnerEvent(.controllerReplaced)
+        }
     }
 
     @discardableResult
@@ -1109,6 +1250,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             preparationState = .idle
             lifecyclePolicy.clearStartTracking()
             deactivateAudioSession()
+            dismissPiPTransportState()
+            applySoundOwnerEvent(.intentionalStopCompleted(origin: stopOrigin))
             FloeLogger(category: .app).info("pictureInPictureIntentionalStopCompleted")
             if stopOrigin.suppressesCurrentBatch {
                 automaticallyStartsFromInline = false
@@ -1143,6 +1286,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         lifecyclePolicy.setAutomaticStartEnabled(false, sourceReady: false)
         lifecyclePolicy.clearStartTracking()
         deactivateAudioSession()
+        dismissPiPTransportState()
+        applySoundOwnerEvent(.unexpectedStopCompleted)
         onUserStopped?()
     }
 
@@ -1214,6 +1359,16 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
     @discardableResult
     private func configureAudioSessionCategory() -> Bool {
+        if let externalRecordingActive, externalRecordingActive() {
+            // Dictation is live: reconfiguring its `.record` session to
+            // `.playback` would break voice input. This is a temporary
+            // yield, not a failure — the next prepare/start/scene transition
+            // after recording ends configures normally.
+            FloeLogger(category: .app).debug(
+                "pictureInPictureAudioSessionCategoryYielded reason=dictationActive"
+            )
+            return false
+        }
         do {
             try AVAudioSession.sharedInstance().setCategory(
                 .playback,
@@ -1241,6 +1396,18 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             FloeLogger(category: .app).debug(
                 "pictureInPictureAudioSessionRelinquished reason=configurationChanged"
             )
+            return
+        }
+        if let externalAudioSessionOwner, externalAudioSessionOwner() {
+            // The task sound service still holds the shared session with the
+            // same category — category equality alone is not proof that no
+            // other owner exists, so the real cross-check decides. Hand the
+            // release lease over explicitly so exactly one owner deactivates
+            // later and the activation can never leak.
+            FloeLogger(category: .app).debug(
+                "pictureInPictureAudioSessionDeactivationDeferred reason=taskAudioActive"
+            )
+            onAudioSessionReleaseDeferred?()
             return
         }
         do {
@@ -1626,13 +1793,28 @@ extension BackgroundVideoService: AVPictureInPictureSampleBufferPlaybackDelegate
         setPlaying playing: Bool
     ) {
         let controllerID = ObjectIdentifier(pictureInPictureController)
+        // AVKit reads `isPlaybackPaused` back synchronously right after this
+        // callback, so the real state is stored immediately in the lock box.
+        // A stale controller's late callback is reverted on the main actor.
+        let previous = transportPaused.withLock { state -> Bool in
+            let old = state
+            state = !playing
+            return old
+        }
         Task { @MainActor in
-            guard self.pipController.map(ObjectIdentifier.init) == controllerID,
-                  let timebase = self.playbackTimebase else { return }
-            CMTimebaseSetRate(timebase, rate: playing ? 1 : 0)
+            guard self.pipController.map(ObjectIdentifier.init) == controllerID else {
+                self.transportPaused.withLock { $0 = previous }
+                return
+            }
+            if let timebase = self.playbackTimebase {
+                CMTimebaseSetRate(timebase, rate: playing ? 1 : 0)
+            }
             FloeLogger(category: .app).debug(
                 "pictureInPicturePlaybackRequest playing=\(playing) timeline=hostClock"
             )
+            // Task audio follows the real transport: pause stops the loop and
+            // announcements; resume returns them under the owner guards.
+            self.onPiPTransportControl?(playing)
         }
     }
 
@@ -1645,7 +1827,7 @@ extension BackgroundVideoService: AVPictureInPictureSampleBufferPlaybackDelegate
     nonisolated func pictureInPictureControllerIsPlaybackPaused(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> Bool {
-        false
+        transportPaused.withLock { $0 }
     }
 
     nonisolated func pictureInPictureController(

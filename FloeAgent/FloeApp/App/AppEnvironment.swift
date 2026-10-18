@@ -30,6 +30,7 @@ import FloeGit
 import FloeTools
 import CloudKit
 import UserNotifications
+import Combine
 #if canImport(FloeOfficeNative)
 import FloeOfficeNative
 #endif
@@ -201,6 +202,9 @@ final class AppEnvironment: ObservableObject {
     }()
     private lazy var _screenShareCenter = ScreenShareCenter(conversationCenter: _conversationCenter)
     private lazy var _backgroundVideoService = BackgroundVideoService()
+    private lazy var _pipAudioService = PiPAudioService()
+    /// Dictation-yields subscription for the task PiP sound service.
+    private var pipAudioRecordingCancellable: AnyCancellable?
     private lazy var _webSearchSettingsCenter = WebSearchSettingsCenter()
     private lazy var _mcpSettingsCenter = MCPSettingsCenter.shared
     private lazy var _workbenchCenter = WorkbenchCenter(
@@ -361,6 +365,67 @@ final class AppEnvironment: ObservableObject {
             service.onUserStopped = { [weak self] in
                 self?.backgroundRunCoordinator.didClosePictureInPicture()
             }
+        }
+        return service
+    }
+    /// Task PiP sound service (ambient loops, generic stage narration,
+    /// attention cues). All cross-service wiring installs once here: the PiP
+    /// video surface owns start/stop and transport pause, answer speech and
+    /// dictation duck/yield the loop, and the two same-category session
+    /// owners consult each other's real state before either releases the
+    /// shared AVAudioSession.
+    var pipAudioService: PiPAudioService {
+        let service = _pipAudioService
+        if service.preferencesProvider == nil {
+            service.preferencesProvider = { [weak self] in
+                self?.settingsCenter.pipAudioPreferences ?? PiPAudioPreferences()
+            }
+            let video = backgroundVideoService
+            video.onAudioOwnerChange = { [weak service] active in
+                service?.handleTaskPiPActiveChanged(active)
+            }
+            video.onPiPTransportControl = { [weak service] playing in
+                service?.handlePiPTransportControlled(playing)
+            }
+            video.onPiPWindowDismissed = { [weak service] in
+                service?.handlePiPWindowDismissed()
+            }
+            video.externalAudioSessionOwner = { [weak service] in
+                service?.holdsSharedAudioSession ?? false
+            }
+            video.onAudioSessionReleaseDeferred = { [weak service] in
+                service?.adoptDeferredSessionLease()
+            }
+            // Synchronous dictation gates for BOTH session owners: the real
+            // voice-input state decides, never a lagging publisher event and
+            // never category equality (a retained `.record` category after
+            // recording must not block playback forever).
+            video.externalRecordingActive = { [weak self] in
+                self?.voiceInput.state.hasSession ?? false
+            }
+            service.isRecordingActiveNow = { [weak self] in
+                self?.voiceInput.state.hasSession ?? false
+            }
+            service.setSessionReleaseCheck { [weak video] in
+                video?.audioSessionMayBeReleased ?? true
+            }
+            let answerSpeech = speechService
+            if answerSpeech.onSpeakingChanged == nil {
+                answerSpeech.onSpeakingChanged = { [weak service] speaking in
+                    service?.handleAnswerSpeechActive(speaking)
+                }
+            }
+            // Dictation owns the record session: the ambient loop yields for
+            // the whole voice-input session and resumes only while its own
+            // task-PiP owner is still active.
+            pipAudioRecordingCancellable = voiceInput.$state
+                .receive(on: RunLoop.main)
+                .sink { [weak service] state in
+                    let recording = state.hasSession
+                    Task { @MainActor [weak service] in
+                        service?.handleRecordingActive(recording)
+                    }
+                }
         }
         return service
     }

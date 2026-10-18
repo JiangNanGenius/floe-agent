@@ -1,8 +1,8 @@
 // FloeCore — Background execution preference for agent runs.
 //
 // iOS cannot keep a long-running network stream alive indefinitely. This
-// records which of the three supported surfaces the user picked, so the app
-// keeps the run alive through the surface the user actually opted into.
+// enum preserves legacy persisted choices. New settings use independent
+// BackgroundExecutionOptions; the enum is only a compatibility projection.
 
 import Foundation
 

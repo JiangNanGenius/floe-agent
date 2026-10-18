@@ -92,6 +92,7 @@ struct SettingsRootView: View {
                         .tag(section)
                         .accessibilityIdentifier("settings.section.\(section.rawValue)")
                 }
+                .accessibilityIdentifier("settings.sections")
                 .navigationTitle(FloeL10n.l("settings.title"))
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -204,7 +205,8 @@ struct SettingsRootView: View {
         case .backgroundExecution:
             BackgroundExecutionSettingsView(
                 center: environment.settingsCenter,
-                videoService: environment.backgroundVideoService
+                videoService: environment.backgroundVideoService,
+                audioService: environment.pipAudioService
             )
         case .files:
             FilesSettingsView(center: environment.settingsCenter)
