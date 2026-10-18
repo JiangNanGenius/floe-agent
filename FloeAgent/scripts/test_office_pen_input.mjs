@@ -52,16 +52,19 @@
  *    checked: same-colour neighbour strokes (far and at overlap distance)
  *    can never cross-clear each other; only identical-geometry strokes are
  *    a documented, inherent ambiguity;
- *  - Writer page-inset input compensation: in a text document the replayed
- *    pen stream is shifted by the live page-1 inset derived from
- *    app.file.writer.pageRectangleList (twips -> CSS through
+ *  - Writer page-TOP inset input compensation: in a text document the
+ *    replayed pen stream's Y is shifted by the live page-1 top inset derived
+ *    from app.file.writer.pageRectangleList (twips -> CSS through
  *    twipsToPixels/dpiScale), fixing the measured real-App Word ghosting
  *    (engine anchored committed ink one page inset below the pen; see the
- *    gate comment and the 2026-10-19 handoff). Preview and paint probes
- *    keep raw pen coordinates, so near evidence settles with no jump. The
- *    compensation fails open (absent, non-text, negative, oversized,
- *    non-finite, broken scale) and recomputes per contact; XLSX/PPTX
- *    streams stay byte-identical. No hardcoded pixel constant;
+ *    gate comment and the 2026-10-19 handoff). X is replayed exactly raw even
+ *    when the page-1 X origin is nonzero: the actual C5 App run measured
+ *    19.3 CSS Word X drift (38.8 after pinch) because both axes had been
+ *    subtracted. Preview and paint probes keep raw pen coordinates, so near
+ *    evidence settles with no jump. The Y compensation fails open (absent,
+ *    non-text, negative, oversized, non-finite, broken scale) and recomputes
+ *    per contact; XLSX/PPTX streams stay byte-identical. No hardcoded pixel
+ *    constant;
  *  - zero-move contact: the canonical replay for a tap is exactly
  *    mousedown+mouseup at the same point (no fabricated move) and the
  *    preview shows the dot path.
@@ -988,18 +991,20 @@ const setStyle = (world, color, width, transparency) => {
     && w.state().previewClears === 10, JSON.stringify(w.state()));
 }
 
-// --- Writer page-inset compensation + adversarial handoff ownership ---------
+// --- Writer page-top inset compensation + adversarial handoff ownership -----
 
-// Turns this world into a Writer document whose page 1 sits `yTw` twips
-// below the document-space origin (the real App geometry: paper top
-// measured at canvas-local device px 37 == ~278 twips at zoom 100).
+// Turns this world into a Writer document whose page-1 origin is
+// `rects[0] = [xTw, yTw, ...]`. The y component is the top inset below the
+// document-space origin (the real App geometry: paper top measured at
+// canvas-local device px 37 == ~278 twips at zoom 100); the x component is
+// diagnostic-only input that the replay never subtracts.
 const setWriterPages = (world, rects) => {
   world.window.app.map._docLayer._docType = 'text';
   world.window.app.file = { writer: { pageRectangleList: rects } };
 };
 
-// 27. The compensation is derived from the live page geometry, applied to
-//     the replayed pen stream only, and the preview/probes keep the raw
+// 27. The Y compensation is derived from the live page geometry, applied to
+//     the replayed pen stream's Y only, and the preview/probes keep the raw
 //     pen coordinates so the compensated engine paint lands where the
 //     near probes already look (zero settle jump, near evidence only).
 {
@@ -1024,8 +1029,9 @@ const setWriterPages = (world, rects) => {
     && seen[1].buttons === 1 && seen[2].buttons === 1,
     JSON.stringify(seen.map((e) => [e.type, e.clientY, e.buttons])));
   check('inset/diagnostic-exposed',
-    JSON.stringify(w.state().writerInsetTwips) === '[0,278]',
-    JSON.stringify(w.state().writerInsetTwips));
+    JSON.stringify(w.state().writerInsetTwips) === '[0,278]'
+    && JSON.stringify(w.state().writerPageOriginTwips) === '[0,278]',
+    JSON.stringify([w.state().writerInsetTwips, w.state().writerPageOriginTwips]));
   const paths = overlayPaths(w).paths;
   check('inset/preview-keeps-raw-pen-coordinates',
     paths.length === 1
@@ -1044,7 +1050,48 @@ const setWriterPages = (world, rects) => {
     JSON.stringify(w.state()));
 }
 
-// 28. Fail-open matrix: non-text documents (XLSX/PPTX controls stay
+// 28. Axis isolation: a nonzero page-1 X origin must never move the
+//     replayed stream. 193 twips is the exact C5 Word horizontal
+//     overcompensation (19.3 CSS) at this world's 0.2 twipsToPixels / dpr 2
+//     scale; the raw-X D9 run measured 0.75 CSS. The valid Y inset still
+//     applies exactly once, and the preview stays on the raw pen path.
+{
+  const w = newWorld();
+  w.arm();
+  setStyle(w, 0xFF0000, 150, 0);
+  setWriterPages(w, [[193, 278, 12240, 15840]]);
+  const seen = recordedMouse(w);
+  const dx = 193 * 0.2 / 2; // 19.3 CSS: must NOT be subtracted
+  const dy = 278 * 0.2 / 2;
+  check('inset/c5-horizontal-regression-is-nonzero',
+    Math.abs(dx - 19.3) < 1e-9 && dy > 0,
+    `${dx}/${dy}`);
+  w.pen('pointerdown', 100, 200, w.canvas, { pointerId: 241 });
+  w.pen('pointermove', 110, 210, w.canvas, { pointerId: 241 });
+  w.pen('pointermove', 120, 220, w.canvas, { pointerId: 241 });
+  w.pumpFrames(1);
+  check('inset/page-x-remains-raw',
+    seen.length === 3
+    && seen.every((e, i) => e.clientX === [100, 110, 120][i])
+    && seen.every((e, i) => Math.abs(e.clientY - ([200, 210, 220][i] - dy)) < 1e-9),
+    JSON.stringify(seen.map((e) => [e.type, e.clientX, e.clientY])));
+  check('inset/page-x-not-subtracted-diagnostic',
+    JSON.stringify(w.state().writerInsetTwips) === '[0,278]'
+    && JSON.stringify(w.state().writerPageOriginTwips) === '[193,278]',
+    JSON.stringify([w.state().writerInsetTwips, w.state().writerPageOriginTwips]));
+  const pathsX = overlayPaths(w).paths;
+  check('inset/nonzero-x-preview-stays-raw',
+    pathsX.length === 1
+    && pathsX[0].getAttribute('d') === 'M100.0 200.0 L110.0 210.0 L120.0 220.0',
+    pathsX.length ? pathsX[0].getAttribute('d') : 'none');
+  w.pen('pointerup', 120, 220, w.canvas, { pointerId: 241 });
+  check('inset/nonzero-x-up-stays-raw',
+    seen.length === 4 && seen[3].type === 'mouseup' && seen[3].clientX === 120
+    && Math.abs(seen[3].clientY - (220 - dy)) < 1e-9,
+    JSON.stringify(seen[3] && [seen[3].type, seen[3].clientX, seen[3].clientY]));
+}
+
+// 29. Fail-open matrix: non-text documents (XLSX/PPTX controls stay
 //     byte-identical), absent/negative/oversized/non-finite page rects and
 //     broken scales all replay the raw coordinates with no diagnostic.
 {
@@ -1072,7 +1119,25 @@ const setWriterPages = (world, rects) => {
   }
 }
 
-// 29. The inset is recomputed per contact: a zoom change between contacts
+// 30. An unusable X diagnostic cannot suppress a valid Y inset: the axes
+//     are independent, X stays raw and only the bounded Y term applies.
+{
+  const w = newWorld();
+  w.arm();
+  setWriterPages(w, [[NaN, 278, 1, 1]]);
+  const seen = recordedMouse(w);
+  const dy = 278 * 0.2 / 2;
+  w.pen('pointerdown', 50, 60, w.canvas, { pointerId: 215 });
+  check('inset/invalid-x-does-not-suppress-valid-y',
+    seen.length === 1 && seen[0].clientX === 50
+    && Math.abs(seen[0].clientY - (60 - dy)) < 1e-9
+    && JSON.stringify(w.state().writerInsetTwips) === '[0,278]'
+    && w.state().writerPageOriginTwips === null,
+    JSON.stringify([seen[0] && [seen[0].clientX, seen[0].clientY],
+      w.state().writerInsetTwips, w.state().writerPageOriginTwips]));
+}
+
+// 31. The inset is recomputed per contact: a zoom change between contacts
 //     (twipsToPixels) rescales the compensation from the same page rect.
 {
   const w = newWorld();
@@ -1092,7 +1157,7 @@ const setWriterPages = (world, rects) => {
     JSON.stringify(seen.map((e) => e.clientY)));
 }
 
-// 30. Adversarial ownership: a same-colour neighbour stroke painting its
+// 32. Adversarial ownership: a same-colour neighbour stroke painting its
 //     own path must never clear this stroke's handoff (no wide windows —
 //     evidence stays on the stroke's own near patches).
 {
@@ -1116,7 +1181,7 @@ const setWriterPages = (world, rects) => {
     && w.state().lastPreviewClear === 'painted', JSON.stringify(w.state()));
 }
 
-// 31. Adversarial ownership at overlap distance: a same-colour stroke 40
+// 33. Adversarial ownership at overlap distance: a same-colour stroke 40
 //     css px away (outside the 7x7 near patches and its paint radius)
 //     still cannot cross-clear; its own paint does.
 {
@@ -1137,7 +1202,7 @@ const setWriterPages = (world, rects) => {
     JSON.stringify(w.state()));
 }
 
-// 32. Documented residual ambiguity: two same-colour strokes on IDENTICAL
+// 34. Documented residual ambiguity: two same-colour strokes on IDENTICAL
 //     geometry are indistinguishable to any geometric evidence scheme; one
 //     paint legitimately settles both. Recorded, not silently accepted.
 {
@@ -1153,7 +1218,7 @@ const setWriterPages = (world, rects) => {
     JSON.stringify(w.state()));
 }
 
-// 33. Zero-move contact (a handwriting dot): the canonical replay is
+// 35. Zero-move contact (a handwriting dot): the canonical replay is
 //     exactly mousedown+mouseup at the SAME point — the gate fabricates no
 //     intermediate move — and the presentation shows the single-point dot
 //     path. Persistence of the dot is core-side (see handoff engine trace).
@@ -1178,7 +1243,7 @@ const setWriterPages = (world, rects) => {
     paths.length ? paths[0].getAttribute('d') : 'none');
 }
 
-// 34. Production text contracts for this round: the far-window fallback is
+// 36. Production text contracts for this round: the far-window fallback is
 //     gone (root review: wide same-colour windows are not ownership), and
 //     the compensation is derived, bounded and text-only.
 check('inset/no-far-window-tier-in-production',
@@ -1186,6 +1251,8 @@ check('inset/no-far-window-tier-in-production',
 check('inset/derived-bounded-text-only',
   script.includes('pageRectangleList') && script.includes('WRITER_INSET_MAX_TWIPS')
   && script.includes("_docType !== 'text'"));
+check('inset/x-not-compensated-in-source',
+  !script.includes('clientX -=') && !script.includes('writerInsetCss.x'));
 
 console.log(`${checks} checks, ${failures} failed`);
 console.log(failures === 0 ? 'ALL PEN INPUT CONTRACT CHECKS PASSED' : `${failures} CHECK(S) FAILED`);

@@ -44,11 +44,11 @@
  *   touch->Pencil recovery clears the flag before each replayed mouse
  *   event), and the finger sequence itself must produce no core mouse
  *   messages.
- *   OFFICE_PEN_WRITER_INSET returns the Writer page-inset compensation
+ *   OFFICE_PEN_WRITER_INSET returns the Writer page-top inset compensation
  *   inputs (docType, pageRectangleList[0], twipsToPixels/dpiScale, the
  *   derived CSS inset, viewedRectangle, anchor, canvas geometry, text
- *   cursor) plus the gate's applied writerInsetTwips, for the real-App
- *   alignment assertions described at its definition.
+ *   cursor) plus the gate's applied writerInsetTwips/writerPageOriginTwips,
+ *   for the real-App alignment assertions described at its definition.
  *
  * This is not device Pencil acceptance: pressure, haptics, real pinch feel,
  * actual pixel paint and physical WebKit pointer/touch interop remain with
@@ -194,17 +194,25 @@ const OFFICE_PEN_TOUCH_ARBITRATION = `(() => {
   };
 })()`;
 
-// Writer page-inset alignment diagnostic (2026-10-19 ghosting round).
+// Writer page-top inset alignment diagnostic (2026-10-19 ghosting round).
 // Evaluate in the live editor web view (any time; ideally before a stroke,
 // after arming drawing mode, and after a stroke settles). It returns every
 // input the gate's derived Writer compensation uses plus the gate's own
 // applied value, so the App run can assert:
 //   - docType === 'text' documents: gateState.writerInsetTwips equals
-//     pageRect0 [x, y] when the inset is in bounds, else null (fail-open);
-//   - derivedInsetCss matches the measured no-jump drift correction: after
-//     the compensated stroke, the canonical-canvas drift metric must fall
-//     from ~17.24 css px (measured 2026-10-19, page inset ~278 twips at
-//     zoom 100/dpr 2) to the strict tolerance;
+//     [0, pageY] when the top inset is in bounds, else null (fail-open);
+//     gateState.writerPageOriginTwips preserves the raw [pageX, pageY] pair.
+//     Page X is diagnostic only and is never subtracted from the replay:
+//     the C5 build subtracted both axes and the actual App measured Word
+//     X drift 19.3 CSS (38.8 after pinch) against a raw-X 0.75 CSS baseline;
+//   - derivedInsetCss is the APPLIED [0, pageY] inset. After the corrected
+//     stroke the canonical-canvas drift metric must fall from ~17.24 css px
+//     on Y (measured 2026-10-19, page top ~278 twips at zoom 100/dpr 2) to
+//     the strict tolerance while X stays at the raw-pointer baseline. The
+//     C5 test aborted at X before its Y assertion, but root's exported C5
+//     attachments measured Y drift 1.76 CSS (plain/rapid) and 3.26 CSS
+//     (post-pinch); the corrected run must still reach/pass the unchanged
+//     Y assertion;
 //   - spreadsheet/presentation documents: pageRect0 null or unused and
 //     writerInsetTwips null (controls must stay untouched);
 //   - textCaretCheck: a MOUSE (not pen, not drawing mode) click on a text
@@ -237,7 +245,7 @@ const OFFICE_PEN_WRITER_INSET = `(() => {
     twipsToPixels: scaleOk ? ttP : null,
     dpiScale: scaleOk ? dpr : null,
     derivedInsetCss: (first && scaleOk)
-      ? [Number(first[0]) * ttP / dpr, Number(first[1]) * ttP / dpr] : null,
+      ? [0, Number(first[1]) * ttP / dpr] : null,
     viewedRect: vr ? { x1: vr.x1, y1: vr.y1, width: vr.width, height: vr.height } : null,
     anchor: (app.sectionContainer && typeof app.sectionContainer.getDocumentAnchor === 'function')
       ? app.sectionContainer.getDocumentAnchor() : null,

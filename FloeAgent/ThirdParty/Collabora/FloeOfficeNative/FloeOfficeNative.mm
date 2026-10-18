@@ -395,7 +395,7 @@ static NSString *FloeInkInputGatingScript() {
         const state = window.__floePenState = {
             strokes: 0, coreEvents: 0, armedDispatches: 0, activeStroke: false, toolState: null,
             shapeHandleSuspensions: 0, previewHandoffs: 0, previewClears: 0,
-            lastPreviewClear: null, writerInsetTwips: null
+            lastPreviewClear: null, writerInsetTwips: null, writerPageOriginTwips: null
         };
         let drawing = false;
         let contact = null;
@@ -448,13 +448,14 @@ static NSString *FloeInkInputGatingScript() {
                     container.touchEventInProgress = false;
             } catch (ignored) {}
         };
-        // ---- Writer page-inset input compensation ---------------------------
+        // ---- Writer page-top inset input compensation -----------------------
         // Measured in the real App (2026-10-19 root runs
         // pencil-app/handoff-geometry-failure-3 and no-jump-negative-4/
         // controls-5, pinned bundle 6320b78c, engine 27b21dc1): Writer
         // commits ink about one page-top inset BELOW the pen (driftY
         // 17.24 CSS px at zoom 100%/dpr 2; XLSX/PPTX controls drift
-        // <=3.4/0.4 and pass). The client chain itself is consistent:
+        // <=3.4/0.4 and pass) while the same run's X drift stays at
+        // 0.75 CSS. The client chain itself is consistent:
         // convertPositionToCanvasLocale maps client CSS to canvas device
         // px, MouseControl.refreshPosition/postCoreMouseEvent round-trip
         // through viewedRectangle and the tiles documentAnchor, and
@@ -470,29 +471,50 @@ static NSString *FloeInkInputGatingScript() {
         // the page origin, so the committed custGeom anchors one inset
         // below the pen on canvas AND in the saved document (the run's PDF
         // export shows the ink ~12 pt below the press point, page-
-        // relative). The architectural fix belongs to the engine (sw LOK
-        // graphics anchoring must consume document-space coordinates like
-        // the text hit path already does); until that lands, the gate
-        // applies the equivalent derived input transform to its own
-        // replayed pen stream only, while drawing mode is armed on a text
-        // document: subtract the live page-1 inset in twips
-        // (app.file.writer.pageRectangleList[0][0..1]) converted to CSS px
-        // through app.twipsToPixels/app.dpiScale. The value is derived at
+        // relative).
+        //
+        // ONLY that page-TOP inset is double-consumed. The page-1 X origin
+        // is a document-space left inset the client chain already places
+        // correctly; it is not an input offset. The C5 build briefly
+        // subtracted both page-origin axes, and the actual App run then
+        // measured Word X drift 19.3 CSS (19.25 with rapid contacts, 38.8
+        // after pinch) — it scaled with the subtracted X term — although
+        // raw X had measured 0.75 CSS. So the replayed X stays byte-raw and
+        // only the live page-1 Y origin is subtracted. The C5 test stopped
+        // at the X assertion before reaching Y, but root's exported
+        // attachments measured C5 Y drift 1.76 CSS (plain and rapid
+        // contacts) and 3.26 CSS after pinch, inside the unchanged 4 CSS
+        // bound; the corrected component must still reach and pass that
+        // same Y assertion.
+        //
+        // The architectural fix belongs to the engine (sw LOK graphics
+        // anchoring must consume document-space coordinates like the text
+        // hit path already does); until that lands, the gate applies the
+        // equivalent derived input transform to its own replayed pen
+        // stream only, while drawing mode is armed on a text document:
+        // subtract the live page-1 top inset in twips
+        // (app.file.writer.pageRectangleList[0][1]) converted to CSS px
+        // through app.twipsToPixels/app.dpiScale. The Y value is derived at
         // runtime, never hardcoded, bounded, and fails open (no
-        // compensation) for absent, non-finite, negative or oversized
-        // insets, non-text documents, or unreadable scales. Preview and
-        // paint probes keep using the raw pen coordinates, so the
-        // compensated engine paint lands where the near probes already
-        // look: handoff clears on real paint evidence with no settle jump.
+        // compensation) for absent, non-finite, negative or oversized top
+        // insets, non-text documents, or unreadable scales. X is replayed
+        // unchanged and an unusable X diagnostic never suppresses a valid
+        // Y inset. Preview and paint probes keep using the raw pen
+        // coordinates, so the compensated engine paint lands where the
+        // near probes already look: handoff clears on real paint evidence
+        // with no settle jump.
+        // Diagnostics: writerInsetTwips reports the APPLIED inset [0, y];
+        // writerPageOriginTwips preserves the raw page-1 [x, y] pair.
         // NOTE for root: if the engine later fixes its graphics anchoring
         // while pageRectangleList keeps y1 > 0, this compensation
         // over-corrects by the same inset — remove it then; the no-jump
         // drift metric shows -inset immediately if that happens.
-        const WRITER_INSET_MAX_TWIPS = 1440; // sane page inset bound (1 in)
-        let writerInsetCss = null;
+        const WRITER_INSET_MAX_TWIPS = 1440; // sane page-top inset bound (1 in)
+        let writerInsetYCss = null;
         const computeWriterInsetCss = () => {
-            writerInsetCss = null;
+            writerInsetYCss = null;
             state.writerInsetTwips = null;
+            state.writerPageOriginTwips = null;
             try {
                 const docLayer = window.app && window.app.map && window.app.map._docLayer;
                 if (!docLayer || docLayer._docType !== 'text') return;
@@ -501,30 +523,27 @@ static NSString *FloeInkInputGatingScript() {
                 if (!pages || !pages.length) return;
                 const first = pages[0];
                 if (!first || first.length < 2) return;
-                const xTw = Number(first[0]);
+                const xTw = Number(first[0]); // diagnostic only, never applied
                 const yTw = Number(first[1]);
-                if (!Number.isFinite(xTw) || !Number.isFinite(yTw)) return;
-                if (xTw < 0 || yTw < 0) return;
-                if (xTw > WRITER_INSET_MAX_TWIPS || yTw > WRITER_INSET_MAX_TWIPS) return;
-                if (xTw === 0 && yTw === 0) return;
+                if (!Number.isFinite(yTw)) return;
+                if (yTw < 0 || yTw > WRITER_INSET_MAX_TWIPS) return;
+                if (yTw === 0) return;
                 const ttP = Number(window.app.twipsToPixels);
                 const dpr = Number(window.app.dpiScale);
                 if (!(ttP > 0) || !(dpr > 0)) return;
-                writerInsetCss = { x: xTw * ttP / dpr, y: yTw * ttP / dpr };
-                state.writerInsetTwips = [xTw, yTw];
+                writerInsetYCss = yTw * ttP / dpr;
+                state.writerPageOriginTwips = Number.isFinite(xTw) ? [xTw, yTw] : null;
+                state.writerInsetTwips = [0, yTw];
             } catch (ignored) {
-                writerInsetCss = null;
+                writerInsetYCss = null;
             }
         };
         const mouse = (type, source, buttons, target) => {
             recoverTouchState();
-            let clientX = source.clientX;
+            const clientX = source.clientX; // page-1 X is never compensated
             let clientY = source.clientY;
-            if (writerInsetCss
-                && Number.isFinite(clientX) && Number.isFinite(clientY)) {
-                clientX -= writerInsetCss.x;
-                clientY -= writerInsetCss.y;
-            }
+            if (writerInsetYCss !== null && Number.isFinite(clientY))
+                clientY -= writerInsetYCss;
             target.dispatchEvent(new MouseEvent(type, {
                 bubbles: true, cancelable: true, view: window,
                 clientX: clientX, clientY: clientY, button: 0, buttons
@@ -1162,9 +1181,10 @@ static NSString *FloeInkInputGatingScript() {
         const down = (event) => {
             if (!drawing || event.pointerType !== 'pen' || contact || !onCanvas(event)) return;
             const canvas = canvasOf();
-            // Per-contact derivation of the Writer page-inset compensation
+            // Per-contact derivation of the Writer page-top compensation
             // (see computeWriterInsetCss): fresh at every down so zoom or
-            // layout changes between contacts are always honoured.
+            // layout changes between contacts are always honoured. Page X
+            // is never part of this transform.
             computeWriterInsetCss();
             contact = { id: event.pointerId, last: event };
             state.activeStroke = true;
@@ -1257,7 +1277,8 @@ static NSString *FloeInkInputGatingScript() {
             previewHandoffs: state.previewHandoffs,
             previewClears: state.previewClears,
             lastPreviewClear: state.lastPreviewClear,
-            writerInsetTwips: state.writerInsetTwips
+            writerInsetTwips: state.writerInsetTwips,
+            writerPageOriginTwips: state.writerPageOriginTwips
         });
     };
     if (document.readyState === 'loading')
