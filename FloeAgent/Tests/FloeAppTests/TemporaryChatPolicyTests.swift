@@ -561,13 +561,16 @@ struct TemporaryChatRuntimeDispatchTests {
         let protocolKind: ModelProtocol = .openAIChatCompletions
         private let lock = NSLock()
         private var turns: [[AgentEvent]]
+        private var requestStorage: [ProviderStreamRequest] = []
+        var requests: [ProviderStreamRequest] { lock.withLock { requestStorage } }
         init(turns: [[AgentEvent]]) { self.turns = turns }
         func stream(
             request: ProviderStreamRequest,
             credentials: ProviderCredentials
         ) -> AsyncThrowingStream<AgentEvent, Error> {
             let turn: [AgentEvent]? = lock.withLock {
-                turns.isEmpty ? nil : turns.removeFirst()
+                requestStorage.append(request)
+                return turns.isEmpty ? nil : turns.removeFirst()
             }
             return AsyncThrowingStream { continuation in
                 if let turn {
@@ -635,9 +638,7 @@ struct TemporaryChatRuntimeDispatchTests {
 
         func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
             try context.cancellation.throwIfCancelled()
-            lock.lock()
-            storage.append(Entry(call: call, context: context))
-            lock.unlock()
+            lock.withLock { storage.append(Entry(call: call, context: context)) }
             return ToolResult(callID: call.id, status: .ok, outputSummary: "ok", outputDigest: "d")
         }
     }
