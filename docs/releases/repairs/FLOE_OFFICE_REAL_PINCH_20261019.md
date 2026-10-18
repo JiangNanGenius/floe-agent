@@ -12,7 +12,8 @@
 | 后续 touchmove / Subsequent moves | 9 | 10 |
 | 目标 / Target | document-canvas | document-canvas |
 | 取消／丢弃记录 / Cancellation or dropped records | 0 / 0 | 0 / 0 |
-| 手势起点、区域、多指状态 / Start, section, multitouch | 未初始化 / unset | 未初始化 / unset |
+| 手势起点、区域 / Start, section | 未初始化 / unset | 未初始化 / unset |
+| 移动期间 multiTouch / Multitouch during moves | 1 | 1 |
 | 引擎缩放 / Engine zoom | 10 → 10 | 10 → 10 |
 | 文档标题可见宽度比 / Visible title width ratio | 0.9286 | 1.0000 |
 
