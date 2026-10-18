@@ -184,7 +184,7 @@ Check save status before closing or switching. Use Trash for recovery and review
 
 1. Open a DOCX, XLSX or PPTX file, wait for it to load, then enter editing.
 2. Edit according to the format: Word supports styles, lists, alignment and tables; Excel supports cells and formulas, formatting, rows and columns, freeze panes, sorting and filtering; presentations support slide duplication, reordering and object alignment.
-3. For handwriting annotations, enable the pen, deselect existing drawing objects, then choose color, width and transparency.
+3. Tap **Start drawing** in the toolbar to write with Apple Pencil. Open **Pen settings** separately to choose color, width and transparency. Tap **Stop drawing** to return to ordinary editing.
 4. For AI edits, review the preview and confirm to apply. Save your manual edits first.
 5. Save and wait for completion. Export the file when ready to share.
 

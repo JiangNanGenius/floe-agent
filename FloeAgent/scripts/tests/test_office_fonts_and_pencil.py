@@ -43,54 +43,94 @@ const results = [];
 function check(name, pass, detail) {
     results.push({ name, pass: !!pass, detail: detail === undefined ? '' : String(detail) });
 }
-const listeners = {};
+const listeners = {}, docListeners = {}, queue = [], delayed = [];
+let activeTool = false, coreContact = false, shapes = 0;
+let commandListener;
+const canvas = {
+    contains(target) { return target === canvas; },
+    dispatchEvent(event) {
+        queue.push(() => { if (event.type === 'mousedown') coreContact = activeTool; });
+    }
+};
+global.MouseEvent = class { constructor(type, props) { this.type = type; Object.assign(this, props); } };
 global.window = {
-    __floePencilOnly: undefined,
-    addEventListener(type, handler, options) {
-        (listeners[type] = listeners[type] || []).push({ handler, options });
-    },
+    addEventListener(type, handler) { (listeners[type] ||= []).push(handler); },
+    app: {
+        sectionContainer: { canvas },
+        map: {
+            isEditMode() { return true; },
+            on(type, handler) { commandListener = handler; }, off() {},
+            _docLayer: { postKeyboardEvent(type, char, key) {
+                queue.push(() => { if (type === 'input' && key === 1281) activeTool = false; });
+            } },
+            sendUnoCommand(command) {
+                queue.push(() => { activeTool = !activeTool; });
+            }
+        }
+    }
 };
 global.document = {
-    readyState: 'complete',
-    head: { appendChild() {} },
-    addEventListener() {},
+    readyState: 'complete', querySelector() { return canvas; },
+    addEventListener(type, handler) { (docListeners[type] ||= []).push(handler); },
+    dispatchEvent(event) {
+        queue.push(() => {
+            if (event.type === 'mouseup' && coreContact) {
+                shapes++; coreContact = false; activeTool = false;
+                // A one-shot engine's state is late, including stale true.
+                delayed.push(() => commandListener({ commandName: '.uno:Freeline_Unfilled', state: true }));
+                delayed.push(() => commandListener({ commandName: '.uno:Freeline_Unfilled', state: false }));
+            }
+        });
+    }
 };
+function flush() { while (queue.length) queue.shift()(); }
+function emit(type, props = {}) {
+    const event = { target: canvas, pointerType: 'pen', pointerId: 1,
+        clientX: 20, clientY: 20, cancelable: true, stopped: false, prevented: false,
+        stopImmediatePropagation() { this.stopped = true; }, stopPropagation() {},
+        preventDefault() { this.prevented = true; }, ...props };
+    for (const handler of listeners[type] || []) {
+        handler(event); if (event.stopped) break;
+    }
+    return event;
+}
 const source = fs.readFileSync(process.argv[1], 'utf8');
 eval(source);
-check('install/flag-default-false', window.__floePencilOnly === false);
-check('install/idempotent-marker', window.__floeInkGatingInstalled === true);
-check('install/registers-pointerdown', Array.isArray(listeners.pointerdown) && listeners.pointerdown.length > 0);
-const handler = listeners.pointerdown[0].handler;
-function dispatch(pointerType) {
-    const state = { stopped: 0, prevented: 0, propagated: 0 };
-    handler({
-        pointerType,
-        stopImmediatePropagation() { state.stopped += 1; },
-        stopPropagation() { state.propagated += 1; },
-        preventDefault() { state.prevented += 1; },
-    });
-    return state;
+check('install/off', window.__floePencilOnly === false);
+check('idle/finger-passes', !emit('pointerdown', { pointerType: 'touch' }).prevented);
+check('enable', window.__floeSetOfficeDrawingMode(true)); flush();
+check('drawing/canvas-finger-blocked', emit('pointerdown', { pointerType: 'touch' }).prevented);
+check('drawing/toolbar-finger-passes', !emit('pointerdown', { pointerType: 'touch', target: {} }).prevented);
+check('drawing/toolbar-pen-passes', !emit('pointerdown', { target: {} }).prevented);
+for (let i = 0; i < 10; i++) {
+    emit('pointerdown'); emit('pointermove'); emit('pointerup');
+    // Also test contacts queued before the previous core mouseup completes.
+    if (i % 2 === 1) flush();
+    if (i % 3 === 0) while (delayed.length) delayed.shift()();
 }
-// Annotation mode off: nothing is filtered.
-window.__floePencilOnly = false;
-let touch = dispatch('touch');
-check('idle/finger-not-blocked', touch.stopped === 0 && touch.prevented === 0);
-let pen = dispatch('pen');
-check('idle/pen-not-blocked', pen.stopped === 0 && pen.prevented === 0);
-// Annotation mode on: only the pencil draws.
-window.__floePencilOnly = true;
-touch = dispatch('touch');
-check('drawing/finger-blocked', touch.stopped === 1 && touch.prevented === 1 && touch.propagated === 1);
-pen = dispatch('pen');
-check('drawing/pen-passes', pen.stopped === 0 && pen.prevented === 0);
-const mouse = dispatch('mouse');
-check('drawing/mouse-passes', mouse.stopped === 0 && mouse.prevented === 0);
-// A re-install must not double-register the gate.
+flush();
+check('one-shot/ten-real-core-shapes', shapes === 10, shapes);
+check('one-shot/ten-completed-contacts', window.__floeOfficePenState().strokes === 10);
+check('one-shot/ready-for-next', activeTool && !window.__floeOfficePenState().activeStroke);
+emit('pointerdown', { pointerId: 3 });
+emit('pointerup', { pointerId: 4 });
+check('ownership/other-pointer-cannot-end', window.__floeOfficePenState().activeStroke);
+emit('pointercancel', { pointerId: 3 }); flush();
+check('cancel/released', !window.__floeOfficePenState().activeStroke && !coreContact);
+emit('pointerdown');
+window.__floeSetOfficeDrawingMode(false); flush();
+check('disable/releases-contact', !window.__floeOfficePenState().activeStroke && !coreContact && !activeTool);
+window.__floeSetOfficeDrawingMode(true); flush();
+emit('pointerdown'); emit('pointerup'); flush();
+check('reenable/can-draw', shapes === 13, shapes);
+emit('pointerdown'); emit('blur'); flush();
+check('blur/releases-contact', !window.__floeOfficePenState().activeStroke && !coreContact);
+emit('pointerdown'); emit('pagehide'); flush();
+check('pagehide/disarms', !window.__floePencilOnly && !window.__floeOfficePenState().activeStroke && !activeTool);
+const before = listeners.pointerdown.length;
 eval(source);
-check('install/does-not-duplicate', listeners.pointerdown.length === 1);
-for (const result of results) {
-    console.log(JSON.stringify(result));
-}
+check('install/idempotent', listeners.pointerdown.length === before);
+for (const result of results) console.log(JSON.stringify(result));
 """
 
 
@@ -176,7 +216,7 @@ class OfficePencilGatingContract(unittest.TestCase):
         self.assertIn("if (!self.readOnly)", self.source)
         self.assertIn("FloeInkInputGatingScript()", self.source)
         # ...and annotation mode arms it together with the freehand tool.
-        self.assertIn("window.__floePencilOnly = %@", self.source)
+        self.assertIn("window.__floeSetOfficeDrawingMode(%@)", self.source)
         self.assertIn(".uno:Freeline_Unfilled", self.source)
         # The freehand tool is the engine's editable vector shape tool, so the
         # strokes are document content that saves and reopens with the file.

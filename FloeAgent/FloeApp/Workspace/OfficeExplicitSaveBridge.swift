@@ -78,6 +78,7 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
         case notReady
         case invalidArguments
         case objectSelected
+        case strokeActive
         case dispatchFailed(String)
 
         var errorDescription: String? {
@@ -87,6 +88,8 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
             case .notReady:
                 OfficeInkText.t("文档尚未进入可编辑状态，暂时无法应用笔迹参数。",
                                 "The document is not editable yet; ink settings cannot be applied.")
+            case .strokeActive:
+                OfficeInkText.t("请抬笔后再调整画笔。", "Lift the Pencil before changing pen settings.")
             case .objectSelected:
                 OfficeInkText.t("请先轻点文档空白处，取消对象选择后再调整画笔。",
                                 "Tap a blank area to deselect the object before changing pen settings.")
@@ -114,12 +117,23 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
                          controller: UIViewController) async throws -> InkApplyOutcome {
         controller.loadViewIfNeeded()
         guard let webView = findWebView(in: controller.view) else { throw InkApplyError.bridgeUnavailable }
-        let dispatch: Any?
-        do {
-            dispatch = try await webView.evaluateJavaScript(
-                "window.__floeApplyOfficeInk ? window.__floeApplyOfficeInk(\(inkRequestJSON(stroke))) : null")
-        } catch {
-            throw InkApplyError.dispatchFailed("bridge-unreachable")
+        var dispatch: Any?
+        // A just-finished contact can still have a selection notification in
+        // flight. Wait for the core's real deselection; never style that shape
+        // or clear the frontend rectangle to manufacture readiness.
+        for attempt in 0..<16 {
+            try Task.checkCancellation()
+            do {
+                dispatch = try await webView.evaluateJavaScript(
+                    "window.__floeApplyOfficeInk ? window.__floeApplyOfficeInk(\(inkRequestJSON(stroke))) : null")
+            } catch {
+                throw InkApplyError.dispatchFailed("bridge-unreachable")
+            }
+            let result = dispatch as? [String: Any]
+            let reason = result?["reason"] as? String
+            guard attempt < 15, reason == "stroke-active" || reason == "object-selected",
+                  (try? await webView.evaluateJavaScript("window.__floePencilOnly === true")) as? Bool == true else { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
         }
         guard let result = dispatch as? [String: Any] else { throw InkApplyError.bridgeUnavailable }
         guard (result["ok"] as? Bool) == true else {
@@ -127,6 +141,7 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
             case "not-ready": throw InkApplyError.notReady
             case "invalid": throw InkApplyError.invalidArguments
             case "object-selected": throw InkApplyError.objectSelected
+            case "stroke-active": throw InkApplyError.strokeActive
             case .some(let reason): throw InkApplyError.dispatchFailed(reason)
             case .none: throw InkApplyError.dispatchFailed("unknown")
             }
@@ -235,6 +250,8 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
             const selection = window.app.definitions && window.app.definitions.graphicSelection;
             if (!selection || typeof selection.hasActiveSelection !== 'function')
                 return { ok: false, reason: 'not-ready' };
+            if (window.__floePenState && window.__floePenState.activeStroke)
+                return { ok: false, reason: 'stroke-active' };
             if (selection.hasActiveSelection())
                 return { ok: false, reason: 'object-selected' };
             // LineWidth is a method slot: TransformParameters passes its

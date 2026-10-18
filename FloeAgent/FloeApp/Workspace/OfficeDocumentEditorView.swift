@@ -584,9 +584,8 @@ final class OfficeFileSession: ObservableObject {
     /// re-runs with the newest stroke. Only the newest generation may publish,
     /// so an older completion can never overwrite the latest settings.
     ///
-    /// Pencil-only input is not gated: the pinned host owns the WebView pointer
-    /// handlers and exposes no verified pen-vs-finger event hook, so no finger
-    /// protection is claimed here.
+    /// The native host owns contact routing and blocks canvas palm input;
+    /// settings wait until the previous contact is no longer selected.
     func applyInkPreferences() async {
         inkError = nil
         guard drawingMode, !readOnly, let controller, supportsDrawing else {
@@ -3252,20 +3251,6 @@ struct OfficeDocumentEditorView: View {
                 .disabled(!session.canAct)
                 .accessibilityIdentifier("office.editor.insertAttachment")
         }
-        if session.supportsDrawing {
-            Button {
-                showingInkControls = true
-            } label: {
-                Label(OfficeInkText.t("画笔批注", "Annotate"), systemImage: "pencil.tip")
-                    .frame(minWidth: 44, minHeight: 44)
-            }
-            .disabled(!session.canAct && !session.drawingMode)
-            .accessibilityIdentifier("office.drawing.toggle")
-            .popover(isPresented: $showingInkControls, arrowEdge: .top) {
-                OfficeInkControlPanel(session: session, ink: session.inkPreferences)
-                    .presentationCompactAdaptation(.popover)
-            }
-        }
         if OfficeDocumentFormat(fileExtension: (relativePath as NSString).pathExtension) != nil {
             Button {
                 showingCommandPanel = true
@@ -3281,6 +3266,37 @@ struct OfficeDocumentEditorView: View {
                 Task { do { try await session.startPresentation() } catch { session.error = error.localizedDescription } }
             } label: { Label("workspace.office_document_editor_view.slide_show", systemImage: "play.rectangle").frame(minWidth: 44, minHeight: 44) }
                 .disabled(!session.canAct).accessibilityIdentifier("office.presentation.start")
+        }
+    }
+
+    @ViewBuilder private var drawingActions: some View {
+        if session.supportsDrawing {
+            Button {
+                Task {
+                    do { try await session.toggleDrawing() }
+                    catch { session.error = error.localizedDescription }
+                }
+            } label: {
+                Label(OfficeInkText.t(session.drawingMode ? "停止书写" : "开始书写",
+                                      session.drawingMode ? "Stop drawing" : "Start drawing"),
+                      systemImage: session.drawingMode ? "pencil.tip.crop.circle.fill" : "pencil.tip")
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .tint(session.drawingMode ? Color.accentColor : Color.primary)
+            .disabled(!session.canAct)
+            .accessibilityValue(OfficeInkText.t(session.drawingMode ? "已开启" : "已关闭",
+                                               session.drawingMode ? "On" : "Off"))
+            .accessibilityIdentifier("office.drawing.toggle")
+            Button { showingInkControls = true } label: {
+                Label(OfficeInkText.t("画笔设置", "Pen settings"), systemImage: "slider.horizontal.3")
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .disabled(!session.canAct)
+            .accessibilityIdentifier("office.drawing.settings")
+            .popover(isPresented: $showingInkControls, arrowEdge: .top) {
+                OfficeInkControlPanel(session: session, ink: session.inkPreferences)
+                    .presentationCompactAdaptation(.popover)
+            }
         }
     }
 
@@ -3335,6 +3351,7 @@ struct OfficeDocumentEditorView: View {
             // layouts too; the remaining edit-mode actions keep their existing
             // compact menu placement.
             editAction
+            drawingActions
             if inlineHeader == nil || sizeClass != .compact { primaryActions }
             documentMenu
         }

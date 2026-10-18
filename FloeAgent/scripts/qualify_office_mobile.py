@@ -245,7 +245,7 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK, sdk='iphon
     report["platformOriginalArchives"] = platform_original_archives(root, lock, sdk)
 
     command = ["xcodebuild", "-project", str(project_path.parent), "-target", "Mobile",
-        "-configuration", "Release", "-sdk", sdk, "-jobs", "2",
+        "-configuration", "Release", "-sdk", sdk, "-jobs", "6",
         "-resultBundlePath", str(destination / "Mobile.xcresult"),
         "ARCHS=arm64", "ONLY_ACTIVE_ARCH=YES", "CODE_SIGNING_ALLOWED=NO",
         "COMPILER_INDEX_STORE_ENABLE=NO", "LOSRCDIR=" + str(source / "engine"),

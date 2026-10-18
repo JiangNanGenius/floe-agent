@@ -122,6 +122,12 @@ window.app.definitions.graphicSelection.hasActiveSelection = () => true;
 check('selection/does-not-restyle-existing-object',
     window.__floeApplyOfficeInk({ color: 0, width: 150, transparency: 0 }).reason === 'object-selected'
     && rejectCalls === 0);
+window.app.definitions.graphicSelection.hasActiveSelection = () => false;
+window.__floePenState = { activeStroke: true };
+check('contact/does-not-restyle-in-progress-stroke',
+    window.__floeApplyOfficeInk({ color: 0, width: 150, transparency: 0 }).reason === 'stroke-active'
+    && rejectCalls === 0);
+window.__floePenState.activeStroke = false;
 window.app.definitions = {};
 check('selection/unknown-does-not-dispatch',
     window.__floeApplyOfficeInk({ color: 0, width: 150, transparency: 0 }).reason === 'not-ready'

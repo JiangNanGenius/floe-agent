@@ -15,9 +15,9 @@ import FloeOfficeNative
 
 @MainActor
 final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
-    func testDOCXTwoNativeVectorStrokesSaveAndReopen() async throws { try await exercise("docx") }
-    func testXLSXTwoNativeVectorStrokesSaveAndReopen() async throws { try await exercise("xlsx") }
-    func testPPTXTwoNativeVectorStrokesSaveAndReopen() async throws { try await exercise("pptx") }
+    func testDOCXTenNativeVectorStrokesSaveAndReopen() async throws { try await exercise("docx") }
+    func testXLSXTenNativeVectorStrokesSaveAndReopen() async throws { try await exercise("xlsx") }
+    func testPPTXTenNativeVectorStrokesSaveAndReopen() async throws { try await exercise("pptx") }
 
     /// Reopen previously saved synthetic assistant outputs with the newly linked
     /// engine. No model call or edit is performed by this qualification.
@@ -216,16 +216,21 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             try await session.toggleDrawing()
             XCTAssertTrue(session.drawingMode)
             var penReceipts: [[String: Any]] = []
-            for index in 0..<2 {
+            for index in 0..<10 {
                 // Same per-document setters and App reapply action as the pen
-                // panel; preserve drawing mode across both style changes.
-                let expected = expectedStyles[index]
-                preferences.setColorHex(expected.colorHex)
-                preferences.setWidthMillimeters(expected.widthMillimeters)
-                preferences.setTransparencyPercent(0)
-                await session.applyInkPreferences()
-                guard session.inkError == nil else { throw NSError(domain: "OfficeNativeDrawingQualification", code: 3,
-                    userInfo: [NSLocalizedDescriptionKey: session.inkError ?? "App ink attributes unavailable"]) }
+                // panel; preserve drawing mode across contacts and style changes.
+                let expected = expectedStyles[index < 5 ? 0 : 1]
+                if index == 0 || index == 5 {
+                    preferences.setColorHex(expected.colorHex)
+                    preferences.setWidthMillimeters(expected.widthMillimeters)
+                    preferences.setTransparencyPercent(0)
+                    await session.applyInkPreferences()
+                    guard session.inkError == nil else { throw NSError(domain: "OfficeNativeDrawingQualification", code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: session.inkError ?? "App ink attributes unavailable"]) }
+                }
+                // Alternate short and long inter-contact delays. Keep mode on
+                // across all ten contacts and change attributes after stroke 5.
+                try await Task.sleep(nanoseconds: index.isMultiple(of: 2) ? 30_000_000 : 350_000_000)
                 let sent = try await receiveStroke(index, web: web, native: native, window: window, root: root, syntheticSource: source)
                 XCTAssertEqual(sent["strokeDelta"] as? Int, 1, "Actual pen bridge did not finish the stroke")
                 XCTAssertGreaterThanOrEqual(sent["coreEventDelta"] as? Int ?? 0, 5, "Actual pen bridge did not forward all events")
@@ -241,8 +246,8 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             XCTAssertEqual(try hash(source), sourceHash, "Native copy export altered original")
             let result = try package(copy, format: format)
             XCTAssertTrue(result.text.contains("BASELINE-DRAWING-KEEP"), "Original content lost")
-            XCTAssertGreaterThanOrEqual(result.customGeometryPaths.count, 2, "Two newly saved vector paths required")
-            XCTAssertGreaterThanOrEqual(Set(result.customGeometryPaths).count, 2, "Stroke geometry must differ")
+            XCTAssertGreaterThanOrEqual(result.customGeometryPaths.count, 10, "Ten newly saved vector paths required")
+            XCTAssertGreaterThanOrEqual(Set(result.customGeometryPaths).count, 10, "Stroke geometry must differ")
             XCTAssertTrue(result.customGeometryPointCounts.allSatisfy { $0 >= 3 }, "Missing actual vector points")
             // a:ln width is EMU (36,000/mm); App UNO width is 1/100 mm.
             // Allow one twip (635 EMU) for Writer's supported round-trip
@@ -259,7 +264,7 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             if format == "xlsx" {
                 XCTAssertEqual(result.cells["B2"], "12", "Excel basic value lost")
                 XCTAssertEqual(result.formulas["B3"], "B2*2", "Excel formula lost or flattened")
-                XCTAssertGreaterThanOrEqual(result.validAnchors, 2, "Excel strokes need nonzero visible sheet anchors")
+                XCTAssertGreaterThanOrEqual(result.validAnchors, 10, "Excel strokes need nonzero visible sheet anchors")
             }
             if format == "pptx" { XCTAssertTrue(result.text.contains("DRAWING-NOTES-KEEP"), "Speaker notes lost") }
             let manifest: [String: Any] = [
@@ -482,8 +487,8 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     const y2 = rect.top + Math.min(canvas.height, section.myTopLeft[1] + section.size[1], Math.max(dy1, dy2)) * scaleY;
     if (![x1, y1, x2, y2].every(Number.isFinite) || x2 - x1 < 120 || y2 - y1 < 120)
         throw new Error('no safely visible document drawing area');
-    const fractions = strokeID === 0 ? [[.28,.45],[.37,.40],[.47,.49],[.57,.43]]
-                                     : [[.30,.66],[.39,.73],[.49,.64],[.59,.71]];
+    const y = .25 + strokeID * .045;
+    const fractions = [[.28,y],[.37 + strokeID*.005,y-.02],[.47,y+.02+strokeID*.002],[.57+strokeID*.003,y]];
     const points = fractions.map(([x,y]) => [x1 + x * (x2-x1), y1 + y * (y2-y1)]);
     // BEGIN boundedSocketObservation — qualification-only, no payload retention.
     const observeSocket = (enabled, app) => {
