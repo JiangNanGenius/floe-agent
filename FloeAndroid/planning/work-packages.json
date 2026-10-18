@@ -1,0 +1,1059 @@
+{
+  "schemaVersion": 1,
+  "sourcePlan": "docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md",
+  "packages": [
+    {
+      "id": "P0.1",
+      "title": "功能台账",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "FloeAndroid/planning/feature-baseline.json",
+        "FloeAndroid/fixtures/inventory.json",
+        "FloeAndroid/scripts/check-fixtures.py",
+        "docs/FLOE_ANDROID_PROGRESS.zh-CN.md"
+      ],
+      "scopeNotes": "G01 coverage ledger only: 170 operations across 36 families including FND, with all 35 plan section-2 rows claimed once. Domain feature implementation and later verification goals (G12/G13) remain planned."
+    },
+    {
+      "id": "P0.2",
+      "title": "架构契约",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "FloeAndroid/core/contracts/src/main/kotlin/com/floe/android/contracts/RuntimeContracts.kt",
+        "FloeAndroid/core/swiftbridge/src/main/kotlin/com/floe/android/bridge/SwiftCore.kt",
+        "FloeAndroid/shared/Sources/FloeAndroidCore/Bridge.swift",
+        "FloeAndroid/README.md"
+      ],
+      "scopeNotes": "G01 contract foundation only: task/run/environment/job identity, revision, event cursor, grant reference and the bounded bridge are defined and exercised. Durable repositories, provider runtime and platform services belong to G02 and later goals."
+    },
+    {
+      "id": "P0.3",
+      "title": "工具链与依赖",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "FloeAndroid/toolchains.lock.json",
+        "FloeAndroid/scripts/env.sh",
+        "FloeAndroid/gradle/verification-metadata.xml",
+        "FloeAndroid/app/gradle.lockfile",
+        "docs/FLOE_ANDROID_PROGRESS.zh-CN.md"
+      ],
+      "scopeNotes": "G01 build toolchain and dependency verification only. Release signing, store packaging and the G12/G13 OS/device matrix remain pending."
+    },
+    {
+      "id": "P0.4",
+      "title": "样例与测试",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "FloeAndroid/fixtures/inventory.json",
+        "FloeAndroid/fixtures/generate.py",
+        "FloeAndroid/scripts/check-fixtures.py",
+        "FloeAndroid/core/designsystem/src/test/kotlin/com/floe/android/design/ComposerStateTest.kt",
+        "FloeAndroid/shared/Tests/FloeAndroidCoreTests/BridgeTests.swift"
+      ],
+      "scopeNotes": "Synthetic fixture and component-test foundation only. The 24 fixtures are coherent samples, not exhaustive coverage; full CJK IME, TalkBack and 16 KB runtime remain unaccepted."
+    },
+    {
+      "id": "P0.5",
+      "title": "工作区与发行设计",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "FloeAndroid/settings.gradle.kts",
+        "FloeAndroid/app/build.gradle.kts",
+        "FloeAndroid/app/src/androidTest/kotlin/com/floe/android/DistributionInstrumentedTest.kt",
+        "FloeAndroid/scripts/check-apk.py"
+      ],
+      "scopeNotes": "Workspace/channel design and current debug APK boundary only. Release-candidate packaging, store delivery and environment lifecycle are later goals."
+    },
+    {
+      "id": "P0.6",
+      "title": "全产品复用选型",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "docs/FLOE_ANDROID_UI_REUSE_RESEARCH.zh-CN.md",
+        "FloeAndroid/planning/UI_FOUNDATION.md",
+        "FloeAndroid/core/designsystem/build.gradle.kts",
+        "FloeAndroid/planning/visual-baseline.json"
+      ],
+      "scopeNotes": "G01 design decision and representative component probe only. The overall reuse research in the plan is a design record, not proof that every integration is implemented; each future page still verifies its own use."
+    },
+    {
+      "id": "P0.7",
+      "title": "安卓系统产品设计",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md",
+        "FloeAndroid/planning/ARCHITECTURE.md",
+        "FloeAndroid/planning/UI_FOUNDATION.md"
+      ],
+      "scopeNotes": "System-capability and product-design record for G01. Notification, background, permission, storage and compatibility implementations are not claimed before their owning goals."
+    },
+    {
+      "id": "P0.8",
+      "title": "网络工作台设计",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md",
+        "FloeAndroid/planning/feature-baseline.json"
+      ],
+      "scopeNotes": "Network workbench design record only (capability ledger, permissions, routing and evidence rules). No Android network measurement implementation exists in G01."
+    },
+    {
+      "id": "P0.9",
+      "title": "Root服务设计",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md",
+        "FloeAndroid/settings.gradle.kts",
+        "FloeAndroid/feature/rootsystem/src/main/kotlin/com/floe/android/rootsystem/RootSystemModule.kt"
+      ],
+      "scopeNotes": "Root-service design and the default-off/full-only boundary only. No root daemon, authorization flow or backend is implemented; that work belongs to G08."
+    },
+    {
+      "id": "P0.10",
+      "title": "文件授权设计",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md",
+        "FloeAndroid/planning/feature-baseline.json",
+        "FloeAndroid/core/contracts/src/main/kotlin/com/floe/android/contracts/RuntimeContracts.kt"
+      ],
+      "scopeNotes": "File-authorization design record only. SAF grants, persistence, provider/network mounts and failure paths belong to G04 and G11."
+    },
+    {
+      "id": "P0.11",
+      "title": "iOS视觉基线",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01",
+        "G14"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "FloeAndroid/planning/visual-baseline.json",
+        "docs/FLOE_ANDROID_UI_REUSE_RESEARCH.zh-CN.md",
+        "docs/FLOE_ANDROID_PROGRESS.zh-CN.md",
+        "FloeAndroid/planning/UI_FOUNDATION.md"
+      ],
+      "scopeNotes": "G01 representative-page baseline only. Actual iPad captures remain private; no pixel-perfect or physical-tablet claim is made, and G14 owns whole-product visual review."
+    },
+    {
+      "id": "P1.1",
+      "title": "Swift 核心",
+      "implementationGoal": "G02",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "agent-core",
+      "status": "planned"
+    },
+    {
+      "id": "P1.2",
+      "title": "数据与事件",
+      "implementationGoal": "G02",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "agent-core",
+      "status": "planned"
+    },
+    {
+      "id": "P1.3",
+      "title": "Linux",
+      "implementationGoal": "G03",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "environments-jobs",
+      "status": "planned"
+    },
+    {
+      "id": "P1.4",
+      "title": "执行边界",
+      "implementationGoal": "G03",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "environments-jobs",
+      "status": "planned"
+    },
+    {
+      "id": "P1.5",
+      "title": "原生 Office 构建",
+      "implementationGoal": "G05",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "office",
+      "status": "planned"
+    },
+    {
+      "id": "P1.6",
+      "title": "Office 操作",
+      "implementationGoal": "G05",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "office",
+      "status": "planned"
+    },
+    {
+      "id": "P1.7",
+      "title": "界面与桥接",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01",
+        "G12",
+        "G13"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "FloeAndroid/app/src/main/kotlin/com/floe/android/FloeShell.kt",
+        "FloeAndroid/app/src/main/kotlin/com/floe/android/SettingsSheet.kt",
+        "FloeAndroid/app/src/main/kotlin/com/floe/android/Diagnostics.kt",
+        "FloeAndroid/core/swiftbridge/src/androidTest/kotlin/com/floe/android/bridge/BridgeInstrumentedTest.kt",
+        "FloeAndroid/planning/UI_FOUNDATION.md"
+      ],
+      "scopeNotes": "G01 bridge and representative shell integration only: handshake/policy.inspect plus the reviewed seven representative UI IDs. No chat/model/feature backend and no full IME/TalkBack acceptance."
+    },
+    {
+      "id": "P1.8",
+      "title": "IDE 与终端复用",
+      "implementationGoal": "G04",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "files-ide-browser",
+      "status": "planned"
+    },
+    {
+      "id": "P1.9",
+      "title": "PDF 笔迹与媒体复用",
+      "implementationGoal": "G06",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "notes-pdf",
+      "status": "planned"
+    },
+    {
+      "id": "P1.10",
+      "title": "几何和远程依赖",
+      "implementationGoal": "G10",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "cad-3d",
+      "status": "planned"
+    },
+    {
+      "id": "P1.11",
+      "title": "手机操作",
+      "implementationGoal": "G08",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "device-system",
+      "status": "planned"
+    },
+    {
+      "id": "P1.12",
+      "title": "通知与后台资格探针",
+      "implementationGoal": "G03",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "environments-jobs",
+      "status": "planned"
+    },
+    {
+      "id": "P1.13",
+      "title": "平板模拟器建设",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "docs/FLOE_ANDROID_PROGRESS.zh-CN.md",
+        "FloeAndroid/scripts/env.sh",
+        "FloeAndroid/toolchains.lock.json"
+      ],
+      "scopeNotes": "API37 ARM64 tablet AVD was created, booted and used for smoke/JNI evidence. It is an emulator, not a physical tablet; both test devices use 4 KB kernels, so no 16 KB runtime proof is claimed."
+    },
+    {
+      "id": "P1.14",
+      "title": "新特性与兼容探针",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned",
+      "supportingGoals": [
+        "G01"
+      ]
+    },
+    {
+      "id": "P1.15",
+      "title": "网络能力探针",
+      "implementationGoal": "G07",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "network",
+      "status": "planned"
+    },
+    {
+      "id": "P1.16",
+      "title": "Root后端探针",
+      "implementationGoal": "G08",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "device-system",
+      "status": "planned"
+    },
+    {
+      "id": "P1.17",
+      "title": "长期文件授权探针",
+      "implementationGoal": "G04",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "files-ide-browser",
+      "status": "planned"
+    },
+    {
+      "id": "P1.18",
+      "title": "跨平台视觉探针",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01",
+        "G14"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "evidence": [
+        "docs/FLOE_ANDROID_UI_REUSE_RESEARCH.zh-CN.md",
+        "FloeAndroid/planning/UI_FOUNDATION.md",
+        "FloeAndroid/core/designsystem/src/main/kotlin/com/floe/android/design/FloeTheme.kt",
+        "FloeAndroid/planning/visual-baseline.json"
+      ],
+      "scopeNotes": "Component/visual probe and G01 representative-page integration only. No whole-product parity, pixel-perfect claim or physical-tablet proof."
+    },
+    {
+      "id": "P2.1",
+      "title": "应用结构",
+      "implementationGoal": "G01",
+      "verificationGoals": [
+        "G01",
+        "G12",
+        "G13"
+      ],
+      "owner": "android-foundation",
+      "status": "component_verified",
+      "supportingGoals": [
+        "G02",
+        "G04",
+        "G11"
+      ],
+      "evidence": [
+        "FloeAndroid/app/src/main/kotlin/com/floe/android/FloeShell.kt",
+        "FloeAndroid/app/src/main/kotlin/com/floe/android/HomeLaunchpadPage.kt",
+        "FloeAndroid/app/src/main/kotlin/com/floe/android/SettingsSheet.kt",
+        "FloeAndroid/planning/UI_FOUNDATION.md",
+        "docs/FLOE_ANDROID_PROGRESS.zh-CN.md"
+      ],
+      "scopeNotes": "G01 compact/expanded shell, theme and settings foundation only. Task lifecycle, temporary-session semantics and feature workspaces remain planned for G02 and later goals."
+    },
+    {
+      "id": "P2.2",
+      "title": "模型与对话",
+      "implementationGoal": "G02",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "agent-core",
+      "status": "planned"
+    },
+    {
+      "id": "P2.3",
+      "title": "任务生命周期",
+      "implementationGoal": "G02",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "agent-core",
+      "status": "planned"
+    },
+    {
+      "id": "P2.4",
+      "title": "内置 IDE 基础",
+      "implementationGoal": "G04",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "files-ide-browser",
+      "status": "planned"
+    },
+    {
+      "id": "P2.5",
+      "title": "环境与包",
+      "implementationGoal": "G03",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "environments-jobs",
+      "status": "planned"
+    },
+    {
+      "id": "P2.6",
+      "title": "Skills/MCP 与临时模式",
+      "implementationGoal": "G02",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "agent-core",
+      "status": "planned"
+    },
+    {
+      "id": "P2.7",
+      "title": "生命周期与安全存储",
+      "implementationGoal": "G02",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "agent-core",
+      "status": "planned"
+    },
+    {
+      "id": "P2.8",
+      "title": "手机操作服务",
+      "implementationGoal": "G08",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "device-system",
+      "status": "planned"
+    },
+    {
+      "id": "P2.9",
+      "title": "通知与运行中心",
+      "implementationGoal": "G03",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "environments-jobs",
+      "status": "planned"
+    },
+    {
+      "id": "P2.10",
+      "title": "新版系统体验接入",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P2.11",
+      "title": "无Root网络主体",
+      "implementationGoal": "G07",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "network",
+      "status": "planned"
+    },
+    {
+      "id": "P2.12",
+      "title": "Root开关与运行中心",
+      "implementationGoal": "G08",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "device-system",
+      "status": "planned"
+    },
+    {
+      "id": "P2.13",
+      "title": "核心UI同款实现",
+      "implementationGoal": "G02",
+      "verificationGoals": [
+        "G02",
+        "G14"
+      ],
+      "owner": "agent-core",
+      "status": "planned",
+      "supportingGoals": [
+        "G01",
+        "G04"
+      ]
+    },
+    {
+      "id": "P3.1",
+      "title": "完整 IDE",
+      "implementationGoal": "G04",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "files-ide-browser",
+      "status": "planned"
+    },
+    {
+      "id": "P3.2",
+      "title": "文件集成",
+      "implementationGoal": "G04",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "files-ide-browser",
+      "status": "planned"
+    },
+    {
+      "id": "P3.3",
+      "title": "内置 Office",
+      "implementationGoal": "G05",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "office",
+      "status": "planned"
+    },
+    {
+      "id": "P3.4",
+      "title": "PDF 与 OCR 基础",
+      "implementationGoal": "G06",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "notes-pdf",
+      "status": "planned"
+    },
+    {
+      "id": "P3.5",
+      "title": "浏览器",
+      "implementationGoal": "G04",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "files-ide-browser",
+      "status": "planned"
+    },
+    {
+      "id": "P3.6",
+      "title": "远程与云端任务",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P3.7",
+      "title": "跨应用任务",
+      "implementationGoal": "G08",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "device-system",
+      "status": "planned"
+    },
+    {
+      "id": "P3.8",
+      "title": "安卓系统入口与网络",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P3.9",
+      "title": "局域网发现",
+      "implementationGoal": "G07",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "network",
+      "status": "planned"
+    },
+    {
+      "id": "P3.10",
+      "title": "测速与持续诊断",
+      "implementationGoal": "G07",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "network",
+      "status": "planned"
+    },
+    {
+      "id": "P3.11",
+      "title": "深度系统工作流",
+      "implementationGoal": "G08",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "device-system",
+      "status": "planned"
+    },
+    {
+      "id": "P3.12",
+      "title": "完整非Root文件工作台",
+      "implementationGoal": "G04",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "files-ide-browser",
+      "status": "planned"
+    },
+    {
+      "id": "P4.1",
+      "title": "手记与笔迹",
+      "implementationGoal": "G06",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "notes-pdf",
+      "status": "planned"
+    },
+    {
+      "id": "P4.2",
+      "title": "PDF 批注",
+      "implementationGoal": "G06",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "notes-pdf",
+      "status": "planned"
+    },
+    {
+      "id": "P4.3",
+      "title": "画布与素材",
+      "implementationGoal": "G09",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "canvas-media",
+      "status": "planned"
+    },
+    {
+      "id": "P4.4",
+      "title": "设计流程",
+      "implementationGoal": "G09",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "canvas-media",
+      "status": "planned"
+    },
+    {
+      "id": "P4.5",
+      "title": "媒体工作台",
+      "implementationGoal": "G09",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "canvas-media",
+      "status": "planned"
+    },
+    {
+      "id": "P4.6",
+      "title": "CAD 与 3D",
+      "implementationGoal": "G10",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "cad-3d",
+      "status": "planned"
+    },
+    {
+      "id": "P4.7",
+      "title": "Office 高级主体",
+      "implementationGoal": "G05",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "office",
+      "status": "planned"
+    },
+    {
+      "id": "P4.8",
+      "title": "工作台视觉与交互对齐",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G04",
+        "G05",
+        "G06",
+        "G07",
+        "G08",
+        "G09",
+        "G10",
+        "G11",
+        "G14"
+      ],
+      "owner": "platform-integration",
+      "status": "planned",
+      "supportingGoals": [
+        "G04",
+        "G05",
+        "G06",
+        "G07",
+        "G08",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "id": "P5.1",
+      "title": "Office 完整回归",
+      "implementationGoal": "G05",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "office",
+      "status": "planned"
+    },
+    {
+      "id": "P5.2",
+      "title": "媒体与工程差异",
+      "implementationGoal": "G10",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "cad-3d",
+      "status": "planned"
+    },
+    {
+      "id": "P5.3",
+      "title": "系统与远程",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P5.4",
+      "title": "自动任务",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P5.5",
+      "title": "资料与管理",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P5.6",
+      "title": "全台账审计",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P5.7",
+      "title": "手机操作可靠性",
+      "implementationGoal": "G08",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "device-system",
+      "status": "planned"
+    },
+    {
+      "id": "P5.8",
+      "title": "系统故障与资源收敛",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P5.9",
+      "title": "高级网络分析",
+      "implementationGoal": "G07",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "network",
+      "status": "planned"
+    },
+    {
+      "id": "P5.10",
+      "title": "Root恢复与兼容",
+      "implementationGoal": "G08",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "device-system",
+      "status": "planned"
+    },
+    {
+      "id": "P6.1",
+      "title": "文档与配置迁移",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P6.2",
+      "title": "跨端同步",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P6.3",
+      "title": "设备与系统",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P6.4",
+      "title": "性能与体积",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G14"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P6.5",
+      "title": "更新与安装",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P6.6",
+      "title": "交付",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G15"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P6.7",
+      "title": "辅助功能渠道与后台验收",
+      "implementationGoal": "G08",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "device-system",
+      "status": "planned"
+    },
+    {
+      "id": "P6.8",
+      "title": "手机平板兼容验收",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P6.9",
+      "title": "开放测试与反馈闭环",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G15"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P6.10",
+      "title": "新特性正式验收",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    },
+    {
+      "id": "P6.11",
+      "title": "无线与网络交付验收",
+      "implementationGoal": "G07",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "network",
+      "status": "planned"
+    },
+    {
+      "id": "P6.12",
+      "title": "GitHub Root版验收",
+      "implementationGoal": "G08",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "owner": "device-system",
+      "status": "planned"
+    },
+    {
+      "id": "P6.13",
+      "title": "双端视觉验收",
+      "implementationGoal": "G11",
+      "verificationGoals": [
+        "G14"
+      ],
+      "owner": "platform-integration",
+      "status": "planned"
+    }
+  ]
+}

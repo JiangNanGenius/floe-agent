@@ -1,0 +1,31 @@
+{
+  "attachments": [
+    {
+      "fixtureRef": "assets/png/gradient-8.png",
+      "id": "att-1"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "b1",
+      "text": "Independent notes workspace — 手记不是聊天。",
+      "type": "text"
+    },
+    {
+      "checked": false,
+      "id": "b2",
+      "text": "β § two",
+      "type": "todo"
+    },
+    {
+      "id": "b3",
+      "language": "python",
+      "text": "print('Floe')  # γ § 3",
+      "type": "code"
+    }
+  ],
+  "chatSessionId": null,
+  "revision": 3,
+  "schema": "floe-android.notes.sample.v0",
+  "title": "手记 § Baseline 🧪"
+}

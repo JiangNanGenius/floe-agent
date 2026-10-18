@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-10-18",
+  "java": "Temurin 21.0.12.1+1",
+  "javaSha256": "3623232f33a9c3baadf304480b2535f9a3cba8a58d42ecbb438ba267315d9998",
+  "gradle": "9.6.0",
+  "gradleSha256": "bbaeb2fef8710818cf0e261201dab964c572f92b942812df0c3620d62a529a01",
+  "agp": "9.4.0",
+  "composeCompiler": "2.2.10",
+  "composeBom": "2026.09.00",
+  "compileSdk": 37,
+  "targetSdk": 37,
+  "minSdk": 28,
+  "abis": [
+    "arm64-v8a"
+  ],
+  "ndk": "30.0.16248370",
+  "swift": "6.4.1",
+  "swiftAndroidSdkSha256": "a356b79f8f1daa6ae3a66f4c556966ca20c0208b3659805cf30a83a0a31d6772",
+  "commandLineTools": "22.0",
+  "commandLineToolsSha256": "835b62a26162b229b441d1f6d4680383815a270809eb33522c0d480fa5002c4e",
+  "buildTools": "37.0.0",
+  "tabletSystemImage": "system-images;android-37.0;google_apis;arm64-v8a",
+  "swiftHostSha256": "c34e7e5fb0be4bcd61decfd40db1766434d8952d68e37aed90bcff4e8547951c",
+  "swiftHostURL": "https://download.swift.org/swift-6.4.1-release/xcode/swift-6.4.1-RELEASE/swift-6.4.1-RELEASE-osx.pkg",
+  "cmake": "3.22.1"
+}
