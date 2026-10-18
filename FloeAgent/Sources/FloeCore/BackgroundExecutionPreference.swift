@@ -18,6 +18,58 @@ public enum BackgroundExecutionPreference: String, Sendable, Codable, CaseIterab
     case screenShare
 }
 
+/// Independently enabled background capabilities. Screen feedback presents
+/// its guidance in PiP, so it cannot remain enabled without that surface.
+/// The legacy enum remains readable for existing settings and callers.
+public struct BackgroundExecutionOptions: Sendable, Codable, Equatable, Hashable {
+    public var enhancedBackgroundEnabled: Bool
+    public var pictureInPictureEnabled: Bool
+    public var screenFeedbackEnabled: Bool
+
+    public init(
+        enhancedBackgroundEnabled: Bool = true,
+        pictureInPictureEnabled: Bool = false,
+        screenFeedbackEnabled: Bool = false
+    ) {
+        self.enhancedBackgroundEnabled = enhancedBackgroundEnabled
+        self.pictureInPictureEnabled = pictureInPictureEnabled || screenFeedbackEnabled
+        self.screenFeedbackEnabled = screenFeedbackEnabled
+    }
+
+    public init(legacy: BackgroundExecutionPreference) {
+        self.init(
+            pictureInPictureEnabled: legacy != .standard,
+            screenFeedbackEnabled: legacy == .screenShare
+        )
+    }
+
+    /// Apply after decoding or direct property updates before persistence/use.
+    public var normalized: Self {
+        Self(
+            enhancedBackgroundEnabled: enhancedBackgroundEnabled,
+            pictureInPictureEnabled: pictureInPictureEnabled,
+            screenFeedbackEnabled: screenFeedbackEnabled
+        )
+    }
+
+    public mutating func setPictureInPictureEnabled(_ enabled: Bool) {
+        pictureInPictureEnabled = enabled
+        if !enabled { screenFeedbackEnabled = false }
+    }
+
+    public mutating func setScreenFeedbackEnabled(_ enabled: Bool) {
+        screenFeedbackEnabled = enabled
+        if enabled { pictureInPictureEnabled = true }
+    }
+
+    /// Compatibility projection only; continued processing must consult the
+    /// independent enhanced-background flag instead of this visual preference.
+    public var legacyPreference: BackgroundExecutionPreference {
+        if screenFeedbackEnabled { return .screenShare }
+        return pictureInPictureEnabled ? .pictureInPicture : .standard
+    }
+}
+
 public extension BackgroundExecutionPreference {
     /// Short user-facing label for the settings row.
     ///

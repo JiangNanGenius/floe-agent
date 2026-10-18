@@ -151,6 +151,7 @@ public enum AppSettingsKey {
     public static let idleDisconnectMinutes = "remote.idleDisconnectMinutes"
     public static let runningInputMode = "agent.runningInputMode"
     public static let backgroundExecution = "agent.backgroundExecution"
+    public static let backgroundExecutionOptions = "agent.backgroundExecutionOptions"
     public static let verifyFinalAnswer = "agent.verifyFinalAnswer"
     /// Semantic (model-written) context compaction for cloud models. Local
     /// models always use the deterministic summarizer regardless.
