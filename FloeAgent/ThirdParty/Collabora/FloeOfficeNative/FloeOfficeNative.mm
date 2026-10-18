@@ -413,23 +413,55 @@ static NSString *FloeInkInputGatingScript() {
             if (arm) {
                 map.sendUnoCommand('.uno:Freeline_Unfilled');
                 state.armedDispatches += 1;
+                // The pinned iOS TextInput.blur only records the keyboard as
+                // inactive; it never blurs the DOM. Keep that intent inactive
+                // on every re-arm. The native host ends the WebView editing
+                // session when the mode is enabled.
+                if (typeof map.setAcceptInput === 'function') {
+                    try { map.setAcceptInput(false); } catch (ignored) {}
+                }
             }
             return true;
         };
-        const finish = (source, rearm) => {
+        const release = (source) => {
             if (!contact) return;
             const last = contact.last;
             contact = null;
             state.activeStroke = false;
             mouse('mouseup', source || last, 0, document);
             state.strokes += 1;
-            if (!resetTool(rearm)) drawing = false;
+        };
+        const finish = (source, rearm) => {
+            if (!contact) return;
+            try {
+                release(source);
+                if (!resetTool(rearm)) {
+                    drawing = false;
+                    state.error = 'engine-unavailable';
+                }
+            } catch (error) {
+                drawing = false;
+                state.error = String(error);
+            }
         };
         window.__floeSetOfficeDrawingMode = (enabled) => {
+            const want = enabled === true;
+            // Fail closed before any fallible map/core access: a lost or
+            // read-only map, a torn-down document layer and a throwing
+            // keyboard/tool command must never leave pointer routing armed
+            // while the native host reports failure.
+            drawing = false;
             try {
-                finish(null, false);
-                if (!resetTool(enabled === true)) return false;
-                drawing = enabled === true;
+                // Release an in-flight synthetic contact first. Its mouseup is
+                // queued locally, so even a failed engine reset cannot strand
+                // the gate in an active-stroke state.
+                release(null);
+                if (!resetTool(want)) {
+                    state.error = 'engine-unavailable';
+                    return false;
+                }
+                drawing = want;
+                state.error = null;
                 return true;
             } catch (error) {
                 drawing = false;
@@ -479,8 +511,9 @@ static NSString *FloeInkInputGatingScript() {
                 if (drawing && onCanvas(event)) stop(event);
             }, { capture: true, passive: false });
         const interrupt = () => {
-            try { finish(null, drawing); }
-            catch (error) { drawing = false; state.error = String(error); }
+            // A blur ends the contact but keeps drawing armed for the next
+            // focus; a lost map inside finish() fails closed.
+            finish(null, drawing);
         };
         window.addEventListener('blur', interrupt);
         window.addEventListener('pagehide', () => window.__floeSetOfficeDrawingMode(false));
@@ -2004,6 +2037,10 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 }
 @end
 
+static NSString *FloeSetDrawingModeScript(BOOL enabled) {
+    return [NSString stringWithFormat:@"(() => { if (typeof window.__floeSetOfficeDrawingMode !== 'function') return false; return window.__floeSetOfficeDrawingMode(%@); })()", enabled ? @"true" : @"false"];
+}
+
 @implementation FloeOfficeNativeViewController
 - (instancetype)initWithWorkingFileURL:(NSURL *)workingFileURL sessionDirectory:(NSURL *)sessionDirectory
                              readOnly:(BOOL)readOnly error:(NSError **)error {
@@ -2219,16 +2256,40 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 }
 - (void)setDrawingMode:(NSNumber *)enabled completion:(void (^)(NSError *))completion {
     NSAssert(NSThread.isMainThread, @"Office drawing is main-queue owned");
+    // The local mirror is fail-closed for every path, including an early
+    // capability rejection: a refused toggle must never leave the host
+    // claiming On. It becomes true only after the gate confirms a real arm.
+    self.drawingModeEnabled = NO;
     if (self.readOnly || self.closing || self.closed || self.insertingAttachment || !self.editor.webView) {
-        completion(OfficeError(35, @"Open the document for editing before annotating.")); return;
+        NSError *rejected = OfficeError(35, @"Open the document for editing before annotating.");
+        // A live WebView that is not being closed can still hold armed JS
+        // routing after a permission/attachment guard rejection. Reuse the
+        // production gate to revoke it. A false gate result means the core is
+        // already unavailable; report the original rejection, never a fake
+        // success. Closing/closed WebViews receive no JavaScript.
+        if (self.editor.webView && !self.closing && !self.closed) {
+            [self.editor.webView evaluateJavaScript:FloeSetDrawingModeScript(NO)
+                                 completionHandler:^(id value, NSError *error) {
+                completion(rejected);
+            }];
+        } else {
+            completion(rejected);
+        }
+        return;
     }
+    // A pencil gesture is not text entry. End only this Office WebView's
+    // editing session: the pinned frontend's iOS TextInput.blur marks input
+    // inactive but never blurs the DOM, so the software keyboard would keep
+    // covering the page while drawing. Never resign the whole application.
+    if (enabled.boolValue) [self.editor.webView endEditing:YES];
     // One owner resets the previous contact/selection and arms the core in
     // channel order. A repeated assignment cannot toggle an already armed slot.
-    NSString *script = [NSString stringWithFormat:@"(() => { if (typeof window.__floeSetOfficeDrawingMode !== 'function') return false; return window.__floeSetOfficeDrawingMode(%@); })()", enabled.boolValue ? @"true" : @"false"];
     __weak FloeOfficeNativeViewController *weakSelf = self;
-    [self.editor.webView evaluateJavaScript:script completionHandler:^(id value, NSError *error) {
-        if (!error && [value isKindOfClass:NSNumber.class] && [value boolValue]) weakSelf.drawingModeEnabled = enabled.boolValue;
-        completion(error ?: ([value isKindOfClass:NSNumber.class] && [value boolValue] ? nil : OfficeError(36, @"The drawing tool is not ready.")));
+    [self.editor.webView evaluateJavaScript:FloeSetDrawingModeScript(enabled.boolValue)
+                         completionHandler:^(id value, NSError *error) {
+        BOOL succeeded = !error && [value isKindOfClass:NSNumber.class] && [value boolValue];
+        weakSelf.drawingModeEnabled = succeeded ? enabled.boolValue : NO;
+        completion(error ?: (succeeded ? nil : OfficeError(36, @"The drawing tool is not ready.")));
     }];
 }
 - (void)cancelPendingSave {

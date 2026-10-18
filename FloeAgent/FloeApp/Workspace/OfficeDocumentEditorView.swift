@@ -540,11 +540,21 @@ final class OfficeFileSession: ObservableObject {
         operating = true
         defer { finishOperation() }
         let enabled = !drawingMode
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let callback: @convention(block) (NSError?) -> Void = { error in
-                if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let callback: @convention(block) (NSError?) -> Void = { error in
+                    if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+                }
+                _ = controller.perform(NSSelectorFromString("setDrawingMode:completion:"), with: NSNumber(value: enabled), with: callback as AnyObject)
             }
-            _ = controller.perform(NSSelectorFromString("setDrawingMode:completion:"), with: NSNumber(value: enabled), with: callback as AnyObject)
+        } catch {
+            // A rejected toggle can still have disarmed or half-armed the
+            // native gate. Never keep publishing On (or stale ink results)
+            // while the caller reports that failure.
+            drawingMode = false
+            invalidateInkApply()
+            inkError = nil
+            throw error
         }
         drawingMode = enabled
         if enabled { await applyInkPreferences() } else { inkApplyOutcome = nil; inkError = nil }
@@ -3294,8 +3304,10 @@ struct OfficeDocumentEditorView: View {
             .disabled(!session.canAct)
             .accessibilityIdentifier("office.drawing.settings")
             .popover(isPresented: $showingInkControls, arrowEdge: .top) {
-                OfficeInkControlPanel(session: session, ink: session.inkPreferences)
-                    .presentationCompactAdaptation(.popover)
+                OfficeInkControlPanel(session: session, ink: session.inkPreferences) {
+                    showingInkControls = false
+                }
+                .presentationCompactAdaptation(.popover)
             }
         }
     }
@@ -3453,128 +3465,135 @@ private struct OfficeConvertedExportShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
-/// Compact app-owned pen panel. It only edits Floe's typed stroke settings and
-/// starts/stops the engine's own editable freehand tool; it never draws a
-/// screen-space overlay and never writes Notes/Canvas ink.
+/// Compact app-owned pen panel. It only edits Floe's typed stroke settings,
+/// never draws a screen-space overlay and never writes Notes/Canvas ink. The
+/// header owns the explicit Done action, so closing the popover never depends
+/// on a coordinate tap or on toggling the drawing mode.
 private struct OfficeInkControlPanel: View {
     @ObservedObject var session: OfficeFileSession
     let ink: OfficeInkPreferences
+    let onDone: () -> Void
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Button {
-                    Task {
-                        do { try await session.toggleDrawing() }
-                        catch { session.inkError = error.localizedDescription }
-                    }
-                } label: {
-                    Label(session.drawingMode
-                          ? OfficeInkText.t("结束批注", "End annotations")
-                          : OfficeInkText.t("开始批注", "Start annotations"),
-                          systemImage: session.drawingMode ? "pencil.tip.crop.circle.badge.minus" : "pencil.tip")
-                        .frame(maxWidth: .infinity, minHeight: 44)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                Text(OfficeInkText.t("画笔设置", "Pen settings"))
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier("office.ink.panel")
+                Spacer(minLength: 12)
+                Button(action: onDone) {
+                    Text(OfficeInkText.t("完成", "Done"))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!session.canAct)
-                .accessibilityIdentifier("office.ink.startStop")
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(OfficeInkText.t("颜色", "Color")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        ForEach(OfficeInkColor.allCases) { color in
-                            Button {
-                                ink.setColor(color)
-                                reapply()
-                            } label: {
-                                Circle()
-                                    .fill(color.swatch)
-                                    .frame(width: 28, height: 28)
-                                    .overlay(Circle().strokeBorder(
-                                        ink.color == color ? Color.accentColor : Color.secondary.opacity(0.35),
-                                        lineWidth: ink.color == color ? 2.5 : 1))
-                                    .frame(width: 44, height: 44)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(color.title)
-                            .accessibilityAddTraits(ink.color == color ? .isSelected : [])
-                            .accessibilityIdentifier("office.ink.color.\(color.rawValue)")
-                        }
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(OfficeInkText.t("线宽", "Width")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        Spacer()
-                        Text(String(format: "%.2f mm", ink.stroke.widthMillimeters))
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                    // Presets own a real 44pt tap target on their own row so
-                    // `.controlSize(.small)` cannot shrink the hit area and the
-                    // slider still gets the full 330pt panel width on compact
-                    // screens. The frame is on the button's label, not outside
-                    // the button, so the whole 44pt region is tappable.
-                    HStack(spacing: 8) {
-                        ForEach(OfficeInkWidthPreset.allCases) { preset in
-                            Button {
-                                ink.setWidthMillimeters(preset.rawValue)
-                                reapply()
-                            } label: {
-                                Text(preset.title)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.8)
-                                    .frame(maxWidth: .infinity, minHeight: 44)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(abs(ink.stroke.widthMillimeters - preset.rawValue) < 0.01 ? Color.accentColor : Color.gray)
-                            .accessibilityIdentifier("office.ink.widthPreset.\(preset.title)")
-                        }
-                    }
-                    Slider(value: Binding(get: { ink.stroke.widthMillimeters },
-                                          set: { ink.setWidthMillimeters($0) }),
-                           in: OfficeInkStroke.widthRange, step: 0.25,
-                           onEditingChanged: { editing in if !editing { reapply() } })
-                        .accessibilityIdentifier("office.ink.width")
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(OfficeInkText.t("透明度", "Transparency")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        Spacer()
-                        Text(ink.stroke.transparencyPercent == 0
-                             ? OfficeInkText.t("0%（实心）", "0% (solid)")
-                             : "\(ink.stroke.transparencyPercent)%")
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                    Slider(value: Binding(
-                        get: { Double(ink.stroke.transparencyPercent) },
-                        set: { ink.setTransparencyPercent(Int($0.rounded())) }),
-                           in: 0...100, step: 1,
-                           onEditingChanged: { editing in if !editing { reapply() } })
-                        .accessibilityIdentifier("office.ink.transparency")
-                    Text(OfficeInkText.t("0% 为实心，数值越大越透明",
-                                         "0% is solid; higher values are more transparent"))
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-
-                if let inkError = session.inkError {
-                    Label(inkError, systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("office.ink.error")
-                } else if session.drawingMode, let outcome = session.inkApplyOutcome {
-                    Label(outcome == .verified
-                          ? OfficeInkText.t("画笔设置已确认", "Pen settings confirmed")
-                          : OfficeInkText.t("设置已发送，尚未确认生效", "Settings sent; awaiting confirmation"),
-                          systemImage: outcome == .verified ? "checkmark.circle" : "clock")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("office.ink.outcome")
-                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("office.ink.done")
             }
-            .padding(16)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(OfficeInkText.t("颜色", "Color")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            ForEach(OfficeInkColor.allCases) { color in
+                                Button {
+                                    ink.setColor(color)
+                                    reapply()
+                                } label: {
+                                    Circle()
+                                        .fill(color.swatch)
+                                        .frame(width: 28, height: 28)
+                                        .overlay(Circle().strokeBorder(
+                                            ink.color == color ? Color.accentColor : Color.secondary.opacity(0.35),
+                                            lineWidth: ink.color == color ? 2.5 : 1))
+                                        .frame(width: 44, height: 44)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(color.title)
+                                .accessibilityAddTraits(ink.color == color ? .isSelected : [])
+                                .accessibilityIdentifier("office.ink.color.\(color.rawValue)")
+                            }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(OfficeInkText.t("线宽", "Width")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%.2f mm", ink.stroke.widthMillimeters))
+                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                        // Presets own a real 44pt tap target on their own row so
+                        // `.controlSize(.small)` cannot shrink the hit area and the
+                        // slider still gets the full 330pt panel width on compact
+                        // screens. The frame is on the button's label, not outside
+                        // the button, so the whole 44pt region is tappable.
+                        HStack(spacing: 8) {
+                            ForEach(OfficeInkWidthPreset.allCases) { preset in
+                                Button {
+                                    ink.setWidthMillimeters(preset.rawValue)
+                                    reapply()
+                                } label: {
+                                    Text(preset.title)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.8)
+                                        .frame(maxWidth: .infinity, minHeight: 44)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(abs(ink.stroke.widthMillimeters - preset.rawValue) < 0.01 ? Color.accentColor : Color.gray)
+                                .accessibilityIdentifier("office.ink.widthPreset.\(preset.title)")
+                            }
+                        }
+                        Slider(value: Binding(get: { ink.stroke.widthMillimeters },
+                                              set: { ink.setWidthMillimeters($0) }),
+                               in: OfficeInkStroke.widthRange, step: 0.25,
+                               onEditingChanged: { editing in if !editing { reapply() } })
+                            .accessibilityIdentifier("office.ink.width")
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(OfficeInkText.t("透明度", "Transparency")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            Spacer()
+                            Text(ink.stroke.transparencyPercent == 0
+                                 ? OfficeInkText.t("0%（实心）", "0% (solid)")
+                                 : "\(ink.stroke.transparencyPercent)%")
+                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                        Slider(value: Binding(
+                            get: { Double(ink.stroke.transparencyPercent) },
+                            set: { ink.setTransparencyPercent(Int($0.rounded())) }),
+                               in: 0...100, step: 1,
+                               onEditingChanged: { editing in if !editing { reapply() } })
+                            .accessibilityIdentifier("office.ink.transparency")
+                        Text(OfficeInkText.t("0% 为实心，数值越大越透明",
+                                             "0% is solid; higher values are more transparent"))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+
+                    if let inkError = session.inkError {
+                        Label(inkError, systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("office.ink.error")
+                    } else if session.drawingMode, let outcome = session.inkApplyOutcome {
+                        Label(outcome == .verified
+                              ? OfficeInkText.t("画笔设置已确认", "Pen settings confirmed")
+                              : OfficeInkText.t("设置已发送，尚未确认生效", "Settings sent; awaiting confirmation"),
+                              systemImage: outcome == .verified ? "checkmark.circle" : "clock")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("office.ink.outcome")
+                    }
+                }
+                .padding(16)
+            }
         }
         .frame(idealWidth: 330, maxWidth: 330, idealHeight: 420, maxHeight: 420)
     }
@@ -3584,4 +3603,5 @@ private struct OfficeInkControlPanel: View {
         Task { await session.applyInkPreferences() }
     }
 }
+
 #endif

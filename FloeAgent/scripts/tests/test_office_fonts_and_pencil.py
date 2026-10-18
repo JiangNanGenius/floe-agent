@@ -46,28 +46,37 @@ function check(name, pass, detail) {
 const listeners = {}, docListeners = {}, queue = [], delayed = [];
 let activeTool = false, coreContact = false, shapes = 0;
 let commandListener;
+let mapAvailable = true, editMode = true, hasDocLayer = true;
+let throwSendUno = false, throwKeyboard = false, throwEditMode = false;
+const acceptInputCalls = [];
 const canvas = {
     contains(target) { return target === canvas; },
     dispatchEvent(event) {
         queue.push(() => { if (event.type === 'mousedown') coreContact = activeTool; });
     }
 };
+const docLayer = {
+    postKeyboardEvent(type, char, key) {
+        if (throwKeyboard) throw new Error('keyboard reset failed');
+        queue.push(() => { if (type === 'input' && key === 1281) activeTool = false; });
+    }
+};
+const map = {
+    isEditMode() { if (throwEditMode) throw new Error('edit-mode lookup failed'); return editMode; },
+    on(type, handler) { commandListener = handler; }, off() {},
+    get _docLayer() { return hasDocLayer ? docLayer : null; },
+    sendUnoCommand(command) {
+        if (throwSendUno) throw new Error('tool reset failed');
+        queue.push(() => { activeTool = !activeTool; });
+    },
+    setAcceptInput(value) { acceptInputCalls.push(value); }
+};
+const app = { sectionContainer: { canvas } };
+Object.defineProperty(app, 'map', { get() { return mapAvailable ? map : null; } });
 global.MouseEvent = class { constructor(type, props) { this.type = type; Object.assign(this, props); } };
 global.window = {
     addEventListener(type, handler) { (listeners[type] ||= []).push(handler); },
-    app: {
-        sectionContainer: { canvas },
-        map: {
-            isEditMode() { return true; },
-            on(type, handler) { commandListener = handler; }, off() {},
-            _docLayer: { postKeyboardEvent(type, char, key) {
-                queue.push(() => { if (type === 'input' && key === 1281) activeTool = false; });
-            } },
-            sendUnoCommand(command) {
-                queue.push(() => { activeTool = !activeTool; });
-            }
-        }
-    }
+    app
 };
 global.document = {
     readyState: 'complete', querySelector() { return canvas; },
@@ -99,6 +108,7 @@ eval(source);
 check('install/off', window.__floePencilOnly === false);
 check('idle/finger-passes', !emit('pointerdown', { pointerType: 'touch' }).prevented);
 check('enable', window.__floeSetOfficeDrawingMode(true)); flush();
+check('enable/accept-input-inactive', acceptInputCalls.includes(false));
 check('drawing/canvas-finger-blocked', emit('pointerdown', { pointerType: 'touch' }).prevented);
 check('drawing/toolbar-finger-passes', !emit('pointerdown', { pointerType: 'touch', target: {} }).prevented);
 check('drawing/toolbar-pen-passes', !emit('pointerdown', { target: {} }).prevented);
@@ -130,6 +140,79 @@ check('pagehide/disarms', !window.__floePencilOnly && !window.__floeOfficePenSta
 const before = listeners.pointerdown.length;
 eval(source);
 check('install/idempotent', listeners.pointerdown.length === before);
+// Fault contracts: a lost or read-only engine, a missing document layer and a
+// throwing keyboard/tool command must clear local pointer routing before the
+// fallible reset, then report an honest failure. Recovery must still work.
+mapAvailable = true; editMode = true; hasDocLayer = true;
+check('fault/lost-map-idle-enable', window.__floeSetOfficeDrawingMode(true) === true); flush();
+check('fault/lost-map-idle-precondition', window.__floePencilOnly === true);
+mapAvailable = false;
+let failure = window.__floeSetOfficeDrawingMode(false); flush();
+check('fault/lost-map-idle-disable-fails', failure === false);
+check('fault/lost-map-idle-clears-local-mode', window.__floePencilOnly === false);
+check('fault/lost-map-idle-clears-active-stroke', window.__floeOfficePenState().activeStroke === false);
+failure = window.__floeSetOfficeDrawingMode(true);
+check('fault/lost-map-enable-fails', failure === false);
+check('fault/lost-map-enable-stays-off', window.__floePencilOnly === false);
+mapAvailable = true;
+check('fault/lost-map-recovered-enable', window.__floeSetOfficeDrawingMode(true) === true); flush();
+check('fault/lost-map-recovered-drawing', window.__floePencilOnly === true);
+
+// Active contact plus a lost map: the queued mouseup must still finish the
+// contact and the local gate must be off even though the engine reset fails.
+emit('pointerdown');
+check('fault/lost-map-active-precondition', window.__floeOfficePenState().activeStroke === true);
+const shapesBeforeLostMap = shapes;
+mapAvailable = false;
+failure = window.__floeSetOfficeDrawingMode(false); flush();
+check('fault/lost-map-active-disable-fails', failure === false);
+check('fault/lost-map-active-clears-contact', window.__floeOfficePenState().activeStroke === false);
+check('fault/lost-map-active-clears-local-mode', window.__floePencilOnly === false);
+check('fault/lost-map-active-releases-shape', shapes === shapesBeforeLostMap + 1, shapes);
+mapAvailable = true;
+
+editMode = false;
+failure = window.__floeSetOfficeDrawingMode(true);
+check('fault/readonly-enable-fails', failure === false);
+check('fault/readonly-stays-off', window.__floePencilOnly === false);
+editMode = true;
+check('fault/readonly-recovered-enable', window.__floeSetOfficeDrawingMode(true) === true); flush();
+
+hasDocLayer = false;
+failure = window.__floeSetOfficeDrawingMode(true);
+check('fault/missing-doc-layer-fails', failure === false);
+check('fault/missing-doc-layer-stays-off', window.__floePencilOnly === false);
+hasDocLayer = true;
+check('fault/missing-doc-layer-recovered-enable', window.__floeSetOfficeDrawingMode(true) === true); flush();
+
+throwEditMode = true;
+failure = window.__floeSetOfficeDrawingMode(true);
+check('fault/throwing-edit-mode-fails', failure === false);
+check('fault/throwing-edit-mode-stays-off', window.__floePencilOnly === false);
+throwEditMode = false;
+check('fault/throwing-edit-mode-recovered-enable', window.__floeSetOfficeDrawingMode(true) === true); flush();
+
+throwSendUno = true;
+failure = window.__floeSetOfficeDrawingMode(true);
+check('fault/throwing-send-uno-fails', failure === false);
+check('fault/throwing-send-uno-stays-off', window.__floePencilOnly === false);
+throwSendUno = false;
+check('fault/throwing-send-uno-recovered-enable', window.__floeSetOfficeDrawingMode(true) === true); flush();
+
+emit('pointerdown');
+throwKeyboard = true;
+failure = window.__floeSetOfficeDrawingMode(false);
+check('fault/throwing-keyboard-disable-fails', failure === false);
+check('fault/throwing-keyboard-clears-local-mode', window.__floePencilOnly === false);
+check('fault/throwing-keyboard-clears-contact', window.__floeOfficePenState().activeStroke === false);
+throwKeyboard = false;
+flush();
+check('fault/throwing-keyboard-recovered-enable', window.__floeSetOfficeDrawingMode(true) === true); flush();
+emit('pointerdown'); emit('pointerup'); flush();
+check('fault/recovered-stroke-completes', window.__floeOfficePenState().activeStroke === false);
+check('fault/final-disable', window.__floeSetOfficeDrawingMode(false) === true); flush();
+check('fault/final-off', window.__floePencilOnly === false);
+
 for (const result of results) console.log(JSON.stringify(result));
 """
 
@@ -218,9 +301,38 @@ class OfficePencilGatingContract(unittest.TestCase):
         # ...and annotation mode arms it together with the freehand tool.
         self.assertIn("window.__floeSetOfficeDrawingMode(%@)", self.source)
         self.assertIn(".uno:Freeline_Unfilled", self.source)
+        # A Pencil gesture must end only this Office WebView's editing session;
+        # the pinned frontend's iOS blur never blurs the DOM itself.
+        self.assertIn("[self.editor.webView endEditing:YES]", self.source)
+        self.assertIn("self.drawingModeEnabled = NO;", self.source)
         # The freehand tool is the engine's editable vector shape tool, so the
         # strokes are document content that saves and reopens with the file.
-        self.assertIn("weakSelf.drawingModeEnabled = enabled.boolValue", self.source)
+        # The local mirror only publishes success after the script confirms it.
+        self.assertIn("weakSelf.drawingModeEnabled = succeeded ? enabled.boolValue : NO;", self.source)
+        # Fail closed: the gate clears local routing before the fallible reset.
+        self.assertIn("drawing = false;\n            try {", self.source)
+        self.assertIn("state.error = 'engine-unavailable';", self.source)
+        self.assertIn("map.setAcceptInput(false)", self.source)
+
+    def test_drawing_guard_clears_mirror_and_revokes_live_routing(self) -> None:
+        """A rejected setDrawingMode must clear the host mirror before return.
+
+        The early readOnly/closing/closed/insertingAttachment/no-WebView guard
+        can reject after drawing was armed. The native mirror must already be
+        Off, and a live, non-closing WebView must still receive the production
+        gate(false) cleanup. The caller keeps the real rejection error.
+        """
+        start = self.source.index("- (void)setDrawingMode:(NSNumber *)enabled")
+        end = self.source.index("- (void)cancelPendingSave", start)
+        method = self.source[start:end]
+        mirror = method.index("self.drawingModeEnabled = NO;")
+        guard = method.index(
+            "if (self.readOnly || self.closing || self.closed || self.insertingAttachment || !self.editor.webView)")
+        self.assertLess(mirror, guard, "the native mirror must clear before the early guard")
+        self.assertIn("FloeSetDrawingModeScript(NO)", method)
+        self.assertIn("if (self.editor.webView && !self.closing && !self.closed)", method)
+        self.assertIn("completion(rejected);", method)
+        self.assertIn("OfficeError(35", method)
 
     def test_gating_javascript_behaviour(self) -> None:
         node = shutil.which("node")

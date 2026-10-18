@@ -19,6 +19,124 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     func testXLSXTenNativeVectorStrokesSaveAndReopen() async throws { try await exercise("xlsx") }
     func testPPTXTenNativeVectorStrokesSaveAndReopen() async throws { try await exercise("pptx") }
 
+    /// A rejected native drawing callback must revoke the App's published On
+    /// state, the private native mirror and the page gate together. The fault
+    /// wrapper invokes the real gate with `false` and then reports failure, so
+    /// the production map is never permanently broken; the original function
+    /// is restored before the test proves a normal cycle still works.
+    func testRejectedDrawingToggleClearsAppAndNativeState() async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in App/native drawing failure regression; not executed")
+        }
+        executionTimeAllowance = 240
+        continueAfterFailure = true
+        let fm = FileManager.default
+        let documents = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let root = documents.appendingPathComponent("Qualification/OfficeDrawingFailure-\(UUID().uuidString)",
+                                                     isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appendingPathComponent("failure.docx")
+        try OfficeDocumentBuilder.createWord(at: source, title: "Pen failure",
+                                             paragraphs: ["FAILURE-CLEAR-KEEP"])
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = mount(session, in: scene)
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+        do {
+            await session.open(source)
+            try await wait(120, "drawing failure regression open") {
+                session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            if session.readOnly {
+                let accepted = await session.requestEditing()
+                XCTAssertTrue(accepted, "Actual App edit entry rejected: \(session.error ?? "unknown")")
+            }
+            try await wait(150, "editable drawing failure document") {
+                !session.readOnly && session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode, "the real toggle must arm drawing before the failure case")
+            XCTAssertEqual(try nativeDrawingFlag(native), true,
+                           "the native host must mirror the armed state after a real toggle")
+
+            try await withTemporaryDrawingModeFailure(web) {
+                var rejected: Error?
+                do { try await session.toggleDrawing() } catch { rejected = error }
+                XCTAssertNotNil(rejected, "a rejected native drawing callback must surface an error")
+                XCTAssertFalse(session.drawingMode,
+                               "a rejected toggle must clear the published drawing state")
+                XCTAssertNil(session.inkApplyOutcome, "a rejected toggle must clear the ink outcome")
+                XCTAssertNil(session.inkError, "a rejected toggle must clear the ink error")
+                XCTAssertEqual(try nativeDrawingFlag(native), false,
+                               "the native private mirror must be disarmed after failure")
+                let facts = try await officePenFacts(web)
+                XCTAssertEqual(facts["drawing"] as? Bool, false,
+                               "the page gate must be off after failure")
+                XCTAssertEqual(facts["activeStroke"] as? Bool, false,
+                               "a rejected toggle must not strand an active stroke")
+            }
+
+            // The wrapper is gone: the production gate, App state and native
+            // mirror must all recover and still complete a normal cycle.
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode, "the real gate must recover after the temporary failure")
+            XCTAssertEqual(try nativeDrawingFlag(native), true,
+                           "the native mirror must recover with a successful toggle")
+            try await session.toggleDrawing()
+            XCTAssertFalse(session.drawingMode, "a normal disable must still publish Off")
+            XCTAssertEqual(try nativeDrawingFlag(native), false,
+                           "a successful disable must clear the native mirror")
+
+            // Early capability guard with a live WebView: arm the real gate
+            // directly, then reject through readOnly. The native mirror must
+            // clear and the page routing must be revoked even though the
+            // request fails; the returned error stays the real rejection.
+            XCTAssertFalse(session.drawingMode, "the App state is Off before the direct guard case")
+            let preGuardError = await setNativeDrawingMode(native, true)
+            XCTAssertNil(preGuardError, "direct native enable must succeed before the guard case")
+            XCTAssertEqual(try nativeDrawingFlag(native), true)
+            let preGuardFacts = try await officePenFacts(web)
+            XCTAssertEqual(preGuardFacts["drawing"] as? Bool, true,
+                           "the page gate must be armed before the guard case")
+            guard native.responds(to: NSSelectorFromString("setReadOnly:")) else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 24, userInfo: [
+                    NSLocalizedDescriptionKey: "the native host does not expose the readOnly guard test seam"
+                ])
+            }
+            native.setValue(true, forKey: "readOnly")
+            let guardError = await setNativeDrawingMode(native, false)
+            XCTAssertNotNil(guardError, "the readOnly guard must reject the toggle")
+            XCTAssertEqual((guardError as NSError?)?.code, 35,
+                           "the guard must return its real rejection, not a success")
+            XCTAssertEqual(try nativeDrawingFlag(native), false,
+                           "a guard rejection must clear the native mirror")
+            let guardFacts = try await officePenFacts(web)
+            XCTAssertEqual(guardFacts["drawing"] as? Bool, false,
+                           "a guard rejection must revoke the page drawing routing")
+            XCTAssertEqual(guardFacts["activeStroke"] as? Bool, false,
+                           "a guard rejection must not leave an active stroke")
+            native.setValue(false, forKey: "readOnly")
+
+            // The App still completes a normal cycle after the guard cleanup.
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode, "the App must re-enable after a guard rejection")
+            XCTAssertEqual(try nativeDrawingFlag(native), true)
+            try await session.toggleDrawing()
+            XCTAssertFalse(session.drawingMode, "the App must disable after a guard rejection")
+            XCTAssertEqual(try nativeDrawingFlag(native), false)
+            await session.release()
+        } catch {
+            await session.release()
+            throw error
+        }
+    }
+
     /// Reopen previously saved synthetic assistant outputs with the newly linked
     /// engine. No model call or edit is performed by this qualification.
     func testPriorLiveModelArtifactsReopenWithoutAnotherModelCall() async throws {
@@ -604,6 +722,92 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         hardwarePointerInput:'not-tested', pressure:'synthetic-not-hardware-tested',
         socketObservation:observation.finish()});
     } finally { observation.finish(); }
+    """#
+
+    private func setNativeDrawingMode(_ native: FloeOfficeNativeViewController,
+                                      _ enabled: Bool) async -> NSError? {
+        await withCheckedContinuation { continuation in
+            let callback: @convention(block) (NSError?) -> Void = { error in
+                continuation.resume(returning: error as NSError?)
+            }
+            _ = native.perform(NSSelectorFromString("setDrawingMode:completion:"),
+                               with: NSNumber(value: enabled), with: callback as AnyObject)
+        }
+    }
+
+    private func nativeDrawingFlag(_ native: FloeOfficeNativeViewController) throws -> Bool {
+        let getter = NSSelectorFromString("drawingModeEnabled")
+        guard native.responds(to: getter),
+              let value = native.value(forKey: "drawingModeEnabled") as? NSNumber else {
+            throw NSError(domain: "OfficeNativeDrawingQualification", code: 20, userInfo: [
+                NSLocalizedDescriptionKey: "the native host does not expose its drawing-mode mirror"
+            ])
+        }
+        return value.boolValue
+    }
+
+    private func officePenFacts(_ web: WKWebView) async throws -> [String: Any] {
+        let receipt = try await web.callAsyncJavaScript(
+            "return JSON.stringify(typeof window.__floeOfficePenState === 'function' ? window.__floeOfficePenState() : null);",
+            arguments: [:], in: nil, contentWorld: .page)
+        guard let json = receipt as? String, json.utf8.count <= 16_384,
+              let facts = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
+            throw NSError(domain: "OfficeNativeDrawingQualification", code: 21, userInfo: [
+                NSLocalizedDescriptionKey: "the page pen state was not a bounded JSON object"
+            ])
+        }
+        return facts
+    }
+
+    /// Temporarily replaces the production drawing gate with a wrapper that
+    /// disarms the real gate and then reports failure. The original function is
+    /// restored on both success and error paths; the real map/core is never
+    /// permanently broken for later async callbacks.
+    private func withTemporaryDrawingModeFailure(_ web: WKWebView,
+                                                 _ body: @MainActor () async throws -> Void) async throws {
+        let installed = try await web.callAsyncJavaScript(Self.installFailingDrawingModeScript,
+            arguments: [:], in: nil, contentWorld: .page)
+        guard (installed as? Bool) == true else {
+            throw NSError(domain: "OfficeNativeDrawingQualification", code: 22, userInfo: [
+                NSLocalizedDescriptionKey: "the temporary drawing failure wrapper could not be installed"
+            ])
+        }
+        do {
+            try await body()
+        } catch {
+            _ = try? await web.callAsyncJavaScript(Self.restoreDrawingModeScript,
+                arguments: [:], in: nil, contentWorld: .page)
+            throw error
+        }
+        let restored = try await web.callAsyncJavaScript(Self.restoreDrawingModeScript,
+            arguments: [:], in: nil, contentWorld: .page)
+        guard (restored as? Bool) == true else {
+            throw NSError(domain: "OfficeNativeDrawingQualification", code: 23, userInfo: [
+                NSLocalizedDescriptionKey: "the production drawing gate was not restored"
+            ])
+        }
+    }
+
+    private static let installFailingDrawingModeScript = #"""
+    if (typeof window.__floeSetOfficeDrawingMode !== 'function')
+        throw new Error('production drawing gate unavailable');
+    if (window.__floeOriginalOfficeDrawingMode)
+        throw new Error('temporary drawing failure already installed');
+    window.__floeOriginalOfficeDrawingMode = window.__floeSetOfficeDrawingMode;
+    window.__floeSetOfficeDrawingMode = function (enabled) {
+        const original = window.__floeOriginalOfficeDrawingMode;
+        if (typeof original !== 'function') throw new Error('original drawing gate missing');
+        original(false);
+        return false;
+    };
+    return true;
+    """#
+
+    private static let restoreDrawingModeScript = #"""
+    if (typeof window.__floeOriginalOfficeDrawingMode !== 'function') return false;
+    window.__floeSetOfficeDrawingMode = window.__floeOriginalOfficeDrawingMode;
+    delete window.__floeOriginalOfficeDrawingMode;
+    return true;
     """#
 
     private func mount(_ session: OfficeFileSession, in scene: UIWindowScene) -> UIWindow {

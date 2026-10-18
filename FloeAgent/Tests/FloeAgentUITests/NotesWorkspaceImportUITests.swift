@@ -73,6 +73,188 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         #endif
     }
 
+    /// Opt-in real-App regression for the two Office pen toolbar entries: the
+    /// direct drawing toggle and the separate pen-settings panel. The App under
+    /// test must link the native Office host (this workspace's
+    /// `native-host.xcconfig`), so the test never assumes the simulator engine
+    /// or silently degrades to a placeholder. It proves the App's real controls
+    /// and their accessibility state only; no Pencil stroke is synthesized.
+    func testOfficePencilToolbarToggleAndSettings() throws {
+        guard ProcessInfo.processInfo.environment["FLOE_OFFICE_PENCIL_UI_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in Office pen toolbar UI qualification; set FLOE_OFFICE_PENCIL_UI_QUALIFICATION=1 in the test runner environment.")
+        }
+        continueAfterFailure = false
+        let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true
+            || UIDevice.current.userInterfaceIdiom == .pad
+        let app = XCUIApplication()
+        app.terminate()
+        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing",
+                               "--ui-test-skip-onboarding", "--ui-test-batch-fixture"]
+        if ipad { app.launchArguments.append("-ui-testing-ipad") }
+        app.launch()
+        defer { app.terminate() }
+        if !ipad {
+            let sidebar = app.buttons["phone.sidebar.open"]
+            XCTAssertTrue(sidebar.waitForExistence(timeout: 15)); sidebar.tap()
+        }
+        let notes = app.staticTexts["sidebar.notes"].firstMatch
+        XCTAssertTrue(notes.waitForExistence(timeout: 15)); notes.tap()
+        let create = creationControl(app)
+        XCTAssertTrue(create.waitForExistence(timeout: 15))
+        wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: create)], timeout: 10)
+        create.tap()
+        let office = app.buttons["Office"]
+        XCTAssertTrue(office.waitForExistence(timeout: 10)); office.tap()
+        // UIKit's nested menu retains the visible title but drops SwiftUI's
+        // accessibilityIdentifier on its generated action buttons.
+        let word = app.buttons["Word 文档"]
+        XCTAssertTrue(word.waitForExistence(timeout: 10)); word.tap()
+        let title = app.textFields["notes.create.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        title.tap()
+        let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)
+        title.typeText("Pen UI \(token)")
+        let createButton = app.buttons["创建"]
+        XCTAssertTrue(createButton.waitForExistence(timeout: 10))
+        wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: createButton)], timeout: 10)
+        createButton.tap()
+
+        let back = app.buttons["office.editor.back"]
+        XCTAssertTrue(back.waitForExistence(timeout: 60),
+                      "the native Office editor must open for the created Word document")
+        wait(for: [expectation(for: NSPredicate(format: "enabled == true AND hittable == true"), evaluatedWith: back)], timeout: 60)
+
+        let toggle = app.buttons["office.drawing.toggle"]
+        let edit = app.buttons["office.preview.edit"]
+        // A newly created document opens in the editor, while an existing
+        // document can legitimately settle in the read-only preview first.
+        // Accept either real product surface, then use the host Edit action
+        // when the preview is the one that appeared.
+        XCTAssertTrue(waitUntil(timeout: 60, { toggle.exists || edit.exists }),
+                      "the Office surface must reach either the editable pen toolbar or the host Edit action")
+        if !toggle.exists {
+            XCTAssertTrue(edit.exists, "the Office preview must expose its Edit action")
+            XCTAssertTrue(waitUntil(timeout: 30, { edit.isEnabled && edit.isHittable }),
+                          "the preview's Edit action must become actionable")
+            assertTouchTarget(edit)
+            edit.tap()
+        }
+        XCTAssertTrue(toggle.waitForExistence(timeout: 60),
+                      "the editable Office toolbar must expose the direct pen toggle after the native engine is ready")
+        let settings = app.buttons["office.drawing.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 15),
+                      "the editable Office toolbar must expose the separate pen settings entry")
+        XCTAssertTrue(waitUntil(timeout: 60, {
+            toggle.exists && toggle.isEnabled && toggle.isHittable
+                && settings.exists && settings.isEnabled && settings.isHittable
+        }), "both pen entries must become actionable once editing is ready")
+        assertTouchTarget(toggle)
+        assertTouchTarget(settings)
+        let windowFrame = app.windows.firstMatch.frame
+        XCTAssertTrue(windowFrame.contains(CGPoint(x: toggle.frame.midX, y: toggle.frame.midY)),
+                      "the direct pen toggle must be inside the visible App window")
+        XCTAssertTrue(windowFrame.contains(CGPoint(x: settings.frame.midX, y: settings.frame.midY)),
+                      "the pen settings entry must be inside the visible App window")
+        XCTAssertEqual(app.buttons.matching(identifier: "office.drawing.toggle").count, 1)
+        XCTAssertEqual(app.buttons.matching(identifier: "office.drawing.settings").count, 1)
+        XCTAssertTrue(waitForDrawingValue(toggle, on: false, timeout: 15),
+                      "the pen toggle must start in the real Off state")
+        // The engine focuses its hidden text input on open. Require the real
+        // software keyboard here so the dismissal below is actually exercised
+        // instead of passing vacuously on a hardware-keyboard simulator.
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 15),
+                      "the Office text input must show the software keyboard before drawing starts")
+        recordPencilToolbarState(app, phase: "initial-off")
+        Thread.sleep(forTimeInterval: 0.4)
+        capture("office-pencil-toggle-off")
+
+        toggle.tap()
+        XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 30),
+                      "one tap on the direct toggle must turn drawing on and publish On")
+        XCTAssertTrue(waitUntil(timeout: 30, {
+            toggle.exists && toggle.isEnabled && settings.exists && settings.isEnabled
+        }), "the toolbar must finish applying the enabled pen state")
+        // The engine autofocuses its hidden text input while opening. Enabling
+        // drawing must end only that Office editing session, otherwise the
+        // software keyboard keeps covering the page and squeezes the popover.
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 15),
+                      "enabling drawing must dismiss the Office text keyboard")
+        XCTAssertEqual(app.keyboards.count, 0, "no keyboard may remain after drawing is On")
+        XCTAssertTrue(app.staticTexts["office.ink.panel"].waitForNonExistence(timeout: 2),
+                      "turning drawing on must not open the pen settings popover")
+        XCTAssertTrue(app.buttons["office.ink.startStop"].waitForNonExistence(timeout: 2),
+                      "the redundant Start/End action must stay removed")
+        recordPencilToolbarState(app, phase: "toggle-on")
+        Thread.sleep(forTimeInterval: 0.4)
+        capture("office-pencil-toggle-on")
+
+        settings.tap()
+        let panel = app.staticTexts["office.ink.panel"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 15),
+                      "the pen settings entry must present the actual control panel")
+        let done = app.buttons["office.ink.done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 10),
+                      "the pen settings panel must expose its explicit Done action")
+        XCTAssertTrue(done.isHittable, "the explicit Done action must be tappable")
+        assertTouchTarget(done)
+        XCTAssertTrue(app.buttons["office.ink.color.black"].waitForExistence(timeout: 10),
+                      "the pen settings panel must expose its real color controls")
+        let width = app.descendants(matching: .any)
+            .matching(identifier: "office.ink.width").firstMatch
+        XCTAssertTrue(width.waitForExistence(timeout: 10),
+                      "the pen settings panel must expose its real width control")
+        let transparency = app.descendants(matching: .any)
+            .matching(identifier: "office.ink.transparency").firstMatch
+        XCTAssertTrue(transparency.waitForExistence(timeout: 10),
+                      "the pen settings panel must expose its real transparency control")
+        XCTAssertFalse(app.buttons["office.ink.startStop"].exists,
+                       "the settings panel must not duplicate the drawing on/off switch")
+        XCTAssertEqual(app.keyboards.count, 0, "opening settings must not summon the keyboard")
+        recordPencilToolbarState(app, phase: "settings-open")
+        Thread.sleep(forTimeInterval: 0.4)
+        capture("office-pencil-settings-open")
+        closeOfficeInkPanel(app)
+        XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 15),
+                      "closing the settings panel must not change the drawing state")
+        XCTAssertEqual(app.keyboards.count, 0, "closing settings must not summon the keyboard")
+        XCTAssertTrue(waitUntil(timeout: 30, { toggle.exists && toggle.isEnabled && toggle.isHittable }),
+                      "the direct pen toggle must be actionable again after the panel closes")
+
+        toggle.tap()
+        XCTAssertTrue(waitForDrawingValue(toggle, on: false, timeout: 30),
+                      "one tap after closing settings must turn drawing off and publish Off")
+        XCTAssertTrue(done.waitForNonExistence(timeout: 2))
+        Thread.sleep(forTimeInterval: 0.4)
+        capture("office-pencil-toggle-off-again")
+
+        toggle.tap()
+        XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 30))
+        XCTAssertTrue(waitUntil(timeout: 30, { toggle.exists && toggle.isEnabled && toggle.isHittable }))
+        toggle.tap()
+        XCTAssertTrue(waitForDrawingValue(toggle, on: false, timeout: 30))
+        XCTAssertTrue(waitUntil(timeout: 30, {
+            toggle.exists && toggle.isEnabled && settings.exists && settings.isEnabled
+        }))
+        XCTAssertTrue(toggle.isHittable, "the direct pen toggle must remain available after repeated cycles")
+        XCTAssertTrue(settings.isHittable, "the pen settings entry must remain available after repeated cycles")
+        assertTouchTarget(toggle)
+        assertTouchTarget(settings)
+        recordPencilToolbarState(app, phase: "cycle-complete")
+        Thread.sleep(forTimeInterval: 0.4)
+        capture("office-pencil-toggle-cycle-complete")
+
+        // Safe exit through the product's own back/save path. Notes owns the
+        // exit decision for this surface: back saves the synthetic document in
+        // place, commits it through the normal Notes resource route, and only
+        // then returns to the library.
+        XCTAssertTrue(waitUntil(timeout: 15, { back.isEnabled && back.isHittable }))
+        back.tap()
+        XCTAssertTrue(create.waitForExistence(timeout: 60),
+                      "the Office editor must return to the Notes library through its safe exit")
+        XCTAssertFalse(back.exists)
+    }
+
     func testWorkspaceImportAndDocumentAssistant() throws {
         let (app, _, _) = try openImportedDocument()
         defer { app.terminate() }
@@ -776,6 +958,56 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         capture("notes-imported-pdf-fullscreen")
 
         return (app, back, create)
+    }
+
+    /// Polls the toggle's published accessibility value. The App localizes the
+    /// value, so both the zh-Hans and English spellings of the same real state
+    /// are accepted; no synthetic state is manufactured.
+    private func waitForDrawingValue(_ toggle: XCUIElement, on: Bool, timeout: TimeInterval) -> Bool {
+        waitUntil(timeout: timeout) {
+            guard toggle.exists else { return false }
+            let value = ((toggle.value as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return on ? (value == "已开启" || value == "On") : (value == "已关闭" || value == "Off")
+        }
+    }
+
+    /// Redacted, bounded toolbar evidence for the visual host: identities,
+    /// actionable state, published state and touch-target frames only.
+    private func recordPencilToolbarState(_ app: XCUIApplication, phase: String) {
+        let toggle = app.buttons["office.drawing.toggle"]
+        let settings = app.buttons["office.drawing.settings"]
+        let toggleValue = toggle.exists ? ((toggle.value as? String) ?? "missing") : "missing"
+        let panel = app.staticTexts["office.ink.panel"]
+        let done = app.buttons["office.ink.done"]
+        let facts = XCTAttachment(string: """
+            phase=\(phase)
+            toggle: exists=\(toggle.exists) enabled=\(toggle.exists && toggle.isEnabled) hittable=\(toggle.exists && toggle.isHittable) value=\(toggleValue) frame=\(toggle.exists ? "\(toggle.frame)" : "missing")
+            settings: exists=\(settings.exists) enabled=\(settings.exists && settings.isEnabled) hittable=\(settings.exists && settings.isHittable) frame=\(settings.exists ? "\(settings.frame)" : "missing")
+            panel: header exists=\(panel.exists) done exists=\(done.exists)
+            keyboard: exists=\(app.keyboards.firstMatch.exists)
+            """)
+        facts.name = "office-pencil-state-\(phase)"
+        facts.lifetime = .keepAlways
+        add(facts)
+    }
+
+    /// Closes the real pen settings popover through its own explicit Done
+    /// action. No outside/coordinate tap is accepted: a panel whose Done
+    /// action is missing or unreachable is a real defect, not a test problem.
+    private func closeOfficeInkPanel(_ app: XCUIApplication,
+                                     file: StaticString = #filePath, line: UInt = #line) {
+        let done = app.buttons["office.ink.done"]
+        guard done.waitForExistence(timeout: 10) else {
+            XCTFail("the pen settings panel must expose its explicit Done action", file: file, line: line)
+            return
+        }
+        XCTAssertTrue(done.isHittable, "the explicit Done action must be tappable", file: file, line: line)
+        assertTouchTarget(done, file: file, line: line)
+        done.tap()
+        XCTAssertTrue(app.staticTexts["office.ink.panel"].waitForNonExistence(timeout: 10),
+                      "Done must close the pen settings panel", file: file, line: line)
+        XCTAssertTrue(app.buttons["office.ink.done"].waitForNonExistence(timeout: 10),
+                      "the closed panel must not keep its Done action on screen", file: file, line: line)
     }
 
     private func capture(_ name: String) {
