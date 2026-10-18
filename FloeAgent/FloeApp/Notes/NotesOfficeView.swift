@@ -18,6 +18,9 @@ struct NotesOfficeView: View {
     @State private var baseResourceID: UUID?
     @State private var pendingCommit = false
     @State private var committing = false
+    @State private var previewAttemptedSource: UUID?
+    @State private var canRetryPreview = false
+    @State private var coverBackfillReady = false
     @State private var message: String?
     @State private var recoveryURL: URL?
     @State private var recoveries: [Recovery] = []
@@ -64,6 +67,7 @@ struct NotesOfficeView: View {
                     HStack {
                         if canRetryOpen { Button("notes.notes_office_view.retry_opening") { Task { await prepare(force: true) } }.disabled(committing) }
                         if pendingCommit { Button("notes.notes_office_view.retry_saving_to_notes") { Task { if await office.saveInPlace() { await commit() } } }.disabled(committing) }
+                        if canRetryPreview { Button("notes.office.preview.retry") { Task { await refreshPreviewOnly() } }.disabled(committing || !office.canAct) }
                         if let recoveryURL { ShareLink("notes.office.externalUpdate.exportCopy", item: recoveryURL) }
                     }
                 }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.regularMaterial)
@@ -120,12 +124,17 @@ struct NotesOfficeView: View {
                             .accessibilityIdentifier("notes.office.assistant")
                     }
                 ), requestsEditingOnAppear: false)
+                .allowsHitTesting(!committing)
                 // Notes owns the first intent: the remembered mode resolved
                 // in `prepare()` decides preview versus editor, so the editor
                 // surface must not auto-request editing when it appears.
 
             }
         }
+        .onChange(of: office.canAct) { _, ready in
+            if ready { scheduleMissingPreview() }
+        }
+        .onChange(of: baseResourceID) { _, _ in scheduleMissingPreview() }
         .onAppear {
             isVisible = true
             session.registerLeaveGuard(for: document.id) {
@@ -284,6 +293,7 @@ struct NotesOfficeView: View {
             }
             return
         }
+        coverBackfillReady = false
         do {
             // Every early return below is a terminal, user-visible outcome: an
             // unbounded "正在打开文档…" spinner is never an acceptable result of
@@ -343,6 +353,9 @@ struct NotesOfficeView: View {
             } else {
                 recordStage("notes.open.ready", ["readOnly": office.readOnly ? "true" : "false"])
             }
+            // Never let cover work race the remembered/explicit edit intent.
+            coverBackfillReady = !shouldEdit && office.error == nil && office.readOnly
+            scheduleMissingPreview()
         } catch {
             // A thrown staging/scan error is the same terminal outcome: make it
             // visible and retryable instead of dropping the intent silently.
@@ -597,6 +610,20 @@ struct NotesOfficeView: View {
             // The content transaction has committed. A metadata failure must not retry an old revision.
             baseRevision = updated.revision; baseResourceID = resource; pendingCommit = false; message = nil
             recordStage("notes.commit.ok", ["revision": String(updated.revision)])
+            previewAttemptedSource = resource
+            if updated.matchingOfficePreviewResourceID == nil {
+                do {
+                    try await refreshGeneratedPreview(sourceID: resource, revision: updated.revision)
+                    canRetryPreview = false
+                } catch {
+                    // The content transaction already succeeded. A cache
+                    // failure cannot turn it into a stale-revision save retry.
+                    canRetryPreview = true
+                    message = String(localized: "notes.office.preview.failed",
+                                     defaultValue: "The preview could not be updated. Try again.")
+                    recordStage("notes.preview.failed", ["domain": (error as NSError).domain])
+                }
+            }
             do {
                 try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]).write(to: url.deletingLastPathComponent().appendingPathComponent("recovery.json"), options: .atomic)
             } catch { message = FloeL10n.l("notes.notes_office_view.the_document_was_saved_but_the", error.localizedDescription) }
@@ -605,6 +632,56 @@ struct NotesOfficeView: View {
             message = FloeL10n.l("notes.notes_office_view.could_not_save_to_notes_the", error.localizedDescription)
             recoveryURL = url
         }
+    }
+
+    /// Backfill existing Office notes while their real read-only editor is
+    /// already open. Library cards never start an engine. An editable canvas
+    /// waits for Save, so background cover work cannot interrupt handwriting.
+    private func scheduleMissingPreview() {
+        guard coverBackfillReady, isVisible, office.readOnly, office.canAct, !committing,
+              !externalRefreshRunning, let source = baseResourceID,
+              previewAttemptedSource != source,
+              document.matchingOfficePreviewResourceID == nil else { return }
+        previewAttemptedSource = source
+        Task { await refreshPreviewOnly() }
+    }
+
+    private func refreshPreviewOnly() async {
+        guard !committing, isVisible, office.canAct, let source = baseResourceID,
+              let revision = baseRevision else { return }
+        committing = true
+        defer { committing = false }
+        do {
+            try await refreshGeneratedPreview(sourceID: source, revision: revision)
+            canRetryPreview = false; message = nil
+        } catch {
+            canRetryPreview = true
+            message = String(localized: "notes.office.preview.failed",
+                             defaultValue: "The preview could not be updated. Try again.")
+            recordStage("notes.preview.failed", ["domain": (error as NSError).domain])
+        }
+    }
+
+    private func refreshGeneratedPreview(sourceID: UUID, revision: Int) async throws {
+        guard let store = session.store else { throw NoteError.resourceUnavailable }
+        let sourceURL = try await store.resourceURL(sourceID)
+        let pdf = try await office.exportCommittedCoverPDF(expectedSHA256: sourceURL.lastPathComponent)
+        defer { try? FileManager.default.removeItem(at: pdf) }
+        let data = try await Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            return try OfficeSavedCoverRenderer.firstPageData(at: pdf)
+        }.value
+        try Task.checkCancellation()
+        let preview = try await NotesCoverImageProcessor.importCover(data: data, store: store)
+        do {
+            _ = try await store.cacheOfficePreview(documentID: document.id, sourceResourceID: sourceID,
+                                                   previewResourceID: preview, expectedRevision: revision)
+        } catch {
+            _ = try? await store.discardUnreferencedResource(preview)
+            throw error
+        }
+        try await session.reload()
+        recordStage("notes.preview.updated")
     }
 }
 #endif
