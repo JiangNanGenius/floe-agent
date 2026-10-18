@@ -8,6 +8,11 @@
 // Add `--ui-test-workbench-preview-probe` with the video fixture to play the
 // rendered preview proxy and record decoded-frame/playback evidence to
 // Documents/workbench-preview-probe.json.
+//
+// Add `--ui-test-workbench-modal` to present the same fixture through a real
+// native sheet. Production Close/Discard/swipe dismissal then run against a
+// modal presenter instead of a root view; the underlying DEBUG host stays a
+// closed/reopen surface and never re-presents on its own.
 
 #if DEBUG
 import SwiftUI
@@ -27,47 +32,113 @@ struct WorkbenchUITestHarness: View {
     }()
     @State private var fixtures: WorkbenchUIFixtureBuilder.Fixtures?
     @State private var generation = 0
+    @State private var showsFixtureSheet = false
+    @State private var didAutoPresentModal = false
+
+    private var isModalLaunch: Bool {
+        ProcessInfo.processInfo.arguments.contains("--ui-test-workbench-modal")
+    }
 
     var body: some View {
-        Group {
-            if let fixtures {
-                // Reuses the production bootstrap path so fixture failures
-                // show the same actionable error UI as real entrances.
-                WorkbenchBootstrapSheet(
-                    center: environment.workbenchCenter,
-                    title: "Workbench UI Fixture",
-                    kind: kind,
-                    urls: kind == .image ? [fixtures.image]
-                                         : [fixtures.landscapeVideo, fixtures.portraitVideo],
-                    musicURL: kind == .video ? fixtures.music : nil,
-                    owner: WorkbenchCenter.Owner(kind: .standalone, id: nil, environmentID: nil),
-                    allowsResume: false)
-                    .id("\(kind.rawValue)-\(generation)")
-                    .task(id: kind) {
-                        guard kind == .video,
-                              ProcessInfo.processInfo.arguments.contains("--ui-test-workbench-preview-probe")
-                        else { return }
-                        await WorkbenchPreviewProbe.run(center: environment.workbenchCenter)
-                    }
+        if isModalLaunch {
+            // The sheet inherits the harness environment (including the shared
+            // AppEnvironment); it is passed explicitly so the production
+            // bootstrap always resolves the same workbench center.
+            modalHost
+                .sheet(isPresented: $showsFixtureSheet) {
+                    fixtureContent
+                        .environmentObject(environment)
+                }
+                .overlay(alignment: .top) { fixturePicker }
+        } else {
+            fixtureContent
+                .overlay(alignment: .top) { fixturePicker }
+        }
+    }
+
+    @ViewBuilder
+    private var fixtureContent: some View {
+        if let fixtures {
+            // Reuses the production bootstrap path so fixture failures
+            // show the same actionable error UI as real entrances.
+            WorkbenchBootstrapSheet(
+                center: environment.workbenchCenter,
+                title: "Workbench UI Fixture",
+                kind: kind,
+                urls: kind == .image ? [fixtures.image]
+                                     : [fixtures.landscapeVideo, fixtures.portraitVideo],
+                musicURL: kind == .video ? fixtures.music : nil,
+                owner: WorkbenchCenter.Owner(kind: .standalone, id: nil, environmentID: nil),
+                allowsResume: false)
+                .id("\(kind.rawValue)-\(generation)")
+                .task(id: kind) {
+                    guard kind == .video,
+                          ProcessInfo.processInfo.arguments.contains("--ui-test-workbench-preview-probe")
+                    else { return }
+                    await WorkbenchPreviewProbe.run(center: environment.workbenchCenter)
+                }
+        } else {
+            ProgressView("Preparing workbench fixtures…")
+                .task { await loadFixtures() }
+        }
+    }
+
+    /// DEBUG-only host behind the native sheet. The identifiers stay stable so
+    /// acceptance can verify the closed state and reopen the production sheet.
+    /// Nothing here re-presents automatically after a production dismiss().
+    private var modalHost: some View {
+        VStack(spacing: 14) {
+            Image(systemName: showsFixtureSheet ? "rectangle.on.rectangle" : "rectangle.slash")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            if showsFixtureSheet {
+                Text("Workbench fixture open in a modal sheet")
+                    .accessibilityIdentifier("workbench.harness.modal.open")
             } else {
-                ProgressView("Preparing workbench fixtures…")
-                    .task {
-                        fixtures = await WorkbenchUIFixtureBuilder.makeFixtures()
-                    }
+                Text("Workbench fixture closed")
+                    .accessibilityIdentifier("workbench.harness.modal.closed")
+            }
+            Button("Reopen fixture") {
+                // A reopen starts a fresh synthetic session rather than
+                // reusing the session the production UI just closed.
+                generation += 1
+                showsFixtureSheet = true
+            }
+            .buttonStyle(.borderedProminent)
+            .frame(minHeight: 44)
+            .disabled(showsFixtureSheet || fixtures == nil)
+            .accessibilityIdentifier("workbench.harness.modal.reopen")
+            if fixtures == nil {
+                ProgressView()
             }
         }
-        .overlay(alignment: .top) {
-            Picker("Fixture", selection: $kind) {
-                Text("Image").tag(MediaProjectKind.image)
-                Text("Video").tag(MediaProjectKind.video)
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 320)
-            .padding(8)
-            .background(.ultraThinMaterial, in: Capsule())
-            .accessibilityIdentifier("workbench.harness.kind")
-            .onChange(of: kind) { _, _ in generation += 1 }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task { await loadFixtures() }
+    }
+
+    private var fixturePicker: some View {
+        Picker("Fixture", selection: $kind) {
+            Text("Image").tag(MediaProjectKind.image)
+            Text("Video").tag(MediaProjectKind.video)
         }
+        .pickerStyle(.segmented)
+        .frame(maxWidth: 320)
+        .padding(8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .accessibilityIdentifier("workbench.harness.kind")
+        .onChange(of: kind) { _, _ in generation += 1 }
+    }
+
+    @MainActor
+    private func loadFixtures() async {
+        guard fixtures == nil else { return }
+        let made = await WorkbenchUIFixtureBuilder.makeFixtures()
+        guard let made else { return }
+        fixtures = made
+        guard isModalLaunch, !didAutoPresentModal else { return }
+        didAutoPresentModal = true
+        showsFixtureSheet = true
     }
 }
 
