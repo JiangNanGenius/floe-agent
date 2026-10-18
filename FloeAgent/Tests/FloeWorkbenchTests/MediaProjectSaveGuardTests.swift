@@ -176,6 +176,49 @@ struct MediaProjectSaveGuardTests {
         #expect(FileManager.default.fileExists(atPath: store.projectURL(id: fresh.id).path))
     }
 
+    @Test func canonicalProjectionIsDeterministicAndDateNormalized() throws {
+        var project = imageProject()
+        let fractional = Date(timeIntervalSinceReferenceDate: 814_026_832.919_999)
+        project.createdAt = fractional
+        project.updatedAt = fractional
+        project.recoveryWarnings = ["computed on load"]
+
+        let first = try MediaProjectStore.canonicalContentData(project)
+        let second = try MediaProjectStore.canonicalContentData(project)
+        #expect(first == second,
+                "the same document must canonicalize to identical bytes every time")
+
+        var normalized = project
+        normalized.createdAt = Date(timeIntervalSinceReferenceDate: 814_026_832.0)
+        normalized.updatedAt = Date(timeIntervalSinceReferenceDate: 814_026_832.0)
+        normalized.recoveryWarnings = []
+        let normalizedData = try MediaProjectStore.canonicalContentData(normalized)
+        #expect(first == normalizedData,
+                "sub-second date precision and load-derived warnings must not change durable identity")
+    }
+
+    @Test func canonicalProjectionMatchesReloadedDocument() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = MediaProjectStore(directory: directory)
+
+        var project = imageProject()
+        let fractional = Date(timeIntervalSinceReferenceDate: 814_026_832.919_999)
+        project.createdAt = fractional
+        project.updatedAt = fractional
+        try await store.save(project)
+
+        let reloaded = try #require(try await store.loadProject(id: project.id))
+        let liveBytes = try MediaProjectStore.canonicalContentData(project)
+        let diskBytes = try MediaProjectStore.canonicalContentData(reloaded)
+        #expect(liveBytes == diskBytes,
+                "a live draft and the document it just wrote must share durable identity")
+
+        // Re-saving that live draft at the same revision is idempotent, not a
+        // same-revision conflict: the center's dirty check relies on this.
+        try await store.save(project, expectedRevision: project.revision)
+    }
+
     @Test func forkAndNewDocumentsAreNotBlockedByTheParentRevision() async throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

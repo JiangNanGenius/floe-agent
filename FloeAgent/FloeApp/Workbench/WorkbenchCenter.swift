@@ -1263,10 +1263,26 @@ final class WorkbenchCenter: ObservableObject {
         // The durable base advances to what actually reached the disk; the
         // active UI revision stays whatever the user has edited since.
         savedRevision = max(savedRevision ?? snapshot.revision, snapshot.revision)
-        if let current = project {
-            unsavedChanges = canonicalDigest(snapshot) != canonicalDigest(current)
-        } else {
-            unsavedChanges = false
+        // "Already saved" is decided with the SAME deterministic projection the
+        // store's compare-and-swap guards use (sorted keys, ISO-8601 dates,
+        // load-derived recovery warnings excluded). Comparing two private
+        // ad-hoc encodings here could report a durably written draft as dirty
+        // forever, so the codec is shared, never duplicated.
+        do {
+            let durable = try MediaProjectStore.canonicalContentData(snapshot)
+            if let current = project {
+                unsavedChanges = durable != (try MediaProjectStore.canonicalContentData(current))
+            } else {
+                unsavedChanges = false
+            }
+        } catch {
+            // Without a faithful projection we cannot prove this write. Keep
+            // the draft dirty and report, instead of claiming it is saved.
+            unsavedChanges = project != nil
+            let message = Self.saveFailureMessage(for: error)
+            saveError = message
+            alert = Alert(title: WorkbenchText.t("保存失败", "Save failed"), message: message)
+            return false
         }
         saveError = nil
         return true
@@ -1291,14 +1307,6 @@ final class WorkbenchCenter: ObservableObject {
         return WorkbenchText.t(
             "保存失败：项目文件无法写入。修改仍保留在内存中，请检查存储空间与权限后重试。",
             "Save failed: the project file could not be written. Your changes are still in memory; check storage space and permissions, then retry.")
-    }
-
-    /// Durable content of a project (load-time recovery warnings excluded),
-    /// used to tell "already saved" apart from same-revision drift.
-    private func canonicalDigest(_ project: MediaProject) -> Data? {
-        var canonical = project
-        canonical.recoveryWarnings = []
-        return try? JSONEncoder().encode(canonical)
     }
 
     // MARK: - Export

@@ -465,6 +465,30 @@ struct WorkbenchSaveFailureTests {
         #expect(await center.closeProject() == true)
     }
 
+    @Test func saveRetryPreservesCompleteDurableContent() async throws {
+        let environment = try makeEnvironment()
+        defer { cleanUp(environment) }
+        let center = makeCenter(environment)
+        center.autosaveDelayForTesting = .seconds(60)
+        let id = try await openImageProject(center, environment)
+        #expect(setOpacity(center, 0.42))
+        let draft = try #require(center.project)
+        let expected = try MediaProjectStore.canonicalContentData(draft)
+
+        try setWritable(false, at: environment.storeDirectory)
+        #expect(await center.closeProject() == false)
+        #expect(center.project?.id == id)
+        #expect(center.unsavedChanges)
+        try setWritable(true, at: environment.storeDirectory)
+        #expect(await center.closeProject() == true)
+        #expect(center.project == nil)
+        #expect(!center.unsavedChanges)
+
+        let reloaded = try diskProject(id, in: environment)
+        #expect(try MediaProjectStore.canonicalContentData(reloaded) == expected,
+                "retry must preserve the entire durable draft, including history and assets")
+    }
+
     @Test func confirmedDiscardDropsOnlyThisSessionsUnsavedEdits() async throws {
         let environment = try makeEnvironment()
         defer { cleanUp(environment) }

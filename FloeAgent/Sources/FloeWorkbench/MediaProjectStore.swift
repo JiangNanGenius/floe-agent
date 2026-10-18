@@ -225,8 +225,29 @@ public actor MediaProjectStore {
     /// recomputed from the document on every open, so they are excluded from
     /// the comparison; everything the user can edit stays in.
     private func canonicalDocumentData(_ project: MediaProject) throws -> Data {
+        try Self.canonicalContentData(project)
+    }
+
+    /// Deterministic durable-content projection shared by every reader of a
+    /// project document: the store's compare-and-swap guards and the app's
+    /// "is this draft already saved" check both go through this one codec, so
+    /// neither side can drift into a private, non-canonical encoding.
+    ///
+    /// It matches the bytes this store writes (sorted keys, ISO-8601 dates) and
+    /// therefore normalizes the sub-second date precision an in-memory draft
+    /// carries against the whole-second dates a document read back from disk
+    /// carries: the same durable content always canonicalizes identically.
+    /// Only load-derived `recoveryWarnings` are excluded (they are recomputed
+    /// on every open and are not user edit state).
+    ///
+    /// Throws instead of returning an unfaithful value, so callers can fail
+    /// closed rather than treating "could not encode" as "unchanged".
+    public nonisolated static func canonicalContentData(_ project: MediaProject) throws -> Data {
         var canonical = project
         canonical.recoveryWarnings = []
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
         return try encoder.encode(canonical)
     }
 }
