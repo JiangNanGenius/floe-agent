@@ -670,11 +670,17 @@ final class OfficeFileSession: ObservableObject {
         let hadEdits = wasReadOnly ? false : await hasLocalEditsToProtect()
         guard let web = OfficeExplicitSaveBridge.findWebView(in: controller.view),
               (try await web.evaluateJavaScript("window.__floeOfficePenState ? window.__floeOfficePenState().activeStroke : false")) as? Bool == false,
-              !hadEdits else { throw CocoaError(.fileWriteFileExists) }
+              !hadEdits else {
+            recordStage("cover.refused", ["reason": "active-or-dirty", "dirty": String(hadEdits)])
+            throw CocoaError(.fileWriteFileExists)
+        }
         let before = try await Task.detached(priority: .userInitiated) {
             try FloeDigest.sha256Hex(ofFileAt: workingURL)
         }.value
-        guard before == expectedSHA256, self.controller === controller else { throw CocoaError(.fileWriteFileExists) }
+        guard before == expectedSHA256, self.controller === controller else {
+            recordStage("cover.refused", ["reason": "source-changed"])
+            throw CocoaError(.fileWriteFileExists)
+        }
         let output = try await Self.exportNativeDocument(controller: controller, format: "pdf")
         do {
             let after = try await Task.detached(priority: .userInitiated) {
@@ -682,7 +688,11 @@ final class OfficeFileSession: ObservableObject {
             }.value
             let hasNewEdits = wasReadOnly ? false : await hasLocalEditsToProtect()
             guard after == before, self.controller === controller,
-                  readOnly == wasReadOnly, !hasNewEdits else { throw CocoaError(.fileWriteFileExists) }
+                  readOnly == wasReadOnly, !hasNewEdits else {
+                recordStage("cover.refused", ["reason": "export-changed", "dirty": String(hasNewEdits),
+                                                "sameBytes": String(after == before)])
+                throw CocoaError(.fileWriteFileExists)
+            }
             return output
         } catch {
             try? FileManager.default.removeItem(at: output)
