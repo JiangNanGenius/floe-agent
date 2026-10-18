@@ -324,6 +324,7 @@ never squeezed into a strip.
 - **Images**: crop, move, scale and rotate; manage layers, add text or drawing, adjust color, blur, sharpen, mosaic and filters. Use rectangle, ellipse or lasso selections, then add, subtract, invert, feather or create a mask.
 - **Video**: add clips to the main track, trim, split, reorder, change speed or adjust framing. Add music, volume changes and fades on the music track. Add captions manually or transcribe a selected clip. Hard cuts and cross-dissolve transitions are available.
 - **Save and resume**: projects save automatically. Use the toolbar folder button to open saved projects with their layers, timeline and edit history. Opening the same source again lets you resume editing or start a new project.
+- **Save failure**: your current edits stay open. Retry **Save project**, keep editing, or explicitly discard unsaved changes. Close completes after the current edits are saved; discarding keeps saved versions and source assets.
 - **Export**: choose PNG, JPEG or HEIC for images, with size and quality options; choose H.264 or HEVC for video, with resolution and frame-rate options. Files go to `Workbench/Exports` in the workspace. Use Share / Save to Files after export.
 - **AI**: open the AI drawer, choose your assets and model, then review parameters and costs before submitting. Accept a candidate to add it as a new layer or clip; you can still undo it. Jobs and candidates remain after closing the workbench. If generation is interrupted, check its status before resubmitting a paid request.
 
