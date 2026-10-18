@@ -130,6 +130,10 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             try await attachLiveDiagnostics(web, label: "\(format)-after-lifting-geometry")
             let pendingPreview = try await web.evaluateJavaScript(
                 "window.__floeOfficePenPreview ? window.__floeOfficePenPreview().pending : -1") as? Int
+            let position = try await web.evaluateJavaScript(Self.committedInkPosition) as? [String: Any]
+            let positionAttachment = XCTAttachment(string: String(describing: position))
+            positionAttachment.name = "\(format)-raw-pen-versus-committed-paint"
+            positionAttachment.lifetime = .keepAlways; add(positionAttachment)
             let saved = await session.saveInPlace()
             guard saved else { throw CocoaError(.fileWriteUnknown) }
             let packageAttachment = XCTAttachment(contentsOfFile: source)
@@ -173,6 +177,12 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             add(cardAttachment)
             await session.release()
             if requireLivePresentation {
+                XCTAssertGreaterThan(position?["pixels"] as? Int ?? 0, 80,
+                    "The committed canvas must contain this stroke independently of its temporary overlay")
+                XCTAssertLessThanOrEqual(position?["driftX"] as? Double ?? .infinity, 4,
+                    "Committed ink must remain under the original pen path horizontally")
+                XCTAssertLessThanOrEqual(position?["driftY"] as? Double ?? .infinity, 4,
+                    "Committed ink must remain under the original pen path vertically; clearing an offset preview is insufficient")
                 XCTAssertEqual(pendingPreview, 0,
                                "Visible opaque ink must hand off promptly; an old preview must not double the saved stroke")
             }
@@ -325,10 +335,18 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
     const offset = typeof contactIndex === 'number' ? contactIndex * .15 : 0;
     const x = x1 + (x2-x1)*(.35+offset), y = y1 + (y2-y1)*.6;
     const length = Math.min(96,(x2-x1)*.25), amplitude = Math.min(24,(y2-y1)*.08);
-    const send = (type, px, py, buttons) => canvas.dispatchEvent(new PointerEvent(type, {
+    if (contactIndex === 0) window.__floeLiveInkRawBounds = [Infinity,Infinity,-Infinity,-Infinity];
+    const include = (px,py) => {
+        const b=window.__floeLiveInkRawBounds;
+        b[0]=Math.min(b[0],px); b[1]=Math.min(b[1],py);
+        b[2]=Math.max(b[2],px); b[3]=Math.max(b[3],py);
+    };
+    const send = (type, px, py, buttons) => {
+        if (buttons) include(px,py);
+        return canvas.dispatchEvent(new PointerEvent(type, {
         bubbles: true, cancelable: true, composed: true, pointerType: 'pen', pointerId: 933,
         isPrimary: true, clientX: px, clientY: py, button: 0, buttons, pressure: buttons ? .5 : 0
-    }));
+    })); };
     send('pointerdown', x, y, 1);
     for (let i = 1; i <= 12; ++i) {
         send('pointermove', x + i * length / 12, y + Math.sin(i / 3) * amplitude, 1);
@@ -337,6 +355,28 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
     window.__floeLiveInkQualificationEnd = () => send('pointerup', x + length, y + Math.sin(4) * amplitude, 0);
     return true;
     """#
+    private static let committedInkPosition = #"""
+    (() => {
+        const c=app.sectionContainer.canvas, r=c.getBoundingClientRect();
+        const rgba=c.getContext('2d').getImageData(0,0,c.width,c.height).data;
+        let minX=c.width,minY=c.height,maxX=-1,maxY=-1,pixels=0;
+        for (let i=0;i<rgba.length;i+=4) {
+            if (rgba[i]>140 && rgba[i]>rgba[i+1]*1.5 && rgba[i]>rgba[i+2]*1.5) {
+                const n=i/4, x=n%c.width,y=Math.floor(n/c.width);
+                minX=Math.min(minX,x);maxX=Math.max(maxX,x);
+                minY=Math.min(minY,y);maxY=Math.max(maxY,y);pixels++;
+            }
+        }
+        const raw=window.__floeLiveInkRawBounds;
+        if (!raw || !pixels) return {pixels};
+        const painted=[r.left+minX*r.width/c.width,r.top+minY*r.height/c.height,
+            r.left+(maxX+1)*r.width/c.width,r.top+(maxY+1)*r.height/c.height];
+        return {pixels,raw,painted,
+            driftX:Math.abs((raw[0]+raw[2]-painted[0]-painted[2])/2),
+            driftY:Math.abs((raw[1]+raw[3]-painted[1]-painted[3])/2)};
+    })()
+    """#
+
     private static let liftPen = #"""
     window.__floeLiveInkQualificationEnd();
     delete window.__floeLiveInkQualificationEnd;
