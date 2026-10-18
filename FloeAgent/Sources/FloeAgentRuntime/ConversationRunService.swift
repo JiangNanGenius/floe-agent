@@ -1163,6 +1163,20 @@ public actor ConversationRunService {
                 // nested JSON and must be verified by digest before use.
                 persisted["artifactRefsJSON"] = encoded
             }
+            if !result.outputFiles.isEmpty {
+                do {
+                    let data = try JSONEncoder().encode(result.outputFiles)
+                    guard let encoded = String(data: data, encoding: .utf8) else {
+                        throw FloeError.storageCorrupted("Unable to encode output file references")
+                    }
+                    // The containing event binds these immutable snapshots
+                    // to this exact run; ordinary artifacts are not outputs.
+                    persisted["outputFilesJSON"] = encoded
+                } catch {
+                    durabilityFailure = "Unable to save output file references"
+                    logger.error("runOutputReferencesEncodingFailed run=\(runID.uuidString)")
+                }
+            }
             _ = await appendEventReliably(
                 runID: runID, kind: .toolResult,
                 payloadJSON: Self.jsonPayload(persisted),

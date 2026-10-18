@@ -277,6 +277,7 @@ public struct CatalogToolExecutor: ToolExecutor {
                 outputDigest: output.fullOutputSHA256,
                 exitStatus: output.exitStatus,
                 artifacts: output.artifacts,
+                outputFiles: output.outputFiles,
                 // These tools enforce their own bounded JSON pages. A second 4K
                 // cut here destroys the JSON and its continuation cursor.
                 maximumSummaryCharacters: ["notes.read", "notes.search"].contains(call.toolName) ? 196_608 :

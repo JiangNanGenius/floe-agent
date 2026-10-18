@@ -128,6 +128,15 @@ public struct ToolExecutionOutput: Sendable {
     public var fullOutputSHA256: String
     public var exitStatus: Int32?
     public var artifacts: [ToolArtifactReference]
+    /// Declared final deliverables captured as immutable per-run snapshots.
+    /// These are distinct from ordinary `artifacts`: evidence, screenshots and
+    /// input references stay in `artifacts` and are never promoted here, and
+    /// nothing is added to `outputFiles` without the tool deliberately
+    /// snapshotting the exact bytes into the run-output store. The runtime
+    /// persists this list on the exact-run `toolResult` event so the owning
+    /// conversation and later callers can reopen the files after the original
+    /// workspace file has changed.
+    public var outputFiles: [ToolArtifactReference]
     /// The tool reached a stable boundary that requires the user to interact
     /// with a visible system surface before the same run can continue.
     public var requiresUserAction: Bool
@@ -137,6 +146,7 @@ public struct ToolExecutionOutput: Sendable {
         fullOutputSHA256: String,
         exitStatus: Int32? = nil,
         artifacts: [ToolArtifactReference] = [],
+        outputFiles: [ToolArtifactReference] = [],
         requiresUserAction: Bool = false,
         maximumSummaryCharacters: Int = 4096
     ) {
@@ -144,6 +154,7 @@ public struct ToolExecutionOutput: Sendable {
         self.fullOutputSHA256 = fullOutputSHA256
         self.exitStatus = exitStatus
         self.artifacts = artifacts
+        self.outputFiles = outputFiles
         self.requiresUserAction = requiresUserAction
     }
 
@@ -153,6 +164,7 @@ public struct ToolExecutionOutput: Sendable {
         digesting summary: String,
         exitStatus: Int32? = nil,
         artifacts: [ToolArtifactReference] = [],
+        outputFiles: [ToolArtifactReference] = [],
         requiresUserAction: Bool = false,
         maximumSummaryCharacters: Int = 4096
     ) {
@@ -161,6 +173,7 @@ public struct ToolExecutionOutput: Sendable {
             fullOutputSHA256: FloeDigest.sha256Hex(Data(summary.utf8)),
             exitStatus: exitStatus,
             artifacts: artifacts,
+            outputFiles: outputFiles,
             requiresUserAction: requiresUserAction,
             maximumSummaryCharacters: maximumSummaryCharacters
         )

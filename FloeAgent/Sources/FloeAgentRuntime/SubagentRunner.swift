@@ -1458,6 +1458,7 @@ public struct SubagentRunner: Sendable {
                     outputDigest: result.outputDigest,
                     exitStatus: result.exitStatus,
                     artifacts: result.artifacts,
+                    outputFiles: result.outputFiles,
                     provenance: result.provenance,
                     maximumSummaryCharacters: maximumResultBytes
                 )
@@ -1582,6 +1583,7 @@ public struct SubagentRunner: Sendable {
                     outputDigest: result.outputDigest,
                     exitStatus: result.exitStatus,
                     artifacts: result.artifacts,
+                    outputFiles: result.outputFiles,
                     provenance: result.provenance,
                     maximumSummaryCharacters: maximumResultBytes
                 )
