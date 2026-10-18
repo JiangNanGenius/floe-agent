@@ -32,9 +32,12 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
     func testPresentationPinchInDrawingModeThenContinueWriting() async throws {
         try await exercise("pptx", navigateBeforeDrawing: true)
     }
+    func testWordRapidContactsStayVisibleAndSaveIndependently() async throws {
+        try await exercise("docx", contactCount: 3)
+    }
 
     private func exercise(_ format: String, requireLivePresentation: Bool = true,
-                          navigateBeforeDrawing: Bool = false) async throws {
+                          navigateBeforeDrawing: Bool = false, contactCount: Int = 1) async throws {
         guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
             throw XCTSkip("Opt-in actual App/native live ink qualification")
         }
@@ -104,20 +107,28 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
                 XCTAssertEqual(facts["strokes"] as? Int, 0, "Fingers must not become pen contacts")
             }
             try await Task.sleep(for: .milliseconds(150))
-            let before = try await snapshot(web, label: "\(format)-before-contact")
-            _ = try await web.callAsyncJavaScript(Self.beginAndMove, arguments: [:], in: nil, contentWorld: .page)
-            // No pointerup has been sent. Demand actual displayed pixels, not
-            // a replay counter or an eventual saved-shape count.
-            let during = try await snapshot(web, label: "\(format)-while-pen-is-down")
-            let stillDown = try await web.evaluateJavaScript("window.__floeOfficePenState().activeStroke")
-            let liveRedDelta = redPixels(during) - redPixels(before)
-            _ = try await web.evaluateJavaScript(Self.liftPen)
-            let afterLift = try await web.evaluateJavaScript("window.__floeOfficePenState().activeStroke")
+            var contacts: [(down: Bool?, lifted: Bool?, redDelta: Int)] = []
+            for index in 0..<contactCount {
+                let before = try await snapshot(web, label: "\(format)-\(index)-before-contact")
+                _ = try await web.callAsyncJavaScript(Self.beginAndMove,
+                    arguments: ["contactIndex": index], in: nil, contentWorld: .page)
+                // No pointerup has been sent. Demand actual displayed pixels,
+                // not a replay counter or an eventual saved-shape count.
+                let during = try await snapshot(web, label: "\(format)-\(index)-while-pen-is-down")
+                let stillDown = try await web.evaluateJavaScript("window.__floeOfficePenState().activeStroke")
+                _ = try await web.evaluateJavaScript(Self.liftPen)
+                let afterLift = try await web.evaluateJavaScript("window.__floeOfficePenState().activeStroke")
+                contacts.append((stillDown as? Bool, afterLift as? Bool,
+                                 redPixels(during) - redPixels(before)))
+                // The next contact starts without an artificial core-paint
+                // sleep. Actual snapshot and frame costs are still present;
+                // this does not claim a physical stylus sampling rate.
+            }
             try await Task.sleep(for: .milliseconds(500))
             _ = try await snapshot(web, label: "\(format)-after-lifting-pen")
             let saved = await session.saveInPlace()
             guard saved else { throw CocoaError(.fileWriteUnknown) }
-            XCTAssertEqual(try vectorCount(in: source), 1,
+            XCTAssertEqual(try vectorCount(in: source), contactCount,
                            "Only the Pencil contact may add a saved vector; touch navigation must not add ink")
             let postSaveState = try await web.evaluateJavaScript(#"""
             (() => ({ latch: window.floeModifiedSinceCommit ?? null,
@@ -151,11 +162,13 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             cardAttachment.name = "\(format)-notes-card-ink"; cardAttachment.lifetime = .keepAlways
             add(cardAttachment)
             await session.release()
-            XCTAssertEqual(stillDown as? Bool, true, "The visual assertion must precede pointerup")
-            XCTAssertEqual(afterLift as? Bool, false)
-            if requireLivePresentation {
-                XCTAssertGreaterThan(liveRedDelta, 80,
-                    "Ink must appear while the pen is moving, before the final vector is committed")
+            for (index, contact) in contacts.enumerated() {
+                XCTAssertEqual(contact.down, true, "Contact \(index): visual assertion must precede pointerup")
+                XCTAssertEqual(contact.lifted, false)
+                if requireLivePresentation {
+                    XCTAssertGreaterThan(contact.redDelta, 80,
+                        "Contact \(index): ink must appear during movement; earlier contacts must stay visible")
+                }
             }
             XCTAssertGreaterThan(redPixels(generated), 40, "The saved engine preview must include the Office vector ink")
             XCTAssertEqual(outcome.source, .officeSavedPreview)
@@ -271,7 +284,8 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
     const y2 = rect.top + Math.min(canvas.height, section.myTopLeft[1] + section.size[1], Math.max(dy1, dy2)) * scaleY;
     if (![x1,y1,x2,y2].every(Number.isFinite) || x2-x1 < 120 || y2-y1 < 120)
         throw new Error('No visible document drawing area');
-    const x = x1 + (x2-x1)*.35, y = y1 + (y2-y1)*.6;
+    const offset = typeof contactIndex === 'number' ? contactIndex * .15 : 0;
+    const x = x1 + (x2-x1)*(.35+offset), y = y1 + (y2-y1)*.6;
     const length = Math.min(96,(x2-x1)*.25), amplitude = Math.min(24,(y2-y1)*.08);
     const send = (type, px, py, buttons) => canvas.dispatchEvent(new PointerEvent(type, {
         bubbles: true, cancelable: true, composed: true, pointerType: 'pen', pointerId: 933,
