@@ -92,6 +92,14 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             _ = try await snapshot(web, label: "\(format)-after-lifting-pen")
             let saved = await session.saveInPlace()
             guard saved else { throw CocoaError(.fileWriteUnknown) }
+            let postSaveState = try await web.evaluateJavaScript(#"""
+            (() => ({ latch: window.floeModifiedSinceCommit ?? null,
+                modified: app.map.stateChangeHandler.getItemValue('.uno:ModifiedStatus') ?? null,
+                active: window.__floeOfficePenState().activeStroke }))()
+            """#)
+            let saveStateAttachment = XCTAttachment(string: String(describing: postSaveState))
+            saveStateAttachment.name = "\(format)-post-save-state"; saveStateAttachment.lifetime = .keepAlways
+            add(saveStateAttachment)
             let sourceHash = try FloeDigest.sha256Hex(ofFileAt: source)
             let pdf = try await session.exportCommittedCoverPDF(expectedSHA256: sourceHash)
             defer { try? FileManager.default.removeItem(at: pdf) }

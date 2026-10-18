@@ -662,7 +662,7 @@ final class OfficeFileSession: ObservableObject {
     /// another serialization could change the package being identified.
     func exportCommittedCoverPDF(expectedSHA256: String) async throws -> URL {
         guard exportFormats.contains("pdf"), let controller,
-              let workingURL = session?.workingURL, beginExternalRefresh() else {
+              let workingURL = session?.workingURL, beginExternalRefresh(resigningFirstResponder: false) else {
             throw CocoaError(.featureUnsupported)
         }
         defer { endExternalRefresh() }
@@ -671,7 +671,9 @@ final class OfficeFileSession: ObservableObject {
         guard let web = OfficeExplicitSaveBridge.findWebView(in: controller.view),
               (try await web.evaluateJavaScript("window.__floeOfficePenState ? window.__floeOfficePenState().activeStroke : false")) as? Bool == false,
               !hadEdits else {
-            recordStage("cover.refused", ["reason": "active-or-dirty", "dirty": String(hadEdits)])
+            recordStage("cover.refused", ["reason": "active-or-dirty", "dirty": String(hadEdits),
+                                            "workingCopyDirty": String(hasUncommittedChanges),
+                                            "engineDirty": (await engineModifiedState()).map(String.init) ?? "unknown"])
             throw CocoaError(.fileWriteFileExists)
         }
         let before = try await Task.detached(priority: .userInitiated) {
@@ -1511,10 +1513,10 @@ final class OfficeFileSession: ObservableObject {
     /// Freezes the current editor and holds the session's operating lock across
     /// an external-revision decision and close. Returns false when another
     /// session operation (initial open, save, attachment) is in flight.
-    func beginExternalRefresh() -> Bool {
+    func beginExternalRefresh(resigningFirstResponder: Bool = true) -> Bool {
         guard canAct else { return false }
         operating = true
-        setEditorInteraction(false)
+        setEditorInteraction(false, resigningFirstResponder: resigningFirstResponder)
         return true
     }
 
@@ -1949,10 +1951,10 @@ final class OfficeFileSession: ObservableObject {
         #endif
     }
 
-    private func setEditorInteraction(_ enabled: Bool) {
+    private func setEditorInteraction(_ enabled: Bool, resigningFirstResponder: Bool = true) {
         guard let controller, controller.isViewLoaded else { return }
         controller.view.isUserInteractionEnabled = enabled
-        if !enabled { controller.view.endEditing(true) }
+        if !enabled && resigningFirstResponder { controller.view.endEditing(true) }
     }
 
     func discardAndReturn() async -> Bool {
