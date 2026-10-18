@@ -9,10 +9,11 @@ Two kinds of checks live here:
   unsigned IPA must be retained immediately after package validation, before
   dSYM capture, and publishing must stay unsigned-only, exact-SHA and
   idempotent;
-* release-mode assertions for the lean route: the dispatch input must keep the
-  historical prerelease/not-latest default, an explicitly dispatched false may
-  create the normal latest release, and an existing release is verified rather
-  than silently converted.
+* release-mode assertions for the lean route: the normal-release rule
+  (2026-10-18) makes the stable latest release the default, an explicitly
+  dispatched true keeps the prerelease/not-latest exception, an existing release
+  is verified rather than silently converted, and every publish is followed by
+  the shared installable-delivery readback gate.
 
 The executable python gates embedded in the workflows are extracted and run
 against synthetic asset folders, so the exclusions are exercised, not just
@@ -452,8 +453,6 @@ class LeanPublishPolicyTests(unittest.TestCase):
         self.assertNotRegex(self.publish, r'gh release (create|upload)[^\n]*--clobber')
         self.assertNotIn('gh release edit', self.publish)
         self.assertNotIn('gh release delete', self.publish)
-        # The Feather continuation from the published asset stays wired.
-        self.assertIn('gh workflow run publish-feather-source.yml', self.publish)
 
     def test_release_mode_flags_for_both_dispatch_paths(self):
         block = extract_release_mode_block(self.publish_step['run'])
@@ -581,7 +580,7 @@ class LeanPublishPolicyTests(unittest.TestCase):
 
 
 class LeanReleaseModeInputTests(unittest.TestCase):
-    """The dispatch input must keep the safe prerelease default and be wired."""
+    """The dispatch input defaults to the normal stable latest release and is wired."""
 
     @classmethod
     def setUpClass(cls):
@@ -590,10 +589,13 @@ class LeanReleaseModeInputTests(unittest.TestCase):
             step for step in RELEASE['jobs']['lean-publish']['steps']
             if step.get('name', '').startswith('Publish the attested unsigned'))
 
-    def test_mode_input_defaults_to_the_historical_prerelease(self):
+    def test_mode_input_defaults_to_the_normal_stable_latest_release(self):
+        # 2026-10-18 normal-release rule: the default is the stable latest
+        # release so AltStore/Feather resolve the newest installable build; the
+        # historical prerelease mode remains an explicit opt-in exception.
         mode = self.inputs['github_prerelease']
         self.assertEqual(mode['type'], 'boolean')
-        self.assertIs(mode['default'], True)
+        self.assertIs(mode['default'], False)
         self.assertFalse(mode['required'])
         description = mode['description'].lower()
         for token in ('prerelease', 'latest', 'lean'):
@@ -611,6 +613,443 @@ class LeanReleaseModeInputTests(unittest.TestCase):
         evidence = next(step for step in RELEASE['jobs']['lean-publish']['steps']
                         if step.get('name') == 'Record the lean delivery evidence')
         self.assertIn('github_release_prerelease=$RELEASE_PRERELEASE', evidence['run'])
+
+
+class PublicationReadbackContractTests(unittest.TestCase):
+    """Both cloud publish routes and the feed refresh verify the live result.
+
+    2026-10-18 normal-release rule: every public App release must be a stable
+    latest release carrying the verified unsigned IPA, and the AltStore/Feather
+    feed must be read back against the published asset. These checks keep the
+    fail-closed readback wired after publishing and before any downstream sync.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.publish_job = RELEASE['jobs']['publish-release']
+        cls.lean_job = RELEASE['jobs']['lean-publish']
+        cls.feather_job = FEATHER['jobs']['publish-source']
+
+    def step(self, job, name):
+        return next(step for step in job['steps'] if step.get('name') == name)
+
+    def test_legacy_source_guard_rejects_a_different_dispatch_commit(self):
+        run = self.step(RELEASE['jobs']['prepare-release'],
+                        'Freeze and validate the release source before parallel qualification')['run']
+        guard = run.split('FloeAgent/scripts/release_preflight.sh', 1)[0]
+        with tempfile.TemporaryDirectory(prefix='floe-release-source-') as folder:
+            repo = Path(folder)
+            env = dict(os.environ, GIT_AUTHOR_NAME='Floe Review',
+                       GIT_COMMITTER_NAME='Floe Review',
+                       GIT_AUTHOR_EMAIL='review@example.invalid',
+                       GIT_COMMITTER_EMAIL='review@example.invalid')
+            for args in (('init', '-q'), ('commit', '--allow-empty', '-qm', 'source'),
+                         ('tag', 'v1.7.99')):
+                subprocess.run(['git', *args], cwd=repo, env=env, check=True,
+                               capture_output=True)
+            commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo,
+                                             text=True).strip()
+            for source, succeeds in ((commit, True), ('0' * 40, False)):
+                result = subprocess.run(['bash', '-c', guard], cwd=repo,
+                                        env=dict(env, RELEASE_TAG='v1.7.99', GITHUB_SHA=source),
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+                if not succeeds:
+                    self.assertIn('--ref v1.7.99', result.stderr)
+
+    def test_legacy_publish_reads_back_after_publishing_before_gitee(self):
+        names = [step.get('name') for step in self.publish_job['steps']]
+        readback = 'Read back the published release as an installable delivery'
+        self.assertLess(names.index('Publish the transport-accepted paired release'),
+                        names.index(readback))
+        self.assertLess(names.index(readback),
+                        names.index('Request Gitee synchronization for the published release'))
+        run = self.step(self.publish_job, readback)['run']
+        self.assertIn('FloeAgent/scripts/verify_github_release_publication.py', run)
+        self.assertIn('gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG"', run)
+        self.assertIn('gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG"', run)
+        self.assertIn('--expect-source-sha "$SOURCE_SHA"', run)
+        self.assertIn('--staged-dir release-assets', run)
+        self.assertIn('releases/latest', run)
+        self.assertIn('*-beta.*', run)
+        self.assertIn('set -euo pipefail', run)
+
+    def test_legacy_publish_uses_the_normal_stable_mode_for_stable_tags(self):
+        publish = self.step(self.publish_job, 'Publish the transport-accepted paired release')
+        run = publish['run']
+        self.assertIn('case "$RELEASE_TAG" in', run)
+        self.assertIn('*-beta.*) RELEASE_MODE_ARGS=(--prerelease --latest=false)', run)
+        self.assertIn('*) RELEASE_MODE_ARGS=(--latest=true)', run)
+        self.assertIn('gh release edit "$RELEASE_TAG" --notes-file release-notes.md --draft=false',
+                      run)
+        self.assertIn('gh release create "$RELEASE_TAG" release-assets/*', run)
+        self.assertIn('"${RELEASE_MODE_ARGS[@]}"', run)
+        # The old hardcoded prerelease must not return to the App release path.
+        self.assertNotIn('--draft=false --prerelease', run)
+        self.assertNotIn('--verify-tag --prerelease', run)
+
+    def test_lean_publish_reads_back_the_attested_release(self):
+        names = [step.get('name') for step in self.lean_job['steps']]
+        readback = 'Read back the published release as an installable delivery'
+        self.assertLess(names.index('Publish the attested unsigned release without clobbering'),
+                        names.index(readback))
+        self.assertLess(names.index(readback),
+                        names.index('Request Gitee synchronization for the published release'))
+        run = self.step(self.lean_job, readback)['run']
+        self.assertIn('verify_github_release_publication.py', run)
+        self.assertIn('--expect-ipa-sha256 "${{ steps.fetch.outputs.ipa_sha256 }}"', run)
+        self.assertIn('--staged-dir release-assets', run)
+        self.assertIn('--expect-source-sha "$SOURCE_SHA"', run)
+        self.assertIn('RELEASE_PRERELEASE', run)
+
+    def test_readback_script_exists_and_compiles(self):
+        script = REPO / 'FloeAgent' / 'scripts' / 'verify_github_release_publication.py'
+        self.assertTrue(script.is_file())
+        subprocess.run([sys.executable, '-m', 'py_compile', str(script)], check=True)
+
+    def test_feather_feed_is_read_back_live_and_bound_to_the_asset(self):
+        names = [step.get('name') for step in self.feather_job['steps']]
+        readback = 'Read back the live feed and the bound release asset'
+        self.assertLess(names.index('Publish the stable source URL'), names.index(readback))
+        run = self.step(self.feather_job, readback)['run']
+        self.assertIn('raw.githubusercontent.com/$GITHUB_REPOSITORY/main/feather.json', run)
+        self.assertIn('releases/tags/$RELEASE_TAG', run)
+        self.assertIn("asset.get('digest')", run)
+        self.assertIn("asset.get('browser_download_url')", run)
+        self.assertIn('"$RELEASE_TAG" "$(cat "$RUNNER_TEMP/feather-source-sha.txt")"', run)
+        self.assertIn('buildVersion', run)
+        # Retry until the live feed MATCHES the expected build, not merely until
+        # any HTTP 200 arrives: bounded timeout + cache-busting + a matching
+        # checker inside the loop, then a hard failure if it never converges.
+        self.assertIn('--max-time 30', run)
+        self.assertIn("Cache-Control: no-cache", run)
+        self.assertIn('check_feed.py', run)
+        self.assertIn('test "$matched" = true', run)
+        self.assertLess(run.index('for attempt in $(seq 1 10)'),
+                        run.index('python3 "$RUNNER_TEMP/check_feed.py"'))
+
+    def test_reusable_workflows_are_only_called_from_job_level(self):
+        # GitHub Actions only supports reusable workflows at jobs.<id>.uses;
+        # a step-level .github/workflows reference is rejected at run creation.
+        for workflow_name in ('release-unsigned-ipa.yml', 'publish-feather-source.yml'):
+            workflow = yaml.safe_load((WORKFLOWS / workflow_name).read_text())
+            for job_id, job in workflow['jobs'].items():
+                for step in job.get('steps', []):
+                    uses = step.get('uses', '')
+                    self.assertFalse(uses.startswith('./.github/workflows/'),
+                                     f'{workflow_name}:{job_id} has a step-level reusable workflow: {uses}')
+
+    def test_all_normal_publish_routes_await_the_same_feather_workflow(self):
+        expected = {
+            'publish-release': ('feather-normal-release',
+                                '${{ needs.publish-release.outputs.tag }}', self.publish_job),
+            'lean-publish': ('feather-lean-release',
+                             '${{ needs.lean-publish.outputs.tag }}', self.lean_job),
+            'local-publish': ('feather-local-release',
+                              '${{ needs.local-publish.outputs.tag }}',
+                              RELEASE['jobs']['local-publish']),
+        }
+        for publisher, (feather_job_id, tag_expression, job) in expected.items():
+            with self.subTest(job=publisher):
+                self.assertEqual(job['outputs']['tag'],
+                                 {'publish-release': '${{ needs.build-verify-release.outputs.tag }}',
+                                  'lean-publish': '${{ needs.lean-source.outputs.tag }}',
+                                  'local-publish': '${{ inputs.tag }}'}[publisher])
+                feather_job = RELEASE['jobs'][feather_job_id]
+                self.assertEqual(feather_job['uses'],
+                                 './.github/workflows/publish-feather-source.yml')
+                self.assertEqual(feather_job['needs'], [publisher])
+                self.assertEqual(feather_job['if'], f"needs.{publisher}.result == 'success'")
+                self.assertEqual(feather_job['with']['tag'], tag_expression)
+                self.assertEqual(feather_job['permissions']['contents'], 'write')
+                raw = job_block(RELEASE_TEXT, publisher)
+                # No detached run-ID heuristic: the called workflow either
+                # succeeds (and reads the live feed back) or the release fails.
+                self.assertNotIn('gh run list', raw)
+                self.assertNotIn('gh workflow run publish-feather-source.yml', raw)
+        triggers = FEATHER.get('on', FEATHER.get(True))
+        self.assertIn('workflow_call', triggers)
+        call_input = triggers['workflow_call']['inputs']['tag']
+        self.assertEqual(call_input['type'], 'string')
+        self.assertTrue(call_input['required'])
+        self.assertEqual(FEATHER['concurrency'],
+                         {'group': 'floe-feather-source', 'cancel-in-progress': False})
+        # publish-release previously granted only contents: write; the called
+        # workflow needs the token scopes it declares.
+        for scope in ('contents', 'actions', 'attestations'):
+            self.assertIn(scope, self.publish_job['permissions'])
+
+    def test_local_publish_requires_the_dispatch_ref_to_be_the_frozen_tag(self):
+        job = RELEASE['jobs']['local-publish']
+        names = [step.get('name') for step in job['steps']]
+        preflight_name = 'Require the local tag and release copy before any publication'
+        preflight = self.step(job, preflight_name)['run']
+        self.assertLess(names.index(preflight_name),
+                        names.index('Download the private draft transport and verify local provenance'))
+        self.assertLess(names.index(preflight_name), names.index('Attest the exact unsigned IPA bytes'))
+        self.assertIn('"$GITHUB_SHA" != "$TAG_COMMIT"', preflight)
+        self.assertIn('"$GITHUB_REF" != "refs/tags/$RELEASE_TAG"', preflight)
+        self.assertIn('--ref $RELEASE_TAG', preflight)
+        self.assertIn('Refusing before transport download, attestation or publication', preflight)
+
+    def test_local_publish_source_context_guard_runs_and_fails_closed(self):
+        run = self.step(
+            RELEASE['jobs']['local-publish'],
+            'Require the local tag and release copy before any publication')['run']
+        lines = run.splitlines()
+        start = next(index for index, line in enumerate(lines)
+                     if line.strip().startswith('TAG_COMMIT='))
+        end = next(index for index in range(start, len(lines))
+                   if lines[index].strip() == 'fi')
+        guard = 'set -euo pipefail\n' + '\n'.join(lines[start:end + 1]) + '\n'
+        with tempfile.TemporaryDirectory(prefix='floe-local-ref-guard-') as folder:
+            repo = Path(folder)
+            env = dict(os.environ, GIT_AUTHOR_NAME='Floe Review',
+                       GIT_COMMITTER_NAME='Floe Review',
+                       GIT_AUTHOR_EMAIL='review@example.invalid',
+                       GIT_COMMITTER_EMAIL='review@example.invalid')
+            for args in (('init', '-q'), ('commit', '--allow-empty', '-qm', 'frozen'),
+                         ('tag', 'v1.7.35')):
+                subprocess.run(['git', *args], cwd=repo, env=env, check=True,
+                               capture_output=True)
+            commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo,
+                                             text=True).strip()
+            script = repo / 'guard.sh'
+            script.write_text(guard)
+
+            def check(sha, ref):
+                return subprocess.run(
+                    ['bash', str(script)], cwd=repo,
+                    env=dict(env, RELEASE_TAG='v1.7.35', GITHUB_SHA=sha, GITHUB_REF=ref),
+                    capture_output=True, text=True)
+
+            ok = check(commit, 'refs/tags/v1.7.35')
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            wrong_ref = check(commit, 'refs/heads/main')
+            self.assertNotEqual(wrong_ref.returncode, 0)
+            self.assertIn('--ref v1.7.35', wrong_ref.stderr)
+            wrong_sha = check('0' * 40, 'refs/tags/v1.7.35')
+            self.assertNotEqual(wrong_sha.returncode, 0)
+            self.assertIn('attestation source digest', wrong_sha.stderr)
+
+    def test_local_publish_requires_an_explicit_distinct_transport_tag(self):
+        job = RELEASE['jobs']['local-publish']
+        transport = self.step(
+            job, 'Download the private draft transport and verify local provenance')['run']
+        self.assertIn('TRANSPORT_TAG="$TRANSPORT_TAG_INPUT"', transport)
+        self.assertIn('if [[ -z "$TRANSPORT_TAG" ]]', transport)
+        self.assertIn('if [[ "$TRANSPORT_TAG" == "$RELEASE_TAG" ]]', transport)
+        self.assertIn('must differ from the public release tag', transport)
+        self.assertNotIn('${TRANSPORT_TAG_INPUT:-$RELEASE_TAG}', transport)
+
+    def test_all_normal_routes_audit_the_ipa_before_attestation_or_publication(self):
+        cases = {
+            'publish-release': (
+                'Download accepted-SDK focused-test evidence',
+                'Publish the transport-accepted paired release', 'release-assets'),
+            'lean-publish': (
+                'Download, digest and verify the retained unsigned IPA',
+                'Attest the unsigned IPA provenance',
+                '$RUNNER_TEMP/DirectArtifact/extracted'),
+        }
+        audit = 'Audit the staged unsigned IPA and device binary before publishing'
+        for job_id, (before, after, folder) in cases.items():
+            with self.subTest(job=job_id):
+                job = RELEASE['jobs'][job_id]
+                names = [step.get('name') for step in job['steps']]
+                self.assertLess(names.index(before), names.index(audit))
+                self.assertLess(names.index(audit), names.index(after))
+                script = self.step(job, audit)['run']
+                self.assertIn('publication.audit_staged_ipa', script)
+                self.assertIn(folder, script)
+                self.assertNotIn('LC_BUILD_VERSION', script)
+                self.assertNotIn('struct.unpack', script)
+
+    def test_local_publish_audits_device_binary_before_attestation_and_publish(self):
+        job = RELEASE['jobs']['local-publish']
+        names = [step.get('name') for step in job['steps']]
+        audit = 'Audit the staged unsigned IPA and device binary before attestation'
+        self.assertLess(names.index('Package the unsigned IPA from the archived device build'),
+                        names.index(audit))
+        self.assertLess(names.index(audit), names.index('Attest the exact unsigned IPA bytes'))
+        self.assertLess(names.index(audit),
+                        names.index('Publish the normal stable release without clobbering'))
+        script = self.step(job, audit)['run']
+        # The pre-attestation gate calls the shared publication helper; it must
+        # not grow a second Mach-O parser or a weaker inlined identity check.
+        self.assertIn('publication.audit_staged_ipa', script)
+        self.assertIn('verify_github_release_publication.py', script)
+        self.assertIn("record['sourceCommit'] == os.environ['SOURCE_SHA']", script)
+        self.assertNotIn('LC_BUILD_VERSION', script)
+        self.assertNotIn('struct.unpack', script)
+
+    def test_local_publish_public_asset_allowlist_and_minimal_provenance(self):
+        job = RELEASE['jobs']['local-publish']
+        package = self.step(job, 'Package the unsigned IPA from the archived device build')['run']
+        self.assertIn('local-private-evidence', package)
+        self.assertIn("assert names == {asset, asset + '.sha256', 'PROVENANCE.json'}", package)
+        self.assertIn("'sourceCommit': source", package)
+        self.assertIn("'ipaSHA256': digest", package)
+        self.assertIn("'unsigned': True", package)
+        self.assertIn("'appRebuilt': False", package)
+        # The raw local provenance/normalization/pdfium reports must never be
+        # copied into the public asset folder.
+        self.assertNotIn('provenance.json" release-assets', package)
+        self.assertNotIn('bundle-normalization.json" release-assets', package)
+        self.assertNotIn('pdfium-linkage.json" release-assets', package)
+        publish = self.step(job, 'Publish the normal stable release without clobbering')['run']
+        self.assertIn('gh release create "$RELEASE_TAG" release-assets/*', publish)
+        self.assertNotIn('symbols/', job_block(RELEASE_TEXT, 'local-publish'))
+        retained = self.step(job, 'Retain private local packaging and readback evidence')
+        self.assertIn('local-private-evidence/', retained['with']['path'])
+
+    def feed_checker(self) -> str:
+        return extract_heredoc_python(
+            self.step(self.feather_job, 'Read back the live feed and the bound release asset'))
+
+    def run_feed_check(self, *, live, published, generated, tag='v1.7.35',
+                       source='a' * 40):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            paths = []
+            for name, payload in (('live.json', live), ('published.json', published),
+                                  ('generated.json', generated)):
+                path = root / name
+                path.write_text(json.dumps(payload))
+                paths.append(str(path))
+            checker = root / 'check_feed.py'
+            checker.write_text(self.feed_checker())
+            return subprocess.run([sys.executable, str(checker), *paths, tag, source],
+                                  capture_output=True, text=True)
+
+    def feed_fixture(self, *, tag='v1.7.35', version='1.7.35', build='276',
+                     source='a' * 40):
+        name = f'Floe-Agent-{version}-build{build}-unsigned.ipa'
+        url = (f'https://github.com/JiangNanGenius/floe-agent/releases/download/'
+               f'{tag}/{name}')
+        entry = {'version': version, 'buildVersion': build, 'downloadURL': url,
+                 'size': 1234, 'sha256': 'b' * 64, 'sourceCommit': source}
+        live_app = {'bundleIdentifier': 'org.floeagent.ios', 'versions': [entry]}
+        generated = {'apps': [{'bundleIdentifier': 'org.floeagent.ios',
+                               'versions': [dict(entry)]}]}
+        published = {'tag_name': tag, 'draft': False,
+                     'published_at': '2026-10-18T00:00:00Z',
+                     'assets': [{'name': name, 'browser_download_url': url,
+                                 'state': 'uploaded', 'size': entry['size'],
+                                 'digest': 'sha256:' + entry['sha256']}]}
+        return dict(live={'apps': [live_app]}, published=published,
+                    generated=generated, tag=tag, source=source,
+                    entry=entry, name=name, url=url)
+
+    def test_feed_readback_binds_the_exact_published_asset_url(self):
+        fixture = self.feed_fixture()
+        ok = self.run_feed_check(**{key: fixture[key]
+                                    for key in ('live', 'published', 'generated', 'tag', 'source')})
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        # Same basename on a different host/path is not the published asset.
+        fixture['published']['assets'][0]['browser_download_url'] = (
+            'https://example.invalid/' + fixture['name'])
+        mismatch = self.run_feed_check(**{key: fixture[key]
+                                          for key in ('live', 'published', 'generated', 'tag', 'source')})
+        self.assertNotEqual(mismatch.returncode, 0)
+        self.assertIn('browser_download_url', mismatch.stderr)
+
+    def test_feed_readback_rejects_wrong_tag_version_or_source(self):
+        fixture = self.feed_fixture()
+        cases = {
+            'wrong release tag': ('published', 'tag_name', 'v1.7.34'),
+            'wrong feed version': ('generated', None, None),
+            'wrong source commit': ('generated', None, None),
+        }
+        for label, (target, key, value) in cases.items():
+            with self.subTest(label=label):
+                payload = json.loads(json.dumps(fixture[target]))
+                if label == 'wrong feed version':
+                    payload['apps'][0]['versions'][0]['version'] = '1.7.34'
+                elif label == 'wrong source commit':
+                    payload['apps'][0]['versions'][0]['sourceCommit'] = 'c' * 40
+                else:
+                    payload[key] = value
+                result = self.run_feed_check(live=fixture['live'], published=payload
+                                             if target == 'published' else fixture['published'],
+                                             generated=payload
+                                             if target == 'generated' else fixture['generated'],
+                                             tag=fixture['tag'], source=fixture['source'])
+                self.assertNotEqual(result.returncode, 0, label)
+
+    def run_feather_asset_gate(self, names):
+        gate_step = self.step(self.feather_job, 'Require a public unsigned-only asset set')
+        python = extract_heredoc_python(gate_step)
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, 'feather-assets.json').write_text(
+                json.dumps({'assets': [{'name': name} for name in names]}))
+            return subprocess.run([sys.executable, '-c', python],
+                                  env=dict(os.environ, RUNNER_TEMP=tmp),
+                                  capture_output=True, text=True)
+
+    def test_feather_gate_requires_the_pair_for_the_intended_release(self):
+        # A valid new stable release passes even though the historic 275
+        # source-only release remains asset-less: the gate inspects only the
+        # intended tag's assets. The same intended release missing its IPA fails.
+        valid = self.run_feather_asset_gate([
+            'Floe-Agent-1.7.34-build275-unsigned.ipa',
+            'Floe-Agent-1.7.34-build275-unsigned.ipa.sha256'])
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        missing = self.run_feather_asset_gate(['PROVENANCE.json'])
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn('Expected one published unsigned IPA', missing.stderr)
+        transport = self.run_feather_asset_gate(['local-device.zip.part00'])
+        self.assertNotEqual(transport.returncode, 0)
+
+    def test_local_first_publish_attests_then_publishes_and_reads_back(self):
+        job = RELEASE['jobs']['local-publish']
+        condition = job['if']
+        for token in ("inputs.local_artifact_sha256 != ''", 'inputs.publish',
+                      '!inputs.lean_release', '!inputs.direct_testflight'):
+            self.assertIn(token, condition)
+        names = [step.get('name') for step in job['steps']]
+        order = ['Download the private draft transport and verify local provenance',
+                 'Package the unsigned IPA from the archived device build',
+                 'Attest the exact unsigned IPA bytes',
+                 'Verify the attestation exactly as Feather will',
+                 'Publish the normal stable release without clobbering',
+                 'Read back the published release as an installable delivery',
+                 'Request Gitee synchronization for the published release']
+        self.assertEqual([name for name in names if name in order], order,
+                         'the local-first route must attest, publish, read back, then sync')
+        feather = RELEASE['jobs']['feather-local-release']
+        self.assertEqual(feather['uses'], './.github/workflows/publish-feather-source.yml')
+        self.assertEqual(feather['needs'], ['local-publish'])
+        steps = {step.get('name'): step for step in job['steps']}
+        transport = steps['Download the private draft transport and verify local provenance']['run']
+        self.assertIn("grep -x true", transport)
+        self.assertIn('EXPECTED_TRANSPORT_SHA256', transport)
+        self.assertIn('local-device.zip.part??', transport)
+        self.assertIn("provenance['source_sha'] == os.environ['SOURCE_SHA']", transport)
+        self.assertIn('_CodeSignature', transport)
+        attest = steps['Attest the exact unsigned IPA bytes']
+        self.assertIn('attest-build-provenance@', attest['uses'])
+        self.assertEqual(attest['with']['subject-path'], '${{ steps.package.outputs.ipa_path }}')
+        verify = steps['Verify the attestation exactly as Feather will']['run']
+        self.assertIn('--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-unsigned-ipa.yml"',
+                      verify)
+        package = steps['Package the unsigned IPA from the archived device build']['run']
+        self.assertIn('scripts/package_unsigned_ipa.sh', package)
+        self.assertIn('ipa_sha256=', package)
+        self.assertNotIn('symbols/', package)
+        publish = steps['Publish the normal stable release without clobbering']['run']
+        self.assertIn('RELEASE_MODE_ARGS=(--latest=true)', publish)
+        self.assertIn('RELEASE_MODE_ARGS=(--prerelease --latest=false)', publish)
+        self.assertIn('gh release create "$RELEASE_TAG"', publish)
+        self.assertIn('gh release download "$$RELEASE_TAG"'.replace('$$', '$'), publish)
+        self.assertNotIn('gh release upload', publish)
+        readback = steps['Read back the published release as an installable delivery']['run']
+        self.assertIn('verify_github_release_publication.py', readback)
+        self.assertIn('--expect-ipa-sha256 "${{ steps.package.outputs.ipa_sha256 }}"', readback)
+        self.assertIn('--latest-json "$READBACK/latest.json"', readback)
+        raw = job_block(RELEASE_TEXT, 'local-publish')
+        self.assertNotIn('secrets.', raw)
+        self.assertNotIn('APP_STORE_CONNECT', raw)
 
 
 if __name__ == '__main__':

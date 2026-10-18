@@ -10,12 +10,12 @@ on:
         required: true
         type: string
       local_artifact_sha256:
-        description: SHA256 of the verified local-device.zip draft transport archive; signing only
+        description: SHA256 of the verified local-device.zip draft transport archive; with publish=true the normal local route packages, attests and publishes the unsigned IPA, otherwise it only signs and uploads to TestFlight
         required: false
         default: ''
         type: string
       transport_tag:
-        description: Optional private draft release tag that holds the local-device.zip transport; empty reuses tag
+        description: Private draft release tag that holds the local-device.zip transport. The normal local publish route requires an explicit tag different from tag so the private transport can never be mistaken for the public release; empty reuses tag only on the signing-only route
         required: false
         default: ''
         type: string
@@ -30,9 +30,9 @@ on:
         default: false
         type: boolean
       github_prerelease:
-        description: Lean release route only. Create the GitHub Release as a prerelease that is never marked latest (historical default). Set false only for an explicitly authorized normal latest Release; the TestFlight audience is unchanged either way
+        description: Lean release route only. Default false publishes the normal stable latest Release with the verified unsigned IPA (normal-release rule 2026-10-18); set true only for an explicitly requested prerelease that is never marked latest. The TestFlight audience is unchanged either way
         required: false
-        default: true
+        default: false
         type: boolean
       reuse_direct_run:
         description: Existing lean run ID for the same tag whose retained unsigned IPA and private symbols artifact are reused without an App build (the producing run must still hold its symbols artifact; TestFlight is re-uploaded only when that run has no accepted-upload evidence)
@@ -144,7 +144,14 @@ jobs:
         id: release
         env:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-        run: FloeAgent/scripts/release_preflight.sh "$RELEASE_TAG"
+        run: |
+          set -euo pipefail
+          TAG_COMMIT="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          if [[ "$GITHUB_SHA" != "$TAG_COMMIT" ]]; then
+            echo "error: workflow source differs from the frozen App source; dispatch with --ref $RELEASE_TAG so the attestation identifies the actual App commit." >&2
+            exit 1
+          fi
+          FloeAgent/scripts/release_preflight.sh "$RELEASE_TAG"
 
   # Normal qualified release path only. The NativeNotes component is qualified
   # from the exact commit prepare-release froze, in parallel with the two SDK
@@ -1501,8 +1508,13 @@ jobs:
     if: (github.event_name == 'push' && !contains(needs.build-verify-release.outputs.tag, '-beta.')) || inputs.publish
     needs: [build-verify-release, testflight]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      tag: ${{ needs.build-verify-release.outputs.tag }}
     permissions:
       contents: write
+      actions: read
+      attestations: read
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -1529,6 +1541,28 @@ jobs:
         with:
           name: accepted-sdk-app-regression-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
           path: release-assets
+      - name: Audit the staged unsigned IPA and device binary before publishing
+        run: |
+          set -euo pipefail
+          # Same shared unsigned-IPA + arm64/iphoneos Mach-O audit as the
+          # post-publish readback, run before any upload/edit/create so a
+          # simulator or malformed IPA can never become the latest release.
+          python3 - "$VERSION" "$BUILD" "release-assets" <<'PY'
+          import importlib.util
+          import json
+          import sys
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location(
+              'publication_audit', 'FloeAgent/scripts/verify_github_release_publication.py')
+          publication = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(publication)
+          version, build, folder = sys.argv[1:4]
+          asset = f'Floe-Agent-{version}-build{build}-unsigned.ipa'
+          staged = publication.audit_staged_ipa(Path(folder), {
+              'ipa_name': asset, 'bundle_id': 'org.floeagent.ios',
+              'version': version, 'build': build})
+          print(json.dumps(staged, indent=2))
+          PY
       - name: Publish the transport-accepted paired release
         run: |
           # Frozen older tags carry the original docs/ layout. Current source
@@ -1557,15 +1591,56 @@ jobs:
           发布资产包含测试证据、SPDX SBOM、第三方许可证、密钥扫描报告和构建来源证明。
           Assets include test evidence, an SPDX SBOM, third-party licenses, secret-scan reports and build provenance.
           EOF
+          # Normal-release rule (2026-10-18): a public App release is stable and
+          # marked latest so AltStore/Feather resolve it; only an explicitly
+          # beta-pattern tag keeps the historical prerelease/not-latest mode.
+          case "$RELEASE_TAG" in
+            *-beta.*) RELEASE_MODE_ARGS=(--prerelease --latest=false) ;;
+            *) RELEASE_MODE_ARGS=(--latest=true) ;;
+          esac
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
-            gh release edit "$RELEASE_TAG" --notes-file release-notes.md --draft=false --prerelease
+            gh release edit "$RELEASE_TAG" --notes-file release-notes.md --draft=false \
+              "${RELEASE_MODE_ARGS[@]}"
           else
             gh release create "$RELEASE_TAG" release-assets/* \
-              --verify-tag --prerelease \
+              --verify-tag "${RELEASE_MODE_ARGS[@]}" \
               --title "Floe Agent $VERSION (build $BUILD)" \
               --notes-file release-notes.md
           fi
+
+      - name: Read back the published release as an installable delivery
+        run: |
+          set -euo pipefail
+          READBACK="$RUNNER_TEMP/ReleaseReadback"
+          mkdir -p "$READBACK"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$READBACK/release.json"
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > "$READBACK/tag-ref.json"
+          REF_TYPE="$(jq -r '.object.type' "$READBACK/tag-ref.json")"
+          REF_SHA="$(jq -r '.object.sha' "$READBACK/tag-ref.json")"
+          if [[ "$REF_TYPE" == tag ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/tags/$REF_SHA" > "$READBACK/tag-object.json"
+          else
+            jq -n --arg sha "$REF_SHA" '{object: {type: "commit", sha: $sha}}' > "$READBACK/tag-object.json"
+          fi
+          LATEST_ARGS=()
+          MODE_ARGS=()
+          if [[ "$RELEASE_TAG" == *-beta.* ]]; then
+            MODE_ARGS=(--allow-prerelease --prerelease-reason 'beta-pattern tag keeps the prerelease mode')
+          else
+            gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$READBACK/latest.json"
+            LATEST_ARGS=(--latest-json "$READBACK/latest.json")
+          fi
+          python3 FloeAgent/scripts/verify_github_release_publication.py \
+            --mode app \
+            --release-json "$READBACK/release.json" \
+            --tag-ref-json "$READBACK/tag-ref.json" \
+            --tag-object-json "$READBACK/tag-object.json" \
+            "${LATEST_ARGS[@]}" "${MODE_ARGS[@]}" \
+            --expect-tag "$RELEASE_TAG" --expect-version "$VERSION" --expect-build "$BUILD" \
+            --expect-source-sha "$SOURCE_SHA" \
+            --staged-dir release-assets \
+            --report "$READBACK/report.json"
 
       - name: Request Gitee synchronization for the published release
         continue-on-error: true
@@ -1574,14 +1649,32 @@ jobs:
             -f event_type=gitee-release-sync -f "client_payload[tag]=$RELEASE_TAG"
           echo 'Gitee synchronization requested; attachment verification and quota are separate delivery gates.' >> "$GITHUB_STEP_SUMMARY"
 
+  # GitHub only supports reusable workflows at jobs.<id>.uses, never as a step.
+  # The publisher finishes first (assets, readback, Gitee); this downstream job
+  # then runs the one existing Feather generator synchronously, so a feed
+  # failure fails the overall release run instead of a detached run-ID guess.
+  feather-normal-release:
+    name: Publish and read back the AltStore/Feather source
+    needs: [publish-release]
+    if: needs.publish-release.result == 'success'
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    uses: ./.github/workflows/publish-feather-source.yml
+    with:
+      tag: ${{ needs.publish-release.outputs.tag }}
+
   # ---------------------------------------------------------------------------
   # Lean single-build release route (explicit user-requested internal delivery).
   #
   # One accepted upload-SDK build produces the unsigned IPA and its private
   # dSYM; TestFlight signs a copy, while the exact same unsigned bytes are
-  # attested and published as a GitHub release for Feather: a prerelease that
-  # is not marked latest by default, or an explicitly authorized normal latest
-  # release when github_prerelease is dispatched as false. A retry restores
+  # attested and published as a GitHub release for Feather. The normal-release
+  # rule (2026-10-18) is the default: a stable, latest release carrying the
+  # verified unsigned IPA, so AltStore/Feather resolve it; only an explicit
+  # github_prerelease=true dispatch keeps the historical prerelease/not-latest
+  # mode. Every publish is followed by the shared readback gate. A retry restores
   # the retained artifact instead of compiling the App again. The immutable tag
   # is created by the runner's own GITHUB_TOKEN, whose pushes never create a
   # workflow run, so a lean request cannot silently start the default tag-push
@@ -1689,11 +1782,13 @@ jobs:
     secrets: inherit
 
   lean-publish:
-    name: Attest, publish the unsigned IPA and continue to Feather
+    name: Attest and publish the unsigned IPA
     needs: [lean-source, lean-build]
     if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.recover_build_156 && github.event_name == 'workflow_dispatch' && inputs.lean_release && inputs.publish && !inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      tag: ${{ needs.lean-source.outputs.tag }}
     permissions:
       contents: write
       actions: write
@@ -1778,6 +1873,27 @@ jobs:
             echo "testflight_evidence_source=$EVIDENCE_SOURCE"
             echo "symbols_artifact_id=$SYMBOLS_ARTIFACT_ID"
           } >> "$GITHUB_OUTPUT"
+      - name: Audit the staged unsigned IPA and device binary before publishing
+        run: |
+          set -euo pipefail
+          # Same shared unsigned-IPA + arm64/iphoneos Mach-O audit as the
+          # post-publish readback, run before attestation and publication.
+          python3 - "$VERSION" "$BUILD" "$RUNNER_TEMP/DirectArtifact/extracted" <<'PY'
+          import importlib.util
+          import json
+          import sys
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location(
+              'publication_audit', 'FloeAgent/scripts/verify_github_release_publication.py')
+          publication = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(publication)
+          version, build, folder = sys.argv[1:4]
+          asset = f'Floe-Agent-{version}-build{build}-unsigned.ipa'
+          staged = publication.audit_staged_ipa(Path(folder), {
+              'ipa_name': asset, 'bundle_id': 'org.floeagent.ios',
+              'version': version, 'build': build})
+          print(json.dumps(staged, indent=2))
+          PY
       - name: Attest the unsigned IPA provenance
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
@@ -1905,28 +2021,45 @@ jobs:
               --title "Floe Agent $VERSION (build $BUILD)" \
               --notes-file release-notes.md
           fi
+      - name: Read back the published release as an installable delivery
+        run: |
+          set -euo pipefail
+          READBACK="$RUNNER_TEMP/Published/Readback"
+          mkdir -p "$READBACK"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$READBACK/release.json"
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > "$READBACK/tag-ref.json"
+          REF_TYPE="$(jq -r '.object.type' "$READBACK/tag-ref.json")"
+          REF_SHA="$(jq -r '.object.sha' "$READBACK/tag-ref.json")"
+          if [[ "$REF_TYPE" == tag ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/tags/$REF_SHA" > "$READBACK/tag-object.json"
+          else
+            jq -n --arg sha "$REF_SHA" '{object: {type: "commit", sha: $sha}}' > "$READBACK/tag-object.json"
+          fi
+          LATEST_ARGS=()
+          MODE_ARGS=()
+          if [[ "$RELEASE_PRERELEASE" == true || "$RELEASE_TAG" == *-beta.* ]]; then
+            MODE_ARGS=(--allow-prerelease --prerelease-reason 'explicit prerelease dispatch or beta-pattern tag')
+          else
+            gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$READBACK/latest.json"
+            LATEST_ARGS=(--latest-json "$READBACK/latest.json")
+          fi
+          python3 FloeAgent/scripts/verify_github_release_publication.py \
+            --mode app \
+            --release-json "$READBACK/release.json" \
+            --tag-ref-json "$READBACK/tag-ref.json" \
+            --tag-object-json "$READBACK/tag-object.json" \
+            "${LATEST_ARGS[@]}" "${MODE_ARGS[@]}" \
+            --expect-tag "$RELEASE_TAG" --expect-version "$VERSION" --expect-build "$BUILD" \
+            --expect-source-sha "$SOURCE_SHA" \
+            --expect-ipa-sha256 "${{ steps.fetch.outputs.ipa_sha256 }}" \
+            --staged-dir release-assets \
+            --report "$READBACK/report.json"
       - name: Request Gitee synchronization for the published release
         continue-on-error: true
         run: |
           gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" \
             -f event_type=gitee-release-sync -f "client_payload[tag]=$RELEASE_TAG"
           echo 'Gitee synchronization requested; attachment verification and quota are separate delivery gates.' >> "$GITHUB_STEP_SUMMARY"
-      - name: Request Feather publication from the published asset
-        id: feather
-        run: |
-          set -euo pipefail
-          before="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow publish-feather-source.yml --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
-          gh workflow run publish-feather-source.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$RELEASE_TAG"
-          for _ in $(seq 1 12); do
-            current="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow publish-feather-source.yml --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
-            if [[ -n "$current" && "$current" != "$before" ]]; then
-              echo "feather_run_id=$current" >> "$GITHUB_OUTPUT"
-              echo "Feather source run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$current"
-              exit 0
-            fi
-            sleep 10
-          done
-          echo 'The Feather dispatch was accepted but the new run was not observed yet; check Actions before reporting Feather delivery.' >&2
       - name: Record the lean delivery evidence
         if: always()
         run: |
@@ -1946,7 +2079,7 @@ jobs:
             echo "private_symbols_artifact=release-symbols-$VERSION-build$BUILD"
             echo "private_symbols_artifact_id=${{ steps.fetch.outputs.symbols_artifact_id }}"
             echo "testflight_evidence_source=${{ steps.fetch.outputs.testflight_evidence_source }}"
-            echo "feather_run=${{ steps.feather.outputs.feather_run_id }}"
+            echo "feather_publication=awaited:publish-feather-source.yml"
             echo "apple_processing_state=not_verified"
             echo "floe_qa_visibility=not_verified"
             echo "signed_ipas_published=false"
@@ -1963,6 +2096,18 @@ jobs:
             ${{ runner.temp }}/lean-publish-preflight.out
           if-no-files-found: ignore
 
+  feather-lean-release:
+    name: Publish and read back the AltStore/Feather source
+    needs: [lean-publish]
+    if: needs.lean-publish.result == 'success'
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    uses: ./.github/workflows/publish-feather-source.yml
+    with:
+      tag: ${{ needs.lean-publish.outputs.tag }}
+
   local-artifact-testflight:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.local_artifact_sha256 != '' && !inputs.publish && !inputs.lean_release && !inputs.direct_testflight }}
     permissions:
@@ -1974,3 +2119,385 @@ jobs:
       transport_tag: ${{ inputs.transport_tag }}
       artifact_sha256: ${{ inputs.local_artifact_sha256 }}
     secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Local-first normal release route (2026-10-18 normal-release rule).
+  #
+  # A verified local Xcode device build travels as a private draft transport
+  # (local-device.zip or its bounded parts), exactly like the signing route.
+  # Dispatch this route at the immutable tag ref: the Actions attestation source
+  # digest is the dispatch-ref commit, so the job fails before any transport
+  # download, attestation or publication if github.sha/github.ref are not that
+  # frozen tag. transport_tag is required and must be a different private draft
+  # tag; the public tag can never hold the transport. This job compiles and
+  # signs nothing: it re-verifies the transport digest and provenance, packages
+  # the unsigned IPA from the archived .app, attests those exact bytes with the
+  # workflow identity, publishes the normal stable latest release, reads it back
+  # and then hands the same tag to the existing Feather workflow job. A local
+  # build therefore follows the same unsigned-producer -> Actions attestation ->
+  # publish -> source-update sequence as the lean route; there is no digest-only
+  # trust exception, and the private transport (with its symbols) is never
+  # published.
+  # ---------------------------------------------------------------------------
+  local-publish:
+    name: Attest and publish the verified local unsigned build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.local_artifact_sha256 != '' && inputs.publish && !inputs.lean_release && !inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' && !inputs.recover_developer_build191 && !inputs.recover_build_156 && !inputs.build191_ui_waiver }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    outputs:
+      tag: ${{ inputs.tag }}
+    permissions:
+      contents: write
+      actions: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_PRERELEASE: ${{ inputs.github_prerelease }}
+      EXPECTED_TRANSPORT_SHA256: ${{ inputs.local_artifact_sha256 }}
+    steps:
+      - name: Check out the immutable local release commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ inputs.tag }}
+      - name: Require the local tag and release copy before any publication
+        id: release
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_TRANSPORT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          TAG_COMMIT="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          test "$(git rev-parse HEAD)" = "$TAG_COMMIT"
+          # actions/attest-build-provenance binds the workflow source context
+          # (github.sha at github.ref), not the tag checked out below. Require
+          # the dispatch ref itself to be this immutable tag: a branch dispatch
+          # would attest the branch commit while publishing the tagged App.
+          # Future tags cut from the landed release workflow contain this file.
+          if [[ "$GITHUB_SHA" != "$TAG_COMMIT" || "$GITHUB_REF" != "refs/tags/$RELEASE_TAG" ]]; then
+            echo "error: dispatch the normal local-first release with --ref $RELEASE_TAG, not a branch: the workflow source context is $GITHUB_SHA on $GITHUB_REF, but the attestation source digest must equal the frozen tag commit $TAG_COMMIT. Refusing before transport download, attestation or publication." >&2
+            exit 1
+          fi
+          SOURCE_SHA="$TAG_COMMIT"
+          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+          manifest="$RUNNER_TEMP/local-preflight.out"
+          : > "$manifest"
+          GITHUB_OUTPUT="$manifest" bash FloeAgent/scripts/release_preflight.sh "$RELEASE_TAG"
+          version="$(awk -F= '$1 == "version" {print $2}' "$manifest")"
+          build="$(awk -F= '$1 == "build" {print $2}' "$manifest")"
+          asset_name="$(awk -F= '$1 == "asset_name" {print $2}' "$manifest")"
+          test -n "$version" && test -n "$build" && test -n "$asset_name"
+          {
+            echo "VERSION=$version"
+            echo "BUILD=$build"
+            echo "ASSET_NAME=$asset_name"
+          } >> "$GITHUB_ENV"
+      - name: Download the private draft transport and verify local provenance
+        env:
+          TRANSPORT_TAG_INPUT: ${{ inputs.transport_tag }}
+        run: |
+          set -euo pipefail
+          TRANSPORT_TAG="$TRANSPORT_TAG_INPUT"
+          if [[ -z "$TRANSPORT_TAG" ]]; then
+            echo "error: the normal local publish route requires an explicit private transport_tag holding local-device.zip (or its parts); refusing to default it to the public release tag $RELEASE_TAG. The transport release must stay a private draft and must never share the public tag." >&2
+            exit 1
+          fi
+          if [[ "$TRANSPORT_TAG" == "$RELEASE_TAG" ]]; then
+            echo "error: transport_tag must differ from the public release tag $RELEASE_TAG; a draft transport release on the same tag would be treated as the public release and the canonical-asset checks could never pass. Use a dedicated private transport tag." >&2
+            exit 1
+          fi
+          if ! [[ "$TRANSPORT_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "Invalid transport tag: expected 1-128 characters matching [A-Za-z0-9][A-Za-z0-9._-]*" >&2
+            exit 1
+          fi
+          if [[ "$TRANSPORT_TAG" == *..* || "$TRANSPORT_TAG" == *.lock || "$TRANSPORT_TAG" == *. ]]; then
+            echo "Invalid transport tag: Git ref punctuation is not allowed" >&2
+            exit 1
+          fi
+          git check-ref-format "refs/tags/$TRANSPORT_TAG"
+          mkdir -p "$RUNNER_TEMP/local-input"
+          gh release view "$TRANSPORT_TAG" --json isDraft --jq .isDraft | grep -x true
+          if gh release view "$TRANSPORT_TAG" --json assets --jq '.assets[].name' | grep -qx local-device.zip; then
+            gh release download "$TRANSPORT_TAG" -p local-device.zip -D "$RUNNER_TEMP/local-input"
+          else
+            gh release download "$TRANSPORT_TAG" -p 'local-device.zip.part??' -D "$RUNNER_TEMP/local-input"
+            for index in 00 01 02 03 04 05 06 07; do
+              test -s "$RUNNER_TEMP/local-input/local-device.zip.part$index"
+              cat "$RUNNER_TEMP/local-input/local-device.zip.part$index" >> "$RUNNER_TEMP/local-input/local-device.zip"
+            done
+          fi
+          test "$(shasum -a 256 "$RUNNER_TEMP/local-input/local-device.zip" | cut -d ' ' -f1)" = "$EXPECTED_TRANSPORT_SHA256"
+          ditto -x -k "$RUNNER_TEMP/local-input/local-device.zip" "$RUNNER_TEMP/FloeUnsignedPayload"
+          python3 - <<'CHECK'
+          import json, os, pathlib, plistlib
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'FloeUnsignedPayload'
+          provenance = json.loads((root / 'provenance.json').read_text())
+          assert provenance['source_sha'] == os.environ['SOURCE_SHA'], provenance
+          assert 'v' + provenance['version'] == os.environ['RELEASE_TAG'], provenance
+          assert provenance['build'] == os.environ['BUILD'], provenance
+          assert provenance['version'] == os.environ['VERSION'], provenance
+          for value in provenance.values():
+              if isinstance(value, str):
+                  assert '/Users/' not in value and 'Local/Private' not in value, value
+          apps = list((root / 'Payload').glob('*.app'))
+          assert len(apps) == 1, apps
+          app = apps[0]
+          assert not (app / '_CodeSignature').exists()
+          assert not (app / 'embedded.mobileprovision').exists()
+          info = plistlib.loads((app / 'Info.plist').read_bytes())
+          assert (info['CFBundleIdentifier'], info['CFBundleShortVersionString'],
+                  info['CFBundleVersion']) == ('org.floeagent.ios', provenance['version'],
+                                               provenance['build'])
+          assert info['DTXcodeBuild'] == provenance['xcode_build'], info.get('DTXcodeBuild')
+          assert info['DTSDKName'] == provenance['sdk'], info.get('DTSDKName')
+          CHECK
+      - name: Package the unsigned IPA from the archived device build
+        id: package
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          FloeAgent/scripts/package_unsigned_ipa.sh \
+            "$RUNNER_TEMP/FloeUnsignedPayload/Payload/Floe Agent.app" \
+            release-assets "$ASSET_NAME"
+          # Raw normalization, the local provenance record (UUIDS, transport
+          # digest), the pdfium report and everything else stay in private
+          # evidence. Only the explicit public allowlist is assembled below.
+          PRIVATE_EVIDENCE="$RUNNER_TEMP/local-private-evidence"
+          mkdir -p "$PRIVATE_EVIDENCE"
+          test -f "$RUNNER_TEMP/FloeUnsignedPayload/provenance.json"
+          cp "$RUNNER_TEMP/FloeUnsignedPayload/provenance.json" "$PRIVATE_EVIDENCE/provenance.json"
+          if [[ -f "$RUNNER_TEMP/FloeUnsignedPayload/bundle-normalization.json" ]]; then
+            cp "$RUNNER_TEMP/FloeUnsignedPayload/bundle-normalization.json" "$PRIVATE_EVIDENCE/"
+          fi
+          if [[ -f release-assets/pdfium-linkage.json ]]; then
+            mv release-assets/pdfium-linkage.json "$PRIVATE_EVIDENCE/pdfium-linkage.json"
+          fi
+          IPA_SHA256="$(shasum -a 256 "release-assets/$ASSET_NAME" | cut -d ' ' -f1)"
+          IPA_BYTES="$(wc -c < "release-assets/$ASSET_NAME" | tr -d ' ')"
+          python3 - "$ASSET_NAME" "$RELEASE_TAG" "$SOURCE_SHA" "$VERSION" "$BUILD" \
+            "$IPA_SHA256" "$IPA_BYTES" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          asset, tag, source, version, build, digest, size = sys.argv[1:8]
+          assert tag == 'v' + version, (tag, version)
+          assert asset == f'Floe-Agent-{version}-build{build}-unsigned.ipa', asset
+          assert len(digest) == 64 and int(size) > 0
+          record = {
+              'schemaVersion': 1,
+              'tag': tag,
+              'version': version,
+              'build': build,
+              'sourceCommit': source,
+              'bundleIdentifier': 'org.floeagent.ios',
+              'assetName': asset,
+              'ipaSHA256': digest,
+              'ipaBytes': int(size),
+              'unsigned': True,
+              'appRebuilt': False,
+          }
+          for value in record.values():
+              if isinstance(value, str):
+                  assert '/Users/' not in value and 'Local/Private' not in value, value
+          Path('release-assets/PROVENANCE.json').write_text(
+              json.dumps(record, indent=2) + '\n')
+          PY
+          python3 - "$ASSET_NAME" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          asset = sys.argv[1]
+          folder = Path('release-assets')
+          names = {path.name for path in folder.iterdir() if path.is_file()}
+          assert names == {asset, asset + '.sha256', 'PROVENANCE.json'}, names
+          record = json.loads((folder / 'PROVENANCE.json').read_text())
+          assert set(record) == {
+              'schemaVersion', 'tag', 'version', 'build', 'sourceCommit',
+              'bundleIdentifier', 'assetName', 'ipaSHA256', 'ipaBytes',
+              'unsigned', 'appRebuilt'}, record
+          assert record['unsigned'] is True and record['appRebuilt'] is False
+          print('Public asset allowlist OK:', sorted(names))
+          PY
+          echo "ipa_sha256=$IPA_SHA256" >> "$GITHUB_OUTPUT"
+          ls -l release-assets
+      - name: Audit the staged unsigned IPA and device binary before attestation
+        run: |
+          set -euo pipefail
+          # Reuse the same unsigned-IPA and arm64/iphoneos Mach-O audit the
+          # post-publish verifier applies. This is the last local gate before
+          # attestation and the public release create: a canonical-named
+          # simulator or malformed IPA must fail here, before it can become the
+          # latest public download.
+          python3 - "$ASSET_NAME" "$VERSION" "$BUILD" <<'PY'
+          import importlib.util
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location(
+              'publication_audit', 'FloeAgent/scripts/verify_github_release_publication.py')
+          publication = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(publication)
+          asset, version, build = sys.argv[1:4]
+          staged = publication.audit_staged_ipa(Path('release-assets'), {
+              'ipa_name': asset, 'bundle_id': 'org.floeagent.ios',
+              'version': version, 'build': build})
+          record = json.loads(Path('release-assets/PROVENANCE.json').read_text())
+          assert record['ipaSHA256'] == staged['sha256'], record
+          assert record['ipaBytes'] == staged['bytes'], record
+          assert record['sourceCommit'] == os.environ['SOURCE_SHA'], record
+          assert record['tag'] == 'v' + version and record['build'] == build, record
+          print(json.dumps(staged, indent=2))
+          PY
+      - name: Attest the exact unsigned IPA bytes
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ steps.package.outputs.ipa_path }}
+      - name: Verify the attestation exactly as Feather will
+        env:
+          IPA_PATH: ${{ steps.package.outputs.ipa_path }}
+        run: |
+          set -euo pipefail
+          verified=false
+          for attempt in 1 2 3 4 5 6; do
+            if gh attestation verify "$IPA_PATH" --repo "$GITHUB_REPOSITORY" \
+                 --source-digest "$SOURCE_SHA" \
+                 --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-unsigned-ipa.yml"; then
+              verified=true
+              break
+            fi
+            echo "Attestation not visible yet (attempt $attempt); retrying" >&2
+            sleep 20
+          done
+          test "$verified" = true
+      - name: Publish the normal stable release without clobbering
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_PRERELEASE" == true ]]; then
+            RELEASE_MODE_ARGS=(--prerelease --latest=false)
+          else
+            RELEASE_MODE_ARGS=(--latest=true)
+          fi
+          if test -d docs/releases/notes; then
+            NOTES_PATH="docs/releases/notes/RELEASE_NOTES_${VERSION}_BUILD_${BUILD}.md"
+          else
+            NOTES_PATH="docs/RELEASE_NOTES_${VERSION}_BUILD_${BUILD}.md"
+          fi
+          test -s "$NOTES_PATH"
+          grep -qE '^##+ 简体中文' "$NOTES_PATH"
+          grep -qE '^##+ English' "$NOTES_PATH"
+          cp "$NOTES_PATH" release-notes.md
+          cat <<'EOF' >> release-notes.md
+
+          > [!WARNING]
+          > GitHub IPA 未签名，不能直接安装，也不是 App Store 上传包。
+          > The GitHub IPA is unsigned, cannot be installed directly, and is not the App Store upload package.
+
+          本次安装包由精确的本地设备构建打包并经工作流签名证明；私有符号与传输归档不会公开。
+          This installable was packaged from the exact local device build and attested by the workflow; private symbols and the transport archive are never public.
+          EOF
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A published release is never rewritten. The retry only proves the
+            # published IPA is the attested byte-for-byte original, the asset set
+            # stays unsigned-only, and the mode already matches the dispatch.
+            PUBLISHED="$RUNNER_TEMP/Published"
+            mkdir -p "$PUBLISHED"
+            gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets,isPrerelease,isDraft > "$PUBLISHED/release.json"
+            python3 - "$PUBLISHED/release.json" "$ASSET_NAME" "$RELEASE_PRERELEASE" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          release = json.loads(Path(sys.argv[1]).read_text())
+          asset_name, requested = sys.argv[2], sys.argv[3] == 'true'
+          names = [entry['name'] for entry in release['assets']]
+          assert names.count(asset_name) == 1, names
+          assert names.count(asset_name + '.sha256') == 1, names
+          forbidden = [name for name in names
+                       if name.endswith(('.mobileprovision', '.p12', '.dSYM'))
+                       or (name.endswith('.ipa') and name != asset_name)]
+          assert not forbidden, f'Published release exposes signing material: {forbidden}'
+          assert release['isDraft'] is False, release
+          assert release['isPrerelease'] is requested, (
+              f'Release already exists with isPrerelease={release["isPrerelease"]} but this dispatch '
+              f'requests isPrerelease={requested}; refusing to change an existing release mode')
+          print('Existing release asset set remains unsigned-only and its mode is unchanged')
+          PY
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$ASSET_NAME" --dir "$PUBLISHED" --clobber
+            test "$(shasum -a 256 "$PUBLISHED/$ASSET_NAME" | cut -d ' ' -f1)" = \
+                 "$(shasum -a 256 "${{ steps.package.outputs.ipa_path }}" | cut -d ' ' -f1)"
+            gh attestation verify "$PUBLISHED/$ASSET_NAME" --repo "$GITHUB_REPOSITORY" \
+              --source-digest "$SOURCE_SHA" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-unsigned-ipa.yml"
+            echo "Release $RELEASE_TAG already holds the attested unsigned IPA; nothing rewritten."
+          else
+            gh release create "$RELEASE_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" \
+              --verify-tag "${RELEASE_MODE_ARGS[@]}" \
+              --title "Floe Agent $VERSION (build $BUILD)" \
+              --notes-file release-notes.md
+          fi
+      - name: Read back the published release as an installable delivery
+        run: |
+          set -euo pipefail
+          READBACK="$RUNNER_TEMP/Published/Readback"
+          mkdir -p "$READBACK"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$READBACK/release.json"
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > "$READBACK/tag-ref.json"
+          REF_TYPE="$(jq -r '.object.type' "$READBACK/tag-ref.json")"
+          REF_SHA="$(jq -r '.object.sha' "$READBACK/tag-ref.json")"
+          if [[ "$REF_TYPE" == tag ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/tags/$REF_SHA" > "$READBACK/tag-object.json"
+          else
+            jq -n --arg sha "$REF_SHA" '{object: {type: "commit", sha: $sha}}' > "$READBACK/tag-object.json"
+          fi
+          LATEST_ARGS=()
+          MODE_ARGS=()
+          if [[ "$RELEASE_PRERELEASE" == true ]]; then
+            MODE_ARGS=(--allow-prerelease --prerelease-reason 'explicit prerelease dispatch')
+          else
+            gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$READBACK/latest.json"
+            LATEST_ARGS=(--latest-json "$READBACK/latest.json")
+          fi
+          python3 FloeAgent/scripts/verify_github_release_publication.py \
+            --mode app \
+            --release-json "$READBACK/release.json" \
+            --tag-ref-json "$READBACK/tag-ref.json" \
+            --tag-object-json "$READBACK/tag-object.json" \
+            "${LATEST_ARGS[@]}" "${MODE_ARGS[@]}" \
+            --expect-tag "$RELEASE_TAG" --expect-version "$VERSION" --expect-build "$BUILD" \
+            --expect-source-sha "$SOURCE_SHA" \
+            --expect-ipa-sha256 "${{ steps.package.outputs.ipa_sha256 }}" \
+            --staged-dir release-assets \
+            --report "$READBACK/report.json"
+      - name: Request Gitee synchronization for the published release
+        continue-on-error: true
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" \
+            -f event_type=gitee-release-sync -f "client_payload[tag]=$RELEASE_TAG"
+          echo 'Gitee synchronization requested; attachment verification and quota are separate delivery gates.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain private local packaging and readback evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: local-release-private-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/local-private-evidence/
+            ${{ runner.temp }}/Published/Readback/report.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  feather-local-release:
+    name: Publish and read back the AltStore/Feather source
+    needs: [local-publish]
+    if: needs.local-publish.result == 'success'
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    uses: ./.github/workflows/publish-feather-source.yml
+    with:
+      tag: ${{ needs.local-publish.outputs.tag }}
