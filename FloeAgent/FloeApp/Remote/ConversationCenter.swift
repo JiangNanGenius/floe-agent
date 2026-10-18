@@ -1025,11 +1025,10 @@ final class ConversationCenter: ObservableObject {
         return markers.contains { normalized.contains($0) }
     }
 
-    /// The exact temporary read-only ceiling for the run's offered
-    /// descriptors: every verified read stays, provider-backed search tools
-    /// leave the ceiling while no ready provider exists, and the result can
-    /// still serve an ordinary "查天气/帮我搜一下" turn through the read-only
-    /// personal queries plus `web.fetch`. Pure and injectable so the
+    /// The temporary public-web ceiling for the run's offered descriptors:
+    /// public search tools require a ready provider; `web.fetch` does not.
+    /// Personal data and authenticated remote reads remain outside this
+    /// ceiling. Pure and injectable so the
     /// App-host suite pins the composition against the REAL settings store
     /// (`WebSearchSettingsCenter.toolIsAvailable`) instead of a synthetic
     /// policy-only fixture.
@@ -2995,16 +2994,11 @@ final class ConversationCenter: ObservableObject {
             // child dispatch, so wrappers/aliases/batch/jobs/delegation
             // cannot widen it.
             //
-            // The ceiling is DERIVED from the actually offered descriptors
-            // (verified read actions, audited per-tool exclusions): public
-            // retrieval, personal-data queries, file/media inspection, skill
-            // instructions and tool discovery stay available, while writes,
-            // execution, installs, VM lifecycle, jobs, delegation, sends, GUI
-            // control and credential disclosure stay out. The previous fixed
-            // web pair could collapse the run to an EMPTY catalog for an
-            // ordinary "查天气/帮我搜一下" request (no configured search
-            // provider leaves nothing callable); a descriptor-derived set
-            // keeps the truthful read-only capabilities instead.
+            // The offered descriptors must pass the public-web name and
+            // metadata checks: web.search, web.searchAI and web.fetch only.
+            // Search also requires its configured provider. Personal,
+            // workspace, device and authenticated remote reads stay out,
+            // alongside writes, execution, jobs, delegation and sends.
             let temporaryCeiling = Self.temporaryToolCeiling(
                 offeredDescriptors: availableDescriptors)
             // Existing per-user scope is preserved: the descriptor ceiling is

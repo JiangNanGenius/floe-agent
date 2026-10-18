@@ -1795,7 +1795,7 @@ public struct SubagentRunner: Sendable {
                 if canonicalChild {
                     // Same effective ceiling as the parent; the canonical
                     // dispatcher still resolves every call per policy. A
-                    // temporary run only ever offers the read-only projection.
+                    // temporary run only ever offers the public-web projection.
                     if context.temporaryReadOnly {
                         return TemporaryChatToolPolicy.readOnlyDescriptor(descriptor) != nil
                     }

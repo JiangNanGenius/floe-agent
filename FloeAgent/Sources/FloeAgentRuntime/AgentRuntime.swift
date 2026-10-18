@@ -1575,7 +1575,7 @@ public actor FloeAgentRuntime {
         return names
     }
 
-    /// Canonical, execution-time check of the temporary read-only policy for
+    /// Canonical, execution-time check of the temporary public-web policy for
     /// one exact call. Returns nil only when the policy explicitly allows
     /// this descriptor+arguments pair; every other case fails closed with the
     /// policy's own reason. `descriptor` is the ORIGINAL catalog descriptor
@@ -3041,7 +3041,7 @@ public actor FloeAgentRuntime {
                 decision: "deny:skill-capability"
             )
         }
-        // Temporary (ephemeral) chat runs re-validate the read-only policy at
+        // Temporary (ephemeral) chat runs re-validate the public-web policy at
         // this canonical resolution boundary — the same path the parent run
         // and every delegated child call use — for the descriptor AND the
         // concrete arguments. A wrapper, alias, batch or child cannot widen

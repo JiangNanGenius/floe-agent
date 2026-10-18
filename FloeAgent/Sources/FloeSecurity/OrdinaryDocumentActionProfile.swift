@@ -23,8 +23,8 @@
 //   `TypedMutationContract` (FloeTools) for the write-target contract that
 //   still governs every actual output.
 // - NOT a temporary-chat change: `TemporaryChatToolPolicy` (FloeTools) keeps
-//   its own descriptor ceiling and verified-action table byte-for-byte. This
-//   table follows the same audited principle (known action values, never
+//   its own public-web name ceiling and descriptor metadata checks. This
+//   ordinary-action table follows the audited principle (known values, never
 //   model-declared intent) but is consumed only by the approval carve-out.
 // - NARROW roles:
 //   * `.readOnly`  — no original bytes AND no draft state are written.

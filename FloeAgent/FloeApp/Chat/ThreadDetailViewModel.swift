@@ -862,7 +862,7 @@ final class ThreadDetailViewModel: ObservableObject {
         let goal = (goalOverride ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         reconcilePlanComposerMode()
         // Temporary conversations send the ordinary agent turn: tools stay
-        // enabled and the immutable read-only ceiling in ConversationCenter
+        // enabled and the immutable public-web ceiling in ConversationCenter
         // (TemporaryChatToolPolicy + descriptor projection) is the authority
         // that decides what the model may call.
         let executionMode = effectiveAgentMode

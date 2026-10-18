@@ -1,4 +1,4 @@
-// FloeAgentRuntimeTests — temporary (ephemeral) chat read-only enforcement.
+// FloeAgentRuntimeTests — temporary (ephemeral) chat public-web enforcement.
 //
 // The policy itself lives in FloeTools (`TemporaryChatToolPolicy`) and is
 // verified in its own tests. These tests exercise the RUNTIME half of the
@@ -6,12 +6,13 @@
 //
 //   * `Configuration.temporaryReadOnly` propagates into every main/child call
 //     context from immutable runtime authority,
-//   * the canonical resolution boundary re-validates the policy for the exact
-//     descriptor + arguments BEFORE any effect (main run and delegated child),
-//   * offered/discovery schemas are the policy's read-only projections while
+//   * the canonical resolution boundary re-validates the public web tools for
+//     the exact descriptor + arguments BEFORE any effect (main run and
+//     delegated child), even when a wider name set is supplied,
+//   * offered/discovery schemas are the policy's public web projection while
 //     execution still uses the ORIGINAL descriptor authorization identity,
-//   * a verified mixed read/write tool runs a safe read action without
-//     demanding a write-only approval and refuses its write actions.
+//   * an ordinary run and an ordinary read-only child keep their existing
+//     private read/write authority when the temporary flag is false.
 
 import Foundation
 import Testing
@@ -69,15 +70,50 @@ struct TemporaryReadOnlyRuntimeTests {
 
     private func descriptors() -> [String: ToolCatalog.Descriptor] {
         [
-            "notes.read": .init(name: "notes.read", riskLabels: [], isSideEffecting: false),
+            "web.fetch": .init(
+                name: "web.fetch",
+                riskLabels: [.networkAccess],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
+            "web.search": .init(
+                name: "web.search",
+                riskLabels: [.networkAccess],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
+            "web.searchAI": .init(
+                name: "web.searchAI",
+                riskLabels: [.networkAccess],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
+            "notes.read": .init(
+                name: "notes.read",
+                riskLabels: [.readsFiles],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
+            "mail.read": .init(
+                name: "mail.read",
+                riskLabels: [.networkAccess, .accessesCredentials],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
+            "skill.list": .init(
+                name: "skill.list",
+                riskLabels: [],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
             "test.write": .init(
                 name: "test.write", riskLabels: [.writesFiles], isSideEffecting: true
             ),
             "exec.shell": .init(
                 name: "exec.shell", riskLabels: [.executesLocalCode], isSideEffecting: true
             ),
-            // Verified mixed read/write tool: the base descriptor is a real
-            // mutating tool; the action policy is the authority.
+            // Mixed read/write tool: allowed read actions in an ordinary
+            // read-only policy, but not part of temporary chat at all.
             "media.models": .init(
                 name: "media.models",
                 toolDescription: "List, inspect, install or remove media models",
@@ -106,6 +142,8 @@ struct TemporaryReadOnlyRuntimeTests {
                 provider: provider,
                 model: TestFixtures.testModel(providerID: provider.id),
                 allowedToolNames: allowedToolNames,
+                ephemeralTransport: temporaryReadOnly,
+                publicWebOnly: temporaryReadOnly,
                 temporaryReadOnly: temporaryReadOnly
             ),
             adapter: adapter,
@@ -116,57 +154,72 @@ struct TemporaryReadOnlyRuntimeTests {
         )
     }
 
-    @Test("a write outside the temporary read-only ceiling is denied before the executor and never offered")
-    func writeDeniedBeforeEffects() async throws {
+    @Test("private reads, writes and executions are denied before the executor and never offered")
+    func privateToolsDeniedBeforeEffects() async throws {
         let executor = RecordingExecutor(descriptors: descriptors())
         let ceiling = temporaryCeiling(executor)
-        #expect(ceiling.contains("notes.read"))
-        #expect(ceiling.contains("media.models"))
-        #expect(!ceiling.contains("test.write"))
-        #expect(!ceiling.contains("exec.shell"))
+        #expect(ceiling == ["web.fetch", "web.search", "web.searchAI"])
 
         let adapter = MockAdapter()
+        let notes = try TestFixtures.toolCall(
+            id: "n-1", toolName: "notes.read", arguments: "{}"
+        )
+        let mail = try TestFixtures.toolCall(
+            id: "m-1", toolName: "mail.read", arguments: #"{"action":"message"}"#
+        )
         let write = try TestFixtures.toolCall(
             id: "w-1", toolName: "test.write", arguments: #"{"path":"a.md","text":"x"}"#
         )
         let shell = try TestFixtures.toolCall(
             id: "s-1", toolName: "exec.shell", arguments: #"{"command":"id"}"#
         )
-        let read = try TestFixtures.toolCall(id: "r-1", toolName: "notes.read", arguments: "{}")
+        let read = try TestFixtures.toolCall(
+            id: "r-1", toolName: "web.fetch", arguments: #"{"url":"https://example.com"}"#
+        )
         adapter.script = [
-            [.toolRequest(write), .toolRequest(shell)],
+            [.toolRequest(notes), .toolRequest(mail), .toolRequest(write), .toolRequest(shell)],
             [.toolRequest(read)],
             [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
         ]
-        let runtime = makeRuntime(adapter: adapter, executor: executor, allowedToolNames: ceiling)
-        try await runtime.start(goal: "temporary chat")
+        // Deliberately wider than the ceiling: the runtime's canonical
+        // temporary policy (not merely the name set) must refuse the private
+        // tools.
+        let runtime = makeRuntime(
+            adapter: adapter,
+            executor: executor,
+            allowedToolNames: ["web.fetch", "web.search", "notes.read", "mail.read", "test.write", "exec.shell"]
+        )
+        try await runtime.start(goal: "temporary chat: use web.fetch for a public page")
 
-        // Offered schemas contain the read-only projection only.
+        // Offered schemas contain the public web projection only.
         let firstSchemas = Set((adapter.requests.first?.toolSchemas ?? []).map(\.name))
+        #expect(firstSchemas.contains("web.fetch"))
+        #expect(!firstSchemas.contains("notes.read"))
+        #expect(!firstSchemas.contains("mail.read"))
         #expect(!firstSchemas.contains("test.write"))
         #expect(!firstSchemas.contains("exec.shell"))
 
         // Denied calls never reached the executor; their real denial flowed
         // back to the model as a tool result.
+        #expect(!executor.entries.contains { $0.call.id == "n-1" })
+        #expect(!executor.entries.contains { $0.call.id == "m-1" })
         #expect(!executor.entries.contains { $0.call.id == "w-1" })
         #expect(!executor.entries.contains { $0.call.id == "s-1" })
         let deniedResults = adapter.requests[1].toolResults
-        // The canonical boundary denies both (the run's effective ceiling and
-        // the temporary read-only policy fail closed before any effect); the
-        // real denial reason flows back as the tool result.
-        let writeDenial = try #require(deniedResults.first { $0.callID == "w-1" })
-        let shellDenial = try #require(deniedResults.first { $0.callID == "s-1" })
-        #expect(writeDenial.output.contains("outside"))
-        #expect(shellDenial.output.contains("outside"))
-        // The safe read executed and carried the temporary flag into its
-        // context.
+        for callID in ["n-1", "m-1", "w-1", "s-1"] {
+            let denial = try #require(deniedResults.first { $0.callID == callID })
+            #expect(denial.output.contains("outside"), "\(callID): \(denial.output)")
+        }
+        // The public web read executed and carried both temporary boundaries
+        // into its context.
         let readEntry = try #require(executor.entries.first { $0.call.id == "r-1" })
         #expect(readEntry.context.temporaryReadOnly)
+        #expect(readEntry.context.publicWebOnly)
         #expect(readEntry.context.clientSessionID != nil)
     }
 
-    @Test("a delegated child of a temporary run is denied a write and a mixed-tool write action, and allowed a read")
-    func childDeniedForWriteAllowedForRead() async throws {
+    @Test("a delegated temporary child is denied private reads and mixed-tool writes, and allowed the public web")
+    func childDeniedForPrivateReadsAllowedForWeb() async throws {
         let executor = RecordingExecutor(descriptors: descriptors())
         let ceiling = temporaryCeiling(executor)
         let runtime = makeRuntime(
@@ -175,7 +228,11 @@ struct TemporaryReadOnlyRuntimeTests {
         func childContext() async -> ToolContext {
             ToolContext(
                 runID: await runtime.runID,
-                allowedToolNames: ceiling,
+                allowedToolNames: [
+                    "web.fetch", "web.search", "notes.read", "mail.read",
+                    "test.write", "exec.shell", "media.models", "web.searchAI",
+                ],
+                publicWebOnly: true,
                 cancellation: CancellationToken(),
                 childBudget: ChildBudgetContext(maximumIterations: 2, reserve: { true }, finish: {}),
                 temporaryReadOnly: true
@@ -184,102 +241,127 @@ struct TemporaryReadOnlyRuntimeTests {
         let identity = ChildExecutionIdentity(
             parentRunID: await runtime.runID, rootTaskID: UUID(), delegateCallID: "d"
         )
-        let write = try TestFixtures.toolCall(
-            id: "cw-1", toolName: "test.write", arguments: #"{"path":"a.md","text":"x"}"#
-        )
-        let install = try TestFixtures.toolCall(
-            id: "ci-1", toolName: "media.models", arguments: #"{"action":"install"}"#
-        )
-        let writeResult = await runtime.dispatchChildTool(
-            write, identity: identity, childContext: await childContext()
-        )
-        #expect(writeResult.status == .denied)
-        let installResult = await runtime.dispatchChildTool(
-            install, identity: identity, childContext: await childContext()
-        )
-        #expect(installResult.status == .denied)
-        #expect(installResult.outputSummary.contains("install"))
+        for name in ["notes.read", "mail.read", "test.write", "exec.shell", "media.models"] {
+            let arguments: Data = name == "media.models"
+                ? Data(#"{"action":"install"}"#.utf8)
+                : Data("{}".utf8)
+            let call = try TestFixtures.toolCall(
+                id: "child-\(name)", toolName: name, arguments: String(decoding: arguments, as: UTF8.self))
+            let result = await runtime.dispatchChildTool(
+                call, identity: identity, childContext: await childContext()
+            )
+            #expect(result.status == .denied, "\(name) must be denied")
+        }
         #expect(executor.entries.isEmpty)
 
-        let read = try TestFixtures.toolCall(id: "cr-1", toolName: "notes.read", arguments: "{}")
+        let read = try TestFixtures.toolCall(
+            id: "cr-1", toolName: "web.fetch", arguments: #"{"url":"https://example.com"}"#
+        )
         let readResult = await runtime.dispatchChildTool(
             read, identity: identity, childContext: await childContext()
         )
         #expect(readResult.status == .ok)
         let entry = try #require(executor.entries.first { $0.call.id == "cr-1" })
         #expect(entry.context.temporaryReadOnly)
+        #expect(entry.context.publicWebOnly)
         #expect(entry.context.childExecution != nil)
         #expect(entry.context.clientSessionID?.hasPrefix("child:") == true)
+
+        // The configured Bocha AI-summary search is also a public web tool.
+        let aiSearch = try TestFixtures.toolCall(
+            id: "ca-1", toolName: "web.searchAI",
+            arguments: #"{"query":"weather summary"}"#)
+        let aiResult = await runtime.dispatchChildTool(
+            aiSearch, identity: identity, childContext: await childContext())
+        #expect(aiResult.status == .ok)
+        #expect(executor.entries.first { $0.call.id == "ca-1" }?.context.publicWebOnly == true)
     }
 
-    @Test("a mixed tool's safe read action executes with the base authorization identity and a narrowed schema")
-    func mixedActionReadKeepsBaseIdentity() async throws {
+    @Test("a public web read keeps the base authorization identity; the LAN opt-in is denied before effect")
+    func publicWebReadKeepsBaseIdentity() async throws {
         let executor = RecordingExecutor(descriptors: descriptors())
         let ceiling = temporaryCeiling(executor)
         let adapter = MockAdapter()
         let allowed = try TestFixtures.toolCall(
-            id: "m-1", toolName: "media.models", arguments: #"{"action":"status"}"#
+            id: "w-1", toolName: "web.fetch", arguments: #"{"url":"https://example.com"}"#
         )
-        let forbidden = try TestFixtures.toolCall(
-            id: "m-2", toolName: "media.models", arguments: #"{"action":"remove"}"#
+        let lan = try TestFixtures.toolCall(
+            id: "w-2", toolName: "web.fetch",
+            arguments: #"{"url":"http://192.168.1.1","localNetwork":true}"#
         )
         adapter.script = [
-            [.toolRequest(allowed), .toolRequest(forbidden)],
+            [.toolRequest(allowed), .toolRequest(lan)],
             [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
         ]
         let runtime = makeRuntime(adapter: adapter, executor: executor, allowedToolNames: ceiling)
-        // The goal names the mixed tool so discovery loads its narrowed
-        // schema on this turn.
-        try await runtime.start(goal: "inspect media.models status")
+        try await runtime.start(goal: "use web.fetch for a public page")
 
-        // The offered schema is the policy's narrowed projection: the write
-        // actions are not advertised at all.
-        let modelsSchema = try #require(
-            adapter.requests.first?.toolSchemas.first { $0.name == "media.models" }
-        )
-        #expect(modelsSchema.parametersJSON.contains("list"))
-        #expect(modelsSchema.parametersJSON.contains("status"))
-        #expect(!modelsSchema.parametersJSON.contains("install"))
-        #expect(!modelsSchema.parametersJSON.contains("remove"))
-
-        // The safe read executed; the executor was asked to verify the BASE
-        // descriptor's authorization identity, never a projected copy's.
-        let entry = try #require(executor.entries.first { $0.call.id == "m-1" })
-        let baseIdentity = try #require(executor.descriptor(named: "media.models")?.authorizationIdentity)
+        // The safe public read executed; the executor was asked to verify the
+        // BASE descriptor's authorization identity, never a projected copy's.
+        let entry = try #require(executor.entries.first { $0.call.id == "w-1" })
+        let baseIdentity = try #require(executor.descriptor(named: "web.fetch")?.authorizationIdentity)
         #expect(entry.expectedAuthorizationIdentity == baseIdentity)
         #expect(entry.context.temporaryReadOnly)
-        // The forbidden action was denied before any effect.
-        #expect(!executor.entries.contains { $0.call.id == "m-2" })
-        let denied = try #require(adapter.requests[1].toolResults.first { $0.callID == "m-2" })
-        #expect(denied.output.contains("Denied"))
-        #expect(denied.output.contains("remove"))
+        #expect(entry.context.publicWebOnly)
+        // The LAN/diagnostic opt-in was denied before any effect.
+        #expect(!executor.entries.contains { $0.call.id == "w-2" })
+        let denied = try #require(adapter.requests[1].toolResults.first { $0.callID == "w-2" })
+        #expect(denied.output.contains("local-network"))
     }
 
-    @Test("a temporary run without the flag never applies the read-only projection")
-    func nonTemporaryRunIsUnaffected() async throws {
+    @Test("an ordinary run and ordinary child keep private read/write authority when the flag is false")
+    func nonTemporaryPathsAreUnaffected() async throws {
         let executor = RecordingExecutor(descriptors: descriptors())
+        let allNames = Set(executor.allDescriptors.map(\.name))
         let adapter = MockAdapter()
+        let privateRead = try TestFixtures.toolCall(
+            id: "n-2", toolName: "notes.read", arguments: "{}"
+        )
         let write = try TestFixtures.toolCall(
             id: "w-2", toolName: "test.write", arguments: #"{"path":"a.md","text":"x"}"#
         )
         adapter.script = [
-            [.toolRequest(write)],
+            [.toolRequest(privateRead), .toolRequest(write)],
             [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
         ]
         let runtime = makeRuntime(
             adapter: adapter,
             executor: executor,
-            allowedToolNames: Set(executor.allDescriptors.map(\.name)),
+            allowedToolNames: allNames,
             temporaryReadOnly: false
         )
-        try await runtime.start(goal: "use test.write now")
-        // The ordinary run executes the write normally and the schema is not
-        // narrowed.
+        try await runtime.start(goal: "use notes.read and test.write now")
+
+        // The ordinary main run executes both; no temporary projection is
+        // applied and the schemas stay unchanged.
+        #expect(executor.entries.contains { $0.call.id == "n-2" })
         #expect(executor.entries.contains { $0.call.id == "w-2" })
-        #expect(executor.entries.first { $0.call.id == "w-2" }?.context.temporaryReadOnly == false)
-        let schema = try #require(
-            adapter.requests.first?.toolSchemas.first { $0.name == "test.write" }
+        #expect(executor.entries.first { $0.call.id == "n-2" }?.context.temporaryReadOnly == false)
+        let notesSchema = try #require(
+            adapter.requests.first?.toolSchemas.first { $0.name == "notes.read" }
         )
-        #expect(schema.parametersJSON == executor.descriptor(named: "test.write")?.parametersJSON)
+        #expect(notesSchema.parametersJSON == executor.descriptor(named: "notes.read")?.parametersJSON)
+
+        // An ordinary delegated child keeps the existing private read path:
+        // the temporary policy is keyed strictly off `temporaryReadOnly`.
+        let identity = ChildExecutionIdentity(
+            parentRunID: await runtime.runID, rootTaskID: UUID(), delegateCallID: "d-ordinary"
+        )
+        let childContext = ToolContext(
+            runID: await runtime.runID,
+            allowedToolNames: ["notes.read", "test.write"],
+            cancellation: CancellationToken(),
+            childBudget: ChildBudgetContext(maximumIterations: 2, reserve: { true }, finish: {}),
+            temporaryReadOnly: false
+        )
+        let childRead = try TestFixtures.toolCall(
+            id: "cn-1", toolName: "notes.read", arguments: "{}"
+        )
+        let childResult = await runtime.dispatchChildTool(
+            childRead, identity: identity, childContext: childContext
+        )
+        #expect(childResult.status == .ok)
+        let childEntry = try #require(executor.entries.first { $0.call.id == "cn-1" })
+        #expect(childEntry.context.temporaryReadOnly == false)
     }
 }

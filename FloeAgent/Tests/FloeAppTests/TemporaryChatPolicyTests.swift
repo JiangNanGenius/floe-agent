@@ -1,14 +1,17 @@
-// FloeAppTests — Temporary chat read-only query ownership.
+// FloeAppTests — Temporary chat public-web ceiling and RAM-only ownership.
 //
-// A temporary (ephemeral) chat may run currently-authorized read-only tools,
-// including personal-data queries. Those queries page through stable RAM-only
-// snapshots, so their ownership must never outlive — or cross into — a
-// different session epoch: the ephemeral conversation id is reused when an
-// empty ordinary chat is converted in place and later converted again, and a
-// snapshot from the previous incarnation must not be readable by the new one.
+// A temporary (ephemeral) chat offers only public web search/fetch
+// (`web.search` and the Bocha AI-summary `web.searchAI` when configured, plus
+// `web.fetch`). Personal-data, workspace, device and discovery reads are
+// outside that ceiling even though ordinary runs may still use them.
 //
-// The tests exercise the exact production seam the calendar/reminder handlers
-// call (`ApplePersonalListPaging` + `PersonalToolOwnerID(context:)`).
+// The paging ownership cases below are retained as defense-in-depth for the
+// RAM snapshot mechanism (`ApplePersonalListPaging` +
+// `PersonalToolOwnerID(context:)`): if a personal tool were ever invoked with
+// a temporary context, its snapshot must still be owned per run, must never
+// cross a session epoch, and must be revoked with the session. The policy and
+// composition tests prove that this surface is not reachable in the first
+// place.
 
 #if canImport(UIKit)
 import Foundation
@@ -180,9 +183,27 @@ struct TemporaryChatPolicyTests {
         #expect(stillThere.returnedCount == 1)
     }
 
-    @Test("The temporary policy allows read-only personal tools and never the write variants")
-    func temporaryCeilingAllowsPersonalReads() {
+    @Test("The temporary policy keeps only public web search/fetch, never private or write tools")
+    func temporaryCeilingIsPublicWebOnly() {
         let descriptors: [ToolCatalog.Descriptor] = [
+            ToolCatalog.Descriptor(
+                name: "web.fetch",
+                riskLabels: [.networkAccess],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
+            ToolCatalog.Descriptor(
+                name: "web.search",
+                riskLabels: [.networkAccess],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
+            ToolCatalog.Descriptor(
+                name: "web.searchAI",
+                riskLabels: [.networkAccess],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
             ToolCatalog.Descriptor(
                 name: "apple.calendar.list",
                 riskLabels: [.persistsPersonalData],
@@ -192,6 +213,16 @@ struct TemporaryChatPolicyTests {
                 name: "mail.read",
                 parametersJSON: #"{"type":"object","properties":{"action":{"type":"string","enum":["folders","list","message"]}},"required":["action"],"additionalProperties":false}"#,
                 riskLabels: [.networkAccess, .accessesCredentials],
+                isSideEffecting: false
+            ),
+            ToolCatalog.Descriptor(
+                name: "notes.read",
+                riskLabels: [.readsFiles],
+                isSideEffecting: false
+            ),
+            ToolCatalog.Descriptor(
+                name: "skill.list",
+                riskLabels: [],
                 isSideEffecting: false
             ),
             ToolCatalog.Descriptor(
@@ -211,31 +242,43 @@ struct TemporaryChatPolicyTests {
             ),
         ]
         let ceiling = TemporaryChatToolPolicy.allowedToolNames(from: descriptors)
-        #expect(ceiling.contains("apple.calendar.list"))
-        #expect(ceiling.contains("mail.read"))
-        #expect(!ceiling.contains("apple.calendar.update"))
-        #expect(!ceiling.contains("mail.setRead"))
-        #expect(!ceiling.contains("mail.download"))
-        // The read-only query must never carry an implicit mark-seen action.
-        let mailRead = descriptors.first { $0.name == "mail.read" }!
+        #expect(ceiling == ["web.fetch", "web.search", "web.searchAI"])
+        for name in [
+            "apple.calendar.list", "mail.read", "notes.read",
+            "skill.list", "apple.calendar.update", "mail.setRead", "mail.download",
+        ] {
+            #expect(!ceiling.contains(name), "\(name) is outside temporary chat")
+        }
+        // Private reads are refused at execution even with ordinary-looking
+        // read arguments; the public pair is accepted when the provider is.
+        for name in ["apple.calendar.list", "mail.read", "notes.read", "skill.list"] {
+            let descriptor = descriptors.first { $0.name == name }!
+            #expect(TemporaryChatToolPolicy.denialReason(
+                descriptor: descriptor,
+                arguments: Data(#"{"action":"message"}"#.utf8)
+            ) != nil, "\(name) must be denied")
+        }
+        let webFetch = descriptors.first { $0.name == "web.fetch" }!
         #expect(TemporaryChatToolPolicy.denialReason(
-            descriptor: mailRead,
-            arguments: Data(#"{"action":"message"}"#.utf8)
+            descriptor: webFetch,
+            arguments: Data(#"{"url":"https://example.com"}"#.utf8)
         ) == nil)
+        let aiSearch = descriptors.first { $0.name == "web.searchAI" }!
         #expect(TemporaryChatToolPolicy.denialReason(
-            descriptor: mailRead,
-            arguments: Data(#"{"action":"setRead"}"#.utf8)
-        ) != nil)
+            descriptor: aiSearch,
+            arguments: Data(#"{"query":"weather summary"}"#.utf8)
+        ) == nil)
     }
 }
 
-// MARK: - Weather/search App composition
+// MARK: - Public web App composition
 
-/// The user-visible weather/search gap was an EMPTY composed tool ceiling:
-/// the old fixed web pair collapsed when no search provider was configured.
-/// These tests pin the real `ConversationCenter` composition against the real
-/// settings store (`WebSearchSettingsCenter.toolIsAvailable`), not a
-/// synthetic policy fixture.
+/// Temporary chat always keeps the public-web-only ceiling, but provider
+/// readiness is a separate gate: each provider-backed search tool is removed
+/// until its provider is configured, while `web.fetch` remains usable without
+/// any provider. These tests pin the real `ConversationCenter` composition
+/// against the real settings store (`WebSearchSettingsCenter.toolIsAvailable`),
+/// not a synthetic policy-only fixture.
 @Suite("FloeApp.TemporaryChatComposition")
 struct TemporaryChatCompositionTests {
 
@@ -256,7 +299,8 @@ struct TemporaryChatCompositionTests {
     }
 
     /// The real catalog slice a temporary chat offers: provider-backed search,
-    /// public fetch, personal queries and one denied write.
+    /// public fetch, private reads and one denied write. Only public web
+    /// search/fetch tools may survive composition.
     private func offeredDescriptors() -> [ToolCatalog.Descriptor] {
         [
             descriptor("web.search", risks: [.networkAccess], effect: .readOnly),
@@ -268,12 +312,14 @@ struct TemporaryChatCompositionTests {
                 schema: #"{"type":"object","properties":{"action":{"type":"string","enum":["folders","list","message"]}},"required":["action"],"additionalProperties":false}"#,
                 risks: [.networkAccess, .accessesCredentials]
             ),
+            descriptor("notes.read", risks: [.readsFiles]),
+            descriptor("skill.list", risks: []),
             descriptor("workspace.writeFile", risks: [.writesFiles], sideEffecting: true),
         ]
     }
 
-    @Test("An unconfigured search provider never leaves an empty ceiling")
-    func unconfiguredSearchKeepsReadOnlyQueries() {
+    @Test("An unconfigured search provider leaves exactly the public fetch tool")
+    func unconfiguredSearchKeepsPublicFetchOnly() {
         let ceiling = ConversationCenter.temporaryToolCeiling(
             offeredDescriptors: offeredDescriptors(),
             webSearchAvailable: { _ in false }
@@ -281,31 +327,42 @@ struct TemporaryChatCompositionTests {
         // Both provider-backed search tools are absent...
         #expect(!ceiling.contains("web.search"))
         #expect(!ceiling.contains("web.searchAI"))
-        // ...but the run still has real read-only capabilities, so an
-        // ordinary weather/search turn can fetch or query authorized data
-        // instead of facing an empty tool directory.
-        #expect(ceiling.contains("web.fetch"))
-        #expect(ceiling.contains("apple.calendar.list"))
-        #expect(ceiling.contains("mail.read"))
-        #expect(!ceiling.contains("workspace.writeFile"))
-        #expect(!ceiling.isEmpty)
+        // ...and no private read fills the gap. `web.fetch` needs no provider
+        // and stays available for an ordinary public page research turn.
+        #expect(ceiling == ["web.fetch"])
     }
 
-    @Test("A configured search provider puts web.search back in the ceiling")
-    func configuredSearchWidensAvailabilityOnly() {
-        let ceiling = ConversationCenter.temporaryToolCeiling(
+    @Test("Each configured provider adds only its own public search tool")
+    func configuredProvidersAddOnlyTheirSearchTool() {
+        let webOnly = ConversationCenter.temporaryToolCeiling(
             offeredDescriptors: offeredDescriptors(),
             webSearchAvailable: { $0 == "web.search" }
         )
-        #expect(ceiling.contains("web.search"))
-        // bocha-only availability must not invent web.searchAI's provider.
+        #expect(webOnly == ["web.search", "web.fetch"])
+        // Provider-filter probe: Bocha's AI-summary tool is a public web read,
+        // and it survives when the composition is told only that tool's
+        // provider is ready. (The real `toolIsAvailable` treats any ready
+        // search provider as enabling web.search too; that any-ready case is
+        // covered below.)
         let bochaOnly = ConversationCenter.temporaryToolCeiling(
             offeredDescriptors: offeredDescriptors(),
             webSearchAvailable: { $0 == "web.searchAI" }
         )
-        #expect(!bochaOnly.contains("web.search"))
-        #expect(bochaOnly.contains("web.searchAI"))
-        #expect(!bochaOnly.contains("workspace.writeFile"))
+        #expect(bochaOnly == ["web.searchAI", "web.fetch"])
+        // Any-ready covers the ordinary any-provider case (including Bocha,
+        // whose provider also satisfies web.search's availability check).
+        let anyReady = ConversationCenter.temporaryToolCeiling(
+            offeredDescriptors: offeredDescriptors(),
+            webSearchAvailable: { _ in true }
+        )
+        #expect(anyReady == ["web.search", "web.searchAI", "web.fetch"])
+        // No private read fills any provider gap.
+        for ceiling in [webOnly, bochaOnly, anyReady] {
+            #expect(!ceiling.contains("apple.calendar.list"))
+            #expect(!ceiling.contains("mail.read"))
+            #expect(!ceiling.contains("notes.read"))
+            #expect(!ceiling.contains("workspace.writeFile"))
+        }
     }
 
     @Test("The real settings store reports a seeded provider as available")
@@ -336,9 +393,10 @@ struct TemporaryChatCompositionTests {
         let ceiling = ConversationCenter.temporaryToolCeiling(
             offeredDescriptors: offeredDescriptors()
         )
-        #expect(ceiling.contains("web.search"))
-        #expect(ceiling.contains("web.fetch"))
-        #expect(ceiling.contains("apple.calendar.list"))
+        #expect(ceiling == ["web.search", "web.fetch"])
+        #expect(!ceiling.contains("apple.calendar.list"))
+        #expect(!ceiling.contains("mail.read"))
+        #expect(!ceiling.contains("notes.read"))
         #expect(!ceiling.contains("workspace.writeFile"))
     }
 }
@@ -484,13 +542,15 @@ struct RunEnvironmentBindingTests {
 
 // MARK: - Temporary chat at the canonical dispatcher
 
-/// The read-only ceiling is enforced twice in the real runtime: the derived
+/// The public-web ceiling is enforced twice in the real runtime: the derived
 /// name set narrows the offered catalog, and the canonical dispatcher
-/// re-validates the descriptor AND arguments before any effect. These tests
-/// exercise the SECOND layer through the production `FloeAgentRuntime` with
-/// the App's real `CatalogToolExecutor`: even if a name reaches the ceiling
-/// (a wrapper, alias or batch trying to widen it), a write/execution call is
-/// refused and produces NO real side effect, while a verified read executes.
+/// re-validates the public web tools (descriptor AND arguments) before any
+/// effect. This test exercises the SECOND layer through the production
+/// `FloeAgentRuntime` with a recording executor: even if a wider name set
+/// reaches the runtime (a wrapper, alias or batch trying to widen it), private
+/// reads, writes and executions are refused with no real side effect, while
+/// `web.fetch` still executes. A recording executor avoids any real network
+/// request while preserving the exact runtime dispatch path under test.
 @Suite("FloeApp.TemporaryChatRuntimeDispatch")
 @MainActor
 struct TemporaryChatRuntimeDispatchTests {
@@ -531,8 +591,59 @@ struct TemporaryChatRuntimeDispatchTests {
         func snapshot() -> [AuditEntry] { entries }
     }
 
-    @Test("A real read executes; a write and an execution are refused with no side effect")
-    func temporaryDispatchRefusesWritesAndExecutions() async throws {
+    /// Records the calls the canonical dispatcher actually executed. Its
+    /// descriptors mirror the production metadata for the public pair and the
+    /// private/write tools; execution itself is inert.
+    private final class DispatchRecordingExecutor: ToolExecutor, @unchecked Sendable {
+        struct Entry {
+            var call: ToolCall
+            var context: ToolContext
+        }
+
+        private let lock = NSLock()
+        private var storage: [Entry] = []
+        private let descriptors: [String: ToolCatalog.Descriptor] = [
+            "web.fetch": .init(
+                name: "web.fetch", riskLabels: [.networkAccess],
+                isSideEffecting: false, effect: .readOnly),
+            "web.searchAI": .init(
+                name: "web.searchAI", riskLabels: [.networkAccess],
+                isSideEffecting: false, effect: .readOnly),
+            "notes.read": .init(
+                name: "notes.read", riskLabels: [.readsFiles],
+                isSideEffecting: false, effect: .readOnly),
+            "skill.list": .init(
+                name: "skill.list", riskLabels: [],
+                isSideEffecting: false, effect: .readOnly),
+            "workspace.writeFile": .init(
+                name: "workspace.writeFile", riskLabels: [.writesFiles],
+                isSideEffecting: true, effect: .mutating),
+            "exec.shell": .init(
+                name: "exec.shell", riskLabels: [.executesLocalCode],
+                isSideEffecting: true, effect: .mutating),
+        ]
+
+        var entries: [Entry] {
+            lock.lock(); defer { lock.unlock() }
+            return storage
+        }
+
+        func descriptor(named name: String) -> ToolCatalog.Descriptor? { descriptors[name] }
+        var allDescriptors: [ToolCatalog.Descriptor] {
+            descriptors.values.sorted { $0.name < $1.name }
+        }
+
+        func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
+            try context.cancellation.throwIfCancelled()
+            lock.lock()
+            storage.append(Entry(call: call, context: context))
+            lock.unlock()
+            return ToolResult(callID: call.id, status: .ok, outputSummary: "ok", outputDigest: "d")
+        }
+    }
+
+    @Test("Only web.fetch executes; private reads, writes and executions are refused")
+    func temporaryDispatchRefusesPrivateReadsAndWrites() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("temporary-dispatch-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -550,17 +661,29 @@ struct TemporaryChatRuntimeDispatchTests {
             limits: ModelLimits(contextTokens: 8_192, maxOutputTokens: 1_024),
             capabilities: [.tools])
 
-        // A verified read that is actually part of the offered catalog
-        // (`crypto.hash` is a compatibility-only alias and therefore not in
-        // the run's visible catalog identity).
         let readCall = try ToolCall(
             id: "temp-read-1",
+            toolName: "web.fetch",
+            argumentsJSON: Data(#"{"url":"https://example.com"}"#.utf8),
+            scope: .local)
+        let aiSearchCall = try ToolCall(
+            id: "temp-ai-1",
+            toolName: "web.searchAI",
+            argumentsJSON: Data(#"{"query":"weather summary"}"#.utf8),
+            scope: .local)
+        // These names are deliberately INSIDE the passed ceiling to prove the
+        // dispatcher's own temporary validation (not merely the name set) is
+        // what refuses them.
+        let notesCall = try ToolCall(
+            id: "temp-notes-1",
+            toolName: "notes.read",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local)
+        let skillCall = try ToolCall(
+            id: "temp-skill-1",
             toolName: "skill.list",
             argumentsJSON: Data("{}".utf8),
             scope: .local)
-        // The name is deliberately INSIDE the passed ceiling to prove the
-        // dispatcher's own temporary validation (not merely the name set) is
-        // what refuses it.
         let writeCall = try ToolCall(
             id: "temp-write-1",
             toolName: "workspace.writeFile",
@@ -572,43 +695,61 @@ struct TemporaryChatRuntimeDispatchTests {
             argumentsJSON: Data(#"{"command":"printf executed > denied-exec.txt"}"#.utf8),
             scope: .local)
         let adapter = ScriptedDispatchAdapter(turns: [
-            [.toolRequest(readCall), .toolRequest(writeCall), .toolRequest(execCall)],
+            [.toolRequest(readCall), .toolRequest(aiSearchCall), .toolRequest(notesCall),
+             .toolRequest(skillCall), .toolRequest(writeCall), .toolRequest(execCall)],
             [.textDelta(.init(text: "temporary run finished"))],
         ])
         let sink = DispatchAuditRecorder()
+        let executor = DispatchRecordingExecutor()
         let runtime = FloeAgentRuntime(
             configuration: FloeAgentRuntime.Configuration(
                 conversationID: UUID(),
                 provider: provider,
                 model: model,
-                allowedToolNames: ["skill.list", "workspace.writeFile", "exec.shell"],
+                allowedToolNames: [
+                    "web.fetch", "web.searchAI", "notes.read", "skill.list",
+                    "workspace.writeFile", "exec.shell",
+                ],
                 workspaceRootURL: root,
+                publicWebOnly: true,
                 temporaryReadOnly: true),
             adapter: adapter,
             policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
-            executor: CatalogToolExecutor(),
+            executor: executor,
             auditSink: sink,
             checkpointStore: nil,
             runID: UUID())
 
-        try await runtime.start(goal: "帮我查一下天气")
+        try await runtime.start(goal: "用 web.searchAI 搜索并用 web.fetch 打开公共网页")
 
         let entries = await sink.snapshot()
         // Evidence line: every decision this run really recorded.
         for entry in entries {
             print("FLOE_TEMP_DISPATCH tool=\(entry.toolName) decision=\(entry.decision) exit=\(String(describing: entry.exitStatus))")
         }
-        let read = try #require(
-            entries.first { $0.toolName == "skill.list" && $0.decision.hasPrefix("allow") }
-                ?? entries.first { $0.toolName == "skill.list" })
-        #expect(read.decision.hasPrefix("allow"), "a verified read must execute: \(read.decision)")
-        // The read really produced output (its digest is recorded); its exit
-        // status is tool-defined and may legitimately be absent.
-        #expect(!read.outputDigestSHA256.isEmpty, "the allowed read must have produced real output")
-        let write = try #require(entries.first { $0.toolName == "workspace.writeFile" })
-        #expect(write.decision == "deny:temporary-readonly", "a write must be refused: \(write.decision)")
-        let exec = try #require(entries.first { $0.toolName == "exec.shell" })
-        #expect(exec.decision == "deny:temporary-readonly", "execution must be refused: \(exec.decision)")
+        // Only the public web tools reached the executor.
+        #expect(Set(executor.entries.map(\.call.id)) == ["temp-read-1", "temp-ai-1"])
+        #expect(executor.entries.first?.context.temporaryReadOnly == true)
+        #expect(executor.entries.first?.context.publicWebOnly == true)
+        for name in ["web.fetch", "web.searchAI"] {
+            let allowed = try #require(
+                entries.first { $0.toolName == name && $0.decision.hasPrefix("allow") })
+            #expect(!allowed.outputDigestSHA256.isEmpty,
+                    "\(name) must have produced real output")
+        }
+        for name in ["notes.read", "skill.list", "workspace.writeFile", "exec.shell"] {
+            let denied = try #require(entries.first { $0.toolName == name })
+            #expect(denied.decision == "deny:temporary-readonly",
+                    "\(name) must be refused: \(denied.decision)")
+        }
+        // The provider wire never advertises the private or write tools.
+        let wire = try #require(adapter.requests.first)
+        let wireNames = Set(wire.toolSchemas.map(\.name)).union(wire.allToolNames)
+        #expect(wireNames.contains("web.fetch"))
+        #expect(wireNames.contains("web.searchAI"))
+        for name in ["notes.read", "skill.list", "workspace.writeFile", "exec.shell"] {
+            #expect(!wireNames.contains(name), "\(name) must not reach the wire")
+        }
 
         // No real side effect from the refused calls.
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("denied.txt").path))

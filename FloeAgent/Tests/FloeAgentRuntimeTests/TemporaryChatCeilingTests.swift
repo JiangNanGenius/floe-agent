@@ -1,11 +1,11 @@
-// FloeAgentRuntimeTests — Temporary chat tool ceiling end-to-end through the
-// REAL runtime: the descriptor-derived ceiling the center computes
-// (`TemporaryChatToolPolicy.allowedToolNames(from descriptors:)`) is enforced
-// at the main-run dispatch, on the provider wire (schemas/allToolNames), and
-// at child dispatch, with the typed `temporaryReadOnly` runtime authority.
-// Wrappers, delegation and batch/jobs cannot widen it, a verified mixed
-// read/write tool runs its read actions and refuses its write actions at the
-// canonical boundary, and an in-ceiling read still executes normally.
+// FloeAgentRuntimeTests — Temporary chat public-web ceiling end-to-end
+// through the REAL runtime: the descriptor-derived ceiling the center
+// computes (`TemporaryChatToolPolicy.allowedToolNames(from descriptors:)`) is
+// enforced on the provider wire (schemas/allToolNames), at main-run dispatch
+// and at child dispatch, with the typed `temporaryReadOnly` runtime authority.
+// Private reads, discovery, mixed tools, wrappers, delegation and batch/jobs
+// cannot widen it; in-ceiling public web search/fetch reads still execute
+// normally.
 
 import Foundation
 import Testing
@@ -20,9 +20,10 @@ import FloeTestSupport
 @Suite("FloeAgentRuntime.TemporaryChatCeiling")
 struct TemporaryChatCeilingTests {
 
-    /// Descriptors the executor "installs": the full ordinary catalog. The
-    /// temporary ceiling must narrow this to the descriptor-derived read-only
-    /// set — absence from the catalog is NOT what denies the other families.
+    /// Descriptors the executor "installs": a representative ordinary catalog
+    /// including genuinely read-only private tools. The temporary ceiling must
+    /// narrow this to the public web tools — absence from the catalog is NOT
+    /// what denies the private families.
     private func ordinaryCatalog() -> [String: ToolCatalog.Descriptor] {
         [
             "web.fetch": ToolCatalog.Descriptor(
@@ -37,8 +38,32 @@ struct TemporaryChatCeilingTests {
                 isSideEffecting: false,
                 effect: .readOnly
             ),
+            "web.searchAI": ToolCatalog.Descriptor(
+                name: "web.searchAI",
+                riskLabels: [.networkAccess],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
             "notes.read": ToolCatalog.Descriptor(
                 name: "notes.read",
+                riskLabels: [.readsFiles],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
+            "mail.read": ToolCatalog.Descriptor(
+                name: "mail.read",
+                riskLabels: [.networkAccess, .accessesCredentials],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
+            "apple.calendar.list": ToolCatalog.Descriptor(
+                name: "apple.calendar.list",
+                riskLabels: [.persistsPersonalData],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
+            "skill.list": ToolCatalog.Descriptor(
+                name: "skill.list",
                 riskLabels: [],
                 isSideEffecting: false,
                 effect: .readOnly
@@ -78,8 +103,8 @@ struct TemporaryChatCeilingTests {
                 isSideEffecting: false,
                 effect: .mutating
             ),
-            // Verified mixed read/write tool: the base descriptor is a real
-            // mutating tool; the action policy is the authority.
+            // Mixed read/write tool: allowed read actions in an ordinary
+            // read-only policy, but not part of temporary chat at all.
             "media.models": ToolCatalog.Descriptor(
                 name: "media.models",
                 toolDescription: "List, inspect, install or remove media models",
@@ -101,18 +126,19 @@ struct TemporaryChatCeilingTests {
         adapter: MockAdapter,
         executor: any ToolExecutor,
         auditSink: MockAuditSink = MockAuditSink(),
-        policy: any ApprovalPolicy = FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil))
+        policy: any ApprovalPolicy = FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
+        allowedToolNames: Set<String>? = nil
     ) -> FloeAgentRuntime {
         let provider = TestFixtures.localhostProvider()
         return FloeAgentRuntime(
             configuration: FloeAgentRuntime.Configuration(
                 provider: provider,
                 model: TestFixtures.testModel(providerID: provider.id),
-                allowedToolNames: temporaryCeiling(),
+                allowedToolNames: allowedToolNames ?? temporaryCeiling(),
                 // Mirror ConversationCenter's temporary-run configuration:
-                // the read-only ceiling rides together with the public-only
-                // boundary, the ephemeral transport and the typed
-                // `temporaryReadOnly` runtime authority.
+                // the public-web-only boundary, the ephemeral transport and
+                // the typed `temporaryReadOnly` runtime authority ride
+                // together.
                 pauseTimeout: 0.1,
                 providerRetryBaseDelay: 0,
                 providerRetryMaxDelay: 0,
@@ -129,64 +155,66 @@ struct TemporaryChatCeilingTests {
         )
     }
 
-    @Test("Main-run dispatch: denied ceiling tools never execute and stay off the provider wire; verified read actions execute")
+    @Test("Main-run dispatch: private reads and writes never execute and stay off the provider wire; public web fetch executes")
     func mainRunCeilingIsEnforced() async throws {
+        // Deliberately WIDER than the ceiling: the canonical policy must deny
+        // a private read even when a wrapper puts its name in the active set.
+        let wideNames: Set<String> = [
+            "web.fetch", "web.search", "web.searchAI", "notes.read", "mail.read",
+            "apple.calendar.list", "media.models", "workspace.writeFile",
+            "exec.shell",
+        ]
         let adapter = MockAdapter()
         adapter.script = [
-            [.toolRequest(try TestFixtures.toolCall(
-                id: "denied-write", toolName: "workspace.writeFile",
-                arguments: #"{"path":"a.txt","text":"x"}"#))],
-            [.toolRequest(try TestFixtures.toolCall(
-                id: "denied-batch", toolName: "batch.run",
-                arguments: #"{"items":[]}"#))],
-            [.toolRequest(try TestFixtures.toolCall(
-                id: "denied-install", toolName: "media.models",
-                arguments: #"{"action":"install","model":"m1"}"#))],
-            [.toolRequest(try TestFixtures.toolCall(
-                id: "allowed-fetch", toolName: "web.fetch",
-                arguments: #"{"url":"https://example.com"}"#))],
-            [.toolRequest(try TestFixtures.toolCall(
-                id: "allowed-list", toolName: "media.models",
-                arguments: #"{"action":"list"}"#))],
+            [
+                .toolRequest(try TestFixtures.toolCall(
+                    id: "denied-notes", toolName: "notes.read", arguments: "{}")),
+                .toolRequest(try TestFixtures.toolCall(
+                    id: "denied-mail", toolName: "mail.read", arguments: #"{"action":"message"}"#)),
+                .toolRequest(try TestFixtures.toolCall(
+                    id: "denied-media", toolName: "media.models", arguments: #"{"action":"list"}"#)),
+                .toolRequest(try TestFixtures.toolCall(
+                    id: "denied-write", toolName: "workspace.writeFile",
+                    arguments: #"{"path":"a.txt","text":"x"}"#)),
+                .toolRequest(try TestFixtures.toolCall(
+                    id: "denied-exec", toolName: "exec.shell", arguments: #"{"command":"id"}"#)),
+                .toolRequest(try TestFixtures.toolCall(
+                    id: "allowed-fetch", toolName: "web.fetch",
+                    arguments: #"{"url":"https://example.com"}"#)),
+            ],
             [.completed(.init(stopReason: .endTurn))],
         ]
         let executor = ContextCapturingExecutor(descriptors: ordinaryCatalog())
         let audit = MockAuditSink()
-        let runtime = makeRuntime(adapter: adapter, executor: executor, auditSink: audit)
-        // The goal names the mixed tool so this turn's discovery really loads
-        // its (narrowed) schema onto the wire.
-        try await runtime.start(goal: "check media.models then research a public page")
+        let runtime = makeRuntime(
+            adapter: adapter, executor: executor, auditSink: audit,
+            allowedToolNames: wideNames)
+        try await runtime.start(goal: "research a public page with web.fetch")
 
-        // Denied families never reached the executor; the in-ceiling web tool
-        // and the verified mixed-tool LIST action did.
-        #expect(executor.entries.map(\.call.toolName).sorted() == ["media.models", "web.fetch"])
-        #expect(executor.entries.first { $0.call.id == "allowed-list" }?.call.toolName == "media.models")
-        #expect(executor.entries.first { $0.call.id == "denied-write" } == nil)
-        #expect(executor.entries.first { $0.call.id == "denied-install" } == nil)
+        // Only the public web fetch reached the executor; every private or
+        // mutating call was denied by the canonical temporary boundary.
+        #expect(executor.entries.map(\.call.toolName) == ["web.fetch"])
+        #expect(executor.entries.first?.call.id == "allowed-fetch")
         let decisions = audit.entries.map(\.decision)
-        #expect(decisions.contains("deny:skill-capability"))
         #expect(decisions.contains("deny:temporary-readonly"))
 
-        // The provider wire itself advertises only the ceiling plus the two
-        // always-callable discovery tools — schemas and the raw allToolNames
-        // list cannot leak the denied families, and the verified mixed tool's
-        // schema is narrowed to its read actions.
+        // The provider wire itself advertises only the public web tools plus
+        // the always-callable discovery tools — schemas and the raw
+        // allToolNames list cannot leak private or denied families.
         let wireRequest = try #require(adapter.requests.first)
         let wireCeiling = temporaryCeiling().union([ToolDiscovery.name, ToolDiscovery.listName])
         let schemaNames = Set(wireRequest.toolSchemas.map(\.name))
         #expect(schemaNames.isSubset(of: wireCeiling))
-        #expect(!schemaNames.contains("workspace.writeFile"))
-        #expect(!schemaNames.contains("exec.shell"))
-        #expect(!schemaNames.contains("delegate"))
         #expect(Set(wireRequest.allToolNames).isSubset(of: wireCeiling))
-        let modelsSchema = try #require(wireRequest.toolSchemas.first { $0.name == "media.models" })
-        #expect(modelsSchema.parametersJSON.contains("list"))
-        #expect(!modelsSchema.parametersJSON.contains("install"))
-        #expect(!modelsSchema.parametersJSON.contains("remove"))
-        // The verified read action executed with the temporary runtime
-        // authority on its context.
-        let contextEntry = try #require(executor.entries.first { $0.call.id == "allowed-list" })
+        for privateName in ["notes.read", "mail.read", "apple.calendar.list", "media.models", "workspace.writeFile", "exec.shell"] {
+            #expect(!schemaNames.contains(privateName), "\(privateName) must not reach the wire")
+            #expect(!wireRequest.allToolNames.contains(privateName), "\(privateName) must not be advertised")
+        }
+        // The public web read executed with the temporary runtime authority
+        // and the public-web-only execution context.
+        let contextEntry = try #require(executor.entries.first { $0.call.id == "allowed-fetch" })
         #expect(contextEntry.context.temporaryReadOnly)
+        #expect(contextEntry.context.publicWebOnly)
     }
 
     /// Executor that records the exact ToolContext the runtime built, so the
@@ -217,7 +245,7 @@ struct TemporaryChatCeilingTests {
         }
     }
 
-    @Test("Child dispatch: the inherited ceiling denies delegation, batch, jobs, execution and workspace tools before the executor")
+    @Test("Child dispatch: temporary children cannot inherit private reads, mixed tools, delegation, jobs or execution")
     func childDispatchCeilingIsInherited() async throws {
         let adapter = MockAdapter()
         let executor = ContextCapturingExecutor(descriptors: ordinaryCatalog())
@@ -231,9 +259,15 @@ struct TemporaryChatCeilingTests {
             ToolContext(
                 runID: UUID(),
                 scope: .local,
-                // Children inherit the run ceiling — the same value the
-                // runtime copies into ToolContext for delegated children.
-                allowedToolNames: temporaryCeiling(),
+                // Deliberately wider than the temporary ceiling: the child
+                // inherits the parent's name set, but the policy must still
+                // refuse every non-public-web descriptor.
+                allowedToolNames: [
+                    "web.fetch", "web.search", "notes.read", "mail.read",
+                    "apple.calendar.list", "media.models", "workspace.writeFile",
+                    "exec.shell", "delegate", "batch.run", "jobs.submit",
+                    "memory.remember",
+                ],
                 workspaceRootURL: nil,
                 cancellation: CancellationToken(),
                 conversationID: UUID(),
@@ -241,36 +275,61 @@ struct TemporaryChatCeilingTests {
             )
         }
 
-        for denied in ["delegate", "batch.run", "jobs.submit", "workspace.writeFile", "exec.shell", "memory.remember"] {
-            let call = try TestFixtures.toolCall(id: "child-\(denied)", toolName: denied, arguments: #"{"x":1}"#)
-            let result = await runtime.dispatchChildTool(call, identity: identity, childContext: childContext())
+        for denied in [
+            "notes.read", "mail.read", "apple.calendar.list", "media.models",
+            "workspace.writeFile", "exec.shell", "delegate", "batch.run",
+            "jobs.submit", "memory.remember",
+        ] {
+            let call = try TestFixtures.toolCall(
+                id: "child-\(denied)", toolName: denied, arguments: #"{"x":1}"#)
+            let result = await runtime.dispatchChildTool(
+                call, identity: identity, childContext: childContext())
             #expect(result.status == .denied, "\(denied) must be denied, got \(result.status.rawValue)")
         }
-        // A verified read action of a mixed tool is denied for its WRITE
-        // action at the child boundary too.
-        let install = try TestFixtures.toolCall(
-            id: "child-install", toolName: "media.models", arguments: #"{"action":"install"}"#
-        )
-        let installResult = await runtime.dispatchChildTool(
-            install, identity: identity, childContext: childContext()
-        )
-        #expect(installResult.status == .denied)
-        #expect(installResult.outputSummary.contains("install"))
         #expect(executor.entries.isEmpty)
 
-        // The ceiling's own read-only web tool and a verified mixed read
-        // action stay reachable for children, and the public-web-only
-        // boundary reaches the actual execute path.
-        let fetch = try TestFixtures.toolCall(id: "child-fetch", toolName: "web.fetch", arguments: #"{"url":"https://example.com"}"#)
-        let fetched = await runtime.dispatchChildTool(fetch, identity: identity, childContext: childContext())
+        // The public web tools stay reachable for temporary children, and the
+        // public-web-only boundary reaches the actual execute path.
+        let fetch = try TestFixtures.toolCall(
+            id: "child-fetch", toolName: "web.fetch",
+            arguments: #"{"url":"https://example.com"}"#)
+        let fetched = await runtime.dispatchChildTool(
+            fetch, identity: identity, childContext: childContext())
         #expect(fetched.status == .ok)
-        let status = try TestFixtures.toolCall(
-            id: "child-status", toolName: "media.models", arguments: #"{"action":"status"}"#
-        )
-        let statusResult = await runtime.dispatchChildTool(status, identity: identity, childContext: childContext())
-        #expect(statusResult.status == .ok)
-        #expect(executor.entries.map(\.call.toolName) == ["web.fetch", "media.models"])
-        #expect(executor.entries.first?.context.publicWebOnly == true)
+        let search = try TestFixtures.toolCall(
+            id: "child-search", toolName: "web.search",
+            arguments: #"{"query":"weather"}"#)
+        let searched = await runtime.dispatchChildTool(
+            search, identity: identity, childContext: childContext())
+        #expect(searched.status == .ok)
+        let aiSearch = try TestFixtures.toolCall(
+            id: "child-ai-search", toolName: "web.searchAI",
+            arguments: #"{"query":"weather summary"}"#)
+        let aiSearched = await runtime.dispatchChildTool(
+            aiSearch, identity: identity, childContext: childContext())
+        #expect(aiSearched.status == .ok)
+        #expect(executor.entries.map(\.call.toolName) == ["web.fetch", "web.search", "web.searchAI"])
+        #expect(executor.entries.allSatisfy { $0.context.publicWebOnly })
         #expect(executor.entries.allSatisfy { $0.context.temporaryReadOnly })
+
+        // Frozen catalog identity: even a stale/forged child context that
+        // excludes the public pair cannot dispatch it.
+        let forgedFrozen = ToolContext(
+            runID: UUID(),
+            scope: .local,
+            allowedToolNames: ["web.fetch", "notes.read"],
+            publicWebOnly: true,
+            cancellation: CancellationToken(),
+            conversationID: UUID(),
+            temporaryReadOnly: true,
+            frozenEffectiveCatalogNames: ["notes.read"]
+        )
+        let forgedFetch = try TestFixtures.toolCall(
+            id: "child-forged-fetch", toolName: "web.fetch",
+            arguments: #"{"url":"https://example.com"}"#)
+        let forgedResult = await runtime.dispatchChildTool(
+            forgedFetch, identity: identity, childContext: forgedFrozen)
+        #expect(forgedResult.status == .denied)
+        #expect(forgedResult.outputSummary.contains("offered catalog"))
     }
 }
