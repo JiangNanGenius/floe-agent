@@ -3469,133 +3469,357 @@ private struct OfficeConvertedExportShareSheet: UIViewControllerRepresentable {
 /// never draws a screen-space overlay and never writes Notes/Canvas ink. The
 /// header owns the explicit Done action, so closing the popover never depends
 /// on a coordinate tap or on toggling the drawing mode.
+///
+/// Ordinary rows stay inline so the panel is roughly a third shorter than the
+/// former fixed 420pt card. Apply acknowledgements and explanatory copy are
+/// intentionally absent; only an actionable error can add a row.
 private struct OfficeInkControlPanel: View {
     @ObservedObject var session: OfficeFileSession
     let ink: OfficeInkPreferences
     let onDone: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// Beyond the default size the inline label/slider/value row can clip its
+    /// English label. Stack the label above the slider instead of shrinking
+    /// the control or truncating the copy.
+    private var usesStackedRows: Bool { dynamicTypeSize >= .xLarge }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
-                Text(OfficeInkText.t("画笔设置", "Pen settings"))
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                    .accessibilityIdentifier("office.ink.panel")
-                Spacer(minLength: 12)
-                Button(action: onDone) {
-                    Text(OfficeInkText.t("完成", "Done"))
-                        .frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.bordered)
-                .accessibilityIdentifier("office.ink.done")
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-
+            header
             Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(OfficeInkText.t("颜色", "Color")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        HStack(spacing: 8) {
-                            ForEach(OfficeInkColor.allCases) { color in
-                                Button {
-                                    ink.setColor(color)
-                                    reapply()
-                                } label: {
-                                    Circle()
-                                        .fill(color.swatch)
-                                        .frame(width: 28, height: 28)
-                                        .overlay(Circle().strokeBorder(
-                                            ink.color == color ? Color.accentColor : Color.secondary.opacity(0.35),
-                                            lineWidth: ink.color == color ? 2.5 : 1))
-                                        .frame(width: 44, height: 44)
-                                        .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(color.title)
-                                .accessibilityAddTraits(ink.color == color ? .isSelected : [])
-                                .accessibilityIdentifier("office.ink.color.\(color.rawValue)")
-                            }
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(OfficeInkText.t("线宽", "Width")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            Spacer()
-                            Text(String(format: "%.2f mm", ink.stroke.widthMillimeters))
-                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        }
-                        // Presets own a real 44pt tap target on their own row so
-                        // `.controlSize(.small)` cannot shrink the hit area and the
-                        // slider still gets the full 330pt panel width on compact
-                        // screens. The frame is on the button's label, not outside
-                        // the button, so the whole 44pt region is tappable.
-                        HStack(spacing: 8) {
-                            ForEach(OfficeInkWidthPreset.allCases) { preset in
-                                Button {
-                                    ink.setWidthMillimeters(preset.rawValue)
-                                    reapply()
-                                } label: {
-                                    Text(preset.title)
-                                        .lineLimit(1)
-                                        .minimumScaleFactor(0.8)
-                                        .frame(maxWidth: .infinity, minHeight: 44)
-                                        .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.bordered)
-                                .tint(abs(ink.stroke.widthMillimeters - preset.rawValue) < 0.01 ? Color.accentColor : Color.gray)
-                                .accessibilityIdentifier("office.ink.widthPreset.\(preset.title)")
-                            }
-                        }
-                        Slider(value: Binding(get: { ink.stroke.widthMillimeters },
-                                              set: { ink.setWidthMillimeters($0) }),
-                               in: OfficeInkStroke.widthRange, step: 0.25,
-                               onEditingChanged: { editing in if !editing { reapply() } })
-                            .accessibilityIdentifier("office.ink.width")
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(OfficeInkText.t("透明度", "Transparency")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            Spacer()
-                            Text(ink.stroke.transparencyPercent == 0
-                                 ? OfficeInkText.t("0%（实心）", "0% (solid)")
-                                 : "\(ink.stroke.transparencyPercent)%")
-                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        }
-                        Slider(value: Binding(
-                            get: { Double(ink.stroke.transparencyPercent) },
-                            set: { ink.setTransparencyPercent(Int($0.rounded())) }),
-                               in: 0...100, step: 1,
-                               onEditingChanged: { editing in if !editing { reapply() } })
-                            .accessibilityIdentifier("office.ink.transparency")
-                        Text(OfficeInkText.t("0% 为实心，数值越大越透明",
-                                             "0% is solid; higher values are more transparent"))
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-
-                    if let inkError = session.inkError {
-                        Label(inkError, systemImage: "exclamationmark.triangle")
-                            .font(.caption).foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityIdentifier("office.ink.error")
-                    } else if session.drawingMode, let outcome = session.inkApplyOutcome {
-                        Label(outcome == .verified
-                              ? OfficeInkText.t("画笔设置已确认", "Pen settings confirmed")
-                              : OfficeInkText.t("设置已发送，尚未确认生效", "Settings sent; awaiting confirmation"),
-                              systemImage: outcome == .verified ? "checkmark.circle" : "clock")
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .accessibilityIdentifier("office.ink.outcome")
-                    }
+            if dynamicTypeSize.isAccessibilitySize {
+                // Accessibility sizes may exceed the popover's usable height,
+                // so only that genuinely constrained case scrolls.
+                ScrollView {
+                    controls
                 }
-                .padding(16)
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(maxHeight: 400)
+            } else {
+                controls
             }
         }
-        .frame(idealWidth: 330, maxWidth: 330, idealHeight: 420, maxHeight: 420)
+        .frame(idealWidth: 330, maxWidth: 330)
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text(OfficeInkText.t("画笔设置", "Pen settings"))
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("office.ink.panel")
+            Spacer(minLength: 8)
+            Button(action: onDone) {
+                Text(OfficeInkText.t("完成", "Done"))
+                    .font(.body.weight(.semibold))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            .accessibilityIdentifier("office.ink.done")
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            presetRow
+            colorRow
+            widthRow
+            transparencyRow
+            if let inkError = session.inkError {
+                Label(inkError, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("office.ink.error")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 14)
+    }
+
+    /// One compact row of real native styles. Each choice writes the preset's
+    /// ordinary width/transparency scalars through the same preference API as
+    /// the sliders, so no synthetic brush or overlay is involved. The row only
+    /// stacks vertically at accessibility sizes, where a single line cannot
+    /// keep three readable labels.
+    private var presetRow: some View {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(spacing: 4) { presetButtons }
+            } else {
+                HStack(spacing: 6) { presetButtons }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("office.ink.type")
+        .frame(minHeight: 44)
+    }
+
+    @ViewBuilder private var presetButtons: some View {
+        ForEach(OfficeInkStylePreset.allCases) { preset in
+            let selected = ink.stroke.preset == preset
+            Button {
+                ink.setPreset(preset)
+                reapply()
+            } label: {
+                Text(preset.title)
+                    .font(.subheadline.weight(selected ? .semibold : .regular))
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                    .minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(selected ? Color.accentColor : Color.primary)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(selected ? Color.accentColor.opacity(0.14)
+                                           : Color.secondary.opacity(0.08))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(selected ? Color.accentColor : Color.secondary.opacity(0.25),
+                                          lineWidth: selected ? 2 : 1)
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(preset.title)
+            .accessibilityAddTraits(selected ? .isSelected : [])
+            .accessibilityIdentifier("office.ink.type.\(preset.rawValue)")
+        }
+    }
+
+    private var colorRow: some View {
+        Group {
+            if usesStackedRows {
+                stackedColorRow
+            } else {
+                // A narrow iPhone popover cannot fit the inline label plus five
+                // 44pt targets; fall back to the same stacked layout instead of
+                // clipping a swatch.
+                ViewThatFits(in: .horizontal) {
+                    inlineColorRow
+                    stackedColorRow
+                }
+            }
+        }
+        .frame(minHeight: 44)
+    }
+
+    private var inlineColorRow: some View {
+        HStack(spacing: 4) {
+            fieldLabel(OfficeInkText.t("颜色", "Color"))
+                .frame(width: 80, alignment: .leading)
+            swatches
+        }
+    }
+
+    private var stackedColorRow: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                fieldLabel(OfficeInkText.t("颜色", "Color"))
+                Spacer(minLength: 0)
+            }
+            swatches
+        }
+    }
+
+    private var swatches: some View {
+        HStack(spacing: 0) {
+            ForEach(OfficeInkColor.allCases) { color in
+                Button {
+                    ink.setColor(color)
+                    reapply()
+                } label: {
+                    Circle()
+                        .fill(color.swatch)
+                        .frame(width: 24, height: 24)
+                        .overlay(Circle().strokeBorder(
+                            ink.color == color ? Color.accentColor : Color.secondary.opacity(0.35),
+                            lineWidth: ink.color == color ? 2.5 : 1))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(color.title)
+                .accessibilityAddTraits(ink.color == color ? .isSelected : [])
+                .accessibilityIdentifier("office.ink.color.\(color.rawValue)")
+            }
+        }
+    }
+
+    /// Width keeps both real controls: five one-tap 44pt size dots and the
+    /// fine-grained slider. The dots own a compact row; the slider, value and
+    /// a real colour/alpha/width preview share the next row. Large text splits
+    /// the slider row rather than clipping the value or preview.
+    private var widthRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            widthDotRow
+            widthSliderRow
+        }
+        .frame(minHeight: 44)
+    }
+
+    private var widthDotRow: some View {
+        HStack(spacing: 4) {
+            ForEach(OfficeInkWidthPreset.allCases) { preset in
+                let selected = abs(ink.stroke.widthMillimeters - preset.rawValue) < 0.01
+                Button {
+                    ink.setWidthMillimeters(preset.rawValue)
+                    reapply()
+                } label: {
+                    ZStack {
+                        Circle()
+                            .strokeBorder(selected ? Color.accentColor : Color.clear,
+                                          lineWidth: 2)
+                            .frame(width: 26, height: 26)
+                        Circle()
+                            .fill(selected ? Color.accentColor : Color.primary)
+                            .frame(width: widthDotDiameter(preset),
+                                   height: widthDotDiameter(preset))
+                    }
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(preset.title)
+                .accessibilityValue(String(format: "%.2f mm", preset.rawValue))
+                .accessibilityAddTraits(selected ? .isSelected : [])
+                .accessibilityIdentifier(preset.accessibilityID)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(OfficeInkText.t("线宽快捷选择", "Width presets"))
+        .accessibilityIdentifier("office.ink.widthPresets")
+    }
+
+    /// Dot size is driven by the real millimetre value inside the shared
+    /// width range, using a square-root curve so both small and large tips
+    /// remain visibly distinct. The 44pt target never changes.
+    private func widthDotDiameter(_ preset: OfficeInkWidthPreset) -> CGFloat {
+        let clamped = OfficeInkStroke.clampedWidth(preset.rawValue)
+        let span = OfficeInkStroke.widthRange.upperBound - OfficeInkStroke.widthRange.lowerBound
+        let normalized = (clamped - OfficeInkStroke.widthRange.lowerBound) / span
+        return 6 + 12 * CGFloat(normalized.squareRoot())
+    }
+
+    private var widthSliderRow: some View {
+        Group {
+            if usesStackedRows {
+                VStack(alignment: .leading, spacing: 4) {
+                    widthSlider
+                    HStack(spacing: 8) {
+                        valueText(widthValue)
+                        Spacer(minLength: 8)
+                        widthPreview
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    widthSlider
+                    valueText(widthValue)
+                        .frame(width: 54, alignment: .trailing)
+                    widthPreview
+                }
+            }
+        }
+        .frame(minHeight: 44)
+    }
+
+    private var widthSlider: some View {
+        Slider(value: Binding(get: { ink.stroke.widthMillimeters },
+                              set: { ink.setWidthMillimeters($0) }),
+               in: OfficeInkStroke.widthRange, step: 0.25,
+               onEditingChanged: { editing in if !editing { reapply() } })
+            .accessibilityLabel(OfficeInkText.t("线宽", "Width"))
+            .accessibilityIdentifier("office.ink.width")
+    }
+
+    private var widthValue: String {
+        String(format: "%.2f mm", ink.stroke.widthMillimeters)
+    }
+
+    /// A short real stroke: the current colour at its real opacity and the
+    /// current millimetre width converted to points (72/25.4). It is a preview
+    /// only, never a second drawing surface.
+    private var widthPreview: some View {
+        let points = ink.stroke.widthMillimeters * 72 / 25.4
+        let opacity = 1 - Double(ink.stroke.transparencyPercent) / 100
+        let color = Color(officeHex: ink.stroke.colorHex).opacity(opacity)
+        return ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.secondary.opacity(0.08))
+                .frame(width: 48, height: 24)
+            Capsule()
+                .fill(color)
+                .frame(width: 40, height: CGFloat(points))
+        }
+        .frame(width: 48, height: 44)
+        .accessibilityElement()
+        .accessibilityLabel(OfficeInkText.t("笔迹预览", "Ink preview"))
+        .accessibilityValue("\(widthValue), \(ink.stroke.transparencyPercent)%")
+        .accessibilityIdentifier("office.ink.widthPreview")
+    }
+
+    private var transparencyRow: some View {
+        sliderRow(label: OfficeInkText.t("透明度", "Transparency"),
+                  value: "\(ink.stroke.transparencyPercent)%") {
+            Slider(value: Binding(
+                get: { Double(ink.stroke.transparencyPercent) },
+                set: { ink.setTransparencyPercent(Int($0.rounded())) }),
+                   in: 0...100, step: 1,
+                   onEditingChanged: { editing in if !editing { reapply() } })
+                .accessibilityIdentifier("office.ink.transparency")
+        }
+    }
+
+    private func sliderRow<Control: View>(label: String,
+                                          value: String,
+                                          @ViewBuilder control: () -> Control) -> some View {
+        Group {
+            if usesStackedRows {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 8) {
+                        fieldLabel(label)
+                        Spacer(minLength: 8)
+                        valueText(value)
+                    }
+                    control()
+                }
+            } else {
+                HStack(spacing: 8) {
+                    fieldLabel(label)
+                        .frame(width: 80, alignment: .leading)
+                    control()
+                    valueText(value)
+                        .frame(width: 54, alignment: .trailing)
+                }
+            }
+        }
+        .frame(minHeight: 44)
+    }
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption.weight(.medium))
+            // Primary keeps the small control labels readable on the popover's
+            // material. Hierarchy comes from size/weight, not a faint tint.
+            .foregroundStyle(.primary)
+            .lineLimit(usesStackedRows ? 2 : 1)
+            .minimumScaleFactor(0.85)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func valueText(_ text: String) -> some View {
+        Text(text)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.primary)
+            .lineLimit(1)
     }
 
     private func reapply() {

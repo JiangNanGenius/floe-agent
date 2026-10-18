@@ -164,6 +164,10 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
         return .dispatchedUnverified
     }
 
+    /// The style preset is Floe-local metadata only. The engine receives the
+    /// verified colour, width and transparency scalars, never a brush/kind
+    /// argument it does not understand. Existing keys stay unchanged so an
+    /// older bridge/host remains compatible with a newly selected preset.
     static func inkRequestJSON(_ stroke: OfficeInkStroke) -> String {
         "{\"color\":\(stroke.colorValue),\"width\":\(stroke.lineWidthValue),\"transparency\":\(stroke.transparencyValue)}"
     }

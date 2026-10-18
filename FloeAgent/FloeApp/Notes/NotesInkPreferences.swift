@@ -155,19 +155,21 @@ enum NotesBrushKind: String, CaseIterable, Codable {
 struct NotesBrushPicker: View {
     let selected: NotesBrushKind
     let select: (NotesBrushKind) -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
+        let columns = dynamicTypeSize.isAccessibilitySize ? 2 : 4
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: columns), spacing: 4) {
             ForEach(NotesBrushKind.allCases, id: \.self) { kind in
                 Button { select(kind) } label: {
-                    VStack(spacing: 3) {
+                    VStack(spacing: 2) {
                         Image(systemName: kind.icon).font(.title3)
                             .frame(width: 32, height: 30)
                             .background(selected == kind ? Color.accentColor.opacity(0.14) : .clear, in: Circle())
                         Text(kind.title).font(.caption2.weight(selected == kind ? .semibold : .regular))
                     }
                     .foregroundStyle(selected == kind ? Color.accentColor : .primary)
-                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .frame(maxWidth: .infinity, minHeight: 48)
                     .contentShape(Rectangle())
                 }.buttonStyle(.plain)
                     .accessibilityLabel(kind.title)
@@ -185,6 +187,7 @@ struct NotesInkOptionsPanel: View {
     let select: (NotesBrushKind) -> Void
     let close: () -> Void
     var doneIdentifier = "notes.ink.done"
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private var config: NotesInkPreferences.Configuration { preferences.configuration(for: selected) }
     private var width: Binding<Double> {
         Binding(get: { config.width }, set: { preferences.setWidth($0, for: selected) })
@@ -192,76 +195,180 @@ struct NotesInkOptionsPanel: View {
     private var transparency: Binding<Double> {
         Binding(get: { 1 - (config.opacity ?? 1) }, set: { preferences.setOpacity(1 - $0, for: selected) })
     }
+    /// Five common widths around the brush's native default. The old
+    /// hairline/standard/bold choices are preserved at 0.5x, 1x and 2x; the
+    /// two additions sit between them. Every value is clamped to PencilKit's
+    /// real legal range. Existing saved widths are read unchanged; only a dot
+    /// or the slider writes a new value.
     static func widths(for kind: NotesBrushKind) -> [Double] {
-        let middle = Double(kind.inkType.defaultWidth)
-        return [0.5, 1.0, 2.0].map { min(kind.widthRange.upperBound, max(kind.widthRange.lowerBound, middle * $0)) }
+        let range = kind.widthRange
+        let nativeDefault = Double(kind.inkType.defaultWidth)
+        let defaultWidth = min(range.upperBound, max(range.lowerBound, nativeDefault))
+        let clamps: (Double) -> Double = { min(range.upperBound, max(range.lowerBound, ($0 * 100).rounded() / 100)) }
+        let values = [0.5, 0.75, 1, 1.5, 2].map { clamps(defaultWidth * $0) }
+        if Set(values.map { Int(($0 * 100).rounded()) }).count == 5 {
+            return values
+        }
+        // Native defaults that sit at the thin end (pencil, monoline) collapse
+        // the default-centered factors. Those brushes get five ordered values
+        // across their real range instead; the slider still covers every width.
+        guard range.lowerBound > 0, range.upperBound > range.lowerBound else { return values }
+        let ratio = pow(range.upperBound / range.lowerBound, 1.0 / 4.0)
+        return (0..<5).map { index in
+            if index == 4 { return range.upperBound }
+            return clamps(range.lowerBound * pow(ratio, Double(index)))
+        }
+    }
+    static func formattedWidth(_ value: Double) -> String {
+        String(format: "%.1f", value)
+    }
+    private static let dotDiameters: [CGFloat] = [6, 10, 14, 18, 22]
+    private static func widthPresetLabel(_ value: Double) -> String {
+        FloeL10n.l("notes.notes_ink_preferences.points",
+                   FloeL10n.l("notes.notes_ink_preferences.brush_thickness"),
+                   formattedWidth(value))
+    }
+    private func isSelectedWidth(_ value: Double) -> Bool {
+        abs(config.width - value) < 0.01
     }
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 8) {
                 Text(selected.title).font(.headline)
-                Spacer()
-                Button("workspace.workspace_canvas_view.done", action: close).frame(minWidth: 44, minHeight: 44)
+                Spacer(minLength: 8)
+                Button("workspace.workspace_canvas_view.done", action: close)
+                    .frame(minWidth: 44, minHeight: 44)
                     .accessibilityIdentifier(doneIdentifier)
-            }.padding(.horizontal, 16)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 2)
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
                     // White paper keeps selected black and white inks truthful in dark mode.
                     NotesBrushSample(kind: selected, configuration: config)
-                        .frame(height: 50).frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: NotesBrushSample.previewHeight(for: selected))
                         .background(Color(uiColor: .white), in: RoundedRectangle(cornerRadius: 8))
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("notes.notes_ink_preferences.brush_thickness")
+                        .accessibilityValue("\(Self.formattedWidth(config.width)) pt · \(Int(((config.opacity ?? 1) * 100).rounded()))%")
+                        .accessibilityIdentifier("notes.ink.preview")
                     NotesBrushPicker(selected: selected, select: select)
                     Divider()
-                    HStack {
-                        Text("workspace.workspace_canvas_view.width").font(.subheadline.weight(.medium))
-                        Spacer()
-                        Text("\(config.width, specifier: "%.1f") pt").monospacedDigit().foregroundStyle(.secondary)
-                            .accessibilityIdentifier("notes.ink.width.value")
-                    }
-                    HStack(spacing: 8) {
-                        ForEach(Array(Self.widths(for: selected).enumerated()), id: \.offset) { index, value in
-                            Button { width.wrappedValue = value } label: {
-                                HStack(spacing: 6) {
-                                    Circle().fill(.primary).frame(width: min(16, max(2, value)), height: min(16, max(2, value)))
-                                    Text(["notes.notes_ink_preferences.hairline", "notes.notes_ink_preferences.medium", "notes.notes_ink_preferences.bold"][index]).font(.caption)
-                                }.frame(maxWidth: .infinity, minHeight: 44)
-                                    .background(abs(config.width - value) < 0.01 ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04), in: Capsule())
-                            }.buttonStyle(.plain)
-                                .accessibilityLabel(FloeL10n.l("notes.notes_ink_preferences.points", [FloeL10n.l("notes.notes_ink_preferences.hairline"), FloeL10n.l("notes.notes_ink_preferences.medium"), FloeL10n.l("notes.notes_ink_preferences.bold")][index], value.formatted(.number.precision(.fractionLength(1)))))
-                                .accessibilityIdentifier("notes.ink.width.preset.\(index)")
-                        }
-                    }
-                    Slider(value: width, in: selected.widthRange).accessibilityLabel("notes.notes_ink_preferences.brush_thickness")
-                        .accessibilityIdentifier("notes.ink.width.slider")
-                    HStack {
-                        Text("notes.ink.transparency").font(.subheadline.weight(.medium))
-                        Spacer()
-                        Text("\(Int(((1 - (config.opacity ?? 1)) * 100).rounded()))%").monospacedDigit().foregroundStyle(.secondary)
-                    }
-                    Slider(value: transparency, in: 0...1).accessibilityLabel("notes.ink.transparency")
-                        .accessibilityIdentifier("notes.ink.opacity.slider")
-                    Text("notes.ink.transparency.help").font(.caption).foregroundStyle(.secondary)
+                    widthControls
                     Divider()
-                    HStack {
-                        Text("notes.notes_ink_preferences.color").font(.subheadline.weight(.medium))
-                        Spacer()
-                        ColorPicker(FloeL10n.l("notes.notes_ink_preferences.custom_color"), selection: customColor, supportsOpacity: false).labelsHidden()
-                            .accessibilityLabel("notes.notes_ink_preferences.custom_brush_color")
-                    }
-                    HStack(spacing: 0) {
-                        ForEach(["#18181B", "#2563EB", "#DC2626", "#16A34A", "#9333EA", "#FACC15"], id: \.self) { hex in
-                            Button { preferences.setColor(hex, for: selected) } label: {
-                                Circle().fill(Color(uiColor: Self.color(hex)))
-                                    .frame(width: 25, height: 25)
-                                    .overlay { if config.color == hex { Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(hex == "#FACC15" ? .black : .white) } }
-                                    .frame(maxWidth: .infinity, minHeight: 44)
-                            }.buttonStyle(.plain).accessibilityLabel(FloeL10n.l("notes.notes_ink_preferences.color_2", hex))
-                                .accessibilityIdentifier("notes.ink.color.\(hex.dropFirst())")
-                        }
-                    }
-                }.padding(.horizontal, 16).padding(.bottom, 12)
+                    transparencyControls
+                    colorControls
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 2)
+                .padding(.bottom, 12)
             }.accessibilityIdentifier("notes.ink.parameters")
-        }.frame(width: 320).frame(idealHeight: 540, maxHeight: 540)
+        }
+        .frame(width: 320)
+        .frame(idealHeight: 500, maxHeight: 540)
+    }
+
+    private var widthControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("workspace.workspace_canvas_view.width").font(.subheadline.weight(.medium))
+                Spacer(minLength: 8)
+                Text("\(Self.formattedWidth(config.width)) pt")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("notes.ink.width.value")
+            }
+            HStack(spacing: 4) {
+                ForEach(Array(Self.widths(for: selected).enumerated()), id: \.offset) { index, value in
+                    widthPresetButton(index: index, value: value)
+                }
+            }
+            Slider(value: width, in: selected.widthRange)
+                .accessibilityLabel("notes.notes_ink_preferences.brush_thickness")
+                .accessibilityValue("\(Self.formattedWidth(config.width)) pt")
+                .accessibilityIdentifier("notes.ink.width.slider")
+        }
+    }
+
+    private func widthPresetButton(index: Int, value: Double) -> some View {
+        let chosen = isSelectedWidth(value)
+        let diameter = Self.dotDiameters[index]
+        return Button { width.wrappedValue = value } label: {
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(chosen ? 0.12 : 0))
+                    .frame(width: 38, height: 38)
+                Circle()
+                    .fill(Color(uiColor: Self.color(config.color)).opacity(config.opacity ?? 1))
+                    .frame(width: diameter, height: diameter)
+                    .overlay(Circle().strokeBorder(.primary.opacity(0.16), lineWidth: 0.5))
+                if chosen {
+                    Circle()
+                        .strokeBorder(Color.accentColor, lineWidth: 2)
+                        .frame(width: diameter + 10, height: diameter + 10)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Self.widthPresetLabel(value))
+        .accessibilityAddTraits(chosen ? .isSelected : [])
+        .accessibilityIdentifier("notes.ink.width.preset.\(index)")
+    }
+
+    private var transparencyControls: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if dynamicTypeSize.isAccessibilitySize {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("notes.ink.transparency").font(.subheadline.weight(.medium))
+                    Spacer(minLength: 8)
+                    transparencyValue
+                }
+                transparencySlider
+            } else {
+                HStack(spacing: 8) {
+                    Text("notes.ink.transparency").font(.subheadline.weight(.medium)).fixedSize()
+                    transparencySlider
+                    transparencyValue.frame(minWidth: 44, alignment: .trailing)
+                }
+                .frame(minHeight: 44)
+            }
+        }
+    }
+    private var transparencySlider: some View {
+        Slider(value: transparency, in: 0...1)
+            .accessibilityLabel("notes.ink.transparency")
+            .accessibilityIdentifier("notes.ink.opacity.slider")
+    }
+    private var transparencyValue: some View {
+        Text("\(Int(((1 - (config.opacity ?? 1)) * 100).rounded()))%")
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+    }
+
+    private var colorControls: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("notes.notes_ink_preferences.color").font(.subheadline.weight(.medium))
+                Spacer()
+                ColorPicker(FloeL10n.l("notes.notes_ink_preferences.custom_color"), selection: customColor, supportsOpacity: false).labelsHidden()
+                    .accessibilityLabel("notes.notes_ink_preferences.custom_brush_color")
+            }
+            .frame(minHeight: 44)
+            HStack(spacing: 0) {
+                ForEach(["#18181B", "#2563EB", "#DC2626", "#16A34A", "#9333EA", "#FACC15"], id: \.self) { hex in
+                    Button { preferences.setColor(hex, for: selected) } label: {
+                        Circle().fill(Color(uiColor: Self.color(hex)))
+                            .frame(width: 25, height: 25)
+                            .overlay { if config.color == hex { Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(hex == "#FACC15" ? .black : .white) } }
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }.buttonStyle(.plain).accessibilityLabel(FloeL10n.l("notes.notes_ink_preferences.color_2", hex))
+                        .accessibilityIdentifier("notes.ink.color.\(hex.dropFirst())")
+                }
+            }
+        }
     }
     private var customColor: Binding<Color> {
         Binding(get: { Color(uiColor: Self.color(config.color)) }, set: { color in
@@ -283,6 +390,15 @@ struct NotesBrushSample: View {
     var configuration: NotesInkPreferences.Configuration? = nil
     @Environment(\.colorScheme) private var colorScheme
     @State private var sample: UIImage?
+    /// A fixed paper canvas keeps the preview at one scale. Its height leaves
+    /// room for the brush's thickest legal width, so the stroke never clips.
+    static let paperWidth: CGFloat = 288
+    static func previewHeight(for kind: NotesBrushKind) -> CGFloat {
+        max(48, CGFloat(kind.widthRange.upperBound) + 24)
+    }
+    static func previewRect(for kind: NotesBrushKind) -> CGRect {
+        CGRect(x: 0, y: 0, width: paperWidth, height: previewHeight(for: kind))
+    }
     var body: some View {
         Group {
             if let sample { Image(uiImage: sample).resizable().scaledToFit() }
@@ -293,15 +409,25 @@ struct NotesBrushSample: View {
             let color = configuration.map { NotesInkOptionsPanel.color($0.color).withAlphaComponent($0.opacity ?? 1) }
                 ?? (colorScheme == .dark ? UIColor.white : UIColor.black)
             sample = Self.drawing(kind: kind, color: color, width: configuration?.width)
-                .image(from: CGRect(x: 0, y: 0, width: 110, height: 32).insetBy(dx: -(configuration?.width ?? 0) / 2, dy: -(configuration?.width ?? 0) / 2), scale: 2)
+                .image(from: Self.previewRect(for: kind), scale: 2)
         }
     }
     static func drawing(kind: NotesBrushKind, color: UIColor, width requestedWidth: Double? = nil) -> PKDrawing {
+        let rect = previewRect(for: kind)
+        let brushWidth = min(kind.widthRange.upperBound,
+                             max(kind.widthRange.lowerBound,
+                                 requestedWidth ?? Double(kind.inkType.defaultWidth)))
+        // Leave matching room on both sides for the widest legal stroke. The
+        // image is shown at its natural point size rather than re-fitted after
+        // every width change, so a thicker stroke still looks thicker.
+        let inset = max(12, CGFloat(kind.widthRange.upperBound) / 2 + 12)
+        let usable = max(1, rect.width - inset * 2)
         let points = (0...40).map { index in
             let fraction = Double(index) / 40
             let pressureScale = kind == .monoline ? 1 : (0.6 + 0.4 * sin(fraction * .pi))
-            let width = (requestedWidth ?? min(12, max(2, kind.inkType.defaultWidth))) * pressureScale
-            return PKStrokePoint(location: CGPoint(x: 8 + fraction * 94, y: 16 + 5 * sin(fraction * .pi * 2)),
+            let width = brushWidth * pressureScale
+            return PKStrokePoint(location: CGPoint(x: inset + CGFloat(fraction) * usable,
+                                                   y: rect.midY + 2 * CGFloat(sin(fraction * .pi * 2))),
                                  timeOffset: fraction, size: CGSize(width: width, height: width),
                                  opacity: 1, force: 0.7,
                                  azimuth: -.pi / 4, altitude: .pi / 3)

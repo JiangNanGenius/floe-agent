@@ -203,11 +203,82 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let width = app.descendants(matching: .any)
             .matching(identifier: "office.ink.width").firstMatch
         XCTAssertTrue(width.waitForExistence(timeout: 10),
-                      "the pen settings panel must expose its real width control")
+                      "the pen settings panel must expose its real width slider")
+        let extraFineWidth = app.buttons["office.ink.widthPreset.extraFine"]
+        let hairlineWidth = app.buttons["office.ink.widthPreset.hairline"]
+        let mediumWidth = app.buttons["office.ink.widthPreset.standard"]
+        let boldWidth = app.buttons["office.ink.widthPreset.bold"]
+        let extraBoldWidth = app.buttons["office.ink.widthPreset.extraBold"]
+        for (name, control) in [("extra fine", extraFineWidth),
+                                ("hairline", hairlineWidth),
+                                ("medium", mediumWidth),
+                                ("bold", boldWidth),
+                                ("extra bold", extraBoldWidth)] {
+            XCTAssertTrue(control.waitForExistence(timeout: 10),
+                          "the \(name) one-tap width dot must exist")
+            XCTAssertTrue(control.isHittable,
+                          "the \(name) one-tap width dot must be tappable")
+            assertTouchTarget(control)
+        }
+        XCTAssertTrue(width.exists, "the fine width slider must remain available")
+        let widthPreview = app.descendants(matching: .any)
+            .matching(identifier: "office.ink.widthPreview").firstMatch
+        XCTAssertTrue(widthPreview.waitForExistence(timeout: 10),
+                      "the width row must expose its live ink preview")
         let transparency = app.descendants(matching: .any)
             .matching(identifier: "office.ink.transparency").firstMatch
         XCTAssertTrue(transparency.waitForExistence(timeout: 10),
                       "the pen settings panel must expose its real transparency control")
+        let typeRow = app.descendants(matching: .any)
+            .matching(identifier: "office.ink.type").firstMatch
+        XCTAssertTrue(typeRow.waitForExistence(timeout: 10),
+                      "the pen settings panel must expose its single-row native style choices")
+        let penType = app.buttons["office.ink.type.pen"]
+        let markerType = app.buttons["office.ink.type.marker"]
+        let highlighterType = app.buttons["office.ink.type.highlighter"]
+        for (name, control) in [("pen", penType), ("marker", markerType), ("highlighter", highlighterType)] {
+            XCTAssertTrue(control.waitForExistence(timeout: 10),
+                          "the \(name) style choice must exist")
+            XCTAssertTrue(control.isHittable, "the \(name) style choice must be tappable")
+            assertTouchTarget(control)
+        }
+        XCTAssertTrue(waitUntil(timeout: 10, { penType.isSelected }),
+                      "a document without an explicit style starts on the ordinary pen choice")
+        // Exercise the actual controls, not a test-only setter. Every choice
+        // keeps drawing On and only changes the real width/transparency the
+        // engine applies to future strokes.
+        markerType.tap()
+        XCTAssertTrue(waitUntil(timeout: 10, { markerType.isSelected }),
+                      "tapping the marker choice must select the marker style")
+        XCTAssertFalse(penType.isSelected, "only one style choice may be selected")
+        highlighterType.tap()
+        XCTAssertTrue(waitUntil(timeout: 10, { highlighterType.isSelected }),
+                      "tapping the highlighter choice must select the highlighter style")
+        XCTAssertFalse(markerType.isSelected, "only one style choice may be selected")
+        // The five size dots stay direct one-tap actions beside the style row;
+        // the final state uses the selected 3.00 mm width and the real preview
+        // must reflect it before Done/toggle/save continues.
+        boldWidth.tap()
+        XCTAssertTrue(waitUntil(timeout: 10, { boldWidth.isSelected }),
+                      "one tap on the bold width dot must apply and select 3.00 mm")
+        XCTAssertFalse(extraFineWidth.isSelected)
+        XCTAssertFalse(hairlineWidth.isSelected)
+        XCTAssertFalse(mediumWidth.isSelected)
+        XCTAssertFalse(extraBoldWidth.isSelected)
+        XCTAssertTrue(waitUntil(timeout: 10, {
+            ((widthPreview.value as? String) ?? "").contains("3.00 mm")
+        }), "the live preview must update to the selected 3.00 mm line width")
+        let fineWidth = app.sliders["office.ink.width"]
+        XCTAssertTrue(fineWidth.isHittable, "fine adjustment must remain directly available")
+        fineWidth.adjust(toNormalizedSliderPosition: 0.2)
+        XCTAssertTrue(waitUntil(timeout: 10, {
+            let preview = (widthPreview.value as? String) ?? ""
+            return preview.contains("mm") && !preview.contains("3.00 mm")
+        }), "fine adjustment must update the live width preview")
+        boldWidth.tap()
+        XCTAssertTrue(waitUntil(timeout: 10, {
+            boldWidth.isSelected && ((widthPreview.value as? String) ?? "").contains("3.00 mm")
+        }), "a quick width dot must still apply after fine adjustment")
         XCTAssertFalse(app.buttons["office.ink.startStop"].exists,
                        "the settings panel must not duplicate the drawing on/off switch")
         XCTAssertEqual(app.keyboards.count, 0, "opening settings must not summon the keyboard")
@@ -322,6 +393,25 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(fountain.waitForExistence(timeout: 5))
         capture("notes-native-brushes")
         fountain.tap()
+        for index in 0..<5 {
+            let dot = app.buttons["notes.ink.width.preset.\(index)"]
+            XCTAssertTrue(dot.waitForExistence(timeout: 5))
+            XCTAssertTrue(dot.isHittable)
+            assertTouchTarget(dot)
+        }
+        let preview = app.descendants(matching: .any)
+            .matching(identifier: "notes.ink.preview").firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        app.buttons["notes.ink.width.preset.4"].tap()
+        let quickPreview = try XCTUnwrap(preview.value as? String)
+        let widthSlider = app.sliders["notes.ink.width.slider"]
+        XCTAssertTrue(widthSlider.isHittable)
+        widthSlider.adjust(toNormalizedSliderPosition: 0.3)
+        XCTAssertTrue(waitUntil(timeout: 5, {
+            preview.value as? String != quickPreview
+        }), "PDF handwriting fine adjustment must update its stroke preview")
+        let savedPreview = try XCTUnwrap(preview.value as? String)
+        capture("notes-pdf-five-width-dots-and-preview")
         app.buttons["notes.ink.done"].tap()
         let inkClosed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fountain)
         wait(for: [inkClosed], timeout: 10)
@@ -332,6 +422,8 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         inkOptions.tap()
         XCTAssertTrue(fountain.waitForExistence(timeout: 5))
         XCTAssertTrue(fountain.isSelected)
+        XCTAssertEqual(preview.value as? String, savedPreview,
+                       "PDF handwriting must retain the fine width after reopening settings")
         app.buttons["notes.ink.brush.marker"].tap()
         app.buttons["notes.ink.done"].tap()
         let markerPanelClosed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fountain)
@@ -979,11 +1071,15 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let toggleValue = toggle.exists ? ((toggle.value as? String) ?? "missing") : "missing"
         let panel = app.staticTexts["office.ink.panel"]
         let done = app.buttons["office.ink.done"]
+        let popover = app.popovers.firstMatch
+        let typeRow = app.descendants(matching: .any)
+            .matching(identifier: "office.ink.type").firstMatch
         let facts = XCTAttachment(string: """
             phase=\(phase)
             toggle: exists=\(toggle.exists) enabled=\(toggle.exists && toggle.isEnabled) hittable=\(toggle.exists && toggle.isHittable) value=\(toggleValue) frame=\(toggle.exists ? "\(toggle.frame)" : "missing")
             settings: exists=\(settings.exists) enabled=\(settings.exists && settings.isEnabled) hittable=\(settings.exists && settings.isHittable) frame=\(settings.exists ? "\(settings.frame)" : "missing")
-            panel: header exists=\(panel.exists) done exists=\(done.exists)
+            panel: header exists=\(panel.exists) done exists=\(done.exists) typeRow exists=\(typeRow.exists) popover exists=\(popover.exists) frame=\(popover.exists ? "\(popover.frame)" : "missing")
+            types: pen=\(app.buttons["office.ink.type.pen"].exists) marker=\(app.buttons["office.ink.type.marker"].exists) highlighter=\(app.buttons["office.ink.type.highlighter"].exists)
             keyboard: exists=\(app.keyboards.firstMatch.exists)
             """)
         facts.name = "office-pencil-state-\(phase)"

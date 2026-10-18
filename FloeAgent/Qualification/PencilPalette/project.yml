@@ -8,6 +8,9 @@ settings:
     SWIFT_VERSION: '6.0'
     CODE_SIGNING_ALLOWED: NO
     GENERATE_INFOPLIST_FILE: YES
+packages:
+  FloeAgent:
+    path: ../..
 targets:
   FloePencilPaletteQualification:
     type: application
@@ -16,6 +19,9 @@ targets:
       - App
       - ../../FloeApp/Notes/NotesPalettePresentation.swift
       - ../../FloeApp/Notes/NotesInkPreferences.swift
+    dependencies:
+      - package: FloeAgent
+        product: FloeCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.pencil.palette.qualification

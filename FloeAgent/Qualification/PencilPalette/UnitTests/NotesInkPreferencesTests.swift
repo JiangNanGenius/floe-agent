@@ -83,6 +83,50 @@ import PencilKit
         XCTAssertEqual(store.inkingTool(for: .marker).color.cgColor.alpha, 1)
     }
 
+    func testFiveWidthDotsStayOrderedDistinctAndLegal() throws {
+        for kind in NotesBrushKind.allCases {
+            let values = NotesInkOptionsPanel.widths(for: kind)
+            XCTAssertEqual(values.count, 5, "\(kind)")
+            XCTAssertEqual(Set(values.map { Int(($0 * 100).rounded()) }).count, 5,
+                           "\(kind) dots must be distinct")
+            for (thin, thick) in zip(values, values.dropFirst()) {
+                XCTAssertLessThan(thin, thick, "\(kind) dots must grow left to right")
+            }
+            for value in values {
+                XCTAssertTrue(kind.widthRange.contains(value),
+                              "\(kind) generated \(value) outside its real width range")
+            }
+            print("Width dots \(kind.rawValue): default=\(kind.inkType.defaultWidth), range=\(kind.widthRange), values=\(values)")
+        }
+    }
+
+    func testPreviewUsesWidthColorAndTransparencyWithoutClipping() throws {
+        let color = UIColor(red: 0.8, green: 0.1, blue: 0.1, alpha: 0.4)
+        for kind in NotesBrushKind.allCases {
+            let maxWidth = kind.widthRange.upperBound
+            let drawing = NotesBrushSample.drawing(kind: kind, color: color, width: maxWidth)
+            let stroke = try XCTUnwrap(drawing.strokes.first)
+            let widest = try XCTUnwrap(stroke.path.max { $0.size.width < $1.size.width })
+            XCTAssertEqual(Double(widest.size.width), maxWidth, accuracy: 0.01,
+                           "\(kind) preview must draw the requested width")
+            XCTAssertEqual(stroke.ink.color.cgColor.alpha, 0.4, accuracy: 0.01,
+                           "\(kind) preview must draw the configured transparency")
+            let rect = NotesBrushSample.previewRect(for: kind)
+            let renderedBounds = drawing.strokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
+            XCTAssertTrue(rect.insetBy(dx: -1, dy: -1).contains(renderedBounds),
+                          "\(kind) preview clipped \(renderedBounds) in \(rect)")
+            let thick = try XCTUnwrap(drawing.image(from: rect, scale: 2).pngData())
+            let narrow = NotesBrushSample.drawing(kind: kind, color: color,
+                                                  width: kind.widthRange.lowerBound)
+            XCTAssertNotEqual(try XCTUnwrap(narrow.image(from: rect, scale: 2).pngData()), thick,
+                              "\(kind) preview must visibly change with width")
+            let opaque = NotesBrushSample.drawing(kind: kind, color: color.withAlphaComponent(1),
+                                                  width: maxWidth)
+            XCTAssertNotEqual(try XCTUnwrap(opaque.image(from: rect, scale: 2).pngData()), thick,
+                              "\(kind) preview must visibly change with transparency")
+        }
+    }
+
     func testAllNativeInkTypesSurviveDrawingSerializationAndRender() throws {
         for kind in NotesBrushKind.allCases {
             let sample = NotesBrushSample.drawing(kind: kind, color: .black)
@@ -112,9 +156,10 @@ import PencilKit
                 XCTAssertEqual(after.opacity, before.opacity, accuracy: 0.001)
             }
             XCTAssertFalse(reopened.bounds.isEmpty)
-            let image = reopened.image(from: CGRect(x: 0, y: 0, width: 110, height: 32), scale: 2)
+            let previewRect = NotesBrushSample.previewRect(for: kind)
+            let image = reopened.image(from: previewRect, scale: 2)
             let png = try XCTUnwrap(image.pngData())
-            let originalImage = sample.image(from: CGRect(x: 0, y: 0, width: 110, height: 32), scale: 2)
+            let originalImage = sample.image(from: previewRect, scale: 2)
             XCTAssertEqual(png, try XCTUnwrap(originalImage.pngData()), "\(kind) must preserve the rendered stroke across save/reopen")
             XCTAssertGreaterThan(png.count, 100)
             let cgImage = try XCTUnwrap(image.cgImage)

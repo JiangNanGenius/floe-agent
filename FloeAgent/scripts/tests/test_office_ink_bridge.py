@@ -295,6 +295,54 @@ enum OfficeInkChecks {
         let prefs = OfficeInkPreferences.session(forDocument: "Docs/report.docx", defaults: defaults)
         precondition(prefs.stroke == OfficeInkStroke(), "default stroke")
         precondition(prefs.documentKey == "Docs/report.docx", "document key")
+        precondition(prefs.stroke.preset == .pen, "new documents default to ordinary pen")
+        precondition(prefs.stroke.widthMillimeters == 1.5, "legacy default width preserved")
+
+        // --- five one-tap sizes keep the original three meanings ---
+        precondition(OfficeInkWidthPreset.allCases.map(\.rawValue)
+                     == [0.25, 0.5, 1.5, 3.0, 4.0],
+                     "five width levels preserve old hairline/standard/bold")
+        precondition(OfficeInkWidthPreset.extraFine.rawValue == 0.25, "extra fine width")
+        precondition(OfficeInkWidthPreset.hairline.rawValue == 0.5, "hairline width")
+        precondition(OfficeInkWidthPreset.standard.rawValue == 1.5, "standard width")
+        precondition(OfficeInkWidthPreset.bold.rawValue == 3.0, "bold width")
+        precondition(OfficeInkWidthPreset.extraBold.rawValue == 4.0, "extra bold width")
+        precondition(OfficeInkWidthPreset.allCases.allSatisfy {
+            OfficeInkStroke.widthRange.contains($0.rawValue)
+        }, "all width levels stay inside the stroke range")
+
+        // --- typed preset selection changes only real scalar attributes ---
+        prefs.setColor(.blue)
+        prefs.setPreset(.marker)
+        precondition(prefs.stroke.preset == .marker, "marker selected")
+        precondition(prefs.stroke.widthMillimeters == 2.0, "marker real width")
+        precondition(prefs.stroke.transparencyPercent == 0, "marker opaque")
+        precondition(prefs.stroke.colorHex == "#0000FF", "preset keeps current colour")
+        let persistedMarker = OfficeInkPreferences.session(forDocument: "Docs/report.docx", defaults: defaults)
+        precondition(persistedMarker.stroke.preset == .marker, "preset persisted per document")
+        precondition(persistedMarker.stroke.widthMillimeters == 2.0, "preset width persisted")
+        precondition(persistedMarker.stroke.colorHex == "#0000FF", "preset colour persisted")
+
+        prefs.setPreset(.highlighter)
+        precondition(prefs.stroke.preset == .highlighter, "highlighter selected")
+        precondition(prefs.stroke.widthMillimeters == 4.0, "highlighter real width")
+        precondition(prefs.stroke.transparencyPercent == 60, "highlighter real transparency")
+        precondition(prefs.stroke.lineWidthValue == 400, "highlighter wire width")
+        precondition(prefs.stroke.transparencyValue == 60, "highlighter wire transparency")
+        prefs.setPreset(.pen)
+        precondition(prefs.stroke.preset == .pen, "ordinary pen selected")
+        precondition(prefs.stroke.widthMillimeters == 0.5, "ordinary pen real width")
+        precondition(prefs.stroke.transparencyPercent == 0, "ordinary pen opaque")
+
+        // Raw sliders stay independently adjustable without dropping the
+        // selected style label or the current colour.
+        prefs.setPreset(.highlighter)
+        prefs.setWidthMillimeters(2.75)
+        prefs.setTransparencyPercent(25)
+        precondition(prefs.stroke.preset == .highlighter, "manual width keeps selected style")
+        precondition(prefs.stroke.widthMillimeters == 2.75, "manual width independent")
+        precondition(prefs.stroke.transparencyPercent == 25, "manual transparency independent")
+        precondition(prefs.stroke.colorHex == "#0000FF", "manual scalars keep colour")
 
         prefs.setColor(.blue)
         prefs.setWidthMillimeters(2.0)
@@ -333,6 +381,68 @@ enum OfficeInkChecks {
         }
         precondition(partial.colorHex == "#000000", "missing color default")
         precondition(partial.widthMillimeters == 6.0, "out-of-range width clamp")
+
+        // --- legacy documents: missing/unknown preset keeps exact scalars ---
+        let legacyJSON = ##"{"colorHex":"#00A650","widthMillimeters":3.25,"transparencyPercent":35}"##
+        guard let legacyData = legacyJSON.data(using: .utf8),
+              let legacy = try? JSONDecoder().decode(OfficeInkStroke.self, from: legacyData) else {
+            fatalError("legacy decode failed")
+        }
+        precondition(legacy.preset == .pen, "missing preset falls back to ordinary pen")
+        precondition(legacy.colorHex == "#00A650", "legacy colour preserved exactly")
+        precondition(legacy.widthMillimeters == 3.25, "legacy width preserved exactly")
+        precondition(legacy.transparencyPercent == 35, "legacy transparency preserved exactly")
+        precondition(legacy.lineWidthValue == 325, "legacy width wire value preserved")
+
+        let unknownPresetJSON =
+            ##"{"preset":"fountain","colorHex":"#FF0000","widthMillimeters":1.75,"transparencyPercent":12}"##
+        guard let unknownData = unknownPresetJSON.data(using: .utf8),
+              let unknown = try? JSONDecoder().decode(OfficeInkStroke.self, from: unknownData) else {
+            fatalError("unknown preset decode failed")
+        }
+        precondition(unknown.preset == .pen, "unknown preset falls back to ordinary pen")
+        precondition(unknown.colorHex == "#FF0000", "unknown preset keeps colour")
+        precondition(unknown.widthMillimeters == 1.75, "unknown preset keeps width")
+        precondition(unknown.transparencyPercent == 12, "unknown preset keeps transparency")
+
+        // Round trip keeps every legacy key and adds the local style label.
+        let highlighter = OfficeInkStroke(colorHex: "#FFCC00", widthMillimeters: 4.0,
+                                          transparencyPercent: 60, preset: .highlighter)
+        guard let encoded = try? JSONEncoder().encode(highlighter),
+              let rawObject = try? JSONSerialization.jsonObject(with: encoded),
+              let object = rawObject as? [String: Any] else {
+            fatalError("preset encode failed")
+        }
+        precondition(object["colorHex"] as? String == "#FFCC00", "encoded legacy colour key")
+        precondition((object["widthMillimeters"] as? NSNumber)?.doubleValue == 4.0,
+                     "encoded legacy width key")
+        precondition((object["transparencyPercent"] as? NSNumber)?.intValue == 60,
+                     "encoded legacy transparency key")
+        precondition(object["preset"] as? String == "highlighter", "encoded preset key")
+        guard let roundTrip = try? JSONDecoder().decode(OfficeInkStroke.self, from: encoded) else {
+            fatalError("preset round trip decode failed")
+        }
+        precondition(roundTrip == highlighter, "preset round trip")
+
+        // End-to-end defaults migration for a stored legacy document.
+        let legacySuite = "office.ink.legacy.\(UUID().uuidString)"
+        guard let legacyDefaults = UserDefaults(suiteName: legacySuite) else {
+            fatalError("no legacy defaults")
+        }
+        defer { legacyDefaults.removePersistentDomain(forName: legacySuite) }
+        let legacySnapshot =
+            ##"{"strokes":{"Docs/legacy.docx":{"colorHex":"#00A650","widthMillimeters":3.25,"transparencyPercent":35}}}"##
+        legacyDefaults.set(Data(legacySnapshot.utf8), forKey: OfficeInkPreferences.storageKey)
+        let legacyPrefs = OfficeInkPreferences.session(forDocument: "Docs/legacy.docx",
+                                                       defaults: legacyDefaults)
+        precondition(legacyPrefs.stroke.preset == .pen, "stored legacy document falls back to pen")
+        precondition(legacyPrefs.stroke.colorHex == "#00A650", "stored legacy colour survives load")
+        precondition(legacyPrefs.stroke.widthMillimeters == 3.25, "stored legacy width survives load")
+        precondition(legacyPrefs.stroke.transparencyPercent == 35,
+                     "stored legacy transparency survives load")
+        let untouchedOther = OfficeInkPreferences.session(forDocument: "Docs/other.xlsx",
+                                                          defaults: legacyDefaults)
+        precondition(untouchedOther.stroke == OfficeInkStroke(), "legacy snapshot keeps other defaults")
 
         let nonFiniteWidth = OfficeInkStroke(widthMillimeters: .infinity)
         precondition(nonFiniteWidth.widthMillimeters == OfficeInkStroke.defaultWidthMillimeters,

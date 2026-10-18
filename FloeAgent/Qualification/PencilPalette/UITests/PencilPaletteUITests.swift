@@ -90,14 +90,39 @@ import PencilKit
         defer { app.terminate() }
         app.buttons["palette.brushes"].tap()
         app.buttons["notes.ink.brush.pen"].tap()
-        let thin = app.buttons["notes.ink.width.preset.0"]
-        let thick = app.buttons["notes.ink.width.preset.2"]
-        XCTAssertTrue(thin.waitForExistence(timeout: 5))
-        thin.tap()
-        let thinValue = app.staticTexts["notes.ink.width.value"].label
-        thick.tap()
+        let preview = app.descendants(matching: .any).matching(identifier: "notes.ink.preview").firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        let dots = (0..<5).map { app.buttons["notes.ink.width.preset.\($0)"] }
+        var widths: [String] = []
+        for (index, dot) in dots.enumerated() {
+            XCTAssertTrue(dot.waitForExistence(timeout: 5), "dot \(index) is missing")
+            XCTAssertTrue(dot.isHittable, "dot \(index) is not tappable")
+            XCTAssertGreaterThanOrEqual(dot.frame.width, 43.5, "dot \(index) has a short touch target")
+            XCTAssertGreaterThanOrEqual(dot.frame.height, 43.5, "dot \(index) has a short touch target")
+            dot.tap()
+            XCTAssertTrue(dot.isSelected, "dot \(index) must expose its selected state")
+            let value = app.staticTexts["notes.ink.width.value"].label
+            widths.append(value)
+            let previewFollowsDot = expectation(for: NSPredicate(format: "value CONTAINS %@", value),
+                                               evaluatedWith: preview)
+            wait(for: [previewFollowsDot], timeout: 5)
+        }
+        XCTAssertEqual(Set(widths).count, 5, "each dot must set a different real width")
+        let numericWidths = widths.compactMap { Double($0.replacingOccurrences(of: " pt", with: "")) }
+        XCTAssertEqual(numericWidths.count, 5)
+        XCTAssertEqual(numericWidths, numericWidths.sorted(), "dots must grow from left to right")
+        let widthSlider = app.sliders["notes.ink.width.slider"]
+        XCTAssertTrue(widthSlider.isHittable)
+        widthSlider.adjust(toNormalizedSliderPosition: 0.7)
+        let sliderValue = app.staticTexts["notes.ink.width.value"].label
+        XCTAssertNotEqual(sliderValue, widths[4], "the slider must fine-tune beyond the widest dot")
+        let previewFollowsSlider = expectation(for: NSPredicate(format: "value CONTAINS %@", sliderValue),
+                                               evaluatedWith: preview)
+        wait(for: [previewFollowsSlider], timeout: 5)
+        dots[4].tap()
+        XCTAssertTrue(dots[4].isSelected)
         let thickValue = app.staticTexts["notes.ink.width.value"].label
-        XCTAssertNotEqual(thinValue, thickValue)
+        XCTAssertNotEqual(thickValue, sliderValue)
         let opacity = app.sliders["notes.ink.opacity.slider"]
         if !opacity.isHittable { app.scrollViews["notes.ink.parameters"].swipeUp() }
         XCTAssertTrue(opacity.isHittable)
@@ -110,6 +135,9 @@ import PencilKit
         app.launch()
         app.buttons["palette.brushes"].tap()
         XCTAssertEqual(app.staticTexts["notes.ink.width.value"].label, thickValue)
+        let restoredDot = app.buttons["notes.ink.width.preset.4"]
+        XCTAssertTrue(restoredDot.waitForExistence(timeout: 5))
+        XCTAssertTrue(restoredDot.isSelected)
         XCTAssertEqual(app.sliders["notes.ink.opacity.slider"].value as? String, savedOpacity)
         app.buttons["palette.brushes.done"].tap()
     }

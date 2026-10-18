@@ -169,7 +169,7 @@ Open Notes from the sidebar, then use + to create or import. For task files, sel
 
 Search titles and document text from the library. Snippets help identify a result; unfinished indexes can omit matches. Use the document menu to rebuild the text index when needed. Tabs switch documents; closing a tab does not delete its document. Select an in-document search result to jump to its page and highlight matching text. Some PDFs support page-level navigation only.
 
-Select pen, highlighter, eraser or lasso. Tap the current pen or color again to change type, color, width and transparency. When the UI says transparency, 0% is solid and 100% is transparent. Make a short test stroke. Pencil squeeze/double-tap depend on hardware and system settings; finger drawing is separately enabled. Lasso manipulates content; AI selection provides context.
+Select pen, highlighter, eraser or lasso. Tap the current pen or color again to change type, color, width and transparency. Five dots from small to large offer quick widths; use the slider for fine adjustment while the stroke preview updates. PDFs imported into Notes use these same writing settings. When the UI says transparency, 0% is solid and 100% is transparent. Make a short test stroke. Pencil squeeze/double-tap depend on hardware and system settings; finger drawing is separately enabled. Lasso manipulates content; AI selection provides context.
 
 Check save status before closing or switching. Use Trash for recovery and review attachments before permanent deletion. The document assistant has its own conversation. In ordinary chat, explicitly add Notes material and revoke access when no longer needed. Review assistant edits on the page and use Undo when appropriate. The assistant previews edits for your confirmation; applied changes can be undone. Export selected pages or the whole document to PDF, or save a portable `.floenote` archive. Editing original PDF text and converting handwriting to editable text are not supported.
 
@@ -184,7 +184,7 @@ Check save status before closing or switching. Use Trash for recovery and review
 
 1. Open a DOCX, XLSX or PPTX file, wait for it to load, then enter editing.
 2. Edit according to the format: Word supports styles, lists, alignment and tables; Excel supports cells and formulas, formatting, rows and columns, freeze panes, sorting and filtering; presentations support slide duplication, reordering and object alignment.
-3. Tap **Start drawing** in the toolbar to write with Apple Pencil. Open **Pen settings** separately to choose color, width and transparency. Tap **Stop drawing** to return to ordinary editing.
+3. Tap the toolbar pen button to write with Apple Pencil. In **Pen settings**, choose **Pen**, **Marker** or **Highlighter** and adjust color, width and transparency. Five dots from small to large offer quick widths; use the slider for fine adjustment with a live stroke preview. Tap **Done** to close settings and keep drawing; tap the pen button again to return to ordinary editing.
 4. For AI edits, review the preview and confirm to apply. Save your manual edits first.
 5. Save and wait for completion. Export the file when ready to share.
 

@@ -75,17 +75,76 @@ enum OfficeInkColor: String, CaseIterable, Codable, Identifiable, Sendable {
 }
 
 enum OfficeInkWidthPreset: Double, CaseIterable, Identifiable, Sendable {
+    // The original hairline/standard/bold values are intentionally kept so
+    // existing source expectations and stored documents retain their meaning.
+    // Two edge presets complete the five-level one-tap size row.
+    case extraFine = 0.25
     case hairline = 0.5
     case standard = 1.5
     case bold = 3.0
+    case extraBold = 4.0
 
     var id: Double { rawValue }
 
     var title: String {
         switch self {
+        case .extraFine: OfficeInkText.t("极细", "Extra fine")
         case .hairline: OfficeInkText.t("细", "Hairline")
         case .standard: OfficeInkText.t("中", "Medium")
         case .bold: OfficeInkText.t("粗", "Bold")
+        case .extraBold: OfficeInkText.t("极粗", "Extra bold")
+        }
+    }
+
+    /// Stable automation identity. The localized Chinese/English title can
+    /// change the VoiceOver label but must never move the control the App's
+    /// real UI regression taps.
+    var accessibilityID: String {
+        switch self {
+        case .extraFine: "office.ink.widthPreset.extraFine"
+        case .hairline: "office.ink.widthPreset.hairline"
+        case .standard: "office.ink.widthPreset.standard"
+        case .bold: "office.ink.widthPreset.bold"
+        case .extraBold: "office.ink.widthPreset.extraBold"
+        }
+    }
+}
+
+/// The three real native freehand styles offered by the app-owned pen panel.
+///
+/// A preset is deliberately only a named pair of the already-verified scalar
+/// line attributes: width and transparency. Selecting one writes those values
+/// through the normal preference API, so the engine still receives the real
+/// `LineWidth`/`LineTransparence` commands and every future stroke is a normal
+/// editable vector shape. No pressure, tilt, texture or other brush-specific
+/// engine capability is claimed or simulated.
+enum OfficeInkStylePreset: String, CaseIterable, Codable, Identifiable, Sendable {
+    case pen, marker, highlighter
+
+    var id: String { rawValue }
+
+    /// Suggested width in millimetres for a newly selected preset.
+    var widthMillimeters: Double {
+        switch self {
+        case .pen: 0.5
+        case .marker: 2.0
+        case .highlighter: 4.0
+        }
+    }
+
+    /// UNO line transparency in percent; `0` is fully opaque.
+    var transparencyPercent: Int {
+        switch self {
+        case .pen, .marker: 0
+        case .highlighter: 60
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .pen: OfficeInkText.t("普通笔", "Pen")
+        case .marker: OfficeInkText.t("记号笔", "Marker")
+        case .highlighter: OfficeInkText.t("荧光笔", "Highlighter")
         }
     }
 }
@@ -100,6 +159,10 @@ struct OfficeInkStroke: Codable, Equatable, Sendable {
     static let widthRange: ClosedRange<Double> = 0.25...6.0
     static let defaultWidthMillimeters = OfficeInkWidthPreset.standard.rawValue
 
+    /// Last explicitly selected style. Legacy documents without this field
+    /// decode to `.pen` while keeping their exact stored width, transparency
+    /// and colour; loading must never reset an older document's settings.
+    var preset: OfficeInkStylePreset = .pen
     var colorHex: String = OfficeInkColor.black.hex
     /// Display width in millimetres, independent of the document core metric.
     var widthMillimeters: Double = OfficeInkWidthPreset.standard.rawValue
@@ -108,7 +171,9 @@ struct OfficeInkStroke: Codable, Equatable, Sendable {
 
     init(colorHex: String = OfficeInkColor.black.hex,
          widthMillimeters: Double = OfficeInkWidthPreset.standard.rawValue,
-         transparencyPercent: Int = 0) {
+         transparencyPercent: Int = 0,
+         preset: OfficeInkStylePreset = .pen) {
+        self.preset = preset
         self.colorHex = OfficeInkPreferences.validHex(colorHex)
             ? colorHex.uppercased() : OfficeInkColor.black.hex
         self.widthMillimeters = Self.clampedWidth(widthMillimeters)
@@ -125,13 +190,18 @@ struct OfficeInkStroke: Codable, Equatable, Sendable {
         let width = (try? container.decode(Double.self, forKey: .widthMillimeters))
             ?? Self.defaultWidthMillimeters
         let transparency = (try? container.decode(Double.self, forKey: .transparencyPercent)) ?? 0
+        // A missing or unknown preset is ordinary pen, but the three legacy
+        // scalars above are still preserved exactly. A style label can never
+        // rewrite a document's colour or line settings while loading.
+        let preset = (try? container.decode(OfficeInkStylePreset.self, forKey: .preset)) ?? .pen
         self.init(colorHex: color,
                   widthMillimeters: width,
-                  transparencyPercent: Int(Self.clampedTransparency(transparency)))
+                  transparencyPercent: Int(Self.clampedTransparency(transparency)),
+                  preset: preset)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case colorHex, widthMillimeters, transparencyPercent
+        case preset, colorHex, widthMillimeters, transparencyPercent
     }
 
     /// Guards every consumer against non-finite or out-of-range persisted
@@ -292,6 +362,19 @@ struct OfficeInkDocumentIdentity: Equatable, Sendable {
     func setTransparencyPercent(_ value: Int) {
         var updated = stroke
         updated.transparencyPercent = max(0, min(100, value))
+        update(updated)
+    }
+
+    /// Applies one named native style to future strokes. Only the preset's real
+    /// width and transparency scalars change; the current colour is kept. This
+    /// is the same persistence path as the sliders, so the caller's ordinary
+    /// `applyInkPreferences()` dispatch reaches the engine unchanged. Loading a
+    /// stored document never calls this, which keeps legacy scalars intact.
+    func setPreset(_ preset: OfficeInkStylePreset) {
+        var updated = stroke
+        updated.preset = preset
+        updated.widthMillimeters = preset.widthMillimeters
+        updated.transparencyPercent = preset.transparencyPercent
         update(updated)
     }
 

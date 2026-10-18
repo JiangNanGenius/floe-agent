@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
-// Actual App drawing mode/settings -> synthetic pen PointerEvents -> real frontend/core -> saved
-// vector OOXML -> native reopen. NOT physical Apple Pencil/pointer acceptance.
+// Actual App drawing mode/settings -> synthetic pen PointerEvents (canvas-direct
+// bands plus a document.elementFromPoint overlap subset) -> real frontend/core ->
+// saved vector OOXML -> native reopen. NOT physical Apple Pencil/pointer acceptance.
 #if canImport(UIKit) && canImport(FloeOfficeNative) && targetEnvironment(simulator) && DEBUG
 import Foundation
 import XCTest
@@ -268,6 +269,46 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         return resolved
     }
 
+    /// One deterministic contact stimulus. The first five contacts keep the
+    /// original non-overlapping bands. The last five trace near-overlapping
+    /// paths over the previous contact and route every PointerEvent through
+    /// the real `document.elementFromPoint` target instead of forcing canvas.
+    private struct StrokeStimulus {
+        enum Kind: String {
+            case band = "band-canvas-direct"
+            case overlap = "overlap-hit-tested"
+        }
+
+        let index: Int
+        let kind: Kind
+        let gapMilliseconds: Int
+        /// The real native style selected before this contact. Three ordinary
+        /// pen, four marker and three highlighter contacts, kept while drawing
+        /// mode stays on for the whole run. The style transition to highlighter
+        /// deliberately happens after the 30 ms 5->6 overlap pair so applying a
+        /// style can never lengthen that measured short-gap contact.
+        let style: OfficeInkStylePreset
+        var previousIndex: Int? { kind == .overlap ? index - 1 : nil }
+
+        var facts: [String: Any] {
+            ["index": index, "mode": kind.rawValue,
+             "gapMilliseconds": gapMilliseconds, "overlapsStroke": previousIndex ?? -1,
+             "style": style.rawValue]
+        }
+    }
+
+    private static func stimulusPlan() -> [StrokeStimulus] {
+        let styles: [OfficeInkStylePreset] = [.pen, .pen, .pen,
+                                              .marker, .marker, .marker, .marker,
+                                              .highlighter, .highlighter, .highlighter]
+        return (0..<10).map { index in
+            StrokeStimulus(index: index,
+                           kind: index < 5 ? .band : .overlap,
+                           gapMilliseconds: index.isMultiple(of: 2) ? 30 : 350,
+                           style: styles[index])
+        }
+    }
+
     private func exercise(_ format: String) async throws {
         guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
             throw XCTSkip("Opt-in App drawing + engine synthetic-stroke qualification; not executed")
@@ -319,42 +360,88 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
             try await waitForPaint(native)
             let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
-            // Keep mode armed across both strokes: toggling between them would
+            // Keep mode armed across all contacts: toggling between them would
             // hide the production bridge's consecutive-stroke rearm defects.
             session.useInkPreferences(workspaceIdentity: root.path, documentKey: source.lastPathComponent)
             let preferences = session.inkPreferences
             let previousStroke = preferences.stroke
             defer {
+                // Preset selection overwrites the two scalars by design; put
+                // the exact pre-test values back afterwards, including a legacy
+                // width that does not match its stored style label.
+                preferences.setPreset(previousStroke.preset)
                 preferences.setColorHex(previousStroke.colorHex)
                 preferences.setWidthMillimeters(previousStroke.widthMillimeters)
                 preferences.setTransparencyPercent(previousStroke.transparencyPercent)
             }
-            let expectedStyles = [OfficeInkStroke(colorHex: "#FF0000", widthMillimeters: 0.4),
-                                  OfficeInkStroke(colorHex: "#0000FF", widthMillimeters: 1.2)]
+            let expectedStyles: [OfficeInkStylePreset: OfficeInkStroke] = [
+                .pen: OfficeInkStroke(colorHex: "#FF0000", widthMillimeters: 0.5,
+                                      transparencyPercent: 0, preset: .pen),
+                .marker: OfficeInkStroke(colorHex: "#0000FF", widthMillimeters: 2.0,
+                                         transparencyPercent: 0, preset: .marker),
+                .highlighter: OfficeInkStroke(colorHex: "#FFCC00", widthMillimeters: 4.0,
+                                              transparencyPercent: 60, preset: .highlighter)
+            ]
+            let expectedStyleOrder: [OfficeInkStylePreset] = [.pen, .marker, .highlighter]
             try await session.toggleDrawing()
             XCTAssertTrue(session.drawingMode)
             var penReceipts: [[String: Any]] = []
-            for index in 0..<10 {
+            let stimuli = Self.stimulusPlan()
+            let expectedStyleCounts = Dictionary(grouping: stimuli, by: \.style)
+                .mapValues { $0.count }
+            XCTAssertEqual(expectedStyleCounts[.pen], 3, "Three ordinary pen contacts required")
+            XCTAssertEqual(expectedStyleCounts[.marker], 4, "Four marker contacts required")
+            XCTAssertEqual(expectedStyleCounts[.highlighter], 3, "Three highlighter contacts required")
+            var previousPoints: [[Double]] = []
+            var appliedStyle: OfficeInkStylePreset?
+            for stimulus in stimuli {
+                let index = stimulus.index
+                guard let expected = expectedStyles[stimulus.style] else {
+                    throw NSError(domain: "OfficeNativeDrawingQualification", code: 34,
+                                  userInfo: [NSLocalizedDescriptionKey: "No expectation for selected style"])
+                }
                 // Same per-document setters and App reapply action as the pen
-                // panel; preserve drawing mode across contacts and style changes.
-                let expected = expectedStyles[index < 5 ? 0 : 1]
-                if index == 0 || index == 5 {
+                // panel; preserve drawing mode across contacts and style
+                // changes. Selecting a style writes its real width and
+                // transparency through the normal preference API.
+                if stimulus.style != appliedStyle {
+                    preferences.setPreset(stimulus.style)
                     preferences.setColorHex(expected.colorHex)
-                    preferences.setWidthMillimeters(expected.widthMillimeters)
-                    preferences.setTransparencyPercent(0)
                     await session.applyInkPreferences()
                     guard session.inkError == nil else { throw NSError(domain: "OfficeNativeDrawingQualification", code: 3,
                         userInfo: [NSLocalizedDescriptionKey: session.inkError ?? "App ink attributes unavailable"]) }
+                    XCTAssertEqual(preferences.stroke.preset, stimulus.style)
+                    XCTAssertEqual(preferences.stroke.widthMillimeters, expected.widthMillimeters)
+                    XCTAssertEqual(preferences.stroke.transparencyPercent, expected.transparencyPercent)
+                    XCTAssertEqual(preferences.stroke.colorHex, expected.colorHex)
+                    appliedStyle = stimulus.style
                 }
-                // Alternate short and long inter-contact delays. Keep mode on
-                // across all ten contacts and change attributes after stroke 5.
-                try await Task.sleep(nanoseconds: index.isMultiple(of: 2) ? 30_000_000 : 350_000_000)
-                let sent = try await receiveStroke(index, web: web, native: native, window: window, root: root, syntheticSource: source)
+                // Keep the original alternating 30/350 ms gaps. The overlap
+                // subset starts at contact 6, so 6->7 is a 30 ms overlapping
+                // pair; never lengthen a gap to hide a hit-test miss.
+                try await Task.sleep(nanoseconds: UInt64(stimulus.gapMilliseconds) * 1_000_000)
+                let sent = try await receiveStroke(index, web: web, native: native, window: window, root: root,
+                    syntheticSource: source, stimulus: stimulus,
+                    previousPoints: stimulus.kind == .overlap ? previousPoints : [])
                 XCTAssertEqual(sent["strokeDelta"] as? Int, 1, "Actual pen bridge did not finish the stroke")
                 XCTAssertGreaterThanOrEqual(sent["coreEventDelta"] as? Int ?? 0, 5, "Actual pen bridge did not forward all events")
                 XCTAssertEqual(sent["activeAfter"] as? Bool, false)
+                XCTAssertEqual(sent["downAccepted"] as? Bool, true,
+                               "The real pen down must be accepted by the production bridge")
+                try validateHitDiagnostics(sent, stimulus: stimulus)
+                previousPoints = try clientPoints(sent, index: index)
                 penReceipts.append(sent)
             }
+            let overlapReceipts = penReceipts.filter {
+                ($0["stimulusMode"] as? String) == StrokeStimulus.Kind.overlap.rawValue
+            }
+            XCTAssertEqual(overlapReceipts.count, 5, "Five hit-tested overlap contacts are required")
+            XCTAssertTrue(overlapReceipts.contains {
+                ($0["gapMilliseconds"] as? Int) == 30 && (($0["previousStrokeID"] as? Int) ?? -1) >= 5
+            }, "A 30 ms pair of successive overlapping hit-tested strokes is required")
+            XCTAssertTrue(overlapReceipts.allSatisfy {
+                ($0["elapsedSincePreviousStrokeMilliseconds"] as? NSNumber) != nil
+            }, "Every overlap contact must record its measured elapsed time")
             if session.drawingMode { try await session.toggleDrawing() }
             let nativeCopy = try await session.exportDocument(format: format)
             let copy = root.appendingPathComponent("drawn.\(format)")
@@ -370,14 +457,42 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             // a:ln width is EMU (36,000/mm); App UNO width is 1/100 mm.
             // Allow one twip (635 EMU) for Writer's supported round-trip
             // quantization, far smaller than the deliberately different widths.
-            for style in expectedStyles {
+            for preset in expectedStyleOrder {
+                guard let style = expectedStyles[preset] else { continue }
                 let expectedEMU = style.lineWidthValue * 360
                 let color = String(style.colorHex.dropFirst()).uppercased()
                 XCTAssertTrue(result.vectorShapes.contains { shape in
                     shape.colorHex?.uppercased() == color
                         && shape.widthEMU.map { abs($0 - expectedEMU) <= 635 } == true
                         && !shape.paths.isEmpty
-                }, "Actual saved vector shape did not retain \(color) / \(expectedEMU) EMU: \(result.vectorShapes)")
+                }, "Actual saved vector shape did not retain \(preset.rawValue) \(color) / \(expectedEMU) EMU: \(result.vectorShapes)")
+            }
+            // Transparency must be a saved line alpha, not a UI-only label:
+            // highlighter 60% transparent -> 40% opacity (40000), while pen
+            // and marker stay opaque (no alpha or 100000). The small tolerance
+            // only covers integer rounding, never a different style.
+            let alphaTolerance = 1_000
+            for preset in expectedStyleOrder {
+                guard let style = expectedStyles[preset] else { continue }
+                let expectedEMU = style.lineWidthValue * 360
+                let color = String(style.colorHex.dropFirst()).uppercased()
+                let matching = result.vectorShapes.filter {
+                    $0.colorHex?.uppercased() == color
+                        && $0.widthEMU.map { abs($0 - expectedEMU) <= 635 } == true
+                        && !$0.paths.isEmpty
+                }
+                XCTAssertFalse(matching.isEmpty, "No saved vector shape for \(preset.rawValue)")
+                switch preset {
+                case .highlighter:
+                    XCTAssertTrue(matching.contains { shape in
+                        guard let alpha = shape.alphaValue else { return false }
+                        return abs(alpha - 40_000) <= alphaTolerance
+                    }, "Highlighter must save a real 40% opacity line alpha: \(result.vectorShapes)")
+                case .pen, .marker:
+                    XCTAssertTrue(matching.allSatisfy {
+                        $0.alphaValue == nil || $0.alphaValue == 100_000
+                    }, "Opaque \(preset.rawValue) strokes must not save a transparent line alpha: \(result.vectorShapes)")
+                }
             }
             if format == "xlsx" {
                 XCTAssertEqual(result.cells["B2"], "12", "Excel basic value lost")
@@ -385,14 +500,28 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(result.validAnchors, 10, "Excel strokes need nonzero visible sheet anchors")
             }
             if format == "pptx" { XCTAssertTrue(result.text.contains("DRAWING-NOTES-KEEP"), "Speaker notes lost") }
+            let expectedLineStyles: [[String: Any]] = expectedStyleOrder.compactMap { preset in
+                guard let style = expectedStyles[preset] else { return nil }
+                return ["preset": preset.rawValue, "color": style.colorHex,
+                        "widthEMU": style.lineWidthValue * 360,
+                        "transparency": style.transparencyPercent,
+                        "alpha": (100 - style.transparencyPercent) * 1_000] as [String: Any]
+            }
+            let expectedStyleCountValues = Dictionary(uniqueKeysWithValues:
+                expectedStyleCounts.map { ($0.key.rawValue, $0.value) })
             let manifest: [String: Any] = [
                 "format": format, "sourceSHA256": sourceHash, "outputSHA256": try hash(copy),
                 "route": "OfficeFileSession.toggleDrawing/applyInkPreferences/pen-PointerEvent/production-DOM-MouseEvent/frontend-core/exportDocument",
+                "strokeStimulusPlan": stimuli.map { $0.facts },
+                "expectedStyleCounts": expectedStyleCountValues,
+                "hitTestRouting": "first five bands canvas-direct; last five overlap contacts document.elementFromPoint; no fabricated overlay",
+                "hitDiagnostics": "bounded tag/id/class/ownership, hit coordinates, overlay census, previous-stroke probe and contact lifecycle; no page text",
                 "hardwarePointerInput": "not-tested", "pressure": "not-tested",
                 "syntheticPenBridgeReceipts": penReceipts,
-                "expectedLineStyles": expectedStyles.map { ["color": $0.colorHex, "widthEMU": $0.lineWidthValue * 360] as [String: Any] },
-                "savedVectorLineStyles": result.vectorShapes.map { ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1, "paths": $0.paths.count] as [String: Any] },
+                "expectedLineStyles": expectedLineStyles,
+                "savedVectorLineStyles": result.vectorShapes.map { ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1, "paths": $0.paths.count, "alpha": $0.alphaValue ?? -1] as [String: Any] },
                 "lineWidthToleranceEMU": 635,
+                "alphaTolerance": alphaTolerance,
                 "vectorPaths": result.customGeometryPaths.count,
                 "distinctVectorPaths": Set(result.customGeometryPaths).count,
                 "vectorPointCounts": result.customGeometryPointCounts,
@@ -440,13 +569,19 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
 
     private func receiveStroke(_ index: Int, web: WKWebView,
                                native: FloeOfficeNativeViewController, window: UIWindow,
-                               root: URL, syntheticSource: URL) async throws -> [String: Any] {
+                               root: URL, syntheticSource: URL,
+                               stimulus: StrokeStimulus, previousPoints: [[Double]]) async throws -> [String: Any] {
         var resultType = "not-returned"
         var jsonByteCount: Int?
         var stage = "call-actual-pen-bridge"
         do {
             let receipt: Any? = try await web.callAsyncJavaScript(Self.strokeScript,
-                arguments: ["strokeID": index, "probeEnabled": ProcessInfo.processInfo.environment["FLOE_A3_PROBE"] == "1"], in: nil, contentWorld: .page)
+                arguments: ["strokeID": index,
+                            "probeEnabled": ProcessInfo.processInfo.environment["FLOE_A3_PROBE"] == "1",
+                            "stimulusMode": stimulus.kind.rawValue,
+                            "gapMilliseconds": stimulus.gapMilliseconds,
+                            "previousStrokeID": stimulus.previousIndex ?? -1,
+                            "previousPoints": previousPoints], in: nil, contentWorld: .page)
             resultType = receipt.map { String(reflecting: type(of: $0)) } ?? "nil"
             stage = "decode-WK-JSON-string"
             guard let json = receipt as? String else {
@@ -479,6 +614,94 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             await retainStrokeFailure(index, stage: stage, resultType: resultType, jsonByteCount: jsonByteCount,
                                       error: error, web: web, native: native, window: window, root: root, syntheticSource: syntheticSource)
             throw error
+        }
+    }
+
+    /// Decode the exact client coordinates that were dispatched, so the next
+    /// overlap contact can be derived from the real previous contact rather
+    /// than from a second, potentially divergent geometry calculation.
+    private func clientPoints(_ receipt: [String: Any], index: Int) throws -> [[Double]] {
+        guard let raw = receipt["clientPoints"] as? [[Any]], raw.count >= 4 else {
+            throw NSError(domain: "OfficeNativeDrawingQualification", code: 31, userInfo: [
+                NSLocalizedDescriptionKey: "Stroke \(index + 1) did not return its actual client points"
+            ])
+        }
+        return try raw.map { pair in
+            guard pair.count == 2,
+                  let x = (pair[0] as? NSNumber)?.doubleValue,
+                  let y = (pair[1] as? NSNumber)?.doubleValue,
+                  x.isFinite, y.isFinite else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 32, userInfo: [
+                    NSLocalizedDescriptionKey: "Stroke \(index + 1) returned an invalid client point"
+                ])
+            }
+            return [x, y]
+        }
+    }
+
+    /// Assert that the stimulus actually recorded a real DOM route. No
+    /// assertion requires a selection overlay to be hit: a canvas target is
+    /// recorded just as honestly as an overlay target.
+    private func validateHitDiagnostics(_ receipt: [String: Any], stimulus: StrokeStimulus) throws {
+        guard let hit = receipt["hitDiagnostics"] as? [String: Any],
+              let contacts = hit["contacts"] as? [[String: Any]],
+              let overlayBefore = hit["overlayCensusBefore"] as? [String: Any],
+              let overlayAfter = hit["overlayCensusAfter"] as? [String: Any] else {
+            throw NSError(domain: "OfficeNativeDrawingQualification", code: 33, userInfo: [
+                NSLocalizedDescriptionKey: "Bounded pen hit diagnostics were missing for stroke \(stimulus.index + 1)"
+            ])
+        }
+        XCTAssertEqual(hit["stimulusMode"] as? String, stimulus.kind.rawValue)
+        XCTAssertEqual(hit["gapMilliseconds"] as? Int, stimulus.gapMilliseconds)
+        XCTAssertEqual(contacts.count, 5, "One down, three moves and one up are required")
+        XCTAssertEqual(overlayBefore["canvasContainerFound"] as? Bool, true,
+                       "The real canvas container must be inspectable")
+        XCTAssertNotNil(overlayAfter["selection"] as? [String: Any],
+                        "Selection state must be recorded, even when no selection exists")
+        XCTAssertEqual(hit["clampedContacts"] as? Int, 0,
+                       "Stimulus points must stay inside the visible document without clamping")
+        let owners = contacts.compactMap {
+            ($0["observedHitTarget"] as? [String: Any])?["ownership"] as? String
+        }
+        XCTAssertEqual(owners.count, contacts.count, "Every contact must record its actual DOM ownership")
+        let knownOwners: Set<String> = ["canvas", "canvas-descendant", "canvas-container-overlay",
+                                        "document-body", "outside-canvas-container", "detached", "unresolved"]
+        XCTAssertTrue(owners.allSatisfy { knownOwners.contains($0) },
+                      "Hit ownership must be one of the bounded categories: \(owners)")
+        let routed = contacts.compactMap { $0["routedBy"] as? String }
+        XCTAssertEqual(routed.count, contacts.count, "Every contact must record its dispatch route")
+        if stimulus.kind == .overlap {
+            XCTAssertEqual(hit["hitTested"] as? Bool, true)
+            XCTAssertEqual(hit["previousStrokeID"] as? Int, stimulus.previousIndex ?? -1)
+            XCTAssertEqual((hit["previousStrokeProbe"] as? [Any])?.count ?? -1, 4,
+                           "The previous contact's four points must be probed before dispatch")
+            XCTAssertTrue(routed.allSatisfy { $0 == "elementFromPoint" },
+                          "Overlap contacts must dispatch at the real elementFromPoint result, not canvas: \(routed)")
+            for contact in contacts {
+                guard let observed = contact["observedHitTarget"] as? [String: Any],
+                      let dispatched = contact["dispatchTarget"] as? [String: Any] else {
+                    XCTFail("An overlap contact did not record both observed and dispatched targets")
+                    continue
+                }
+                XCTAssertEqual(observed["tag"] as? String, dispatched["tag"] as? String,
+                               "Overlap dispatch must use the observed DOM element, not a substitute")
+                XCTAssertEqual(observed["ownership"] as? String, dispatched["ownership"] as? String)
+                XCTAssertEqual(observed["insideCanvas"] as? Bool, dispatched["insideCanvas"] as? Bool)
+            }
+        } else {
+            XCTAssertEqual(hit["hitTested"] as? Bool, false)
+            XCTAssertTrue(routed.allSatisfy { $0 == "canvas-direct" },
+                          "Band contacts must preserve the original canvas-direct dispatch")
+            XCTAssertEqual((hit["previousStrokeProbe"] as? [Any])?.count ?? -1, 0)
+            for contact in contacts {
+                guard contact["dispatchTarget"] is [String: Any],
+                      contact["observedHitTarget"] is [String: Any] else {
+                    XCTFail("A band contact did not record observed and dispatched target facts")
+                    continue
+                }
+                XCTAssertEqual((contact["dispatchTarget"] as? [String: Any])?["ownership"] as? String ?? "MISSING",
+                               "canvas")
+            }
         }
     }
 
@@ -563,7 +786,9 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     const canvas = window.app && window.app.sectionContainer && window.app.sectionContainer.canvas;
     const rect = canvas && canvas.getBoundingClientRect();
     const pen = typeof window.__floeOfficePenState === 'function' ? window.__floeOfficePenState() : null;
+    const hit = window.__floePenHitQualification;
     return JSON.stringify({socketObservation:window.__floePenSocketQualification || null,
+        hitQualification:hit && typeof hit === 'object' ? hit : null,
         readyState:document.readyState, visibility:document.visibilityState,
         hasApp:!!window.app, hasMap:!!map, hasPenBridge:typeof window.__floeOfficePenState === 'function',
         docType:map && typeof map.getDocType === 'function' ? String(map.getDocType()).slice(0,32) : null,
@@ -605,9 +830,150 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     const y2 = rect.top + Math.min(canvas.height, section.myTopLeft[1] + section.size[1], Math.max(dy1, dy2)) * scaleY;
     if (![x1, y1, x2, y2].every(Number.isFinite) || x2 - x1 < 120 || y2 - y1 < 120)
         throw new Error('no safely visible document drawing area');
-    const y = .25 + strokeID * .045;
-    const fractions = [[.28,y],[.37 + strokeID*.005,y-.02],[.47,y+.02+strokeID*.002],[.57+strokeID*.003,y]];
-    const points = fractions.map(([x,y]) => [x1 + x * (x2-x1), y1 + y * (y2-y1)]);
+    // Small reusable stimulus helpers. Band contacts keep the original
+    // canvas-direct dispatch; overlap contacts resolve the actual DOM element
+    // at every contact point and dispatch the real synthetic PointerEvent
+    // there. No overlay element is created or simulated.
+    const canvasContainer = (() => {
+        const byId = document.getElementById('canvas-container');
+        if (byId && byId.contains(canvas)) return byId;
+        return canvas.parentElement || null;
+    })();
+    const bounded = (value, limit) =>
+        typeof value === 'string' ? (value.length > limit ? value.slice(0, limit) : value) : null;
+    const round2 = (value) => Math.round(value * 100) / 100;
+    const classOf = (element) => {
+        if (!element || typeof element.getAttribute !== 'function') return null;
+        return bounded(element.getAttribute('class'), 96);
+    };
+    const ownerOf = (element) => {
+        if (!element) return 'unresolved';
+        if (element === canvas) return 'canvas';
+        if (canvas.contains(element)) return 'canvas-descendant';
+        if (canvasContainer && canvasContainer.contains(element)) return 'canvas-container-overlay';
+        if (element === document.body) return 'document-body';
+        if (document.documentElement && document.documentElement.contains(element))
+            return 'outside-canvas-container';
+        return 'detached';
+    };
+    const targetFacts = (element) => {
+        if (!element) return {tag:null,id:null,class:null,ownership:'unresolved',
+            insideCanvas:false,insideCanvasContainer:false,svgAncestor:null,connected:false};
+        const svg = typeof element.closest === 'function' ? element.closest('svg') : null;
+        return {
+            tag: bounded(element.tagName ? String(element.tagName).toLowerCase() : null, 24),
+            id: bounded(typeof element.id === 'string' ? element.id : null, 64),
+            class: classOf(element),
+            ownership: ownerOf(element),
+            insideCanvas: canvas.contains(element),
+            insideCanvasContainer: !!(canvasContainer && canvasContainer.contains(element)),
+            svgAncestor: svg ? {tag:'svg', id:bounded(svg.id, 64), class:classOf(svg)} : null,
+            connected: element.isConnected === true
+        };
+    };
+    const countInContainer = (selector) => {
+        if (!canvasContainer) return null;
+        try { return Math.min(canvasContainer.querySelectorAll(selector).length, 64); }
+        catch (_) { return null; }
+    };
+    const selectionState = () => {
+        try {
+            const definition = window.app && window.app.CSections && window.app.CSections.ShapeHandlesSection;
+            const sectionContainer = window.app && window.app.sectionContainer;
+            const section = definition && typeof definition.name === 'string' && sectionContainer
+                && typeof sectionContainer.getSectionWithName === 'function'
+                ? sectionContainer.getSectionWithName(definition.name) : null;
+            if (!section) return {sectionFound:false};
+            const properties = section.sectionProperties || {};
+            const svg = properties.svg || null;
+            return {
+                sectionFound:true,
+                sectionName: bounded(definition.name, 48),
+                shown: section.showSection === true,
+                subSectionCount: Array.isArray(properties.subSections)
+                    ? Math.min(properties.subSections.length, 32) : null,
+                previewSvgPresent: !!svg,
+                previewSvgDisplay: svg ? bounded(String(svg.style.display || ''), 24) : null,
+                previewSvgPointerEvents: svg ? bounded(String(svg.style.pointerEvents || ''), 24) : null
+            };
+        } catch (_) { return {sectionFound:false, inspectionFailed:true}; }
+    };
+    const overlayCensus = () => {
+        try {
+            return {
+                canvasContainerFound: !!canvasContainer,
+                canvasContainerId: canvasContainer ? bounded(canvasContainer.id, 64) : null,
+                canvasContainerClass: canvasContainer ? classOf(canvasContainer) : null,
+                containerChildCount: canvasContainer && canvasContainer.children
+                    ? Math.min(canvasContainer.children.length, 64) : null,
+                svgCount: countInContainer('svg'),
+                handleClassCount: countInContainer('[class*="handle" i]'),
+                selectionClassCount: countInContainer('[class*="selection" i]'),
+                overlayClassCount: countInContainer('[class*="overlay" i]'),
+                htmlObjectCount: countInContainer('.html-object-section'),
+                selection: selectionState()
+            };
+        } catch (_) {
+            return {canvasContainerFound: !!canvasContainer, inspectionFailed: true,
+                selection: {sectionFound:false, inspectionFailed:true}};
+        }
+    };
+    const elementAt = (point) => {
+        try { return document.elementFromPoint(point[0], point[1]); }
+        catch (_) { return null; }
+    };
+    // Successive overlap patterns are small fractions of the visible
+    // document area. Each contact is derived from the previous contact, so
+    // the paths genuinely overlap while still producing distinct geometry.
+    const overlapOffsets = [
+        [[ .0018, .0012], [ .0026,-.0014], [-.0012, .0022], [-.0022,-.0014]],
+        [[-.0022, .0016], [ .0012, .0022], [ .0024,-.0016], [-.0010,-.0022]],
+        [[ .0022,-.0016], [-.0026, .0012], [ .0016, .0024], [-.0012,-.0018]],
+        [[-.0016,-.0022], [ .0022, .0016], [-.0024, .0010], [ .0016,-.0026]],
+        [[ .0026, .0010], [-.0018,-.0024], [ .0010, .0026], [-.0026, .0016]]
+    ];
+    const mode = stimulusMode === 'overlap-hit-tested' ? 'overlap'
+        : stimulusMode === 'band-canvas-direct' ? 'band' : null;
+    if (!mode) throw new Error('unknown qualification stimulus mode');
+    const gap = typeof gapMilliseconds === 'number' && Number.isFinite(gapMilliseconds)
+        ? gapMilliseconds : null;
+    const previous = Array.isArray(previousPoints) && previousPoints.length === 4
+        ? previousPoints.map((point) => Array.isArray(point) && point.length === 2
+            && point.every((value) => typeof value === 'number' && Number.isFinite(value))
+            ? [point[0], point[1]] : null)
+        : null;
+    if (mode === 'overlap' && (!previous || previous.some((point) => !point)))
+        throw new Error('previous client points required for the overlap stimulus');
+    const bandPenPoints = () => {
+        const y = .25 + strokeID * .045;
+        const fractions = [[.28,y],[.37 + strokeID*.005,y-.02],
+            [.47,y+.02+strokeID*.002],[.57+strokeID*.003,y]];
+        return fractions.map(([x,y]) => [x1 + x * (x2-x1), y1 + y * (y2-y1)]);
+    };
+    const overlapScale = 1.5; // ~3 px max on a 744 px canvas: still overlapping, but safely distinct in OOXML.
+    const overlapPenPoints = () => {
+        const offsets = overlapOffsets[Math.max(0, strokeID - 5) % overlapOffsets.length];
+        const dx = x2 - x1, dy = y2 - y1;
+        return previous.map(([x,y], pointIndex) => {
+            const offset = offsets[pointIndex] || [0,0];
+            return [x + offset[0] * dx * overlapScale, y + offset[1] * dy * overlapScale];
+        });
+    };
+    const clamp = (value, lower, upper) => Math.min(upper, Math.max(lower, value));
+    const points = mode === 'overlap' ? overlapPenPoints() : bandPenPoints();
+    const clampedContacts = points.map((point) => {
+        const x = clamp(point[0], x1 + 1, x2 - 1);
+        const y = clamp(point[1], y1 + 1, y2 - 1);
+        const changed = x !== point[0] || y !== point[1];
+        point[0] = x; point[1] = y;
+        return changed;
+    });
+    if (points.length < 4) throw new Error('qualified stroke needs at least four contact points');
+    const previousStrokeProbe = previous ? previous.map((point, pointIndex) => {
+        const hit = elementAt(point);
+        return {pointIndex, x:round2(point[0]), y:round2(point[1]), target:targetFacts(hit)};
+    }) : [];
+    const overlayBefore = overlayCensus();
     // BEGIN boundedSocketObservation — qualification-only, no payload retention.
     const observeSocket = (enabled, app) => {
         const facts = {enabled: enabled === true, limit: 32, events: [], budgetExceeded: false,
@@ -702,23 +1068,77 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     // END boundedSocketObservation
     const observation = observeSocket(probeEnabled === true, app);
     try {
-    const post = (type, p, buttons) => canvas.dispatchEvent(new PointerEvent(type, {
-        bubbles:true, cancelable:true, composed:true, pointerType:'pen', pointerId:41 + strokeID,
-        isPrimary:true, clientX:p[0], clientY:p[1], button:0, buttons, pressure: buttons ? .5 : 0
-    }));
-    post('pointerdown', points[0], 1);
+    const contacts = [];
+    const post = (phase, point, buttons) => {
+        const hit = elementAt(point);
+        const target = mode === 'overlap' ? (hit || canvas) : canvas;
+        const routedBy = mode === 'overlap'
+            ? (hit ? 'elementFromPoint' : 'canvas-fallback') : 'canvas-direct';
+        // Capture both targets before dispatch: the event itself may hide or
+        // replace the overlay, and the receipt must describe the hit test that
+        // actually routed this contact.
+        const dispatchFacts = targetFacts(target);
+        const hitFacts = targetFacts(hit);
+        const type = phase === 'down' ? 'pointerdown' : phase === 'up' ? 'pointerup' : 'pointermove';
+        target.dispatchEvent(new PointerEvent(type, {
+            bubbles:true, cancelable:true, composed:true, pointerType:'pen',
+            pointerId:41 + strokeID, isPrimary:true, clientX:point[0], clientY:point[1],
+            button:0, buttons, pressure: buttons ? .5 : 0
+        }));
+        contacts.push({
+            phase, x:round2(point[0]), y:round2(point[1]), routedBy,
+            dispatchTarget:dispatchFacts, observedHitTarget:hitFacts,
+            activeAfter:window.__floeOfficePenState().activeStroke === true
+        });
+    };
+    // Content-free canvas route observation. This exposes a canvas-drawn
+    // shape-handle section without treating it as a DOM overlay. Read before
+    // and after the down so a stale previous value is visible.
+    const canvasSectionName = () => {
+        const sectionContainer = window.app && window.app.sectionContainer;
+        return sectionContainer && typeof sectionContainer.targetSection === 'string'
+            ? bounded(sectionContainer.targetSection, 64) : null;
+    };
+    // Actual time from the previous contact's up to this down, including the
+    // script's own pre-down probes. This is evidence, not the intended sleep.
+    const strokeStart = performance.now();
+    const elapsedSincePreviousStrokeMilliseconds = typeof window.__floePenLastStrokeEnd === 'number'
+        ? round2(strokeStart - window.__floePenLastStrokeEnd) : null;
+    const canvasSectionBeforeDown = canvasSectionName();
+    post('down', points[0], 1);
+    const downAccepted = contacts[0].activeAfter === true;
+    const canvasSectionAtDown = canvasSectionName();
     for (let i = 1; i < points.length; i++) {
         await new Promise(resolve => setTimeout(resolve, 25));
-        post('pointermove', points[i], 1);
+        post('move', points[i], 1);
     }
-    post('pointerup', points[points.length - 1], 0);
+    post('up', points[points.length - 1], 0);
     const after = window.__floeOfficePenState();
     const strokeDelta = after.strokes - before.strokes, coreEventDelta = after.coreEvents - before.coreEvents;
-    if (strokeDelta !== 1 || coreEventDelta < points.length + 1 || after.activeStroke)
-        throw new Error('production pen bridge did not forward/finish synthetic stroke');
-    return JSON.stringify({strokeID, strokeDelta, coreEventDelta, activeAfter:after.activeStroke,
+    window.__floePenLastStrokeEnd = performance.now();
+    const hitDiagnostics = {
+        stimulusMode:stimulusMode, hitTested:mode === 'overlap', gapMilliseconds:gap,
+        previousStrokeID:previousStrokeID, elapsedSincePreviousStrokeMilliseconds,
+        clampedContacts:clampedContacts.filter(Boolean).length,
+        canvasSectionBeforeDown, canvasSectionAtDown,
+        overlayCensusBefore:overlayBefore, overlayCensusAfter:overlayCensus(),
+        previousStrokeProbe, contacts
+    };
+    if (strokeDelta !== 1 || coreEventDelta < points.length + 1 || after.activeStroke) {
+        // Preserve the bounded hit facts on the page so the Swift failure
+        // path can attach them even though callAsyncJavaScript throws.
+        window.__floePenHitQualification = {strokeID, strokeDelta, coreEventDelta,
+            activeAfter:after.activeStroke, downAccepted, hitDiagnostics};
+        const downFacts = contacts.length ? contacts[0].observedHitTarget : null;
+        throw new Error('production pen bridge did not forward/finish synthetic stroke; down='
+            + (downFacts ? downFacts.ownership + ':' + (downFacts.tag || '?') : 'none'));
+    }
+    window.__floePenHitQualification = null;
+    return JSON.stringify({strokeID, stimulusMode:stimulusMode, hitTested:mode === 'overlap',
+        gapMilliseconds:gap, previousStrokeID, elapsedSincePreviousStrokeMilliseconds,
+        strokeDelta, coreEventDelta, activeAfter:after.activeStroke, downAccepted,
         before, after, canvasRect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},
-        visibleDocumentRect:{x1,y1,x2,y2}, clientPoints:points,
+        visibleDocumentRect:{x1,y1,x2,y2}, clientPoints:points, hitDiagnostics,
         hardwarePointerInput:'not-tested', pressure:'synthetic-not-hardware-tested',
         socketObservation:observation.finish()});
     } finally { observation.finish(); }
@@ -865,7 +1285,11 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
     struct VectorShape: CustomStringConvertible {
         var depth: Int, spPrDepth: Int?, paths: [String] = []
         var widthEMU: Int?, colorHex: String?
-        var description: String { "vector(color=\(colorHex ?? "missing"), widthEMU=\(widthEMU ?? -1), paths=\(paths.count))" }
+        /// `a:ln/a:solidFill/a:srgbClr/a:alpha@val`, in 1/1000 percent
+        /// (100000 = fully opaque). Absent for an opaque line whose fill
+        /// carries no explicit alpha element.
+        var alphaValue: Int?
+        var description: String { "vector(color=\(colorHex ?? "missing"), widthEMU=\(widthEMU ?? -1), alpha=\(alphaValue.map(String.init) ?? "none"), paths=\(paths.count))" }
     }
     var vectorShapes: [VectorShape] = []
     private var activeShapes: [VectorShape] = []
@@ -910,6 +1334,18 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
                    drawingNamespaces.contains(elementNamespaces[properties] ?? ""),
                    drawingNamespaces.contains(elementNamespaces[properties + 1] ?? "") {
                     activeShapes[last].colorHex = attributes["val"]
+                }
+                // Line transparency is saved as an explicit alpha on the same
+                // line colour. Only this shape/spPr/a:ln/a:solidFill/a:srgbClr
+                // path may set it; fill/text alpha never does.
+                if local == "alpha", elements.count == properties + 4,
+                   elements[properties] == "ln", elements[properties + 1] == "solidFill",
+                   elements[properties + 2] == "srgbClr",
+                   drawingNamespaces.contains(namespaceURI ?? ""),
+                   drawingNamespaces.contains(elementNamespaces[properties] ?? ""),
+                   drawingNamespaces.contains(elementNamespaces[properties + 1] ?? ""),
+                   drawingNamespaces.contains(elementNamespaces[properties + 2] ?? "") {
+                    activeShapes[last].alphaValue = Int(attributes["val"] ?? "")
                 }
             }
         }
