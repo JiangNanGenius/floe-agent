@@ -17,6 +17,9 @@ import FloeModels
 import FloePersistence
 import FloeLocalModelCatalog
 import FloeCAD
+#if canImport(AppIntents)
+import AppIntents
+#endif
 
 final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -51,6 +54,9 @@ final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
 
 @main
 struct FloeAgentApp: App {
+    // App reconstruction must not open another database/service graph while
+    // SwiftUI retains the original StateObject and system action dependency.
+    @MainActor private static let liveEnvironment = AppEnvironment.live()
     @UIApplicationDelegateAdaptor(FloeApplicationDelegate.self) private var applicationDelegate
     @StateObject private var environment: AppEnvironment
     @StateObject private var router: AppRouter
@@ -72,7 +78,13 @@ struct FloeAgentApp: App {
         if ProcessInfo.processInfo.arguments.contains("-ui-testing") {
             UIView.setAnimationsEnabled(false)
         }
-        let environment = AppEnvironment.live()
+        let environment = Self.liveEnvironment
+        #if canImport(AppIntents)
+        // System actions join the same app-owned service graph, including
+        // headless invocations. They never create a second environment.
+        AppDependencyManager.shared.add(dependency: environment)
+        FloeShortcutsRuntime.shared.install(environment: environment)
+        #endif
         #if DEBUG
         AppEnvironment.qualificationLaunchEnvironment = environment
         #endif

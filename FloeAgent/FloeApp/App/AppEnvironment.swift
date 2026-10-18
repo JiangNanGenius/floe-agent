@@ -378,6 +378,16 @@ final class AppEnvironment: ObservableObject {
     let isEphemeral: Bool
     private let shouldSeedBundledSkills: Bool
 
+    // S3 external-automation readiness. ONE in-flight bootstrap/launch-recovery
+    // task per process: view rebuilds and concurrent App Intents join it
+    // instead of re-running interrupted recovery over runs that were just
+    // started. Successful repeats are no-ops; a failed bootstrap may be
+    // retried by a later explicit call. The App keeps the single environment.
+    private var bootstrapInFlight: Task<Void, Never>?
+    private var bootstrapDidCompleteSuccessfully = false
+    private var externalAutomationInFlight: Task<Bool, Never>?
+    private var externalAutomationReady = false
+
     private init(
         database: DatabaseManager,
         conversationStore: any ConversationStore,
@@ -781,7 +791,10 @@ final class AppEnvironment: ObservableObject {
             linuxPreparation: linuxPreparation,
             linuxLifecycle: linuxGuestLifecycle
         )
-        FloeShortcutsRuntime.shared.install(environment: self)
+        // App Intents join the single live environment from FloeAgentApp.init
+        // (AppDependencyManager registration + FloeShortcutsRuntime install).
+        // Installing the runtime from every environment constructor let a
+        // preview/test environment replace the live shortcut runtime globally.
         // Build 233 R2: every Office surface (workspace preview, IDE tab,
         // Notes, fullscreen editor) can reach the idle-model shed even when its
         // own view does not resolve this environment. The safety contract stays
@@ -1520,6 +1533,108 @@ final class AppEnvironment: ObservableObject {
             anchorTimezone: TimeZone.current.identifier)
     }
 
+    // MARK: - Shortcuts / App Intents exact-run service
+
+    /// Exact-run service used by App Intents and Shortcuts. It projects the
+    /// SAME live environment, stores and conversation center: no second
+    /// `.live()`, database pool, runtime, or permission grant. The service
+    /// holds sendable store reads, the durable exact-run reply reader, the
+    /// system clock and weak app/center actions; a released environment never
+    /// fabricates a replacement.
+    func floeShortcutRunService() -> FloeShortcutRunService {
+        let replyReader = SQLiteRunReplyReader(database: database)
+        return FloeShortcutRunService(deps: FloeShortcutRunDeps(
+            ensureReady: { [weak self] in
+                guard let self else { throw FloeShortcutRunError.applicationStillStarting }
+                try await self.ensureReadyForExternalAutomation()
+            },
+            capabilityEnabled: {
+                AppleCapabilityPreferences.isEnabled(.shortcuts)
+            },
+            defaultModel: { [weak self] in
+                guard let self else { return nil }
+                return await self.shortcutDefaultModel()
+            },
+            startTask: { [weak self] request in
+                guard let self else { throw FloeShortcutRunError.applicationStillStarting }
+                let center = await self.conversationCenter
+                let started = try await center.startTask(
+                    goal: request.goal,
+                    title: request.title,
+                    provider: request.provider,
+                    model: request.model,
+                    startOrigin: .externalAutomation
+                )
+                return FloeRunStartReceipt(
+                    runID: started.run.runID,
+                    conversationID: started.conversationID
+                )
+            },
+            cancelRun: { [weak self] runID in
+                guard let self else { return }
+                await self.conversationCenter.cancel(runID: runID)
+            },
+            hasLiveOwner: { [weak self] runID in
+                guard let self else { return false }
+                return await self.conversationCenter.hasLiveOwner(runID: runID)
+            },
+            loadRun: { [weak self] runID in
+                guard let self else { throw FloeShortcutRunError.applicationStillStarting }
+                return try await self.shortcutLoadRun(runID)
+            },
+            loadConversation: { [weak self] conversationID in
+                guard let self else { throw FloeShortcutRunError.applicationStillStarting }
+                return try await self.shortcutLoadConversation(conversationID)
+            },
+            recentRunEvents: { [weak self] runID, limit in
+                guard let self else { throw FloeShortcutRunError.applicationStillStarting }
+                return try await self.shortcutRecentRunEvents(runID, limit: limit)
+            },
+            earlierRunEvents: { [weak self] runID, sequence, limit in
+                guard let self else { throw FloeShortcutRunError.applicationStillStarting }
+                return try await self.shortcutEarlierRunEvents(
+                    runID, beforeSequence: sequence, limit: limit
+                )
+            },
+            latestAssistantText: { runID, conversationID in
+                try await replyReader.latestAssistantText(
+                    runID: runID, conversationID: conversationID
+                )
+            }
+        ))
+    }
+
+    /// External-start model resolution. Only reached after shared readiness
+    /// awaited `conversationCenter.reload()`, so the published default and the
+    /// provider/model pairs reflect the durable configuration. Missing
+    /// configuration stays an honest refusal; no model is invented.
+    private func shortcutDefaultModel() -> (provider: ProviderProfile, model: ModelProfile)? {
+        let center = conversationCenter
+        return center.providerAndModel(modelID: center.modelPreferences.defaultAgentModelID)
+    }
+
+    private func shortcutLoadRun(_ runID: UUID) async throws -> RunRecord? {
+        try await runStore.run(id: runID)
+    }
+
+    private func shortcutLoadConversation(_ conversationID: UUID) async throws -> ConversationRecord? {
+        try await conversationStore.conversation(id: conversationID)
+    }
+
+    private func shortcutRecentRunEvents(
+        _ runID: UUID, limit: Int
+    ) async throws -> [RunEventRecord] {
+        try await runStore.recentEvents(runID: runID, limit: limit)
+    }
+
+    private func shortcutEarlierRunEvents(
+        _ runID: UUID, beforeSequence: Int, limit: Int
+    ) async throws -> [RunEventRecord] {
+        try await runStore.earlierEvents(
+            runID: runID, beforeSequence: beforeSequence, limit: limit
+        )
+    }
+
     /// Builds the remote-Python service against the shared host store.
     /// Sessions open on demand through SSHConnectionService; credentials
     /// resolve through the Keychain and are never held beyond the connect.
@@ -1678,7 +1793,28 @@ final class AppEnvironment: ObservableObject {
     /// Applies pending migrations. Called once during app launch. On failure
     /// the environment records the error so the UI can offer recovery rather
     /// than presenting a broken workbench.
+    ///
+    /// Shared single-flight: concurrent callers (root view task, scene
+    /// reconstruction, App Intents) join the SAME in-flight task. A completed
+    /// successful bootstrap is skipped so interrupted recovery and launch
+    /// fixtures never re-run over work created after launch; a failed attempt
+    /// may be retried by a later call (explicit failed-initialization retry).
     func bootstrap() async {
+        if bootstrapDidCompleteSuccessfully { return }
+        if let inFlight = bootstrapInFlight {
+            await inFlight.value
+            return
+        }
+        let task = Task { @MainActor [self] in
+            await self.performBootstrap()
+        }
+        bootstrapInFlight = task
+        await task.value
+        bootstrapInFlight = nil
+    }
+
+    /// The original launch migration/recovery sequence.
+    private func performBootstrap() async {
         do {
             try await database.migrate()
             try await NotesRepository.shared.reconcileAssistantOwnership(database: database)
@@ -2034,6 +2170,74 @@ final class AppEnvironment: ObservableObject {
         } catch {
             persistenceReady = false
             bootstrapError = error.localizedDescription
+        }
+        // Success means the WHOLE launch sequence above finished with durable
+        // storage. An ephemeral recovery environment stays retryable so a
+        // transient database failure is not remembered as permanent.
+        bootstrapDidCompleteSuccessfully = !isEphemeral && persistenceReady
+        if bootstrapDidCompleteSuccessfully {
+            bootstrapError = nil
+        }
+    }
+
+    /// Shared readiness for App Intents/Shortcuts automation. Joins the
+    /// single-flight bootstrap and then the FIRST shared run recovery + model
+    /// configuration publication for this process, so external starts and
+    /// queries never observe a half-recovered graph:
+    ///
+    /// - `persistenceReady` can flip true inside bootstrap while later steps
+    ///   still run; the whole task is joined instead of the boolean alone.
+    /// - `reconcileInterruptedRunsOnLaunch()` is center-latched and protected
+    ///   by its current-process owner rules; this seam never re-runs it per
+    ///   call and never starts a second environment, pool or runtime.
+    /// - Launch settings (approval/background choices) were loaded by
+    ///   bootstrap; provider/model preferences are loaded by `reload()` here,
+    ///   then read back from the durable store before automation may start.
+    ///
+    /// Failed durable initialization blocks external writes/queries. A
+    /// configuration read failure is retryable on the next call.
+    func ensureReadyForExternalAutomation() async throws {
+        if externalAutomationReady { return }
+        await bootstrap()
+        try verifyDurableLaunchReady()
+
+        let task: Task<Bool, Never>
+        let isOwner: Bool
+        if let inFlight = externalAutomationInFlight {
+            task = inFlight
+            isOwner = false
+        } else {
+            let newTask = Task { @MainActor [weak self] () -> Bool in
+                guard let self else { return false }
+                await self.conversationCenter.reconcileInterruptedRunsOnLaunch()
+                await self.conversationCenter.reload()
+                do {
+                    _ = try await self.configurationStore.preferences()
+                    _ = try await self.configurationStore.providers()
+                    _ = try await self.configurationStore.models()
+                    return true
+                } catch {
+                    return false
+                }
+            }
+            externalAutomationInFlight = newTask
+            task = newTask
+            isOwner = true
+        }
+        let configurationLoaded = await task.value
+        if isOwner {
+            externalAutomationInFlight = nil
+        }
+        try verifyDurableLaunchReady()
+        guard configurationLoaded else {
+            throw FloeShortcutRunError.modelConfigurationUnavailable
+        }
+        externalAutomationReady = true
+    }
+
+    private func verifyDurableLaunchReady() throws {
+        guard !isEphemeral, persistenceReady, bootstrapError == nil else {
+            throw FloeShortcutRunError.durableStorageUnavailable
         }
     }
 
