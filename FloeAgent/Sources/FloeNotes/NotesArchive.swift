@@ -162,6 +162,8 @@ public enum NotesArchive {
             var document = original
             document.id = documentIDs[original.id]!; document.notebookID = notebookID; document.deletedAt = nil
             document.officeResourceID = document.officeResourceID.flatMap { ids[$0] }
+            document.officePreviewSourceID = document.officePreviewSourceID.flatMap { ids[$0] }
+            document.officePreviewResourceID = document.officePreviewResourceID.flatMap { ids[$0] }
             document.engineeringResourceID = document.engineeringResourceID.flatMap { ids[$0] }
             // The explicit cover is a referenced resource like any other; an
             // unremapped id would make the imported document reference a
