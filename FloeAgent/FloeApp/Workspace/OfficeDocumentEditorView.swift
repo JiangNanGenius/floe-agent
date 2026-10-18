@@ -647,7 +647,51 @@ final class OfficeFileSession: ObservableObject {
         #endif
         // The shipped host is pinned separately. A selector capability check keeps old hosts
         // functional until the newly compiled host is qualified, without rewriting its headers.
-        let output: URL = try await withCheckedThrowingContinuation { continuation in
+        let output = try await Self.exportNativeDocument(controller: controller, format: format)
+        if format == "pdf" {
+            guard let pdf = CGPDFDocument(output as CFURL), pdf.numberOfPages > 0 else { throw CocoaError(.fileReadCorruptFile) }
+        } else if ["docx", "pptx", "xlsx"].contains(format) {
+            _ = try OfficeDocumentService.inspect(url: output)
+        }
+        return output
+    }
+
+    /// A cover belongs to already committed bytes, never to a newer unsaved
+    /// canvas. Hold the existing input/operation fence through export and
+    /// check the working copy and engine before and after. Do not re-save:
+    /// another serialization could change the package being identified.
+    func exportCommittedCoverPDF(expectedSHA256: String) async throws -> URL {
+        guard exportFormats.contains("pdf"), let controller,
+              let workingURL = session?.workingURL, beginExternalRefresh() else {
+            throw CocoaError(.featureUnsupported)
+        }
+        defer { endExternalRefresh() }
+        let wasReadOnly = readOnly
+        let hadEdits = wasReadOnly ? false : await hasLocalEditsToProtect()
+        guard let web = OfficeExplicitSaveBridge.findWebView(in: controller.view),
+              (try await web.evaluateJavaScript("window.__floeOfficePenState ? window.__floeOfficePenState().activeStroke : false")) as? Bool == false,
+              !hadEdits else { throw CocoaError(.fileWriteFileExists) }
+        let before = try await Task.detached(priority: .userInitiated) {
+            try FloeDigest.sha256Hex(ofFileAt: workingURL)
+        }.value
+        guard before == expectedSHA256, self.controller === controller else { throw CocoaError(.fileWriteFileExists) }
+        let output = try await Self.exportNativeDocument(controller: controller, format: "pdf")
+        do {
+            let after = try await Task.detached(priority: .userInitiated) {
+                try FloeDigest.sha256Hex(ofFileAt: workingURL)
+            }.value
+            let hasNewEdits = wasReadOnly ? false : await hasLocalEditsToProtect()
+            guard after == before, self.controller === controller,
+                  readOnly == wasReadOnly, !hasNewEdits else { throw CocoaError(.fileWriteFileExists) }
+            return output
+        } catch {
+            try? FileManager.default.removeItem(at: output)
+            throw error
+        }
+    }
+
+    private static func exportNativeDocument(controller: UIViewController, format: String) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
             let callback: @convention(block) (NSURL?, NSError?) -> Void = { url, error in
                 if let error { continuation.resume(throwing: error) }
                 else if let url { continuation.resume(returning: url as URL) }
@@ -655,12 +699,6 @@ final class OfficeFileSession: ObservableObject {
             }
             _ = controller.perform(NSSelectorFromString("exportDocumentWithFormat:completion:"), with: format as NSString, with: callback as AnyObject)
         }
-        if format == "pdf" {
-            guard let pdf = CGPDFDocument(output as CFURL), pdf.numberOfPages > 0 else { throw CocoaError(.fileReadCorruptFile) }
-        } else if ["docx", "pptx", "xlsx"].contains(format) {
-            _ = try OfficeDocumentService.inspect(url: output)
-        }
-        return output
     }
 
     func startPresentation() async throws {

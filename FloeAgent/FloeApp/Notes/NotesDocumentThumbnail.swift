@@ -21,6 +21,8 @@ enum NotesDocumentCoverSource: String, Sendable, CaseIterable {
     /// A bounded, native OOXML content summary rendered from the document's
     /// own text/cells. This is explicitly not the original Office layout.
     case officeContentSummary = "officeContentSummary"
+    /// First-page engine render bound to the exact saved Office resource.
+    case officeSavedPreview = "officeSavedPreview"
     /// A real render of the document's first note page (handwriting, images,
     /// PDF background, text elements) in stable page coordinates.
     case notePage = "notePage"
@@ -41,7 +43,7 @@ enum NotesDocumentCoverSource: String, Sendable, CaseIterable {
 
     var hasContent: Bool {
         switch self {
-        case .quickLookThumbnail, .officeContentSummary, .notePage, .mindMap, .engineeringPreview, .customCover: true
+        case .quickLookThumbnail, .officeContentSummary, .officeSavedPreview, .notePage, .mindMap, .engineeringPreview, .customCover: true
         case .unsupported, .none: false
         }
     }
@@ -1059,6 +1061,17 @@ enum NotesDocumentCoverService {
                                     maximumSourceBytes: Int,
                                     request: (@MainActor (URL, CGSize, Duration) async -> NotesOfficeThumbnailGenerator.AttemptOutcome)? = nil,
                                     onFirstPaint: (@MainActor (NotesDocumentCoverOutcome) -> Void)? = nil) async -> NotesDocumentCoverOutcome {
+        if let previewID = document.matchingOfficePreviewResourceID {
+            var saved = await customCover(resourceID: previewID, store: store, size: size,
+                                          maximumSourceBytes: maximumSourceBytes)
+            if saved.image != nil {
+                saved.source = .officeSavedPreview
+                saved.diagnosis = "saved first page"
+                return saved
+            }
+            // A cache loss must not prevent opening the actual document or
+            // replace its content with another revision's image.
+        }
         guard let resourceID = document.officeResourceID, let fileName = document.officeFileName,
               let fileExtension = NotesOfficeThumbnailStaging.validatedExtension(of: fileName) else {
             return .init(image: nil, source: .unsupported,

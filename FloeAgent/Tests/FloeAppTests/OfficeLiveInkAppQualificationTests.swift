@@ -7,6 +7,8 @@ import UIKit
 import SwiftUI
 import WebKit
 import FloeDocuments
+import FloeCore
+import FloeNotes
 import FloeOfficeNative
 @testable import FloeApp
 
@@ -84,11 +86,39 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             let afterLift = try await web.evaluateJavaScript("window.__floeOfficePenState().activeStroke")
             try await Task.sleep(for: .milliseconds(500))
             _ = try await snapshot(web, label: "\(format)-after-lifting-pen")
+            let saved = await session.saveInPlace()
+            guard saved else { throw CocoaError(.fileWriteUnknown) }
+            let sourceHash = try FloeDigest.sha256Hex(ofFileAt: source)
+            let pdf = try await session.exportCommittedCoverPDF(expectedSHA256: sourceHash)
+            defer { try? FileManager.default.removeItem(at: pdf) }
+            let coverData = try await Task.detached {
+                try OfficeSavedCoverRenderer.firstPageData(at: pdf)
+            }.value
+            let generated = try XCTUnwrap(UIImage(data: coverData))
+            let coverAttachment = XCTAttachment(image: generated)
+            coverAttachment.name = "\(format)-saved-engine-first-page"; coverAttachment.lifetime = .keepAlways
+            add(coverAttachment)
+            let store = try NotesStore(root: root.appendingPathComponent("notes-store"))
+            let imported = try await NoteFileImporter.importFile(source, notebookID: nil, store: store)
+            let document = try await store.create(imported)
+            let coverResource = try await NotesCoverImageProcessor.importCover(data: coverData, store: store)
+            let covered = try await store.cacheOfficePreview(documentID: document.id,
+                sourceResourceID: document.officeResourceID!, previewResourceID: coverResource,
+                expectedRevision: document.revision)
+            let outcome = await NotesDocumentCoverService.render(document: covered, store: store,
+                size: CGSize(width: 320, height: 420), maximumSourceBytes: 128 * 1_024 * 1_024)
+            let cardImage = try XCTUnwrap(outcome.image)
+            let cardAttachment = XCTAttachment(image: cardImage)
+            cardAttachment.name = "\(format)-notes-card-ink"; cardAttachment.lifetime = .keepAlways
+            add(cardAttachment)
             await session.release()
             XCTAssertEqual(stillDown as? Bool, true, "The visual assertion must precede pointerup")
             XCTAssertEqual(afterLift as? Bool, false)
             XCTAssertGreaterThan(liveRedDelta, 80,
                 "Ink must appear while the pen is moving, before the final vector is committed")
+            XCTAssertGreaterThan(redPixels(generated), 40, "The saved engine preview must include the Office vector ink")
+            XCTAssertEqual(outcome.source, .officeSavedPreview)
+            XCTAssertGreaterThan(redPixels(cardImage), 10, "The actual Notes cover renderer must retain the saved ink")
         } catch {
             await session.release()
             throw error
@@ -132,18 +162,34 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
     private static let beginAndMove = #"""
     const canvas = window.app && window.app.sectionContainer && window.app.sectionContainer.canvas;
     if (!canvas || !window.__floeOfficePenState().drawing) throw new Error('Actual Office pen surface unavailable');
+    const layout = app.activeDocument && app.activeDocument.activeLayout;
+    const size = app.activeDocument && app.activeDocument.fileSize;
+    const section = app.sectionContainer.getDocumentAnchorSection();
+    if (!layout || !size || !section) throw new Error('Actual document geometry unavailable');
     const rect = canvas.getBoundingClientRect();
-    const x = rect.left + rect.width * .38, y = rect.top + rect.height * .65;
+    const scaleX = rect.width / canvas.width, scaleY = rect.height / canvas.height;
+    const origin = size.clone(); origin.pX = 0; origin.pY = 0;
+    const end = size.clone();
+    const dx1 = layout.documentToViewX(origin), dy1 = layout.documentToViewY(origin);
+    const dx2 = layout.documentToViewX(end), dy2 = layout.documentToViewY(end);
+    const x1 = rect.left + Math.max(0, section.myTopLeft[0], Math.min(dx1, dx2)) * scaleX;
+    const y1 = rect.top + Math.max(0, section.myTopLeft[1], Math.min(dy1, dy2)) * scaleY;
+    const x2 = rect.left + Math.min(canvas.width, section.myTopLeft[0] + section.size[0], Math.max(dx1, dx2)) * scaleX;
+    const y2 = rect.top + Math.min(canvas.height, section.myTopLeft[1] + section.size[1], Math.max(dy1, dy2)) * scaleY;
+    if (![x1,y1,x2,y2].every(Number.isFinite) || x2-x1 < 120 || y2-y1 < 120)
+        throw new Error('No visible document drawing area');
+    const x = x1 + (x2-x1)*.35, y = y1 + (y2-y1)*.6;
+    const length = Math.min(96,(x2-x1)*.25), amplitude = Math.min(24,(y2-y1)*.08);
     const send = (type, px, py, buttons) => canvas.dispatchEvent(new PointerEvent(type, {
         bubbles: true, cancelable: true, composed: true, pointerType: 'pen', pointerId: 933,
         isPrimary: true, clientX: px, clientY: py, button: 0, buttons, pressure: buttons ? .5 : 0
     }));
     send('pointerdown', x, y, 1);
     for (let i = 1; i <= 12; ++i) {
-        send('pointermove', x + i * 8, y + Math.sin(i / 3) * 24, 1);
+        send('pointermove', x + i * length / 12, y + Math.sin(i / 3) * amplitude, 1);
         await new Promise(resolve => requestAnimationFrame(resolve));
     }
-    window.__floeLiveInkQualificationEnd = () => send('pointerup', x + 96, y + Math.sin(4) * 24, 0);
+    window.__floeLiveInkQualificationEnd = () => send('pointerup', x + length, y + Math.sin(4) * amplitude, 0);
     return true;
     """#
     private static let liftPen = #"""
