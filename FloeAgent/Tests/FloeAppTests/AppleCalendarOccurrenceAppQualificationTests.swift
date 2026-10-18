@@ -182,6 +182,69 @@ final class AppleCalendarOccurrenceAppQualificationTests: XCTestCase {
         XCTAssertEqual(remainingStandalone.token, standalone.token)
     }
 
+    func testFutureScopeStartsAtSelectedOccurrence() async throws {
+        executionTimeAllowance = 180
+        let fixture = try makeFixture(occurrenceCount: 3, includeStandaloneEvent: true)
+        defer { removeFixture(fixture) }
+        let initial = try fixtureOccurrences(fixture)
+        let series = initial.filter { $0.title == fixture.seriesTitle }
+            .sorted { $0.start < $1.start }
+        XCTAssertEqual(series.count, 3)
+        let first = try XCTUnwrap(series.first)
+        let second = try XCTUnwrap(series.dropFirst().first)
+        let third = try XCTUnwrap(series.dropFirst(2).first)
+        let standalone = try XCTUnwrap(initial.first { $0.title == fixture.standaloneTitle })
+        let tool = AppleCalendarUpdateTool()
+        let context = makeContext()
+        let update = AppleCalendarUpdateTool.Arguments(
+            action: "update", id: second.identifier, occurrence: second.token,
+            span: "futureEvents", title: fixture.editedTitle, start: nil, end: nil,
+            notes: fixture.editedNote, location: nil, isAllDay: nil
+        )
+        try tool.validate(update)
+        let result = try await tool.execute(update, context: context)
+        XCTAssertEqual(result.exitStatus ?? -1, 0)
+        XCTAssertTrue(result.summary.contains("verified=true"), result.summary)
+        XCTAssertTrue(result.summary.contains("span=futureEvents"), result.summary)
+        XCTAssertTrue(result.summary.contains("verificationScope=targetOccurrence"), result.summary)
+        let updated = try fixtureOccurrences(fixture)
+        XCTAssertEqual(updated.count, 4)
+        let untouchedFirst = try occurrence(at: first.start, in: updated)
+        XCTAssertEqual(untouchedFirst.title, first.title)
+        XCTAssertEqual(untouchedFirst.notes, first.notes)
+        XCTAssertEqual(untouchedFirst.end, first.end)
+        for original in [second, third] {
+            let changed = try occurrence(at: original.start, in: updated)
+            XCTAssertEqual(changed.title, fixture.editedTitle)
+            XCTAssertEqual(changed.notes, fixture.editedNote)
+            XCTAssertEqual(changed.end, original.end)
+        }
+        XCTAssertEqual(try occurrence(at: standalone.start, in: updated), standalone)
+
+        // A future-series split may change its identifier. Reuse the actual
+        // post-write occurrence instead of assuming the previous series id.
+        let selected = try occurrence(at: second.start, in: updated)
+        XCTAssertEqual(try field("occurrence", in: result.summary), selected.token)
+        let remove = AppleCalendarUpdateTool.Arguments(
+            action: "delete", id: selected.identifier, occurrence: selected.token,
+            span: "futureEvents", title: nil, start: nil, end: nil,
+            notes: nil, location: nil, isAllDay: nil
+        )
+        try tool.validate(remove)
+        let deleted = try await tool.execute(remove, context: context)
+        XCTAssertEqual(deleted.exitStatus ?? -1, 0)
+        XCTAssertTrue(deleted.summary.contains("verified=true"), deleted.summary)
+        XCTAssertTrue(deleted.summary.contains("span=futureEvents"), deleted.summary)
+        let remaining = try fixtureOccurrences(fixture)
+        XCTAssertEqual(remaining.count, 2)
+        let keptFirst = try occurrence(at: first.start, in: remaining)
+        XCTAssertEqual(keptFirst.title, first.title)
+        XCTAssertEqual(keptFirst.notes, first.notes)
+        XCTAssertEqual(keptFirst.end, first.end)
+        XCTAssertEqual(try occurrence(at: standalone.start, in: remaining), standalone)
+        XCTAssertFalse(remaining.contains { $0.start == second.start || $0.start == third.start })
+    }
+
     func testMismatchedSeriesIdAndOccurrenceTokenWritesNothing() async throws {
         executionTimeAllowance = 120
         let fixture = try makeFixture(occurrenceCount: 3, includeStandaloneEvent: true)
