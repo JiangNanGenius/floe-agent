@@ -65,7 +65,7 @@
 
 ## 发布档案（只追加、不回改）
 
-逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。1.7.34（275）为当前候选（[发布说明](releases/notes/RELEASE_NOTES_1.7.34_BUILD_275.md)、[本地核验与交付记录](releases/testflight/BUILD_275_LOCAL_VERIFICATION.md)），内部 Floe QA 可用、尚未提交外部审核；1.7.33（274）仍为 publictest1 等待审核状态并保留（[本地核验与交付记录](releases/testflight/BUILD_274_LOCAL_VERIFICATION.md)），1.7.32（273）保留为回滚记录。
+逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。当前阶段内测为 1.7.37（278），已确认 Apple `VALID`、未过期且现有 Floe QA 可安装（[发布说明](releases/notes/RELEASE_NOTES_1.7.37_BUILD_278.md)、[本地核验与交付记录](releases/testflight/BUILD_278_LOCAL_VERIFICATION.md)）。真实 UIKit 画笔缩放仍在修复。此前版本与正式审核保留各自历史记录，不以本次内测状态覆盖。
 
 ## 历史研究（结论以现行代码为准）
 
