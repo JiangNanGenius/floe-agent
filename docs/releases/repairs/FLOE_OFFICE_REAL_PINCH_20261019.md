@@ -30,3 +30,9 @@
 - 运行回执、原始截图、前后 JSON、键盘／视口和 xcresult 均已保留。模拟器运行结束后已关机，未重置或删除数据。/ Raw evidence is retained; the simulator is shut down with data preserved.
 
 后续 / Next: 最小生产修复 → 重建实际前端资源并校验来源 → 原可见缩放、画笔保持、无手指误写与保存重开验收 → 新编号内测。真实 Pencil、手掌与锁屏交互仍须设备反馈。/ Minimal production fix, verified resource integration, original zoom and drawing/save acceptance, then a new internal beta. Physical Pencil and device behavior remain separate acceptance.
+
+## 源码修复进展 / Source repair progress
+
+已增加双指同时起始的初始化补丁，并修复取消后遗留的多指状态；新手势会丢弃上一手势结束后保留的旧区域，而同一次先后落指保持原区域。实际源码提取的 15 项行为检查通过，包含旧写法失败的连续手势对照。补丁准备的 16 项临时 Git 行为测试通过；设备与模拟器构建入口现复用同一准备流程，设备入口通过 shell 语法检查。/ The patch initializes batched starts, clears cancellation state and distinguishes a fresh gesture from a sequential second finger. Fifteen source-behavior checks and sixteen preparation tests passed; both build entrypoints now share preparation. The device entrypoint passed shell syntax checking.
+
+补丁尚未进入新生成的 Office 资源或安装包。新的补丁锁文件需要与重建组件的来源证明及资源摘要一起固定；现有组件证明保持原值，不能用旧包宣称已携带新修复。/ The patch is not yet included in regenerated Office resources or an installable build. Its new lock identity must be pinned with rebuilt component provenance and resource hashes; existing component evidence remains unchanged.

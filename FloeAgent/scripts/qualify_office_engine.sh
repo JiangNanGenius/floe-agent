@@ -28,29 +28,11 @@ print(json.dumps(report,indent=2))
 if not report['preflightPassed']: sys.exit(2)
 PY
 [[ "$mode" == "--check" ]] && exit 0
-source_dir="$build_root/source"
-commit="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["commit"])' "$lock_file")"
-repository="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["repository"])' "$lock_file")"
-if [[ ! -e "$source_dir" ]]; then
-  git init "$source_dir"
-  git -C "$source_dir" remote add origin "$repository"
-  git -C "$source_dir" fetch --depth=1 origin "$commit"
-  git -C "$source_dir" checkout --detach FETCH_HEAD
-fi
-[[ "$(git -C "$source_dir" rev-parse HEAD)" == "$commit" ]] || { echo 'Source commit mismatch' >&2; exit 3; }
-git -C "$source_dir" diff --cached --quiet
-python3 - "$lock_file" "$source_dir" <<'PYPATCH'
-import hashlib,json,os,subprocess,sys
-lock=json.load(open(sys.argv[1])); patch=os.path.join(os.path.dirname(sys.argv[1]),lock['sourcePatch'])
-if hashlib.sha256(open(patch,'rb').read()).hexdigest()!=lock['sourcePatchSHA256']: raise SystemExit('Source overlay hash mismatch')
-# A stopped build may already carry exactly our verified overlay.
-applied=subprocess.run(['git','apply','--reverse','--check',patch],cwd=sys.argv[2],capture_output=True).returncode==0
-if applied:
- subprocess.run(['git','apply','--reverse',patch],cwd=sys.argv[2],check=True)
-subprocess.run(['git','diff','--exit-code'],cwd=sys.argv[2],check=True,stdout=subprocess.DEVNULL)
-subprocess.run(['git','apply','--check',patch],cwd=sys.argv[2],check=True)
-subprocess.run(['git','apply',patch],cwd=sys.argv[2],check=True)
-PYPATCH
+# Device and Simulator resources must carry the same verified source patches.
+# The shared preparation helper preserves unknown edits and is idempotent.
+python3 "$script_dir/office_real_simulator/prepare_simulator_source.py" \
+  "$build_root" --lock "$lock_file" \
+  --output "$build_root/source-preparation.json"
 python3 - "$build_root" <<'PYBUILD'
 import json,os,shutil,signal,subprocess,sys,time
 root=sys.argv[1]; source=os.path.join(root,'source'); engine=os.path.join(source,'engine')

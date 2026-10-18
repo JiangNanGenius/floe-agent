@@ -1,0 +1,31 @@
+--- a/browser/src/canvas/CanvasSectionContainer.ts
++++ b/browser/src/canvas/CanvasSectionContainer.ts
+@@ -1490,6 +1490,20 @@
+ 		else if (!this.multiTouch) {
+ 			this.stopLongPress();
+ 			this.multiTouch = true;
++
++			// WebKit may deliver both fingers in the first touchstart. Also
++			// discard positions retained from a completed gesture for its
++			// synthetic click. Both need a fresh first-touch start and target;
++			// a sequential second finger keeps touchEventInProgress false and
++			// its existing target.
++			if (this.positionOnMouseDown === null || this.touchEventInProgress) {
++				this.clearMousePositions();
++				this.positionOnMouseDown = this.convertPositionToCanvasLocale(e);
++				var startSection: CanvasSectionObject = this.findSectionContainingPoint(this.positionOnMouseDown);
++				if (startSection)
++					this.sectionOnMouseDown = startSection.name;
++			}
++
+ 			var section: CanvasSectionObject = this.getSectionWithName(this.sectionOnMouseDown);
+ 			if (section)
+ 				this.propagateOnMultiTouchStart(section, e);
+@@ -1560,6 +1574,7 @@
+ 
+ 	public onTouchCancel (e: TouchEvent) {
+ 		this.clearMousePositions();
++		this.multiTouch = false;
+ 		this.stopLongPress();
+ 	}
+ 
