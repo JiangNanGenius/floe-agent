@@ -394,7 +394,8 @@ static NSString *FloeInkInputGatingScript() {
         window.__floeInkGatingInstalled = true;
         const state = window.__floePenState = {
             strokes: 0, coreEvents: 0, armedDispatches: 0, activeStroke: false, toolState: null,
-            shapeHandleSuspensions: 0, previewHandoffs: 0, previewClears: 0, lastPreviewClear: null
+            shapeHandleSuspensions: 0, previewHandoffs: 0, previewClears: 0,
+            lastPreviewClear: null, writerInsetTwips: null
         };
         let drawing = false;
         let contact = null;
@@ -447,11 +448,86 @@ static NSString *FloeInkInputGatingScript() {
                     container.touchEventInProgress = false;
             } catch (ignored) {}
         };
+        // ---- Writer page-inset input compensation ---------------------------
+        // Measured in the real App (2026-10-19 root runs
+        // pencil-app/handoff-geometry-failure-3 and no-jump-negative-4/
+        // controls-5, pinned bundle 6320b78c, engine 27b21dc1): Writer
+        // commits ink about one page-top inset BELOW the pen (driftY
+        // 17.24 CSS px at zoom 100%/dpr 2; XLSX/PPTX controls drift
+        // <=3.4/0.4 and pass). The client chain itself is consistent:
+        // convertPositionToCanvasLocale maps client CSS to canvas device
+        // px, MouseControl.refreshPosition/postCoreMouseEvent round-trip
+        // through viewedRectangle and the tiles documentAnchor, and
+        // ViewLayout.canvasToDocumentPoint converts canvas px to document
+        // twips — the text-caret path proves that mapping. But the Writer
+        // document space starts one page inset ABOVE the first page: the
+        // status pagerectangles put page 1 top at y ~= 278 twips
+        // (pageRectangleList[0][1] > 0) and TilesSection.
+        // drawPageBackgroundWriter paints the sheet there through the same
+        // documentToView mapping (paper top measured at canvas-local
+        // device px 37 = 278 twips at zoom 100). The engine's graphics
+        // anchoring consumes the same document-space mouse Y but re-adds
+        // the page origin, so the committed custGeom anchors one inset
+        // below the pen on canvas AND in the saved document (the run's PDF
+        // export shows the ink ~12 pt below the press point, page-
+        // relative). The architectural fix belongs to the engine (sw LOK
+        // graphics anchoring must consume document-space coordinates like
+        // the text hit path already does); until that lands, the gate
+        // applies the equivalent derived input transform to its own
+        // replayed pen stream only, while drawing mode is armed on a text
+        // document: subtract the live page-1 inset in twips
+        // (app.file.writer.pageRectangleList[0][0..1]) converted to CSS px
+        // through app.twipsToPixels/app.dpiScale. The value is derived at
+        // runtime, never hardcoded, bounded, and fails open (no
+        // compensation) for absent, non-finite, negative or oversized
+        // insets, non-text documents, or unreadable scales. Preview and
+        // paint probes keep using the raw pen coordinates, so the
+        // compensated engine paint lands where the near probes already
+        // look: handoff clears on real paint evidence with no settle jump.
+        // NOTE for root: if the engine later fixes its graphics anchoring
+        // while pageRectangleList keeps y1 > 0, this compensation
+        // over-corrects by the same inset — remove it then; the no-jump
+        // drift metric shows -inset immediately if that happens.
+        const WRITER_INSET_MAX_TWIPS = 1440; // sane page inset bound (1 in)
+        let writerInsetCss = null;
+        const computeWriterInsetCss = () => {
+            writerInsetCss = null;
+            state.writerInsetTwips = null;
+            try {
+                const docLayer = window.app && window.app.map && window.app.map._docLayer;
+                if (!docLayer || docLayer._docType !== 'text') return;
+                const pages = window.app.file && window.app.file.writer
+                    && window.app.file.writer.pageRectangleList;
+                if (!pages || !pages.length) return;
+                const first = pages[0];
+                if (!first || first.length < 2) return;
+                const xTw = Number(first[0]);
+                const yTw = Number(first[1]);
+                if (!Number.isFinite(xTw) || !Number.isFinite(yTw)) return;
+                if (xTw < 0 || yTw < 0) return;
+                if (xTw > WRITER_INSET_MAX_TWIPS || yTw > WRITER_INSET_MAX_TWIPS) return;
+                if (xTw === 0 && yTw === 0) return;
+                const ttP = Number(window.app.twipsToPixels);
+                const dpr = Number(window.app.dpiScale);
+                if (!(ttP > 0) || !(dpr > 0)) return;
+                writerInsetCss = { x: xTw * ttP / dpr, y: yTw * ttP / dpr };
+                state.writerInsetTwips = [xTw, yTw];
+            } catch (ignored) {
+                writerInsetCss = null;
+            }
+        };
         const mouse = (type, source, buttons, target) => {
             recoverTouchState();
+            let clientX = source.clientX;
+            let clientY = source.clientY;
+            if (writerInsetCss
+                && Number.isFinite(clientX) && Number.isFinite(clientY)) {
+                clientX -= writerInsetCss.x;
+                clientY -= writerInsetCss.y;
+            }
             target.dispatchEvent(new MouseEvent(type, {
                 bubbles: true, cancelable: true, view: window,
-                clientX: source.clientX, clientY: source.clientY, button: 0, buttons
+                clientX: clientX, clientY: clientY, button: 0, buttons
             }));
             state.coreEvents += 1;
         };
@@ -1086,6 +1162,10 @@ static NSString *FloeInkInputGatingScript() {
         const down = (event) => {
             if (!drawing || event.pointerType !== 'pen' || contact || !onCanvas(event)) return;
             const canvas = canvasOf();
+            // Per-contact derivation of the Writer page-inset compensation
+            // (see computeWriterInsetCss): fresh at every down so zoom or
+            // layout changes between contacts are always honoured.
+            computeWriterInsetCss();
             contact = { id: event.pointerId, last: event };
             state.activeStroke = true;
             stop(event); // suppress WebKit's duplicate compatibility mouse input
@@ -1176,7 +1256,8 @@ static NSString *FloeInkInputGatingScript() {
             livePreview: !!(previewStroke || previewHandoffs.length),
             previewHandoffs: state.previewHandoffs,
             previewClears: state.previewClears,
-            lastPreviewClear: state.lastPreviewClear
+            lastPreviewClear: state.lastPreviewClear,
+            writerInsetTwips: state.writerInsetTwips
         });
     };
     if (document.readyState === 'loading')

@@ -48,7 +48,23 @@
  *    stroke cannot blink the first. Non-evidence exits are the honest
  *    bounded ones only: probe give-up, wall-clock deadline, unreadable
  *    canvas degrading to the deadline, overflow of the pending cap, resize,
- *    pagehide and the fail-closed path.
+ *    pagehide and the fail-closed path. Evidence ownership is adversarially
+ *    checked: same-colour neighbour strokes (far and at overlap distance)
+ *    can never cross-clear each other; only identical-geometry strokes are
+ *    a documented, inherent ambiguity;
+ *  - Writer page-inset input compensation: in a text document the replayed
+ *    pen stream is shifted by the live page-1 inset derived from
+ *    app.file.writer.pageRectangleList (twips -> CSS through
+ *    twipsToPixels/dpiScale), fixing the measured real-App Word ghosting
+ *    (engine anchored committed ink one page inset below the pen; see the
+ *    gate comment and the 2026-10-19 handoff). Preview and paint probes
+ *    keep raw pen coordinates, so near evidence settles with no jump. The
+ *    compensation fails open (absent, non-text, negative, oversized,
+ *    non-finite, broken scale) and recomputes per contact; XLSX/PPTX
+ *    streams stay byte-identical. No hardcoded pixel constant;
+ *  - zero-move contact: the canonical replay for a tap is exactly
+ *    mousedown+mouseup at the same point (no fabricated move) and the
+ *    preview shows the dot path.
  *
  * History note (kept honestly): this file was stale against the production
  * gate between 6c964870 and this round. Its previous expectations of a
@@ -971,6 +987,205 @@ const setStyle = (world, color, width, transparency) => {
   check('lifecycle/everything-settles', w.preview().pending === 0
     && w.state().previewClears === 10, JSON.stringify(w.state()));
 }
+
+// --- Writer page-inset compensation + adversarial handoff ownership ---------
+
+// Turns this world into a Writer document whose page 1 sits `yTw` twips
+// below the document-space origin (the real App geometry: paper top
+// measured at canvas-local device px 37 == ~278 twips at zoom 100).
+const setWriterPages = (world, rects) => {
+  world.window.app.map._docLayer._docType = 'text';
+  world.window.app.file = { writer: { pageRectangleList: rects } };
+};
+
+// 27. The compensation is derived from the live page geometry, applied to
+//     the replayed pen stream only, and the preview/probes keep the raw
+//     pen coordinates so the compensated engine paint lands where the
+//     near probes already look (zero settle jump, near evidence only).
+{
+  const w = newWorld();
+  w.arm();
+  setStyle(w, 0xFF0000, 150, 0);
+  setWriterPages(w, [[0, 278, 12240, 15840]]);
+  const seen = recordedMouse(w);
+  const dy = 278 * 0.2 / 2; // world scale: ttP 0.2 device px/twip, dpr 2
+  w.pen('pointerdown', 100, 200, w.canvas, { pointerId: 201 });
+  w.pen('pointermove', 110, 210, w.canvas, { pointerId: 201 });
+  w.pen('pointermove', 120, 220, w.canvas, { pointerId: 201 });
+  w.pumpFrames(1); // d is applied on the frame tick, like production
+  check('inset/down-shifted-by-derived-page-inset',
+    seen.length === 3 && seen[0].type === 'mousedown'
+    && Math.abs(seen[0].clientY - (200 - dy)) < 1e-9 && seen[0].clientX === 100,
+    JSON.stringify(seen.map((e) => [e.type, e.clientX, e.clientY])));
+  check('inset/shape-preserved-for-move-and-up-so-far',
+    Math.abs(seen[1].clientY - (210 - dy)) < 1e-9
+    && Math.abs(seen[2].clientY - (220 - dy)) < 1e-9
+    && seen[1].clientX === 110 && seen[2].clientX === 120
+    && seen[1].buttons === 1 && seen[2].buttons === 1,
+    JSON.stringify(seen.map((e) => [e.type, e.clientY, e.buttons])));
+  check('inset/diagnostic-exposed',
+    JSON.stringify(w.state().writerInsetTwips) === '[0,278]',
+    JSON.stringify(w.state().writerInsetTwips));
+  const paths = overlayPaths(w).paths;
+  check('inset/preview-keeps-raw-pen-coordinates',
+    paths.length === 1
+    && paths[0].getAttribute('d') === 'M100.0 200.0 L110.0 210.0 L120.0 220.0',
+    paths.length ? paths[0].getAttribute('d') : 'none');
+  w.pen('pointerup', 120, 220, w.canvas, { pointerId: 201 });
+  check('inset/up-shifted',
+    seen.length === 4 && seen[3].type === 'mouseup'
+    && Math.abs(seen[3].clientY - (220 - dy)) < 1e-9 && seen[3].buttons === 0,
+    JSON.stringify(seen[3] && [seen[3].type, seen[3].clientY]));
+  // The compensated engine paints under the pen; near evidence settles it.
+  w.paintArea([[100, 200], [110, 210], [120, 220]]);
+  w.pumpFrames(1);
+  check('inset/settles-on-near-evidence-no-far-tier',
+    w.preview().pending === 0 && w.state().lastPreviewClear === 'painted',
+    JSON.stringify(w.state()));
+}
+
+// 28. Fail-open matrix: non-text documents (XLSX/PPTX controls stay
+//     byte-identical), absent/negative/oversized/non-finite page rects and
+//     broken scales all replay the raw coordinates with no diagnostic.
+{
+  const cases = [
+    ['spreadsheet-untouched', (w) => {
+      w.window.app.map._docLayer._docType = 'spreadsheet';
+      w.window.app.file = { writer: { pageRectangleList: [[0, 278, 1, 1]] } };
+    }],
+    ['missing-page-rects', (w) => { w.window.app.map._docLayer._docType = 'text'; }],
+    ['negative-inset', (w) => setWriterPages(w, [[0, -50, 1, 1]])],
+    ['oversized-inset', (w) => setWriterPages(w, [[0, 99999, 1, 1]])],
+    ['non-finite-inset', (w) => setWriterPages(w, [[0, NaN, 1, 1]])],
+    ['broken-scale', (w) => { setWriterPages(w, [[0, 278, 1, 1]]); w.window.app.twipsToPixels = 0; }],
+  ];
+  for (const [name, setup] of cases) {
+    const w = newWorld();
+    w.arm();
+    setup(w);
+    const seen = recordedMouse(w);
+    w.pen('pointerdown', 50, 60, w.canvas, { pointerId: 210 });
+    check(`inset/fail-open-${name}`,
+      seen.length === 1 && seen[0].clientX === 50 && seen[0].clientY === 60
+      && w.state().writerInsetTwips === null,
+      JSON.stringify([seen[0] && seen[0].clientY, w.state().writerInsetTwips]));
+  }
+}
+
+// 29. The inset is recomputed per contact: a zoom change between contacts
+//     (twipsToPixels) rescales the compensation from the same page rect.
+{
+  const w = newWorld();
+  w.arm();
+  setWriterPages(w, [[0, 278, 12240, 15840]]);
+  const seen = recordedMouse(w);
+  w.pen('pointerdown', 10, 100, w.canvas, { pointerId: 221 });
+  w.pen('pointerup', 10, 100, w.canvas, { pointerId: 221 });
+  w.window.app.twipsToPixels = 0.28; // e.g. pinch-zoom between contacts
+  w.pen('pointerdown', 10, 100, w.canvas, { pointerId: 222 });
+  const dy1 = 278 * 0.2 / 2;
+  const dy2 = 278 * 0.28 / 2;
+  check('inset/recomputed-per-contact',
+    Math.abs(seen[0].clientY - (100 - dy1)) < 1e-9
+    && Math.abs(seen[2].clientY - (100 - dy2)) < 1e-9
+    && dy1 !== dy2,
+    JSON.stringify(seen.map((e) => e.clientY)));
+}
+
+// 30. Adversarial ownership: a same-colour neighbour stroke painting its
+//     own path must never clear this stroke's handoff (no wide windows —
+//     evidence stays on the stroke's own near patches).
+{
+  const w = newWorld();
+  w.arm();
+  setStyle(w, 0xFF0000, 150, 0);
+  const a = w.strokeAt([[100, 100], [140, 120], [180, 140]]);
+  const b = [[300, 100], [340, 120], [380, 140]]; // 200 css px away
+  w.strokeAt(b);
+  check('ownership/two-pending', w.preview().pending === 2,
+    String(w.preview().pending));
+  w.paintArea(b); // engine painted ONLY the neighbour, same colour
+  w.pumpFrames(4);
+  check('ownership/neighbour-paint-keeps-own-pending',
+    w.preview().pending === 1 && overlayPaths(w).paths.length === 1,
+    JSON.stringify(w.preview()));
+  w.paintArea(a);
+  w.pumpFrames(2);
+  check('ownership/own-paint-clears',
+    w.preview().pending === 0 && w.state().previewClears === 2
+    && w.state().lastPreviewClear === 'painted', JSON.stringify(w.state()));
+}
+
+// 31. Adversarial ownership at overlap distance: a same-colour stroke 40
+//     css px away (outside the 7x7 near patches and its paint radius)
+//     still cannot cross-clear; its own paint does.
+{
+  const w = newWorld();
+  w.arm();
+  setStyle(w, 0xFF0000, 150, 0);
+  const a = w.strokeAt([[100, 100], [140, 120]]);
+  const b = [[100, 140], [140, 160]];
+  w.strokeAt(b);
+  w.paintArea(b);
+  w.pumpFrames(4);
+  check('ownership/offset-overlap-no-cross-clear', w.preview().pending === 1,
+    JSON.stringify(w.preview()));
+  w.paintArea(a);
+  w.pumpFrames(2);
+  check('ownership/offset-overlap-own-clears',
+    w.preview().pending === 0 && w.state().previewClears === 2,
+    JSON.stringify(w.state()));
+}
+
+// 32. Documented residual ambiguity: two same-colour strokes on IDENTICAL
+//     geometry are indistinguishable to any geometric evidence scheme; one
+//     paint legitimately settles both. Recorded, not silently accepted.
+{
+  const w = newWorld();
+  w.arm();
+  setStyle(w, 0xFF0000, 150, 0);
+  const a = w.strokeAt([[100, 100], [140, 120]]);
+  w.strokeAt([[100, 100], [140, 120]]);
+  w.paintArea(a);
+  w.pumpFrames(2);
+  check('ownership/identical-geometry-ambiguity-documented',
+    w.preview().pending === 0 && w.state().previewClears === 2,
+    JSON.stringify(w.state()));
+}
+
+// 33. Zero-move contact (a handwriting dot): the canonical replay is
+//     exactly mousedown+mouseup at the SAME point — the gate fabricates no
+//     intermediate move — and the presentation shows the single-point dot
+//     path. Persistence of the dot is core-side (see handoff engine trace).
+{
+  const w = newWorld();
+  w.arm();
+  setWriterPages(w, [[0, 278, 12240, 15840]]);
+  const seen = recordedMouse(w);
+  w.pen('pointerdown', 60, 80, w.canvas, { pointerId: 231 });
+  w.pen('pointerup', 60, 80, w.canvas, { pointerId: 231 });
+  const dy = 278 * 0.2 / 2;
+  check('dot/canonical-two-events-same-point',
+    seen.length === 2 && seen[0].type === 'mousedown' && seen[1].type === 'mouseup'
+    && seen[0].clientX === seen[1].clientX && seen[0].clientY === seen[1].clientY
+    && Math.abs(seen[0].clientY - (80 - dy)) < 1e-9,
+    JSON.stringify(seen.map((e) => [e.type, e.clientX, e.clientY])));
+  check('dot/stroke-counted', w.state().strokes === 1 && w.state().coreEvents === 2,
+    JSON.stringify(w.state()));
+  const paths = overlayPaths(w).paths;
+  check('dot/preview-dot-path', paths.length === 1
+    && paths[0].getAttribute('d') === 'M60.0 80.0 L60.1 80.0',
+    paths.length ? paths[0].getAttribute('d') : 'none');
+}
+
+// 34. Production text contracts for this round: the far-window fallback is
+//     gone (root review: wide same-colour windows are not ownership), and
+//     the compensation is derived, bounded and text-only.
+check('inset/no-far-window-tier-in-production',
+  !script.includes('PREVIEW_FAR_MARGIN') && !script.includes('farEvidence'));
+check('inset/derived-bounded-text-only',
+  script.includes('pageRectangleList') && script.includes('WRITER_INSET_MAX_TWIPS')
+  && script.includes("_docType !== 'text'"));
 
 console.log(`${checks} checks, ${failures} failed`);
 console.log(failures === 0 ? 'ALL PEN INPUT CONTRACT CHECKS PASSED' : `${failures} CHECK(S) FAILED`);

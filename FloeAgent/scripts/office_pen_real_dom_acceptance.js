@@ -44,6 +44,11 @@
  *   touch->Pencil recovery clears the flag before each replayed mouse
  *   event), and the finger sequence itself must produce no core mouse
  *   messages.
+ *   OFFICE_PEN_WRITER_INSET returns the Writer page-inset compensation
+ *   inputs (docType, pageRectangleList[0], twipsToPixels/dpiScale, the
+ *   derived CSS inset, viewedRectangle, anchor, canvas geometry, text
+ *   cursor) plus the gate's applied writerInsetTwips, for the real-App
+ *   alignment assertions described at its definition.
  *
  * This is not device Pencil acceptance: pressure, haptics, real pinch feel,
  * actual pixel paint and physical WebKit pointer/touch interop remain with
@@ -189,9 +194,65 @@ const OFFICE_PEN_TOUCH_ARBITRATION = `(() => {
   };
 })()`;
 
+// Writer page-inset alignment diagnostic (2026-10-19 ghosting round).
+// Evaluate in the live editor web view (any time; ideally before a stroke,
+// after arming drawing mode, and after a stroke settles). It returns every
+// input the gate's derived Writer compensation uses plus the gate's own
+// applied value, so the App run can assert:
+//   - docType === 'text' documents: gateState.writerInsetTwips equals
+//     pageRect0 [x, y] when the inset is in bounds, else null (fail-open);
+//   - derivedInsetCss matches the measured no-jump drift correction: after
+//     the compensated stroke, the canonical-canvas drift metric must fall
+//     from ~17.24 css px (measured 2026-10-19, page inset ~278 twips at
+//     zoom 100/dpr 2) to the strict tolerance;
+//   - spreadsheet/presentation documents: pageRect0 null or unused and
+//     writerInsetTwips null (controls must stay untouched);
+//   - textCaretCheck: a MOUSE (not pen, not drawing mode) click on a text
+//     line followed by reading app.file.textCursor.rectangle tells whether
+//     the writer window-origin shift also affects text placement (open
+//     question in the handoff; the gate compensation only ever touches the
+//     replayed pen stream in drawing mode).
+const OFFICE_PEN_WRITER_INSET = `(() => {
+  const app = window.app || {};
+  const docLayer = app.map && app.map._docLayer;
+  const pages = app.file && app.file.writer && app.file.writer.pageRectangleList;
+  const first = pages && pages.length ? pages[0] : null;
+  const ttP = Number(app.twipsToPixels);
+  const dpr = Number(app.dpiScale);
+  const scaleOk = Number.isFinite(ttP) && ttP > 0 && Number.isFinite(dpr) && dpr > 0;
+  const stateFn = window.__floeOfficePenState;
+  const canvas = app.sectionContainer && app.sectionContainer.canvas;
+  let canvasInfo = null;
+  if (canvas && typeof canvas.getBoundingClientRect === 'function') {
+    const r = canvas.getBoundingClientRect();
+    canvasInfo = { left: r.left, top: r.top, width: r.width, height: r.height,
+                   backing: [canvas.width, canvas.height] };
+  }
+  const vr = app.activeDocument && app.activeDocument.activeLayout
+    && app.activeDocument.activeLayout.viewedRectangle;
+  return {
+    docType: docLayer ? docLayer._docType : null,
+    pageCount: pages ? pages.length : 0,
+    pageRect0: first ? [first[0], first[1], first[2], first[3]] : null,
+    twipsToPixels: scaleOk ? ttP : null,
+    dpiScale: scaleOk ? dpr : null,
+    derivedInsetCss: (first && scaleOk)
+      ? [Number(first[0]) * ttP / dpr, Number(first[1]) * ttP / dpr] : null,
+    viewedRect: vr ? { x1: vr.x1, y1: vr.y1, width: vr.width, height: vr.height } : null,
+    anchor: (app.sectionContainer && typeof app.sectionContainer.getDocumentAnchor === 'function')
+      ? app.sectionContainer.getDocumentAnchor() : null,
+    textCursor: (app.file && app.file.textCursor && app.file.textCursor.rectangle)
+      ? [app.file.textCursor.rectangle.x1, app.file.textCursor.rectangle.y1,
+         app.file.textCursor.rectangle.x2, app.file.textCursor.rectangle.y2] : null,
+    gateState: stateFn ? stateFn() : null,
+    canvas: canvasInfo
+  };
+})()`;
+
 module.exports = {
   OFFICE_PEN_ACCEPTANCE_INSTALL,
   OFFICE_PEN_ACCEPTANCE_RUN,
   OFFICE_PEN_LIVE_RUN,
   OFFICE_PEN_TOUCH_ARBITRATION,
+  OFFICE_PEN_WRITER_INSET,
 };
