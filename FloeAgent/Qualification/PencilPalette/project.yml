@@ -19,6 +19,8 @@ targets:
       - App
       - ../../FloeApp/Notes/NotesPalettePresentation.swift
       - ../../FloeApp/Notes/NotesInkPreferences.swift
+      - path: ../../FloeApp/Resources/Localizable.xcstrings
+        buildPhase: resources
     dependencies:
       - package: FloeAgent
         product: FloeCore

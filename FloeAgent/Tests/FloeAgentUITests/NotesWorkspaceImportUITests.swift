@@ -1017,6 +1017,13 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // title. Select the import row's own identity, not a global text match.
         // NavigationLink rows are buttons: an any-type descendant predicate scan
         // stalls AX snapshots on loaded runners.
+        // The shared simulator retains many independent test workspaces. Use
+        // the picker's real search instead of assuming this fixture is in the
+        // first realized List rows; never clear the user's or other tests' data.
+        let workspaceSearch = app.searchFields["搜索工作区"]
+        XCTAssertTrue(workspaceSearch.waitForExistence(timeout: 10))
+        workspaceSearch.tap()
+        workspaceSearch.typeText("批量选择测试\n")
         let workspace = app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH %@ AND label CONTAINS %@",
             "workspace.import.source.", "批量选择测试"

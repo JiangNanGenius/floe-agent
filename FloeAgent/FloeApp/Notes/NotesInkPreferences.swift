@@ -385,20 +385,160 @@ struct NotesInkOptionsPanel: View {
     }
 }
 
+@MainActor
 struct NotesBrushSample: View {
     let kind: NotesBrushKind
     var configuration: NotesInkPreferences.Configuration? = nil
     @Environment(\.colorScheme) private var colorScheme
     @State private var sample: UIImage?
-    /// A fixed paper canvas keeps the preview at one scale. Its height leaves
-    /// room for the brush's thickest legal width, so the stroke never clips.
+
+    /// The visible preview paper is compact and identical for every brush.
+    /// Strokes are authored with their real native width in a viewport measured
+    /// from the widest legal sample, then the finished image is uniformly
+    /// scaled into this paper. A brush keeps the same zoom while the user drags
+    /// the slider; only the source width changes.
     static let paperWidth: CGFloat = 288
-    static func previewHeight(for kind: NotesBrushKind) -> CGFloat {
-        max(48, CGFloat(kind.widthRange.upperBound) + 24)
+    static let paperHeight: CGFloat = 60
+    static func previewHeight(for kind: NotesBrushKind) -> CGFloat { paperHeight }
+    static func previewRect(for kind: NotesBrushKind) -> CGRect { layout(for: kind).rect }
+    static func renderScale(for kind: NotesBrushKind) -> CGFloat { layout(for: kind).renderScale }
+
+    private struct PreviewLayout {
+        var rect: CGRect
+        var nativeLength: CGFloat
+        var rasterZoom: CGFloat
+        var renderScale: CGFloat
     }
-    static func previewRect(for kind: NotesBrushKind) -> CGRect {
-        CGRect(x: 0, y: 0, width: paperWidth, height: previewHeight(for: kind))
+    private static var layouts: [NotesBrushKind: PreviewLayout] = [:]
+    /// A short reference stroke only exists to measure the texture expansion of
+    /// the thickest legal nib. The final path is lengthened or shortened so the
+    /// viewport matches the paper's aspect ratio.
+    private static let referenceLength: CGFloat = 100
+    private static let paperPadding: CGFloat = 2
+    /// PencilKit drops point widths below roughly 1.8 points from its raster
+    /// output, even when the image scale is raised. Enlarging the sample
+    /// uniformly to this width keeps a half-point monoline visible without
+    /// clamping a thin setting to a fake minimum. Two points is also the
+    /// canonical width at which monoline and its serialized pen alias render
+    /// identical pixels.
+    private static let minimumRasterWidth: CGFloat = 2.0
+    private static let maximumRasterZoom: CGFloat = 6
+    static func previewZoom(for kind: NotesBrushKind) -> CGFloat { layout(for: kind).rasterZoom }
+
+    private static func layout(for kind: NotesBrushKind) -> PreviewLayout {
+        if let cached = layouts[kind] { return cached }
+        let minWidth = CGFloat(kind.widthRange.lowerBound)
+        let maxWidth = CGFloat(kind.widthRange.upperBound)
+        // The vector zoom and the viewport are both fixed per brush. Fitting
+        // the enlarged viewport back into the 60-point paper cancels the zoom
+        // visually, so the displayed proportions stay native and constant for
+        // the same brush. Only the rasterization happens above the cutoff.
+        let rasterZoom = min(maximumRasterZoom, max(1, minimumRasterWidth / max(0.01, minWidth)))
+        let reference = stroke(kind: kind, color: .black, width: maxWidth,
+                               length: referenceLength, zoom: rasterZoom)
+        let referenceBounds = renderedBounds(of: reference)
+        let scaledExpansion = max(0, referenceBounds.width - referenceLength * rasterZoom)
+        let contentWidth = max(1, (paperWidth / paperHeight)
+                                  * (referenceBounds.height + paperPadding * 2)
+                                  - paperPadding * 2)
+        let nativeLength = max(8, (contentWidth - scaledExpansion) / rasterZoom)
+        // Include the minimum and every width dot in the fixed viewport as
+        // well as the maximum so no legal selection can be cropped.
+        var sampledWidths: [CGFloat] = [minWidth, maxWidth]
+        sampledWidths.append(contentsOf: NotesInkOptionsPanel.widths(for: kind).map { CGFloat($0) })
+        let fullBounds = sampledWidths.reduce(CGRect.null) { union, width in
+            let drawing = stroke(kind: kind, color: .black, width: Double(width),
+                                 length: nativeLength, zoom: rasterZoom)
+            return renderedBounds(of: drawing).union(union)
+        }
+        let rect = (fullBounds.isNull || fullBounds.isEmpty
+            ? CGRect(x: 0, y: 0, width: contentWidth, height: referenceBounds.height)
+            : fullBounds).insetBy(dx: -paperPadding, dy: -paperPadding)
+        let fit = min(paperWidth / max(1, rect.width), paperHeight / max(1, rect.height))
+        let renderScale = min(6, max(2, (fit * 2).rounded(.up)))
+        let layout = PreviewLayout(rect: rect, nativeLength: nativeLength,
+                                   rasterZoom: rasterZoom, renderScale: renderScale)
+        layouts[kind] = layout
+        return layout
     }
+
+    private static func renderedBounds(of drawing: PKDrawing) -> CGRect {
+        drawing.strokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
+    }
+
+    static func image(kind: NotesBrushKind, color: UIColor, width: Double? = nil) -> UIImage {
+        let layout = layout(for: kind)
+        return previewDrawing(kind: kind, color: color, width: width)
+            .image(from: layout.rect, scale: layout.renderScale)
+    }
+
+    /// The native sample keeps the real requested width and the same path
+    /// geometry for every width. Tests use it for width and serialization
+    /// checks; the on-screen preview uses the uniformly enlarged copy below.
+    static func drawing(kind: NotesBrushKind, color: UIColor, width requestedWidth: Double? = nil) -> PKDrawing {
+        let layout = layout(for: kind)
+        return stroke(kind: kind, color: color, width: requestedWidth,
+                      length: layout.nativeLength)
+    }
+
+    /// Uniformly enlarged sample used only for rasterization. Its stroke widths
+    /// and path are scaled by the same fixed factor, and the viewport stores the
+    /// matching render bounds.
+    static func previewDrawing(kind: NotesBrushKind, color: UIColor,
+                               width requestedWidth: Double? = nil) -> PKDrawing {
+        let layout = layout(for: kind)
+        return stroke(kind: kind, color: color, width: requestedWidth,
+                      length: layout.nativeLength, zoom: layout.rasterZoom)
+    }
+
+    /// Applies the same fixed raster zoom to an already serialized sample, so
+    /// save/reopen rendering can be compared in the real preview viewport.
+    static func previewDrawing(kind: NotesBrushKind, from drawing: PKDrawing) -> PKDrawing {
+        let zoom = layout(for: kind).rasterZoom
+        guard zoom != 1 else { return drawing }
+        let strokes = drawing.strokes.map { stroke -> PKStroke in
+            let points = stroke.path.map { point in
+                PKStrokePoint(location: CGPoint(x: point.location.x * zoom,
+                                                y: point.location.y * zoom),
+                              timeOffset: point.timeOffset,
+                              size: CGSize(width: point.size.width * zoom,
+                                           height: point.size.height * zoom),
+                              opacity: point.opacity, force: point.force,
+                              azimuth: point.azimuth, altitude: point.altitude)
+            }
+            return PKStroke(ink: stroke.ink,
+                            path: PKStrokePath(controlPoints: points,
+                                               creationDate: Date(timeIntervalSince1970: 0)),
+                            transform: stroke.transform, mask: stroke.mask,
+                            randomSeed: stroke.randomSeed)
+        }
+        return PKDrawing(strokes: strokes)
+    }
+
+    private static func stroke(kind: NotesBrushKind, color: UIColor,
+                               width requestedWidth: Double?, length: CGFloat,
+                               zoom: CGFloat = 1) -> PKDrawing {
+        let brushWidth = min(kind.widthRange.upperBound,
+                             max(kind.widthRange.lowerBound,
+                                 requestedWidth ?? Double(kind.inkType.defaultWidth)))
+        let points = (0...40).map { index -> PKStrokePoint in
+            let fraction = Double(index) / 40
+            let pressureScale = kind == .monoline ? 1 : (0.6 + 0.4 * sin(fraction * .pi))
+            let pointWidth = CGFloat(brushWidth * pressureScale) * zoom
+            return PKStrokePoint(location: CGPoint(x: CGFloat(fraction) * max(8, length) * zoom,
+                                                   y: CGFloat(2 * sin(fraction * .pi * 2)) * zoom),
+                                 timeOffset: fraction,
+                                 size: CGSize(width: pointWidth, height: pointWidth),
+                                 opacity: 1, force: 0.7,
+                                 azimuth: -.pi / 4, altitude: .pi / 3)
+        }
+        let path = PKStrokePath(controlPoints: points, creationDate: Date(timeIntervalSince1970: 0))
+        // Ask the native writing tool for its stroke ink. Brush modes such as
+        // monoline need not have a distinct serialized PKInk identifier.
+        let ink = PKInkingTool(kind.inkType, color: color).ink
+        return PKDrawing(strokes: [PKStroke(ink: ink, path: path)])
+    }
+
     var body: some View {
         Group {
             if let sample { Image(uiImage: sample).resizable().scaledToFit() }
@@ -408,35 +548,8 @@ struct NotesBrushSample: View {
         .task(id: "\(kind.rawValue)-\(String(describing: configuration))-\(colorScheme)") {
             let color = configuration.map { NotesInkOptionsPanel.color($0.color).withAlphaComponent($0.opacity ?? 1) }
                 ?? (colorScheme == .dark ? UIColor.white : UIColor.black)
-            sample = Self.drawing(kind: kind, color: color, width: configuration?.width)
-                .image(from: Self.previewRect(for: kind), scale: 2)
+            sample = Self.image(kind: kind, color: color, width: configuration?.width)
         }
-    }
-    static func drawing(kind: NotesBrushKind, color: UIColor, width requestedWidth: Double? = nil) -> PKDrawing {
-        let rect = previewRect(for: kind)
-        let brushWidth = min(kind.widthRange.upperBound,
-                             max(kind.widthRange.lowerBound,
-                                 requestedWidth ?? Double(kind.inkType.defaultWidth)))
-        // Leave matching room on both sides for the widest legal stroke. The
-        // image is shown at its natural point size rather than re-fitted after
-        // every width change, so a thicker stroke still looks thicker.
-        let inset = max(12, CGFloat(kind.widthRange.upperBound) / 2 + 12)
-        let usable = max(1, rect.width - inset * 2)
-        let points = (0...40).map { index in
-            let fraction = Double(index) / 40
-            let pressureScale = kind == .monoline ? 1 : (0.6 + 0.4 * sin(fraction * .pi))
-            let width = brushWidth * pressureScale
-            return PKStrokePoint(location: CGPoint(x: inset + CGFloat(fraction) * usable,
-                                                   y: rect.midY + 2 * CGFloat(sin(fraction * .pi * 2))),
-                                 timeOffset: fraction, size: CGSize(width: width, height: width),
-                                 opacity: 1, force: 0.7,
-                                 azimuth: -.pi / 4, altitude: .pi / 3)
-        }
-        let path = PKStrokePath(controlPoints: points, creationDate: Date(timeIntervalSince1970: 0))
-        // Ask the native writing tool for its stroke ink. Brush modes such as
-        // monoline need not have a distinct serialized PKInk identifier.
-        let ink = PKInkingTool(kind.inkType, color: color).ink
-        return PKDrawing(strokes: [PKStroke(ink: ink, path: path)])
     }
 }
 #endif

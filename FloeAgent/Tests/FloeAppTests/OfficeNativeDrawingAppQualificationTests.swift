@@ -482,9 +482,11 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                         && !$0.paths.isEmpty
                 }
                 XCTAssertFalse(matching.isEmpty, "No saved vector shape for \(preset.rawValue)")
+                XCTAssertEqual(matching.count, expectedStyleCounts[preset] ?? 0,
+                               "Every \(preset.rawValue) contact must retain its own saved style")
                 switch preset {
                 case .highlighter:
-                    XCTAssertTrue(matching.contains { shape in
+                    XCTAssertTrue(matching.allSatisfy { shape in
                         guard let alpha = shape.alphaValue else { return false }
                         return abs(alpha - 40_000) <= alphaTolerance
                     }, "Highlighter must save a real 40% opacity line alpha: \(result.vectorShapes)")

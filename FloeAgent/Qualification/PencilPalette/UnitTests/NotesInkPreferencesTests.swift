@@ -102,29 +102,68 @@ import PencilKit
 
     func testPreviewUsesWidthColorAndTransparencyWithoutClipping() throws {
         let color = UIColor(red: 0.8, green: 0.1, blue: 0.1, alpha: 0.4)
+        XCTAssertEqual(NotesBrushSample.paperWidth, 288)
+        XCTAssertTrue((56...64).contains(NotesBrushSample.paperHeight),
+                      "the compact preview paper must stay 56-64 points high")
         for kind in NotesBrushKind.allCases {
-            let maxWidth = kind.widthRange.upperBound
-            let drawing = NotesBrushSample.drawing(kind: kind, color: color, width: maxWidth)
-            let stroke = try XCTUnwrap(drawing.strokes.first)
-            let widest = try XCTUnwrap(stroke.path.max { $0.size.width < $1.size.width })
-            XCTAssertEqual(Double(widest.size.width), maxWidth, accuracy: 0.01,
-                           "\(kind) preview must draw the requested width")
-            XCTAssertEqual(stroke.ink.color.cgColor.alpha, 0.4, accuracy: 0.01,
-                           "\(kind) preview must draw the configured transparency")
             let rect = NotesBrushSample.previewRect(for: kind)
-            let renderedBounds = drawing.strokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
-            XCTAssertTrue(rect.insetBy(dx: -1, dy: -1).contains(renderedBounds),
-                          "\(kind) preview clipped \(renderedBounds) in \(rect)")
-            let thick = try XCTUnwrap(drawing.image(from: rect, scale: 2).pngData())
-            let narrow = NotesBrushSample.drawing(kind: kind, color: color,
-                                                  width: kind.widthRange.lowerBound)
-            XCTAssertNotEqual(try XCTUnwrap(narrow.image(from: rect, scale: 2).pngData()), thick,
+            XCTAssertEqual(rect, NotesBrushSample.previewRect(for: kind),
+                           "\(kind) viewport must not change with the current width")
+            let zoom = NotesBrushSample.previewZoom(for: kind)
+            XCTAssertGreaterThanOrEqual(zoom, 1)
+            // The native drawing keeps the exact requested width, and the
+            // uniformly zoomed preview keeps that same ratio at every setting.
+            // The fixed viewport is checked against the zoomed render bounds
+            // for the legal minimum, maximum and every five-dot width, which
+            // covers texture expansion beyond the nominal nib size.
+            var widths: [Double] = [kind.widthRange.lowerBound, kind.widthRange.upperBound]
+            widths.append(contentsOf: NotesInkOptionsPanel.widths(for: kind))
+            for width in widths {
+                let native = NotesBrushSample.drawing(kind: kind, color: color, width: width)
+                let nativeStroke = try XCTUnwrap(native.strokes.first)
+                let nativeWidest = try XCTUnwrap(nativeStroke.path.max { $0.size.width < $1.size.width })
+                XCTAssertEqual(Double(nativeWidest.size.width), width, accuracy: 0.01,
+                               "\(kind) native sample must keep the requested width")
+                let drawing = NotesBrushSample.previewDrawing(kind: kind, color: color, width: width)
+                let stroke = try XCTUnwrap(drawing.strokes.first)
+                let widest = try XCTUnwrap(stroke.path.max { $0.size.width < $1.size.width })
+                XCTAssertEqual(Double(widest.size.width), width * Double(zoom), accuracy: 0.02,
+                               "\(kind) preview must keep one fixed zoom")
+                XCTAssertEqual(stroke.ink.color.cgColor.alpha, 0.4, accuracy: 0.01,
+                               "\(kind) preview must draw the configured transparency")
+                let renderedBounds = drawing.strokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
+                XCTAssertTrue(rect.insetBy(dx: -1, dy: -1).contains(renderedBounds),
+                              "\(kind) preview clipped \(renderedBounds) in \(rect) at width \(width)")
+            }
+            let thickImage = NotesBrushSample.image(kind: kind, color: color,
+                                                    width: kind.widthRange.upperBound)
+            let narrowImage = NotesBrushSample.image(kind: kind, color: color,
+                                                     width: kind.widthRange.lowerBound)
+            let thick = try XCTUnwrap(thickImage.pngData())
+            XCTAssertNotEqual(try XCTUnwrap(narrowImage.pngData()), thick,
                               "\(kind) preview must visibly change with width")
-            let opaque = NotesBrushSample.drawing(kind: kind, color: color.withAlphaComponent(1),
-                                                  width: maxWidth)
-            XCTAssertNotEqual(try XCTUnwrap(opaque.image(from: rect, scale: 2).pngData()), thick,
+            XCTAssertTrue(try containsVisibleInk(thickImage),
+                          "\(kind) widest preview must render actual ink")
+            XCTAssertTrue(try containsVisibleInk(narrowImage),
+                          "\(kind) thinnest preview must render actual ink, not an empty PNG")
+            let opaqueImage = NotesBrushSample.image(kind: kind,
+                                                     color: color.withAlphaComponent(1),
+                                                     width: kind.widthRange.upperBound)
+            XCTAssertNotEqual(try XCTUnwrap(opaqueImage.pngData()), thick,
                               "\(kind) preview must visibly change with transparency")
         }
+    }
+
+    private func containsVisibleInk(_ image: UIImage) throws -> Bool {
+        let cgImage = try XCTUnwrap(image.cgImage)
+        var pixels = [UInt8](repeating: 0, count: cgImage.width * cgImage.height * 4)
+        try pixels.withUnsafeMutableBytes { bytes in
+            let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: cgImage.width,
+                height: cgImage.height, bitsPerComponent: 8, bytesPerRow: cgImage.width * 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
+        }
+        return stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] > 0 }
     }
 
     func testAllNativeInkTypesSurviveDrawingSerializationAndRender() throws {
@@ -157,20 +196,15 @@ import PencilKit
             }
             XCTAssertFalse(reopened.bounds.isEmpty)
             let previewRect = NotesBrushSample.previewRect(for: kind)
-            let image = reopened.image(from: previewRect, scale: 2)
+            let previewScale = NotesBrushSample.renderScale(for: kind)
+            let preview = NotesBrushSample.previewDrawing(kind: kind, from: reopened)
+            let originalPreview = NotesBrushSample.previewDrawing(kind: kind, from: sample)
+            let image = preview.image(from: previewRect, scale: previewScale)
             let png = try XCTUnwrap(image.pngData())
-            let originalImage = sample.image(from: previewRect, scale: 2)
+            let originalImage = originalPreview.image(from: previewRect, scale: previewScale)
             XCTAssertEqual(png, try XCTUnwrap(originalImage.pngData()), "\(kind) must preserve the rendered stroke across save/reopen")
             XCTAssertGreaterThan(png.count, 100)
-            let cgImage = try XCTUnwrap(image.cgImage)
-            var pixels = [UInt8](repeating: 0, count: cgImage.width * cgImage.height * 4)
-            try pixels.withUnsafeMutableBytes { bytes in
-                let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: cgImage.width,
-                    height: cgImage.height, bitsPerComponent: 8, bytesPerRow: cgImage.width * 4,
-                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-                context.draw(cgImage, in: CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
-            }
-            XCTAssertTrue(stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] > 0 },
+            XCTAssertTrue(try containsVisibleInk(image),
                           "\(kind) must render actual ink, not an empty PNG")
         }
     }
