@@ -142,6 +142,12 @@ public actor MediaProjectStore {
     /// transaction logic lives in the nonisolated `MediaTransactions` engine
     /// so the UI and model tool share draft-then-commit semantics without
     /// crossing actor boundaries with mutable state.
+    ///
+    /// Every write is additionally guarded against regression: a document
+    /// with an older revision can never replace a newer one, and an equal
+    /// revision must carry identical durable content. `expectedRevision`
+    /// binds a caller to the exact base it loaded; omitting it is a claim of
+    /// "this is the newest state I know of", never permission to roll back.
     @discardableResult
     public func save(_ project: MediaProject, expectedRevision: Int64? = nil) async throws -> URL {
         try await persist(project, expectedRevision: expectedRevision)
@@ -170,11 +176,35 @@ public actor MediaProjectStore {
     private func persist(_ project: MediaProject, expectedRevision: Int64?) async throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = projectURL(id: project.id)
-        if let expectedRevision, FileManager.default.fileExists(atPath: url.path) {
-            let onDisk = try readProject(from: url)
-            guard onDisk.revision == expectedRevision else {
+        let onDisk = FileManager.default.fileExists(atPath: url.path)
+            ? try readProject(from: url)
+            : nil
+        if let onDisk {
+            // No-regression defense shared by every write path, including a
+            // UI autosave that carries no transaction base of its own: an
+            // older snapshot must never overwrite a newer document, and an
+            // equal revision must match the durable content exactly. An
+            // equal revision with different content is a real conflict
+            // (undo/redo advance the revision, so legitimate history never
+            // needs to reuse a revision number).
+            guard project.revision >= onDisk.revision else {
+                throw FloeError.validationFailed(
+                    "Project revision conflict: refusing to replace revision \(onDisk.revision) with stale revision \(project.revision)")
+            }
+            if project.revision == onDisk.revision,
+               try canonicalDocumentData(project) != canonicalDocumentData(onDisk) {
+                throw FloeError.validationFailed(
+                    "Project revision conflict: the document changed contents at revision \(project.revision)")
+            }
+            if let expectedRevision, onDisk.revision != expectedRevision {
                 throw FloeError.validationFailed("Project revision conflict: document changed since the transaction started")
             }
+        } else if expectedRevision != nil {
+            // A caller that loaded a base document never expects it to be
+            // gone; silently recreating a deleted document would hide data
+            // loss. Brand-new projects pass `nil` and remain valid.
+            throw FloeError.validationFailed(
+                "Project revision conflict: the base document is missing")
         }
         let data = try encoder.encode(project)
         guard data.count <= limits.maximumDocumentBytes else {
@@ -189,5 +219,14 @@ public actor MediaProjectStore {
             try FileManager.default.moveItem(at: staging, to: url)
         }
         return url
+    }
+
+    /// Durable identity of a revision. Load-time recovery warnings are
+    /// recomputed from the document on every open, so they are excluded from
+    /// the comparison; everything the user can edit stays in.
+    private func canonicalDocumentData(_ project: MediaProject) throws -> Data {
+        var canonical = project
+        canonical.recoveryWarnings = []
+        return try encoder.encode(canonical)
     }
 }

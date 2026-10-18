@@ -128,6 +128,13 @@ struct MediaWorkbenchView: View {
                     .font(.headline)
                     .lineLimit(1)
             }
+            if let status = saveStatusText {
+                Text(status)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(center.saveError == nil ? Color.secondary : Color.orange)
+                    .lineLimit(1)
+                    .accessibilityIdentifier("workbench.save.status")
+            }
             Spacer(minLength: 0)
             toolbarButton("arrow.uturn.backward", WorkbenchText.t("撤销", "Undo"),
                           identifier: "workbench.undo", disabled: !center.canUndo()) { center.undo() }
@@ -263,6 +270,14 @@ struct MediaWorkbenchView: View {
         case .export: WorkbenchText.t("导出", "Export")
         }
     }
+
+    /// Concise save state for the toolbar. Details stay in the alert; the
+    /// "Save project" button is the retry action.
+    private var saveStatusText: String? {
+        if center.saveError != nil { return WorkbenchText.t("保存失败", "Save failed") }
+        if center.unsavedChanges { return WorkbenchText.t("未保存", "Unsaved changes") }
+        return nil
+    }
 }
 
 // MARK: - Preselection entry
@@ -375,6 +390,10 @@ struct WorkbenchBootstrapSheet: View {
             Alert(title: Text(alert.title), message: Text(alert.message),
                   dismissButton: .default(Text(WorkbenchText.t("好", "OK"))))
         }
+        // A swipe may only close a session with nothing at risk; dirty or
+        // in-flight edits must pass through Close (flush + retry) or the
+        // confirmed Discard action inside the editor.
+        .interactiveDismissDisabled(center.unsavedChanges || center.saveInFlight)
     }
 
     @MainActor
@@ -382,13 +401,19 @@ struct WorkbenchBootstrapSheet: View {
         ready = false
         failure = nil
         resumeCandidate = nil
-        await center.closeProject()
+        // Replacement entry: stop when the open session could not be flushed.
+        // The editor (with retry/discard/continue-editing) stays on screen
+        // instead of silently dropping unsaved edits for the new source.
+        guard await center.closeProject() else {
+            ready = true
+            return
+        }
         // A bound node resumes its exact project; a missing project is a real
         // error (with an explicit "start new edit" option), never a silent
         // fresh start that orphans the saved edits.
         if !ignoringSavedProject, let resumeProjectID {
-            await center.openProject(id: resumeProjectID)
-            if center.project != nil {
+            let opened = await center.openProject(id: resumeProjectID)
+            if opened {
                 ready = true
                 return
             }
@@ -407,9 +432,9 @@ struct WorkbenchBootstrapSheet: View {
             return
         }
         if kind == .image, let url = urls.first {
-            await center.startImageProject(sourceURL: url, owner: owner)
+            _ = await center.startImageProject(sourceURL: url, owner: owner)
         } else {
-            await center.startVideoProject(clipURLs: urls, musicURL: musicURL, owner: owner)
+            _ = await center.startVideoProject(clipURLs: urls, musicURL: musicURL, owner: owner)
         }
         if center.project == nil {
             failure = center.alert?.message
@@ -426,12 +451,17 @@ struct WorkbenchBootstrapSheet: View {
     private func resume(_ candidate: MediaProjectStore.ProjectSummary) async {
         ready = false
         failure = nil
-        await center.openProject(id: candidate.id)
-        if center.project == nil {
+        let opened = await center.openProject(id: candidate.id)
+        if !opened {
             failure = center.alert?.message
                 ?? WorkbenchText.t("无法打开已保存的项目。", "Could not open the saved project.")
-            // Fall back to the fresh-start flow rather than a dead end.
-            await prepare(ignoringSavedProject: true)
+            // A failed flush keeps the current editor; otherwise fall back to
+            // the fresh-start flow rather than a dead end.
+            if center.project == nil {
+                await prepare(ignoringSavedProject: true)
+            } else {
+                ready = true
+            }
             return
         }
         resumeCandidate = nil
@@ -449,6 +479,7 @@ struct WorkbenchSheet: View {
     var onSaveToSource: ((ImageExportOptions) async throws -> Void)?
     var onMakeVariant: ((ImageExportOptions) async throws -> Void)?
     @Environment(\.dismiss) private var dismiss
+    @State private var showsDiscardConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -456,15 +487,44 @@ struct WorkbenchSheet: View {
                                onSaveToSource: onSaveToSource, onMakeVariant: onMakeVariant)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button(WorkbenchText.t("关闭", "Close")) {
-                            Task {
-                                await center.closeProject()
-                                dismiss()
+                        HStack(spacing: 12) {
+                            if center.unsavedChanges || center.saveError != nil {
+                                Button(WorkbenchText.t("放弃更改", "Discard"), role: .destructive) {
+                                    showsDiscardConfirmation = true
+                                }
+                                .accessibilityIdentifier("workbench.discard")
                             }
+                            Button(WorkbenchText.t("关闭", "Close")) {
+                                Task {
+                                    // Dismiss only after the draft reached the
+                                    // disk; on failure the editor stays with
+                                    // retry, continue-editing and discard.
+                                    if await center.closeProject() {
+                                        dismiss()
+                                    }
+                                }
+                            }
+                            .accessibilityIdentifier("workbench.close")
                         }
-                        .accessibilityIdentifier("workbench.close")
                     }
                 }
+        }
+        .alert(WorkbenchText.t("放弃未保存的更改？", "Discard unsaved changes?"),
+               isPresented: $showsDiscardConfirmation) {
+            Button(WorkbenchText.t("放弃更改", "Discard changes"), role: .destructive) {
+                Task {
+                    // Only dismiss when this session was actually discarded; a
+                    // replacement session that took over stays on screen.
+                    if await center.discardChangesAndClose() {
+                        dismiss()
+                    }
+                }
+            }
+            Button(WorkbenchText.t("取消", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(WorkbenchText.t(
+                "仅丢弃本次会话在内存中的修改；已保存的项目版本、原始文件和素材都会保留。",
+                "Only this session's in-memory edits are discarded. Saved project versions, source files and assets are kept."))
         }
     }
 }
@@ -479,6 +539,7 @@ struct WorkbenchProjectLibraryView: View {
     @ObservedObject var center: WorkbenchCenter
     @Environment(\.dismiss) private var dismiss
     @State private var projects: [MediaProjectStore.ProjectSummary] = []
+    @State private var switchError: String?
 
     var body: some View {
         NavigationStack {
@@ -493,8 +554,18 @@ struct WorkbenchProjectLibraryView: View {
                     List(projects) { summary in
                         Button {
                             Task {
-                                await center.openProject(id: summary.id)
-                                dismiss()
+                                // Switching flushes the open project first; a
+                                // failed save keeps the library up with the
+                                // error instead of replacing the draft.
+                                if await center.openProject(id: summary.id) {
+                                    switchError = nil
+                                    dismiss()
+                                } else {
+                                    switchError = center.alert?.message
+                                        ?? WorkbenchText.t("无法打开该项目；当前编辑仍保留在编辑器中。",
+                                                           "Could not open the project; the current edit is still open in the editor.")
+                                    center.alert = nil
+                                }
                             }
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
@@ -532,6 +603,18 @@ struct WorkbenchProjectLibraryView: View {
             }
             .task {
                 projects = await center.savedProjectsForCurrentContext()
+            }
+            .safeAreaInset(edge: .top) {
+                if let switchError {
+                    Text(switchError)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                        .padding(.vertical, 8)
+                        .background(.thinMaterial)
+                        .accessibilityIdentifier("workbench.projects.error")
+                }
             }
         }
     }

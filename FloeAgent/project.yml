@@ -608,6 +608,11 @@ targets:
       - path: Qualification/DesignTools
       - path: Tests/FloeAppTests/ExternalWorkspaceTemplateAccessTests.swift
       - path: Tests/FloeAppTests/WorkbenchAIReviewTests.swift
+      - path: Tests/FloeAppTests/MailBodyTransportQualificationTests.swift
+      - path: Tests/FloeExecutionTests/MailBodyPagingTests.swift
+      - path: Tests/FloeExecutionTests/MailMutationJournalTests.swift
+      - path: Tests/FloeWorkbenchTests/MediaProjectSaveGuardTests.swift
+      - path: Tests/FloeAppTests/WorkbenchSaveFailureTests.swift
       - path: Tests/FloeAppTests/WorkbenchExportDeliveryTests.swift
       - path: Tests/FloeAppTests/CadWebEngineSessionTests.swift
       - path: Tests/FloeAppTests/FloeCADWorkbenchTests.swift
@@ -653,6 +658,11 @@ targets:
       #   * primary's ConfigSync capability-decision helper tests and C's
       #     provider metadata/migration suite are pure offline logic.
       - path: Tests/FloeAgentRuntimeTests/ChildRunPersistenceTests.swift
+      # S2: run the same integrity and temporary-ceiling suites in the App.
+      - path: Tests/FloeAgentRuntimeTests/TemporaryChatCeilingTests.swift
+      - path: Tests/FloeAgentRuntimeTests/TemporaryReadOnlyRuntimeTests.swift
+      - path: Tests/FloeToolsTests/TemporaryChatToolPolicyTests.swift
+      - path: Tests/FloeExecutionTests/CalendarOccurrenceIdentityTests.swift
       - path: Tests/FloeAgentRuntimeTests/DependencyWaitTests.swift
       - path: Tests/FloeExecutionTests/JobOutputPagingTests.swift
       - path: Tests/FloeExecutionTests/BackgroundJobTests.swift
@@ -711,6 +721,7 @@ targets:
       - path: Qualification/NativeNotes/Tests/NotesCustomCoverTests.swift
       - path: Tests/FloePersistenceTests/RunLifecycleRetentionTests.swift
       - path: Tests/FloePersistenceTests/TaskLifecycleStoreTests.swift
+      - path: Tests/FloePersistenceTests/ChildRunPayloadTests.swift
       - path: Tests/FloeProvidersTests/ProviderCapabilityMetadataTests.swift
       - path: Tests/FloeSyncTests/DeferredConfigSyncTests.swift
       - path: Tests/FloeAppTests/NativeCADDrawingAssemblyClosureTests.swift

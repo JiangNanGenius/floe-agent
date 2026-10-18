@@ -142,8 +142,26 @@ final class WorkbenchCenter: ObservableObject {
 
     // Published state
     @Published private(set) var project: MediaProject? {
-        didSet { projectRootBox.set(project?.taskWorkspacePath.map { URL(fileURLWithPath: $0) }) }
+        didSet {
+            projectRootBox.set(project?.taskWorkspacePath.map { URL(fileURLWithPath: $0) })
+            // Any assignment is an edit unless the save/load path that made it
+            // re-baselines the session immediately afterwards.
+            if project != nil { unsavedChanges = true }
+        }
     }
+    /// Revision of the live project that this editing session last confirmed
+    /// on disk. `nil` while no project is open. This is the base every write
+    /// compare-and-swaps against, so it is deliberately separate from the
+    /// active UI revision (which advances on every accepted edit).
+    @Published private(set) var savedRevision: Int64?
+    /// True while the in-memory project holds edits that are not on disk.
+    @Published private(set) var unsavedChanges = false
+    /// Actionable reason the latest save attempt left the edits in memory.
+    /// Cleared by a successful write or when the editing session ends.
+    @Published private(set) var saveError: String?
+    /// True while an owned save is awaiting the disk. Only the interactive
+    /// dismissal guard reads it; editing itself is never blocked by a save.
+    @Published private(set) var saveInFlight = false
     @Published private(set) var previewImage: CGImage?
     @Published private(set) var sourcePreviewImage: CGImage?
     @Published private(set) var playerItem: AVPlayerItem?
@@ -283,6 +301,17 @@ final class WorkbenchCenter: ObservableObject {
     private var lastPreviewURL: URL?
     private var previewTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
+    /// Fence for callbacks owned by the current editing session: minted for
+    /// every successful open/start, cleared by close/discard. A task that
+    /// finishes after the session changed can never write into a newer
+    /// project, report an error for it or claim its revision was saved.
+    private var sessionToken: UUID?
+    /// Test seam: overrides the 300 ms autosave debounce so fault-injection
+    /// tests can hold or release the debounced write deterministically.
+    var autosaveDelayForTesting: Duration?
+    /// Test seam: awaited immediately before an owned write reaches the store,
+    /// so interleaving tests can accept an edit during an explicit flush.
+    var saveGateForTesting: (@MainActor () async -> Void)?
     private var thumbnailTask: Task<Void, Never>?
     /// Jobs the user chose to stop waiting on (local-only; no remote cancel).
     private var stoppedWaitingJobs: Set<UUID> = []
@@ -354,7 +383,16 @@ final class WorkbenchCenter: ObservableObject {
 
     // MARK: - Project lifecycle
 
-    func startImageProject(sourceURL: URL, owner: Owner) async {
+    /// Creates and opens a fresh image project. Returns `false` when the
+    /// current project could not be flushed/closed or the initial document
+    /// could not be written; in both cases the open session is preserved and
+    /// the source file is untouched.
+    @discardableResult
+    func startImageProject(sourceURL: URL, owner: Owner) async -> Bool {
+        guard await closeProject() else { return false }
+        let token = UUID()
+        sessionToken = token
+        var started = false
         clearExportDelivery()
         await runBusy {
             let asset = try await importAsset(url: sourceURL)
@@ -386,13 +424,32 @@ final class WorkbenchCenter: ObservableObject {
             let layer = ImageLayer(kind: .image, name: WorkbenchText.t("底图", "Base image"), assetID: asset.id)
             try MediaTransactions.apply(.addImageLayer(layer), to: &project)
             try await self.store.save(project)
+            guard self.sessionToken == token else { return }
             self.project = project
             self.candidates = []
+            self.savedRevision = project.revision
+            self.unsavedChanges = false
+            self.saveError = nil
             self.refreshPreview()
+            started = true
         }
+        if !started, sessionToken == token {
+            sessionToken = nil
+            savedRevision = nil
+            unsavedChanges = false
+        }
+        return started && sessionToken == token
     }
 
-    func startVideoProject(clipURLs: [URL], musicURL: URL?, owner: Owner) async {
+    /// Creates and opens a fresh video project (or the migrated legacy plan
+    /// for the same single clip). Returns `false` when the current session
+    /// could not be flushed or the initial document could not be written.
+    @discardableResult
+    func startVideoProject(clipURLs: [URL], musicURL: URL?, owner: Owner) async -> Bool {
+        guard await closeProject() else { return false }
+        let token = UUID()
+        sessionToken = token
+        var started = false
         clearExportDelivery()
         await runBusy {
             guard !clipURLs.isEmpty else {
@@ -404,9 +461,14 @@ final class WorkbenchCenter: ObservableObject {
             if musicURL == nil, clipURLs.count == 1,
                let migrated = await self.migratedLegacyProject(from: clipURLs[0], owner: owner) {
                 try await self.store.save(migrated)
+                guard self.sessionToken == token else { return }
                 self.project = migrated
+                self.savedRevision = migrated.revision
+                self.unsavedChanges = false
+                self.saveError = nil
                 self.refreshPreview()
                 self.refreshThumbnails()
+                started = true
                 return
             }
             var project = MediaProject(kind: .video, name: clipURLs[0].deletingPathExtension().lastPathComponent)
@@ -455,19 +517,39 @@ final class WorkbenchCenter: ObservableObject {
                                             to: &project)
             }
             try await self.store.save(project)
+            guard self.sessionToken == token else { return }
             self.project = project
             self.candidates = []
             self.previewRecoveryAttempts = 0
+            self.savedRevision = project.revision
+            self.unsavedChanges = false
+            self.saveError = nil
             self.refreshPreview()
             self.refreshThumbnails()
+            started = true
         }
+        if !started, sessionToken == token {
+            sessionToken = nil
+            savedRevision = nil
+            unsavedChanges = false
+        }
+        return started && sessionToken == token
     }
 
-    func openProject(id: UUID) async {
+    /// Opens a saved project after flushing the open session. Returns `false`
+    /// when the previous project could not be persisted (the open session and
+    /// its edits are preserved) or the requested project could not be loaded.
+    @discardableResult
+    func openProject(id: UUID) async -> Bool {
+        guard await closeProject() else { return false }
+        let token = UUID()
+        sessionToken = token
+        var opened = false
         await runBusy {
             guard let loaded = try await self.store.loadProject(id: id) else {
                 throw FloeError.notFound("project \(id.uuidString)")
             }
+            guard self.sessionToken == token else { return }
             // A verified result belongs to the previously open project; never
             // surface or share it after switching projects.
             self.exportCancellation?.cancel()
@@ -478,19 +560,75 @@ final class WorkbenchCenter: ObservableObject {
             self.lastExportResult = nil
             self.project = loaded
             self.candidates = await self.candidateStore.load(projectID: id)
+            guard self.sessionToken == token else { return }
             self.imageRequests = self.imageRequestStore.load(projectID: id)
             self.confirmedReviewRequestIDs = Set(self.imageRequests.map(\.id))
             self.previewRecoveryAttempts = 0
+            self.savedRevision = loaded.revision
+            self.unsavedChanges = false
+            self.saveError = nil
             self.refreshPreview()
             self.refreshThumbnails()
             await self.reloadAISignals()
+            guard self.sessionToken == token else { return }
+            opened = true
         }
+        if !opened, sessionToken == token {
+            sessionToken = nil
+            savedRevision = nil
+            unsavedChanges = false
+        }
+        return opened && sessionToken == token
     }
 
-    /// Flushes the latest draft to disk before tearing the session down; a
-    /// close/switch must never cancel an in-flight save and lose edits.
-    func closeProject() async {
-        await saveNow()
+    /// Flushes the open project and tears the editing session down. Returns
+    /// `false` when the draft could not be persisted: the project, preview,
+    /// candidates, undo history and error then stay available so the user can
+    /// retry, keep editing or explicitly discard. An unchanged, already-saved
+    /// project closes without attempting a write, so a read-only volume never
+    /// traps a clean session.
+    @discardableResult
+    func closeProject() async -> Bool {
+        // Capture the identity of the session this call is closing BEFORE any
+        // await. A replacement session opened meanwhile owns its own state and
+        // a stale close must never tear it down.
+        let token = sessionToken
+        let closingID = project?.id
+        guard let closingID else {
+            if token == nil || sessionToken == token {
+                cancelOwnedWork()
+                resetSessionState()
+            }
+            return true
+        }
+        guard await saveNow() else { return false }
+        guard sessionToken == token, project?.id == closingID else { return false }
+        cancelOwnedWork()
+        resetSessionState()
+        return true
+    }
+
+    /// Drops only the unsaved in-memory edits of the current session after
+    /// the UI obtained the user's explicit confirmation. No saved document,
+    /// source asset or other file is deleted. Returns `false` when a
+    /// replacement session took over while the pending work was awaited.
+    @discardableResult
+    func discardChangesAndClose() async -> Bool {
+        let token = sessionToken
+        let discardedID = project?.id
+        let pendingSave = saveTask
+        pendingSave?.cancel()
+        await pendingSave?.value
+        // Identity check before ANY shared-state mutation: a replacement
+        // session (or a newer task it scheduled) is not ours to clear.
+        guard sessionToken == token, project?.id == discardedID else { return false }
+        if let pendingSave, saveTask == pendingSave { saveTask = nil }
+        cancelOwnedWork()
+        resetSessionState()
+        return true
+    }
+
+    private func cancelOwnedWork() {
         previewTask?.cancel()
         saveTask?.cancel()
         thumbnailTask?.cancel()
@@ -507,6 +645,9 @@ final class WorkbenchCenter: ObservableObject {
         }
         lastPreviewURL = nil
         playerModel.setItem(nil)
+    }
+
+    private func resetSessionState() {
         project = nil
         previewImage = nil
         playerItem = nil
@@ -517,6 +658,11 @@ final class WorkbenchCenter: ObservableObject {
         imageRequests = []
         aiJobs = []
         confirmedReviewRequestIDs = []
+        sessionToken = nil
+        savedRevision = nil
+        unsavedChanges = false
+        saveError = nil
+        saveInFlight = false
     }
 
     /// Persisted fork used by canvas "make variant" and by copies of bound
@@ -707,11 +853,11 @@ final class WorkbenchCenter: ObservableObject {
                         canvas: CGSize(width: canvas.width, height: canvas.height),
                         resolveAsset: { urls[$0] },
                         previewMaxEdge: previewEdge)
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, self.project?.id == project.id else { return }
                     self.previewImage = rendered
                     self.previewError = nil
                 } catch {
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, self.project?.id == project.id else { return }
                     self.previewImage = nil
                     self.previewError = WorkbenchText.t(
                         "图片预览渲染失败：\(error.localizedDescription)",
@@ -730,11 +876,13 @@ final class WorkbenchCenter: ObservableObject {
                     clean.isHidden = false
                     sourceOnly.imageLayers = [clean]
                     sourceOnly.canvasAdjustment = .init()
-                    self.sourcePreviewImage = try? await self.imageRenderer.render(
+                    let compare = try? await self.imageRenderer.render(
                         project: sourceOnly,
                         canvas: CGSize(width: canvas.width, height: canvas.height),
                         resolveAsset: { urls[$0] },
                         previewMaxEdge: previewEdge)
+                    guard !Task.isCancelled, self.project?.id == project.id else { return }
+                    self.sourcePreviewImage = compare
                 } else {
                     self.sourcePreviewImage = nil
                 }
@@ -746,7 +894,8 @@ final class WorkbenchCenter: ObservableObject {
                 do {
                     let receipt = try await self.videoRenderer.renderPreview(project: project,
                                                                             cancellation: token)
-                    guard !Task.isCancelled, !token.isCancelled else { return }
+                    guard !Task.isCancelled, !token.isCancelled,
+                          self.project?.id == project.id else { return }
                     if self.previewRenderCancellation === token {
                         self.isRenderingPreview = false
                     }
@@ -1003,23 +1152,153 @@ final class WorkbenchCenter: ObservableObject {
 
     // MARK: - Persistence
 
+    /// Debounced autosave. The snapshot, session token and base revision are
+    /// captured when the write is scheduled; the write never takes ownership
+    /// of the live project, so an older queued snapshot can never roll back a
+    /// newer durable revision (the store enforces the same boundary).
     private func scheduleSave() {
         saveTask?.cancel()
-        guard let project else { return }
+        guard let snapshot = project, let token = sessionToken else { return }
+        let delay = autosaveDelayForTesting ?? .milliseconds(300)
         saveTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(300))
+            try? await Task.sleep(for: delay)
             guard let self, !Task.isCancelled else { return }
-            do {
-                try await self.store.save(project)
-            } catch {
-                self.present(error)
-            }
+            _ = await self.performSave(snapshot: snapshot, token: token, explicit: false)
         }
     }
 
-    func saveNow() async {
-        guard let project else { return }
-        do { try await store.save(project) } catch { present(error) }
+    /// Waits for the currently scheduled autosave (deterministic test seam;
+    /// the close/retry paths reach the same boundary through `saveNow`).
+    func waitForPendingSave() async {
+        let task = saveTask
+        await task?.value
+    }
+
+    /// Flushes the live draft with an explicit compare-and-swap against the
+    /// last durable revision. Returns `true` only when the CURRENT active
+    /// draft is actually durable: edits accepted while a write awaited the
+    /// disk trigger another flush, so a close can never tear down newer work
+    /// that arrived mid-save. Returns `false` when the draft was retained.
+    @discardableResult
+    func saveNow() async -> Bool {
+        guard project != nil else { return true }
+        // A live project without a session fence is a defect: refuse to claim
+        // it is saved instead of letting a close tear it down.
+        guard let token = sessionToken else { return false }
+        guard unsavedChanges else {
+            saveError = nil
+            return true
+        }
+        // Stop the debounced write and wait out any owned write before
+        // flushing. Only the handle captured for THIS session is cleared, and
+        // no shared state is mutated before the identity check: a replacement
+        // session's cancellation handle is not ours.
+        var drained = 0
+        while let pendingSave = saveTask, drained < 8 {
+            drained += 1
+            pendingSave.cancel()
+            await pendingSave.value
+            guard token == sessionToken else { return false }
+            if saveTask == pendingSave { saveTask = nil }
+        }
+        guard token == sessionToken else { return false }
+        // An edit accepted during a write keeps the draft dirty; flush the
+        // newer active revision too instead of closing over it. Bounded so a
+        // continuous edit stream reports honestly instead of spinning.
+        var attempts = 0
+        while unsavedChanges {
+            attempts += 1
+            guard attempts <= 4, token == sessionToken else { break }
+            guard let snapshot = project else { return false }
+            let saved = await performSave(snapshot: snapshot, token: token, explicit: true)
+            // A replacement session appeared mid-write: this call cannot claim
+            // the new session's draft is durable.
+            if token != sessionToken { return false }
+            guard saved else { return false }
+        }
+        guard token == sessionToken else { return false }
+        guard !unsavedChanges else {
+            let message = WorkbenchText.t(
+                "保存尚未完成：编辑仍在进行。更改已保留，请稍后重试。",
+                "Save did not finish: edits are still arriving. Your changes are kept; retry in a moment.")
+            saveError = message
+            alert = Alert(title: WorkbenchText.t("保存失败", "Save failed"), message: message)
+            return false
+        }
+        return true
+    }
+
+    private func performSave(snapshot: MediaProject, token: UUID, explicit: Bool) async -> Bool {
+        guard token == sessionToken else { return true }
+        let expected = savedRevision
+        if let expected, snapshot.revision < expected {
+            // A queued snapshot older than what this session already wrote is
+            // dropped quietly; an explicit flush must report the conflict.
+            guard explicit else { return true }
+            presentSaveConflict()
+            return false
+        }
+        if !explicit, let expected, snapshot.revision == expected, !unsavedChanges {
+            return true
+        }
+        // Only the gesture-dismiss guard observes this; editing stays live.
+        saveInFlight = true
+        defer { if token == sessionToken { saveInFlight = false } }
+        if let gate = saveGateForTesting { await gate() }
+        guard token == sessionToken else { return true }
+        do {
+            try await store.save(snapshot, expectedRevision: expected)
+        } catch {
+            // A callback from a replaced session must never touch the new one.
+            guard token == sessionToken else { return true }
+            // The disk may have advanced while this write awaited; that is a
+            // superseded write, not a failure the user needs to act on.
+            if let savedRevision, snapshot.revision < savedRevision { return true }
+            let message = Self.saveFailureMessage(for: error)
+            saveError = message
+            alert = Alert(title: WorkbenchText.t("保存失败", "Save failed"), message: message)
+            return false
+        }
+        guard token == sessionToken else { return true }
+        // The durable base advances to what actually reached the disk; the
+        // active UI revision stays whatever the user has edited since.
+        savedRevision = max(savedRevision ?? snapshot.revision, snapshot.revision)
+        if let current = project {
+            unsavedChanges = canonicalDigest(snapshot) != canonicalDigest(current)
+        } else {
+            unsavedChanges = false
+        }
+        saveError = nil
+        return true
+    }
+
+    private func presentSaveConflict() {
+        let message = Self.conflictMessage()
+        saveError = message
+        alert = Alert(title: WorkbenchText.t("保存冲突", "Save conflict"), message: message)
+    }
+
+    private static func conflictMessage() -> String {
+        WorkbenchText.t(
+            "项目已被其他操作更新，本次修改未写入磁盘。更改仍保留在内存中：可撤销/重做后再次保存，或放弃本次更改。",
+            "The project was changed by another operation, so these edits were not written. Your changes are still in memory — undo/redo and save again, or discard this session.")
+    }
+
+    private static func saveFailureMessage(for error: Error) -> String {
+        if error.localizedDescription.contains("Project revision conflict") {
+            return conflictMessage()
+        }
+        return WorkbenchText.t(
+            "保存失败：项目文件无法写入。修改仍保留在内存中，请检查存储空间与权限后重试。",
+            "Save failed: the project file could not be written. Your changes are still in memory; check storage space and permissions, then retry.")
+    }
+
+    /// Durable content of a project (load-time recovery warnings excluded),
+    /// used to tell "already saved" apart from same-revision drift.
+    private func canonicalDigest(_ project: MediaProject) -> Data? {
+        var canonical = project
+        canonical.recoveryWarnings = []
+        return try? JSONEncoder().encode(canonical)
     }
 
     // MARK: - Export
@@ -1572,7 +1851,22 @@ extension WorkbenchCenter: MediaProjectHost {
     nonisolated func persistProject(_ project: MediaProject, expectedRevision: Int64?) async throws {
         try await store.save(project, expectedRevision: expectedRevision)
         await MainActor.run {
-            if self.project?.id == project.id { self.project = project }
+            guard self.project?.id == project.id else { return }
+            // The tool's revision is on disk. Adopt it into the editing
+            // session only when the on-screen draft has not moved past the
+            // revision the tool started from: a late callback must never
+            // replace newer in-memory edits with its older snapshot.
+            if expectedRevision == nil || self.project?.revision == expectedRevision {
+                self.project = project
+                self.savedRevision = project.revision
+                self.unsavedChanges = false
+                self.saveError = nil
+            } else {
+                // Keep the newer draft dirty; only the durable base moves so a
+                // later flush cannot silently roll the disk back.
+                self.savedRevision = max(self.savedRevision ?? project.revision, project.revision)
+                self.unsavedChanges = true
+            }
         }
     }
 
