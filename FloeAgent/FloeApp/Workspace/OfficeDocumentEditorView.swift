@@ -667,7 +667,15 @@ final class OfficeFileSession: ObservableObject {
         }
         defer { endExternalRefresh() }
         let wasReadOnly = readOnly
-        let hadEdits = wasReadOnly ? false : await hasLocalEditsToProtect()
+        var hadEdits = wasReadOnly ? false : await hasLocalEditsToProtect()
+        // Writer can deliver its post-save ModifiedStatus after the save
+        // receipt. Keep input fenced while waiting for a real clean state;
+        // expiry still refuses capture, without clearing any dirty flag.
+        let settleDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while hadEdits, ContinuousClock.now < settleDeadline {
+            try await Task.sleep(for: .milliseconds(50))
+            hadEdits = await hasLocalEditsToProtect()
+        }
         guard let web = OfficeExplicitSaveBridge.findWebView(in: controller.view),
               (try await web.evaluateJavaScript("window.__floeOfficePenState ? window.__floeOfficePenState().activeStroke : false")) as? Bool == false,
               !hadEdits else {
