@@ -11,6 +11,7 @@ verify.
 
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,11 +22,53 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "FloeAgent/scripts/pin_office_host_artifact.py"
 LOCK = REPO_ROOT / "FloeAgent/ThirdParty/Collabora/engine.lock.json"
+PATCHES = LOCK.parent / "patches"
+PATCH_LOCK = LOCK.parent / "engine.patch.lock.json"
 HOST_SOURCES = REPO_ROOT / "FloeAgent/ThirdParty/Collabora/FloeOfficeNative"
 
 
 def digest(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def stage_lock_dependencies(folder: Path) -> None:
+    """Stage the tracked files a temp lock resolves next to itself.
+
+    pin_office_host_artifact.py hashes every compiled-lifecycle patch a lock
+    names and reads the sibling engine repair contract before it validates the
+    pin. A lock copied without those dependencies would be rejected for that
+    fixture gap instead of the contract under test.
+    """
+    target = Path(folder) / "patches"
+    if not target.exists():
+        shutil.copytree(PATCHES, target)
+    repair_lock = Path(folder) / "engine.patch.lock.json"
+    if not repair_lock.exists():
+        shutil.copyfile(PATCH_LOCK, repair_lock)
+
+
+def compiled_lifecycle_claims(pin: dict) -> dict:
+    """The manifest's compiled-member receipt and original archive proof.
+
+    The producer repeats the validated compiled member identity in the host
+    manifest and names the original archives it measured it against; the pin
+    rejects a host that omits either, so the synthetic host carries the same
+    two blocks as the tracked pin.
+    """
+    receipt = pin.get("embeddedLifecycleMember")
+    if receipt is None:
+        return {}
+    archives = {}
+    pending = [receipt]
+    while pending:
+        block = pending.pop()
+        archives[Path(block["archive"]).name] = block["originalArchiveSHA256"]
+        pending.extend((block.get("additionalArchives") or {}).values())
+    sdk = {"IOS": "iphoneos", "IOSSIMULATOR": "iphonesimulator"}[receipt["platform"]]
+    return {
+        "embeddedLifecycleMember": receipt,
+        "platformOriginalArchives": {"sdk": sdk, "archives": archives},
+    }
 
 
 class OfficeHostPinPath(unittest.TestCase):
@@ -63,6 +106,7 @@ class OfficeHostPinPath(unittest.TestCase):
         covered.
         """
         with tempfile.TemporaryDirectory() as folder:
+            stage_lock_dependencies(Path(folder))
             lock = json.loads(LOCK.read_text())
             pin = lock["qualifiedHostArtifact"]
             with self.subTest("rebuild owed"):
@@ -167,6 +211,24 @@ class OfficeHostPinPath(unittest.TestCase):
             if omit_overlay_key:
                 overlay.pop("patchSHA256", None)
             manifest["filterOverlay"] = overlay
+        # The embedded lifecycle parent overlay is tracked like every other
+        # host build overlay; the manifest carries its exact patch/commit/
+        # prepared-source provenance.
+        embedded = lock.get("embeddedLifecycleOverlay")
+        if embedded:
+            manifest["embeddedLifecycle"] = {
+                "patchSHA256": embedded["sha256"], "sourceCommit": lock["commit"],
+                "files": {name: value["preparedSHA256"]
+                          for name, value in embedded["files"].items()},
+            }
+        # The tracked compiled embedded lifecycle member is part of the host
+        # identity: the manifest carries its receipt and the platform original
+        # archive proof the pin validates, exactly as a rebuilt host does.
+        manifest.update(compiled_lifecycle_claims(pin))
+        # The single-member engine repair is tracked beside the lock too; a
+        # rebuilt host repeats its canonical claim in the manifest.
+        if pin.get("engineRepair") is not None:
+            manifest["engineRepair"] = pin["engineRepair"]
         if tamper_resources:
             (resources / "fundamentalrc").write_text("tampered", encoding="utf-8")
         (root / "native-host.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -180,6 +242,7 @@ class OfficeHostPinPath(unittest.TestCase):
     def test_apply_refuses_missing_forwarding_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
+            stage_lock_dependencies(folder)
             lock = folder / "lock.json"
             lock.write_bytes(LOCK.read_bytes())
             artifact = self.make_artifact(folder, matching_sources=True, omit_forwarding=True)
@@ -191,6 +254,7 @@ class OfficeHostPinPath(unittest.TestCase):
     def test_apply_refuses_missing_scheme_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
+            stage_lock_dependencies(folder)
             lock = folder / "lock.json"
             lock.write_bytes(LOCK.read_bytes())
             artifact = self.make_artifact(folder, matching_sources=True, omit_scheme=True)
@@ -209,6 +273,7 @@ class OfficeHostPinPath(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
+            stage_lock_dependencies(folder)
             ahead = folder / "ahead.lock.json"
             ahead_lock = json.loads(LOCK.read_text())
             ahead_lock['qualifiedHostArtifact'].pop('kitCallbackOverlaySHA256', None)
@@ -234,6 +299,7 @@ class OfficeHostPinPath(unittest.TestCase):
     def test_apply_refuses_missing_kit_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
+            stage_lock_dependencies(folder)
             lock = folder / "lock.json"
             lock.write_bytes(LOCK.read_bytes())
             artifact = self.make_artifact(folder, matching_sources=True, omit_kit=True)
@@ -246,6 +312,7 @@ class OfficeHostPinPath(unittest.TestCase):
     def test_apply_refuses_a_changed_kit_patch(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
+            stage_lock_dependencies(folder)
             lock = folder / "lock.json"
             lock.write_bytes(LOCK.read_bytes())
             artifact = self.make_artifact(folder, matching_sources=True, kit_patch="c" * 64)
@@ -257,6 +324,7 @@ class OfficeHostPinPath(unittest.TestCase):
     def test_apply_refuses_kit_provenance_from_another_commit(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
+            stage_lock_dependencies(folder)
             lock = folder / "lock.json"
             lock.write_bytes(LOCK.read_bytes())
             artifact = self.make_artifact(folder, matching_sources=True,
@@ -270,6 +338,7 @@ class OfficeHostPinPath(unittest.TestCase):
     def test_apply_refuses_changed_kit_prepared_files(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
+            stage_lock_dependencies(folder)
             lock = folder / "lock.json"
             lock.write_bytes(LOCK.read_bytes())
             tracked = json.loads(LOCK.read_text())["kitCallbackLifecycleOverlay"]["files"]
@@ -283,6 +352,7 @@ class OfficeHostPinPath(unittest.TestCase):
 
     def test_check_rejects_a_kit_claim_without_a_tracked_overlay(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
+            stage_lock_dependencies(Path(folder))
             legacy = json.loads(LOCK.read_text())
             legacy.pop("kitCallbackLifecycleOverlay", None)
             legacy["qualifiedHostArtifact"]["kitCallbackOverlaySHA256"] = "9" * 64
@@ -302,6 +372,7 @@ class OfficeHostPinPath(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
+            stage_lock_dependencies(folder)
             legacy = json.loads(LOCK.read_text())
             legacy.pop("kitCallbackLifecycleOverlay", None)
             legacy["qualifiedHostArtifact"].pop("kitCallbackOverlaySHA256", None)
@@ -378,6 +449,7 @@ class OfficeHostPinPath(unittest.TestCase):
     def test_apply_records_a_verified_artifact_and_clears_the_marker(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             folder_path = Path(folder)
+            stage_lock_dependencies(folder_path)
             artifact = self.make_artifact(folder_path, matching_sources=True)
             lock_copy = folder_path / "engine.lock.json"
             lock_copy.write_text(LOCK.read_text(), encoding="utf-8")
