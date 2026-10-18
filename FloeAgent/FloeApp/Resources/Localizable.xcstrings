@@ -89217,6 +89217,40 @@
           }
         }
       }
+    },
+    "pip.audio.sound.rain": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rain"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "雨声"
+          }
+        }
+      }
+    },
+    "pip.audio.sound.brown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Brown noise"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "棕噪声"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

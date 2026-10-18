@@ -76,7 +76,11 @@ final class BackgroundAudioSettingsUITests: XCTestCase {
 
     private func set(_ element: XCUIElement, to value: Bool) {
         guard element.exists else { return }
-        if enabled(element) != value { element.tap() }
+        if enabled(element) != value {
+            // SwiftUI exposes the full labeled row as the Switch element;
+            // its native switch control occupies the trailing end.
+            element.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        }
         assertValue(element, value)
     }
 
