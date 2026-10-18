@@ -58,8 +58,10 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
             # Every script release_preflight.sh executes, directly or through
             # imports: pin_office_host_artifact imports office_engine_repair,
             # which imports sim_paths (office_real_simulator) and
-            # verify_office_engine/package_office_engine. A missing dependency
-            # must fail this fixture loudly, never silently skip the gate.
+            # verify_office_engine/package_office_engine, and both the pin and
+            # bootstrap_office_host import office_compiled_lifecycle. A missing
+            # dependency must fail this fixture loudly, never silently skip the
+            # gate.
             for name in ("project.yml", "scripts/release_preflight.sh",
                          "scripts/validate_localization_catalog.py",
                          "scripts/audit_native_runtime_free.py",
@@ -67,6 +69,7 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
                          "scripts/resolved_pins.py",
                          "Package.resolved",
                          "scripts/bootstrap_office_host.py",
+                         "scripts/office_compiled_lifecycle.py",
                          "scripts/office_release_gates.py",
                          "scripts/pin_office_host_artifact.py",
                          "scripts/office_engine_repair.py",
@@ -95,6 +98,18 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
                 files += [office / spec["patch"]
                           for spec in filters.get("headerDependencies", {}).values()
                           if spec.get("patch")]
+            # checked_lock validates the pinned compiled lifecycle member
+            # against its tracked patch bytes before the version gate runs, so
+            # stage the parent overlay and every nested member/archive patch
+            # the lock names, exactly as a release checkout carries them.
+            lifecycle = lock.get("embeddedLifecycleOverlay", {})
+            pending = [lifecycle, *(lifecycle.get("compiledMembers") or {}).values()]
+            while pending:
+                entry = pending.pop()
+                if "patch" in entry:
+                    files.append(office / entry["patch"])
+                pending.extend((entry.get("additionalMembers") or {}).values())
+                pending.extend((entry.get("additionalArchives") or {}).values())
             for name in files:
                 target = app / name
                 target.parent.mkdir(parents=True, exist_ok=True)
