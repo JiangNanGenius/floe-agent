@@ -10,6 +10,9 @@ native host sources, which the app build compiles and pins:
   discovery instead of reusing a stale cached catalog;
 * the host injects a pointer gate that lets only Apple Pencil ('pen') start a
   stroke while annotation mode is on, leaving finger input to navigation;
+* that gate also hides a stale frontend ``shapeHandlesSection`` for the
+  replayed contact, so a previous object's handle subsection cannot win the
+  CanvasSection hit test and swallow the new freehand mousedown;
 * ``engine.lock.json`` records the exact source hash and the rebuilt,
   re-qualified framework artifact pinned from the qualifying CI run.
 
@@ -45,20 +48,32 @@ function check(name, pass, detail) {
 }
 const listeners = {}, docListeners = {}, queue = [], delayed = [];
 let activeTool = false, coreContact = false, shapes = 0;
+let escapes = 0, mouseups = 0;
 let commandListener;
 let mapAvailable = true, editMode = true, hasDocLayer = true;
 let throwSendUno = false, throwKeyboard = false, throwEditMode = false;
 const acceptInputCalls = [];
 const canvas = {
     contains(target) { return target === canvas; },
+    getBoundingClientRect() { return { left: 0, top: 0, right: 1000, bottom: 1000 }; },
     dispatchEvent(event) {
-        queue.push(() => { if (event.type === 'mousedown') coreContact = activeTool; });
+        if (event.type !== 'mousedown') return;
+        // Pinned CanvasSectionContainer.onMouseDown: convert the client point,
+        // take the topmost located/visible/interactable section, then propagate
+        // mousedown to it. A hidden shape-handle section cannot win this hit.
+        const point = sectionContainer.convertPositionToCanvasLocale(event);
+        const target = sectionContainer.findSectionContainingPoint(point);
+        sectionContainer.targetSection = target ? target.name : null;
+        queue.push(() => {
+            if (target && typeof target.onMouseDown === 'function')
+                target.onMouseDown(point, event);
+        });
     }
 };
 const docLayer = {
     postKeyboardEvent(type, char, key) {
         if (throwKeyboard) throw new Error('keyboard reset failed');
-        queue.push(() => { if (type === 'input' && key === 1281) activeTool = false; });
+        queue.push(() => { if (type === 'input' && key === 1281) { activeTool = false; escapes += 1; } });
     }
 };
 const map = {
@@ -71,7 +86,62 @@ const map = {
     },
     setAcceptInput(value) { acceptInputCalls.push(value); }
 };
-const app = { sectionContainer: { canvas } };
+// Real CanvasSection order: a document section below the selection handle
+// subsections. Hidden sections are skipped exactly like the pinned bundle.
+const documentSection = {
+    name: 'mouse-control', showSection: true, interactable: true, isLocated: true,
+    documentObject: true, isVisible: true, bounds: [0, 0, 1000, 1000],
+    onMouseDown() { coreContact = activeTool; }, onMouseMove() {}, onMouseUp() {}
+};
+const shapeHandlesSection = {
+    name: 'shapeHandlesSection', showSection: false, interactable: true, isLocated: true,
+    documentObject: true, isVisible: true, bounds: [0, 0, 1000, 1000],
+    sectionProperties: { subSections: [] },
+    setShowSection(show) {
+        this.showSection = show;
+        // Pinned onSectionShowStatusChange cascades to every independent
+        // 'shape-handle-*' section object, not just the parent flag.
+        for (const subSection of this.sectionProperties.subSections)
+            subSection.setShowSection(show);
+        if (app.definitions && app.definitions.graphicSelection)
+            app.definitions.graphicSelection.handlesSection = this;
+    },
+    onMouseDown() { coreContact = false; }, onMouseMove() {}, onMouseUp() {}
+};
+const shapeHandle = {
+    name: 'shape-handle-3', showSection: false, interactable: true, isLocated: true,
+    documentObject: true, isVisible: true, bounds: [10, 10, 30, 30],
+    setShowSection(show) { this.showSection = show; },
+    onMouseDown() { coreContact = false; }, onMouseMove() {}, onMouseUp() {}
+};
+shapeHandlesSection.sectionProperties.subSections.push(shapeHandle);
+const sections = [documentSection, shapeHandlesSection, shapeHandle];
+const sectionContainer = {
+    canvas, sections, targetSection: null,
+    getSectionWithName(name) {
+        return sections.find((section) => section.name === name) || null;
+    },
+    doesSectionExist(name) { return !!this.getSectionWithName(name); },
+    findSectionContainingPoint(point) {
+        for (let i = sections.length - 1; i >= 0; i--) {
+            const section = sections[i];
+            if (!section.isLocated || !section.showSection || !section.interactable) continue;
+            if (section.documentObject && !section.isVisible) continue;
+            const bounds = section.bounds;
+            if (point[0] >= bounds[0] && point[0] <= bounds[2] &&
+                point[1] >= bounds[1] && point[1] <= bounds[3]) return section;
+        }
+        return null;
+    },
+    convertPositionToCanvasLocale(event) {
+        const rect = canvas.getBoundingClientRect();
+        return [Math.round((event.clientX - rect.left) * app.dpiScale),
+                Math.round((event.clientY - rect.top) * app.dpiScale)];
+    }
+};
+const app = { sectionContainer, dpiScale: 1 };
+app.CSections = { ShapeHandlesSection: { name: 'shapeHandlesSection' } };
+app.definitions = { graphicSelection: { handlesSection: null } };
 Object.defineProperty(app, 'map', { get() { return mapAvailable ? map : null; } });
 global.MouseEvent = class { constructor(type, props) { this.type = type; Object.assign(this, props); } };
 global.window = {
@@ -83,6 +153,7 @@ global.document = {
     addEventListener(type, handler) { (docListeners[type] ||= []).push(handler); },
     dispatchEvent(event) {
         queue.push(() => {
+            if (event.type === 'mouseup') mouseups += 1;
             if (event.type === 'mouseup' && coreContact) {
                 shapes++; coreContact = false; activeTool = false;
                 // A one-shot engine's state is late, including stale true.
@@ -213,6 +284,282 @@ check('fault/recovered-stroke-completes', window.__floeOfficePenState().activeSt
 check('fault/final-disable', window.__floeSetOfficeDrawingMode(false) === true); flush();
 check('fault/final-off', window.__floePencilOnly === false);
 
+// Stale graphic-selection handle routing. The pinned CanvasSection hit test
+// gives a shown shape-handle subsection precedence over mouse-control. This
+// baseline replays the exact pre-fix mouse event with the stale handle shown
+// and proves the fixture observes the swallow. The production gate then
+// replays the same contact through its Pencil path and must hide the stale
+// handle, route the down to the document section, complete the stroke, and
+// restore the handle for ordinary object interaction after the contact.
+const replayMouseDown = (x, y) => {
+    canvas.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true, cancelable: true, view: window,
+        clientX: x, clientY: y, button: 0, buttons: 1
+    }));
+};
+shapeHandlesSection.setShowSection(true);
+check('handle/stale-selection-shown',
+      shapeHandlesSection.showSection === true && shapeHandle.showSection === true);
+const shapesBeforeBaseline = shapes;
+sectionContainer.targetSection = null;
+replayMouseDown(20, 20); flush();
+check('baseline/replayed-down-hits-stale-handle',
+      sectionContainer.targetSection === 'shape-handle-3', sectionContainer.targetSection);
+check('baseline/stale-handle-swallows-down',
+      coreContact === false && shapes === shapesBeforeBaseline, shapes);
+check('handle/drawing-off-preserved',
+      window.__floePencilOnly === false && shapeHandlesSection.showSection === true);
+
+check('handle/enable', window.__floeSetOfficeDrawingMode(true) === true); flush();
+shapeHandlesSection.setShowSection(true);
+const suspensionsBefore = window.__floeOfficePenState().shapeHandleSuspensions;
+const shapesBeforePatched = shapes;
+sectionContainer.targetSection = null;
+emit('pointerdown');
+check('patched/pencil-down-hides-stale-handle',
+      shapeHandlesSection.showSection === false && shapeHandle.showSection === false);
+check('patched/pencil-down-routes-document',
+      sectionContainer.targetSection === 'mouse-control', sectionContainer.targetSection);
+flush();
+check('patched/pencil-down-reaches-core', coreContact === true);
+emit('pointermove', { clientX: 22, clientY: 22 }); flush();
+emit('pointerup', { clientX: 24, clientY: 24 }); flush();
+check('patched/pencil-stroke-completes', shapes === shapesBeforePatched + 1, shapes);
+check('patched/stroke-not-swallowed',
+      window.__floeOfficePenState().activeStroke === false && coreContact === false);
+check('patched/handle-restored-after-contact',
+      shapeHandlesSection.showSection === true && shapeHandle.showSection === true);
+check('patched/suspension-counted',
+      window.__floeOfficePenState().shapeHandleSuspensions === suspensionsBefore + 1,
+      window.__floeOfficePenState().shapeHandleSuspensions);
+check('handle/independent-child-section',
+      sections.indexOf(shapeHandle) > sections.indexOf(shapeHandlesSection)
+      && sectionContainer.getSectionWithName('shape-handle-3') === shapeHandle);
+
+// A parent-only hide is insufficient: 'shape-handle-3' is its own
+// CanvasSectionObject in the container. Break the pinned parent cascade and
+// verify the production repair still hides the independent child before the
+// replayed down, rather than treating the parent flag as proof.
+const cascadeSetShowSection = shapeHandlesSection.setShowSection;
+shapeHandlesSection.setShowSection = function(show) { this.showSection = show; };
+shapeHandlesSection.setShowSection(true); // parent only
+shapeHandle.showSection = true;
+app.definitions.graphicSelection.handlesSection = shapeHandlesSection;
+const suspensionsBroken = window.__floeOfficePenState().shapeHandleSuspensions;
+const shapesBroken = shapes;
+sectionContainer.targetSection = null;
+emit('pointerdown');
+check('child/parent-only-hide-covers-independent-child',
+      shapeHandlesSection.showSection === false && shapeHandle.showSection === false);
+check('child/parent-only-hide-routes-document',
+      sectionContainer.targetSection === 'mouse-control', sectionContainer.targetSection);
+flush();
+shapeHandlesSection.setShowSection = cascadeSetShowSection; // restore before up
+emit('pointerup'); flush();
+check('child/parent-only-hide-stroke-completes', shapes === shapesBroken + 1, shapes);
+check('child/parent-only-hide-restores',
+      shapeHandlesSection.showSection === true && shapeHandle.showSection === true);
+check('child/parent-only-hide-counted',
+      window.__floeOfficePenState().shapeHandleSuspensions === suspensionsBroken + 1);
+
+// A child can be shown independently of the parent flag. The gate must hide
+// the child itself instead of returning early because the parent is hidden.
+shapeHandlesSection.showSection = false;
+shapeHandle.showSection = true;
+app.definitions.graphicSelection.handlesSection = shapeHandlesSection;
+const suspensionsChildOnly = window.__floeOfficePenState().shapeHandleSuspensions;
+const shapesChildOnly = shapes;
+sectionContainer.targetSection = null;
+emit('pointerdown');
+check('child/parent-hidden-child-shown-hides', shapeHandle.showSection === false);
+check('child/parent-hidden-child-shown-routes-document',
+      sectionContainer.targetSection === 'mouse-control', sectionContainer.targetSection);
+flush();
+emit('pointerup'); flush();
+check('child/parent-hidden-child-shown-stroke', shapes === shapesChildOnly + 1, shapes);
+check('child/parent-hidden-child-shown-restores',
+      shapeHandlesSection.showSection === true && shapeHandle.showSection === true);
+check('child/parent-hidden-child-shown-counted',
+      window.__floeOfficePenState().shapeHandleSuspensions === suspensionsChildOnly + 1);
+
+// A handle section that throws while hiding must fail closed: no replayed
+// mousedown, no stroke success counter, drawing off and an honest error.
+shapeHandlesSection.setShowSection(true);
+const childSetShowSection = shapeHandle.setShowSection;
+shapeHandle.setShowSection = function() { throw new Error('handle hide failed'); };
+const strokesBeforeApiFailure = window.__floeOfficePenState().strokes;
+const shapesBeforeApiFailure = shapes;
+sectionContainer.targetSection = null;
+emit('pointerdown');
+check('failure/handle-api-fails-closed',
+      window.__floePencilOnly === false
+      && window.__floeOfficePenState().error === 'shape-handle-unavailable');
+check('failure/handle-api-clears-contact',
+      window.__floeOfficePenState().activeStroke === false && coreContact === false);
+check('failure/handle-api-no-stroke-count',
+      window.__floeOfficePenState().strokes === strokesBeforeApiFailure
+      && shapes === shapesBeforeApiFailure);
+check('failure/handle-api-no-mousedown', sectionContainer.targetSection === null,
+      sectionContainer.targetSection);
+shapeHandle.setShowSection = childSetShowSection;
+
+// A shown section without its setter is equally unconfirmable.
+shapeHandlesSection.setShowSection(true);
+const parentSetShowSection = shapeHandlesSection.setShowSection;
+shapeHandlesSection.setShowSection = undefined;
+const strokesBeforeMissingApi = window.__floeOfficePenState().strokes;
+const shapesBeforeMissingApi = shapes;
+sectionContainer.targetSection = null;
+emit('pointerdown');
+check('failure/missing-section-api-fails-closed',
+      window.__floePencilOnly === false
+      && window.__floeOfficePenState().error === 'shape-handle-unavailable');
+check('failure/missing-section-api-no-stroke',
+      window.__floeOfficePenState().strokes === strokesBeforeMissingApi
+      && shapes === shapesBeforeMissingApi);
+check('failure/missing-section-api-no-mousedown', sectionContainer.targetSection === null);
+shapeHandlesSection.setShowSection = parentSetShowSection;
+
+// A missing container lookup cannot prove the absence of a hit-test winner.
+if (!window.__floePencilOnly) { window.__floeSetOfficeDrawingMode(true); flush(); }
+const containerLookup = sectionContainer.getSectionWithName;
+sectionContainer.getSectionWithName = undefined;
+const strokesBeforeLookupFailure = window.__floeOfficePenState().strokes;
+const shapesBeforeLookupFailure = shapes;
+sectionContainer.targetSection = null;
+emit('pointerdown');
+check('failure/missing-container-api-fails-closed',
+      window.__floePencilOnly === false
+      && window.__floeOfficePenState().error === 'shape-handle-unavailable');
+check('failure/missing-container-api-no-stroke',
+      window.__floeOfficePenState().strokes === strokesBeforeLookupFailure
+      && shapes === shapesBeforeLookupFailure);
+check('failure/missing-container-api-no-mousedown', sectionContainer.targetSection === null);
+sectionContainer.getSectionWithName = containerLookup;
+
+// A late core selection callback can replace the section object under the
+// same name. Restoring must use the current object, never the stale one.
+if (!window.__floePencilOnly) { window.__floeSetOfficeDrawingMode(true); flush(); }
+shapeHandlesSection.setShowSection(true);
+const shapesIdentity = shapes;
+sectionContainer.targetSection = null;
+emit('pointerdown'); flush();
+const replacementHandles = {
+    name: 'shapeHandlesSection', showSection: false, interactable: true, isLocated: true,
+    documentObject: true, isVisible: true, bounds: [0, 0, 1000, 1000],
+    sectionProperties: { subSections: [] },
+    setShowSection(show) { this.showSection = show; },
+    onMouseDown() { coreContact = false; }, onMouseMove() {}, onMouseUp() {}
+};
+const handlesIndex = sections.indexOf(shapeHandlesSection);
+sections[handlesIndex] = replacementHandles;
+app.definitions.graphicSelection.handlesSection = replacementHandles;
+emit('pointerup'); flush();
+check('identity/replaced-section-not-restored', shapeHandlesSection.showSection === false);
+check('identity/replacement-untouched', replacementHandles.showSection === false);
+check('identity/stroke-completes', shapes === shapesIdentity + 1, shapes);
+sections[handlesIndex] = shapeHandlesSection;
+app.definitions.graphicSelection.handlesSection = null;
+
+// Even a stale GraphicSelection pointer must not re-show the old object when
+// the container now maps the name to a different section: the container
+// identity is authoritative.
+if (!window.__floePencilOnly) { window.__floeSetOfficeDrawingMode(true); flush(); }
+shapeHandlesSection.setShowSection(true);
+const shapesStalePointer = shapes;
+sectionContainer.targetSection = null;
+emit('pointerdown'); flush();
+const replacementStalePointer = Object.assign({}, replacementHandles);
+sections[handlesIndex] = replacementStalePointer;
+app.definitions.graphicSelection.handlesSection = shapeHandlesSection; // stale
+emit('pointerup'); flush();
+check('identity/container-authoritative', shapeHandlesSection.showSection === false);
+check('identity/stale-pointer-stroke-completes', shapes === shapesStalePointer + 1, shapes);
+sections[handlesIndex] = shapeHandlesSection;
+app.definitions.graphicSelection.handlesSection = null;
+
+// A handle that becomes live mid-contact and then throws on the pointerup hide
+// must still end the core contact and send the ordered backend Escape, without
+// counting a completed stroke. This catches a release() that clears contact
+// before the handle check and therefore never dispatches mouseup.
+if (!window.__floePencilOnly) { window.__floeSetOfficeDrawingMode(true); flush(); }
+shapeHandlesSection.setShowSection(true);
+sectionContainer.targetSection = null;
+emit('pointerdown'); flush();
+emit('pointermove', { clientX: 22, clientY: 22 }); flush();
+const throwingHandles = {
+    name: 'shapeHandlesSection', showSection: true, interactable: true, isLocated: true,
+    documentObject: true, isVisible: true, bounds: [0, 0, 1000, 1000],
+    sectionProperties: { subSections: [] },
+    setShowSection() { throw new Error('hide at pointerup failed'); },
+    onMouseDown() { coreContact = false; }, onMouseMove() {}, onMouseUp() {}
+};
+sections[handlesIndex] = throwingHandles;
+app.definitions.graphicSelection.handlesSection = throwingHandles;
+const strokesBeforeReleaseFailure = window.__floeOfficePenState().strokes;
+const escapesBeforeReleaseFailure = escapes;
+const mouseupsBeforeReleaseFailure = mouseups;
+sectionContainer.targetSection = null;
+emit('pointerup'); flush();
+check('failure/pointerup-hide-fails-closed',
+      window.__floePencilOnly === false
+      && window.__floeOfficePenState().error === 'shape-handle-unavailable');
+check('failure/pointerup-hide-releases-core-contact',
+      coreContact === false && mouseups === mouseupsBeforeReleaseFailure + 1,
+      'core=' + coreContact + ' mouseups=' + (mouseups - mouseupsBeforeReleaseFailure));
+check('failure/pointerup-hide-sends-ordered-escape',
+      escapes === escapesBeforeReleaseFailure + 1,
+      'escapes=' + (escapes - escapesBeforeReleaseFailure));
+check('failure/pointerup-hide-no-completed-stroke',
+      window.__floeOfficePenState().strokes === strokesBeforeReleaseFailure,
+      window.__floeOfficePenState().strokes);
+sections[handlesIndex] = shapeHandlesSection;
+app.definitions.graphicSelection.handlesSection = null;
+shapeHandlesSection.setShowSection(false);
+
+// Cancellation, pagehide and map loss must restore any handles hidden for the
+// contact. No hidden state may leak out of the Pencil path.
+if (!window.__floePencilOnly) { window.__floeSetOfficeDrawingMode(true); flush(); }
+shapeHandlesSection.setShowSection(true);
+emit('pointerdown');
+check('lifecycle/cancel-hides-handles', shapeHandlesSection.showSection === false);
+emit('pointercancel'); flush();
+check('lifecycle/cancel-restores-handles',
+      shapeHandlesSection.showSection === true && shapeHandle.showSection === true);
+
+shapeHandlesSection.setShowSection(true);
+emit('pointerdown');
+check('lifecycle/pagehide-hides-handles', shapeHandlesSection.showSection === false);
+emit('pagehide'); flush();
+check('lifecycle/pagehide-restores-handles',
+      shapeHandlesSection.showSection === true && shapeHandle.showSection === true);
+check('lifecycle/pagehide-disarms', window.__floePencilOnly === false);
+
+check('lifecycle/re-enable', window.__floeSetOfficeDrawingMode(true) === true); flush();
+shapeHandlesSection.setShowSection(true);
+emit('pointerdown');
+check('lifecycle/maploss-hides-handles', shapeHandlesSection.showSection === false);
+mapAvailable = false;
+check('lifecycle/maploss-disable-fails', window.__floeSetOfficeDrawingMode(false) === false); flush();
+check('lifecycle/maploss-restores-handles',
+      shapeHandlesSection.showSection === true && shapeHandle.showSection === true);
+mapAvailable = true;
+check('lifecycle/maploss-recovered-enable', window.__floeSetOfficeDrawingMode(true) === true); flush();
+check('lifecycle/maploss-recovered-disable', window.__floeSetOfficeDrawingMode(false) === true); flush();
+
+// Outside drawing mode the real handle route must stay intact: raw object
+// interaction still hits the independent child handle, and no Pencil replay
+// is involved.
+shapeHandlesSection.setShowSection(true);
+const shapesBeforeOff = shapes;
+sectionContainer.targetSection = null;
+replayMouseDown(20, 20); flush();
+check('handle/drawing-off-hits-handle',
+      sectionContainer.targetSection === 'shape-handle-3', sectionContainer.targetSection);
+check('handle/drawing-off-no-stroke', coreContact === false && shapes === shapesBeforeOff);
+shapeHandlesSection.setShowSection(false);
+app.definitions.graphicSelection.handlesSection = null;
+
 for (const result of results) console.log(JSON.stringify(result));
 """
 
@@ -313,6 +660,33 @@ class OfficePencilGatingContract(unittest.TestCase):
         self.assertIn("drawing = false;\n            try {", self.source)
         self.assertIn("state.error = 'engine-unavailable';", self.source)
         self.assertIn("map.setAcceptInput(false)", self.source)
+
+    def test_gate_clears_every_stale_shape_handle_section(self) -> None:
+        """The pinned handles parent does not own the hit test alone.
+
+        ShapeHandlesSection.onSectionShowStatusChange() calls
+        setShowSection(show) on each independent 'shape-handle-*' child, and
+        CanvasSectionContainer.findSectionContainingPoint() still returns a
+        child whose own showSection is true. The gate must verify/hide the
+        children and use the current section identity when restoring, while a
+        missing container lookup must not pretend the route is safe.
+        """
+        script = extract_objective_c_js(self.source, GATING_BEGIN, GATING_END)
+        self.assertIn("getSectionWithName", script)
+        self.assertIn("section.sectionProperties.subSections", script)
+        self.assertIn("subsection.setShowSection(false)", script)
+        self.assertIn("subsection.showSection === true", script)
+        self.assertIn("shape-handle-unavailable", script)
+        self.assertIn("if (!contact) return true;", script,
+                      "a failed handle cleanup must be distinguishable from a completed release")
+        self.assertIn("if (!release(null)) return false;", script,
+                      "the mode toggle must keep its error instead of re-arming after a failed cleanup")
+        self.assertIn("try { resetTool(false); } catch (ignored) {}", script,
+                      "a failed handle cleanup must still post the ordered backend Escape")
+        self.assertIn("container.getSectionWithName(section.name) !== section", script,
+                      "restore must use the current section object, not a stale same-name section")
+        self.assertIn("selection.handlesSection !== section", script,
+                      "restore must not touch a handle section no longer owned by GraphicSelection")
 
     def test_drawing_guard_clears_mirror_and_revokes_live_routing(self) -> None:
         """A rejected setDrawingMode must clear the host mirror before return.

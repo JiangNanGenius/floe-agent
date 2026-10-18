@@ -517,7 +517,7 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                 "strokeStimulusPlan": stimuli.map { $0.facts },
                 "expectedStyleCounts": expectedStyleCountValues,
                 "hitTestRouting": "first five bands canvas-direct; last five overlap contacts document.elementFromPoint; no fabricated overlay",
-                "hitDiagnostics": "bounded tag/id/class/ownership, hit coordinates, overlay census, previous-stroke probe and contact lifecycle; no page text",
+                "hitDiagnostics": "bounded tag/id/class/ownership, hit coordinates, overlay census, pre/post CanvasSection hit and bound names, stale-handle suspension counters and contact lifecycle; no page text",
                 "hardwarePointerInput": "not-tested", "pressure": "not-tested",
                 "syntheticPenBridgeReceipts": penReceipts,
                 "expectedLineStyles": expectedLineStyles,
@@ -662,6 +662,48 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                         "Selection state must be recorded, even when no selection exists")
         XCTAssertEqual(hit["clampedContacts"] as? Int, 0,
                        "Stimulus points must stay inside the visible document without clamping")
+        // A previous core selection can leave a frontend shape-handle section
+        // above the document in the real CanvasSection hit test. The production
+        // Pencil replay must clear that local handle section before the down
+        // and restore it afterwards; the core selection itself is untouched.
+        if let selectionBefore = hit["shapeSelectionBeforeDown"] as? [String: Any],
+           (selectionBefore["shown"] as? Bool == true
+            || (selectionBefore["shownChildCount"] as? Int ?? 0) > 0) {
+            let selectionAtDown = hit["shapeSelectionAtDown"] as? [String: Any]
+            XCTAssertEqual(selectionAtDown?["shown"] as? Bool, false,
+                           "A shown shape-handle section must be hidden for the replayed Pencil down")
+            XCTAssertEqual(selectionAtDown?["shownChildCount"] as? Int, 0,
+                           "Every independent shape-handle child must be hidden for the replayed Pencil down")
+            XCTAssertEqual((hit["shapeHandleSuspensionsAtDown"] as? Int ?? 0)
+                           - (hit["shapeHandleSuspensionsBeforeDown"] as? Int ?? 0), 1,
+                           "The Pencil down must record exactly one frontend stale-handle suspension (not a core save ACK)")
+        }
+        // Direct root-cause gate: re-run the same pinned container hit test
+        // after the down. A stale shape-handle-* child or the parent
+        // shapeHandlesSection must not remain the winner. Overlay and
+        // selection-rectangle sections are valid when their normal bounds
+        // propagate the mousedown to the document (MouseControl); do not
+        // hardcode mouse-control as the only acceptable name. The receipt
+        // counters above are DOM replay counters, never a core save ACK; the
+        // saved 10-path/exact 3-4-3 OOXML assertions in exercise() are the
+        // core proof and reject a lost stroke. Never delete or force-miss the
+        // sampled point.
+        let hitBefore = hit["canvasHitSectionBeforeDown"] as? String
+        let hitAtDown = hit["canvasHitSectionAtDown"] as? String
+        let handleAtDown = hit["shapeHandleAtDown"] as? Bool
+        XCTAssertNotNil(hitBefore, "The pre-down CanvasSection hit must be recorded")
+        XCTAssertNotNil(hitAtDown, "The post-down hit test must resolve a real document section")
+        XCTAssertEqual(handleAtDown, false,
+                       "The Pencil down must not resolve to a shape-handle-* or shapeHandlesSection; before=\(hitBefore ?? "nil") after=\(hitAtDown ?? "nil")")
+        if (hit["shapeHandleBeforeDown"] as? Bool) == true {
+            XCTAssertEqual(handleAtDown, false,
+                           "The stale shape handle present before the down must be cleared before replay")
+        }
+        if let boundNames = hit["canvasSectionAtDownBoundNames"] as? [String],
+           let parentName = hit["shapeHandlesName"] as? String {
+            XCTAssertFalse(boundNames.contains { $0 == parentName || $0.hasPrefix("shape-handle-") },
+                           "The routed section's boundsList must not propagate the Pencil down to a shape handle: \(boundNames)")
+        }
         let owners = contacts.compactMap {
             ($0["observedHitTarget"] as? [String: Any])?["ownership"] as? String
         }
@@ -800,6 +842,8 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         canvas:rect ? {x:finite(rect.x),y:finite(rect.y),width:finite(rect.width),height:finite(rect.height)} : null,
         pen:pen ? {drawing:pen.drawing === true,strokes:finite(pen.strokes),coreEvents:finite(pen.coreEvents),
             armedDispatches:finite(pen.armedDispatches),activeStroke:pen.activeStroke === true,
+            shapeHandleSuspensions:finite(pen.shapeHandleSuspensions),
+            error:typeof pen.error === 'string' ? pen.error.slice(0,64) : null,
             toolState:typeof pen.toolState === 'string' ? pen.toolState.slice(0,64) : null} : null});
     """#
 
@@ -888,12 +932,15 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             if (!section) return {sectionFound:false};
             const properties = section.sectionProperties || {};
             const svg = properties.svg || null;
+            const subSections = Array.isArray(properties.subSections) ? properties.subSections : [];
             return {
                 sectionFound:true,
                 sectionName: bounded(definition.name, 48),
                 shown: section.showSection === true,
                 subSectionCount: Array.isArray(properties.subSections)
                     ? Math.min(properties.subSections.length, 32) : null,
+                shownChildCount: Math.min(subSections.filter((sub) =>
+                    sub && sub.showSection === true).length, 32),
                 previewSvgPresent: !!svg,
                 previewSvgDisplay: svg ? bounded(String(svg.style.display || ''), 24) : null,
                 previewSvgPointerEvents: svg ? bounded(String(svg.style.pointerEvents || ''), 24) : null
@@ -1101,15 +1148,60 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         return sectionContainer && typeof sectionContainer.targetSection === 'string'
             ? bounded(sectionContainer.targetSection, 64) : null;
     };
+    // Re-derive the real CanvasSection hit with the pinned container's own
+    // findSectionContainingPoint at the same client point. The shape-handle
+    // root cause is a positive hit here, independent of DOM replay counters.
+    const shapeHandlesName = (app.CSections && app.CSections.ShapeHandlesSection
+        && app.CSections.ShapeHandlesSection.name) || 'shapeHandlesSection';
+    const isShapeHandleSection = (name) => typeof name === 'string'
+        && (name === shapeHandlesName || name.startsWith('shape-handle-'));
+    const canvasPoint = (point) => {
+        if (container && typeof container.convertPositionToCanvasLocale === 'function')
+            return container.convertPositionToCanvasLocale({clientX:point[0], clientY:point[1]});
+        const rect = canvas.getBoundingClientRect();
+        return [Math.round((point[0] - rect.left) * app.dpiScale),
+                Math.round((point[1] - rect.top) * app.dpiScale)];
+    };
+    const sectionHitAt = (point) => {
+        try {
+            if (!container || typeof container.findSectionContainingPoint !== 'function') return null;
+            return container.findSectionContainingPoint(canvasPoint(point));
+        } catch (_) { return null; }
+    };
+    const nameOfSection = (section) => section && typeof section.name === 'string'
+        ? bounded(section.name, 64) : null;
+    const boundNamesOf = (section) => {
+        try {
+            if (!section || !Array.isArray(section.boundsList)) return [];
+            return section.boundsList.map((bound) => nameOfSection(bound))
+                .filter((name) => typeof name === 'string').slice(0, 32);
+        } catch (_) { return []; }
+    };
     // Actual time from the previous contact's up to this down, including the
     // script's own pre-down probes. This is evidence, not the intended sleep.
     const strokeStart = performance.now();
     const elapsedSincePreviousStrokeMilliseconds = typeof window.__floePenLastStrokeEnd === 'number'
         ? round2(strokeStart - window.__floePenLastStrokeEnd) : null;
     const canvasSectionBeforeDown = canvasSectionName();
+    const canvasHitSectionBeforeDown = nameOfSection(sectionHitAt(points[0]));
+    const shapeHandleBeforeDown = isShapeHandleSection(canvasHitSectionBeforeDown);
+    // The pinned CanvasSection hit test can put a stale shape-handle
+    // subsection above the document. Record the bounded selection/handle
+    // state and the production gate's suspension counter around the down so
+    // the App test can prove the handle was cleared before replay.
+    const shapeSelectionBeforeDown = selectionState();
+    const shapeHandleSuspensionsBeforeDown = typeof before.shapeHandleSuspensions === 'number'
+        ? before.shapeHandleSuspensions : null;
     post('down', points[0], 1);
     const downAccepted = contacts[0].activeAfter === true;
     const canvasSectionAtDown = canvasSectionName();
+    const downHitSection = sectionHitAt(points[0]);
+    const canvasHitSectionAtDown = nameOfSection(downHitSection);
+    const shapeHandleAtDown = isShapeHandleSection(canvasHitSectionAtDown);
+    const canvasSectionAtDownBoundNames = boundNamesOf(downHitSection);
+    const shapeSelectionAtDown = selectionState();
+    const shapeHandleSuspensionsAtDown = typeof window.__floeOfficePenState().shapeHandleSuspensions === 'number'
+        ? window.__floeOfficePenState().shapeHandleSuspensions : null;
     for (let i = 1; i < points.length; i++) {
         await new Promise(resolve => setTimeout(resolve, 25));
         post('move', points[i], 1);
@@ -1123,6 +1215,11 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         previousStrokeID:previousStrokeID, elapsedSincePreviousStrokeMilliseconds,
         clampedContacts:clampedContacts.filter(Boolean).length,
         canvasSectionBeforeDown, canvasSectionAtDown,
+        canvasHitSectionBeforeDown, canvasHitSectionAtDown,
+        shapeHandleBeforeDown, shapeHandleAtDown,
+        canvasSectionAtDownBoundNames, shapeHandlesName,
+        shapeSelectionBeforeDown, shapeSelectionAtDown,
+        shapeHandleSuspensionsBeforeDown, shapeHandleSuspensionsAtDown,
         overlayCensusBefore:overlayBefore, overlayCensusAfter:overlayCensus(),
         previousStrokeProbe, contacts
     };

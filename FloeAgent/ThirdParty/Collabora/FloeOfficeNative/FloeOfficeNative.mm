@@ -351,6 +351,16 @@ static NSString *FloeBundledFontCatalogFingerprint(NSBundle *bundle) {
 // Freehand is one-shot in the core. After each contact, enqueue Escape then
 // re-arm on the same ordered engine channel; commandstatechanged is delayed
 // and must never decide whether the next contact is allowed to draw.
+//
+// The pinned CanvasSectionContainer hit-tests sections top-to-bottom before
+// the document's mouse-control section. A selection left by the previous
+// stroke keeps a document-local shapeHandlesSection above it, and its
+// subsections (for example 'shape-handle-3') would turn the replayed
+// mousedown into a shape drag instead of a freehand stroke. While a Pencil
+// contact is active, hide that handle section so the real document section
+// receives the replayed mouse input, then restore it after the contact. This
+// touches only the Pencil replay; touch/mouse object interaction outside
+// drawing mode and the core selection itself are unchanged.
 static NSString *FloeInkInputGatingScript() {
     return [NSString stringWithUTF8String:R"FLOE_JS(
 (() => {
@@ -358,7 +368,8 @@ static NSString *FloeInkInputGatingScript() {
         if (window.__floeInkGatingInstalled) return;
         window.__floeInkGatingInstalled = true;
         const state = window.__floePenState = {
-            strokes: 0, coreEvents: 0, armedDispatches: 0, activeStroke: false, toolState: null
+            strokes: 0, coreEvents: 0, armedDispatches: 0, activeStroke: false, toolState: null,
+            shapeHandleSuspensions: 0
         };
         let drawing = false;
         let contact = null;
@@ -423,18 +434,138 @@ static NSString *FloeInkInputGatingScript() {
             }
             return true;
         };
+        // A stale graphic selection is drawn by the frontend, not the core.
+        // Hiding it for this contact keeps its handle subsections out of the
+        // CanvasSection hit test; no core selection/command is changed.
+        //
+        // The pinned ShapeHandlesSection owns independent 'shape-handle-*'
+        // container sections in its subSections list: its
+        // onSectionShowStatusChange() calls setShowSection(show) on every
+        // child, and findSectionContainingPoint() skips each child only when
+        // that child's own showSection is false. Hiding the parent alone is
+        // therefore insufficient; hide and verify every shown child too. A
+        // failed hide must fail closed without counting a stroke, because the
+        // replayed down would otherwise be swallowed by the handle while the
+        // DOM bridge still reported success.
+        let suspendedHandles = null;
+        const shapeHandles = () => {
+            const app = window.app;
+            const container = app && app.sectionContainer;
+            // Undefined means the container itself cannot be inspected; null
+            // means the pinned container is inspectable and has no handles.
+            if (!container || typeof container.getSectionWithName !== 'function') return undefined;
+            const definition = app && app.CSections && app.CSections.ShapeHandlesSection;
+            const name = definition && typeof definition.name === 'string'
+                ? definition.name : 'shapeHandlesSection';
+            return container.getSectionWithName(name) || null;
+        };
+        const hideShapeHandles = (section) => {
+            if (!section || typeof section.setShowSection !== 'function') return false;
+            const subsections = section.sectionProperties && section.sectionProperties.subSections;
+            // The pinned class always owns this array. A missing one is not a
+            // shape-handle section we can prove is clear.
+            if (!Array.isArray(subsections)) return false;
+            try {
+                if (section.showSection !== false) section.setShowSection(false);
+                for (const subsection of subsections) {
+                    if (!subsection || subsection.showSection !== true) continue;
+                    if (typeof subsection.setShowSection !== 'function') return false;
+                    subsection.setShowSection(false);
+                }
+                if (section.showSection !== false) return false;
+                for (const subsection of subsections) {
+                    if (subsection && subsection.showSection === true) return false;
+                }
+                return true;
+            } catch (ignored) {
+                return false;
+            }
+        };
+        const suspendShapeHandles = () => {
+            const section = shapeHandles();
+            if (section === undefined) return 'failed';
+            if (!section) return 'none';
+            const subsections = section.sectionProperties && section.sectionProperties.subSections;
+            // A child is an independent container section: a stale child can
+            // still win the hit test even if the parent flag is already false.
+            if (!Array.isArray(subsections)) return 'failed';
+            let childShown = false;
+            for (const subsection of subsections) {
+                if (subsection && subsection.showSection === true) {
+                    childShown = true;
+                    break;
+                }
+            }
+            if (section.showSection !== true && !childShown) return 'none';
+            // Remember the object even if the hide fails so the caller's
+            // fail-closed cleanup can try to restore a partially hidden state.
+            suspendedHandles = section;
+            if (!hideShapeHandles(section)) return 'failed';
+            state.shapeHandleSuspensions += 1;
+            return 'suspended';
+        };
+        const restoreShapeHandles = () => {
+            const section = suspendedHandles;
+            suspendedHandles = null;
+            if (!section) return;
+            try {
+                const app = window.app;
+                const file = app && app.file;
+                if (file && file.textCursor && file.textCursor.visible === true) return;
+                const container = app && app.sectionContainer;
+                if (!container || typeof container.getSectionWithName !== 'function') return;
+                // A late core selection callback can replace the section under
+                // the same name; never restore a stale object.
+                if (container.getSectionWithName(section.name) !== section) return;
+                const selection = app.definitions && app.definitions.graphicSelection;
+                if (selection && selection.handlesSection !== section) return;
+                section.setShowSection(true);
+            } catch (ignored) {}
+        };
+        const failShapeHandles = (source) => {
+            drawing = false;
+            state.error = 'shape-handle-unavailable';
+            if (contact) {
+                const last = contact.last;
+                contact = null;
+                state.activeStroke = false;
+                // End any core contact already replayed. This mouseup may be
+                // swallowed by the unmaintainable handle, but the gate is now
+                // off and no completed stroke is claimed.
+                try { mouse('mouseup', source || last, 0, document); } catch (ignored) {}
+            } else {
+                state.activeStroke = false;
+            }
+            // Best-effort ordered backend Escape: even a swallowed mouseup must
+            // not leave core freehand/button state armed while the local gate
+            // is off. resetTool posts to the document's engine channel and
+            // never touches DOM selection/handles.
+            try { resetTool(false); } catch (ignored) {}
+            restoreShapeHandles();
+        };
         const release = (source) => {
-            if (!contact) return;
+            if (!contact) return true;
             const last = contact.last;
+            // Keep the contact until the handle check succeeds: failShapeHandles
+            // still needs to end any core contact already replayed.
+            if (suspendShapeHandles() === 'failed') {
+                failShapeHandles(source || last);
+                return false;
+            }
             contact = null;
             state.activeStroke = false;
-            mouse('mouseup', source || last, 0, document);
-            state.strokes += 1;
+            try {
+                mouse('mouseup', source || last, 0, document);
+                state.strokes += 1;
+            } finally {
+                restoreShapeHandles();
+            }
+            return true;
         };
         const finish = (source, rearm) => {
             if (!contact) return;
             try {
-                release(source);
+                if (!release(source)) return;
                 if (!resetTool(rearm)) {
                     drawing = false;
                     state.error = 'engine-unavailable';
@@ -454,8 +585,9 @@ static NSString *FloeInkInputGatingScript() {
             try {
                 // Release an in-flight synthetic contact first. Its mouseup is
                 // queued locally, so even a failed engine reset cannot strand
-                // the gate in an active-stroke state.
-                release(null);
+                // the gate in an active-stroke state. A failed handle cleanup
+                // keeps its error and the gate off instead of re-arming.
+                if (!release(null)) return false;
                 if (!resetTool(want)) {
                     state.error = 'engine-unavailable';
                     return false;
@@ -480,6 +612,11 @@ static NSString *FloeInkInputGatingScript() {
             contact = { id: event.pointerId, last: event };
             state.activeStroke = true;
             stop(event); // suppress WebKit's duplicate compatibility mouse input
+            if (suspendShapeHandles() === 'failed') {
+                contact = null;
+                failShapeHandles(null);
+                return;
+            }
             mouse('mousedown', event, 1, canvas);
         };
         const owns = (event) => contact && event.pointerType === 'pen' && event.pointerId === contact.id;
@@ -487,6 +624,10 @@ static NSString *FloeInkInputGatingScript() {
             if (!owns(event)) return;
             contact.last = event;
             stop(event);
+            if (suspendShapeHandles() === 'failed') {
+                failShapeHandles(event);
+                return;
+            }
             mouse('mousemove', event, 1, document);
         };
         const up = (event) => {
@@ -521,6 +662,7 @@ static NSString *FloeInkInputGatingScript() {
         window.__floeOfficePenState = () => ({
             drawing, strokes: state.strokes, coreEvents: state.coreEvents,
             armedDispatches: state.armedDispatches, activeStroke: state.activeStroke,
+            shapeHandleSuspensions: state.shapeHandleSuspensions,
             toolState: state.toolState, error: state.error || null
         });
     };
