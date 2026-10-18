@@ -334,6 +334,10 @@ public actor NotesStore {
             // never rewound by an undo/redo of the document's content.
             value.coverResourceID = current.coverResourceID
             value.coverRevision = current.coverRevision
+            if value.officeResourceID == current.officePreviewSourceID {
+                value.officePreviewSourceID = current.officePreviewSourceID
+                value.officePreviewResourceID = current.officePreviewResourceID
+            }
             try validateResources(value, db: db)
             try persist(value, cursor: redo ? cursor + 1 : cursor - 1, db: db)
             return value
@@ -437,6 +441,40 @@ public actor NotesStore {
                            arguments: [updated.updatedAt.timeIntervalSince1970, body, documentID.uuidString])
             try updateReferencesAndSearch(updated, db: db)
             if let previous = value.coverResourceID, previous != resolved {
+                try db.execute(sql: "INSERT OR IGNORE INTO resource_collection VALUES(?)", arguments: [previous.uuidString])
+            }
+            return updated
+        }
+        guard let changed else { return try document(documentID) }
+        publishChange()
+        return changed
+    }
+
+    /// Attach a generated render to its exact saved Office resource. This is
+    /// presentation metadata: no content revision/undo mutation, and no change
+    /// to the user's explicit cover. A late renderer cannot label newer bytes.
+    @discardableResult
+    public func cacheOfficePreview(documentID: UUID, sourceResourceID: UUID,
+                                   previewResourceID: UUID, expectedRevision: Int) throws -> NoteDocument {
+        let changed = try database.write { db -> NoteDocument? in
+            guard let raw = try Data.fetchOne(db, sql: "SELECT body FROM documents WHERE id=?",
+                                              arguments: [documentID.uuidString]) else { throw NoteError.notFound }
+            let value = try decoder.decode(NoteDocument.self, from: raw)
+            guard value.kind == .office, value.deletedAt == nil,
+                  value.officeResourceID == sourceResourceID else { throw NoteError.conflict }
+            let mediaType = try String.fetchOne(db, sql: "SELECT media_type FROM resources WHERE id=?",
+                                               arguments: [previewResourceID.uuidString])
+            guard NoteCoverAssetPolicy.acceptsStoredAsset(mediaType: mediaType) else { throw NoteError.resourceUnavailable }
+            if value.matchingOfficePreviewResourceID == previewResourceID { return nil }
+            guard value.revision == expectedRevision else { throw NoteError.conflict }
+            guard var object = try JSONSerialization.jsonObject(with: raw) as? [String: Any] else { throw NoteError.resourceUnavailable }
+            object["officePreviewSourceID"] = sourceResourceID.uuidString
+            object["officePreviewResourceID"] = previewResourceID.uuidString
+            let body = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            let updated = try decoder.decode(NoteDocument.self, from: body)
+            try db.execute(sql: "UPDATE documents SET body=? WHERE id=?", arguments: [body, documentID.uuidString])
+            try updateReferencesAndSearch(updated, db: db)
+            if let previous = value.officePreviewResourceID, previous != previewResourceID {
                 try db.execute(sql: "INSERT OR IGNORE INTO resource_collection VALUES(?)", arguments: [previous.uuidString])
             }
             return updated

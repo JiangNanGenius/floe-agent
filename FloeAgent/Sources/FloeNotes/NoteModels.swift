@@ -261,6 +261,15 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
     public var officeTextResourceID: UUID?
     public var officeExtractedText: String?
     public var officeTextError: String?
+    /// Rebuildable first-page render of the exact immutable Office resource.
+    /// Separate from an explicit user cover; never display it for other bytes.
+    public var officePreviewSourceID: UUID?
+    public var officePreviewResourceID: UUID?
+    public var matchingOfficePreviewResourceID: UUID? {
+        guard kind == .office, let source = officeResourceID,
+              officePreviewSourceID == source else { return nil }
+        return officePreviewResourceID
+    }
     /// Standalone engineering/CAD document: exactly one immutable resource, previewed read-only.
     /// Optional so archives written before this kind still decode.
     public var engineeringResourceID: UUID?
@@ -289,7 +298,9 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
     /// Cache-key fragment that changes on exactly the cover state changes.
     /// It carries a cover-specific version, not the content revision.
     public var coverCacheToken: String {
-        "\(coverResourceID?.uuidString ?? "auto")@\(normalizedCoverRevision)"
+        let source = coverResourceID?.uuidString
+            ?? matchingOfficePreviewResourceID.map { "office-preview:\($0.uuidString)" } ?? "auto"
+        return "\(source)@\(normalizedCoverRevision)"
     }
     public init(id: UUID = UUID(), kind: Kind = .notebook, notebookID: UUID? = nil, title: String) {
         self.id = id; self.kind = kind; self.notebookID = notebookID; self.title = title; self.revision = 0
@@ -302,7 +313,7 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
         Set(pages.flatMap { page in
             [page.backgroundResourceID, page.drawingResourceID].compactMap { $0 }
             + page.elements.compactMap(\.resourceID)
-        } + nodes.compactMap(\.imageResourceID) + nodes.flatMap { ($0.attachments ?? []).map(\.resourceID) } + [officeResourceID, engineeringResourceID, coverResourceID].compactMap { $0 })
+        } + nodes.compactMap(\.imageResourceID) + nodes.flatMap { ($0.attachments ?? []).map(\.resourceID) } + [officeResourceID, engineeringResourceID, coverResourceID, matchingOfficePreviewResourceID].compactMap { $0 })
     }
     public var searchableText: String {
         ([title] + tags + ((officeTextResourceID == officeResourceID ? officeExtractedText : nil).map { [$0] } ?? []) + (engineeringFileName.map { [$0] } ?? []) + pages.compactMap(\.extractedText) + pages.compactMap(\.indexedVisualText) + pages.flatMap { $0.elements.map(\.text) }

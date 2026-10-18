@@ -55,6 +55,10 @@ public enum NoteEdit: Codable, Hashable, Sendable {
             document.mindMapDirection = direction; document.summaries = summaries
         case .replaceOfficeResource(let resource):
             guard document.kind == .office else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_target_is_not_an_office")) }
+            if document.officeResourceID != resource {
+                document.officePreviewSourceID = nil
+                document.officePreviewResourceID = nil
+            }
             document.officeResourceID = resource
         case .replaceMindMap(let nodes, let connections):
             guard document.kind == .mindMap else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_edit.the_target_is_not_a_mind")) }
