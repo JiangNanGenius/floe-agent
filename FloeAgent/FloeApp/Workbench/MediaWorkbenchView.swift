@@ -304,6 +304,7 @@ struct WorkbenchBootstrapSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var ready = false
+    @State private var didStartPreparation = false
     @State private var failure: String?
     @State private var resumeCandidate: MediaProjectStore.ProjectSummary?
 
@@ -381,10 +382,17 @@ struct WorkbenchBootstrapSheet: View {
                     }
                 }
                 .padding()
+            } else if ready {
+                // The session was closed; dismissal may still be animating.
+                Color.clear
             } else {
                 ProgressView(WorkbenchText.t("正在准备工作台…", "Preparing workbench…"))
-                    .task { await prepare() }
             }
+        }
+        .task {
+            guard !didStartPreparation else { return }
+            didStartPreparation = true
+            await prepare()
         }
         .alert(item: $center.alert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message),

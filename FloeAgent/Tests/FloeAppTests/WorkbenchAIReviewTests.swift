@@ -87,7 +87,8 @@ struct WorkbenchAIReviewTests {
                 throw FloeError.notFound("no result")
             },
             costNote: { _ in "Mock pricing note" })
-        return WorkbenchCenter(rootProvider: { root }, bridge: bridge)
+        return WorkbenchCenter(rootProvider: { root }, bridge: bridge,
+                               mediaProjectStoreDirectory: root.appendingPathComponent("MediaProjects"))
     }
 
     private func makeImageProject(center: WorkbenchCenter, root: URL,
