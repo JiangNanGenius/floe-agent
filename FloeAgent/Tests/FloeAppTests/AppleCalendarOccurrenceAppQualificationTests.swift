@@ -364,7 +364,6 @@ final class AppleCalendarOccurrenceAppQualificationTests: XCTestCase {
         let calendar = EKCalendar(for: .event, eventStore: store)
         calendar.source = source
         calendar.title = identifier
-        calendar.timeZone = TimeZone.current
         try store.saveCalendar(calendar, commit: true)
         guard let savedSource = calendar.source, savedSource.sourceType == .local else {
             do {
