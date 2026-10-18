@@ -91,15 +91,16 @@ public enum BundledDomainSkills {
             id: "floe-apple",
             name: "Apple Capabilities",
             description: "Mail, calendar, photos, home, reminders, shortcuts, clipboard and camera rules in one place.",
-            version: "1.0.0",
+            version: "1.1.0",
             exposed: false,
             markdown: """
             ## Apple capability rules
-            - **Stable IDs**: list before update/delete and reuse the exact returned id (calendar events, reminders, automations, home accessoryID+characteristicID). Create actions need no prior id.
+            - **Stable IDs**: list before update/delete and reuse the exact returned id (calendar events, reminders, automations, home accessoryID+characteristicID). For calendar events, also pass the exact occurrence token from the list; recurring or detached events require it. Create actions need no prior id.
+            - **Calendar scope**: calendar update/delete applies to this event by default; `span=futureEvents` is explicit and only for a recurring series. Never substitute a series' first occurrence for the requested one — if an occurrence token is stale or ambiguous, list again.
             - **Mail**: `apple.mail.compose` only opens the compose UI — it never sends. `mail.send` sends through the configured SMTP account with approval. Read/search/download via `mail.*` connector tools.
             - **Photos**: capture new images to the workspace through `apple.camera.capture` (bounded, user-visible). Do not claim a Photos-library save tool exists; use the app's explicit export UI when needed.
             - **Home**: control only writable characteristics with both exact IDs from `apple.home.list`.
-            - **Reminders/Calendar**: create with clear titles/times; edits always go list-first.
+            - **Reminders/Calendar**: create with clear titles/times; edits always go list-first and carry the listed calendar occurrence token plus the intended scope.
             - **Shortcuts**: `apple.shortcuts.run` executes an installed shortcut by exact name with bounded input/output.
             - **Clipboard**: reads/writes are approval-gated and one-shot; never stash clipboard content into memory or files unless the user asked.
             - **Permissions**: if a capability reports missing authorization, name the exact Settings path instead of retrying blindly.

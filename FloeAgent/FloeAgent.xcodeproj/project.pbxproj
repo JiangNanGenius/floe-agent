@@ -438,6 +438,7 @@
 		BD180E6F18D1B24DA6B15D12 /* QuickLookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B378CF37C409045418D9D24 /* QuickLookView.swift */; };
 		BD1E0A6DDC575DC93F9FF050 /* DesignWorkflowFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6268D776BDDFBA3D1D333F52 /* DesignWorkflowFixtureTests.swift */; };
 		BD4F412634BDD60B073A99E2 /* LegacySceneMigrationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFD23A66A0F3BD2103413362 /* LegacySceneMigrationService.swift */; };
+		BD9CDC06210B0CCF5C4F07BE /* AppleCalendarOccurrenceAppQualificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A83F3B9F0A92C891DBAEE289 /* AppleCalendarOccurrenceAppQualificationTests.swift */; };
 		BE3C6E177C8B0010918C0EDA /* EnvironmentLanguagePackageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD2CFD611878BC20AF443EB /* EnvironmentLanguagePackageTests.swift */; };
 		BE534C8C1F5C827155E0256E /* HomeLaunchpadViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */; };
 		BED80FA8AAFDE587A9A65784 /* CADCanvasActionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07D2E301B70A21D7EBEC5FB /* CADCanvasActionBridge.swift */; };
@@ -1054,6 +1055,7 @@
 		A7A5F2275DCABC7DDA74B914 /* ContentUpdatesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentUpdatesSettingsView.swift; sourceTree = "<group>"; };
 		A809A3D1E4CFC7C591315E2A /* EnvironmentLanguagePackageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvironmentLanguagePackageService.swift; sourceTree = "<group>"; };
 		A837399A8DE937C9827D4EFA /* PDFiumLicenses */ = {isa = PBXFileReference; lastKnownFileType = folder; name = PDFiumLicenses; path = FloeApp/Resources/PDFiumLicenses; sourceTree = SOURCE_ROOT; };
+		A83F3B9F0A92C891DBAEE289 /* AppleCalendarOccurrenceAppQualificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleCalendarOccurrenceAppQualificationTests.swift; sourceTree = "<group>"; };
 		A88E81F353E8C7B2FFB15A74 /* ComposerEditingPrimitives.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerEditingPrimitives.swift; sourceTree = "<group>"; };
 		A9882EA32564305D017F2566 /* TextFileEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextFileEditorView.swift; sourceTree = "<group>"; };
 		A9A791AA53691DDDBA9E92CB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -1611,6 +1613,7 @@
 		28BC25D92D9FAD5D529EB886 /* FloeAppTests */ = {
 			isa = PBXGroup;
 			children = (
+				A83F3B9F0A92C891DBAEE289 /* AppleCalendarOccurrenceAppQualificationTests.swift */,
 				BB87C04D48C3CED090BDB8EC /* AppQualificationEnvironment.swift */,
 				82EC5CFD8139A8DD4786A020 /* ApprovalCardRegistryTests.swift */,
 				D55118226D254642053BAEF1 /* AutomaticReasoningEffortLifecycleTests.swift */,
@@ -3210,6 +3213,7 @@
 			files = (
 				4871E0C3F21F532775D4CFE7 /* AgentRuntimeTests.swift in Sources */,
 				0930D102D376383BFCE14ABF /* AppQualificationEnvironment.swift in Sources */,
+				BD9CDC06210B0CCF5C4F07BE /* AppleCalendarOccurrenceAppQualificationTests.swift in Sources */,
 				EFDEEEE385F4DD9EEB64BF0E /* ApprovalCardRegistryTests.swift in Sources */,
 				F00244E95C974C5D4C654125 /* AutomaticReasoningEffortLifecycleTests.swift in Sources */,
 				D39605167E853A1D1BB5A3CF /* BackgroundJobTests.swift in Sources */,

@@ -213,14 +213,21 @@ struct AppleCalendarListTool: AgentTool {
                 if lhsID != rhsID { return lhsID < rhsID }
                 return ($0.title ?? "") < ($1.title ?? "")
             }
-        let lines = events.map { event -> String in
-            let id = event.eventIdentifier ?? "unknown"
-            let startISO = AppleToolOutput.iso(event.startDate)
+        let lines = events.compactMap { event -> String? in
+            // A stored occurrence must expose both the series identifier and
+            // its start. Emitting a token with "unknown" would look editable
+            // but could never resolve, so an incomplete row is omitted.
+            guard let id = event.eventIdentifier, !id.isEmpty,
+                  let startDate = event.startDate else { return nil }
             // Occurrence identity: a recurring series shares eventIdentifier,
             // so the occurrence start distinguishes instances across pages.
-            let occurrence = "\(id)@\(startISO)"
-            return "id=\(id) occurrence=\(occurrence) start=\(startISO)"
+            // This exact token is the only selector that may reach a
+            // recurring update/delete.
+            let identity = CalendarOccurrenceIdentity(eventIdentifier: id, start: startDate)
+            return "id=\(id) occurrence=\(identity.token) start=\(identity.startISO8601)"
                 + " end=\(AppleToolOutput.iso(event.endDate)) allDay=\(event.isAllDay)"
+                + " recurring=\(event.hasRecurrenceRules || event.isDetached)"
+                + " detached=\(event.isDetached)"
                 + " calendar=\(event.calendar.title) title=\(event.title ?? "")"
         }
         do {
@@ -252,49 +259,446 @@ struct AppleCalendarListTool: AgentTool {
     private static let emptyFilterKey = "start=none end=none query="
 }
 
+private struct EventKitOccurrenceTarget: CalendarOccurrenceTarget {
+    let event: EKEvent
+
+    var occurrenceCandidate: CalendarOccurrenceCandidate {
+        CalendarOccurrenceCandidate(
+            eventIdentifier: event.eventIdentifier ?? "",
+            start: event.startDate ?? .distantPast,
+            hasRecurrenceRules: event.hasRecurrenceRules,
+            isDetached: event.isDetached
+        )
+    }
+}
+
+private struct EventKitCalendarOccurrenceAdapter: CalendarOccurrenceWriting {
+    typealias Target = EventKitOccurrenceTarget
+
+    let store: EKEventStore
+    let prepare: (EKEvent) throws -> Void
+
+    func candidates(for identity: CalendarOccurrenceIdentity) throws -> [EventKitOccurrenceTarget] {
+        // A two-second window around the listed start is enough to retrieve
+        // the occurrence without scanning a large range. The resolver then
+        // requires the exact identifier and whole-second start, so a nearby
+        // series instance can never stand in for the requested one.
+        let predicate = store.predicateForEvents(
+            withStart: identity.start.addingTimeInterval(-2),
+            end: identity.start.addingTimeInterval(2),
+            calendars: nil
+        )
+        return store.events(matching: predicate).map {
+            EventKitOccurrenceTarget(event: $0)
+        }
+    }
+
+    func apply(
+        _ operation: CalendarOccurrenceWriteOperation,
+        span: CalendarWriteSpan,
+        to target: EventKitOccurrenceTarget
+    ) throws {
+        switch operation {
+        case .save:
+            try prepare(target.event)
+            try store.save(target.event, span: span.eventKitSpan, commit: true)
+        case .remove:
+            try store.remove(target.event, span: span.eventKitSpan, commit: true)
+        }
+    }
+}
+
+private struct AppleCalendarExpectedUpdate {
+    let eventIdentifier: String
+    let calendarItemIdentifier: String?
+    let start: Date
+    let end: Date?
+    let title: String?
+    let notes: String?
+    let location: String?
+    let isAllDay: Bool?
+}
+
+private enum AppleCalendarWriteReadback {
+    /// Actual post-write read: reset the store cache, re-query the target
+    /// start and require one identity match plus the content we wrote. A save
+    /// alone is never reported as verified.
+    static func updatedEvent(
+        store: EKEventStore,
+        expected: AppleCalendarExpectedUpdate
+    ) -> EKEvent? {
+        store.reset()
+        let candidates = events(store: store, around: expected.start)
+        let direct = candidates.filter { event in
+            guard let identifier = event.eventIdentifier,
+                  let start = event.startDate else { return false }
+            return identifier == expected.eventIdentifier
+                && CalendarOccurrenceIdentity.sameSecond(start, expected.start)
+        }
+        let matched: EKEvent?
+        if direct.count == 1 {
+            matched = direct[0]
+        } else if direct.isEmpty, let itemIdentifier = expected.calendarItemIdentifier,
+                  !itemIdentifier.isEmpty {
+            // A thisEvent detach or futureEvents split may change the series
+            // eventIdentifier. The occurrence item identifier plus the exact
+            // start is a narrow alternate read-back binding.
+            let indirect = candidates.filter { event in
+                guard let start = event.startDate else { return false }
+                return event.calendarItemIdentifier == itemIdentifier
+                    && CalendarOccurrenceIdentity.sameSecond(start, expected.start)
+            }
+            matched = indirect.count == 1 ? indirect[0] : nil
+        } else {
+            matched = nil
+        }
+        guard let matched,
+              let start = matched.startDate,
+              CalendarOccurrenceIdentity.sameSecond(start, expected.start) else {
+            return nil
+        }
+        if let title = expected.title, matched.title != title { return nil }
+        if let notes = expected.notes, matched.notes != notes { return nil }
+        if let location = expected.location, matched.location != location { return nil }
+        if let isAllDay = expected.isAllDay, matched.isAllDay != isAllDay { return nil }
+        if let end = expected.end {
+            guard let actualEnd = matched.endDate,
+                  CalendarOccurrenceIdentity.sameSecond(actualEnd, end) else {
+                return nil
+            }
+        }
+        return matched
+    }
+
+    static func occurrenceIsAbsent(
+        store: EKEventStore,
+        identity: CalendarOccurrenceIdentity
+    ) -> Bool {
+        store.reset()
+        let candidates = events(store: store, around: identity.start)
+        return !candidates.contains { event in
+            guard let identifier = event.eventIdentifier,
+                  let start = event.startDate else { return false }
+            return identifier == identity.eventIdentifier
+                && CalendarOccurrenceIdentity.sameSecond(start, identity.start)
+        }
+    }
+
+    private static func events(store: EKEventStore, around start: Date) -> [EKEvent] {
+        let predicate = store.predicateForEvents(
+            withStart: start.addingTimeInterval(-2),
+            end: start.addingTimeInterval(2),
+            calendars: nil
+        )
+        return store.events(matching: predicate)
+    }
+}
+
+private extension CalendarWriteSpan {
+    var eventKitSpan: EKSpan {
+        switch self {
+        case .thisEvent: .thisEvent
+        case .futureEvents: .futureEvents
+        }
+    }
+}
+
 struct AppleCalendarUpdateTool: AgentTool {
     struct Arguments: Decodable, Sendable {
-        var action: String; var id: String?; var title: String?; var start: String?; var end: String?
+        var action: String; var id: String?; var occurrence: String?; var span: String?
+        var title: String?; var start: String?; var end: String?
         var notes: String?; var location: String?; var isAllDay: Bool?
     }
     static let name = "apple.calendar.update"
-    static let toolDescription = "Create, update, or delete an Apple Calendar event. Use an id returned by apple.calendar.list for update/delete."
-    static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"id":{"type":"string"},"title":{"type":"string"},"start":{"type":"string"},"end":{"type":"string"},"notes":{"type":"string"},"location":{"type":"string"},"isAllDay":{"type":"boolean"}},"required":["action"],"additionalProperties":false}"#
+    static let toolDescription = "Create, update, or delete an Apple Calendar event. For update/delete, use the id and the exact occurrence token returned by apple.calendar.list. span selects thisEvent (default) or futureEvents for a recurring series. Recurring or detached events require occurrence; missing, stale or ambiguous occurrences fail without changing another instance. Read-back verifies the selected target occurrence (verificationScope=targetOccurrence); for futureEvents it does not enumerate every future instance."
+    static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"id":{"type":"string"},"occurrence":{"type":"string","maxLength":2048},"span":{"type":"string","enum":["thisEvent","futureEvents"]},"title":{"type":"string"},"start":{"type":"string"},"end":{"type":"string"},"notes":{"type":"string"},"location":{"type":"string"},"isAllDay":{"type":"boolean"}},"required":["action"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true
     func validate(_ args: Arguments) throws {
         guard ["create", "update", "delete"].contains(args.action) else { throw FloeError.validationFailed("Unsupported calendar action") }
-        if args.action != "create", args.id?.isEmpty != false { throw FloeError.validationFailed("id is required") }
-        if args.action == "create", args.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false { throw FloeError.validationFailed("title is required") }
+        if args.action == "create" {
+            do {
+                try CalendarOccurrenceResolver.validateCreate(
+                    occurrenceToken: args.occurrence,
+                    spanRaw: args.span
+                )
+            } catch let error as CalendarOccurrenceError {
+                throw Self.occurrenceFailure(error)
+            }
+            if args.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                throw FloeError.validationFailed("title is required")
+            }
+            return
+        }
+        if args.id?.isEmpty != false { throw FloeError.validationFailed("id is required") }
+        let id = args.id!
+        let span = try Self.parsedSpan(args.span)
+        if let occurrence = args.occurrence {
+            _ = try Self.boundOccurrence(id: id, token: occurrence)
+        } else if span == .futureEvents {
+            throw Self.occurrenceFailure(.futureEventsRequiresOccurrence)
+        }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        guard ["create", "update", "delete"].contains(args.action) else {
+            throw FloeError.validationFailed("Unsupported calendar action")
+        }
+        if args.action != "create", args.id?.isEmpty != false {
+            throw FloeError.validationFailed("id is required")
+        }
+        if args.action == "create",
+           args.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            throw FloeError.validationFailed("title is required")
+        }
         let store = EKEventStore()
         guard try await store.requestFullAccessToEvents() else { return AppleToolOutput.make("status=permissionDenied capability=calendar", exitStatus: 77) }
-        if args.action == "delete" {
-            guard let event = store.event(withIdentifier: args.id!) else { throw FloeError.notFound("calendar event") }
-            try store.remove(event, span: .thisEvent, commit: true)
-            return AppleToolOutput.make("status=ok action=delete id=\(args.id!)")
-        }
-        let event: EKEvent
-        if args.action == "update" {
-            guard let current = store.event(withIdentifier: args.id!) else { throw FloeError.notFound("calendar event") }
-            event = current
-        } else {
-            event = EKEvent(eventStore: store)
+        let span = try Self.parsedSpan(args.span)
+        if args.action == "create" {
+            // validate() already enforces this; keep execute fail-closed when
+            // it is invoked directly by a test or another caller.
+            do {
+                try CalendarOccurrenceResolver.validateCreate(
+                    occurrenceToken: args.occurrence,
+                    spanRaw: args.span
+                )
+            } catch let error as CalendarOccurrenceError {
+                throw Self.occurrenceFailure(error)
+            }
+            let event = EKEvent(eventStore: store)
             event.calendar = store.defaultCalendarForNewEvents
+            try Self.applyFields(args, to: event, isCreate: true)
+            try store.save(event, span: .thisEvent, commit: true)
+            return AppleToolOutput.make("status=ok action=create id=\(event.eventIdentifier ?? "unknown")")
         }
+        if args.action == "delete" {
+            return try Self.delete(args, span: span, store: store)
+        }
+        return try Self.update(args, span: span, store: store)
+    }
+
+    private static func update(
+        _ args: Arguments,
+        span: CalendarWriteSpan,
+        store: EKEventStore
+    ) throws -> ToolExecutionOutput {
+        let id = args.id!
+        if let token = args.occurrence {
+            let identity = try Self.boundOccurrence(id: id, token: token)
+            let requestedStart = try Self.requestedStart(args, fallback: identity.start)
+            let writer = CalendarOccurrenceWriter(adapter: EventKitCalendarOccurrenceAdapter(
+                store: store,
+                prepare: { event in
+                    try Self.applyFields(args, to: event, isCreate: false)
+                }
+            ))
+            let target: EventKitOccurrenceTarget
+            do {
+                target = try writer.apply(identity: identity, span: span, operation: .save)
+            } catch let error as CalendarOccurrenceError {
+                throw Self.occurrenceFailure(error)
+            }
+            return try Self.finishUpdate(
+                args: args,
+                span: span,
+                target: target,
+                store: store,
+                requestedStart: requestedStart
+            )
+        }
+        guard let event = store.event(withIdentifier: id) else {
+            throw FloeError.notFound("calendar event")
+        }
+        do {
+            try CalendarOccurrenceResolver.validateLegacyWrite(
+                hasRecurrenceRules: event.hasRecurrenceRules,
+                isDetached: event.isDetached,
+                span: span
+            )
+        } catch let error as CalendarOccurrenceError {
+            throw Self.occurrenceFailure(error)
+        }
+        guard let legacyStartDate = event.startDate else {
+            throw FloeError.notFound("calendar event")
+        }
+        let legacyStart = CalendarOccurrenceIdentity(
+            eventIdentifier: id,
+            start: legacyStartDate
+        ).start
+        let requestedStart = try Self.requestedStart(args, fallback: legacyStart)
+        try Self.applyFields(args, to: event, isCreate: false)
+        try store.save(event, span: .thisEvent, commit: true)
+        return try Self.finishUpdate(
+            args: args,
+            span: .thisEvent,
+            target: EventKitOccurrenceTarget(event: event),
+            store: store,
+            requestedStart: requestedStart
+        )
+    }
+
+    private static func delete(
+        _ args: Arguments,
+        span: CalendarWriteSpan,
+        store: EKEventStore
+    ) throws -> ToolExecutionOutput {
+        let id = args.id!
+        if let token = args.occurrence {
+            let identity = try Self.boundOccurrence(id: id, token: token)
+            let writer = CalendarOccurrenceWriter(adapter: EventKitCalendarOccurrenceAdapter(
+                store: store,
+                prepare: { _ in }
+            ))
+            do {
+                _ = try writer.apply(identity: identity, span: span, operation: .remove)
+            } catch let error as CalendarOccurrenceError {
+                throw Self.occurrenceFailure(error)
+            }
+            // Read-back proves the selected occurrence is gone. For
+            // futureEvents it deliberately does not enumerate every later
+            // instance; the response names the narrower scope.
+            guard AppleCalendarWriteReadback.occurrenceIsAbsent(store: store, identity: identity) else {
+                throw FloeError.validationFailed("Calendar occurrence is still present after delete; no success was claimed. Re-list the calendar before retrying.")
+            }
+            return AppleToolOutput.make(
+                "status=ok action=delete id=\(identity.eventIdentifier)"
+                    + " occurrence=\(identity.token) span=\(span.rawValue)"
+                    + " verified=true readback=absent verificationScope=targetOccurrence"
+            )
+        }
+        guard let event = store.event(withIdentifier: id) else {
+            throw FloeError.notFound("calendar event")
+        }
+        do {
+            try CalendarOccurrenceResolver.validateLegacyWrite(
+                hasRecurrenceRules: event.hasRecurrenceRules,
+                isDetached: event.isDetached,
+                span: span
+            )
+        } catch let error as CalendarOccurrenceError {
+            throw Self.occurrenceFailure(error)
+        }
+        guard let startDate = event.startDate else {
+            throw FloeError.notFound("calendar event")
+        }
+        let identity = CalendarOccurrenceIdentity(eventIdentifier: id, start: startDate)
+        try store.remove(event, span: .thisEvent, commit: true)
+        guard AppleCalendarWriteReadback.occurrenceIsAbsent(store: store, identity: identity) else {
+            throw FloeError.validationFailed("Calendar event is still present after delete; no success was claimed. Re-list the calendar before retrying.")
+        }
+        return AppleToolOutput.make(
+            "status=ok action=delete id=\(identity.eventIdentifier)"
+                + " occurrence=\(identity.token) span=thisEvent"
+                + " verified=true readback=absent verificationScope=targetOccurrence"
+        )
+    }
+
+    private static func finishUpdate(
+        args: Arguments,
+        span: CalendarWriteSpan,
+        target: EventKitOccurrenceTarget,
+        store: EKEventStore,
+        requestedStart: Date
+    ) throws -> ToolExecutionOutput {
+        let event = target.event
+        guard let finalID = event.eventIdentifier, !finalID.isEmpty,
+              let finalStart = event.startDate else {
+            throw FloeError.validationFailed("Calendar event has no readable identity after save; no content verification was possible.")
+        }
+        let finalIdentity = CalendarOccurrenceIdentity(eventIdentifier: finalID, start: finalStart)
+        let expectedEnd = args.end == nil ? nil : try? AppleToolOutput.date(args.end)
+        // The read-back is bound to the start requested by this call (or the
+        // selected occurrence's start when start was not edited), not to
+        // whatever start the engine may have produced after save. A moved or
+        // normalized-away start therefore reports verified=false instead of
+        // being silently accepted as the requested content.
+        let expected = AppleCalendarExpectedUpdate(
+            eventIdentifier: finalID,
+            calendarItemIdentifier: event.calendarItemIdentifier,
+            start: CalendarOccurrenceIdentity.canonicalStart(requestedStart),
+            end: expectedEnd,
+            title: args.title,
+            notes: args.notes,
+            location: args.location,
+            isAllDay: args.isAllDay
+        )
+        // Future-series writes are saved with EventKit's span, but the
+        // read-back can only prove the selected occurrence and its content.
+        // The response therefore names targetOccurrence rather than implying
+        // that every later instance was re-read.
+        let readback = AppleCalendarWriteReadback.updatedEvent(store: store, expected: expected)
+        let verified = readback != nil
+        let responseID = readback?.eventIdentifier ?? finalID
+        let responseStart = readback?.startDate ?? finalIdentity.start
+        let responseIdentity = CalendarOccurrenceIdentity(
+            eventIdentifier: responseID,
+            start: responseStart
+        )
+        return AppleToolOutput.make(
+            "status=ok action=update id=\(responseID)"
+                + " occurrence=\(responseIdentity.token) span=\(span.rawValue)"
+                + " verified=\(verified)"
+                + " readback=\(verified ? "occurrence" : "unconfirmed")"
+                + " verificationScope=targetOccurrence"
+        )
+    }
+
+    private static func applyFields(
+        _ args: Arguments,
+        to event: EKEvent,
+        isCreate: Bool
+    ) throws {
         if let title = args.title { event.title = title }
         if let start = try AppleToolOutput.date(args.start) { event.startDate = start }
         if let end = try AppleToolOutput.date(args.end) { event.endDate = end }
-        if args.action == "create", event.startDate == nil { throw FloeError.validationFailed("start is required") }
-        if args.action == "create", event.endDate == nil { event.endDate = event.startDate.addingTimeInterval(3600) }
-        if event.endDate < event.startDate { throw FloeError.validationFailed("end must not precede start") }
+        if isCreate, event.startDate == nil {
+            throw FloeError.validationFailed("start is required")
+        }
+        if isCreate, event.endDate == nil {
+            event.endDate = event.startDate.addingTimeInterval(3600)
+        }
+        if let start = event.startDate, let end = event.endDate, end < start {
+            throw FloeError.validationFailed("end must not precede start")
+        }
         if let notes = args.notes { event.notes = notes }
         if let location = args.location { event.location = location }
         if let isAllDay = args.isAllDay { event.isAllDay = isAllDay }
-        try store.save(event, span: .thisEvent, commit: true)
-        return AppleToolOutput.make("status=ok action=\(args.action) id=\(event.eventIdentifier ?? "unknown")")
+    }
+
+    private static func parsedSpan(_ raw: String?) throws -> CalendarWriteSpan {
+        do {
+            return try CalendarOccurrenceResolver.parseSpan(raw)
+        } catch let error as CalendarOccurrenceError {
+            throw Self.occurrenceFailure(error)
+        }
+    }
+
+    private static func boundOccurrence(
+        id: String,
+        token: String
+    ) throws -> CalendarOccurrenceIdentity {
+        do {
+            return try CalendarOccurrenceResolver.bind(
+                eventIdentifier: id,
+                occurrenceToken: token
+            )
+        } catch let error as CalendarOccurrenceError {
+            throw Self.occurrenceFailure(error)
+        }
+    }
+
+    private static func requestedStart(_ args: Arguments, fallback: Date) throws -> Date {
+        guard args.start != nil else {
+            return CalendarOccurrenceIdentity.canonicalStart(fallback)
+        }
+        guard let parsed = try AppleToolOutput.date(args.start) else {
+            return CalendarOccurrenceIdentity.canonicalStart(fallback)
+        }
+        return CalendarOccurrenceIdentity.canonicalStart(parsed)
+    }
+
+    private static func occurrenceFailure(_ error: CalendarOccurrenceError) -> FloeError {
+        FloeError.validationFailed(error.errorDescription ?? "Invalid calendar occurrence")
     }
 }
 

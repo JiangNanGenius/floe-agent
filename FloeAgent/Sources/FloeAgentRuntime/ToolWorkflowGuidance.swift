@@ -32,7 +32,7 @@ enum ToolWorkflowGuidance {
             lines.append("Apple Home workflow: control only a writable characteristic with the exact accessoryID+characteristicID from apple.home.list. Apple capability rules: skill.read id=floe-apple.")
         }
         if names.contains("apple.calendar.list") || names.contains("apple.reminders.list") || names.contains("apple.automation.list") {
-            lines.append("Apple edit workflow: list first for update/delete and reuse the returned stable id. Apple capability rules: skill.read id=floe-apple.")
+            lines.append("Apple edit workflow: list first for update/delete and reuse the returned stable id. For calendar events, also copy the exact occurrence token (id@start) from the list; recurring or detached events require it, span defaults to thisEvent, and futureEvents is explicit. Re-list when an occurrence is stale or ambiguous instead of substituting another instance. Apple capability rules: skill.read id=floe-apple.")
         }
         if names.contains("font.list") && names.contains("font.remove") {
             lines.append("Font workflow: font.list returns the digest id required by font.remove; never derive it from a filename.")
@@ -75,7 +75,7 @@ enum ToolWorkflowGuidance {
         case "font.remove":
             return "Use the digest id returned by font.list."
         case "apple.calendar.update":
-            return "For update/delete, use the id returned by apple.calendar.list."
+            return "For update/delete, use the event id and its exact occurrence token from apple.calendar.list. If the occurrence no longer matches or matches more than one event, list again; never fall back to the first instance. Use span=futureEvents only for a recurring series and an explicit request to change later events."
         case "apple.reminders.update":
             return "For update/delete, use the id returned by apple.reminders.list."
         case "apple.automation.update":
