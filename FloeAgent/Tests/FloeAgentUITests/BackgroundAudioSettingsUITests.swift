@@ -1,5 +1,6 @@
 import XCTest
 
+@MainActor
 final class BackgroundAudioSettingsUITests: XCTestCase {
     func testIndependentSwitchesAndScreenFeedbackDependency() throws {
         continueAfterFailure = false
