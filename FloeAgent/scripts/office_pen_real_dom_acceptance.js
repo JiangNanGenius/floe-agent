@@ -25,8 +25,30 @@
  * finger stroke (pointerType 'touch') injected the same way must produce no
  * core mouse messages and must still scroll/navigate.
  *
- * This is not device Pencil acceptance: pressure, haptics and real WebKit
- * pointer routing remain with physical-device testing.
+ * Live-ink + navigation acceptance (new in this round):
+ *   evaluate OFFICE_PEN_LIVE_RUN while a synthetic pen contact is still
+ *   down (no pointerup): window.__floeOfficePenPreview() must report the
+ *   live SVG path (stroke true, ordered points, style matching
+ *   __floeOfficeInkLastDispatch.expected mapped through
+ *   app.twipsToPixels/app.dpiScale) and the composited canvas must show a
+ *   WK snapshot delta; after pointerup the preview path must remain until
+ *   the geometric paint probe clears it (lastPreviewClear 'painted'), never
+ *   'timeout' on a healthy renderer, and the saved document must contain
+ *   exactly the canonical vectors (root's App tests assert custGeom counts).
+ *   OFFICE_PEN_TOUCH_ARBITRATION dispatches a real first-finger ->
+ *   second-finger -> pinch-move -> touchend TouchEvent sequence through the
+ *   actual pinned handlers while drawing mode is ON with no pen contact:
+ *   no event may be defaultPrevented by the gate, the container's own
+ *   touchEventInProgress must be left set exactly as the pinned code does,
+ *   a following full pen contact must still replay (the gate's
+ *   touch->Pencil recovery clears the flag before each replayed mouse
+ *   event), and the finger sequence itself must produce no core mouse
+ *   messages.
+ *
+ * This is not device Pencil acceptance: pressure, haptics, real pinch feel,
+ * actual pixel paint and physical WebKit pointer/touch interop remain with
+ * device testing. Synthetic TouchEvent dispatch here exercises the pinned
+ * handler chain, not iOS gesture plumbing.
  */
 const OFFICE_PEN_ACCEPTANCE_INSTALL = `(() => {
   const map = window.app && window.app.map;
@@ -68,4 +90,108 @@ const OFFICE_PEN_ACCEPTANCE_RUN = `(() => {
   };
 })()`;
 
-module.exports = { OFFICE_PEN_ACCEPTANCE_INSTALL, OFFICE_PEN_ACCEPTANCE_RUN };
+// Live-ink presentation check. Run this while the contact is still down:
+// it injects a pen contact plus three trusted moves (one animation frame
+// apart), snapshots the gate's own preview state, and returns a function
+// that completes the contact. The caller must see stroke=true with ordered
+// points BEFORE invoking finish(), then a 'painted' clear after the engine
+// repaints. The preview must match the bridge's verified scalars and the
+// live zoom scale, and must never consume coalesced or predicted samples.
+const OFFICE_PEN_LIVE_RUN = `(async () => {
+  const canvas = window.app && window.app.sectionContainer && window.app.sectionContainer.canvas;
+  const penState = window.__floeOfficePenState && window.__floeOfficePenState();
+  if (!canvas || !penState || !penState.drawing)
+    return { ok: false, reason: 'surface-unavailable' };
+  const rect = canvas.getBoundingClientRect();
+  const x = rect.left + rect.width * 0.4, y = rect.top + rect.height * 0.6;
+  const send = (type, px, py, buttons) => canvas.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, composed: true, pointerType: 'pen',
+    pointerId: 555, isPrimary: true, clientX: px, clientY: py,
+    button: 0, buttons, pressure: buttons ? 0.5 : 0
+  }));
+  const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+  send('pointerdown', x, y, 1);
+  for (let i = 1; i <= 3; i += 1) { send('pointermove', x + i * 12, y + i * 6, 1); await frame(); }
+  const during = {
+    preview: window.__floeOfficePenPreview ? window.__floeOfficePenPreview() : null,
+    penState: window.__floeOfficePenState(),
+    expectedStyle: (window.__floeOfficeInkLastDispatch || {}).expected || null,
+    twipsToPixels: (window.app && window.app.twipsToPixels) || null,
+    dpiScale: (window.app && window.app.dpiScale) || null
+  };
+  window.__floeLiveRunFinish = () => {
+    send('pointerup', x + 48, y + 24, 0);
+    delete window.__floeLiveRunFinish;
+    return window.__floeOfficePenPreview();
+  };
+  window.__floeLiveRunInspect = () => window.__floeOfficePenPreview();
+  return { ok: true, during };
+})()`;
+
+// Touch arbitration + touch->Pencil transition. Requires
+// OFFICE_PEN_ACCEPTANCE_INSTALL first: run reset, evaluate this (it drives
+// a real two-finger pinch through the pinned container's own ontouch*
+// handlers with drawing mode ON and no pen contact), then compare the
+// recorded socket messages and the zoom delta. Acceptance: nothing in the
+// touch phase produces core mouse messages; the first finger's touchstart
+// is not defaultPrevented by the gate; app.map.getZoom() changes on pinch;
+// container.touchEventInProgress is true afterwards (the pinned onTouchEnd
+// line 1558); the immediately following full pen contact DOES produce the
+// canonical buttondown/move/up sequence because the gate restores that one
+// flag before each replay; and the whole run adds no finger ink.
+const OFFICE_PEN_TOUCH_ARBITRATION = `(() => {
+  const canvas = window.app && window.app.sectionContainer && window.app.sectionContainer.canvas;
+  const container = window.app && window.app.sectionContainer;
+  const penState = window.__floeOfficePenState && window.__floeOfficePenState();
+  if (!canvas || !container || !penState || !penState.drawing)
+    return { ok: false, reason: 'surface-unavailable' };
+  const rect = canvas.getBoundingClientRect();
+  const cx = rect.left + rect.width * 0.5, cy = rect.top + rect.height * 0.5;
+  const mkTouch = (id, x, y) => new Touch({
+    identifier: id, target: canvas, clientX: x, clientY: y,
+    pageX: x, pageY: y, screenX: x, screenY: y
+  });
+  const dispatchTouch = (type, ids) => {
+    const touches = ids.map((id) => mkTouch(id[0], id[1], id[2]));
+    const event = new TouchEvent(type, {
+      bubbles: true, cancelable: true,
+      touches, targetTouches: touches, changedTouches: touches.slice(-1)
+    });
+    canvas.dispatchEvent(event);
+    return { prevented: event.defaultPrevented, zoom: window.app.map.getZoom() };
+  };
+  const a = [1, cx - 60, cy], b = [2, cx + 60, cy];
+  const steps = [];
+  steps.push(['first-touchstart', dispatchTouch('touchstart', [a])]);
+  steps.push(['second-touchstart', dispatchTouch('touchstart', [a, b])]);
+  steps.push(['pinch-move-1', dispatchTouch('touchmove', [
+    [1, cx - 60, cy], [2, cx + 140, cy]])]);
+  steps.push(['pinch-move-2', dispatchTouch('touchmove', [
+    [1, cx - 60, cy], [2, cx + 260, cy]])]);
+  steps.push(['touchend', dispatchTouch('touchend', [])]);
+  const zoomAfter = window.app.map.getZoom();
+  const flagAfterPinch = container.touchEventInProgress === true;
+  const before = (window.__floePenAcceptanceMouse || []).length;
+  const x = rect.left + rect.width * 0.35, y = rect.top + rect.height * 0.62;
+  const send = (type, px, py, buttons) => canvas.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, composed: true, pointerType: 'pen',
+    pointerId: 556, isPrimary: true, clientX: px, clientY: py,
+    button: 0, buttons, pressure: buttons ? 0.5 : 0
+  }));
+  send('pointerdown', x, y, 1); send('pointermove', x + 14, y + 6, 1); send('pointerup', x + 24, y + 10, 0);
+  const mouse = (window.__floePenAcceptanceMouse || []).slice(before);
+  return {
+    ok: true, steps, zoomAfter, zoomChanged: steps[0][1].zoom !== zoomAfter,
+    flagAfterPinch,
+    recoveredForPen: container.touchEventInProgress === false,
+    penMouseAfterTouch: mouse,
+    penState: window.__floeOfficePenState()
+  };
+})()`;
+
+module.exports = {
+  OFFICE_PEN_ACCEPTANCE_INSTALL,
+  OFFICE_PEN_ACCEPTANCE_RUN,
+  OFFICE_PEN_LIVE_RUN,
+  OFFICE_PEN_TOUCH_ARBITRATION,
+};

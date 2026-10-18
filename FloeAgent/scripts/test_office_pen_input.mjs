@@ -1,33 +1,68 @@
 #!/usr/bin/env node
 /*
- * Contract test for the Floe pen-input overlay injected by
+ * Contract test for the Floe pen-input + live-ink overlay injected by
  * FloeAgent/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.mm
  * (FLOE_INK_GATING_SCRIPT region).
  *
  * The script text is extracted from the .mm at run time, so the test always
- * exercises exactly what the native host injects. The harness is a minimal
- * DOM: window/document/canvas event targets with capture+bubble propagation,
- * a MouseEvent constructor and the pinned frontend's map / sectionContainer /
- * stateChangeHandler surface.
+ * exercises exactly what the native host injects. The harness models the
+ * CURRENT production surface: window/document/canvas targets with
+ * capture+bubble propagation, the ordered map._docLayer.postKeyboardEvent
+ * Escape channel, per-type map.on subscriptions, a fake composited document
+ * canvas (sectionContainer.context.getImageData) whose painted regions the
+ * test controls in backing-pixel coordinates, deterministic timers and
+ * animation frames, and the app.twipsToPixels/dpiScale zoom scale.
  *
- * Covered contracts (review-required, 2026-10-17):
- *  - an App pre-arm (OfficeFileSession/setDrawingMode already dispatched
- *    .uno:Freeline_Unfilled, observed either through the __floePencilOnly
- *    assignment or the engine's current item state) must NOT be re-dispatched
- *    by the first pen stroke: re-executing the same slot deselects the tool in
- *    Writer/Calc;
- *  - an observed inactive state re-arms exactly once per stroke start, and an
- *    observed active state suppresses re-arming;
- *  - 'enabled'/'disabled' describe availability only and never count as the
- *    tool being active or inactive;
- *  - pen strokes become real DOM mouse events on the engine canvas/document
- *    (the frontend's own path to the core), while finger pointer and touch
- *    navigation stay untouched outside an active stroke.
+ * Covered contracts:
+ *  - armed/disarmed routing: the App arm dispatches the freehand tool once;
+ *    down/move/up replay through the pinned canvas mouse path; every
+ *    completed contact re-arms exactly once behind an ordered Escape pair;
+ *    commandstatechanged observations (including 'disabled' and stale cache
+ *    values) never decide whether the next contact draws and the cached
+ *    getItemValue is never consulted at all;
+ *  - finger pointer events on the canvas stay stopped during drawing while
+ *    ordinary mouse and toolbar input keep working;
+ *  - pinch regression fix: with drawing armed and no Pencil contact, canvas
+ *    touchstart/touchmove/touchend/touchcancel are untouched, so the pinned
+ *    CanvasSectionContainer receives the FIRST finger's touchstart and can
+ *    hand two-finger gestures to its own ZoomControl; during an active
+ *    Pencil contact touchstart/touchmove are blocked, a stray
+ *    touchend/touchcancel is held while the container has no open gesture
+ *    (its single-finger branch would truncate the live stroke) and an open
+ *    pinch's touchend is delivered; the container's leftover
+ *    touchEventInProgress flag must never swallow the next Pencil contact's
+ *    canonical replay;
+ *  - live ink presentation: the ongoing contact draws an SVG preview before
+ *    pointerup using the bridge's last verified {color,width,transparency}
+ *    mapped through twipsToPixels/dpiScale. The preview consumes exactly the
+ *    trusted samples the canonical replay forwards: coalesced and predicted
+ *    events must never be read (one shared geometry, no divergence).
+ *    Constant engine-legal width only. The canonical replay is byte-identical
+ *    with the preview available or unavailable;
+ *  - handoff: the only eraser before the stroke vanishes is GEOMETRIC PAINT
+ *    EVIDENCE — per-probe pre-release canvas snapshots along the stroke's
+ *    own path plus pixels that moved toward that stroke's composited ink
+ *    colour. ModifiedStatus (transition-based, may not fire per stroke and
+ *    can arrive before the handoff exists) never clears. Overlapping and
+ *    rapid contacts each keep their own pending path (bounded), so a second
+ *    stroke cannot blink the first. Non-evidence exits are the honest
+ *    bounded ones only: probe give-up, wall-clock deadline, unreadable
+ *    canvas degrading to the deadline, overflow of the pending cap, resize,
+ *    pagehide and the fail-closed path.
+ *
+ * History note (kept honestly): this file was stale against the production
+ * gate between 6c964870 and this round. Its previous expectations of a
+ * background subscribe/retry chain and getItemValue seeding describe the
+ * removed pre-continuous-stroke design and failed 7 checks and crashed once
+ * against the shipped script (retained in
+ * Local/Private/ios-closure-20261018/pencil-live-input/pen-mjs-original-failures.log).
+ * The rewrite preserves every still-valid rejection/handle/re-arm semantic
+ * in current production terms; it weakens nothing silently.
  *
  * This is a frontend contract test. It is not a device Pencil proof: pressure,
- * haptics and real WebKit pointer routing stay with device acceptance, and
- * scripts/office_pen_real_dom_acceptance.js documents the real-DOM -> core
- * acceptance path for the integration owner.
+ * haptics, real WebKit pointer/touch interop and actual pixel paint stay with
+ * device acceptance; scripts/office_pen_real_dom_acceptance.js documents the
+ * real-DOM -> core acceptance path for the integration owner.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -47,7 +82,9 @@ const script = region.slice(open + 'R"FLOE_JS('.length, close);
 if (!script.includes('__floePencilOnly')) throw new Error('extracted script looks wrong');
 
 let failures = 0;
+let checks = 0;
 const check = (name, ok, detail = '') => {
+  checks += 1;
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? ` (${detail})` : ''}`);
   if (!ok) failures += 1;
 };
@@ -55,8 +92,11 @@ const check = (name, ok, detail = '') => {
 class Target {
   constructor(name, parent = null) {
     this.name = name;
+    this.tagName = name;
     this.parent = parent;
+    this.children = [];
     this.listeners = [];
+    this.attrs = {};
   }
   addEventListener(type, fn, options) {
     this.listeners.push({ type, fn, capture: !!(options && options.capture) });
@@ -64,17 +104,27 @@ class Target {
   removeEventListener(type, fn) {
     this.listeners = this.listeners.filter((l) => !(l.type === type && l.fn === fn));
   }
+  setAttribute(name, value) { this.attrs[name] = String(value); }
+  getAttribute(name) { return this.attrs[name] === undefined ? null : this.attrs[name]; }
+  appendChild(child) { child.parent = this; this.children.push(child); return child; }
+  removeChild(child) {
+    const i = this.children.indexOf(child);
+    if (i >= 0) this.children.splice(i, 1);
+    child.parent = null;
+    return child;
+  }
+  remove() { if (this.parent) this.parent.removeChild(this); }
   querySelector() { return null; }
   contains(node) {
     for (let n = node; n; n = n.parent) if (n === this) return true;
     return false;
   }
+  get paths() { return this.children.filter((c) => c.tagName === 'path'); }
   dispatchEvent(event) { return this.dispatch(event); }
   dispatch(event) {
     const chain = [];
     for (let node = this; node; node = node.parent) chain.unshift(node);
     event.target = this;
-    // Capture phase: window -> target, capture listeners only.
     for (const node of chain) {
       for (const listener of node.listeners.slice()) {
         if (listener.type !== event.type || !listener.capture || event.stopped) continue;
@@ -83,13 +133,11 @@ class Target {
       }
       if (event.stoppedImmediate) break;
     }
-    // Target phase: non-capture listeners on the target itself.
     if (!event.stopped && !event.stoppedImmediate) {
       for (const listener of this.listeners.slice()) {
         if (listener.type === event.type && !listener.capture) listener.fn(event);
       }
     }
-    // Bubble phase: target parent -> window, non-capture listeners only.
     for (const node of chain.reverse().slice(1)) {
       if (event.stopped) break;
       for (const listener of node.listeners.slice()) {
@@ -103,6 +151,7 @@ class Target {
 const makeEvent = (type, extra = {}) => ({
   type,
   pointerType: '',
+  pointerId: 0,
   clientX: 0,
   clientY: 0,
   stopped: false,
@@ -114,40 +163,130 @@ const makeEvent = (type, extra = {}) => ({
   ...extra,
 });
 
-function newWorld(seededState, options = {}) {
-  const seed = typeof seededState === 'string' || seededState === undefined
-    ? (seededState === undefined ? {} : { '.uno:Freeline_Unfilled': seededState })
-    : seededState;
-  const window = new Target('window');
-  if (options.plainFlag) {
-    // Simulate a host where the overlay could not install its accessor: the
-    // flag stays a plain writable property, so no App-armed transition is
-    // observable and the first stroke must fall back to one dispatch.
-    Object.defineProperty(window, '__floePencilOnly',
-      { value: false, writable: true, configurable: false });
-  }
-  const document = new Target('document', window);
+const CSS_PER_TWIP = 0.1; // app.twipsToPixels 0.2 / app.dpiScale 2 in this world
+const MM100 = (mm100) => (mm100 / 100) * (1440 / 25.4) * CSS_PER_TWIP;
+const RED = [255, 0, 0];
+const GREEN = [0, 255, 0];
+const BLACK = [0, 0, 0];
+
+function newWorld(options = {}) {
+  const windowTarget = new Target('window');
+  const document = new Target('document', windowTarget);
+  const documentElement = new Target('html', document);
+  document.appendChild(documentElement);
+  document.documentElement = documentElement; // what the production script reads
   const canvas = new Target('canvas', document);
+  document.appendChild(canvas);
   const toolbar = new Target('toolbar', document);
+  document.appendChild(toolbar);
   document.readyState = 'complete';
   document.querySelector = () => canvas;
+  document.createElement = (tag) => new Target(tag);
+  if (!options.noCreateElementNS)
+    document.createElementNS = (ns, tag) => new Target(tag);
+
+  // Deterministic time and frames.
+  let now = 0;
+  let timerId = 0;
+  const timers = new Map();
+  const setTimeoutFake = (fn, delay) => {
+    const id = ++timerId;
+    timers.set(id, { at: now + (delay || 0), fn });
+    return id;
+  };
+  const clearTimeoutFake = (id) => { timers.delete(id); };
+  const advanceTimers = (ms) => {
+    now += ms;
+    const due = [...timers.entries()].filter(([, t]) => t.at <= now)
+      .sort((a, b) => a[1].at - b[1].at);
+    for (const [id, t] of due) {
+      if (!timers.delete(id)) continue;
+      t.fn();
+    }
+  };
+  const frames = [];
+  windowTarget.requestAnimationFrame = (fn) => { frames.push(fn); return frames.length; };
+  const pumpFrames = (count = 1) => {
+    for (let i = 0; i < count; i += 1) {
+      const queued = frames.splice(0, frames.length);
+      for (const fn of queued) fn();
+    }
+  };
+
+  // Fake composited document canvas. paintArea marks BACKING-pixel regions
+  // that "the engine" has painted with the given colour; getImageData
+  // reflects them. The gate's handoff probe must observe movement toward
+  // its own stroke's composited ink colour, not merely "something changed".
+  const painted = []; // {x0, y0, x1, y1, rgb}
+  const context = options.noContext ? null : {
+    getImageData: (x, y, w, h) => {
+      if (w <= 0 || h <= 0) throw new Error('bad rect');
+      const data = new Uint8ClampedArray(w * h * 4);
+      for (let py = 0; py < h; py += 1) {
+        for (let px = 0; px < w; px += 1) {
+          let rgb = null;
+          for (const region of painted) {
+            if (x + px >= region.x0 && x + px <= region.x1
+                && y + py >= region.y0 && y + py <= region.y1) rgb = region.rgb;
+          }
+          const i = (py * w + px) * 4;
+          data[i] = rgb ? rgb[0] : 255;
+          data[i + 1] = rgb ? rgb[1] : 255;
+          data[i + 2] = rgb ? rgb[2] : 255;
+          data[i + 3] = 255;
+        }
+      }
+      return { data };
+    },
+  };
+  canvas.getBoundingClientRect = () => ({ left: 0, top: 0, right: 600, bottom: 800, width: 600, height: 800 });
+  canvas.width = 1200; // backing scale = 2 in this world
+  canvas.height = 1600;
+  if (!options.noGetContext)
+    canvas.getContext = () => context;
+
+  // The pinned container is inspectable; this world's document has no stale
+  // graphic selection by default (individual tests install their own).
+  const sectionContainer = {
+    canvas,
+    context,
+    getSectionWithName: () => null,
+  };
+  const keyboardEvents = [];
   const uno = [];
-  const stateListeners = [];
-  const items = { ...seed };
+  const handlers = {};
   const map = {
     sendUnoCommand: (cmd) => { uno.push(cmd); },
-    on: (name, fn) => { if (name === 'commandstatechanged') stateListeners.push(fn); },
+    on: (name, fn) => { (handlers[name] = handlers[name] || []).push(fn); },
     off: (name, fn) => {
-      const i = stateListeners.indexOf(fn);
-      if (i >= 0) stateListeners.splice(i, 1);
+      const list = handlers[name] || [];
+      const i = list.indexOf(fn);
+      if (i >= 0) list.splice(i, 1);
     },
     isEditMode: () => true,
     getContainer: () => null,
-    stateChangeHandler: { getItemValue: (name) => items[name] },
+    _docLayer: options.noDocLayer ? null : {
+      postKeyboardEvent: (kind, char, key) => { keyboardEvents.push([kind, key]); },
+    },
+    stateChangeHandler: {
+      getItemValue: () => {
+        cacheReads += 1; // the production gate must never consult the stale cache
+        return 'true';
+      },
+    },
   };
-  window.app = options.noMap
-    ? { sectionContainer: { canvas } }
-    : { map, sectionContainer: { canvas } };
+  let cacheReads = 0;
+  windowTarget.app = {
+    map,
+    sectionContainer,
+    dpiScale: 2,
+    twipsToPixels: 0.2,
+    activeDocument: { getZoomPercent: () => 100 },
+    CSections: { ShapeHandlesSection: { name: 'shapeHandlesSection' } },
+    definitions: { graphicSelection: { handlesSection: null } },
+  };
+  if (options.noMap) delete windowTarget.app.map;
+
   class MouseEvent {
     constructor(type, init = {}) {
       this.type = type;
@@ -165,268 +304,674 @@ function newWorld(seededState, options = {}) {
       this.preventDefault = () => { this.defaultPrevented = true; };
     }
   }
-  const timers = [];
-  const fakeSetTimeout = (fn, delay) => { timers.push({ fn, delay }); return timers.length; };
-  new Function('window', 'document', 'MouseEvent', 'setTimeout', script)(window, document, MouseEvent, fakeSetTimeout);
-  const advance = (rounds = 1) => {
-    for (let i = 0; i < rounds; i += 1) {
-      const due = timers.shift();
-      if (!due) return false;
-      due.fn();
-    }
-    return true;
-  };
-  const attachMap = () => { window.app.map = map; };
-  return {
-    timers, advance, attachMap, map,
-    window, document, canvas, uno, stateListeners, items,
-    toolbar,
-    // Real WebKit delivers pointer contacts targeted at the element under the
-    // pen/finger; the overlay listens on window capture, so dispatching on the
-    // canvas (or the toolbar) models the browser faithfully.
-    pen: (type, x = 10, y = 20, target = canvas) =>
-      target.dispatch(makeEvent(type, { pointerType: 'pen', clientX: x, clientY: y })),
-    finger: (type, target = canvas) => target.dispatch(makeEvent(type, { pointerType: 'touch' })),
-    mouse: (type, target = canvas) => target.dispatch(makeEvent(type, { pointerType: 'mouse' })),
-    stateChanged: (value, name = 'Freeline_Unfilled') => {
-      for (const fn of stateListeners.slice()) fn({ commandName: name, state: value });
+
+  new Function('window', 'document', 'MouseEvent', 'setTimeout', 'clearTimeout', script)(
+    windowTarget, document, MouseEvent, setTimeoutFake, clearTimeoutFake);
+
+  let pointerId = 900;
+  const world = {
+    window: windowTarget, document, documentElement, canvas, toolbar, map, uno,
+    keyboardEvents, handlers, advanceTimers, pumpFrames, sectionContainer,
+    get cacheReads() { return cacheReads; },
+    // Paint a backing-pixel band (radius 24) around each client-space point.
+    paintArea: (points, rgb = RED) => {
+      for (const [cx, cy] of points) {
+        const bx = cx * 2, by = cy * 2;
+        painted.push({ x0: bx - 24, y0: by - 24, x1: bx + 24, y1: by + 24, rgb });
+      }
     },
-    arm: () => { window.__floePencilOnly = true; },
-    state: () => window.__floeOfficePenState(),
+    pen: (type, x = 10, y = 20, target = canvas, extra = {}) =>
+      target.dispatch(makeEvent(type, {
+        pointerType: 'pen', pointerId: extra.pointerId === undefined ? pointerId : extra.pointerId,
+        clientX: x, clientY: y, ...extra,
+      })),
+    touch: (type, target = canvas) => {
+      const event = makeEvent(type, { pointerType: 'touch' });
+      target.dispatch(event);
+      return event;
+    },
+    stateChanged: (value, name = 'Freeline_Unfilled') => {
+      for (const fn of (handlers.commandstatechanged || []).slice())
+        fn({ commandName: `.uno:${name}`, state: value });
+    },
+    arm: () => { windowTarget.__floePencilOnly = true; },
+    state: () => windowTarget.__floeOfficePenState(),
+    preview: () => windowTarget.__floeOfficePenPreview(),
+    // A deterministic contact: fresh pointerId, caller's points, trusted
+    // events only. Returns the point list it used.
+    strokeAt: (points) => {
+      const id = ++pointerId;
+      world.pen('pointerdown', points[0][0], points[0][1], canvas, { pointerId: id });
+      for (let i = 1; i < points.length; i += 1)
+        world.pen('pointermove', points[i][0], points[i][1], canvas, { pointerId: id });
+      const last = points[points.length - 1];
+      world.pen('pointerup', last[0], last[1], canvas, { pointerId: id });
+      return points;
+    },
+    stroke: (moves = 1, base = [10, 20]) =>
+      world.strokeAt(Array.from({ length: moves + 1 },
+        (_, i) => [base[0] + i * 8, base[1] + i * 4])),
   };
+  return world;
 }
 
-const canvasEvents = (world) => {
+const recordedMouse = (world) => {
   const seen = [];
-  const wrap = world.canvas.dispatch.bind(world.canvas);
+  const wrapCanvas = world.canvas.dispatch.bind(world.canvas);
   world.canvas.dispatch = (event) => {
-    // Record only the replayed core-bound mouse events, not the raw pen
-    // pointer contacts the test itself dispatches onto the canvas.
-    if (event.type === 'mousedown' || event.type === 'mousemove' || event.type === 'mouseup')
-      seen.push(event);
-    return wrap(event);
+    if (['mousedown', 'mousemove', 'mouseup'].includes(event.type)) seen.push(event);
+    return wrapCanvas(event);
   };
-  return seen;
-};
-const documentEvents = (world) => {
-  const seen = [];
-  const original = world.document.dispatch.bind(world.document);
+  const wrapDocument = world.document.dispatch.bind(world.document);
   world.document.dispatch = (event) => {
-    if (event.target === undefined) seen.push(event);
-    return original(event);
+    if (['mousemove', 'mouseup'].includes(event.type)) seen.push(event);
+    return wrapDocument(event);
   };
   return seen;
 };
-const stroke = (world) => {
-  world.pen('pointerdown');
-  world.pen('pointermove');
-  world.pen('pointerup');
+
+const overlayPaths = (world) => {
+  const layer = world.documentElement.children
+    .find((c) => c.id === 'floe-ink-live-preview');
+  if (!layer) return { layer: null, paths: [] };
+  return { layer, paths: layer.children[0] ? layer.children[0].paths : [] };
 };
+
+const setStyle = (world, color, width, transparency) => {
+  world.window.__floeOfficeInkLastDispatch = {
+    token: 1, expected: { color, width, transparency },
+  };
+};
+
+// --- routing / arming -------------------------------------------------------
 
 // 1. Disarmed: a pen stroke must not touch the core at all.
 {
   const w = newWorld();
-  const seen = canvasEvents(w);
-  stroke(w);
-  check('disarmed pen produces no core input', seen.length === 0 && w.uno.length === 0,
+  const seen = recordedMouse(w);
+  w.stroke(1);
+  check('disarmed/no-core-input', seen.length === 0 && w.uno.length === 0,
     `canvas=${seen.length} uno=${w.uno.length}`);
 }
 
-// 2. App pre-arm via the __floePencilOnly assignment: first stroke re-dispatches nothing.
+// 2. Arm dispatches the tool exactly once; the first contact re-dispatches
+//    nothing on down; the completed contact re-arms exactly once behind an
+//    ordered Escape input+up pair.
 {
   const w = newWorld();
-  const seen = canvasEvents(w);
+  const seen = recordedMouse(w);
   w.arm();
-  stroke(w);
-  check('App-armed first stroke posts core input without re-dispatch',
-    w.uno.length === 0 && seen.length === 1 && seen[0].type === 'mousedown' && seen[0].buttons === 1,
-    `uno=${w.uno.length} canvas=${seen.map((e) => e.type).join(',')}`);
-  stroke(w);
-  check('App-armed second stroke still re-dispatches nothing', w.uno.length === 0, JSON.stringify(w.uno));
-  check('two strokes counted', w.state().strokes === 2, JSON.stringify(w.state()));
+  check('arm/one-dispatch-one-escape-pair',
+    w.uno.length === 1 && w.uno[0] === '.uno:Freeline_Unfilled'
+    && w.keyboardEvents.length === 2
+    && w.keyboardEvents[0][0] === 'input' && w.keyboardEvents[0][1] === 1281
+    && w.keyboardEvents[1][0] === 'up' && w.keyboardEvents[1][1] === 1281,
+    JSON.stringify({ uno: w.uno, keys: w.keyboardEvents.length }));
+  w.pen('pointerdown', 12, 14, w.canvas, { pointerId: 11 });
+  check('down/no-new-dispatch', w.uno.length === 1, JSON.stringify(w.uno));
+  check('down/mousedown-carries-coordinates-and-buttons',
+    seen.length === 1 && seen[0].type === 'mousedown'
+    && seen[0].clientX === 12 && seen[0].clientY === 14 && seen[0].buttons === 1,
+    JSON.stringify(seen.map((e) => [e.type, e.buttons])));
+  w.pen('pointermove', 16, 18, w.canvas, { pointerId: 11 });
+  w.pen('pointerup', 18, 20, w.canvas, { pointerId: 11 });
+  check('up/exactly-one-rearm-after-completed-contact',
+    w.uno.length === 2 && w.uno[1] === '.uno:Freeline_Unfilled'
+    && w.keyboardEvents.length === 4, JSON.stringify(w.uno));
+  check('strokes-counted-and-armed',
+    w.state().strokes === 1 && w.state().armedDispatches === 2, JSON.stringify(w.state()));
+  const move = seen.find((e) => e.type === 'mousemove');
+  const up = seen.find((e) => e.type === 'mouseup');
+  check('geometry/move-and-up-replay-once-with-button-state',
+    seen.length === 3 && move.buttons === 1 && up.buttons === 0,
+    JSON.stringify(seen.map((e) => [e.type, e.buttons])));
 }
 
-// 3. App armed earlier, observed through the engine's current item state.
-{
-  const w = newWorld('true');
-  w.arm();
-  stroke(w);
-  check('seeded active state suppresses first-stroke dispatch', w.uno.length === 0, JSON.stringify(w.uno));
-  check('seeded active stroke still posts core input', w.state().coreEvents === 3, JSON.stringify(w.state()));
-}
-
-// 4. Observed inactive state re-arms exactly once; observed active suppresses.
+// 3. commandstatechanged never decides drawing: availability strings, an
+//    observed inactive state and stale cache values cannot suppress or
+//    duplicate re-arming; the cache itself is never read. ModifiedStatus
+//    reports (any order, even before pointerup) must not clear a preview.
 {
   const w = newWorld();
   w.arm();
-  stroke(w);
-  w.stateChanged(false);
-  stroke(w);
-  check('observed inactive state re-arms once', w.uno.length === 1, JSON.stringify(w.uno));
-  w.stateChanged(true);
-  stroke(w);
-  check('observed active state suppresses re-arm', w.uno.length === 1, JSON.stringify(w.uno));
-}
-
-// 5. Availability states never count as activity changes.
-{
-  const w = newWorld('enabled');
-  w.arm();
-  stroke(w);
-  check('seeded enabled is not activity: armed App stroke does not dispatch',
-    w.uno.length === 0, JSON.stringify(w.uno));
   w.stateChanged('disabled');
-  stroke(w);
-  check('disabled availability does not clear an armed tool', w.uno.length === 0, JSON.stringify(w.uno));
-  check('strokes still posted', w.state().strokes === 2 && w.state().coreEvents === 6, JSON.stringify(w.state()));
+  w.stateChanged(false);
+  w.stateChanged(true, 'Freeline');
+  w.stroke(1);
+  w.stateChanged(true, 'ModifiedStatus'); // already-dirty document noise
+  w.stroke(1);
+  check('observation/never-gates-rearm', w.uno.length === 3, JSON.stringify(w.uno));
+  check('observation/strokes-still-post',
+    w.state().strokes === 2 && w.state().coreEvents === 6, JSON.stringify(w.state()));
+  check('cache/never-read', w.cacheReads === 0, String(w.cacheReads));
+  w.advanceTimers(1200); // the old buggy 1200 ms model-armed cap must not exist
+  check('modified/never-clears-preview', w.preview().pending === 2,
+    JSON.stringify(w.preview()));
 }
 
-// 6. No observable arming at all (accessor unavailable): one dispatch allowed.
-{
-  const w = newWorld(undefined, { plainFlag: true });
-  const seen = canvasEvents(w);
-  w.window.__floePencilOnly = true;
-  stroke(w);
-  check('unobserved+unarmed first stroke dispatches once',
-    w.uno.length === 1 && w.uno[0] === '.uno:Freeline_Unfilled' && seen.length === 1,
-    JSON.stringify(w.uno));
-}
+// --- finger/mouse arbitration -----------------------------------------------
 
-// 7. Stroke geometry: down/move/up reach canvas/document with button state.
-{
-  const w = newWorld();
-  const seen = canvasEvents(w);
-  const doc = documentEvents(w);
-  w.arm();
-  w.pen('pointerdown', 12, 34);
-  w.pen('pointermove', 16, 40);
-  w.pen('pointerup', 18, 44);
-  const moves = doc.filter((e) => e.type === 'mousemove');
-  const ups = doc.filter((e) => e.type === 'mouseup');
-  check('mousedown carries pen coordinates and buttons=1',
-    seen.length === 1 && seen[0].clientX === 12 && seen[0].clientY === 34 && seen[0].buttons === 1);
-  check('mousemove(buttons=1) and mouseup(buttons=0) posted once each',
-    moves.length === 1 && moves[0].buttons === 1 && ups.length === 1 && ups[0].buttons === 0,
-    `moves=${moves.length} ups=${ups.length}`);
-}
-
-// 8. Finger keeps navigating while armed; no core input from finger.
+// 4. Finger pointer events on the canvas stay stopped during drawing while
+//    toolbar fingers and ordinary mouse pointers pass, and none may draw.
 {
   const w = newWorld();
-  const seen = canvasEvents(w);
+  const seen = recordedMouse(w);
   w.arm();
   const down = makeEvent('pointerdown', { pointerType: 'touch' });
-  w.window.dispatch(down);
+  w.canvas.dispatch(down);
   const move = makeEvent('pointermove', { pointerType: 'touch' });
-  w.window.dispatch(move);
-  check('finger pointer events are stopped and post no core input',
-    down.stopped && move.stopped && seen.length === 0 && w.uno.length === 0);
+  w.canvas.dispatch(move);
+  const bar = makeEvent('pointerdown', { pointerType: 'touch' });
+  w.toolbar.dispatch(bar);
+  const mouseDown = makeEvent('pointerdown', { pointerType: 'mouse' });
+  w.canvas.dispatch(mouseDown);
+  check('finger/canvas-pointer-stopped', down.stopped && down.defaultPrevented
+    && move.stopped, JSON.stringify({ d: down.defaultPrevented, m: move.defaultPrevented }));
+  check('finger/toolbar-pointer-passes', !bar.stopped && !bar.defaultPrevented);
+  check('mouse/pointer-passes-gate', !mouseDown.stopped);
+  check('finger/no-core-replay', seen.length === 0 && w.uno.length === 1, JSON.stringify(w.uno));
 }
 
-// 9. Touch scrolling blocked only inside an active pen stroke.
+// 5. Pinch regression: with drawing armed and NO Pencil contact, all four
+//    canvas touch types are untouched so the pinned CanvasSectionContainer
+//    sees the first finger's touchstart and routes gestures to ZoomControl.
 {
   const w = newWorld();
   w.arm();
-  const idle = makeEvent('touchmove');
-  w.window.dispatch(idle);
-  check('touchmove outside a stroke is untouched', !idle.stopped && !idle.defaultPrevented);
-  w.pen('pointerdown');
-  const during = makeEvent('touchmove');
-  w.window.dispatch(during);
-  check('touchmove during a pen stroke is blocked', during.stopped && during.defaultPrevented);
-  w.pen('pointerup');
-  const after = makeEvent('touchmove');
-  w.window.dispatch(after);
-  check('touchmove after the stroke is untouched again', !after.stopped);
+  const results = ['touchstart', 'touchmove', 'touchend', 'touchcancel']
+    .map((t) => w.touch(t));
+  check('pinch/idle-canvas-touches-untouched',
+    results.every((e) => !e.stopped && !e.defaultPrevented),
+    JSON.stringify(results.map((e) => [e.stopped, e.defaultPrevented])));
+  const second = ['touchstart', 'touchmove'].map((t) => w.touch(t));
+  check('pinch/still-untouched-after-two-finger-sequence',
+    second.every((e) => !e.stopped && !e.defaultPrevented));
 }
 
-// 10. Mouse pointer passes the finger gate and is not replayed as pen input.
+// 6. During an active Pencil contact: canvas touchstart/touchmove are
+//    blocked. A stray touchend/touchcancel (the container has no open
+//    multi-touch gesture) is held, because the pinned single-finger
+//    onTouchEnd branch would propagate a mouse-up into the live replayed
+//    stroke; when a real pinch IS open (container.multiTouch === true) the
+//    touchend must pass so the gesture state can close.
 {
   const w = newWorld();
-  const seen = canvasEvents(w);
+  const seen = recordedMouse(w);
   w.arm();
-  const down = makeEvent('pointerdown', { pointerType: 'mouse' });
-  w.window.dispatch(down);
-  check('mouse pointer passes the gate without core replay',
-    !down.stopped && seen.length === 0 && w.uno.length === 0);
+  w.pen('pointerdown', 10, 12, w.canvas, { pointerId: 21 });
+  const ts = w.touch('touchstart');
+  const tm = w.touch('touchmove');
+  const te = w.touch('touchend');
+  const tc = w.touch('touchcancel');
+  check('contact/touchstart-and-touchmove-blocked', ts.stopped && tm.defaultPrevented,
+    JSON.stringify({ ts: ts.stopped, tm: tm.defaultPrevented }));
+  check('contact/stray-touchend-held-while-no-gesture-open',
+    te.stopped && tc.stopped, JSON.stringify({ te: te.stopped, tc: tc.stopped }));
+  w.sectionContainer.multiTouch = true; // a pinch the container opened
+  const openTe = w.touch('touchend');
+  check('contact/open-gesture-touchend-delivered',
+    !openTe.stopped && !openTe.defaultPrevented, JSON.stringify({ s: openTe.stopped }));
+  w.sectionContainer.multiTouch = false;
+  w.pen('pointercancel', 10, 12, w.canvas, { pointerId: 21 });
+  check('contact/pen-stream-survives-finger-noise',
+    seen.filter((e) => e.type === 'mousedown').length === 1);
+  // After the contact ends, touches flow again for the next pinch.
+  const after = w.touch('touchstart');
+  check('contact/flow-resumes-after-contact', !after.stopped && !after.defaultPrevented);
 }
 
-// 11. Alias aggregation: active unfilled slot wins over a false filled alias.
+// 6b. Touch -> Pencil transition: a finished finger gesture leaves the
+//     pinned container with touchEventInProgress=true (its onTouchEnd line
+//     1558) and the container's own mouse path only clears that flag behind
+//     the flag-gated branch. The whole next Pencil contact's replayed
+//     mousedown/mousemove/mouseup must still reach the canonical surface:
+//     the gate restores exactly that one boolean before each replay and
+//     never fabricates a touch/click/reset event.
 {
-  const w = newWorld({ '.uno:Freeline_Unfilled': 'true', '.uno:Freeline': 'false' });
+  const w = newWorld();
+  const seen = recordedMouse(w);
   w.arm();
-  stroke(w);
-  check('specific true + generic false stays armed', w.uno.length === 0, JSON.stringify(w.uno));
-  // App armed, engine then reports the unfilled slot inactive while the
-  // filled alias stays false/true in any order: the next stroke re-arms once
-  // and the generic alias cannot mask the specific inactive report.
+  // Simulate the exact state the pinned container keeps after
+  // first finger -> second finger -> pinch moves -> touchend.
+  w.sectionContainer.touchEventInProgress = true;
+  w.pen('pointerdown', 10, 10, w.canvas, { pointerId: 22 });
+  check('transition/down-replays-and-recovers',
+    seen.length === 1 && seen[0].type === 'mousedown'
+    && w.sectionContainer.touchEventInProgress === false,
+    JSON.stringify({ seen: seen.length, flag: w.sectionContainer.touchEventInProgress }));
+  // A stray finger lifts mid-stroke and re-sets the flag: the following
+  // move/up replays must each recover it again, keeping one stroke intact.
+  w.sectionContainer.touchEventInProgress = true;
+  w.pen('pointermove', 16, 14, w.canvas, { pointerId: 22 });
+  check('transition/move-replays-and-recovers',
+    seen.length === 2 && seen[1].type === 'mousemove'
+    && w.sectionContainer.touchEventInProgress === false);
+  w.sectionContainer.touchEventInProgress = true;
+  w.pen('pointerup', 20, 16, w.canvas, { pointerId: 22 });
+  check('transition/up-replays-and-recovers',
+    seen.length === 3 && seen[2].type === 'mouseup'
+    && w.sectionContainer.touchEventInProgress === false
+    && w.state().strokes === 1, JSON.stringify(w.state()));
+}
+
+// 7. Contacts must start on the canvas; toolbar and body are not ink. An
+//    in-progress stroke may leave the canvas and still finish.
+{
+  const w = newWorld();
+  const seen = recordedMouse(w);
+  w.arm();
+  const barDown = makeEvent('pointerdown', { pointerType: 'pen', pointerId: 31, clientX: 5, clientY: 5 });
+  w.toolbar.dispatch(barDown);
+  w.pen('pointermove', 6, 6, w.toolbar, { pointerId: 31 });
+  w.pen('pointerup', 7, 7, w.toolbar, { pointerId: 31 });
+  check('hit/toolbar-pen-is-not-ink',
+    seen.length === 0 && !barDown.stopped && !barDown.defaultPrevented);
+  const bodyDown = makeEvent('pointerdown', { pointerType: 'pen', pointerId: 32 });
+  w.document.dispatch(bodyDown);
+  check('hit/outside-canvas-down-is-not-ink', seen.length === 0 && !bodyDown.defaultPrevented);
+  w.pen('pointerdown', 30, 40, w.canvas, { pointerId: 33 });
+  w.pen('pointermove', 34, 44, w.toolbar, { pointerId: 33 });
+  w.pen('pointerup', 36, 46, w.toolbar, { pointerId: 33 });
+  check('hit/stroke-may-end-outside-canvas', w.state().strokes === 1, JSON.stringify(w.state()));
+}
+
+// 8. Ownership: another pointer cannot move or end the live contact.
+{
+  const w = newWorld();
+  w.arm();
+  w.pen('pointerdown', 10, 10, w.canvas, { pointerId: 41 });
+  w.pen('pointermove', 20, 20, w.canvas, { pointerId: 42 });
+  w.pen('pointerup', 25, 25, w.canvas, { pointerId: 42 });
+  check('ownership/other-id-keeps-stroke-active',
+    w.state().activeStroke === true && w.state().strokes === 0, JSON.stringify(w.state()));
+  w.pen('pointerup', 30, 30, w.canvas, { pointerId: 41 });
+  check('ownership/owning-id-completes',
+    w.state().activeStroke === false && w.state().strokes === 1, JSON.stringify(w.state()));
+}
+
+// 9. Late map: with no map the arm fails closed and honestly; once the map
+//    exists, arming succeeds and strokes flow (production has no background
+//    subscribe chain any more — the old seeded/retry expectations are
+//    superseded by the continuous-stroke re-arm design).
+{
+  const w = newWorld({ noMap: true });
+  check('late-map/arm-fails-closed', w.window.__floeSetOfficeDrawingMode(true) === false
+    && w.state().drawing === false && w.state().error === 'engine-unavailable',
+    JSON.stringify(w.state()));
+  w.window.app.map = w.map;
+  check('late-map/recovers-after-map-arrives',
+    w.window.__floeSetOfficeDrawingMode(true) === true && w.state().drawing === true);
+  w.stroke(1);
+  check('late-map/stroke-completes-after-recovery', w.state().strokes === 1,
+    JSON.stringify(w.state()));
+}
+
+// --- live ink preview --------------------------------------------------------
+
+// 10. The preview surface is created lazily (nothing before a contact) and
+//     the ongoing contact draws before pointerup with the verified style at
+//     the current zoom.
+{
+  const w = newWorld();
+  w.arm();
+  check('preview/no-surface-before-contact', overlayPaths(w).layer === null);
+  setStyle(w, 0xFF0000, 150, 60);
+  w.pen('pointerdown', 10, 20, w.canvas, { pointerId: 51 });
+  const first = overlayPaths(w);
+  check('preview/surface-on-down', !!first.layer && first.paths.length === 1);
+  check('preview/style-color-width-opacity',
+    first.paths[0].attrs.stroke === '#ff0000'
+    && first.paths[0].attrs['stroke-width'] === String(MM100(150))
+    && first.paths[0].attrs['stroke-opacity'] === '0.4'
+    && first.paths[0].attrs.fill === 'none'
+    && first.paths[0].attrs['stroke-linecap'] === 'round',
+    JSON.stringify(first.paths[0].attrs));
+  check('preview/single-point-dot-visible', /M10\.0 20\.0 L10\.1 20\.0$/.test(w.preview().d), w.preview().d);
+  w.pen('pointermove', 14, 24, w.canvas, { pointerId: 51 });
+  w.pumpFrames(1);
+  w.pen('pointermove', 18, 28, w.canvas, { pointerId: 51 });
+  w.pumpFrames(1);
+  const live = w.preview();
+  check('preview/ink-before-pointerup',
+    live.stroke === true && live.points === 3 && /M10\.0 20\.0 L14\.0 24\.0 L18\.0 28\.0/.test(live.d),
+    JSON.stringify({ p: live.points, d: live.d }));
+  check('preview/activeStroke-true-while-down', w.state().activeStroke === true);
+}
+
+// 11. One geometry: the preview consumes EXACTLY the trusted samples the
+//     canonical replay forwards. Coalesced intermediates (which the core
+//     never receives) and predicted events must not be read at all, so the
+//     live line can never diverge from the eventual engine vector.
+{
+  const w = newWorld();
+  const seen = recordedMouse(w);
+  w.arm();
+  setStyle(w, 0x00FF00, 100, 0);
+  let coalescedRead = 0;
+  let predictedRead = 0;
+  w.pen('pointerdown', 10, 20, w.canvas, { pointerId: 61 });
+  w.canvas.dispatch(makeEvent('pointermove', {
+    pointerType: 'pen', pointerId: 61, clientX: 13, clientY: 23,
+    getCoalescedEvents: () => { coalescedRead += 1; return [
+      makeEvent('pointermove', { clientX: 11, clientY: 21 }),
+      makeEvent('pointermove', { clientX: 12, clientY: 22 }),
+    ]; },
+    getPredictedEvents: () => { predictedRead += 1; return [makeEvent('pointermove', { clientX: 99, clientY: 99 })]; },
+  }));
+  w.pumpFrames(1);
+  w.pen('pointerup', 13, 23, w.canvas, { pointerId: 61 });
+  check('coalesced/never-read', coalescedRead === 0, String(coalescedRead));
+  check('predicted/never-read', predictedRead === 0, String(predictedRead));
+  const canonical = seen.filter((e) => e.type === 'mousedown' || e.type === 'mousemove')
+    .map((e) => [e.clientX, e.clientY]);
+  const drawn = [[10, 20], [13, 23]];
+  check('geometry/preview-equals-canonical-samples',
+    JSON.stringify(canonical) === JSON.stringify(drawn), JSON.stringify(canonical));
+  check('geometry/d-string-matches-trusted-path',
+    w.preview().pending === 1 && w.state().coreEvents === 3, JSON.stringify(w.state()));
+}
+
+// 12. Style discipline: no last dispatch falls back to the documented pen
+//     default unverified; garbage expected values are rejected, never trusted.
+{
+  const w = newWorld();
+  w.arm();
+  w.pen('pointerdown', 10, 10, w.canvas, { pointerId: 71 });
+  const fallback = w.preview().style;
+  check('style/default-pen-fallback',
+    fallback.color === '#000000' && fallback.cssPx === MM100(50)
+    && fallback.opacity === 1 && fallback.verified === false, JSON.stringify(fallback));
   const w2 = newWorld();
   w2.arm();
-  stroke(w2);
-  w2.stateChanged(false);
-  w2.stateChanged(true, 'Freeline');
-  stroke(w2);
-  check('specific false + generic true re-arms once', w2.uno.length === 1, JSON.stringify(w2.uno));
-  const w3 = newWorld();
-  w3.arm();
-  stroke(w3);
-  w3.stateChanged(true);
-  stroke(w3);
-  check('live active keeps suppressing', w3.uno.length === 0, JSON.stringify(w3.uno));
-  w3.stateChanged(false);
-  w3.stateChanged(false, 'Freeline');
-  stroke(w3);
-  check('live active->inactive re-arms once', w3.uno.length === 1, JSON.stringify(w3.uno));
+  setStyle(w2, 1.5, 700, 101); // non-integer color, out-of-range width/transparency
+  w2.pen('pointerdown', 10, 10, w2.canvas, { pointerId: 72 });
+  check('style/invalid-expected-rejected',
+    w2.preview().style.verified === false && w2.preview().style.color === '#000000',
+    JSON.stringify(w2.preview().style));
 }
 
-// 12. Late map: one progressive retry chain subscribes and seeds, no burst.
-{
-  const w = newWorld(undefined, { noMap: true });
-  check('unsubscribed world parks exactly one retry timer', w.timers.length === 1, `timers=${w.timers.length}`);
-  const unoBefore = w.uno.length;
-  // map appears later with the slot already active from the App's toggle.
-  w.items['.uno:Freeline_Unfilled'] = 'true';
-  w.attachMap();
-  w.advance(1);
-  check('retry chain subscribes once the map exists', w.state().toolState !== null, JSON.stringify(w.state()));
-  check('retry chain stays single-filed', w.timers.length === 0, `timers=${w.timers.length}`);
-  w.arm();
-  stroke(w);
-  check('late-subscribed seeded active stroke does not dispatch',
-    w.uno.length === unoBefore, JSON.stringify(w.uno));
-}
-
-// 13. Retry chain gives up bounded when the map never appears.
-{
-  const w = newWorld(undefined, { noMap: true });
-  for (let i = 0; i < 80; i += 1) w.advance(1);
-  check('bounded retry chain stops', w.timers.length === 0 && w.state().subscribeAttempts <= 41,
-    `attempts=${w.state().subscribeAttempts}`);
-}
-
-// 14. Pen contact must start on the document canvas; toolbar taps stay UI.
+// 13. The zoom mapping reacts to the frontend scale, not to a synthetic
+//     constant: halving twipsToPixels halves the CSS width.
 {
   const w = newWorld();
-  const seen = canvasEvents(w);
   w.arm();
-  const toolbarDown = makeEvent('pointerdown', { pointerType: 'pen', clientX: 5, clientY: 5 });
-  w.toolbar.dispatch(toolbarDown);
-  w.pen('pointermove', 6, 6, w.toolbar);
-  w.pen('pointerup', 7, 7, w.toolbar);
-  check('pen tap on toolbar is not ink and not blocked',
-    seen.length === 0 && w.uno.length === 0 && !toolbarDown.stopped && !toolbarDown.defaultPrevented);
-  const bodyDown = makeEvent('pointerdown', { pointerType: 'pen' });
-  w.document.dispatch(bodyDown);
-  check('pen contact outside the canvas is not ink', seen.length === 0 && !bodyDown.defaultPrevented);
-  const canvasDown = makeEvent('pointerdown', { pointerType: 'pen', clientX: 30, clientY: 40 });
-  w.canvas.dispatch(canvasDown);
-  check('canvas pen down becomes ink and cancels compatibility mouse',
-    seen.length === 1 && canvasDown.defaultPrevented === true, `prevented=${canvasDown.defaultPrevented}`);
-  // An in-progress stroke may leave the canvas and still finish.
-  w.pen('pointermove', 40, 50, w.toolbar);
-  w.pen('pointerup', 44, 54, w.toolbar);
-  check('stroke may end outside the canvas', w.state().strokes === 1, JSON.stringify(w.state()));
+  setStyle(w, 0x000000, 200, 0);
+  w.window.app.twipsToPixels = 0.1;
+  w.pen('pointerdown', 10, 10, w.canvas, { pointerId: 81 });
+  check('zoom/width-follows-twipsToPixels',
+    w.preview().style.cssPx === (2.0 * (1440 / 25.4) * (0.1 / 2)),
+    JSON.stringify(w.preview().style));
 }
 
+// 14. Invalid coordinates: a NaN contact point draws no preview but still
+//     replays canonical input exactly once (presentation is best-effort).
+{
+  const w = newWorld();
+  const seen = recordedMouse(w);
+  w.arm();
+  w.pen('pointerdown', NaN, 20, w.canvas, { pointerId: 91 });
+  check('invalid/no-preview-for-nan-down', w.preview().stroke === false);
+  check('invalid/canonical-still-replays',
+    seen.length === 1 && seen[0].type === 'mousedown', JSON.stringify(seen.map((e) => e.type)));
+  w.pen('pointermove', 12, 22, w.canvas, { pointerId: 91 });
+  w.pen('pointerup', 14, 24, w.canvas, { pointerId: 91 });
+  check('invalid/stroke-completes-without-preview',
+    w.state().strokes === 1 && w.preview().pending === 0, JSON.stringify(w.state()));
+}
+
+// 15. Pathological long contact stays bounded and keeps the newest point.
+{
+  const w = newWorld();
+  w.arm();
+  w.pen('pointerdown', 0, 0, w.canvas, { pointerId: 101 });
+  for (let i = 1; i <= 3100; i += 1)
+    w.pen('pointermove', i % 600, i % 800, w.canvas, { pointerId: 101 });
+  w.pumpFrames(1);
+  const live = w.preview();
+  check('bound/points-decimated', live.points <= 3000, String(live.points));
+  check('bound/newest-point-kept', live.d.trim().endsWith('L100.0 700.0'), live.d.slice(-40));
+}
+
+// 16. Handoff on real geometric paint evidence only: after up the preview
+//     survives (no blink), a repaint that moves the sampled pixels toward
+//     THIS stroke's composited colour clears it. No ModifiedStatus needed —
+//     an already-dirty document never reports per stroke.
+{
+  const w = newWorld();
+  w.arm();
+  setStyle(w, 0xFF0000, 150, 0);
+  const pts = w.strokeAt([[100, 100], [150, 120], [200, 140]]);
+  check('handoff/kept-after-up',
+    w.preview().pending === 1 && overlayPaths(w).paths.length === 1
+    && w.state().previewHandoffs === 1, JSON.stringify(w.preview()));
+  w.pumpFrames(2); // probe ticks with white evidence: must not clear
+  check('handoff/survives-without-paint', w.preview().pending === 1);
+  w.paintArea(pts); // engine painted this stroke's own geometry
+  w.pumpFrames(2);
+  check('handoff/cleared-on-painted', w.preview().pending === 0
+    && overlayPaths(w).paths.length === 0 && w.state().lastPreviewClear === 'painted',
+    JSON.stringify(w.state()));
+  check('handoff/stroke-counted', w.state().strokes === 1 && w.state().activeStroke === false);
+}
+
+// 17. Decoy repaint (wrong colour) is not evidence: an unrelated dark
+//     repaint over the same area must not fake completion.
+{
+  const w = newWorld();
+  w.arm();
+  setStyle(w, 0xFF0000, 150, 0);
+  const pts = w.strokeAt([[100, 100], [150, 120], [200, 140]]);
+  w.paintArea(pts, BLACK); // black caret/UI-style repaint over red's probes
+  w.pumpFrames(6);
+  check('evidence/wrong-colour-not-painted', w.preview().pending === 1,
+    JSON.stringify(w.preview()));
+  w.paintArea(pts, RED);
+  w.pumpFrames(2);
+  check('evidence/right-colour-clears', w.preview().pending === 0
+    && w.state().lastPreviewClear === 'painted');
+}
+
+// 18. Rapid overlapping strokes: completed contacts coexist; a new contact
+//     never drops a pending handoff (no blink), and each clears on its own
+//     paint. Style-alpha overlap: two half-transparent strokes overlapping
+//     in space clear only on their own composited colour.
+{
+  const w = newWorld();
+  w.arm();
+  setStyle(w, 0xFF0000, 400, 60); // semi-transparent thick red
+  const a = w.strokeAt([[100, 100], [200, 140]]);
+  setStyle(w, 0x00FF00, 400, 60); // overlapping green
+  const bPts = [[150, 130], [250, 170]];
+  w.pen('pointerdown', bPts[0][0], bPts[0][1], w.canvas, { pointerId: 111 });
+  check('overlap/new-down-keeps-prior-handoff',
+    w.preview().pending === 1 && overlayPaths(w).paths.length === 2,
+    JSON.stringify({ p: w.preview().pending, paths: overlayPaths(w).paths.length }));
+  w.pen('pointermove', bPts[1][0], bPts[1][1], w.canvas, { pointerId: 111 });
+  w.pen('pointerup', bPts[1][0], bPts[1][1], w.canvas, { pointerId: 111 });
+  check('overlap/two-pending-handoffs', w.preview().pending === 2
+    && w.state().previewHandoffs === 2, JSON.stringify(w.preview()));
+  w.paintArea(a, [255, 153, 153]); // stroke A's red 40% composited over white
+  w.pumpFrames(2);
+  const state = w.preview();
+  check('overlap/red-clears-green-waits',
+    state.pending === 1 && state.probes.length === 1
+    && overlayPaths(w).paths.length === 1, JSON.stringify(state));
+  w.paintArea(bPts, [153, 255, 153]); // stroke B's green 40% composite
+  w.pumpFrames(2);
+  check('overlap/both-cleared-independently', w.preview().pending === 0
+    && overlayPaths(w).paths.length === 0 && w.state().previewClears === 2,
+    JSON.stringify(w.state()));
+}
+
+// 19. Delayed paint: evidence past the old 24-frame blind window still
+//     clears; the probe keeps running with a bounded stride.
+{
+  const w = newWorld();
+  w.arm();
+  setStyle(w, 0xFF0000, 150, 0);
+  const pts = w.strokeAt([[300, 300], [350, 320], [400, 340]]);
+  w.pumpFrames(40); // beyond every-frame window; old build had stopped probing
+  check('delayed/still-pending-frames-40', w.preview().pending === 1
+    && w.preview().probes[0].frames >= 40, JSON.stringify(w.preview().probes));
+  w.paintArea(pts);
+  w.pumpFrames(8); // next stride tick is <=4 frames away
+  check('delayed/late-paint-clears', w.preview().pending === 0
+    && w.state().lastPreviewClear === 'painted', JSON.stringify(w.preview()));
+}
+
+// 20. Never-painted content is bounded by an honest probe give-up (frames)
+//     or wall-clock deadline (starved rAF), never earlier.
+{
+  const w = newWorld();
+  w.arm();
+  setStyle(w, 0xFF0000, 150, 0);
+  w.strokeAt([[100, 100], [150, 120]]);
+  w.pumpFrames(120);
+  check('bound/midway-still-pending', w.preview().pending === 1);
+  w.pumpFrames(140);
+  check('bound/probe-gave-up', w.preview().pending === 0
+    && w.state().lastPreviewClear === 'probe-gave-up', JSON.stringify(w.state()));
+  w.advanceTimers(7000);
+  check('bound/late-deadline-is-no-op', w.preview().pending === 0);
+  const w2 = newWorld();
+  w2.arm();
+  w2.strokeAt([[100, 100], [150, 120]]);
+  w2.advanceTimers(6100); // rAF starved (backgrounded webview)
+  check('bound/deadline-clears-hidden', w2.preview().pending === 0
+    && w2.state().lastPreviewClear === 'deadline', JSON.stringify(w2.state()));
+}
+
+// 21. Unreadable canvas degrades to the deadline path only; a model event
+//     cannot settle it (the removed 'model-settled' behaviour regression).
+{
+  const w = newWorld({ noContext: true, noGetContext: true });
+  w.arm();
+  w.stroke(1);
+  check('unreadable/probe-unavailable', w.preview().probes[0].probe === 'unavailable',
+    JSON.stringify(w.preview()));
+  w.stateChanged(true, 'ModifiedStatus');
+  w.pumpFrames(12);
+  check('unreadable/model-event-does-not-settle', w.preview().pending === 1,
+    JSON.stringify(w.preview()));
+  w.advanceTimers(6100);
+  check('unreadable/deadline-bounds-it', w.preview().pending === 0
+    && w.state().lastPreviewClear === 'deadline');
+}
+
+// 22. Pending handoffs are capped: the ninth completed contact honestly
+//     evicts the oldest instead of growing unbounded.
+{
+  const w = newWorld({ noContext: true, noGetContext: true });
+  w.arm();
+  for (let i = 0; i < 9; i += 1) w.stroke(1, [10 + i, 20 + i]);
+  check('cap/pending-bounded', w.preview().pending === 8, JSON.stringify(w.preview()));
+  check('cap/oldest-evicted', w.state().lastPreviewClear === 'overflow'
+    && w.state().previewHandoffs === 9, JSON.stringify(w.state()));
+}
+
+// 23. Viewport resize and pagehide tear down every preview within bounds;
+//     pagehide keeps its existing disarms.
+{
+  const w = newWorld();
+  w.arm();
+  w.stroke(1);
+  w.stroke(1);
+  w.window.dispatch(makeEvent('resize'));
+  check('teardown/resize-clears-all', w.preview().pending === 0
+    && w.state().lastPreviewClear === 'viewport-resized'
+    && overlayPaths(w).paths.length === 0, JSON.stringify(w.state()));
+  w.window.__floeSetOfficeDrawingMode(true);
+  w.stroke(1);
+  w.window.dispatch(makeEvent('pagehide'));
+  check('teardown/pagehide-clears-and-disarms',
+    w.preview().pending === 0 && w.state().drawing === false
+    && w.state().lastPreviewClear === 'pagehide', JSON.stringify(w.state()));
+}
+
+// 24. Fail-closed shape-handle loss. A handle that already fails on down
+//     never starts a preview for that contact (and keeps prior completed
+//     handoffs intact); a handle that breaks mid-contact drops only its own
+//     stroke preview. The ordered Escape still runs and the honest error
+//     stays observable through __floeOfficePenState().
+{
+  const w = newWorld();
+  w.arm();
+  w.stroke(1); // completed, pending handoff #1
+  const definition = w.window.app.CSections.ShapeHandlesSection;
+  let working = {
+    name: definition.name, showSection: false,
+    setShowSection(show) { this.showSection = show; },
+    sectionProperties: { subSections: [] },
+  };
+  w.window.app.sectionContainer.getSectionWithName = (name) =>
+    (name === working.name ? working : null);
+  w.pen('pointerdown', 10, 10, w.canvas, { pointerId: 131 });
+  check('failclosed/mid-contact-armed',
+    w.preview().stroke === true && w.state().activeStroke === true,
+    JSON.stringify(w.preview()));
+  const throwing = {
+    name: definition.name, showSection: true,
+    setShowSection(show) { if (show === false) throw new Error('hide failed'); },
+    sectionProperties: { subSections: [] },
+  };
+  working = throwing;
+  w.pen('pointermove', 14, 14, w.canvas, { pointerId: 131 });
+  check('failclosed/stroke-preview-dropped',
+    w.state().error === 'shape-handle-unavailable' && w.preview().stroke === false
+    && w.state().lastPreviewClear === 'fail-closed' && w.state().drawing === false,
+    JSON.stringify(w.state()));
+  check('failclosed/prior-handoff-kept', w.preview().pending === 1,
+    JSON.stringify(w.preview()));
+  check('failclosed/no-completed-stroke-for-failed-contact', w.state().strokes === 1,
+    JSON.stringify(w.state()));
+}
+
+// 25. Canonical invariance: the replayed mouse stream and counters are
+//     identical whether the preview is available or the DOM cannot be
+//     created at all (presentation must never touch the persistent path).
+{
+  const wOn = newWorld();
+  setStyle(wOn, 0xFF0000, 150, 0);
+  wOn.arm();
+  const seenOn = recordedMouse(wOn);
+  wOn.stroke(2);
+  const wOff = newWorld({ noCreateElementNS: true });
+  setStyle(wOff, 0xFF0000, 150, 0);
+  wOff.arm();
+  const seenOff = recordedMouse(wOff);
+  wOff.stroke(2);
+  const shape = (seen) => JSON.stringify(seen.map((e) => [e.type, e.clientX, e.clientY, e.buttons]));
+  check('canonical/mouse-stream-identical', shape(seenOn) === shape(seenOff),
+    `${shape(seenOn)} vs ${shape(seenOff)}`);
+  check('canonical/counters-identical',
+    JSON.stringify({ s: wOn.state().strokes, c: wOn.state().coreEvents })
+    === JSON.stringify({ s: wOff.state().strokes, c: wOff.state().coreEvents }),
+    JSON.stringify(wOn.state()));
+  check('canonical/unavailable-degrades-quietly',
+    wOff.preview().available === false && wOff.state().strokes === 1, JSON.stringify(wOff.preview()));
+}
+
+// 26. Ten rapid contacts: every handoff is counted, every painted contact
+//     clears, and the overlay never accumulates orphan nodes.
+{
+  const w = newWorld();
+  w.arm();
+  setStyle(w, 0xFF0000, 150, 0); // paintArea's red must match the stroke target
+  for (let i = 0; i < 10; i += 1) {
+    const pts = w.strokeAt([[50 + i * 30, 100], [80 + i * 30, 140]]);
+    w.paintArea(pts);
+    w.pumpFrames(3);
+  }
+  check('lifecycle/ten-strokes-ten-handoffs', w.state().previewHandoffs === 10
+    && w.state().strokes === 10, JSON.stringify(w.state()));
+  check('lifecycle/no-orphan-nodes', w.preview().pending === 0
+    && overlayPaths(w).paths.length === 0, String(overlayPaths(w).paths.length));
+  w.advanceTimers(10000);
+  w.pumpFrames(10);
+  check('lifecycle/everything-settles', w.preview().pending === 0
+    && w.state().previewClears === 10, JSON.stringify(w.state()));
+}
+
+console.log(`${checks} checks, ${failures} failed`);
 console.log(failures === 0 ? 'ALL PEN INPUT CONTRACT CHECKS PASSED' : `${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

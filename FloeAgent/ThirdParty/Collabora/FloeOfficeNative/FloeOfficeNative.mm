@@ -344,13 +344,38 @@ static NSString *FloeBundledFontCatalogFingerprint(NSBundle *bundle) {
 // Pencil-only annotation input: while annotation mode is on, only Apple
 // Pencil pointer events ('pen') reach the document's freehand tool; finger
 // pointer events are stopped so a finger keeps navigating the document.
-// WKWebView's own gesture recognizers are untouched, so pinching/scrolling
-// stays native.
+// Finger navigation itself belongs to the pinned frontend's own touch
+// pipeline: CanvasSectionContainer turns a one-finger drag into view
+// scrolling and hands two-finger gestures to its ZoomControl section, and
+// that container's touchEventInProgress flag already keeps a finger's
+// compatibility mouse/click out of every section handler. The gate therefore
+// leaves the first finger's touchstart untouched and stops canvas
+// touchstart/touchmove only while a Pencil contact is actually in flight, so
+// a pinch cannot be started from a prevented contact and a stray finger can
+// never move the viewport (or draw) under a live stroke.
 //
 // Replay Pencil contacts through the pinned frontend's canvas mouse routing.
 // Freehand is one-shot in the core. After each contact, enqueue Escape then
 // re-arm on the same ordered engine channel; commandstatechanged is delayed
 // and must never decide whether the next contact is allowed to draw.
+//
+// The engine keeps an in-progress create inside sdr::overlay::OverlayManager
+// until the EndCreate mouse-up inserts the vector into the model, and this
+// pinned client composites document tiles only, with no in-stroke overlay
+// channel. So the gate renders the ongoing actual contact locally in a
+// pointer-events:none SVG layer (live ink) at the bridge's last verified
+// colour/width/transparency mapped through the frontend's own twips/pixel
+// scale, consuming exactly the trusted samples the canonical replay
+// forwards. The preview is presentation-only: canonical persistence remains
+// the replayed mouse stream and the model object, and the preview adds no
+// core/UNO/network traffic. After a completed contact its path is kept
+// (bounded multiple pending contacts coexist, so a fast second stroke never
+// blinks the first) until geometric paint evidence along its own path
+// appears in the composited document canvas: pre-release patch snapshots
+// plus direction-checked movement toward the expected composited ink colour.
+// A model event alone, a dispatch counter or a timer never erases a stroke
+// before that evidence; invisible or never-painted content is bounded by an
+// honest probe give-up and a wall-clock deadline instead.
 //
 // The pinned CanvasSectionContainer hit-tests sections top-to-bottom before
 // the document's mouse-control section. A selection left by the previous
@@ -369,7 +394,7 @@ static NSString *FloeInkInputGatingScript() {
         window.__floeInkGatingInstalled = true;
         const state = window.__floePenState = {
             strokes: 0, coreEvents: 0, armedDispatches: 0, activeStroke: false, toolState: null,
-            shapeHandleSuspensions: 0
+            shapeHandleSuspensions: 0, previewHandoffs: 0, previewClears: 0, lastPreviewClear: null
         };
         let drawing = false;
         let contact = null;
@@ -390,16 +415,462 @@ static NSString *FloeInkInputGatingScript() {
             event.stopPropagation();
             if (event.cancelable !== false) event.preventDefault();
         };
+        // A finger gesture the container itself opened must be allowed to
+        // close; anything else is judged against the live Pencil contact.
+        const gestureOpen = () => {
+            try {
+                const container = window.app && window.app.sectionContainer;
+                return !!(container && container.multiTouch === true);
+            } catch (ignored) {
+                return false;
+            }
+        };
+        // Touch -> Pencil transition recovery. The pinned
+        // CanvasSectionContainer.onTouchEnd ends by setting
+        // touchEventInProgress (its line 1558); the container's own mouse
+        // entry points only clear that flag inside branches the flag itself
+        // gates (onMouseDown line 1321 + clearMousePositions), and a real
+        // touch pipeline clears it on the next one-finger touchstart. The
+        // synthetic Pencil replay has no touch phase, so without recovery a
+        // pinch that ended moments before would swallow the next contact's
+        // whole replayed mousedown/mousemove/mouseup sequence. Before each
+        // replay the gate restores exactly that one boolean to the value
+        // the completed touch pipeline already implies; it fabricates no
+        // touch/click/reset event and touches no other container state —
+        // the container's own legitimate onMouseDown then runs its real
+        // clearMousePositions. Ordinary mouse/object interaction outside
+        // drawing is never replayed and never touched.
+        const recoverTouchState = () => {
+            try {
+                const container = window.app && window.app.sectionContainer;
+                if (container && container.touchEventInProgress === true)
+                    container.touchEventInProgress = false;
+            } catch (ignored) {}
+        };
         const mouse = (type, source, buttons, target) => {
+            recoverTouchState();
             target.dispatchEvent(new MouseEvent(type, {
                 bubbles: true, cancelable: true, view: window,
                 clientX: source.clientX, clientY: source.clientY, button: 0, buttons
             }));
             state.coreEvents += 1;
         };
+        // ---- Live ink preview (presentation only) ---------------------------
+        // Renders the ongoing actual contact every frame while the pen is
+        // down, because the engine's in-progress create lives only in its
+        // window overlay and this client composites document tiles only. The
+        // preview reads the bridge's last verified scalars at contact start
+        // (no second style state, no dispatch, no network). It consumes
+        // exactly the trusted samples that the canonical replay forwards:
+        // coalesced intermediates and predicted events are NOT drawn, so the
+        // preview and the eventual engine vector share one geometry instead
+        // of two divergent point streams. The canonical mouse replay below
+        // is untouched by anything here; every preview operation is
+        // best-effort and must never affect routing.
+        const PREVIEW_POINTS_CAP = 3000;
+        const PREVIEW_HANDOFF_MAX = 8;
+        const PREVIEW_EVERY_FRAME_TICKS = 30;
+        const PREVIEW_PROBE_STRIDE = 4;
+        const PREVIEW_MAX_TICKS = 240;
+        const PREVIEW_DEADLINE_MS = 6000;
+        const PREVIEW_PATCH_RADIUS = 3; // device px -> (2r+1)^2 read per probe
+        const PREVIEW_MOVED_MIN_PIXELS = 2;
+        const PREVIEW_TARGET_MAX_DIST = 200; // per-pixel sum-of-channels
+        const PREVIEW_PROBE_MAX = 8;
+        const PREVIEW_SVG_NS = 'http://www.w3.org/2000/svg';
+        let previewLayer = null;
+        let previewSurface = null;
+        let previewUnavailable = false;
+        let previewStroke = null;
+        const previewHandoffs = [];
+        let previewFrameQueued = false;
+        let previewLoopQueued = false;
+        const nextFrame = (fn) => {
+            if (typeof window.requestAnimationFrame === 'function')
+                window.requestAnimationFrame(fn);
+            else setTimeout(fn, 16);
+        };
+        const resolveInkStyle = () => {
+            // Reuse the bridge's last verified dispatch, never a re-send and
+            // never an invented second style. The documented pen default
+            // (0.5 mm black solid) is the honest fallback when no style was
+            // ever verified in this document session.
+            const style = { color: 0x000000, mm100: 50, transparency: 0, verified: false };
+            try {
+                const expected = window.__floeOfficeInkLastDispatch
+                    && window.__floeOfficeInkLastDispatch.expected;
+                if (expected && Number.isInteger(expected.color)
+                    && expected.color >= 0 && expected.color <= 0xFFFFFF
+                    && Number.isInteger(expected.width)
+                    && expected.width >= 1 && expected.width <= 600
+                    && Number.isInteger(expected.transparency)
+                    && expected.transparency >= 0 && expected.transparency <= 100) {
+                    style.color = expected.color;
+                    style.mm100 = expected.width;
+                    style.transparency = expected.transparency;
+                    style.verified = true;
+                }
+            } catch (ignored) {}
+            // twipsToPixels is the pinned frontend's device-px-per-document-
+            // twip scale and dpiScale its device pixel ratio; the quotient is
+            // exactly the CSS-px-per-twip the sections themselves use
+            // (geometry.ts cX). Fallbacks: the UI zoom percent at the 96 dpi
+            // document scale, then plain 96 dpi.
+            let cssPerTwip = null;
+            try {
+                const app = window.app;
+                if (app && Number.isFinite(app.twipsToPixels) && app.twipsToPixels > 0
+                    && Number.isFinite(app.dpiScale) && app.dpiScale > 0)
+                    cssPerTwip = app.twipsToPixels / app.dpiScale;
+                else if (app && app.activeDocument
+                    && typeof app.activeDocument.getZoomPercent === 'function') {
+                    const percent = app.activeDocument.getZoomPercent();
+                    if (Number.isFinite(percent) && percent > 0)
+                        cssPerTwip = (96 / 1440) * (percent / 100);
+                }
+            } catch (ignored) {}
+            if (!cssPerTwip) cssPerTwip = 96 / 1440;
+            const cssPx = (style.mm100 / 100) * (1440 / 25.4) * cssPerTwip;
+            style.cssPx = Math.min(512, Math.max(0.6, cssPx));
+            style.css = '#' + style.color.toString(16).padStart(6, '0');
+            style.opacity = (100 - style.transparency) / 100;
+            return style;
+        };
+        const ensurePreviewSurface = () => {
+            if (previewSurface || previewUnavailable) return previewSurface;
+            try {
+                if (!document || typeof document.createElement !== 'function'
+                    || typeof document.createElementNS !== 'function'
+                    || !document.documentElement
+                    || typeof document.documentElement.appendChild !== 'function') {
+                    previewUnavailable = true;
+                    return null;
+                }
+                previewLayer = document.createElement('div');
+                previewLayer.id = 'floe-ink-live-preview';
+                previewLayer.setAttribute('style',
+                    'position:fixed;left:0;top:0;width:100%;height:100%;'
+                    + 'margin:0;padding:0;border:0;pointer-events:none;'
+                    + 'z-index:2147483000;');
+                previewSurface = document.createElementNS(PREVIEW_SVG_NS, 'svg');
+                previewSurface.setAttribute('style', 'width:100%;height:100%;pointer-events:none;');
+                previewLayer.appendChild(previewSurface);
+                document.documentElement.appendChild(previewLayer);
+            } catch (ignored) {
+                previewUnavailable = true;
+                previewLayer = null;
+                previewSurface = null;
+            }
+            return previewSurface;
+        };
+        const removePreviewPath = (path) => {
+            try {
+                if (path && previewSurface && typeof previewSurface.removeChild === 'function')
+                    previewSurface.removeChild(path);
+                else if (path && typeof path.remove === 'function') path.remove();
+            } catch (ignored) {}
+        };
+        const dropStrokePreview = (reason) => {
+            const stroke = previewStroke;
+            if (!stroke) return false;
+            previewStroke = null;
+            removePreviewPath(stroke.path);
+            state.previewClears += 1;
+            state.lastPreviewClear = reason;
+            return true;
+        };
+        const dropHandoff = (handoff, reason) => {
+            const i = previewHandoffs.indexOf(handoff);
+            if (i < 0) return false;
+            previewHandoffs.splice(i, 1);
+            if (handoff.deadline !== undefined) clearTimeout(handoff.deadline);
+            removePreviewPath(handoff.path);
+            state.previewClears += 1;
+            state.lastPreviewClear = reason;
+            return true;
+        };
+        const dropAllPreviews = (reason) => {
+            const hadStroke = dropStrokePreview(reason);
+            const hadPending = previewHandoffs.length > 0;
+            while (previewHandoffs.length) dropHandoff(previewHandoffs[0], reason);
+            return hadStroke || hadPending;
+        };
+        const applyStrokePath = () => {
+            if (!previewStroke) return;
+            const points = previewStroke.points;
+            let d = '';
+            for (let i = 0; i < points.length; i += 2) {
+                d += (i === 0 ? 'M' : ' L');
+                d += points[i].toFixed(1) + ' ' + points[i + 1].toFixed(1);
+            }
+            if (points.length === 2)
+                d += ' L' + (points[0] + 0.1).toFixed(1) + ' ' + points[1].toFixed(1);
+            previewStroke.d = d;
+            try { previewStroke.path.setAttribute('d', d); } catch (ignored) {}
+        };
+        const queueStrokePaint = () => {
+            if (!previewStroke || previewFrameQueued) return;
+            previewFrameQueued = true;
+            nextFrame(() => {
+                previewFrameQueued = false;
+                applyStrokePath();
+            });
+        };
+        const appendStrokePoints = (events) => {
+            if (!previewStroke) return;
+            const points = previewStroke.points;
+            for (const event of events) {
+                if (!event) continue;
+                if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY))
+                    continue;
+                points.push(event.clientX, event.clientY);
+            }
+            if (points.length > PREVIEW_POINTS_CAP * 2) {
+                // Bound RAM on pathological contacts: keep every other
+                // sample and always the newest point; presentation degrades
+                // slightly, canonical input was already dispatched per event.
+                const kept = [];
+                for (let i = 0; i < points.length; i += 4) kept.push(points[i], points[i + 1]);
+                const last = points.length - 2;
+                if (kept.length < 2 || kept[kept.length - 2] !== points[last]
+                    || kept[kept.length - 1] !== points[last + 1])
+                    kept.push(points[last], points[last + 1]);
+                previewStroke.points = kept;
+            }
+        };
+        const beginStroke = (event) => {
+            try {
+                // A leftover active preview means the previous contact never
+                // terminated normally; only that stale single path is
+                // dropped. Completed contacts live in previewHandoffs and
+                // keep their own paint evidence untouched.
+                dropStrokePreview('abandoned');
+                if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY))
+                    return;
+                if (!ensurePreviewSurface()) return;
+                const style = resolveInkStyle();
+                const path = document.createElementNS(PREVIEW_SVG_NS, 'path');
+                path.setAttribute('fill', 'none');
+                path.setAttribute('stroke', style.css);
+                path.setAttribute('stroke-width', String(style.cssPx));
+                path.setAttribute('stroke-opacity', String(style.opacity));
+                path.setAttribute('stroke-linecap', 'round');
+                path.setAttribute('stroke-linejoin', 'round');
+                previewSurface.appendChild(path);
+                previewStroke = { path, style, points: [], d: '' };
+                appendStrokePoints([event]);
+                applyStrokePath();
+            } catch (ignored) {
+                previewStroke = null;
+            }
+        };
+        const sampleStroke = (event) => {
+            if (!previewStroke) return;
+            // Exactly the trusted event the canonical replay forwards.
+            // getCoalescedEvents()/getPredictedEvents() are deliberately not
+            // read: drawing intermediate samples the core never received
+            // would make the local line diverge from the engine vector.
+            try {
+                appendStrokePoints([event]);
+                queueStrokePaint();
+            } catch (ignored) {}
+        };
+        const previewReadPatch = (rect) => { // rect = [x, y, w, h] backing px
+            if (!rect) return null;
+            try {
+                const canvas = canvasOf();
+                const container = window.app && window.app.sectionContainer;
+                const ctx = (container && container.context
+                        && typeof container.context.getImageData === 'function')
+                    ? container.context
+                    : (canvas && typeof canvas.getContext === 'function'
+                        ? canvas.getContext('2d') : null);
+                if (!ctx || typeof ctx.getImageData !== 'function') return null;
+                const patch = ctx.getImageData(rect[0], rect[1], rect[2], rect[3]);
+                if (!patch || !patch.data
+                    || typeof patch.data.length !== 'number'
+                    || patch.data.length < rect[2] * rect[3] * 4)
+                    return null;
+                return patch.data;
+            } catch (ignored) {
+                return null;
+            }
+        };
+        // Count pixels that actually moved toward the composited colour this
+        // stroke's own style would produce over that pixel's pre-release
+        // value. Improvement alone is not evidence: a black caret repaint is
+        // "closer" to a red target than white is (it matches the G/B zeros),
+        // so a pixel only counts when it is plausibly the ink itself
+        // (PREVIEW_TARGET_MAX_DIST from the composited target) AND
+        // demonstrably closer than before. An unrelated repaint (caret blink,
+        // grey UI invalidation, a different-coloured stroke in an overlapping
+        // area) can never fake this stroke's completion.
+        const previewMovedTowardInk = (before, now, target) => {
+            let count = 0;
+            const length = Math.min(before.length, now.length);
+            const op = target.op;
+            for (let i = 0; i + 3 < length; i += 4) {
+                const br = before[i], bg = before[i + 1], bb = before[i + 2];
+                const nr = now[i], ng = now[i + 1], nb = now[i + 2];
+                const diff = Math.abs(nr - br) + Math.abs(ng - bg) + Math.abs(nb - bb);
+                if (diff < 24) continue;
+                const tr = target.r * op + br * (1 - op);
+                const tg = target.g * op + bg * (1 - op);
+                const tb = target.b * op + bb * (1 - op);
+                const was = Math.abs(br - tr) + Math.abs(bg - tg) + Math.abs(bb - tb);
+                const is = Math.abs(nr - tr) + Math.abs(ng - tg) + Math.abs(nb - tb);
+                if (is <= PREVIEW_TARGET_MAX_DIST && is + 24 <= was) count += 1;
+            }
+            return count;
+        };
+        const buildStrokeProbes = (stroke) => {
+            const probes = [];
+            const canvas = canvasOf();
+            if (!canvas || typeof canvas.getBoundingClientRect !== 'function') return probes;
+            const rect = canvas.getBoundingClientRect();
+            if (!rect || !Number.isFinite(rect.width) || rect.width <= 0
+                || !Number.isFinite(rect.height) || rect.height <= 0
+                || !Number.isFinite(canvas.width) || canvas.width <= 0
+                || !Number.isFinite(canvas.height) || canvas.height <= 0)
+                return probes;
+            const size = PREVIEW_PATCH_RADIUS * 2 + 1;
+            if (canvas.width < size || canvas.height < size) return probes;
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const points = stroke.points;
+            const pairs = Math.floor(points.length / 2);
+            if (pairs < 1) return probes;
+            const color = stroke.style.color;
+            const target = {
+                r: (color >> 16) & 0xFF, g: (color >> 8) & 0xFF, b: color & 0xFF,
+                op: stroke.style.opacity
+            };
+            const wanted = Math.min(PREVIEW_PROBE_MAX, pairs);
+            const seen = new Set();
+            for (let k = 0; k < wanted; k += 1) {
+                const index = wanted === 1 ? 0
+                    : Math.round((k * (pairs - 1)) / (wanted - 1));
+                if (seen.has(index)) continue;
+                seen.add(index);
+                const cx = Math.round((points[index * 2] - rect.left) * scaleX);
+                const cy = Math.round((points[index * 2 + 1] - rect.top) * scaleY);
+                const x = Math.max(0, Math.min(canvas.width - size, cx - PREVIEW_PATCH_RADIUS));
+                const y = Math.max(0, Math.min(canvas.height - size, cy - PREVIEW_PATCH_RADIUS));
+                const patch = [x, y, size, size];
+                const before = previewReadPatch(patch);
+                if (!before) return []; // unreadable: fall back to the deadline
+                probes.push({ rect: patch, before, target, done: false });
+            }
+            return probes;
+        };
+        const handoffEvidenceComplete = (handoff) => {
+            if (!handoff.probes.length) return false;
+            let painted = 0;
+            for (const probe of handoff.probes) {
+                if (probe.done) { painted += 1; continue; }
+                const now = previewReadPatch(probe.rect);
+                if (!now) {
+                    handoff.probes.length = 0;
+                    handoff.probe = 'unavailable';
+                    return false;
+                }
+                if (previewMovedTowardInk(probe.before, now, probe.target)
+                    >= PREVIEW_MOVED_MIN_PIXELS) probe.done = true;
+                if (probe.done) painted += 1;
+            }
+            return painted >= Math.max(1, Math.ceil(handoff.probes.length / 2));
+        };
+        const previewLoop = () => {
+            previewLoopQueued = false;
+            if (!previewHandoffs.length) return;
+            for (const handoff of previewHandoffs.slice()) {
+                handoff.frames += 1;
+                const probeTick = handoff.frames <= PREVIEW_EVERY_FRAME_TICKS
+                    || handoff.frames % PREVIEW_PROBE_STRIDE === 0;
+                if (handoff.probe === 'paint' && probeTick
+                    && handoffEvidenceComplete(handoff)) {
+                    dropHandoff(handoff, 'painted');
+                    continue;
+                }
+                if (handoff.frames >= PREVIEW_MAX_TICKS) {
+                    dropHandoff(handoff,
+                        handoff.probe === 'paint' ? 'probe-gave-up' : 'deadline');
+                }
+            }
+            if (previewHandoffs.length) {
+                previewLoopQueued = true;
+                nextFrame(previewLoop);
+            }
+        };
+        const queuePreviewLoop = () => {
+            if (previewLoopQueued || !previewHandoffs.length) return;
+            previewLoopQueued = true;
+            nextFrame(previewLoop);
+        };
+        const endStrokeHandoff = () => {
+            // A completed contact hands presentation to the engine's painted
+            // result. Evidence is geometric and real: a bounded set of probe
+            // patches along this stroke's own path, each compared against
+            // its own pre-release snapshot for pixels that moved toward the
+            // expected composited ink colour. Nothing erases a stroke before
+            // that paint evidence; a fast second or overlapping contact adds
+            // its own pending path instead of dropping this one (bounded at
+            // PREVIEW_HANDOFF_MAX, oldest honestly evicted first). Content
+            // that is invisible, rejected or never repainted is bounded by
+            // PREVIEW_MAX_TICKS probe frames plus a wall-clock deadline, and
+            // an unreadable canvas degrades to the deadline path only — the
+            // documented residual blink risk on a renderer slower than the
+            // probe window.
+            if (!previewStroke) return;
+            const stroke = previewStroke;
+            previewStroke = null;
+            try {
+                const handoff = {
+                    path: stroke.path, style: stroke.style,
+                    probes: buildStrokeProbes(stroke), frames: 0,
+                    probe: 'paint', deadline: undefined
+                };
+                if (!handoff.probes.length) handoff.probe = 'unavailable';
+                previewHandoffs.push(handoff);
+                state.previewHandoffs += 1;
+                while (previewHandoffs.length > PREVIEW_HANDOFF_MAX)
+                    dropHandoff(previewHandoffs[0], 'overflow');
+                handoff.deadline = setTimeout(() => {
+                    if (previewHandoffs.indexOf(handoff) < 0) return;
+                    if (handoff.probe === 'paint' && handoffEvidenceComplete(handoff))
+                        dropHandoff(handoff, 'painted');
+                    else dropHandoff(handoff, 'deadline');
+                }, PREVIEW_DEADLINE_MS);
+                queuePreviewLoop();
+            } catch (ignored) {
+                removePreviewPath(stroke.path);
+            }
+        };
+        window.__floeOfficePenPreview = () => ({
+            available: !previewUnavailable && !!previewSurface,
+            surface: !!previewSurface,
+            stroke: !!previewStroke,
+            points: previewStroke ? previewStroke.points.length / 2 : 0,
+            d: previewStroke ? previewStroke.d : null,
+            style: previewStroke ? {
+                color: previewStroke.style.css, cssPx: previewStroke.style.cssPx,
+                opacity: previewStroke.style.opacity, verified: previewStroke.style.verified
+            } : null,
+            pending: previewHandoffs.length,
+            probes: previewHandoffs.map((one) => ({
+                frames: one.frames,
+                probe: one.probe,
+                painted: one.probes.reduce((n, p) => n + (p.done ? 1 : 0), 0),
+                of: one.probes.length
+            }))
+        });
         const recordToolState = (event) => {
             if (event && ['.uno:Freeline_Unfilled', '.uno:Freeline'].includes(event.commandName))
                 state.toolState = event.state;
+            // .uno:ModifiedStatus is deliberately NOT preview evidence: it is
+            // transition-based (a dirty document reports nothing on the next
+            // stroke) and it can arrive around the mouse-up before a handoff
+            // exists. The geometric paint probe is the only completion signal.
         };
         const mapOf = () => {
             const map = window.app && window.app.map;
@@ -525,6 +996,11 @@ static NSString *FloeInkInputGatingScript() {
         const failShapeHandles = (source) => {
             drawing = false;
             state.error = 'shape-handle-unavailable';
+            // A fail-closed contact owns no completed stroke, so its own
+            // preview must not survive; the ordered Escape below may discard
+            // exactly the create it had drawn. Previously completed contacts
+            // keep their independent handoff evidence untouched.
+            dropStrokePreview('fail-closed');
             if (contact) {
                 const last = contact.last;
                 contact = null;
@@ -557,6 +1033,7 @@ static NSString *FloeInkInputGatingScript() {
             try {
                 mouse('mouseup', source || last, 0, document);
                 state.strokes += 1;
+                endStrokeHandoff();
             } finally {
                 restoreShapeHandles();
             }
@@ -617,6 +1094,7 @@ static NSString *FloeInkInputGatingScript() {
                 failShapeHandles(null);
                 return;
             }
+            beginStroke(event);
             mouse('mousedown', event, 1, canvas);
         };
         const owns = (event) => contact && event.pointerType === 'pen' && event.pointerId === contact.id;
@@ -624,6 +1102,7 @@ static NSString *FloeInkInputGatingScript() {
             if (!owns(event)) return;
             contact.last = event;
             stop(event);
+            sampleStroke(event);
             if (suspendShapeHandles() === 'failed') {
                 failShapeHandles(event);
                 return;
@@ -645,11 +1124,34 @@ static NSString *FloeInkInputGatingScript() {
         window.addEventListener('pointermove', move, { capture: true, passive: false });
         window.addEventListener('pointerup', up, { capture: true, passive: false });
         window.addEventListener('pointercancel', up, { capture: true, passive: false });
-        // Touch compatibility events belong to the canvas too. Toolbar taps
-        // and native controls remain usable during and between contacts.
-        for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel'])
+        // Finger navigation stays on the pinned frontend's own touch
+        // pipeline. CanvasSectionContainer records the first finger's
+        // touchstart, resolves the gesture's section from that state and
+        // propagates two-finger events to its ZoomControl section; a
+        // prevented first touchstart kills the whole pinch, so idle canvas
+        // touches are never stopped. While a Pencil contact is in flight,
+        // canvas touchstart/touchmove are blocked so a stray finger cannot
+        // scroll or zoom the viewport under the stroke. touchend/touchcancel
+        // are delivered mid-contact ONLY when the container actually has a
+        // multi-touch gesture open: closing it flips multiTouch and lets the
+        // pinned onTouchEnd else-branch run (no section mouse-up is
+        // propagated while multiTouch was open, so the replayed stroke is
+        // not injected a premature core buttonup), and the touch -> Pencil
+        // replay recovery above handles the flag it leaves behind. A stray
+        // touchend with no gesture open WOULD propagate a mouse-up through
+        // the container's single-finger branch and truncate the live core
+        // stroke, so it is held until the contact ends. With touch flowing,
+        // the container's own touchEventInProgress suppression plus
+        // blockFinger (pointer level) keep fingers out of the document;
+        // toolbar and native controls are never canvas-targeted and stay
+        // usable.
+        for (const type of ['touchstart', 'touchmove'])
             window.addEventListener(type, (event) => {
-                if (drawing && onCanvas(event)) stop(event);
+                if (contact && onCanvas(event)) stop(event);
+            }, { capture: true, passive: false });
+        for (const type of ['touchend', 'touchcancel'])
+            window.addEventListener(type, (event) => {
+                if (contact && onCanvas(event) && !gestureOpen()) stop(event);
             }, { capture: true, passive: false });
         const interrupt = () => {
             // A blur ends the contact but keeps drawing armed for the next
@@ -657,13 +1159,24 @@ static NSString *FloeInkInputGatingScript() {
             finish(null, drawing);
         };
         window.addEventListener('blur', interrupt);
-        window.addEventListener('pagehide', () => window.__floeSetOfficeDrawingMode(false));
+        window.addEventListener('pagehide', () => {
+            window.__floeSetOfficeDrawingMode(false);
+            dropAllPreviews('pagehide');
+        });
         document.addEventListener('visibilitychange', () => { if (document.hidden) interrupt(); });
+        // A viewport resize re-lays the canvas out: viewport-relative
+        // preview geometry is stale the moment that happens, while the
+        // canonical stream keeps its own live client-coordinate conversion.
+        window.addEventListener('resize', () => dropAllPreviews('viewport-resized'));
         window.__floeOfficePenState = () => ({
             drawing, strokes: state.strokes, coreEvents: state.coreEvents,
             armedDispatches: state.armedDispatches, activeStroke: state.activeStroke,
             shapeHandleSuspensions: state.shapeHandleSuspensions,
-            toolState: state.toolState, error: state.error || null
+            toolState: state.toolState, error: state.error || null,
+            livePreview: !!(previewStroke || previewHandoffs.length),
+            previewHandoffs: state.previewHandoffs,
+            previewClears: state.previewClears,
+            lastPreviewClear: state.lastPreviewClear
         });
     };
     if (document.readyState === 'loading')
