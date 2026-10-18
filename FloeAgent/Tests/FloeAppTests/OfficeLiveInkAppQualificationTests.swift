@@ -335,7 +335,11 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
     const offset = typeof contactIndex === 'number' ? contactIndex * .15 : 0;
     const x = x1 + (x2-x1)*(.35+offset), y = y1 + (y2-y1)*.6;
     const length = Math.min(96,(x2-x1)*.25), amplitude = Math.min(24,(y2-y1)*.08);
-    if (contactIndex === 0) window.__floeLiveInkRawBounds = [Infinity,Infinity,-Infinity,-Infinity];
+    if (contactIndex === 0) {
+        window.__floeLiveInkRawBounds = [Infinity,Infinity,-Infinity,-Infinity];
+        window.__floeLiveInkBase = {width:canvas.width,height:canvas.height,
+            rgba:canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data};
+    }
     const include = (px,py) => {
         const b=window.__floeLiveInkRawBounds;
         b[0]=Math.min(b[0],px); b[1]=Math.min(b[1],py);
@@ -359,15 +363,25 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
     (() => {
         const c=app.sectionContainer.canvas, r=c.getBoundingClientRect();
         const rgba=c.getContext('2d').getImageData(0,0,c.width,c.height).data;
+        const raw=window.__floeLiveInkRawBounds, base=window.__floeLiveInkBase;
+        if (!raw || !base || base.width!==c.width || base.height!==c.height)
+            throw new Error('Actual ink canvas geometry changed during the contact');
+        const red=(a,i)=>a[i]>140 && a[i]>a[i+1]*1.5 && a[i]>a[i+2]*1.5;
         let minX=c.width,minY=c.height,maxX=-1,maxY=-1,pixels=0;
-        for (let i=0;i<rgba.length;i+=4) {
-            if (rgba[i]>140 && rgba[i]>rgba[i+1]*1.5 && rgba[i]>rgba[i+2]*1.5) {
-                const n=i/4, x=n%c.width,y=Math.floor(n/c.width);
+        // Exclude pre-existing red cells/text and unrelated UI. The generous
+        // 48 CSS px observation margin retains the measured 17px Writer
+        // displacement; it cannot make that displacement pass the 4px check.
+        const left=Math.max(0,Math.floor((raw[0]-48-r.left)*c.width/r.width));
+        const right=Math.min(c.width,Math.ceil((raw[2]+48-r.left)*c.width/r.width));
+        const top=Math.max(0,Math.floor((raw[1]-48-r.top)*c.height/r.height));
+        const bottom=Math.min(c.height,Math.ceil((raw[3]+48-r.top)*c.height/r.height));
+        for (let y=top;y<bottom;y++) for (let x=left;x<right;x++) {
+            const i=(y*c.width+x)*4;
+            if (red(rgba,i) && !red(base.rgba,i)) {
                 minX=Math.min(minX,x);maxX=Math.max(maxX,x);
                 minY=Math.min(minY,y);maxY=Math.max(maxY,y);pixels++;
             }
         }
-        const raw=window.__floeLiveInkRawBounds;
         if (!raw || !pixels) return {pixels};
         const painted=[r.left+minX*r.width/c.width,r.top+minY*r.height/c.height,
             r.left+(maxX+1)*r.width/c.width,r.top+(maxY+1)*r.height/c.height];
