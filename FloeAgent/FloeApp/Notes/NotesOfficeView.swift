@@ -131,7 +131,7 @@ struct NotesOfficeView: View {
 
             }
         }
-        .onChange(of: office.canAct) { _, ready in
+        .onChange(of: office.documentActionsReady) { _, ready in
             if ready { scheduleMissingPreview() }
         }
         .onChange(of: baseResourceID) { _, _ in scheduleMissingPreview() }
@@ -638,7 +638,7 @@ struct NotesOfficeView: View {
     /// already open. Library cards never start an engine. An editable canvas
     /// waits for Save, so background cover work cannot interrupt handwriting.
     private func scheduleMissingPreview() {
-        guard coverBackfillReady, isVisible, office.readOnly, office.canAct, !committing,
+        guard coverBackfillReady, isVisible, office.readOnly, office.documentActionsReady, !committing,
               !externalRefreshRunning, let source = baseResourceID,
               previewAttemptedSource != source,
               document.matchingOfficePreviewResourceID == nil else { return }

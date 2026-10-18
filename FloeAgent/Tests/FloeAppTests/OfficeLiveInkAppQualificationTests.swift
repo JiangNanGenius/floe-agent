@@ -6,6 +6,7 @@ import XCTest
 import UIKit
 import SwiftUI
 import WebKit
+import ZIPFoundation
 import FloeDocuments
 import FloeCore
 import FloeNotes
@@ -22,7 +23,18 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
     func testWorkbookSavedInkIsInNotesCover() async throws { try await exercise("xlsx", requireLivePresentation: false) }
     func testPresentationSavedInkIsInNotesCover() async throws { try await exercise("pptx", requireLivePresentation: false) }
 
-    private func exercise(_ format: String, requireLivePresentation: Bool = true) async throws {
+    func testWordPinchInDrawingModeThenContinueWriting() async throws {
+        try await exercise("docx", navigateBeforeDrawing: true)
+    }
+    func testWorkbookPinchInDrawingModeThenContinueWriting() async throws {
+        try await exercise("xlsx", navigateBeforeDrawing: true)
+    }
+    func testPresentationPinchInDrawingModeThenContinueWriting() async throws {
+        try await exercise("pptx", navigateBeforeDrawing: true)
+    }
+
+    private func exercise(_ format: String, requireLivePresentation: Bool = true,
+                          navigateBeforeDrawing: Bool = false) async throws {
         guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
             throw XCTSkip("Opt-in actual App/native live ink qualification")
         }
@@ -78,6 +90,19 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             try await session.toggleDrawing()
             await session.applyInkPreferences()
             XCTAssertNil(session.inkError)
+            if navigateBeforeDrawing {
+                let navigation = try await web.callAsyncJavaScript(Self.pinch, arguments: [:],
+                    in: nil, contentWorld: .page)
+                let facts = try XCTUnwrap(navigation as? [String: Any])
+                let attachment = XCTAttachment(string: String(describing: facts))
+                attachment.name = "\(format)-actual-touch-pinch"; attachment.lifetime = .keepAlways
+                add(attachment)
+                XCTAssertNotEqual(facts["before"] as? Double, facts["after"] as? Double,
+                                  "Touch handlers must change the real frontend zoom")
+                XCTAssertEqual(facts["drawing"] as? Bool, true)
+                XCTAssertEqual(facts["activeStroke"] as? Bool, false)
+                XCTAssertEqual(facts["strokes"] as? Int, 0, "Fingers must not become pen contacts")
+            }
             try await Task.sleep(for: .milliseconds(150))
             let before = try await snapshot(web, label: "\(format)-before-contact")
             _ = try await web.callAsyncJavaScript(Self.beginAndMove, arguments: [:], in: nil, contentWorld: .page)
@@ -92,6 +117,8 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             _ = try await snapshot(web, label: "\(format)-after-lifting-pen")
             let saved = await session.saveInPlace()
             guard saved else { throw CocoaError(.fileWriteUnknown) }
+            XCTAssertEqual(try vectorCount(in: source), 1,
+                           "Only the Pencil contact may add a saved vector; touch navigation must not add ink")
             let postSaveState = try await web.evaluateJavaScript(#"""
             (() => ({ latch: window.floeModifiedSinceCommit ?? null,
                 modified: app.map.stateChangeHandler.getItemValue('.uno:ModifiedStatus') ?? null,
@@ -173,6 +200,58 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
         }
     }
 
+    private func vectorCount(in url: URL) throws -> Int {
+        let archive = try Archive(url: url, accessMode: .read)
+        let counter = OfficeLiveInkVectorCounter()
+        for entry in archive where entry.path == "word/document.xml"
+            || entry.path.hasPrefix("xl/drawings/drawing")
+            || entry.path.hasPrefix("ppt/slides/slide") {
+            guard entry.path.hasSuffix(".xml") else { continue }
+            var data = Data()
+            _ = try archive.extract(entry) { data.append($0) }
+            let parser = XMLParser(data: data)
+            parser.shouldResolveExternalEntities = false
+            parser.shouldProcessNamespaces = true; parser.delegate = counter
+            guard parser.parse() else { throw parser.parserError ?? CocoaError(.fileReadCorruptFile) }
+        }
+        return counter.count
+    }
+
+    /// Synthetic TouchEvents enter the real canvas handlers, beginning with
+    /// one finger as required by CanvasSectionContainer. No direct zoom call,
+    /// handler replacement or edit-state reset is allowed in this stimulus.
+    private static let pinch = #"""
+    const canvas = app.sectionContainer.canvas;
+    const rect = canvas.getBoundingClientRect();
+    const layout = app.activeDocument.activeLayout;
+    const anchor = app.sectionContainer.getDocumentAnchorSection();
+    const origin = app.activeDocument.fileSize.clone(); origin.pX=0; origin.pY=0;
+    const end = app.activeDocument.fileSize.clone();
+    const left = Math.max(0, anchor.myTopLeft[0], layout.documentToViewX(origin));
+    const top = Math.max(0, anchor.myTopLeft[1], layout.documentToViewY(origin));
+    const right = Math.min(canvas.width, anchor.myTopLeft[0]+anchor.size[0], layout.documentToViewX(end));
+    const bottom = Math.min(canvas.height, anchor.myTopLeft[1]+anchor.size[1], layout.documentToViewY(end));
+    const x = rect.left+(left+right)*.5*rect.width/canvas.width;
+    const y = rect.top+(top+bottom)*.5*rect.height/canvas.height;
+    const before = app.map.getZoom();
+    const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const touch = (id, offset) => new Touch({identifier:id,target:canvas,
+        clientX:x+offset,clientY:y,pageX:x+offset+window.scrollX,pageY:y+window.scrollY});
+    const send = (type, touches, changed) => canvas.dispatchEvent(new TouchEvent(type,
+        {bubbles:true,cancelable:true,composed:true,touches,targetTouches:touches,changedTouches:changed}));
+    let a=touch(971,-30), b=touch(972,30);
+    send('touchstart',[a],[a]); await frame();
+    send('touchstart',[a,b],[b]); await frame();
+    send('touchmove',[a,b],[a,b]); await frame();
+    a=touch(971,-60); b=touch(972,60);
+    send('touchmove',[a,b],[a,b]); await frame();
+    send('touchend',[],[a,b]);
+    for (let i=0;i<30 && app.map.getZoom()===before;i++) await frame();
+    const state=window.__floeOfficePenState();
+    return {before,after:app.map.getZoom(),drawing:state.drawing,
+        activeStroke:state.activeStroke,strokes:state.strokes};
+    """#
+
     private static let beginAndMove = #"""
     const canvas = window.app && window.app.sectionContainer && window.app.sectionContainer.canvas;
     if (!canvas || !window.__floeOfficePenState().drawing) throw new Error('Actual Office pen surface unavailable');
@@ -211,5 +290,14 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
     delete window.__floeLiveInkQualificationEnd;
     true;
     """#
+}
+
+private final class OfficeLiveInkVectorCounter: NSObject, XMLParserDelegate {
+    var count = 0
+    func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
+                qualifiedName: String?, attributes: [String: String] = [:]) {
+        if name == "custGeom", namespaceURI == "http://schemas.openxmlformats.org/drawingml/2006/main"
+            || namespaceURI == "http://purl.oclc.org/ooxml/drawingml/main" { count += 1 }
+    }
 }
 #endif
