@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import XCTest
 import UIKit
+import Vision
 
 /// Captures the verified on-screen tap point of a menu row so the tap never
 /// depends on a second (potentially stale) accessibility frame read.
@@ -189,6 +190,27 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.4)
         capture("office-pencil-toggle-on")
 
+        // XCTest synthesizes real UIKit touches here. Require a change in
+        // the document's rendered title, in addition to the separate native
+        // tests of frontend TouchEvents and saved vectors.
+        let web = app.webViews.firstMatch
+        XCTAssertTrue(web.waitForExistence(timeout: 10))
+        let beforePinch = web.screenshot()
+        let beforeTitle = try officeTitleBounds(in: beforePinch.image)
+        web.pinch(withScale: 1.25, velocity: 1)
+        Thread.sleep(forTimeInterval: 1)
+        let afterPinch = web.screenshot()
+        let afterTitle = try officeTitleBounds(in: afterPinch.image)
+        for (name, shot) in [("office-pencil-before-real-pinch", beforePinch),
+                             ("office-pencil-after-real-pinch", afterPinch)] {
+            let attachment = XCTAttachment(screenshot: shot)
+            attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        }
+        XCTAssertGreaterThan(afterTitle.width, beforeTitle.width * 1.08,
+                             "A UIKit pinch in drawing mode must visibly enlarge the document")
+        XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 10),
+                      "Pinching must leave the drawing tool enabled")
+
         settings.tap()
         let panel = app.staticTexts["office.ink.panel"]
         XCTAssertTrue(panel.waitForExistence(timeout: 15),
@@ -324,6 +346,20 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(create.waitForExistence(timeout: 60),
                       "the Office editor must return to the Notes library through its safe exit")
         XCTAssertFalse(back.exists)
+    }
+
+    private func officeTitleBounds(in image: UIImage) throws -> CGRect {
+        let cg = try XCTUnwrap(image.cgImage)
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["en-US"]
+        request.usesLanguageCorrection = false
+        try VNImageRequestHandler(cgImage: cg).perform([request])
+        let title = request.results?.first { observation in
+            guard let text = observation.topCandidates(1).first?.string else { return false }
+            return text.replacingOccurrences(of: " ", with: "").lowercased().contains("penui")
+        }
+        return try XCTUnwrap(title, "The synthetic document title must be visible for the pinch comparison").boundingBox
     }
 
     func testWorkspaceImportAndDocumentAssistant() throws {
