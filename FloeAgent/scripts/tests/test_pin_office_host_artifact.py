@@ -5,8 +5,9 @@ The tracked single-member engine repair is part of the host identity now.  A
 pin must carry exactly the canonical claim; a missing claim means the pinned
 framework predates the repair (SOURCE AHEAD), while a present-but-different
 claim (wrong SHA/platform/member/lock or an extra diagnostic field such as an
-absolute receipt path) is corrupt and must be rejected outright.  ``--check``
-stays strictly read-only.
+absolute receipt path) is corrupt and must be rejected outright.  A compiled
+lifecycle rejection must also survive an otherwise valid engine repair claim.
+``--check`` stays strictly read-only.
 """
 import copy
 import json
@@ -30,7 +31,16 @@ TRACKED_LOCK = REPO_ROOT / "FloeAgent/ThirdParty/Collabora/engine.lock.json"
 PATCH_LOCK = REPO_ROOT / "FloeAgent/ThirdParty/Collabora/engine.patch.lock.json"
 
 
-class PinEngineRepairClaim(unittest.TestCase):
+class PinCheckFixture(unittest.TestCase):
+    """A current lock copy that drives the real ``--check`` subprocess.
+
+    The fixture refreshes the pin's source/overlay identities so only the
+    contract under test can reject it. Compiled lifecycle is opt-in because
+    its validator also hashes the tracked patch bytes next to the lock.
+    """
+
+    include_compiled_lifecycle = False
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -39,6 +49,8 @@ class PinEngineRepairClaim(unittest.TestCase):
         self.lock.write_text(TRACKED_LOCK.read_text())
         # The pin script resolves the sibling engine contract next to the lock.
         (self.root / "engine.patch.lock.json").symlink_to(PATCH_LOCK)
+        if self.include_compiled_lifecycle:
+            shutil.copytree(TRACKED_LOCK.parent / "patches", self.root / "patches")
         self.repair_lock, self.section, _ = repair.load_lock(
             PATCH_LOCK, "IOS")
         self.claim = repair.expected_manifest_block(self.repair_lock, self.section)
@@ -52,11 +64,12 @@ class PinEngineRepairClaim(unittest.TestCase):
 
     def write_pin(self, mutate):
         lock = json.loads(TRACKED_LOCK.read_text())
-        # This suite isolates the engineRepair contract, not the live checkout's
-        # pending source rebuild. Compiled lifecycle has its own strict tests.
-        lock.get("embeddedLifecycleOverlay", {}).pop("compiledMembers", None)
         block = lock["qualifiedHostArtifact"]
-        block.pop("embeddedLifecycleMember", None)
+        if not self.include_compiled_lifecycle:
+            # Isolate the engineRepair contract from the compiled lifecycle;
+            # that contract has its own strict tests.
+            lock.get("embeddedLifecycleOverlay", {}).pop("compiledMembers", None)
+            block.pop("embeddedLifecycleMember", None)
         block["hostSourceSHA256"] = {name: pin.source_hashes()[name] for name in block["hostSourceSHA256"]}
         block["overlaySHA256"] = lock["embeddingOverlay"]["sha256"]
         for section, claim_key, _, _ in pin.LIFECYCLE_OVERLAYS:
@@ -65,6 +78,8 @@ class PinEngineRepairClaim(unittest.TestCase):
         mutate(block)
         self.lock.write_text(json.dumps(lock, indent=2) + "\n")
 
+
+class PinEngineRepairClaim(PinCheckFixture):
     def test_missing_claim_reports_source_ahead(self):
         completed = self.run_check()
         self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
@@ -138,6 +153,64 @@ class PinEngineRepairClaim(unittest.TestCase):
         failures = pin.engine_repair_provenance_failures(
             {"engineRepair": wrong}, self.claim)
         self.assertTrue(any("member" in failure for failure in failures))
+
+
+class PinCompiledLifecycleAggregation(PinCheckFixture):
+    """A valid engine repair claim must not hide compiled lifecycle failures."""
+
+    include_compiled_lifecycle = True
+
+    def valid_repair(self, block):
+        block["engineRepair"] = copy.deepcopy(self.claim)
+
+    @staticmethod
+    def invalid_compiled(block):
+        block["embeddedLifecycleMember"]["objectSHA256ByMember"] = {}
+
+    @staticmethod
+    def invalid_repair(block):
+        block["engineRepair"]["patchedArchiveSHA256"] = "0" * 64
+
+    def test_valid_compiled_lifecycle_and_repair_are_accepted(self):
+        self.write_pin(self.valid_repair)
+        completed = self.run_check()
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("matches the current host sources", completed.stdout)
+
+    def test_invalid_compiled_lifecycle_with_valid_repair_is_rejected(self):
+        def mutate(block):
+            self.valid_repair(block)
+            self.invalid_compiled(block)
+
+        self.write_pin(mutate)
+        completed = self.run_check()
+        self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+        self.assertIn("REJECTED compiled embedded lifecycle member", completed.stdout)
+        self.assertIn("object member inventory differs", completed.stdout)
+        self.assertNotIn("REJECTED engine repair claim", completed.stdout)
+
+    def test_valid_compiled_lifecycle_with_invalid_repair_is_rejected(self):
+        self.write_pin(self.invalid_repair)
+        completed = self.run_check()
+        self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+        self.assertIn("REJECTED engine repair claim", completed.stdout)
+        self.assertIn("patchedArchiveSHA256", completed.stdout)
+        self.assertNotIn("REJECTED compiled embedded lifecycle member", completed.stdout)
+
+    def test_both_invalid_contracts_report_both_findings(self):
+        def both(block):
+            self.valid_repair(block)
+            self.invalid_compiled(block)
+            self.invalid_repair(block)
+
+        self.write_pin(both)
+        completed = self.run_check()
+        self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+        self.assertIn("REJECTED compiled embedded lifecycle member", completed.stdout)
+        self.assertIn("object member inventory differs", completed.stdout)
+        self.assertIn("REJECTED engine repair claim", completed.stdout)
+        self.assertIn("patchedArchiveSHA256", completed.stdout)
+        self.assertEqual(completed.stdout.count("pin: REJECTED"), 2, completed.stdout)
 
 
 class TransportStorageIdentityCliTests(unittest.TestCase):

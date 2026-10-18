@@ -282,17 +282,21 @@ def check(lock_path: Path) -> int:
             try:
                 compiled_lifecycle.validate(block, lock, 'IOS', lock_path=lock_path)
             except ValueError as error:
-                rejected.append(str(error))
+                # Keep this finding: a valid engine repair claim below must
+                # never replace a compiled-lifecycle rejection.
+                rejected.append(("compiled embedded lifecycle member", str(error)))
     if repair_claim is not None:
         pin_block = pin.get("engineRepair")
         if pin_block is None:
             mismatched.append("engine repair (blank slideshow fix)")
         else:
-            rejected = engine_repair_claim_failures(
-                pin_block, repair_claim, "pin")
+            rejected.extend(
+                ("engine repair claim", failure)
+                for failure in engine_repair_claim_failures(
+                    pin_block, repair_claim, "pin"))
     if rejected:
-        for failure in rejected:
-            print(f"pin: REJECTED engine repair claim — {failure}")
+        for label, failure in rejected:
+            print(f"pin: REJECTED {label} — {failure}")
         return 2
     status = capability_status(pin)
     for flag in status["unproven"]:
