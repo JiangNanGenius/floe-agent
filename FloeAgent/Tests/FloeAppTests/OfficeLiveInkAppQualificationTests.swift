@@ -115,6 +115,7 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
                 // No pointerup has been sent. Demand actual displayed pixels,
                 // not a replay counter or an eventual saved-shape count.
                 let during = try await snapshot(web, label: "\(format)-\(index)-while-pen-is-down")
+                try await attachLiveDiagnostics(web, label: "\(format)-\(index)-live-geometry")
                 let stillDown = try await web.evaluateJavaScript("window.__floeOfficePenState().activeStroke")
                 _ = try await web.evaluateJavaScript(Self.liftPen)
                 let afterLift = try await web.evaluateJavaScript("window.__floeOfficePenState().activeStroke")
@@ -124,10 +125,16 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
                 // sleep. Actual snapshot and frame costs are still present;
                 // this does not claim a physical stylus sampling rate.
             }
-            try await Task.sleep(for: .milliseconds(500))
+            try await Task.sleep(for: .milliseconds(750))
             _ = try await snapshot(web, label: "\(format)-after-lifting-pen")
+            try await attachLiveDiagnostics(web, label: "\(format)-after-lifting-geometry")
+            let pendingPreview = try await web.evaluateJavaScript(
+                "window.__floeOfficePenPreview ? window.__floeOfficePenPreview().pending : -1") as? Int
             let saved = await session.saveInPlace()
             guard saved else { throw CocoaError(.fileWriteUnknown) }
+            let packageAttachment = XCTAttachment(contentsOfFile: source)
+            packageAttachment.name = "\(format)-actual-saved-vector-package"
+            packageAttachment.lifetime = .keepAlways; add(packageAttachment)
             XCTAssertEqual(try vectorCount(in: source), contactCount,
                            "Only the Pencil contact may add a saved vector; touch navigation must not add ink")
             let postSaveState = try await web.evaluateJavaScript(#"""
@@ -141,6 +148,9 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             let sourceHash = try FloeDigest.sha256Hex(ofFileAt: source)
             let pdf = try await session.exportCommittedCoverPDF(expectedSHA256: sourceHash)
             defer { try? FileManager.default.removeItem(at: pdf) }
+            let pdfAttachment = XCTAttachment(contentsOfFile: pdf)
+            pdfAttachment.name = "\(format)-actual-engine-export"
+            pdfAttachment.lifetime = .keepAlways; add(pdfAttachment)
             let coverData = try await Task.detached {
                 try OfficeSavedCoverRenderer.firstPageData(at: pdf)
             }.value
@@ -162,6 +172,10 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             cardAttachment.name = "\(format)-notes-card-ink"; cardAttachment.lifetime = .keepAlways
             add(cardAttachment)
             await session.release()
+            if requireLivePresentation {
+                XCTAssertEqual(pendingPreview, 0,
+                               "Visible opaque ink must hand off promptly; an old preview must not double the saved stroke")
+            }
             for (index, contact) in contacts.enumerated() {
                 XCTAssertEqual(contact.down, true, "Contact \(index): visual assertion must precede pointerup")
                 XCTAssertEqual(contact.lifted, false)
@@ -193,6 +207,30 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
         let attachment = XCTAttachment(image: image)
         attachment.name = label; attachment.lifetime = .keepAlways; add(attachment)
         return image
+    }
+
+    private func attachLiveDiagnostics(_ web: WKWebView, label: String) async throws {
+        let value = try await web.evaluateJavaScript(#"""
+        (() => {
+            const app=window.app, c=app.sectionContainer.canvas, r=c.getBoundingClientRect();
+            const a=app.sectionContainer.getDocumentAnchorSection();
+            const svg=document.querySelector('#floe-ink-live-preview svg');
+            return {pen:window.__floeOfficePenState(),
+                preview:window.__floeOfficePenPreview ? window.__floeOfficePenPreview() : null,
+                viewport:{width:innerWidth,height:innerHeight,scrollX,scrollY,
+                    visualScale:visualViewport?.scale ?? null},
+                canvas:{width:c.width,height:c.height,left:r.left,top:r.top,widthCSS:r.width,heightCSS:r.height},
+                layout:{name:app.activeDocument.activeLayout.constructor.name,
+                    zoom:app.map.getZoom(),dpiScale:app.dpiScale,twipsToPixels:app.twipsToPixels,
+                    anchor:a.myTopLeft,size:a.size},
+                paths:svg ? Array.from(svg.children).map(p=>({d:p.getAttribute('d'),
+                    color:p.getAttribute('stroke'),width:p.getAttribute('stroke-width'),
+                    opacity:p.getAttribute('stroke-opacity')})) : []};
+        })()
+        """#)
+        let data = try JSONSerialization.data(withJSONObject: try XCTUnwrap(value), options: [.prettyPrinted, .sortedKeys])
+        let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+        attachment.name = label; attachment.lifetime = .keepAlways; add(attachment)
     }
 
     private func redPixels(_ image: UIImage) -> Int {
