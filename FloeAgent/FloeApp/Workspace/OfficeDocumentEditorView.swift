@@ -2490,6 +2490,9 @@ final class OfficeFileSession: ObservableObject {
                     }
                     self.renderUnverified = false
                     self.phase = .ready
+                    #if DEBUG
+                    OfficeTouchQualificationProbe.shared.installIfNeeded(for: native)
+                    #endif
                     var facts = Self.hostRenderDiagnostics(native)
                     facts["docType"] = (docType as String?) ?? "unknown"
                     facts["elapsed"] = String(format: "%.1f", elapsed)
@@ -2582,6 +2585,9 @@ final class OfficeFileSession: ObservableObject {
             if state == .ready {
                 self.cancelOpenWatchdog()
                 self.phase = .ready
+                #if DEBUG
+                OfficeTouchQualificationProbe.shared.installIfNeeded(for: native)
+                #endif
             } else {
                 self.cancelOpenWatchdog()
                 self.startRenderWatchdog(for: native)
@@ -2654,6 +2660,9 @@ final class OfficeFileSession: ObservableObject {
     #endif
     private func closeController() async throws {
         guard let controller else { return }
+        #if DEBUG
+        OfficeTouchQualificationProbe.shared.removeTouchTelemetry(for: controller)
+        #endif
         cancelOpenWatchdog()
         cancelRenderWatchdog()
         renderGate = nil
