@@ -196,16 +196,16 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let web = app.webViews.firstMatch
         XCTAssertTrue(web.waitForExistence(timeout: 10))
         let beforePinch = web.screenshot()
-        let beforeTitle = try officeTitleBounds(in: beforePinch.image)
         web.pinch(withScale: 1.25, velocity: 1)
         Thread.sleep(forTimeInterval: 1)
         let afterPinch = web.screenshot()
-        let afterTitle = try officeTitleBounds(in: afterPinch.image)
         for (name, shot) in [("office-pencil-before-real-pinch", beforePinch),
                              ("office-pencil-after-real-pinch", afterPinch)] {
             let attachment = XCTAttachment(screenshot: shot)
             attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
         }
+        let beforeTitle = try officeTitleBounds(in: beforePinch.image)
+        let afterTitle = try officeTitleBounds(in: afterPinch.image)
         XCTAssertGreaterThan(afterTitle.width, beforeTitle.width * 1.08,
                              "A UIKit pinch in drawing mode must visibly enlarge the document")
         XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 10),
