@@ -19,6 +19,12 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     func testDOCXTenNativeVectorStrokesSaveAndReopen() async throws { try await exercise("docx") }
     func testXLSXTenNativeVectorStrokesSaveAndReopen() async throws { try await exercise("xlsx") }
     func testPPTXTenNativeVectorStrokesSaveAndReopen() async throws { try await exercise("pptx") }
+    func testXLSXControlledStaleShapeHandleSelectionReplayStillDraws() async throws {
+        try await exerciseStaleShapeHandleReplay("xlsx")
+    }
+    func testPPTXControlledStaleShapeHandleSelectionReplayStillDraws() async throws {
+        try await exerciseStaleShapeHandleReplay("pptx")
+    }
 
     /// A rejected native drawing callback must revoke the App's published On
     /// state, the private native mirror and the page gate together. The fault
@@ -569,6 +575,408 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         } catch { await reopen.release(); throw error }
     }
 
+    /// Deterministic regression for the real S1 routing branch. A real engine
+    /// freehand curve is selected by its post-stroke selection echo or with the
+    /// pinned core's own select tool plus a real DOM down/up/click sequence
+    /// (a standalone `click` never reaches `MouseControl`), the authentic
+    /// `graphicselection:` message is captured
+    /// through the document layer's actual message handler, the live core
+    /// selection is cleared with the production gate, marker attributes are
+    /// applied, and that captured delayed callback is replayed through the
+    /// original frontend handler in the same JavaScript turn as a Pencil down
+    /// on a real independent `shape-handle-*` child center. The production b83
+    /// gate must record a positive suspension, the next contact must save
+    /// exactly one new curve, and the prior curve's saved
+    /// path/placement/anchor/style must not change.
+    private func exerciseStaleShapeHandleReplay(_ format: String) async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in App drawing + real stale shape-handle replay; not executed")
+        }
+        XCTAssertTrue(["xlsx", "pptx"].contains(format), "Only the two formats with observed stale handles are qualified")
+        executionTimeAllowance = 600
+        continueAfterFailure = true
+        let fm = FileManager.default
+        let documents = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let root = documents.appendingPathComponent("Qualification/OfficeStaleHandle-\(format)-\(UUID().uuidString)",
+                                                     isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        print("FLOE_STALE_HANDLE_ARTIFACT_ROOT=\(root.path)")
+        let source = root.appendingPathComponent("original.\(format)")
+        switch format {
+        case "xlsx":
+            try OfficeDocumentBuilder.createWorkbook(at: source, sheets: [
+                OfficeWorkbookSheet(name: "基准", rows: [["BASELINE-DRAWING-KEEP", "数值"], ["原值", "12"], ["公式", "=B2*2"]])
+            ])
+        case "pptx":
+            try OfficeDocumentBuilder.createPresentation(at: source, title: "中文笔迹验收 Stale Handle", slides: [
+                OfficePresentationSlide(title: "BASELINE-DRAWING-KEEP",
+                                        bullets: ["中文原文 12345", "Editable original content"],
+                                        notes: "DRAWING-NOTES-KEEP")
+            ])
+        default:
+            throw CocoaError(.featureUnsupported)
+        }
+        let sourceHash = try hash(source)
+        let baseline = try package(source, format: format)
+        XCTAssertEqual(baseline.customGeometryPaths.count, 0, "Fixture must contain no preinserted strokes")
+        attach(source, name: "stale-handle-source-\(format)")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = mount(session, in: scene)
+        defer { window.isHidden = true; window.rootViewController = nil; previousKeyWindow?.makeKey() }
+        let exported = root.appendingPathComponent("drawn.\(format)")
+        var diagnosticsWeb: WKWebView?
+        var diagnosticsNative: FloeOfficeNativeViewController?
+        var selectionReceipt: [String: Any] = [:]
+        var replayReceipt: [String: Any] = [:]
+        do {
+            await session.open(source)
+            try await wait(120, "stale-handle native open") {
+                session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            if session.readOnly {
+                let accepted = await session.requestEditing()
+                XCTAssertTrue(accepted, "Actual App edit entry rejected: \(session.error ?? "unknown")")
+            }
+            try await wait(150, "stale-handle editable native document") {
+                !session.readOnly && session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            diagnosticsWeb = web
+            diagnosticsNative = native
+            session.useInkPreferences(workspaceIdentity: root.path, documentKey: source.lastPathComponent)
+            let preferences = session.inkPreferences
+            let previousStroke = preferences.stroke
+            defer {
+                preferences.setPreset(previousStroke.preset)
+                preferences.setColorHex(previousStroke.colorHex)
+                preferences.setWidthMillimeters(previousStroke.widthMillimeters)
+                preferences.setTransparencyPercent(previousStroke.transparencyPercent)
+            }
+            preferences.setPreset(.pen)
+            preferences.setColorHex("#FF0000")
+            preferences.setWidthMillimeters(0.5)
+            preferences.setTransparencyPercent(0)
+            XCTAssertEqual(preferences.stroke.preset, .pen)
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode, "The real App toggle must arm drawing")
+            await session.applyInkPreferences()
+            XCTAssertNil(session.inkError,
+                         "Pen attributes were rejected before the first curve: \(session.inkError ?? "unknown")")
+            XCTAssertNotNil(session.inkApplyOutcome, "Pen attributes were not dispatched before the first curve")
+            XCTAssertEqual(try nativeDrawingFlag(native), true)
+
+            let firstStimulus = StrokeStimulus(index: 0, kind: .band, gapMilliseconds: 30, style: .pen)
+            let firstReceipt = try await receiveStroke(0, web: web, native: native, window: window, root: root,
+                syntheticSource: source, stimulus: firstStimulus, previousPoints: [])
+            try validateHitDiagnostics(firstReceipt, stimulus: firstStimulus)
+            XCTAssertEqual(firstReceipt["strokeDelta"] as? Int, 1, "The first production curve must complete")
+            XCTAssertEqual(firstReceipt["downAccepted"] as? Bool, true)
+            let curvePoints = try clientPoints(firstReceipt, index: 0)
+            let visible = try visibleDocumentRect(firstReceipt)
+            let firstFacts: [String: Any] = ["points": curvePoints,
+                "visibleDocumentRect": visible, "receipt": firstReceipt]
+            let firstFactsURL = root.appendingPathComponent("first-curve-receipt.json")
+            try JSONSerialization.data(withJSONObject: firstFacts, options: [.prettyPrinted, .sortedKeys])
+                .write(to: firstFactsURL, options: .atomic)
+            attach(firstFactsURL, name: "stale-handle-first-curve-\(format)")
+
+            // Select only after leaving the freehand tool, exactly as a user
+            // would: production mode off, real core select command, then a
+            // real down/up/click at an actual contact point of the
+            // engine-created curve. A standalone DOM click never reaches the
+            // pinned CanvasSectionContainer/MouseControl path.
+            try await session.toggleDrawing()
+            XCTAssertFalse(session.drawingMode, "Drawing must be off while the real object is selected")
+            XCTAssertEqual(try nativeDrawingFlag(native), false)
+
+            let selectionRequest: [String: Any] = ["documentFormat": format,
+                "curvePoints": curvePoints, "visibleDocumentRect": visible]
+            let selectionValue = try await web.callAsyncJavaScript(Self.staleHandleSelectionScript,
+                arguments: selectionRequest, in: nil, contentWorld: .page)
+            selectionReceipt = try decodePageReceipt(selectionValue, limit: 98_304,
+                                                     stage: "real shape selection")
+            let selectionURL = root.appendingPathComponent("selection-receipt.json")
+            try JSONSerialization.data(withJSONObject: selectionReceipt, options: [.prettyPrinted, .sortedKeys])
+                .write(to: selectionURL, options: .atomic)
+            attach(selectionURL, name: "stale-handle-selection-\(format)")
+            guard let capture = selectionReceipt["capture"] as? [String: Any],
+                  let message = capture["message"] as? String,
+                  message.hasPrefix("graphicselection:"), message.utf8.count <= 16_384,
+                  let captureType = capture["type"] as? String,
+                  captureType == "freehandLine" || captureType == "pathLine" else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 60, userInfo: [
+                    NSLocalizedDescriptionKey: "The real core selection did not return an authentic bounded freehand graphicselection message"
+                ])
+            }
+            XCTAssertEqual(selectionReceipt["hookRestored"] as? Bool, true,
+                           "The qualification hook must restore the exact original document-layer handler")
+            // Acquisition proves the authentic engine callback and the hook
+            // restore. Its immediate post-handler section/child snapshot is
+            // retained as evidence, but a later genuine empty callback may
+            // clear the persistent handles before this stage ends. The delayed
+            // synchronous replay below must independently hit a real child
+            // handle and prove the production suspension and saved 1->2.
+            let afterCapture = selectionReceipt["afterCapture"] as? [String: Any]
+            XCTAssertNotNil(afterCapture,
+                            "The authentic callback must be sampled synchronously after the real handler")
+            let capturePhase = selectionReceipt["capturePhase"] as? String
+            XCTAssertTrue(["post-stroke-echo", "select-click"].contains(capturePhase ?? ""),
+                          "The capture must record which real engine callback produced it: \(capturePhase ?? "nil")")
+
+            // Clear the live core selection with the production gate, which
+            // posts the same Escape pair as a normal dispose. The apply-ink
+            // bridge refuses to style a selected object, so this also proves
+            // the re-arm path is not styling the prior curve.
+            let deselectValue = try await web.callAsyncJavaScript(Self.staleHandleDeselectScript,
+                arguments: [:], in: nil, contentWorld: .page)
+            let deselect = try decodePageReceipt(deselectValue, limit: 16_384,
+                                                 stage: "production deselection")
+            XCTAssertEqual(deselect["cleared"] as? Bool, true,
+                           "The production gate must clear the real core selection before re-arming: \(deselect)")
+            XCTAssertEqual(deselect["gateResult"] as? Bool, true)
+
+            // Prior geometry checkpoint: one real saved curve, taken after the
+            // selection was captured and cleared but before the delayed contact.
+            // This keeps the selection click on the live first-curve view while
+            // still giving the final package an exact before/after object.
+            let checkpointNative = try await session.exportDocument(format: format)
+            let checkpoint = root.appendingPathComponent("checkpoint1.\(format)")
+            try fm.copyItem(at: checkpointNative, to: checkpoint)
+            attach(checkpoint, name: "stale-handle-checkpoint-\(format)")
+            let checkpointXML = try package(checkpoint, format: format)
+            XCTAssertEqual(checkpointXML.customGeometryPaths.count, 1,
+                           "The checkpoint must contain exactly the first engine-saved curve: \(checkpointXML.customGeometryPaths.count)")
+            XCTAssertEqual(checkpointXML.vectorShapes.count, 1,
+                           "The checkpoint must contain exactly one vector shape: \(checkpointXML.vectorShapes)")
+            let priorShape = try XCTUnwrap(checkpointXML.vectorShapes.first)
+            let priorPath = try XCTUnwrap(priorShape.paths.first)
+            XCTAssertEqual(priorShape.paths.count, 1)
+            XCTAssertEqual(priorShape.colorHex?.uppercased(), "FF0000")
+            XCTAssertEqual(priorShape.widthEMU, 18_000)
+            XCTAssertTrue(priorShape.alphaValue == nil || priorShape.alphaValue == 100_000)
+            XCTAssertNotNil(priorShape.placement,
+                            "The prior curve's own xfrm placement must be parsed for the before/after check")
+            if format == "xlsx" {
+                XCTAssertNotNil(priorShape.anchor,
+                                "The prior curve's xdr anchor must be parsed for the before/after check")
+                XCTAssertEqual(checkpointXML.validAnchors, 1,
+                               "The prior curve must own exactly one visible sheet anchor")
+            }
+            let checkpointFacts: [String: Any] = [
+                "format": format, "pathCount": checkpointXML.customGeometryPaths.count,
+                "priorPathSHA256": Self.sha256(priorPath),
+                "priorShape": priorShape.description,
+                "priorPlacement": priorShape.placement ?? "missing",
+                "priorAnchor": priorShape.anchor ?? "missing",
+                "validAnchors": checkpointXML.validAnchors,
+                "sourceSHA256": sourceHash, "checkpointSHA256": try hash(checkpoint)
+            ]
+            let checkpointJSON = root.appendingPathComponent("checkpoint-package.json")
+            try JSONSerialization.data(withJSONObject: checkpointFacts, options: [.prettyPrinted, .sortedKeys])
+                .write(to: checkpointJSON, options: .atomic)
+            attach(checkpointJSON, name: "stale-handle-checkpoint-package-\(format)")
+
+            // The checkpoint export must not leave a live core selection that
+            // the ink bridge would refuse to style. Re-assert the production
+            // deselect immediately before the real re-arm.
+            let preArmValue = try await web.callAsyncJavaScript(Self.staleHandleDeselectScript,
+                arguments: [:], in: nil, contentWorld: .page)
+            let preArm = try decodePageReceipt(preArmValue, limit: 16_384,
+                                               stage: "pre-arm deselection")
+            XCTAssertEqual(preArm["cleared"] as? Bool, true,
+                           "The production gate must leave no live selection before marker re-arm: \(preArm)")
+
+            // The second contact uses a visibly different real native style so
+            // the saved OOXML can prove these attributes were applied before it.
+            preferences.setPreset(.marker)
+            preferences.setColorHex("#0000FF")
+            preferences.setWidthMillimeters(2.0)
+            preferences.setTransparencyPercent(0)
+            XCTAssertEqual(preferences.stroke.preset, .marker)
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode, "The real App toggle must re-arm drawing")
+            XCTAssertEqual(try nativeDrawingFlag(native), true)
+            await session.applyInkPreferences()
+            XCTAssertNil(session.inkError,
+                         "Marker attributes were rejected before the delayed replay: \(session.inkError ?? "unknown")")
+            XCTAssertNotNil(session.inkApplyOutcome, "Marker attributes were not dispatched before the delayed replay")
+
+            let replayRequest: [String: Any] = ["message": message, "curvePoints": curvePoints,
+                "visibleDocumentRect": visible, "strokeID": 7]
+            let replayValue = try await web.callAsyncJavaScript(Self.staleHandleReplayScript,
+                arguments: replayRequest, in: nil, contentWorld: .page)
+            replayReceipt = try decodePageReceipt(replayValue, limit: 65_536,
+                                                  stage: "delayed selection replay")
+            replayReceipt["replayedMessageSHA256"] = Self.sha256(message)
+            let replayURL = root.appendingPathComponent("replay-receipt.json")
+            try JSONSerialization.data(withJSONObject: replayReceipt, options: [.prettyPrinted, .sortedKeys])
+                .write(to: replayURL, options: .atomic)
+            attach(replayURL, name: "stale-handle-replay-\(format)")
+
+            XCTAssertEqual(replayReceipt["beforeHitIsChildShapeHandle"] as? Bool, true,
+                           "The contact must start on an independent shape-handle-* child: \(replayReceipt["beforeHitName"] ?? "nil")")
+            XCTAssertEqual((replayReceipt["replayedMessageSHA256"] as? String)?.count, 64)
+            XCTAssertGreaterThan(replayReceipt["suspensionDeltaAtDown"] as? Int ?? 0, 0,
+                                 "The production b83 gate must record a positive stale-handle suspension at the down")
+            let afterDown = replayReceipt["afterDown"] as? [String: Any]
+            XCTAssertEqual(afterDown?["hitIsShapeHandle"] as? Bool, false,
+                           "The replayed down must not remain routed to a shape handle")
+            XCTAssertEqual(afterDown?["hitIsChildShapeHandle"] as? Bool, false,
+                           "The replayed down must not remain routed to an independent handle child")
+            XCTAssertEqual(afterDown?["shownChildCount"] as? Int, 0,
+                           "Every shown independent shape-handle child must be hidden at the down")
+            XCTAssertEqual(afterDown?["shown"] as? Bool, false)
+            XCTAssertEqual(replayReceipt["downAccepted"] as? Bool, true)
+            XCTAssertEqual(replayReceipt["strokeDelta"] as? Int, 1,
+                           "The delayed-replay contact must save one new curve")
+            XCTAssertGreaterThanOrEqual(replayReceipt["coreEventDelta"] as? Int ?? 0, 5)
+            XCTAssertEqual(replayReceipt["activeAfter"] as? Bool, false)
+
+            try await session.toggleDrawing()
+            XCTAssertFalse(session.drawingMode, "The test must leave drawing off before the final export")
+            let finalNative = try await session.exportDocument(format: format)
+            try fm.copyItem(at: finalNative, to: exported)
+            attach(exported, name: "stale-handle-saved-\(format)")
+            XCTAssertEqual(try hash(source), sourceHash, "The original synthetic source must not change")
+            let finalXML = try package(exported, format: format)
+            XCTAssertEqual(finalXML.customGeometryPaths.count, 2,
+                           "Exactly one additional engine-saved curve is required: \(finalXML.customGeometryPaths.count)")
+            XCTAssertEqual(Set(finalXML.customGeometryPaths).count, 2, "The two saved curves must differ")
+            XCTAssertTrue(finalXML.customGeometryPaths.contains(priorPath),
+                          "The prior curve's saved path changed; prior=\(Self.sha256(priorPath)) "
+                            + "final=\(finalXML.customGeometryPaths.map(Self.sha256))")
+            let finalPrior = try XCTUnwrap(finalXML.vectorShapes.first { $0.paths.contains(priorPath) },
+                                           "The prior vector shape disappeared after the new contact: \(finalXML.vectorShapes)")
+            XCTAssertEqual(finalPrior.paths, priorShape.paths, "The prior curve path must remain unchanged")
+            XCTAssertEqual(finalPrior.colorHex, priorShape.colorHex, "The prior curve style must remain unchanged")
+            XCTAssertEqual(finalPrior.widthEMU, priorShape.widthEMU, "The prior curve width must remain unchanged")
+            XCTAssertEqual(finalPrior.alphaValue, priorShape.alphaValue, "The prior curve alpha must remain unchanged")
+            XCTAssertEqual(finalPrior.placement, priorShape.placement, "The prior curve placement must remain unchanged")
+            if format == "xlsx" {
+                XCTAssertEqual(finalPrior.anchor, priorShape.anchor, "The prior curve anchor must remain unchanged")
+            }
+            let newShape = try XCTUnwrap(finalXML.vectorShapes.first { !$0.paths.contains(priorPath) },
+                                         "The new curve must be a distinct saved vector shape: \(finalXML.vectorShapes)")
+            XCTAssertEqual(newShape.paths.count, 1)
+            XCTAssertEqual(newShape.colorHex?.uppercased(), "0000FF",
+                           "The delayed-replay curve must save the real marker colour applied before it")
+            XCTAssertEqual(newShape.widthEMU, 72_000,
+                           "The delayed-replay curve must save the real marker width applied before it")
+            XCTAssertTrue(newShape.alphaValue == nil || newShape.alphaValue == 100_000)
+            XCTAssertNotNil(newShape.placement, "The new curve's xfrm placement must be parsed")
+            if format == "xlsx" {
+                XCTAssertNotNil(newShape.anchor, "The new curve's xdr anchor must be parsed")
+            }
+            XCTAssertNotEqual(newShape.paths.first, priorPath)
+            XCTAssertTrue(finalXML.text.contains("BASELINE-DRAWING-KEEP"), "Original text content was lost")
+            if format == "xlsx" {
+                XCTAssertEqual(finalXML.cells["B2"], "12", "Excel basic value lost")
+                XCTAssertEqual(finalXML.formulas["B3"], "B2*2", "Excel formula lost or flattened")
+                XCTAssertGreaterThanOrEqual(finalXML.validAnchors, checkpointXML.validAnchors + 1,
+                                            "The new curve needs its own visible sheet anchor")
+            }
+            if format == "pptx" {
+                XCTAssertTrue(finalXML.text.contains("DRAWING-NOTES-KEEP"), "Speaker notes lost")
+            }
+
+            let manifest: [String: Any] = [
+                "format": format, "sourceSHA256": sourceHash,
+                "checkpointSHA256": try hash(checkpoint), "outputSHA256": try hash(exported),
+                "route": "real engine curve -> authentic post-stroke selection echo or real .uno:SelectObject DOM down/up/click -> captured graphicselection (post-handler snapshot) -> production deselection -> Native b83 replay+pen contact -> saved OOXML",
+                "firstCurveClientPoints": curvePoints,
+                "selection": selectionReceipt,
+                "replay": replayReceipt,
+                "replayedMessageSHA256": Self.sha256(message),
+                "suspensionDeltaAtDown": replayReceipt["suspensionDeltaAtDown"] ?? -1,
+                "priorPathSHA256": Self.sha256(priorPath),
+                "priorShape": priorShape.description,
+                "priorPlacement": priorShape.placement ?? "missing",
+                "priorAnchor": priorShape.anchor ?? "missing",
+                "finalPathSHA256s": finalXML.customGeometryPaths.map(Self.sha256),
+                "finalShapes": finalXML.vectorShapes.map { shape in
+                    ["description": shape.description, "placement": shape.placement ?? "missing",
+                     "anchor": shape.anchor ?? "missing", "pathSHA256s": shape.paths.map(Self.sha256)] as [String: Any]
+                },
+                "validAnchors": finalXML.validAnchors,
+                "hardwarePointerInput": "not-tested",
+                "visualReview": "pending-primary-image-review"
+            ]
+            let receiptURL = root.appendingPathComponent("verification.json")
+            try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+                .write(to: receiptURL, options: .atomic)
+            attach(receiptURL, name: "stale-handle-verification-\(format)")
+            await session.release()
+        } catch {
+            if let web = diagnosticsWeb {
+                await retainStaleHandleFailure(web: web, native: diagnosticsNative, window: window,
+                                               root: root, stage: "stale-handle-\(format)", error: error)
+            }
+            // Report the acquisition/replay failure itself. The old throw path
+            // could surface the secondary session-close state-machine
+            // InvalidTransition { idle -> failed(deinit) } instead of the
+            // actual failure; keep the diagnostic JSON and make the first
+            // failure readable.
+            XCTFail("stale-handle \(format) failed: \(error.localizedDescription)")
+            await session.release()
+            return
+        }
+
+        // Fresh native session: the exact saved copy must reopen and paint.
+        // Hash the file before the reopen session can touch it, and compare
+        // only after that session is released; hashing twice inside the same
+        // read window would not prove the reopen preserved the file.
+        let savedCopyHashBeforeReopen = try hash(exported)
+        let preReopenReceipt = (try? JSONSerialization.jsonObject(
+            with: Data(contentsOf: root.appendingPathComponent("verification.json")))) as? [String: Any]
+        XCTAssertEqual(preReopenReceipt?["outputSHA256"] as? String, savedCopyHashBeforeReopen,
+                       "The pre-reopen saved copy must match the just-written manifest")
+        let reopen = OfficeFileSession()
+        let reopenWindow = mount(reopen, in: scene)
+        defer { reopenWindow.isHidden = true; reopenWindow.rootViewController = nil }
+        do {
+            await reopen.open(exported)
+            try await wait(120, "stale-handle saved copy reopen") {
+                reopen.canAct && reopen.documentActionsReady && reopen.controller != nil
+            }
+            let native = try XCTUnwrap(reopen.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            let config = WKSnapshotConfiguration(); config.afterScreenUpdates = true
+            let image = try await web.takeSnapshot(configuration: config)
+            let png = try XCTUnwrap(image.pngData())
+            let screenshot = root.appendingPathComponent("reopened-native-\(format).png")
+            try png.write(to: screenshot)
+            attach(screenshot, name: "stale-handle-reopened-native-\(format)")
+            let windowImage = UIGraphicsImageRenderer(bounds: reopenWindow.bounds).image { _ in
+                reopenWindow.drawHierarchy(in: reopenWindow.bounds, afterScreenUpdates: true)
+            }
+            let whole = root.appendingPathComponent("reopened-window-\(format).png")
+            try XCTUnwrap(windowImage.pngData()).write(to: whole)
+            attach(whole, name: "stale-handle-reopened-window-\(format)")
+            let renderDiagnostics = OfficeFileSession.hostRenderDiagnostics(native)
+            await reopen.release()
+            let savedCopyHashAfterReopen = try hash(exported)
+            let receiptURL = root.appendingPathComponent("verification.json")
+            var receipt = (try JSONSerialization.jsonObject(with: Data(contentsOf: receiptURL))) as? [String: Any] ?? [:]
+            receipt["savedCopyReopened"] = true
+            receipt["savedCopySHA256BeforeReopen"] = savedCopyHashBeforeReopen
+            receipt["savedCopySHA256AfterReopen"] = savedCopyHashAfterReopen
+            receipt["savedCopyUnchangedAfterReopen"] = savedCopyHashBeforeReopen == savedCopyHashAfterReopen
+            receipt["reopenNativeRenderDiagnostics"] = renderDiagnostics
+            receipt["visualReview"] = "pending-primary-image-review"
+            XCTAssertEqual(savedCopyHashAfterReopen, savedCopyHashBeforeReopen,
+                           "The saved copy changed while it was reopened")
+            XCTAssertEqual(receipt["savedCopyUnchangedAfterReopen"] as? Bool, true)
+            try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]).write(to: receiptURL)
+            attach(receiptURL, name: "stale-handle-reopen-verification-\(format)")
+        } catch { await reopen.release(); throw error }
+    }
+
     private func receiveStroke(_ index: Int, web: WKWebView,
                                native: FloeOfficeNativeViewController, window: UIWindow,
                                root: URL, syntheticSource: URL,
@@ -823,6 +1231,154 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             if (try? png.write(to: wholeURL)) != nil { attach(wholeURL, name: prefix + "-actual-window") }
         }
     }
+
+    private func visibleDocumentRect(_ receipt: [String: Any]) throws -> [String: Double] {
+        guard let raw = receipt["visibleDocumentRect"] as? [String: Any] else {
+            throw NSError(domain: "OfficeNativeDrawingQualification", code: 62, userInfo: [
+                NSLocalizedDescriptionKey: "The first actual contact did not record its visible document rectangle"
+            ])
+        }
+        var result: [String: Double] = [:]
+        for key in ["x1", "y1", "x2", "y2"] {
+            guard let value = (raw[key] as? NSNumber)?.doubleValue, value.isFinite else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 63, userInfo: [
+                    NSLocalizedDescriptionKey: "The visible document rectangle has no finite \(key)"
+                ])
+            }
+            result[key] = value
+        }
+        guard (result["x1"] ?? 0) < (result["x2"] ?? 0), (result["y1"] ?? 0) < (result["y2"] ?? 0) else {
+            throw NSError(domain: "OfficeNativeDrawingQualification", code: 64, userInfo: [
+                NSLocalizedDescriptionKey: "The visible document rectangle is empty"
+            ])
+        }
+        return result
+    }
+
+    private func decodePageReceipt(_ value: Any?, limit: Int, stage: String) throws -> [String: Any] {
+        guard let json = value as? String else {
+            throw NSError(domain: "OfficeNativeDrawingQualification", code: 65, userInfo: [
+                NSLocalizedDescriptionKey: "The \(stage) page bridge did not return a JSON string"
+            ])
+        }
+        guard json.utf8.count <= limit else {
+            throw NSError(domain: "OfficeNativeDrawingQualification", code: 66, userInfo: [
+                NSLocalizedDescriptionKey: "The \(stage) page receipt exceeded its bounded transport"
+            ])
+        }
+        guard let decoded = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
+            throw NSError(domain: "OfficeNativeDrawingQualification", code: 67, userInfo: [
+                NSLocalizedDescriptionKey: "The \(stage) page receipt was not a JSON object"
+            ])
+        }
+        return decoded
+    }
+
+    private static func sha256(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Persist bounded page and surface facts after a real API/capture failure.
+    /// No page text, path, title, form value or arbitrary message is retained:
+    /// the page observation only reports counters, booleans and allowlisted
+    /// names, and the qualification failure objects keep their own bounds.
+    private func retainStaleHandleFailure(web: WKWebView,
+                                          native: FloeOfficeNativeViewController?,
+                                          window: UIWindow, root: URL,
+                                          stage: String, error: Error) async {
+        let nsError = error as NSError
+        var facts: [String: Any] = ["stage": stage, "errorDomain": nsError.domain,
+            "errorCode": nsError.code, "hardwarePointerInput": "not-tested",
+            "saveAndVectorVerification": "not-completed"]
+        if let native {
+            facts["nativeRenderDiagnostics"] = OfficeFileSession.hostRenderDiagnostics(native)
+        }
+        do {
+            let observed = try await web.callAsyncJavaScript(Self.staleHandleFailureObservationScript,
+                arguments: [:], in: nil, contentWorld: .page)
+            if let json = observed as? String, json.utf8.count <= 65_536,
+               let value = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] {
+                facts["actualPageState"] = value
+            } else {
+                facts["observationTransport"] = "missing-or-invalid-JSON-string"
+            }
+        } catch {
+            facts["observationErrorDomain"] = (error as NSError).domain
+            facts["observationErrorCode"] = (error as NSError).code
+        }
+        let diagnosticURL = root.appendingPathComponent(stage + "-failure.json")
+        if let bytes = try? JSONSerialization.data(withJSONObject: facts, options: [.prettyPrinted, .sortedKeys]),
+           (try? bytes.write(to: diagnosticURL, options: .atomic)) != nil {
+            attach(diagnosticURL, name: stage + "-actual-state")
+        }
+        do {
+            let configuration = WKSnapshotConfiguration(); configuration.afterScreenUpdates = true
+            let image = try await web.takeSnapshot(configuration: configuration)
+            guard let png = image.pngData() else { throw CocoaError(.fileWriteUnknown) }
+            let surface = root.appendingPathComponent(stage + "-surface.png")
+            try png.write(to: surface)
+            attach(surface, name: stage + "-actual-surface")
+        } catch {
+            let message = "Actual WK snapshot unavailable; domain=\((error as NSError).domain) code=\((error as NSError).code)"
+            let snapshotFailure = root.appendingPathComponent(stage + "-snapshot-unavailable.txt")
+            if (try? Data(message.utf8).write(to: snapshotFailure)) != nil {
+                attach(snapshotFailure, name: stage + "-snapshot-unavailable")
+            }
+        }
+        let whole = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        if let png = whole.pngData() {
+            let wholeURL = root.appendingPathComponent(stage + "-window.png")
+            if (try? png.write(to: wholeURL)) != nil {
+                attach(wholeURL, name: stage + "-actual-window")
+            }
+        }
+    }
+
+    private static let staleHandleFailureObservationScript = #"""
+    const app = window.app;
+    const selection = app && app.definitions && app.definitions.graphicSelection;
+    const container = app && app.sectionContainer;
+    const canvas = container && container.canvas;
+    const section = selection && selection.handlesSection;
+    const properties = section && section.sectionProperties ? section.sectionProperties : {};
+    const subSections = Array.isArray(properties.subSections) ? properties.subSections : [];
+    const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const bounded = (value, limit) => typeof value === 'string'
+        ? (value.length > limit ? value.slice(0, limit) : value) : null;
+    const targetFacts = () => {
+        if (!canvas) return null;
+        const rect = canvas.getBoundingClientRect();
+        return {x:finite(rect.x), y:finite(rect.y), width:finite(rect.width), height:finite(rect.height),
+            widthPixels:finite(canvas.width), heightPixels:finite(canvas.height)};
+    };
+    const pen = typeof window.__floeOfficePenState === 'function' ? window.__floeOfficePenState() : null;
+    const state = selection && typeof selection.hasActiveSelection === 'function' ? {
+        hasActiveSelection: selection.hasActiveSelection() === true,
+        handlesFound: !!(section && container && typeof container.getSectionWithName === 'function'
+            && container.getSectionWithName(section.name) === section),
+        shown: section ? section.showSection === true : false,
+        subSectionCount: subSections.length,
+        shownChildCount: subSections.filter(sub => sub && sub.showSection === true).length,
+        sectionName: section ? bounded(section.name, 64) : null
+    } : null;
+    const selectionFailure = window.__floeStaleHandleSelectionFailure || null;
+    const replayFailure = window.__floeStaleHandleReplayFailure || null;
+    delete window.__floeStaleHandleSelectionFailure;
+    delete window.__floeStaleHandleReplayFailure;
+    return JSON.stringify({selection:state, canvas:targetFacts(),
+        targetSection:container && typeof container.targetSection === 'string'
+            ? bounded(container.targetSection, 64) : null,
+        docType:app && app.map && app.map._docLayer && typeof app.map._docLayer._docType === 'string'
+            ? bounded(app.map._docLayer._docType, 32) : null,
+        editable:!!(app && app.map && typeof app.map.isEditMode === 'function' && app.map.isEditMode()),
+        pen:pen ? {drawing:pen.drawing === true, strokes:finite(pen.strokes),
+            coreEvents:finite(pen.coreEvents), activeStroke:pen.activeStroke === true,
+            shapeHandleSuspensions:finite(pen.shapeHandleSuspensions),
+            error:typeof pen.error === 'string' ? bounded(pen.error, 64) : null} : null,
+        selectionFailure, replayFailure});
+    """#
 
     private static let strokeFailureObservationScript = #"""
     const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -1243,6 +1799,652 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     } finally { observation.finish(); }
     """#
 
+    /// Qualification-only capture of a real core graphic selection. The pinned
+    /// document layer routes `graphicselection:` through `_onMessage`; that
+    /// exact instance handler is wrapped (never a made-up section or DOM), the
+    /// real `.uno:SelectObject` command and a legacy MouseEvent click on an
+    /// actual contact point select the engine-created curve, and the wrapper is
+    /// restored in `finally`. The returned message is passed back to the replay
+    /// script; no test global survives a successful call.
+    private static let staleHandleSelectionScript = #"""
+    const app = window.app;
+    const map = app && app.map;
+    const docLayer = map && map._docLayer;
+    const container = app && app.sectionContainer;
+    const canvas = container && container.canvas;
+    const graphicSelection = app && app.definitions && app.definitions.graphicSelection;
+    if (!canvas || !map || !container || !docLayer || !graphicSelection
+        || typeof docLayer._onMessage !== 'function'
+        || typeof graphicSelection.onMessage !== 'function'
+        || typeof graphicSelection.hasActiveSelection !== 'function'
+        || typeof map.sendUnoCommand !== 'function'
+        || typeof container.getSectionWithName !== 'function'
+        || typeof container.findSectionContainingPoint !== 'function'
+        || typeof container.convertPositionToCanvasLocale !== 'function')
+        throw new Error('pinned selection APIs unavailable');
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width / canvas.width, scaleY = rect.height / canvas.height;
+    if (!(scaleX > 0) || !(scaleY > 0) || Math.abs(scaleX - scaleY) > 0.001)
+        throw new Error('actual canvas/client scale unavailable');
+    const points = Array.isArray(curvePoints) ? curvePoints.filter(point =>
+        Array.isArray(point) && point.length === 2
+        && point.every(value => typeof value === 'number' && Number.isFinite(value))) : [];
+    if (points.length < 2) throw new Error('actual first-curve endpoints unavailable');
+    const visible = visibleDocumentRect && ['x1','y1','x2','y2'].every(key =>
+        typeof visibleDocumentRect[key] === 'number' && Number.isFinite(visibleDocumentRect[key]))
+        ? visibleDocumentRect : null;
+    if (!visible) throw new Error('actual visible document rectangle unavailable');
+    // The saved freehand path passes through its first and last contacts; the
+    // two interior contacts become Bézier control points. Click the real
+    // endpoints first, then fall back to the interior only as bounded attempts.
+    const clickPoints = [points[0], points[points.length - 1]]
+        .concat(points.slice(1, -1)).slice(0, 4);
+    const round2 = value => Math.round(value * 100) / 100;
+    const bounded = (value, limit) => typeof value === 'string'
+        ? (value.length > limit ? value.slice(0, limit) : value) : null;
+    const classOf = element => {
+        if (!element || typeof element.getAttribute !== 'function') return null;
+        return bounded(element.getAttribute('class'), 96);
+    };
+    const targetFacts = element => {
+        if (!element) return {tag:null, id:null, class:null, connected:false};
+        return {tag:bounded(element.tagName ? String(element.tagName).toLowerCase() : null, 24),
+            id:bounded(typeof element.id === 'string' ? element.id : null, 64),
+            class:classOf(element), connected:element.isConnected === true};
+    };
+    const canvasPoint = point => container.convertPositionToCanvasLocale({clientX:point[0], clientY:point[1]});
+    const shapeHandlesName = (app.CSections && app.CSections.ShapeHandlesSection
+        && app.CSections.ShapeHandlesSection.name) || 'shapeHandlesSection';
+    const isShapeHandleName = name => typeof name === 'string'
+        && (name === shapeHandlesName || name.startsWith('shape-handle-'));
+    const isChildShapeHandleName = name => typeof name === 'string' && name.startsWith('shape-handle-');
+    const isScalingHandleName = name => typeof name === 'string' && /^shape-handle-\d+$/.test(name);
+    const nameOfSection = section => section && typeof section.name === 'string'
+        ? bounded(section.name, 64) : null;
+    const sectionHit = point => {
+        try { return container.findSectionContainingPoint(canvasPoint(point)); }
+        catch (ignored) { return null; }
+    };
+    const selectionState = () => {
+        const section = graphicSelection.handlesSection;
+        const properties = section && section.sectionProperties ? section.sectionProperties : {};
+        const subSections = Array.isArray(properties.subSections) ? properties.subSections : [];
+        return {hasActiveSelection: graphicSelection.hasActiveSelection() === true,
+            handlesFound: !!(section && typeof container.getSectionWithName === 'function'
+                && container.getSectionWithName(section.name) === section),
+            shown: section ? section.showSection === true : false,
+            subSectionCount: subSections.length,
+            shownChildCount: subSections.filter(sub => sub && sub.showSection === true).length,
+            sectionName: section ? bounded(section.name, 64) : null,
+            position: section && Array.isArray(section.myTopLeft) && Array.isArray(section.size)
+                ? [section.myTopLeft[0], section.myTopLeft[1], section.size[0], section.size[1]] : null};
+    };
+    const parseCapture = textMsg => {
+        if (typeof textMsg !== 'string' || !textMsg.startsWith('graphicselection:')) return null;
+        if (textMsg.length > 16384) return null;
+        const body = textMsg.slice('graphicselection:'.length);
+        if (!body || body.startsWith('EMPTY') || body.startsWith('INPLACE')) return null;
+        let parsed;
+        try { parsed = JSON.parse('[' + body + ']'); } catch (ignored) { return null; }
+        if (!Array.isArray(parsed) || parsed.length <= 5) return null;
+        const extra = parsed[5];
+        const handles = extra && extra.handles && extra.handles.kinds;
+        if (!handles || typeof handles !== 'object') return null;
+        const rectangle = handles.rectangle;
+        if (!rectangle || typeof rectangle !== 'object') return null;
+        const ids = Object.keys(rectangle).filter(key => Array.isArray(rectangle[key]) && rectangle[key].length > 0);
+        if (ids.length < 1) return null;
+        return {message:textMsg, bytes:textMsg.length,
+            id:extra && typeof extra.id === 'string' ? bounded(extra.id, 64) : null,
+            // The first engine-created annotation is a freehand line in both
+            // observed formats. Keep the core's own type string so the
+            // capture cannot silently accept an unrelated object selection.
+            type:extra && typeof extra.typeString === 'string'
+                ? bounded(extra.typeString, 40) : null,
+            handleKinds:Object.keys(handles).filter(key => typeof key === 'string').slice(0, 16),
+            handleCount:ids.length,
+            isDraggable:extra.isDraggable !== false,
+            isResizable:extra.isResizable !== false,
+            rectangle:[parsed[0], parsed[1], parsed[2], parsed[3]].map(value =>
+                typeof value === 'number' && Number.isFinite(value) ? value : null)};
+    };
+    const curveCore = points.map(canvasPoint);
+    const curveBounds = {
+        minX:Math.min(...curveCore.map(point => point[0])),
+        maxX:Math.max(...curveCore.map(point => point[0])),
+        minY:Math.min(...curveCore.map(point => point[1])),
+        maxY:Math.max(...curveCore.map(point => point[1]))
+    };
+    // Identity-only containment, not geometry equality: the handle section is
+    // allowed to be larger than the contact points because of handles/line hit
+    // slop, but it must describe the same real curve.
+    const boundsMatch = position => {
+        if (!position || position.length !== 4
+            || !position.every(value => typeof value === 'number' && Number.isFinite(value))) return false;
+        const tolerance = 192;
+        return curveBounds.minX >= position[0] - tolerance
+            && curveBounds.maxX <= position[0] + position[2] + tolerance
+            && curveBounds.minY >= position[1] - tolerance
+            && curveBounds.maxY <= position[1] + position[3] + tolerance;
+    };
+    const handleCandidates = () => {
+        const section = graphicSelection.handlesSection;
+        const subSections = section && section.sectionProperties
+            && Array.isArray(section.sectionProperties.subSections)
+            ? section.sectionProperties.subSections : [];
+        const centerOfCanvas = [rect.left + rect.width / 2, rect.top + rect.height / 2];
+        const candidates = [];
+        for (const sub of subSections) {
+            if (!sub || sub.showSection !== true) continue;
+            const name = typeof sub.name === 'string' ? sub.name : '';
+            if (!isScalingHandleName(name)) continue;
+            if (!Array.isArray(sub.myTopLeft) || !Array.isArray(sub.size)) continue;
+            if (!sub.myTopLeft.every(Number.isFinite) || !sub.size.every(Number.isFinite)) continue;
+            const center = [rect.left + (sub.myTopLeft[0] + sub.size[0] / 2) * scaleX,
+                            rect.top + (sub.myTopLeft[1] + sub.size[1] / 2) * scaleY];
+            if (!center.every(Number.isFinite)) continue;
+            const inCanvas = center[0] >= rect.left + 1 && center[0] <= rect.right - 1
+                && center[1] >= rect.top + 1 && center[1] <= rect.bottom - 1;
+            const inVisible = center[0] >= visible.x1 && center[0] <= visible.x2
+                && center[1] >= visible.y1 && center[1] <= visible.y2;
+            if (!inCanvas || !inVisible) continue;
+            const coreCenter = canvasPoint(center);
+            const mappingError = Math.max(
+                Math.abs(coreCenter[0] - (sub.myTopLeft[0] + sub.size[0] / 2)),
+                Math.abs(coreCenter[1] - (sub.myTopLeft[1] + sub.size[1] / 2)));
+            const hitName = nameOfSection(sectionHit(center));
+            candidates.push({name, center:[round2(center[0]), round2(center[1])],
+                mappingError:round2(mappingError), hitName,
+                hitIsShapeHandle:isShapeHandleName(hitName),
+                hitIsChildShapeHandle:isChildShapeHandleName(hitName), visible:true,
+                distanceFromCanvasCenter:round2(Math.hypot(center[0] - centerOfCanvas[0],
+                    center[1] - centerOfCanvas[1]))});
+            if (candidates.length >= 16) break;
+        }
+        return candidates;
+    };
+    // A standalone DOM `click` never reaches the pinned input path:
+    // CanvasSectionContainer's `onClick` only runs when `positionOnMouseDown`
+    // and `positionOnMouseUp` were recorded by the preceding down/up pair.
+    // Dispatch the real browser-like sequence on the actual hit target. The
+    // down/up record the pinned container positions (no core contact because
+    // there is no drag), and the click reaches MouseControl.onClick, which
+    // sends the real buttondown/buttonup click through the core. This uses
+    // the pinned canvas/MouseControl path end to end; no mock section or
+    // synthetic core message is fabricated.
+    const dispatchSelectClick = (target, point) => {
+        const base = {bubbles:true, cancelable:true, view:window,
+            clientX:point[0], clientY:point[1], button:0};
+        target.dispatchEvent(new MouseEvent('mousedown', {...base, buttons:1}));
+        target.dispatchEvent(new MouseEvent('mouseup', {...base, buttons:0}));
+        target.dispatchEvent(new MouseEvent('click', {...base, buttons:0}));
+        return ['mousedown', 'mouseup', 'click'];
+    };
+    let captured = null;
+    let capturedState = null;
+    let capturedCandidates = [];
+    let captureAt = null;
+    let capturePhase = null;
+    let selectAttemptStarted = false;
+    let rejected = 0;
+    let tooLarge = 0;
+    const original = docLayer._onMessage;
+    const ownDescriptor = Object.getOwnPropertyDescriptor(docLayer, '_onMessage');
+    const hook = function (textMsg) {
+        let value = null;
+        if (!captured && typeof textMsg === 'string'
+            && textMsg.startsWith('graphicselection:')) {
+            value = parseCapture(textMsg);
+            if (!value && textMsg.length > 16384) tooLarge += 1;
+            else if (!value && !textMsg.slice('graphicselection:'.length).trim().startsWith('EMPTY'))
+                rejected += 1;
+        }
+        const outcome = Reflect.apply(original, this, arguments);
+        if (value) {
+            captured = value;
+            // Sample the authentic section and child-hit state in the same
+            // synchronous turn that invoked the real handler. The next
+            // `graphicselection: EMPTY` (the production Escape) clears
+            // `GraphicSelection.rectangle`, removes the handles section and
+            // its children; polling after any later timer would miss a
+            // selection that did exist at handler time. The capture may come
+            // from the engine's post-stroke selection echo or from the real
+            // select contact below; both are the same actual first curve.
+            capturedState = selectionState();
+            capturedCandidates = handleCandidates();
+            captureAt = Math.round(performance.now());
+            capturePhase = selectAttemptStarted ? 'select-click' : 'post-stroke-echo';
+        }
+        return outcome;
+    };
+    const result = {step:'real-selection', format:documentFormat, ok:false,
+        hookInstalled:false, hookRestored:false, deselectedBeforeSelect:false,
+        attempts:[], rejectedMessages:0, tooLargeMessages:0, capture:null,
+        captureAtMs:null, capturePhase:null, afterCapture:null,
+        afterCaptureLive:null, realHandleCandidates:[], realHandleHit:null,
+        curveBounds, selectionMatchesFirstCurve:false};
+    let restored = false;
+    try {
+        docLayer._onMessage = hook;
+        result.hookInstalled = docLayer._onMessage === hook;
+        if (!result.hookInstalled) throw new Error('document layer message hook was not writable');
+        // A positive auto-selection callback from the first stroke can still
+        // be in flight when the production gate posts its Escape. Require a
+        // stable clear window before the checkpoint/re-arm. The hook above
+        // keeps the first authentic nonempty callback (with its immediate
+        // post-handler snapshot) even if that callback is the in-flight echo;
+        // the real select contact below is the fallback when it already
+        // passed before the hook was installed.
+        const clearDeadline = performance.now() + 3000;
+        let clearSince = null;
+        while (performance.now() < clearDeadline) {
+            if (graphicSelection.hasActiveSelection() === false) {
+                if (clearSince === null) clearSince = performance.now();
+                else if (performance.now() - clearSince >= 250) break;
+            } else {
+                clearSince = null;
+            }
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        result.deselectedBeforeSelect = clearSince !== null
+            && graphicSelection.hasActiveSelection() === false;
+        // This is a best-effort clean start for the select contact, not an
+        // acquisition requirement: the production-gate deselect below must
+        // clear any live selection before the checkpoint and marker re-arm.
+        for (const point of clickPoints) {
+            if (captured) break;
+            try { map.sendUnoCommand('.uno:SelectObject'); }
+            catch (error) {
+                throw new Error('real .uno:SelectObject failed: '
+                    + String(error && error.message || error).slice(0, 96));
+            }
+            await new Promise(resolve => setTimeout(resolve, 200));
+            if (captured) break;
+            let hit = null;
+            try { hit = document.elementFromPoint(point[0], point[1]); } catch (ignored) {}
+            const attempt = {x:round2(point[0]), y:round2(point[1]),
+                hit:targetFacts(hit), dispatched:false, captured:false,
+                events:null, note:null};
+            result.attempts.push(attempt);
+            if (!hit || !(hit === canvas || canvas.contains(hit))) {
+                attempt.note = 'actual-hit-outside-canvas';
+                continue;
+            }
+            try {
+                selectAttemptStarted = true;
+                attempt.events = dispatchSelectClick(hit, point);
+                attempt.dispatched = true;
+            } catch (error) {
+                attempt.note = String(error && error.message || error).slice(0, 120);
+                continue;
+            }
+            const attemptDeadline = performance.now() + 1800;
+            while (!captured && performance.now() < attemptDeadline)
+                await new Promise(resolve => setTimeout(resolve, 50));
+            attempt.captured = !!captured;
+        }
+        result.rejectedMessages = rejected;
+        result.tooLargeMessages = tooLarge;
+        result.capture = captured;
+        result.captureAtMs = captureAt;
+        result.capturePhase = capturePhase;
+        // Keep the immediate post-handler snapshot as acquisition evidence.
+        // A later empty callback legitimately clearing the persistent handles
+        // is recorded separately and is not an acquisition failure; the
+        // delayed replay below must independently recreate and hit a real
+        // child handle and prove the production suspension and saved 1->2.
+        result.afterCapture = capturedState;
+        result.afterCaptureLive = selectionState();
+        result.selectionMatchesFirstCurve = capturedState
+            ? boundsMatch(capturedState.position) : false;
+        result.realHandleCandidates = capturedCandidates;
+        result.realHandleHit = capturedCandidates.find(candidate =>
+            candidate.hitIsChildShapeHandle && candidate.mappingError <= 2.5) || null;
+        result.captureLineKind = captured && typeof captured.type === 'string'
+            ? captured.type : null;
+        result.handlesClearedAfterCapture = !!capturedState
+            && result.afterCaptureLive.hasActiveSelection === false;
+        result.ok = result.hookInstalled && !!result.capture
+            && (result.captureLineKind === 'freehandLine'
+                || result.captureLineKind === 'pathLine');
+        if (!result.ok) {
+            const reasons = [];
+            if (!result.hookInstalled) reasons.push('hook');
+            if (!result.capture) reasons.push('capture');
+            if (result.capture && result.captureLineKind !== 'freehandLine'
+                && result.captureLineKind !== 'pathLine') reasons.push('line-kind');
+            result.failureReasons = reasons;
+        }
+    } catch (error) {
+        result.error = String(error && error.message || error).slice(0, 200);
+    } finally {
+        try {
+            if (ownDescriptor) {
+                Object.defineProperty(docLayer, '_onMessage', ownDescriptor);
+                restored = docLayer._onMessage === original;
+            } else if (docLayer._onMessage === hook) {
+                delete docLayer._onMessage;
+                restored = docLayer._onMessage === original;
+            } else {
+                restored = docLayer._onMessage === original;
+            }
+        } catch (ignored) { restored = false; }
+    }
+    result.hookRestored = restored;
+    result.ok = result.ok && restored;
+    if (!result.ok) {
+        window.__floeStaleHandleSelectionFailure = result;
+        throw new Error('real stale-handle selection capture failed: '
+            + (result.error
+                || (Array.isArray(result.failureReasons) && result.failureReasons.length > 0
+                    ? result.failureReasons.join(',') : 'unconfirmed')));
+    }
+    return JSON.stringify(result);
+    """#
+
+    /// Production-gate deselection between capture and re-arm. It posts the
+    /// same ordered Escape pair as the real dispose path; the selected core
+    /// object is never cleared by touching the frontend rectangle directly.
+    private static let staleHandleDeselectScript = #"""
+    const app = window.app;
+    const selection = app && app.definitions && app.definitions.graphicSelection;
+    if (!selection || typeof selection.hasActiveSelection !== 'function'
+        || typeof window.__floeSetOfficeDrawingMode !== 'function')
+        throw new Error('production deselection APIs unavailable');
+    const selectedBefore = selection.hasActiveSelection() === true;
+    const gateResult = window.__floeSetOfficeDrawingMode(false) === true;
+    // Require a stable clear window, not one false sample: the Escape's
+    // empty-selection callback can trail a positive callback that was already
+    // in flight. Waiting for both leaves the checkpoint and re-arm genuinely
+    // unselected.
+    const deadline = performance.now() + 3000;
+    let clearSince = null;
+    while (performance.now() < deadline) {
+        if (selection.hasActiveSelection() === false) {
+            if (clearSince === null) clearSince = performance.now();
+            else if (performance.now() - clearSince >= 200) break;
+        } else {
+            clearSince = null;
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    const selectedAfter = selection.hasActiveSelection() === true;
+    return JSON.stringify({selectedBefore, gateResult, selectedAfter,
+        quietMilliseconds:clearSince === null
+            ? 0 : Math.round(performance.now() - clearSince),
+        cleared:selectedAfter === false && clearSince !== null});
+    """#
+
+    /// Replay the captured authentic `graphicselection:` callback through the
+    /// original pinned frontend handler, then, in the same synchronous turn,
+    /// find a shown independent scaling-handle child, map its actual
+    /// canvas-core center to a client point, confirm the real CanvasSection
+    /// hit is a `shape-handle-*`, and dispatch the next Pencil down on the real
+    /// `elementFromPoint` target. No await occurs between replay and down, so a
+    /// late deselect callback cannot erase the seeded stale section first.
+    private static let staleHandleReplayScript = #"""
+    const app = window.app;
+    const map = app && app.map;
+    const container = app && app.sectionContainer;
+    const canvas = container && container.canvas;
+    const graphicSelection = app && app.definitions && app.definitions.graphicSelection;
+    const pen = typeof window.__floeOfficePenState === 'function' ? window.__floeOfficePenState() : null;
+    if (!canvas || !map || !container || !graphicSelection || !pen
+        || typeof graphicSelection.onMessage !== 'function'
+        || typeof graphicSelection.hasActiveSelection !== 'function'
+        || typeof container.findSectionContainingPoint !== 'function'
+        || typeof container.convertPositionToCanvasLocale !== 'function')
+        throw new Error('pinned replay APIs unavailable');
+    if (pen.drawing !== true || pen.activeStroke === true)
+        throw new Error('production pen gate is not armed for the delayed replay');
+    if (typeof message !== 'string' || !message.startsWith('graphicselection:')
+        || message.length > 16384)
+        throw new Error('authentic bounded graphicselection message unavailable');
+    if (graphicSelection.hasActiveSelection() === true)
+        throw new Error('a live core selection still exists before the delayed replay');
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width / canvas.width, scaleY = rect.height / canvas.height;
+    if (!(scaleX > 0) || !(scaleY > 0) || Math.abs(scaleX - scaleY) > 0.001)
+        throw new Error('actual canvas/client scale unavailable');
+    const points = Array.isArray(curvePoints) ? curvePoints.filter(point =>
+        Array.isArray(point) && point.length === 2
+        && point.every(value => typeof value === 'number' && Number.isFinite(value))) : [];
+    if (points.length < 1) throw new Error('actual first-curve points unavailable');
+    let visible = visibleDocumentRect && ['x1','y1','x2','y2'].every(key =>
+        typeof visibleDocumentRect[key] === 'number' && Number.isFinite(visibleDocumentRect[key]))
+        ? visibleDocumentRect : null;
+    if (!visible) throw new Error('actual visible document rectangle unavailable');
+    // Prefer the live visible document area at replay time: the prior-curve
+    // checkpoint export happened after the first contact and may have changed
+    // the scroll/zoom. The handle must be inside what is actually visible now,
+    // not only inside the first contact's old rectangle.
+    try {
+        const layout = app.activeDocument && app.activeDocument.activeLayout;
+        const size = app.activeDocument && app.activeDocument.fileSize;
+        const anchor = typeof container.getDocumentAnchorSection === 'function'
+            ? container.getDocumentAnchorSection() : null;
+        if (layout && size && anchor && Array.isArray(anchor.myTopLeft) && Array.isArray(anchor.size)
+            && typeof layout.documentToViewX === 'function' && typeof layout.documentToViewY === 'function') {
+            const origin = size.clone(); origin.pX = 0; origin.pY = 0;
+            const end = size.clone();
+            const dx1 = layout.documentToViewX(origin), dy1 = layout.documentToViewY(origin);
+            const dx2 = layout.documentToViewX(end), dy2 = layout.documentToViewY(end);
+            const x1 = rect.left + Math.max(0, anchor.myTopLeft[0], Math.min(dx1, dx2)) * scaleX;
+            const y1 = rect.top + Math.max(0, anchor.myTopLeft[1], Math.min(dy1, dy2)) * scaleY;
+            const x2 = rect.left + Math.min(canvas.width, anchor.myTopLeft[0] + anchor.size[0],
+                Math.max(dx1, dx2)) * scaleX;
+            const y2 = rect.top + Math.min(canvas.height, anchor.myTopLeft[1] + anchor.size[1],
+                Math.max(dy1, dy2)) * scaleY;
+            if ([x1, y1, x2, y2].every(Number.isFinite) && x2 - x1 > 120 && y2 - y1 > 120)
+                visible = {x1, y1, x2, y2};
+        }
+    } catch (ignored) {}
+    const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+    const round2 = value => Math.round(value * 100) / 100;
+    const bounded = (value, limit) => typeof value === 'string'
+        ? (value.length > limit ? value.slice(0, limit) : value) : null;
+    const classOf = element => {
+        if (!element || typeof element.getAttribute !== 'function') return null;
+        return bounded(element.getAttribute('class'), 96);
+    };
+    const targetFacts = element => {
+        if (!element) return {tag:null, id:null, class:null, connected:false};
+        return {tag:bounded(element.tagName ? String(element.tagName).toLowerCase() : null, 24),
+            id:bounded(typeof element.id === 'string' ? element.id : null, 64),
+            class:classOf(element), connected:element.isConnected === true};
+    };
+    const canvasPoint = point => container.convertPositionToCanvasLocale({clientX:point[0], clientY:point[1]});
+    const shapeHandlesName = (app.CSections && app.CSections.ShapeHandlesSection
+        && app.CSections.ShapeHandlesSection.name) || 'shapeHandlesSection';
+    const isShapeHandleName = name => typeof name === 'string'
+        && (name === shapeHandlesName || name.startsWith('shape-handle-'));
+    const isChildShapeHandleName = name => typeof name === 'string' && name.startsWith('shape-handle-');
+    const isScalingHandleName = name => typeof name === 'string' && /^shape-handle-\d+$/.test(name);
+    const nameOfSection = section => section && typeof section.name === 'string'
+        ? bounded(section.name, 64) : null;
+    const sectionHit = point => {
+        try { return container.findSectionContainingPoint(canvasPoint(point)); }
+        catch (ignored) { return null; }
+    };
+    const selectionState = () => {
+        const section = graphicSelection.handlesSection;
+        const properties = section && section.sectionProperties ? section.sectionProperties : {};
+        const subSections = Array.isArray(properties.subSections) ? properties.subSections : [];
+        return {hasActiveSelection: graphicSelection.hasActiveSelection() === true,
+            handlesFound: !!(section && typeof container.getSectionWithName === 'function'
+                && container.getSectionWithName(section.name) === section),
+            shown: section ? section.showSection === true : false,
+            subSectionCount: subSections.length,
+            shownChildCount: subSections.filter(sub => sub && sub.showSection === true).length,
+            sectionName: section ? bounded(section.name, 64) : null,
+            position: section && Array.isArray(section.myTopLeft) && Array.isArray(section.size)
+                ? [section.myTopLeft[0], section.myTopLeft[1], section.size[0], section.size[1]] : null};
+    };
+    const curveCore = points.map(canvasPoint);
+    const curveBounds = {
+        minX:Math.min(...curveCore.map(point => point[0])),
+        maxX:Math.max(...curveCore.map(point => point[0])),
+        minY:Math.min(...curveCore.map(point => point[1])),
+        maxY:Math.max(...curveCore.map(point => point[1]))
+    };
+    const boundsMatch = position => {
+        if (!position || position.length !== 4
+            || !position.every(value => typeof value === 'number' && Number.isFinite(value))) return false;
+        const tolerance = 192;
+        return curveBounds.minX >= position[0] - tolerance
+            && curveBounds.maxX <= position[0] + position[2] + tolerance
+            && curveBounds.minY >= position[1] - tolerance
+            && curveBounds.maxY <= position[1] + position[3] + tolerance;
+    };
+    const handleCandidates = () => {
+        const section = graphicSelection.handlesSection;
+        const subSections = section && section.sectionProperties
+            && Array.isArray(section.sectionProperties.subSections)
+            ? section.sectionProperties.subSections : [];
+        const centerOfCanvas = [rect.left + rect.width / 2, rect.top + rect.height / 2];
+        const candidates = [];
+        for (const sub of subSections) {
+            if (!sub || sub.showSection !== true) continue;
+            const name = typeof sub.name === 'string' ? sub.name : '';
+            if (!isScalingHandleName(name)) continue;
+            if (!Array.isArray(sub.myTopLeft) || !Array.isArray(sub.size)) continue;
+            if (!sub.myTopLeft.every(Number.isFinite) || !sub.size.every(Number.isFinite)) continue;
+            const center = [rect.left + (sub.myTopLeft[0] + sub.size[0] / 2) * scaleX,
+                            rect.top + (sub.myTopLeft[1] + sub.size[1] / 2) * scaleY];
+            if (!center.every(Number.isFinite)) continue;
+            const inCanvas = center[0] >= rect.left + 1 && center[0] <= rect.right - 1
+                && center[1] >= rect.top + 1 && center[1] <= rect.bottom - 1;
+            const inVisible = center[0] >= visible.x1 && center[0] <= visible.x2
+                && center[1] >= visible.y1 && center[1] <= visible.y2;
+            if (!inCanvas || !inVisible) continue;
+            const coreCenter = canvasPoint(center);
+            const mappingError = Math.max(
+                Math.abs(coreCenter[0] - (sub.myTopLeft[0] + sub.size[0] / 2)),
+                Math.abs(coreCenter[1] - (sub.myTopLeft[1] + sub.size[1] / 2)));
+            const hitName = nameOfSection(sectionHit(center));
+            candidates.push({name, center:[round2(center[0]), round2(center[1])],
+                mappingError:round2(mappingError), hitName,
+                hitIsShapeHandle:isShapeHandleName(hitName),
+                hitIsChildShapeHandle:isChildShapeHandleName(hitName), visible:true,
+                distanceFromCanvasCenter:round2(Math.hypot(center[0] - centerOfCanvas[0],
+                    center[1] - centerOfCanvas[1]))});
+            if (candidates.length >= 16) break;
+        }
+        return candidates;
+    };
+    const insideVisible = point => point[0] >= visible.x1 + 1 && point[0] <= visible.x2 - 1
+        && point[1] >= visible.y1 + 1 && point[1] <= visible.y2 - 1;
+    const buildStrokePoints = center => {
+        const centerX = (visible.x1 + visible.x2) / 2, centerY = (visible.y1 + visible.y2) / 2;
+        let dx = centerX - center[0], dy = centerY - center[1];
+        const length = Math.hypot(dx, dy);
+        if (!Number.isFinite(length) || length < 1) return null;
+        dx /= length; dy /= length;
+        const perpendicular = [-dy, dx];
+        const lateral = [0, 2, -2, 1];
+        for (let distance = 40; distance >= 8; distance -= 4) {
+            const stroke = [0, 1, 2, 3].map(index => [
+                center[0] + dx * (distance * index / 3) + perpendicular[0] * lateral[index],
+                center[1] + dy * (distance * index / 3) + perpendicular[1] * lateral[index]]);
+            if (stroke.every(insideVisible)) return stroke;
+        }
+        return null;
+    };
+    const suspensionsBefore = pen.shapeHandleSuspensions;
+    const result = {step:'delayed-selection-replay', strokeID,
+        ok:false, beforeHitName:null, beforeHitIsShapeHandle:false,
+        beforeHitIsChildShapeHandle:false, afterReplay:null, afterDown:null,
+        suspensionDeltaAtDown:0, strokeDelta:0, coreEventDelta:0, downAccepted:false,
+        activeAfter:null, clientPoints:[], chosenHandle:null, candidates:[],
+        replayedMessageBytes:message.length, replayedMessageSHA256:null,
+        selectionMatchesFirstCurve:false};
+    try {
+        // The exact captured frontend handler runs here. No await follows until
+        // after the Pencil down below, so the stale section cannot be erased by
+        // an async empty-selection callback between seeding and contact.
+        graphicSelection.onMessage(message);
+        result.afterReplay = selectionState();
+        result.selectionMatchesFirstCurve = boundsMatch(result.afterReplay.position);
+        result.candidates = handleCandidates();
+        const chosen = result.candidates
+            .filter(candidate => candidate.hitIsChildShapeHandle && candidate.mappingError <= 2.5)
+            .sort((left, right) => right.distanceFromCanvasCenter - left.distanceFromCanvasCenter
+                || left.name.localeCompare(right.name))[0] || null;
+        result.chosenHandle = chosen;
+        if (!chosen) throw new Error('no visible real shape-handle-* child center resolved');
+        const beforeSection = sectionHit(chosen.center);
+        result.beforeHitName = nameOfSection(beforeSection);
+        result.beforeHitIsShapeHandle = isShapeHandleName(result.beforeHitName);
+        result.beforeHitIsChildShapeHandle = isChildShapeHandleName(result.beforeHitName);
+        if (!result.beforeHitIsChildShapeHandle)
+            throw new Error('handle center did not resolve to an independent shape-handle-* section');
+        const hitTarget = document.elementFromPoint(chosen.center[0], chosen.center[1]);
+        result.elementFromPoint = targetFacts(hitTarget);
+        if (!hitTarget || !(hitTarget === canvas || canvas.contains(hitTarget)))
+            throw new Error('real handle center is not on the document canvas');
+        result.clientPoints = buildStrokePoints(chosen.center);
+        if (!result.clientPoints)
+            throw new Error('no visible inward stroke points from the real handle center');
+        result.strokeDistancePixels = round2(Math.hypot(
+            result.clientPoints[3][0] - result.clientPoints[0][0],
+            result.clientPoints[3][1] - result.clientPoints[0][1]));
+        result.drawingBeforeDown = window.__floeOfficePenState().drawing === true;
+        hitTarget.dispatchEvent(new PointerEvent('pointerdown', {
+            bubbles:true, cancelable:true, composed:true, pointerType:'pen', pointerId:73,
+            isPrimary:true, clientX:result.clientPoints[0][0], clientY:result.clientPoints[0][1],
+            button:0, buttons:1, pressure:0.5
+        }));
+        const atDown = window.__floeOfficePenState();
+        result.downAccepted = atDown.activeStroke === true;
+        result.drawingAtDown = atDown.drawing === true;
+        result.suspensionsAtDown = atDown.shapeHandleSuspensions;
+        result.suspensionDeltaAtDown = atDown.shapeHandleSuspensions - suspensionsBefore;
+        const afterDownSelection = selectionState();
+        const afterDownSection = sectionHit(chosen.center);
+        result.afterDown = {selection:afterDownSelection,
+            hitName:nameOfSection(afterDownSection),
+            hitIsShapeHandle:isShapeHandleName(nameOfSection(afterDownSection)),
+            hitIsChildShapeHandle:isChildShapeHandleName(nameOfSection(afterDownSection)),
+            shown:afterDownSelection.shown,
+            shownChildCount:afterDownSelection.shownChildCount};
+        for (let index = 1; index < result.clientPoints.length; index++) {
+            await sleep(25);
+            canvas.dispatchEvent(new PointerEvent('pointermove', {
+                bubbles:true, cancelable:true, composed:true, pointerType:'pen', pointerId:73,
+                isPrimary:true, clientX:result.clientPoints[index][0],
+                clientY:result.clientPoints[index][1], button:0, buttons:1, pressure:0.5
+            }));
+        }
+        await sleep(25);
+        canvas.dispatchEvent(new PointerEvent('pointerup', {
+            bubbles:true, cancelable:true, composed:true, pointerType:'pen', pointerId:73,
+            isPrimary:true, clientX:result.clientPoints[result.clientPoints.length - 1][0],
+            clientY:result.clientPoints[result.clientPoints.length - 1][1],
+            button:0, buttons:0, pressure:0
+        }));
+        const after = window.__floeOfficePenState();
+        result.strokeDelta = after.strokes - pen.strokes;
+        result.coreEventDelta = after.coreEvents - pen.coreEvents;
+        result.activeAfter = after.activeStroke === true;
+        result.drawingAfter = after.drawing === true;
+        result.suspensionsAfter = after.shapeHandleSuspensions;
+        result.ok = result.drawingBeforeDown && result.downAccepted && result.drawingAtDown
+            && result.suspensionDeltaAtDown > 0 && result.beforeHitIsChildShapeHandle
+            && result.afterDown && result.afterDown.hitIsShapeHandle === false
+            && result.afterDown.hitIsChildShapeHandle === false
+            && result.afterDown.shownChildCount === 0 && result.afterDown.shown === false
+            && result.strokeDelta === 1 && result.coreEventDelta >= 5
+            && result.activeAfter === false;
+    } catch (error) {
+        result.error = String(error && error.message || error).slice(0, 200);
+    }
+    if (!result.ok) {
+        window.__floeStaleHandleReplayFailure = result;
+        throw new Error('delayed stale-handle replay failed: ' + (result.error || 'unconfirmed'));
+    }
+    return JSON.stringify(result);
+    """#
+
     private func setNativeDrawingMode(_ native: FloeOfficeNativeViewController,
                                       _ enabled: Bool) async -> NSError? {
         await withCheckedContinuation { continuation in
@@ -1388,6 +2590,16 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
         /// (100000 = fully opaque). Absent for an opaque line whose fill
         /// carries no explicit alpha element.
         var alphaValue: Int?
+        /// The shape's own `spPr/a:xfrm` placement, canonicalized for an
+        /// exact before/after comparison. This is the presentation anchor and
+        /// the spreadsheet shape frame, never the surrounding xdr anchor.
+        var placement: String?
+        /// The enclosing spreadsheet-drawing anchor, canonicalized. Text and
+        /// presentation shapes have no xdr anchor.
+        var anchor: String?
+        var xfrmDepth: Int?
+        var xfrmOffset: String?
+        var xfrmExtent: String?
         var description: String { "vector(color=\(colorHex ?? "missing"), widthEMU=\(widthEMU ?? -1), alpha=\(alphaValue.map(String.init) ?? "none"), paths=\(paths.count))" }
     }
     var vectorShapes: [VectorShape] = []
@@ -1445,6 +2657,28 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
                    drawingNamespaces.contains(elementNamespaces[properties + 1] ?? ""),
                    drawingNamespaces.contains(elementNamespaces[properties + 2] ?? "") {
                     activeShapes[last].alphaValue = Int(attributes["val"] ?? "")
+                }
+                // The shape's own a:xfrm is the presentation placement and the
+                // per-anchor shape frame in a spreadsheet drawing. It is the
+                // direct child of this spPr; nested xfrm elements never count.
+                if local == "xfrm", elements.count == properties + 1,
+                   drawingNamespaces.contains(namespaceURI ?? "") {
+                    activeShapes[last].xfrmDepth = elements.count
+                    activeShapes[last].xfrmOffset = nil
+                    activeShapes[last].xfrmExtent = nil
+                }
+                if let xfrmDepth = activeShapes[last].xfrmDepth,
+                   elements.count == xfrmDepth + 1,
+                   elements[xfrmDepth - 1] == "xfrm",
+                   drawingNamespaces.contains(namespaceURI ?? "") {
+                    if local == "off" {
+                        activeShapes[last].xfrmOffset =
+                            "x=\(attributes["x"] ?? "");y=\(attributes["y"] ?? "")"
+                    }
+                    if local == "ext" {
+                        activeShapes[last].xfrmExtent =
+                            "cx=\(attributes["cx"] ?? "");cy=\(attributes["cy"] ?? "")"
+                    }
                 }
             }
         }
@@ -1505,7 +2739,15 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
             anchorKind = nil; anchorDepth = 0; anchorNamespace = nil
         }
         if let last = activeShapes.last, last.depth == elements.count {
-            if !last.paths.isEmpty { vectorShapes.append(last) }
+            var finished = last
+            if let offset = finished.xfrmOffset, let extent = finished.xfrmExtent {
+                finished.placement = offset + ";" + extent
+            }
+            if let kind = anchorKind, !anchorFields.isEmpty {
+                finished.anchor = kind + ":" + anchorFields.keys.sorted()
+                    .map { "\($0)=\(anchorFields[$0]!)" }.joined(separator: ",")
+            }
+            if !finished.paths.isEmpty { vectorShapes.append(finished) }
             activeShapes.removeLast()
         }
         elements.removeLast(); elementNamespaces.removeLast()
