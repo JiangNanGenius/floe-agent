@@ -1,6 +1,40 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "notes.office.preview.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The preview could not be updated. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预览暂未更新，请重试。"
+          }
+        }
+      }
+    },
+    "notes.office.preview.retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update Preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新预览"
+          }
+        }
+      }
+    },
     "chat.temporary.voiceNote": {
       "localizations": {
         "en": {

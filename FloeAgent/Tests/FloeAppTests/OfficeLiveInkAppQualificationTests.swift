@@ -18,7 +18,11 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
     func testWorkbookInkIsVisibleBeforeLiftingPen() async throws { try await exercise("xlsx") }
     func testPresentationInkIsVisibleBeforeLiftingPen() async throws { try await exercise("pptx") }
 
-    private func exercise(_ format: String) async throws {
+    func testWordSavedInkIsInNotesCover() async throws { try await exercise("docx", requireLivePresentation: false) }
+    func testWorkbookSavedInkIsInNotesCover() async throws { try await exercise("xlsx", requireLivePresentation: false) }
+    func testPresentationSavedInkIsInNotesCover() async throws { try await exercise("pptx", requireLivePresentation: false) }
+
+    private func exercise(_ format: String, requireLivePresentation: Bool = true) async throws {
         guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
             throw XCTSkip("Opt-in actual App/native live ink qualification")
         }
@@ -114,8 +118,10 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             await session.release()
             XCTAssertEqual(stillDown as? Bool, true, "The visual assertion must precede pointerup")
             XCTAssertEqual(afterLift as? Bool, false)
-            XCTAssertGreaterThan(liveRedDelta, 80,
-                "Ink must appear while the pen is moving, before the final vector is committed")
+            if requireLivePresentation {
+                XCTAssertGreaterThan(liveRedDelta, 80,
+                    "Ink must appear while the pen is moving, before the final vector is committed")
+            }
             XCTAssertGreaterThan(redPixels(generated), 40, "The saved engine preview must include the Office vector ink")
             XCTAssertEqual(outcome.source, .officeSavedPreview)
             XCTAssertGreaterThan(redPixels(cardImage), 10, "The actual Notes cover renderer must retain the saved ink")

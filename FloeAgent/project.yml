@@ -564,6 +564,7 @@ targets:
       - path: Tests/FloeAppTests/OfficeKeyboardLayoutTests.swift
       - path: Tests/FloeAppTests/OfficeDocumentConversionAppQualificationTests.swift
       - path: Tests/FloeAppTests/OfficeNativeDrawingAppQualificationTests.swift
+      - path: Tests/FloeAppTests/OfficeLiveInkAppQualificationTests.swift
       - path: Tests/FloeAppTests/OfficeNativeChartAppQualificationTests.swift
       - path: Tests/FloeAppTests/SourceControlRootIdentityTests.swift
       - path: Tests/FloeAppTests/IDEMarkdownOutlineTests.swift
@@ -718,6 +719,7 @@ targets:
       # G2 integration of the N custom-cover patch: cover store/tool
       # ownership and raster validation run in the App host.
       - path: Tests/FloeNotesTests/NoteCoverStoreTests.swift
+      - path: Tests/FloeNotesTests/OfficeGeneratedPreviewTests.swift
       - path: Qualification/NativeNotes/Tests/NotesCustomCoverTests.swift
       - path: Tests/FloePersistenceTests/RunLifecycleRetentionTests.swift
       - path: Tests/FloePersistenceTests/TaskLifecycleStoreTests.swift
