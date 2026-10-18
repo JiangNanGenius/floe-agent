@@ -1,0 +1,35 @@
+{
+  "edges": [
+    {
+      "from": "n1",
+      "to": "n2"
+    },
+    {
+      "from": "n2",
+      "to": "n3"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "n1",
+      "kind": "text",
+      "text": "手记 § node 🧪"
+    },
+    {
+      "assetId": "att-known",
+      "fixtureRef": "assets/png/gradient-8.png",
+      "id": "n2",
+      "kind": "asset"
+    },
+    {
+      "assetId": "att-missing",
+      "fixtureRef": null,
+      "id": "n3",
+      "kind": "asset"
+    }
+  ],
+  "notes": "n3 references a missing asset on purpose (failure path).",
+  "ownerTaskId": "task-g01-demo",
+  "revision": 7,
+  "schema": "floe-android.canvas.sample.v0"
+}

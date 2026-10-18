@@ -1,0 +1,531 @@
+{
+  "artifact": "floe-android-g01-synthetic-fixtures",
+  "baselineRef": "FloeAndroid/planning/feature-baseline.json",
+  "determinismNote": "stdlib entries are byte-reproducible; mp4 entries require the pinned ffmpeg version — see README.md",
+  "entries": [
+    {
+      "bytes": 268,
+      "determinism": "stdlib",
+      "expect": {
+        "bitDepth": 8,
+        "colorType": 2,
+        "height": 8,
+        "width": 8
+      },
+      "format": "png",
+      "operations": [
+        "CNV-ASSET-OWNERSHIP",
+        "GEN-DOWNLOAD-ARCHIVE",
+        "WSF-EXPORT",
+        "BRW-LOCAL-PREVIEW"
+      ],
+      "path": "assets/png/gradient-8.png",
+      "sha256": "6a8546b0a4a0b47a65c1dacc76954735c61856a7e1f2d6cfac186ae2afb36167"
+    },
+    {
+      "bytes": 190,
+      "determinism": "stdlib",
+      "expect": {
+        "circleCount": 1,
+        "pathCount": 1,
+        "root": "svg"
+      },
+      "format": "svg",
+      "operations": [
+        "CNV-ASSET-OWNERSHIP",
+        "BRW-LOCAL-PREVIEW"
+      ],
+      "path": "assets/svg/marker.svg",
+      "sha256": "829f04c49a3ea0f0e9a7a0c40d370a77777d7e149892ca7283847b15aeadbd87"
+    },
+    {
+      "bytes": 421,
+      "determinism": "stdlib",
+      "expect": {
+        "acadver": "AC1009",
+        "entities": {
+          "CIRCLE": 1,
+          "LINE": 2,
+          "TEXT": 1
+        },
+        "layers": [
+          "0",
+          "hidden",
+          "文本-Text"
+        ],
+        "textValue": "手记 § test"
+      },
+      "format": "dxf",
+      "operations": [
+        "CAD-LAYER-SELECT-EDIT",
+        "CAD-MEASURE",
+        "CAD-UNKNOWN-PRESERVE",
+        "CAD-IMPORT-EXPORT",
+        "CAD-SAVE-REOPEN",
+        "NOT-COVER-READ"
+      ],
+      "path": "cad/dxf/lines-text-layers.dxf",
+      "sha256": "d57ce726e448f4083f30d3c8df61c40044389aaad5191c924dc80562bd77a5ad"
+    },
+    {
+      "bytes": 191,
+      "determinism": "stdlib",
+      "expect": {
+        "faces": 6,
+        "group": "cube § main",
+        "normals": 0,
+        "vertices": 8
+      },
+      "format": "obj",
+      "operations": [
+        "CAD-IMPORT-EXPORT",
+        "CAD3D-MODEL-KERNEL",
+        "CAD3D-EXPORT",
+        "CAD-SAVE-REOPEN"
+      ],
+      "path": "cad/obj/cube.obj",
+      "sha256": "1642d977e1b95290cb7c5c15dce6434155fdc8513b6498ad71ffddeb9909e26b"
+    },
+    {
+      "bytes": 636,
+      "determinism": "stdlib",
+      "expect": {
+        "danglingAssetRefs": 1,
+        "edgeCount": 2,
+        "knownAssetRefs": 1,
+        "nodeCount": 3,
+        "owner": "task-g01-demo",
+        "revision": 7,
+        "schema": "floe-android.canvas.sample.v0"
+      },
+      "format": "canvas-json",
+      "operations": [
+        "CNV-NODES-EDGES",
+        "CNV-ASSET-OWNERSHIP",
+        "CNV-SAVE-RESTORE-BACKUP",
+        "CNV-VARIANTS",
+        "BAK-VERSIONED-PACKAGE"
+      ],
+      "path": "canvas/canvas-with-assets.json",
+      "sha256": "3c7121e94cffcf5bc0255b284005e11d2db69f843418645aeb7ce1c71fe21da1"
+    },
+    {
+      "bytes": 44144,
+      "determinism": "stdlib",
+      "expect": {
+        "bits": 16,
+        "channels": 1,
+        "frames": 22050,
+        "frequency": 440.0,
+        "peakAmplitude": 28999,
+        "sampleRate": 44100,
+        "seconds": 0.5
+      },
+      "format": "wav",
+      "operations": [
+        "MED-PLAYBACK-CODECS",
+        "MED-TIMELINE-TRIM",
+        "MED-EXPORT-VERIFY",
+        "MED-SUBTITLES-AUDIO",
+        "VOI-FILE-TRANSCRIBE"
+      ],
+      "path": "media/audio/tone-440.wav",
+      "sha256": "c250d87551c85fb9b5488214171101dd81ebeab74d26f7ba1ef3994b223385bb"
+    },
+    {
+      "bytes": 149,
+      "determinism": "stdlib",
+      "expect": {
+        "cueCount": 3,
+        "lastCueText": "γ 结束 🧪"
+      },
+      "format": "srt",
+      "operations": [
+        "MED-SUBTITLES-AUDIO",
+        "VOI-FILE-TRANSCRIBE"
+      ],
+      "path": "media/subtitles/captions.srt",
+      "sha256": "41e845e0d829f94e37efaf98c69032029f56699a8b7512b3f766a3222d667a1d"
+    },
+    {
+      "bytes": 91,
+      "determinism": "stdlib",
+      "expect": {
+        "cueCount": 2,
+        "header": "WEBVTT"
+      },
+      "format": "vtt",
+      "operations": [
+        "MED-SUBTITLES-AUDIO"
+      ],
+      "path": "media/subtitles/captions.vtt",
+      "sha256": "19843d7f22fd4daca1944036a09e9941886b4a0941cd62d00f73ec619c7d3dbb"
+    },
+    {
+      "bytes": 598,
+      "determinism": "stdlib",
+      "expect": {
+        "attachmentRef": "assets/png/gradient-8.png",
+        "blockCount": 3,
+        "blockTypes": [
+          "text",
+          "todo",
+          "code"
+        ],
+        "chatSessionId": null,
+        "revision": 3,
+        "schema": "floe-android.notes.sample.v0",
+        "title": "手记 § Baseline 🧪"
+      },
+      "format": "notes-json",
+      "operations": [
+        "NOT-STORAGE-INDEP",
+        "NOT-EDIT-UNDO",
+        "NOT-SEARCH",
+        "NOT-AI-ASSISTANT",
+        "NOT-EXPORT",
+        "NOT-COVER-READ",
+        "BAK-VERSIONED-PACKAGE"
+      ],
+      "path": "notes/note-basic.json",
+      "sha256": "ebe9530258252aad52ac16fd6aa2dc795c2b2b68ab1b9550dc60a335d3eb3234"
+    },
+    {
+      "bytes": 3088,
+      "determinism": "stdlib",
+      "expect": {
+        "expectedFailure": "OPC reader must reject with a structured error",
+        "hasContentTypes": false,
+        "zipReadable": true
+      },
+      "format": "docx-corrupt",
+      "operations": [
+        "OFC-PREVIEW-DOCX",
+        "BAK-VERIFY-REJECT-UNKNOWN"
+      ],
+      "path": "office/docx/corrupt-missing-content-types.docx",
+      "sha256": "81221c408dc6a83da9a0d9b514748d2b235c5bd273f0b3cd9ace34e6338abf4c"
+    },
+    {
+      "bytes": 3892,
+      "determinism": "stdlib",
+      "expect": {
+        "headingStyle": "Heading1",
+        "listItemCount": 3,
+        "paragraphCount": 7,
+        "parts": [
+          "[Content_Types].xml",
+          "word/document.xml",
+          "word/styles.xml",
+          "word/numbering.xml"
+        ],
+        "texts": [
+          "手记 § Baseline 🧪",
+          "Floe G01 synthetic paragraph with bold and italic runs.",
+          "مرحبا שלום mixed RTL",
+          "alpha list one",
+          "beta list two",
+          "γ § 3 list three"
+        ]
+      },
+      "format": "docx",
+      "operations": [
+        "OFC-PREVIEW-DOCX",
+        "OFC-EDIT-PARAGRAPH",
+        "OFC-SAVE-REOPEN",
+        "OFC-REVISION-TRACKING",
+        "OFC-PDF-EXPORT",
+        "NOT-IMPORT",
+        "DSN-ENTRY-ANCHORS",
+        "BAK-VERSIONED-PACKAGE",
+        "PDF-EXPORT-REOPEN"
+      ],
+      "path": "office/docx/paragraphs-unicode.docx",
+      "sha256": "a289f91545a495b9048a22a85a21e9c6dcee7ebab701920383db3ae2f08cccb5"
+    },
+    {
+      "bytes": 10035,
+      "determinism": "stdlib",
+      "expect": {
+        "bulletCount": 3,
+        "slideCount": 2,
+        "slideParts": [
+          "ppt/slides/slide1.xml",
+          "ppt/slides/slide2.xml"
+        ],
+        "titleText": "手记 § Deck 🧪"
+      },
+      "format": "pptx",
+      "operations": [
+        "OFC-PREVIEW-PPTX",
+        "OFC-SLIDES-EDIT",
+        "OFC-CREATE-NEW",
+        "OFC-SAVE-REOPEN"
+      ],
+      "path": "office/pptx/two-slides.pptx",
+      "sha256": "ec49379444bf85e6b0bde2d251855ab9e49b769d8a4aaaa1bcb903af0e3f69bc"
+    },
+    {
+      "bytes": 3908,
+      "determinism": "stdlib",
+      "expect": {
+        "cachedValues": {
+          "C2": "60"
+        },
+        "formulas": {
+          "C2": "SUM(B2:B4)"
+        },
+        "numericCells": 3,
+        "sheetCount": 1,
+        "sheetName": "数据 § Sales"
+      },
+      "format": "xlsx",
+      "operations": [
+        "OFC-PREVIEW-XLSX",
+        "OFC-CELL-FORMULA-RECALC",
+        "OFC-SAVE-REOPEN"
+      ],
+      "path": "office/xlsx/formula-basic.xlsx",
+      "sha256": "0f8229c15f6901429a1ca4331e22e512cc4b8cfbdd89c3e0b53469d3799de593"
+    },
+    {
+      "bytes": 4047,
+      "determinism": "stdlib",
+      "expect": {
+        "cachedValues": {
+          "C2": "60"
+        },
+        "errorCells": {
+          "D2": "#DIV/0!"
+        },
+        "formulas": {
+          "C2": "SUM(B2:B4)",
+          "D2": "10/0"
+        },
+        "injectionString": "=HYPERLINK(\"https://example.invalid/x\")",
+        "numericCells": 3,
+        "sheetCount": 1,
+        "sheetName": "数据 § Sales"
+      },
+      "format": "xlsx",
+      "operations": [
+        "OFC-CELL-FORMULA-RECALC",
+        "OFC-CSV-SECURITY"
+      ],
+      "path": "office/xlsx/formula-error-and-injection.xlsx",
+      "sha256": "d91cecd8af81209515f733f7a76027c18009a38b8e62566f8c5c4d4795957616"
+    },
+    {
+      "bytes": 442,
+      "determinism": "stdlib",
+      "expect": {
+        "expectedFailure": "parser must reject incomplete xref, not render pages",
+        "hasXref": false,
+        "header": "%PDF-1.4"
+      },
+      "format": "pdf-corrupt",
+      "operations": [
+        "PDF-READ-PAGES",
+        "BAK-VERIFY-REJECT-UNKNOWN"
+      ],
+      "path": "pdf/truncated.pdf",
+      "sha256": "10c87bfaa395a74a01107946986ca856d7ca3134c6e7af4c9dc54c8b4345fc1c"
+    },
+    {
+      "bytes": 884,
+      "determinism": "stdlib",
+      "expect": {
+        "containsTexts": [
+          "Floe G01 fixture page one",
+          "Floe G01 fixture page two"
+        ],
+        "header": "%PDF-1.4",
+        "pageCount": 2,
+        "rootObject": 1
+      },
+      "format": "pdf",
+      "operations": [
+        "PDF-READ-PAGES",
+        "PDF-SELECT-ANNOTATE",
+        "PDF-EXPORT-REOPEN",
+        "OFC-PDF-EXPORT"
+      ],
+      "path": "pdf/two-page-basic.pdf",
+      "sha256": "7563af5cd427641ce797aeedeb43df9cccc93acaa3ba6c542d12235821d0f333"
+    },
+    {
+      "bytes": 177,
+      "determinism": "stdlib",
+      "expect": {
+        "containsText": "你好, Floe",
+        "symbols": [
+          "greeting",
+          "main"
+        ]
+      },
+      "format": "kotlin",
+      "operations": [
+        "IDE-TREE-EDIT",
+        "IDE-UNDO-DRAFT",
+        "IDE-LANG-SUPPORT"
+      ],
+      "path": "text/code/sample.kt",
+      "sha256": "29f818d11572fd09121a1ed28bc8904d4bc611b889a30a2a609502110890dbcc"
+    },
+    {
+      "bytes": 251,
+      "determinism": "stdlib",
+      "expect": {
+        "containsText": "手记 § 测试 🧪",
+        "symbols": [
+          "PI_APPROX",
+          "area"
+        ]
+      },
+      "format": "python",
+      "operations": [
+        "PY-JOB-OUTPUT",
+        "IDE-TREE-EDIT",
+        "IDE-LANG-SUPPORT",
+        "GIT-DIFF-STAGE-COMMIT"
+      ],
+      "path": "text/code/sample.py",
+      "sha256": "0cc0644f36c56e0c7605f9f788a60b68fe53d33d9aae1cf01fff8059620d1de4"
+    },
+    {
+      "bytes": 166,
+      "determinism": "stdlib",
+      "expect": {
+        "containsText": "Hola, Floe",
+        "symbols": [
+          "greeting",
+          "twice"
+        ]
+      },
+      "format": "typescript",
+      "operations": [
+        "IDE-SEARCH-REPLACE",
+        "IDE-LANG-SUPPORT",
+        "IDE-DIFF"
+      ],
+      "path": "text/code/sample.ts",
+      "sha256": "07cdb9bd3dfd72412ef3426bb2e010dadec1a01948ae316d922da2609f2a9bb3"
+    },
+    {
+      "bytes": 133,
+      "determinism": "stdlib",
+      "expect": {
+        "formulaCell": "=HYPERLINK(\"https://example.invalid/x\")",
+        "note": "formula-like text must render as text, never execute",
+        "rows": 4
+      },
+      "format": "csv",
+      "operations": [
+        "OFC-CSV-SECURITY",
+        "APR-UNTRUSTED-NO-GRANT"
+      ],
+      "path": "text/csv/formula-injection.csv",
+      "sha256": "c4396e5d125d6641fd55dcfd30798286341f415c4fda52277d17e6cdea003746"
+    },
+    {
+      "bytes": 40,
+      "determinism": "stdlib",
+      "expect": {
+        "crlfLineCount": 3,
+        "preserved": "CRLF"
+      },
+      "format": "text",
+      "operations": [
+        "IDE-ENCODING-LINES"
+      ],
+      "path": "text/encoding/crlf.txt",
+      "sha256": "ec6ae42e2038d991c9ab9fad11889cd950b36658f91d1f01991dcbf4364e9a16"
+    },
+    {
+      "bytes": 4097,
+      "determinism": "stdlib",
+      "expect": {
+        "longestLineChars": 4096
+      },
+      "format": "text",
+      "operations": [
+        "IDE-ENCODING-LINES"
+      ],
+      "path": "text/encoding/long-line.txt",
+      "sha256": "5d05023e33a88151e829770ac45c53a2acd6f5bd111cbb101b8d649d7f9c2906"
+    },
+    {
+      "bytes": 18,
+      "determinism": "stdlib",
+      "expect": {
+        "startsUtf8Bom": true
+      },
+      "format": "text",
+      "operations": [
+        "IDE-ENCODING-LINES"
+      ],
+      "path": "text/encoding/utf8-bom.txt",
+      "sha256": "8c161c74111f272049ec566500099fec0bdc3bbdfde5e392b7e076f2e3113847"
+    },
+    {
+      "bytes": 25125,
+      "determinism": "ffmpeg-version-pinned",
+      "expect": {
+        "boxes": [
+          "ftyp",
+          "moov",
+          "mdat"
+        ],
+        "height": 240,
+        "secondsApprox": 1.0,
+        "width": 320
+      },
+      "format": "mp4",
+      "operations": [
+        "MED-PLAYBACK-CODECS",
+        "MED-TIMELINE-TRIM",
+        "MED-EXPORT-VERIFY",
+        "ENH-IN-OUT-CONTRACT",
+        "ENH-NO-FAKE-UPSCALE"
+      ],
+      "path": "media/video/floe-test.mp4",
+      "recipe": {
+        "argv": [
+          "/opt/homebrew/bin/ffmpeg",
+          "-loglevel",
+          "error",
+          "-y",
+          "-f",
+          "lavfi",
+          "-i",
+          "testsrc=size=320x240:rate=15:duration=1",
+          "-f",
+          "lavfi",
+          "-i",
+          "sine=frequency=1000:sample_rate=44100:duration=1",
+          "-c:v",
+          "libx264",
+          "-preset",
+          "ultrafast",
+          "-profile:v",
+          "baseline",
+          "-pix_fmt",
+          "yuv420p",
+          "-g",
+          "15",
+          "-c:a",
+          "aac",
+          "-b:a",
+          "48k",
+          "-shortest",
+          "-movflags",
+          "+faststart",
+          "<output>"
+        ],
+        "version": "ffmpeg version 9.0.2 Copyright (c) 2000-2026 the FFmpeg developers"
+      },
+      "sha256": "ac1d2de41e7f652a663fbec04d7c216cee083e347850326ea5199cc1ed0f2f90"
+    }
+  ],
+  "schemaVersion": 1
+}

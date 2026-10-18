@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "frozenAt": "2026-10-18",
+  "sourceCommit": "19ab263a3c48fee30a5bb8f8df1d89603040f604",
+  "sources": {
+    "FloeAgent/FloeApp/App/FloeAgentApp.swift": "fda9ec3eeb7e2361b74f61440e8dff221456e98362caafebd9c010cbb99c6182",
+    "FloeAgent/FloeApp/Shell/AppDestination.swift": "c45a954e5fafd0da192f009a87d2f3a09b11cd4665f1cd1cfac0cc372043411e",
+    "FloeAgent/FloeApp/Design/FloeTheme.swift": "a6a0cedf690e9a2815ad83e317fe82726aad67b6d7fbad62c4bc6fcfe96cf3cf",
+    "FloeAgent/Sources/FloeModels/TaskPolicy.swift": "93e0bd85a428077ec375073bf38dc8e437cf127c3ad6512a2ab9bb1b50fa664c",
+    "FloeAgent/FloeApp/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png": "19547864334816dbcf0b423bd755d18daeace86cd93ed897b8806a25509d25e2"
+  },
+  "navigation": {
+    "phone": "task-first sidebar drawer",
+    "tablet": "persistent sidebar and selected task detail",
+    "primaryOrder": [
+      "newTask",
+      "taskCenter",
+      "notes",
+      "creative",
+      "plugins"
+    ],
+    "secondaryOrder": [
+      "settings",
+      "diagnostics"
+    ],
+    "settingsAndDiagnosticsOnly": "G01 does not implement the other workspaces yet",
+    "settingsPresentation": "sidebar footer gear opens an independent settings sheet",
+    "diagnosticsPresentation": "section inside settings; not an independent primary/sidebar route"
+  },
+  "theme": {
+    "brandRGB": {
+      "cyan": [
+        0.1,
+        0.78,
+        0.86
+      ],
+      "blue": [
+        0.24,
+        0.48,
+        0.96
+      ],
+      "violet": [
+        0.56,
+        0.36,
+        0.94
+      ]
+    },
+    "readingSurface": "opaque",
+    "sidebarSurface": "secondary system grouped",
+    "fonts": "system sans mapped to iOS hierarchy; no bundled SF fonts",
+    "androidTouchTargetDp": 48,
+    "launcherIcon": "Reuse existing AppIcon-1024.png without redrawing"
+  },
+  "screenshots": {
+    "currentPairedAcceptance": "G01 representative-page gate; G14 full-page final review",
+    "historicalReferencesOnly": [
+      "docs/evidence/floe-1.7/native-media-workbench.png"
+    ],
+    "historicalReferencesAreCurrentProof": false,
+    "foundationShellAccepted": true,
+    "foundationShellFeedback": "2026-10-18 historical: the user rejected the earlier sparse framework shell as far from the current iPad SwiftUI appearance. That shell was replaced; the feedback is preserved, not the current acceptance state.",
+    "nextRequiredEvidence": "Main-owned final source snapshot, G01 handoff/closure and cleanup record; G14 whole-product review. No further recapture is required for the seven reviewed G01 IDs.",
+    "currentIOSReference": {
+      "capturedAt": "2026-10-18",
+      "appVersion": "1.7.34",
+      "build": "275",
+      "os": "iPadOS 27.0",
+      "deviceClass": "iPad mini (A17 Pro)",
+      "scenarios": [
+        "new-task portrait",
+        "new-task landscape",
+        "general settings sheet landscape"
+      ],
+      "pixelSizes": [
+        [
+          1488,
+          2266
+        ],
+        [
+          2266,
+          1488
+        ]
+      ],
+      "installedExecutableMatchesSourceReceipt": true,
+      "relevantUIUnchangedAtVerificationCommit": "2199859f3b77354ddb68b3772ee966f57b66f8a5",
+      "privateEvidenceRetained": true,
+      "publicScreenshots": "pending synthetic/redacted paired export"
+    },
+    "firstReview": {
+      "disposition": "fix",
+      "scope": "G01 representative native foundation",
+      "androidCaptures": 22,
+      "nativeIPadCaptures": 3,
+      "materialFindings": [
+        "G01-F01",
+        "G01-F02",
+        "G01-F03",
+        "G01-F04",
+        "G01-F05",
+        "G01-F06",
+        "G01-F07"
+      ],
+      "accepted": false,
+      "historical": true,
+      "supersededBy": "round2"
+    },
+    "foundationShellAcceptedScope": "Independent G01 foundation review of the original seven finding IDs (G01-F01..G01-F07) on compact phone and expanded tablet representative pages only. Not whole-product, all-page, TalkBack/CJK-IME or 16 KB runtime acceptance.",
+    "foundationShellAcceptedAt": "2026-10-18",
+    "foundationShellAcceptanceBasis": "Round-2 independent verdict SHIP after one repair batch and two targeted rounds; the installed APK hash matched the exported APK from the recorded source snapshot; private captures remain private evidence.",
+    "round1": {
+      "disposition": "fix",
+      "scope": "Original seven reviewed finding IDs; targeted remainder only",
+      "resolved": [
+        "G01-F01",
+        "G01-F02",
+        "G01-F03",
+        "G01-F06",
+        "G01-F07"
+      ],
+      "partial": [
+        "G01-F04",
+        "G01-F05"
+      ],
+      "historicalFailurePreserved": true
+    },
+    "round2": {
+      "disposition": "ship",
+      "scope": "Original seven reviewed finding IDs only; G01 representative foundation",
+      "resolved": [
+        "G01-F01",
+        "G01-F02",
+        "G01-F03",
+        "G01-F04",
+        "G01-F05",
+        "G01-F06",
+        "G01-F07"
+      ],
+      "partial": [],
+      "unresolved": []
+    },
+    "reviewLimits": [
+      "Not full product functionality or whole-product visual parity",
+      "Not full TalkBack coverage",
+      "Not full CJK IME composition coverage",
+      "No 16 KB runtime qualification: static ELF/ZIP checks pass, but both test devices use 4 KB kernels",
+      "The final tiny drawer-state patch did not rerun the full 10-test instrumentation matrix; unchanged native/resources/test APKs and the final full/play install-launch-JNI smoke are recorded separately",
+      "No pixel-perfect claim and no physical-tablet proof; G14 owns whole-product visual review"
+    ],
+    "publicEvidence": [
+      "docs/FLOE_ANDROID_PROGRESS.zh-CN.md",
+      "FloeAndroid/planning/UI_FOUNDATION.md",
+      "FloeAndroid/planning/visual-baseline.json"
+    ],
+    "privateCaptures": "Actual paired Android/iPad captures and device logs remain in private task evidence; no public screenshots are claimed."
+  },
+  "allowedDifferences": [
+    "system permission/share/file-picker screens",
+    "system fonts and icon assets",
+    "system back and insets",
+    "device-dependent rendering effects"
+  ]
+}

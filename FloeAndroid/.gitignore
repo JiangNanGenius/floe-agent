@@ -1,0 +1,11 @@
+.gradle/
+.kotlin/
+**/build/
+**/.cxx/
+local.properties
+core/swiftbridge/src/main/jniLibs/
+shared/.swiftpm/
+shared/.build/
+*.jks
+*.keystore
+__pycache__/

@@ -1,0 +1,4 @@
+名称 Name,价格,备注
+widget,10,"plain text"
+gadget,20,"=HYPERLINK(""https://example.invalid/x"")"
+测试,30,"=1+1 literal text"

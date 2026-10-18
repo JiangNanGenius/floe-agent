@@ -1,0 +1,5749 @@
+{
+  "schemaVersion": 1,
+  "artifact": "floe-android-feature-baseline",
+  "version": "g01.2026-10-18.2",
+  "kind": "operation-level-planning-baseline",
+  "status": "Operation planning baseline; 3 FND foundation operations component-verified for G01; 167 operations remain planned; G01 final handoff pending",
+  "createdAt": "2026-10-18",
+  "sourcePlan": "docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md",
+  "planSectionsCovered": [
+    "1",
+    "2",
+    "11",
+    "19",
+    "20",
+    "21",
+    "23"
+  ],
+  "fixtureInventory": "FloeAndroid/fixtures/inventory.json",
+  "visualBaselineRef": "FloeAndroid/planning/visual-baseline.json",
+  "iosReference": {
+    "planningBaselineCommit": "037698e96e6890b0b3ac6d95037e3792aa32c692",
+    "evidenceVerifiedAgainst": "iOS sources in this repository working tree at Android repo initial commit 19ab263a, 2026-10-18",
+    "meaning": "iOS source evidence proves an iOS-side reference implementation exists for the operation. It is not Android acceptance; stale documentation claims are never treated as current evidence."
+  },
+  "androidImplementationState": "g01-foundation-component-verified",
+  "channels": {
+    "full": "GitHub full APK: includes phone control and optional Root enhancement modules behind explicit default-off switches.",
+    "play": "Google Play build: phone-control and Root modules physically excluded at build time (sources, service declarations, permissions, tool registrations, entries), per plan section 1.1."
+  },
+  "alignmentLegend": {
+    "built-in-equivalent": "Android in-app implementation achieves the same user result",
+    "system-equivalent": "Official Android platform API achieves the result",
+    "external-collaboration": "Verified external app editing round-trip; only accepted manual workflows",
+    "on-demand-equivalent": "Optional installed component completes the workflow with explicit dependency",
+    "remote-equivalent": "User-configured service or host; never claimed as offline parity",
+    "platform-replacement": "Apple-specific or absent capability replaced by an Android approach judged on user result",
+    "pending-gap": "No verifiable implementation path yet; does not satisfy alignment"
+  },
+  "globalLimitations": [
+    "Only FND-SHARED-CORE, FND-FLAVOR-EXCLUDE and FND-VISUAL-TOKENS are component-verified for the G01 foundation scope; the other 167 operations remain 'planned' and no future-goal domain feature is implemented or qualified.",
+    "Cross-device real-time sync (SYNC family) is a separate user decision gate and is not silently promised.",
+    "No local LLM on Android: FloeLocalModels/FloeLocalModelCatalog paths are deliberately excluded from this baseline's evidence set.",
+    "Fixtures are synthetic and cover coherent operations, not every combination; see FloeAndroid/fixtures/README.md for the explicit gap list (encrypted PDF, DWG, speech audio).",
+    "iOS evidence was re-read from current source on 2026-10-18; historical doc results are dated records, not proof."
+  ],
+  "families": [
+    {
+      "id": "FND",
+      "name": "工程与渠道边界 (foundation, not a section-2 domain; required by G01 close condition)",
+      "section2Row": null,
+      "androidOwnerGoal": "G01",
+      "workPackages": [
+        "P0.2",
+        "P0.5",
+        "P2.1",
+        "P6.7"
+      ],
+      "operations": [
+        {
+          "id": "FND-SHARED-CORE",
+          "op": "JVM calls the shared Swift policy core through the JNI round trip; the same TaskPolicy decides on both platforms",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeModels/TaskPolicy.swift",
+              "symbol": "TaskPolicy"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G01",
+          "verify": [
+            "G01",
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "task/run states",
+          "output": "policy decision identical to iOS core",
+          "assertions": [
+            "round trip returns a real policy verdict; protocol version and correlation are explicit and bounded",
+            "no Kotlin echo substitute"
+          ],
+          "status": "component_verified",
+          "alignment": "built-in-equivalent",
+          "evidence": [
+            "FloeAndroid/core/swiftbridge/src/main/kotlin/com/floe/android/bridge/SwiftCore.kt",
+            "FloeAndroid/core/swiftbridge/src/androidTest/kotlin/com/floe/android/bridge/BridgeInstrumentedTest.kt",
+            "FloeAndroid/shared/Sources/FloeAndroidCore/Bridge.swift",
+            "FloeAndroid/shared/Sources/FloeSharedModels/TaskPolicy.swift",
+            "FloeAndroid/shared/Tests/FloeAndroidCoreTests/BridgeTests.swift",
+            "docs/FLOE_ANDROID_PROGRESS.zh-CN.md",
+            "FloeAndroid/core/contracts/src/main/kotlin/com/floe/android/contracts/RuntimeContracts.kt",
+            "FloeAndroid/README.md"
+          ],
+          "scopeNotes": "G01 foundation only; later verification goals G12/G13 and any product-wide behavior remain planned."
+        },
+        {
+          "id": "FND-FLAVOR-EXCLUDE",
+          "op": "full/play flavors physically exclude phone-control and Root modules from the Play artifact",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeTools/ToolCatalog.swift",
+              "symbol": "ToolCatalog"
+            }
+          ],
+          "iosState": "implemented",
+          "iosBasis": "iOS evidence only shows capability-gating precedent; channel enforcement mechanism is Android-specific",
+          "goal": "G01",
+          "verify": [
+            "G01",
+            "G08",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "full and play builds",
+          "output": "DEX/manifest/dependency exclusion evidence",
+          "assertions": [
+            "Play artifact carries no service declaration, permission or tool registration for excluded modules",
+            "no reflection or plugin download can restore them"
+          ],
+          "status": "component_verified",
+          "alignment": "built-in-equivalent",
+          "evidence": [
+            "FloeAndroid/app/build.gradle.kts",
+            "FloeAndroid/app/src/full/kotlin/com/floe/android/DistributionModules.kt",
+            "FloeAndroid/app/src/play/kotlin/com/floe/android/DistributionModules.kt",
+            "FloeAndroid/app/src/androidTest/kotlin/com/floe/android/DistributionInstrumentedTest.kt",
+            "FloeAndroid/scripts/check-apk.py",
+            "docs/FLOE_ANDROID_PROGRESS.zh-CN.md",
+            "FloeAndroid/README.md"
+          ],
+          "scopeNotes": "G01 foundation only; later verification goals G08/G13 and any product-wide channel behavior remain planned."
+        },
+        {
+          "id": "FND-VISUAL-TOKENS",
+          "op": "Compose renders Floe semantic colors, typography, grouped surfaces and selection mapped from the iOS design system",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Design/FloeTheme.swift",
+              "symbol": "FloeTheme"
+            },
+            {
+              "path": "FloeAgent/FloeApp/App/FloeAgentApp.swift",
+              "symbol": "FloeAgentApp"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G01",
+          "verify": [
+            "G01",
+            "G14"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "theme token set and paired screens",
+          "output": "Android screens comparable to the iOS visual baseline",
+          "assertions": [
+            "visual-baseline.json mappings honored; wallpaper colors do not replace the iOS identity",
+            "Android back/insets/accessibility/48dp stay functional"
+          ],
+          "status": "component_verified",
+          "alignment": "built-in-equivalent",
+          "evidence": [
+            "FloeAndroid/core/designsystem/src/main/kotlin/com/floe/android/design/FloeTheme.kt",
+            "FloeAndroid/app/src/main/kotlin/com/floe/android/FloeShell.kt",
+            "FloeAndroid/planning/visual-baseline.json",
+            "FloeAndroid/planning/UI_FOUNDATION.md",
+            "docs/FLOE_ANDROID_UI_REUSE_RESEARCH.zh-CN.md",
+            "docs/FLOE_ANDROID_PROGRESS.zh-CN.md"
+          ],
+          "scopeNotes": "G01 foundation only; later verification goal G14 (whole-product visual review) and future pages remain planned."
+        }
+      ]
+    },
+    {
+      "id": "PRV",
+      "name": "云端 Provider",
+      "section2Row": "云端 Provider",
+      "androidOwnerGoal": "G02",
+      "workPackages": [
+        "P1.1",
+        "P2.2"
+      ],
+      "operations": [
+        {
+          "id": "PRV-CONFIG-VALIDATE",
+          "op": "Add a BYOK provider (base URL, key, model), validate with a live check, persist capability overrides",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeProviders/ProviderCatalog.swift",
+              "symbol": "ProviderCatalog"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/ModelConfigurationStore.swift",
+              "symbol": "ModelConfigurationStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "provider config with user-supplied key",
+          "output": "saved, verified model entry",
+          "assertions": [
+            "validation reflects a real request",
+            "secrets only in Keystore-class storage, never logs"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "PRV-STREAM-CHAT",
+          "op": "Stream chat completion events and render them incrementally",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeProviders/ProviderAdapter.swift",
+              "symbol": "ProviderAdapter"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeProviders/SSE/SSEParser.swift",
+              "symbol": "SSEParser"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "prompt + model id",
+          "output": "ordered token/tool events",
+          "assertions": [
+            "stream parsing runs in the shared core; Android rendering keeps a stable streaming layout"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "PRV-CANCEL-RETRY",
+          "op": "Cancel an in-flight request; retry with visible backoff on transient failure",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/ConversationRunService.swift",
+              "symbol": "ConversationRunService"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "active run",
+          "output": "cancelled state or retried run",
+          "assertions": [
+            "cancel stops consumption; late callbacks cannot touch another session"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "PRV-REASONING-EFFORT",
+          "op": "Automatic reasoning-effort selection per model capability",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeProviders/AutomaticReasoningEffort.swift",
+              "symbol": "AutomaticReasoningEffort"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "task + model profile",
+          "output": "selected effort carried on the request",
+          "assertions": [
+            "shared-core decision reused; saved model overrides respected"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "PRV-CUSTOM-ENDPOINT",
+          "op": "Custom endpoint and wire-protocol adaptation for OpenAI-compatible services",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeProviders/ProviderAdapterFactory.swift",
+              "symbol": "ProviderAdapterFactory"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeProviders/WireTranslator.swift",
+              "symbol": "WireTranslator"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "custom base URL",
+          "output": "working adapter session",
+          "assertions": [
+            "adapter selection semantics identical to shared core; Android auth adaptation isolated"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "PRV-CAPABILITY-ROUTE",
+          "op": "Route image/video/tool capability only to models that actually support it",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeProviders/NativeToolCapability.swift",
+              "symbol": "NativeToolCapability"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeProviders/ProviderCatalogCapabilities.swift",
+              "symbol": "ProviderCatalogCapabilityResolver"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "capability request + catalog",
+          "output": "eligible model set",
+          "assertions": [
+            "disabled, unconfigured or unsupported capabilities are never offered"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "PRV-TOOL-CALLS",
+          "op": "Parse and dispatch model tool calls with typed arguments",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeModels/ToolCall.swift",
+              "symbol": "ToolCall"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "assistant tool-call payload",
+          "output": "validated ToolCall events",
+          "assertions": [
+            "malformed calls produce a tool error, not a crash"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "CHA",
+      "name": "对话与任务",
+      "section2Row": "对话与任务",
+      "androidOwnerGoal": "G02",
+      "workPackages": [
+        "P2.2",
+        "P2.3",
+        "P2.7"
+      ],
+      "operations": [
+        {
+          "id": "CHA-PLAN-GOAL",
+          "op": "Plan and goal controls visible during a run with follow-up steering",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/GoalModels.swift",
+              "symbol": "GoalStatus"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/PlanningModels.swift",
+              "symbol": "PlanStatus"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "multi-step task",
+          "output": "plan/goal state steerable in UI",
+          "assertions": [
+            "plan events replay correctly after reopen"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CHA-FOLLOWUP-HISTORY",
+          "op": "Continue a conversation with assembled bounded history, surviving restart",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/ConversationHistoryAssembler.swift",
+              "symbol": "ConversationHistoryAssembler"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Chat/ThreadDetailView.swift",
+              "symbol": "ThreadDetailView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "existing conversation",
+          "output": "bounded context + full scrollback",
+          "assertions": [
+            "durable store restores messages, approvals and tool records after process death"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CHA-SEARCH",
+          "op": "Search the conversation list and message content (incl. CJK)",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Chat/ConversationSearchView.swift",
+              "symbol": "ConversationSearchView"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/ConversationStore.swift",
+              "symbol": "ConversationStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "query text",
+          "output": "ranked hits",
+          "assertions": [
+            "unicode query behavior matches the shared store"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CHA-ARCHIVE-BULK",
+          "op": "Archive conversations and batch-manage them (move/delete/rename)",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Chat/TaskBulkManagement.swift",
+              "symbol": "TaskBulkOperation"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Chat/ConversationBatchManagementView.swift",
+              "symbol": "ConversationBatchManagementView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "conversation selection",
+          "output": "batch operation with confirmation",
+          "assertions": [
+            "notes/workspace data survives chat task deletion (independent stores)"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CHA-RESUME-RUN",
+          "op": "Resume or reconcile an interrupted background run after restart",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/AgentCheckpoint.swift",
+              "symbol": "AgentCheckpoint"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/RunStore.swift",
+              "symbol": "RunStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "run interrupted by process death",
+          "output": "restored state or accurate failure",
+          "assertions": [
+            "no duplicate side effects on resume; failure preserves recoverable data"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CHA-DRAFT-KEEP",
+          "op": "Composer draft survives navigation, rotation and view rebuild",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Chat/ComposerDraftStore.swift",
+              "symbol": "ComposerDraftStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "unsent draft",
+          "output": "draft intact on return",
+          "assertions": [
+            "no draft loss or duplicate subscription after view recreation"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "APR",
+      "name": "审批与工具记录",
+      "section2Row": "审批与工具记录",
+      "androidOwnerGoal": "G02",
+      "workPackages": [
+        "P2.6",
+        "P2.7"
+      ],
+      "operations": [
+        {
+          "id": "APR-CALL-BOUND",
+          "op": "Approval binds to the exact task and exact tool call; grants are consumed or expire",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSecurity/ApprovalPolicy.swift",
+              "symbol": "ApprovalPolicy"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeSecurity/ApprovalGrantStore.swift",
+              "symbol": "ApprovalGrantStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "pending risky call",
+          "output": "grant scoped to that call",
+          "assertions": [
+            "a replay with different arguments is not covered by the old grant"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "APR-TOOL-RECORD-OUTPUT",
+          "op": "Tool history cards show the real recorded output, not a success string",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSecurity/AuditEntry.swift",
+              "symbol": "AuditEntry"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Chat/ToolCallCardView.swift",
+              "symbol": "ToolCallCardView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "completed tool call",
+          "output": "readable record with bounded output",
+          "assertions": [
+            "failure cards keep the actual error text"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "APR-UNTRUSTED-NO-GRANT",
+          "op": "Imported documents, web responses and tool outputs never grant tool permissions",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeTools/RuntimeTaskAuthority.swift",
+              "symbol": "RuntimeTaskAuthority"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeSecurity/SecretIngressScanner.swift",
+              "symbol": "SecretIngressScanner"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "fixture containing injection-like content",
+          "output": "authority state unchanged after ingestion",
+          "assertions": [
+            "content cannot escalate; authority is host-authored only"
+          ],
+          "fixtures": [
+            "text/csv/formula-injection.csv"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "APR-DOC-EDIT-PROFILE",
+          "op": "Routine task-authorized document/media edits avoid per-edit interactive approval while keeping revision and save validation",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSecurity/OrdinaryDocumentActionProfile.swift",
+              "symbol": "OrdinaryDocumentActionProfile"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "AI edit of a task-owned document",
+          "output": "applied edit with ownership checks",
+          "assertions": [
+            "external or irreversible actions keep existing safeguards"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "SUB",
+      "name": "子代理与后台作业",
+      "section2Row": "子代理与后台作业",
+      "androidOwnerGoal": "G02",
+      "workPackages": [
+        "P2.3",
+        "P2.6"
+      ],
+      "operations": [
+        {
+          "id": "SUB-DELEGATE",
+          "op": "Delegate a bounded subagent task with explicit outcome and handoff artifact",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/DelegateTool.swift",
+              "symbol": "DelegateTool"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "delegation spec",
+          "output": "child session returning a report",
+          "assertions": [
+            "child result continues the originating task"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "SUB-CHILD-ISOLATION",
+          "op": "Cancel one child without touching siblings; budgets enforced",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeTools/ChildExecution.swift",
+              "symbol": "ChildExecution"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeTools/ChildBudgetContext.swift",
+              "symbol": "ChildBudgetContext"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/ChildRunStore.swift",
+              "symbol": "ChildRunStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "parallel children",
+          "output": "isolated cancellation",
+          "assertions": [
+            "no cross-task contamination; ownership explicit"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "JOB-BACKGROUND-LIFECYCLE",
+          "op": "Background jobs are owned by services, not view lifetime; stop owned workers before deleting references",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/BackgroundJobService.swift",
+              "symbol": "BackgroundJobService"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Tools/BackgroundJobTools.swift",
+              "symbol": "BackgroundJobTools"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "job started then UI navigated away",
+          "output": "job continues or reports accurately",
+          "assertions": [
+            "failed operation preserves recoverable data"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "JOB-SHARED-ENV",
+          "op": "Jobs and subagents share the resolved environment without leaking between tasks",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeEnvironments/EnvironmentExecutionCoordinator.swift",
+              "symbol": "EnvironmentExecutionCoordinator"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "two tasks on one environment",
+          "output": "serialized safe sharing",
+          "assertions": [
+            "explicit environmentID and task ownership through execution"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "TMP",
+      "name": "临时会话",
+      "section2Row": "临时会话",
+      "androidOwnerGoal": "G02",
+      "workPackages": [
+        "P2.6"
+      ],
+      "operations": [
+        {
+          "id": "TMP-TOOL-CEILING",
+          "op": "Temporary chat stays RAM-only with a text/public-web tool ceiling",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeTools/TemporaryChatToolPolicy.swift",
+              "symbol": "TemporaryChatToolPolicy"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "temporary session requesting a file tool",
+          "output": "policy denial with a readable reason",
+          "assertions": [
+            "nothing persists in RAM-only mode"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "TMP-NAV-DISCARD",
+          "op": "Navigating to another conversation or New Task immediately fences and discards temporary state, even with a run in flight; late callbacks are dropped",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloePersistence/EphemeralStores.swift",
+              "symbol": "EphemeralConversationStore"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeCore/LaunchEpochFence.swift",
+              "symbol": "LaunchEpochFence"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "temporary session with an in-flight run, navigated away",
+          "output": "discarded; callbacks ignored",
+          "assertions": [
+            "view reconstruction is not navigation",
+            "process death restores no temporary content"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "TMP-KEEP-PROMOTE",
+          "op": "Explicit successful Keep uses atomic promotion into ordinary history/workspace ownership",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloePersistence/ConversationPromoter.swift",
+              "symbol": "ConversationPromoter"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "keep action",
+          "output": "single atomic promotion",
+          "assertions": [
+            "promotion only after success; no partial write"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "WSF",
+      "name": "项目与文件",
+      "section2Row": "项目与文件",
+      "androidOwnerGoal": "G04",
+      "workPackages": [
+        "P1.17",
+        "P3.2",
+        "P3.12"
+      ],
+      "operations": [
+        {
+          "id": "WSF-WRITE-LAYER",
+          "op": "Resolve session→project→shared→base with an explicit write layer; never silently choose a temp dir or the first project",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeEnvironments/EnvironmentRoots.swift",
+              "symbol": "EnvironmentRoots"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeModels/Workspace.swift",
+              "symbol": "Workspace"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "write into a project workspace",
+          "output": "file lands in the resolved write layer",
+          "assertions": [
+            "layer visible; dependency/data lifecycle separated"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "WSF-FILE-OPS-SAF",
+          "op": "Full file operations under a persisted, reused SAF grant without re-prompting per operation (no-root file workbench, plan section 21)",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeWorkspace/WorkspaceFileService.swift",
+              "symbol": "WorkspaceFileService"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "granted directory tree",
+          "output": "create/read/write/move/delete/list",
+          "assertions": [
+            "grant survives reboot/upgrade",
+            "revocation degrades to an accurate actionable state"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "WSF-REVISION-CONFLICT",
+          "op": "Revision conflict detection with recovery copies instead of silent clobber",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeWorkspace/WorkspaceEditConflict.swift",
+              "symbol": "WorkspaceEditConflict"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeDocuments/DocumentRecovery.swift",
+              "symbol": "DocumentRecovery"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "external edit racing an AI edit",
+          "output": "conflict review UI with both copies",
+          "assertions": [
+            "failed save keeps recoverable original"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "WSF-SAFE-EXTRACT",
+          "op": "Bounded safe archive extraction rejecting traversal; staged commit only after verification",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeWorkspace/ArchiveEngine.swift",
+              "symbol": "ArchiveEngine"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeTools/FileLimits.swift",
+              "symbol": "FileLimits"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "normal archives + adversarial entries",
+          "output": "atomic commit or rejection",
+          "assertions": [
+            "no path escape; size limits enforced"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "WSF-EXPORT",
+          "op": "Export/copy task results to a user-chosen destination",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Files/DocumentPickerView.swift",
+              "symbol": "DocumentPickerView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "generated asset",
+          "output": "file at destination",
+          "assertions": [
+            "bytes/hashes equal after export"
+          ],
+          "fixtures": [
+            "assets/png/gradient-8.png"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "WSF-NETWORK-MOUNT",
+          "op": "Network file sources inside the file workbench",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeWorkspace/NetworkWorkspaceMount.swift",
+              "symbol": "NetworkWorkspaceMount"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeWorkspace/WorkspaceMountRegistry.swift",
+              "symbol": "WorkspaceMountRegistry"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "configured network source",
+          "output": "browsed and copied files",
+          "assertions": [
+            "credentials stay in approved storage"
+          ],
+          "status": "planned",
+          "alignment": "remote-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "IDE",
+      "name": "内置 IDE",
+      "section2Row": "内置 IDE",
+      "androidOwnerGoal": "G04",
+      "workPackages": [
+        "P1.8",
+        "P2.4",
+        "P3.1"
+      ],
+      "operations": [
+        {
+          "id": "IDE-TREE-EDIT",
+          "op": "File tree plus multi-tab code editing in one workbench",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/FileTreeView.swift",
+              "symbol": "FileTreeView"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/CodeEditorCore.swift",
+              "symbol": "StructuredCodeTextView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "workspace with sample files",
+          "output": "open/edit/save round trip",
+          "assertions": [
+            "unicode content preserved byte-exactly"
+          ],
+          "fixtures": [
+            "text/code/sample.kt"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "IDE-SEARCH-REPLACE",
+          "op": "Workspace search and replace with hit preview",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/TextFileEditorView.swift",
+              "symbol": "TextFileEditorView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "pattern + scope",
+          "output": "hits then applied edit",
+          "assertions": [
+            "CJK and case-sensitivity behave as documented"
+          ],
+          "fixtures": [
+            "text/code/sample.ts"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "IDE-UNDO-DRAFT",
+          "op": "Per-editor undo; drafts survive tab switch",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeWorkspace/IDENativeTextEditing.swift",
+              "symbol": "IDENativeTextEditing"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeWorkspace/IDEWorkspaceSession.swift",
+              "symbol": "IDEWorkspaceSession"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "edit sequence then undo xN",
+          "output": "original bytes restored",
+          "assertions": [
+            "no draft loss on rotation or view recreation"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "IDE-ENCODING-LINES",
+          "op": "Preserve CRLF, UTF-8 BOM and long lines across open→edit→save→reopen",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeWorkspace/TextReader/ReaderTextCodec.swift",
+              "symbol": "ReaderTextCodec"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeWorkspace/WorkspaceTextPolicy.swift",
+              "symbol": "WorkspaceTextPolicy"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "encoding fixture files",
+          "output": "saved file keeps declared encoding traits",
+          "assertions": [
+            "crlf stays crlf unless the user changes it; BOM kept",
+            "one 4096-char line renders without layout break"
+          ],
+          "fixtures": [
+            "text/encoding/crlf.txt",
+            "text/encoding/utf8-bom.txt",
+            "text/encoding/long-line.txt"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "IDE-DIFF",
+          "op": "Diff view of pending edits/changes",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/DiffView.swift",
+              "symbol": "DiffView"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeWorkspace/TextMergePlan.swift",
+              "symbol": "TextMergePlan"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "modified file",
+          "output": "hunk-level diff",
+          "assertions": [
+            "IDE diff matches the Git view of the same change"
+          ],
+          "fixtures": [
+            "text/code/sample.ts"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "IDE-RUN-LOG-PREVIEW",
+          "op": "Run code through the resolved Linux environment with log capture and web preview",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/IDELanguageRunView.swift",
+              "symbol": "IDELanguageRunView"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/IDEWebServiceView.swift",
+              "symbol": "IDEWebServiceView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "sample.py in workspace",
+          "output": "stdout/exit code in logs; served page preview",
+          "assertions": [
+            "execution goes through exec.shell in the resolved environment; no host interpreter fallback"
+          ],
+          "fixtures": [
+            "text/code/sample.py"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "IDE-TERMINAL-EMBED",
+          "op": "Terminal panel inside the IDE shares the workspace session",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Terminal/TerminalView.swift",
+              "symbol": "TerminalView"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Terminal/LocalTerminalView.swift",
+              "symbol": "LocalTerminalView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "shell session",
+          "output": "ANSI-correct interactive panel",
+          "assertions": [
+            "Ctrl-C, resize and cancellation correct; Chinese IME input in embedded editor covered by P1.8"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "IDE-LANG-SUPPORT",
+          "op": "Language-aware handling for representative source types",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/WorkspaceFileType.swift",
+              "symbol": "WorkspaceFileType"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/IDELanguageRunPolicy.swift",
+              "symbol": "IDELanguageRunPolicy"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "py/kt/ts samples",
+          "output": "recognized file type and run policy",
+          "assertions": [
+            "unknown extensions degrade to plain text"
+          ],
+          "fixtures": [
+            "text/code/sample.py",
+            "text/code/sample.kt",
+            "text/code/sample.ts"
+          ],
+          "status": "planned",
+          "alignment": "on-demand-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "LNX",
+      "name": "Linux 与终端",
+      "section2Row": "Linux 与终端",
+      "androidOwnerGoal": "G03",
+      "workPackages": [
+        "P1.3",
+        "P1.4",
+        "P2.5"
+      ],
+      "operations": [
+        {
+          "id": "LNX-GUEST-LIFECYCLE",
+          "op": "Install/start/stop the ARM64 Linux guest (PRoot candidate) with accurate state",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestLifecycle.swift",
+              "symbol": "LinuxGuestLifecycle"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestService.swift",
+              "symbol": "LinuxGuestService"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "install state + rootfs image",
+          "output": "running guest or honest install state",
+          "assertions": [
+            "stop releases owned workers and shared references",
+            "PRoot isolation limitations explicit; not a security sandbox"
+          ],
+          "status": "planned",
+          "alignment": "on-demand-equivalent"
+        },
+        {
+          "id": "LNX-PTY-EXEC",
+          "op": "exec.shell through PTY with stdin/stdout/stderr and exit codes",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Shell/LocalShellService.swift",
+              "symbol": "LocalShellService"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestCommandChannel.swift",
+              "symbol": "LinuxGuestCommandChannel"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/InteractiveShellSessionService.swift",
+              "symbol": "InteractiveShellSessionService"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "command in resolved environment",
+          "output": "streams + exit code",
+          "assertions": [
+            "single exec path; removed aliases never revived"
+          ],
+          "fixtures": [
+            "text/code/sample.py"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "LNX-TIMEOUT-CANCEL",
+          "op": "Timeout, cancel and signals never kill another session",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestShellBackend.swift",
+              "symbol": "LinuxGuestShellBackend"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeCore/HeavyRuntimeArbiter.swift",
+              "symbol": "HeavyRuntimeArbiter"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "two concurrent commands; cancel one",
+          "output": "isolated termination",
+          "assertions": [
+            "bounded buffers; the native host is never treated as a disposable guest"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "LNX-SERVICES-PORTS",
+          "op": "Background services with port registration and resource lifecycle",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestLocalService.swift",
+              "symbol": "LinuxGuestLocalService"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeCore/LinuxPortForwardRules.swift",
+              "symbol": "LinuxPortForwardRule"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "service start request",
+          "output": "ready state with reachable port",
+          "assertions": [
+            "readiness proven by a real response, not a start string"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "LNX-RECOVERY-UNKNOWN",
+          "op": "Reconcile unknown outcomes after crash/disconnect without double execution",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestUnknownOutcomeReconciler.swift",
+              "symbol": "LinuxUnknownOutcomeReconciler"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "interrupted command",
+          "output": "reconciled run state",
+          "assertions": [
+            "events do not replay into duplicate side effects"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "PYN",
+      "name": "Python 与 Node",
+      "section2Row": "Python 与 Node",
+      "androidOwnerGoal": "G03",
+      "workPackages": [
+        "P1.3",
+        "P2.5"
+      ],
+      "operations": [
+        {
+          "id": "PY-INSTALL",
+          "op": "Install Python packages inside the environment with recorded versions",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/ManagedPythonInstallService.swift",
+              "symbol": "ManagedPythonInstallService"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestPythonEnvironment.swift",
+              "symbol": "LinuxGuestPythonEnvironment"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "package request",
+          "output": "installed version queryable",
+          "assertions": [
+            "no parallel installer tool on the Android side"
+          ],
+          "status": "planned",
+          "alignment": "on-demand-equivalent"
+        },
+        {
+          "id": "PY-JOB-OUTPUT",
+          "op": "Run Python code as a job and capture real output",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/GuestPythonRuntime.swift",
+              "symbol": "GuestPythonRuntime"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/ManagedPythonPackageInspector.swift",
+              "symbol": "ManagedPythonPackageInspector"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "sample.py",
+          "output": "stdout and exit code recorded",
+          "assertions": [
+            "package execution proven by result, not a success string"
+          ],
+          "fixtures": [
+            "text/code/sample.py"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NODE-ENV",
+          "op": "Node package management inside the environment",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/NodePackageManagerPolicy.swift",
+              "symbol": "NodePackageManagerPolicy"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestNodeEnvironment.swift",
+              "symbol": "LinuxGuestNodeEnvironment"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "npm install request",
+          "output": "version and job output",
+          "assertions": [
+            "service readiness checks apply to node services too"
+          ],
+          "status": "planned",
+          "alignment": "on-demand-equivalent"
+        },
+        {
+          "id": "PKG-TRANSACTION",
+          "op": "System package transactions with dependency resolution and rollback",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloePackages/PackageTransaction.swift",
+              "symbol": "PackageTransaction"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePackages/AptEngine.swift",
+              "symbol": "AptEngine"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePackages/DpkgDatabase.swift",
+              "symbol": "DpkgDatabase"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "apt install plus failure injection",
+          "output": "committed transaction or clean rollback",
+          "assertions": [
+            "dependencies persist across guest restart"
+          ],
+          "status": "planned",
+          "alignment": "on-demand-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "GIT",
+      "name": "Git 与 GitHub",
+      "section2Row": "Git 与 GitHub",
+      "androidOwnerGoal": "G04",
+      "workPackages": [
+        "P3.1",
+        "P3.6"
+      ],
+      "operations": [
+        {
+          "id": "GIT-DIFF-STAGE-COMMIT",
+          "op": "diff/stage/commit flows on task repositories",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeGit/LocalGitService.swift",
+              "symbol": "LocalGitService"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/SourceControlView.swift",
+              "symbol": "SourceControlView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "modified sample file",
+          "output": "commit with visible diff",
+          "assertions": [
+            "repository writes keep the applicable review policy"
+          ],
+          "fixtures": [
+            "text/code/sample.py"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "GIT-PUSH-CONFLICT",
+          "op": "Push with explicit conflict/rejection handling",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeGit/GitHubService.swift",
+              "symbol": "GitHubService"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/SourceControlCenter.swift",
+              "symbol": "SourceControlCenter"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "diverged branch",
+          "output": "conflict surfaced, work preserved",
+          "assertions": [
+            "never force-push implicitly"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "GH-ACTIONS-STATUS",
+          "op": "Inspect Actions run status and logs",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeGit/GitHubActionsService.swift",
+              "symbol": "GitHubActionsClient"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/GitHubActionsJobCenter.swift",
+              "symbol": "GitHubActionsJobCenter"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "repository + run",
+          "output": "status timeline",
+          "assertions": [
+            "cloud CI remains advisory per repo policy"
+          ],
+          "status": "planned",
+          "alignment": "remote-equivalent"
+        },
+        {
+          "id": "GH-ARTIFACT-DOWNLOAD",
+          "op": "Download workflow artifacts into the task workspace",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/GitHubActionsJobEngine.swift",
+              "symbol": "GitHubActionsJobEngine"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "run id",
+          "output": "artifact stored in workspace",
+          "assertions": [
+            "download owned by a service; bounded and verified"
+          ],
+          "status": "planned",
+          "alignment": "remote-equivalent"
+        },
+        {
+          "id": "GIT-CRED-STORE",
+          "op": "Git credentials only in approved platform storage",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeGit/GitHubCredentialStore.swift",
+              "symbol": "GitHubCredentialStore"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeSecurity/KeychainStore.swift",
+              "symbol": "KeychainStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "token input",
+          "output": "Keystore-backed credential",
+          "assertions": [
+            "an in-memory fallback is never the credential store"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "NOT",
+      "name": "手记 (Notes)",
+      "section2Row": "手记",
+      "androidOwnerGoal": "G06",
+      "workPackages": [
+        "P4.1"
+      ],
+      "operations": [
+        {
+          "id": "NOT-STORAGE-INDEP",
+          "op": "Notes is a primary workspace whose storage is independent from chat; deleting a chat task never removes notes",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeNotes/NotesStore.swift",
+              "symbol": "NotesStore"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeNotes/NoteModels.swift",
+              "symbol": "NoteSourceReference"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "note fixture plus deleted chat task",
+          "output": "note survives",
+          "assertions": [
+            "no shared editor state, selection, undo or assistant conversation between notes and chat"
+          ],
+          "fixtures": [
+            "notes/note-basic.json"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NOT-EDIT-UNDO",
+          "op": "Element editing with per-note undo and revision rebasing",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeNotes/NoteEdit.swift",
+              "symbol": "NoteEdit"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeNotes/NoteEditRebase.swift",
+              "symbol": "NoteEditConflict"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "edit sequence then undo",
+          "output": "consistent document state",
+          "assertions": [
+            "revision/ownership validated before save"
+          ],
+          "fixtures": [
+            "notes/note-basic.json"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NOT-INK-PENCIL",
+          "op": "Pen/ink handwriting layer",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Notes/NotePencilView.swift",
+              "symbol": "NotePencilView"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Notes/NotesInkPreferences.swift",
+              "symbol": "NotesInkPreferences"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "stroke capture",
+          "output": "rendered ink",
+          "assertions": [
+            "pressure acceptance only on physical stylus hardware (user-owned); finger/simulator never claimed as pencil acceptance"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "NOT-IMPORT",
+          "op": "Import documents (incl. Office) into notes",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Notes/NoteFileImporter.swift",
+              "symbol": "NoteFileImporter"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "docx fixture",
+          "output": "imported blocks",
+          "assertions": [
+            "unicode text survives import intact"
+          ],
+          "fixtures": [
+            "office/docx/paragraphs-unicode.docx"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NOT-SEARCH",
+          "op": "Note text search",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeNotes/NoteTextSearch.swift",
+              "symbol": "NoteTextSearch"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "query 手记",
+          "output": "matching blocks",
+          "assertions": [
+            "CJK hit correctness"
+          ],
+          "fixtures": [
+            "notes/note-basic.json"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NOT-AI-ASSISTANT",
+          "op": "Notes assistant proposals flow through the shared ownership/approval path",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Notes/NotesAgentTools.swift",
+              "symbol": "NotesProposalCenter"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeNotes/NoteProposals.swift",
+              "symbol": "NoteProposalSummary"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "selection + instruction",
+          "output": "proposal applied or rejected",
+          "assertions": [
+            "assistant conversation separate from chat task state"
+          ],
+          "fixtures": [
+            "notes/note-basic.json"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NOT-COVER-READ",
+          "op": "Cover rendering (incl. engineering cover) and paginated reading view",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeNotes/NoteCover.swift",
+              "symbol": "NoteCover"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Notes/NotePageRenderer.swift",
+              "symbol": "NotePageRenderer"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Notes/NotesEngineeringCoverRenderer.swift",
+              "symbol": "NotesEngineeringCoverRenderer"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13",
+            "G14"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "note fixture + dxf asset",
+          "output": "cover image and reader pages",
+          "assertions": [
+            "cover invalidates on content revision"
+          ],
+          "fixtures": [
+            "notes/note-basic.json",
+            "cad/dxf/lines-text-layers.dxf"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NOT-EXPORT",
+          "op": "Export selection to PDF/DOCX/Markdown and reopen results",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Notes/NotesExport.swift",
+              "symbol": "NotesExport"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeNotes/NoteExportSelection.swift",
+              "symbol": "NoteExportSelection"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "note fixture",
+          "output": "exported files",
+          "assertions": [
+            "export format matches inventory expectations"
+          ],
+          "fixtures": [
+            "notes/note-basic.json"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NOT-MINDMAP",
+          "op": "Mind-map editing linked to notes",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeNotes/MindMapLayout.swift",
+              "symbol": "MindMapLayout"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Notes/NoteMindMapView.swift",
+              "symbol": "NoteMindMapView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "topic tree edits",
+          "output": "persisted mind map",
+          "assertions": [
+            "follows docs/FLOE_1_7_MIND_MAPS.md behavior"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "PDF",
+      "name": "PDF 与 OCR",
+      "section2Row": "PDF 与 OCR",
+      "androidOwnerGoal": "G06",
+      "workPackages": [
+        "P1.9",
+        "P3.4",
+        "P4.2"
+      ],
+      "operations": [
+        {
+          "id": "PDF-READ-PAGES",
+          "op": "Render pages with page navigation; reject incomplete files",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Files/PDFKitAccess.swift",
+              "symbol": "PDFKitGate"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/InlinePDFReader.swift",
+              "symbol": "InlinePDFReader"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "valid and truncated pdf fixtures",
+          "output": "2 pages rendered / structured rejection",
+          "assertions": [
+            "page count matches inventory",
+            "truncated file never renders phantom pages"
+          ],
+          "fixtures": [
+            "pdf/two-page-basic.pdf",
+            "pdf/truncated.pdf"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "PDF-SELECT-ANNOTATE",
+          "op": "Selection, annotation and journaled PDF operations",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Files/PDFContentEditor.swift",
+              "symbol": "PDFContentEditor"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Files/PDFOperationJournal.swift",
+              "symbol": "PDFOperationJournal"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Files/PDFOperationSchema.swift",
+              "symbol": "PDFOperationSchema"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "annotation ops on fixture",
+          "output": "saved annotated PDF",
+          "assertions": [
+            "journal replay safe; failure keeps recoverable copy"
+          ],
+          "fixtures": [
+            "pdf/two-page-basic.pdf"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "PDF-PROTECTED-GATE",
+          "op": "Protected PDF operations only through the single gated path",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Files/PDFKitAccess.swift",
+              "symbol": "PDFKitGate"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Files/PDFUnlockTool.swift",
+              "symbol": "PDFUnlockTool"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "password-protected pdf (coverage gap: no safe stdlib generator in this fixture set)",
+          "output": "gated unlock or refusal",
+          "assertions": [
+            "Android must not create a parallel unguarded rendering path"
+          ],
+          "status": "planned",
+          "alignment": "pending-gap"
+        },
+        {
+          "id": "PDF-OCR",
+          "op": "Text recognition over pages/images with bounded resources",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeCore/VisualTextRecognition.swift",
+              "symbol": "VisualTextRecognizer"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeCore/BoundedVisualTextRecognizer.swift",
+              "symbol": "BoundedVisualTextRecognizer"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "rendered fixture page",
+          "output": "recognized text",
+          "assertions": [
+            "ML Kit bundled path evaluated without assuming GMS"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "PDF-EXPORT-REOPEN",
+          "op": "Export/convert to PDF and reopen the result",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Files/PDFExportTool.swift",
+              "symbol": "PDFExportTool"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Files/DocumentConversionTool.swift",
+              "symbol": "DocumentConvertTool"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G06",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "docx/note fixtures",
+          "output": "pdf reopened",
+          "assertions": [
+            "content present and page count sane after reopen"
+          ],
+          "fixtures": [
+            "office/docx/paragraphs-unicode.docx"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "OFC",
+      "name": "Office (内置 LibreOfficeKit/Collabora)",
+      "section2Row": "Office",
+      "androidOwnerGoal": "G05",
+      "workPackages": [
+        "P1.5",
+        "P1.6",
+        "P3.3",
+        "P4.7",
+        "P5.1"
+      ],
+      "operations": [
+        {
+          "id": "OFC-PREVIEW-DOCX",
+          "op": "Offline in-app DOCX preview without Linux/external app/network",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeDocuments/OfficeOpeningPolicy.swift",
+              "symbol": "OfficeOpeningPolicy"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/OfficeDocumentEditorView.swift",
+              "symbol": "OfficeDocumentEditorView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G05",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "valid and corrupt docx fixtures",
+          "output": "rendered heading/list/RTL/emoji text or structured error",
+          "assertions": [
+            "paragraph order and unicode match inventory expectations",
+            "corrupt file rejected without crash"
+          ],
+          "fixtures": [
+            "office/docx/paragraphs-unicode.docx",
+            "office/docx/corrupt-missing-content-types.docx"
+          ],
+          "status": "planned",
+          "alignment": "on-demand-equivalent"
+        },
+        {
+          "id": "OFC-PREVIEW-XLSX",
+          "op": "Offline in-app XLSX preview including formula display",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeDocuments/OfficeOpenXML.swift",
+              "symbol": "OfficeDocumentKind"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Notes/NotesOfficeView.swift",
+              "symbol": "NotesOfficeView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G05",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "xlsx fixtures",
+          "output": "grid with unicode sheet name and cached values",
+          "assertions": [
+            "error cell displays #DIV/0! as data; nothing executes on open"
+          ],
+          "fixtures": [
+            "office/xlsx/formula-basic.xlsx",
+            "office/xlsx/formula-error-and-injection.xlsx"
+          ],
+          "status": "planned",
+          "alignment": "on-demand-equivalent"
+        },
+        {
+          "id": "OFC-PREVIEW-PPTX",
+          "op": "Offline in-app PPTX slide preview",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeDocuments/OfficeDocumentTools.swift",
+              "symbol": "OfficeInspectTool"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G05",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "pptx fixture",
+          "output": "2 slides with title/bullets rendered",
+          "assertions": [
+            "slide switching correct"
+          ],
+          "fixtures": [
+            "office/pptx/two-slides.pptx"
+          ],
+          "status": "planned",
+          "alignment": "on-demand-equivalent"
+        },
+        {
+          "id": "OFC-EDIT-PARAGRAPH",
+          "op": "AI/manual paragraph edit then save",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeDocuments/OfficeDocumentCommandTool.swift",
+              "symbol": "OfficeCommandProposal"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/OfficeCommandBridge.swift",
+              "symbol": "OfficeCommandBridge"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G05",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "docx fixture + edit intent",
+          "output": "modified docx",
+          "assertions": [
+            "edit-level acceptance is separate from domain-level success (plan section 2 note)"
+          ],
+          "fixtures": [
+            "office/docx/paragraphs-unicode.docx"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "OFC-CELL-FORMULA-RECALC",
+          "op": "Edit cells, recalculate formulas, verify computed values",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeDocuments/OfficeFormulaVerification.swift",
+              "symbol": "OfficeFormulaVerification"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeDocuments/DocumentReadSheetTool.swift",
+              "symbol": "DocumentReadSheetTool"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G05",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "xlsx fixtures",
+          "output": "SUM recomputed; error formula surfaced",
+          "assertions": [
+            "formula results verified semantically, not cached-string echo"
+          ],
+          "fixtures": [
+            "office/xlsx/formula-basic.xlsx",
+            "office/xlsx/formula-error-and-injection.xlsx"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "OFC-REVISION-TRACKING",
+          "op": "Track/keep revisions with conflict review; keep-revisions-then-export-PDF is its own case",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/OfficeConflictReviewView.swift",
+              "symbol": "OfficeConflictReviewView"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/OfficeEditIntentQueue.swift",
+              "symbol": "OfficeEditIntentQueue"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G05",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "docx with queued edits",
+          "output": "revision state preserved on export",
+          "assertions": [],
+          "fixtures": [
+            "office/docx/paragraphs-unicode.docx"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "OFC-SLIDES-EDIT",
+          "op": "Edit slide text/structure through LOK",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeDocuments/OfficeDocumentBuilders.swift",
+              "symbol": "OfficeWorkbookSheet"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G05",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "pptx fixture + change",
+          "output": "saved deck",
+          "assertions": [
+            "reopened deck shows the edit; layout preserved"
+          ],
+          "fixtures": [
+            "office/pptx/two-slides.pptx"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "OFC-CREATE-NEW",
+          "op": "AI creates new DOCX/XLSX/PPTX from scratch",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeDocuments/DocumentCreateTool.swift",
+              "symbol": "DocumentCreateTool"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G05",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "content spec",
+          "output": "valid files",
+          "assertions": [
+            "created files pass the same structural validators as fixtures"
+          ],
+          "fixtures": [
+            "office/pptx/two-slides.pptx"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "OFC-SAVE-REOPEN",
+          "op": "Save admission validation and reopen round trip, including after a crash",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeDocuments/OfficeNativeSaveValidation.swift",
+              "symbol": "OfficeNativeSaveValidation"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/OfficeSaveAdmissionRetry.swift",
+              "symbol": "OfficeSaveAdmissionRetry"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G05",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "edited fixtures",
+          "output": "reopened documents with edits",
+          "assertions": [
+            "crash during save keeps a recoverable original"
+          ],
+          "fixtures": [
+            "office/docx/paragraphs-unicode.docx",
+            "office/xlsx/formula-basic.xlsx",
+            "office/pptx/two-slides.pptx"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "OFC-PDF-EXPORT",
+          "op": "Export Office document to PDF with content verification",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/OfficeCommandCenter.swift",
+              "symbol": "OfficeCommandCenter"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G05",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "docx fixture",
+          "output": "PDF with expected pages",
+          "assertions": [
+            "actual PDF content verified, not a command success string"
+          ],
+          "fixtures": [
+            "office/docx/paragraphs-unicode.docx",
+            "pdf/two-page-basic.pdf"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "OFC-CSV-SECURITY",
+          "op": "Formula-like text in CSV/XLSX stays inert display text; preview triggers no network",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeDocuments/OfficeCapabilityTool.swift",
+              "symbol": "OfficeCapabilityTool"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G05",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "csv + xlsx injection fixtures",
+          "output": "literal text rendered",
+          "assertions": [
+            "no hyperlink/formula execution on open or preview"
+          ],
+          "fixtures": [
+            "text/csv/formula-injection.csv",
+            "office/xlsx/formula-error-and-injection.xlsx"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "PHC",
+      "name": "手机操作 (Android AccessibilityService)",
+      "section2Row": "手机操作",
+      "androidOwnerGoal": "G08",
+      "workPackages": [
+        "P1.11",
+        "P2.8",
+        "P3.7",
+        "P5.7",
+        "P6.7"
+      ],
+      "operations": [
+        {
+          "id": "PHC-OBSERVE",
+          "op": "Observe screen state through the AccessibilityService node tree under explicit task authorization",
+          "ios": [],
+          "iosState": "not-on-ios",
+          "iosBasis": "Android-only capability (plan 1.1, 23.2 G08); no iOS equivalent",
+          "goal": "G08",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full"
+          ],
+          "input": "foreground app + task grant",
+          "output": "structured observation",
+          "assertions": [
+            "visible on-screen state while active"
+          ],
+          "status": "planned",
+          "alignment": "platform-replacement"
+        },
+        {
+          "id": "PHC-ACT-STOP",
+          "op": "Click/type/scroll/back/switch-app actions with an always-available stop",
+          "ios": [],
+          "iosState": "not-on-ios",
+          "iosBasis": "Android-only capability",
+          "goal": "G08",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full"
+          ],
+          "input": "authorized action list",
+          "output": "executed actions",
+          "assertions": [
+            "stop halts immediately",
+            "no screen-password capture or system-boundary bypass",
+            "accessibility service is not a general keep-alive mechanism"
+          ],
+          "status": "planned",
+          "alignment": "platform-replacement"
+        },
+        {
+          "id": "PHC-REOBSERVE-TAKEOVER",
+          "op": "Re-observe after each action; human takeover returns control",
+          "ios": [],
+          "iosState": "not-on-ios",
+          "iosBasis": "Android-only capability",
+          "goal": "G08",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full"
+          ],
+          "input": "action with changed UI",
+          "output": "verified result or correction",
+          "assertions": [
+            "no reliance on development-host ADB"
+          ],
+          "status": "planned",
+          "alignment": "platform-replacement"
+        },
+        {
+          "id": "PHC-CHANNEL-EXCLUSION",
+          "op": "Play build physically excludes the module; store-policy qualification recorded separately",
+          "ios": [],
+          "iosState": "not-on-ios",
+          "iosBasis": "Channel rule specified by the user (plan 1.1)",
+          "goal": "G08",
+          "verify": [
+            "G08",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "both APKs",
+          "output": "manifest/DEX/dependency exclusion evidence",
+          "assertions": [
+            "phone-control and Root exclusions verified separately"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "BRW",
+      "name": "浏览器与网页预览",
+      "section2Row": "浏览器与网页预览",
+      "androidOwnerGoal": "G04",
+      "workPackages": [
+        "P3.5"
+      ],
+      "operations": [
+        {
+          "id": "BRW-NAV-OBSERVE",
+          "op": "Controlled WebView navigation and page observation",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Browser/BrowserSessionCenter.swift",
+              "symbol": "BrowserSessionCenter"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Browser/BrowserModels.swift",
+              "symbol": "BrowserAction"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "url",
+          "output": "observation events",
+          "assertions": [
+            "browser work stays unobtrusive unless explicit human interaction is requested"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "BRW-ACT-DOWNLOAD",
+          "op": "Interact with page elements; downloads land in the workspace",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Browser/BrowserTools.swift",
+              "symbol": "BrowserTools"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "action + download",
+          "output": "verified file",
+          "assertions": [
+            "download owned by service; staged commit after verification"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "BRW-HANDOFF",
+          "op": "Manual takeover with continue-handoff back to the agent",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Browser/BrowserSessionCenter.swift",
+              "symbol": "Handoff"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "takeover request",
+          "output": "human control then return",
+          "assertions": [
+            "handoff state modeled like iOS including error and needs-continue"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "BRW-LOGIN-POLICY",
+          "op": "Login-state handling under URL/destination policy",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Browser/BrowserURLPolicy.swift",
+              "symbol": "BrowserURLPolicy"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeTools/NetworkDestinationPolicy.swift",
+              "symbol": "NetworkDestinationPolicy"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "authenticated session",
+          "output": "scoped reuse",
+          "assertions": [
+            "web responses stay untrusted content"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "BRW-LOCAL-PREVIEW",
+          "op": "Local static/preview servers for generated web results",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Browser/LocalPreviewServer.swift",
+              "symbol": "LocalPreviewServer"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Browser/LocalStaticFileServer.swift",
+              "symbol": "LocalPreviewServer"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G04",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "built html/asset set",
+          "output": "loopback-served preview",
+          "assertions": [
+            "bounded lifetime, stopped with its owner"
+          ],
+          "fixtures": [
+            "assets/png/gradient-8.png",
+            "assets/svg/marker.svg"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "SSH",
+      "name": "SSH 与远程设备",
+      "section2Row": "SSH 与远程设备",
+      "androidOwnerGoal": "G11",
+      "workPackages": [
+        "P3.6"
+      ],
+      "operations": [
+        {
+          "id": "SSH-AUTH-HOSTKEY",
+          "op": "Host authentication with explicit host-key trust decisions",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSSH/SSHConnectionService.swift",
+              "symbol": "SSHConnectionService"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Hosts/HostKeyTrustSheet.swift",
+              "symbol": "HostKeyTrustSheet"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "host profile",
+          "output": "trusted session",
+          "assertions": [
+            "a changed key blocks unattended reconnect",
+            "keys in approved storage only"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "SSH-EXEC-LONG",
+          "op": "Long-running commands and disconnect state visible through reconnect",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSSH/SSHExecService.swift",
+              "symbol": "SSHExecResult"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/RemoteSessionRegistry.swift",
+              "symbol": "RemoteSessionRegistry"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "long command + network drop",
+          "output": "reconciled session state",
+          "assertions": [
+            "service owns the session, not a view"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "SSH-DIRECTORY",
+          "op": "Remote directory browsing and file copy through the unified host contract",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSSH/RemoteHostProfile.swift",
+              "symbol": "RemoteHostProfile"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Tools/CloudWorkspaceTools.swift",
+              "symbol": "CloudWorkspaceCatalogArguments"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "remote path",
+          "output": "listing and transferred files",
+          "assertions": [
+            "remote responses treated as untrusted content"
+          ],
+          "status": "planned",
+          "alignment": "remote-equivalent"
+        },
+        {
+          "id": "REMOTE-AGENT-TASK",
+          "op": "Remote agent task execution on configured hosts",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/RemoteAgentTaskService.swift",
+              "symbol": "RemoteAgentTaskService"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/RemoteAgentInstaller.swift",
+              "symbol": "RemoteAgentInstaller"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "task + remote target",
+          "output": "executed remote workflow",
+          "assertions": [
+            "uploads explain object/purpose/target before transfer; task authorization carries"
+          ],
+          "status": "planned",
+          "alignment": "remote-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "VNC",
+      "name": "VNC 与其他协议",
+      "section2Row": "VNC 与其他协议",
+      "androidOwnerGoal": "G11",
+      "workPackages": [
+        "P3.6",
+        "P5.3"
+      ],
+      "operations": [
+        {
+          "id": "VNC-DISPLAY-INPUT",
+          "op": "VNC session with Android display/input mapping",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeVNC/VNCSession.swift",
+              "symbol": "VNCSession"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeVNC/VNCTools.swift",
+              "symbol": "VNCTools"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "host + credentials",
+          "output": "interactive session",
+          "assertions": [
+            "enabled only for actually supported encodings"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "RDP-CONNECT",
+          "op": "RDP with certificate trust decisions",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeVNC/RDPSession.swift",
+              "symbol": "RDPSession"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeVNC/RDPCertificateTrust.swift",
+              "symbol": "RDPCertificateTrust"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "RDP host",
+          "output": "session or explicit trust failure",
+          "assertions": [
+            "per plan row: enabled by actual support"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "TELNET-TCP",
+          "op": "Telnet/TCP raw connections with observable streams",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSSH/RemoteHostProfile.swift",
+              "symbol": "telnet"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/RawRemoteConnectionService.swift",
+              "symbol": "RawRemoteConnectionService"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "host:port",
+          "output": "bidirectional stream",
+          "assertions": [
+            "destination policy respected"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "BLE-USB",
+          "op": "BLE GATT / serial device connections",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/BluetoothSerialService.swift",
+              "symbol": "BluetoothSerialService"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Tools/BluetoothSerialTools.swift",
+              "symbol": "BluetoothSerialScanTool"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "peripheral (Android BLE/USB host permissions)",
+          "output": "device IO",
+          "assertions": [
+            "simulator cannot prove radio/hardware; results labeled by device class"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "PORT-FORWARD",
+          "op": "SSH tunnels/loopback forwarding for remote web access",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSSH/LoopbackSSHForwarder.swift",
+              "symbol": "LoopbackSSHForwarder"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "forward spec",
+          "output": "reachable local port",
+          "assertions": [
+            "teardown on session end"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "NET",
+      "name": "网络工作台",
+      "section2Row": "网络工作台",
+      "androidOwnerGoal": "G07",
+      "workPackages": [
+        "P1.15",
+        "P2.11",
+        "P3.9",
+        "P3.10",
+        "P5.9",
+        "P6.11"
+      ],
+      "operations": [
+        {
+          "id": "NET-WIFI-INFO",
+          "op": "Wi-Fi signal/channel/SSID readings through Android system APIs with per-API permission branches",
+          "ios": [],
+          "iosState": "not-on-ios",
+          "iosBasis": "Android focus capability (plan section 19); iOS Wi-Fi APIs not comparable",
+          "goal": "G07",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "location/network permission states",
+          "output": "real radio readings",
+          "assertions": [
+            "simulator waveforms never counted as measured RF",
+            "API 33 and latest-system branches both exercised"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "NET-LAN-DISCOVERY",
+          "op": "LAN device discovery (NSD/mDNS/scan)",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/LANDiscoveryService.swift",
+              "symbol": "LANDiscoveryService"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G07",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "local subnet",
+          "output": "device list with provenance",
+          "assertions": [
+            "live vs cached results distinguished"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "NET-DNS",
+          "op": "DNS resolution and record inspection",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/HostResolver.swift",
+              "symbol": "HostResolver"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G07",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "hostname",
+          "output": "records + timing",
+          "assertions": [
+            "resolver source reported accurately"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NET-PING-TRACE",
+          "op": "Ping/traceroute path diagnostics",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Tools/DeviceICMPPing.swift",
+              "symbol": "DeviceICMPPing"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Tools/DeviceICMPTraceroute.swift",
+              "symbol": "DeviceICMPTraceroute"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G07",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "target",
+          "output": "hops/latency",
+          "assertions": [
+            "Android raw-socket limits and fallbacks explicit"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NET-TCP-TLS-HTTP",
+          "op": "TCP/TLS/HTTP protocol diagnostics",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/HTTPRequestService.swift",
+              "symbol": "HTTPRequestService"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Execution/FloeTLSConfiguration.m",
+              "symbol": "FloeTLSConfiguration"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G07",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "endpoint",
+          "output": "structured protocol report",
+          "assertions": [
+            "controlled protocol use; destinations policy-checked"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NET-SPEED-MONITOR",
+          "op": "Speed test and sustained monitoring with report export",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/HTTPRequestService.swift",
+              "symbol": "HTTPRequestService"
+            }
+          ],
+          "iosState": "implemented-partial",
+          "iosBasis": "iOS reference partial; sustained-monitor design lives in plan section 19 / P0.8",
+          "goal": "G07",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "monitor spec",
+          "output": "samples and report",
+          "assertions": [
+            "real/estimated/cached measurements distinguished"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NET-AGENT-TOOLS",
+          "op": "Structured network tools callable by the agent",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/Packages/ToolCapabilityCatalog.swift",
+              "symbol": "ToolCapabilityCatalog"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeTools/NetworkDestinationPolicy.swift",
+              "symbol": "NetworkDestinationPolicy"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G07",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "tool call",
+          "output": "bounded structured result",
+          "assertions": [
+            "core usable without Root; rate limits and cancellation honored"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "NET-ROOT-CAPTURE",
+          "op": "Deep analysis/packet-capture interfaces backed by a Root component",
+          "ios": [],
+          "iosState": "not-on-ios",
+          "iosBasis": "Android full-channel optional capability (plan 19/20)",
+          "goal": "G07",
+          "verify": [
+            "G13"
+          ],
+          "channel": [
+            "full"
+          ],
+          "input": "root grant",
+          "output": "capture artifacts",
+          "assertions": [
+            "contract present at G07, wired at G08; never present on Play"
+          ],
+          "status": "planned",
+          "alignment": "on-demand-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "ROOT",
+      "name": "Root 增强 (GitHub full only)",
+      "section2Row": "Root增强",
+      "androidOwnerGoal": "G08",
+      "workPackages": [
+        "P0.9",
+        "P1.16",
+        "P2.12",
+        "P3.11",
+        "P5.10",
+        "P6.12"
+      ],
+      "operations": [
+        {
+          "id": "ROOT-TOGGLE-AUTH",
+          "op": "Default-off Root switch for already-rooted, consenting devices",
+          "ios": [],
+          "iosState": "not-on-ios",
+          "iosBasis": "Android-only optional capability (plan 1.1, section 20)",
+          "goal": "G08",
+          "verify": [
+            "G13"
+          ],
+          "channel": [
+            "full"
+          ],
+          "input": "toggle + user grant",
+          "output": "capability matrix reflects actual root state",
+          "assertions": [
+            "no auto-root or bootloader unlock",
+            "non-Root functionality is not weakened"
+          ],
+          "status": "planned",
+          "alignment": "platform-replacement"
+        },
+        {
+          "id": "ROOT-DEEP-OPS-REVOKE",
+          "op": "Per-capability deep file/process/network/system operations with task attribution and revocation",
+          "ios": [],
+          "iosState": "not-on-ios",
+          "iosBasis": "Android-only",
+          "goal": "G08",
+          "verify": [
+            "G13"
+          ],
+          "channel": [
+            "full"
+          ],
+          "input": "authorized op",
+          "output": "result with attribution",
+          "assertions": [
+            "per-capability probing",
+            "revocation effective immediately",
+            "no implicit host execution"
+          ],
+          "status": "planned",
+          "alignment": "platform-replacement"
+        },
+        {
+          "id": "ROOT-PLAY-EXCLUSION",
+          "op": "Root module physically absent from Play artifacts",
+          "ios": [],
+          "iosState": "not-on-ios",
+          "iosBasis": "Channel rule (plan 1.1)",
+          "goal": "G08",
+          "verify": [
+            "G08",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "Play APK",
+          "output": "dependency/manifest/DEX exclusion evidence",
+          "assertions": [
+            "verified separately from phone-control exclusion"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "SKL",
+      "name": "Skills 与 MCP",
+      "section2Row": "Skills 与 MCP",
+      "androidOwnerGoal": "G02",
+      "workPackages": [
+        "P2.6"
+      ],
+      "operations": [
+        {
+          "id": "SKL-DISCOVER-USABLE",
+          "op": "Tool discovery reflects enabled + configured + actually usable only",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeTools/ToolCatalog.swift",
+              "symbol": "ToolCatalog"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeTools/CapabilityExecutionRouter.swift",
+              "symbol": "CapabilityExecutionRouter"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "capability state matrix",
+          "output": "offered tool list",
+          "assertions": [
+            "Play-absent modules never advertised on Play; saved overrides respected"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "SKL-INSTALL-VERSION",
+          "op": "Skill install/upgrade with version and compatibility validation",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSkills/SkillInstallStagingService.swift",
+              "symbol": "SkillInstallStagingService"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeSkills/SkillCompatibility.swift",
+              "symbol": "SkillCompatibility"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "skill source",
+          "output": "staged then validated install",
+          "assertions": [
+            "failed staging leaves the prior version intact"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "SKL-SOURCE-NO-GRANT",
+          "op": "Skill/content source signature validation never grants tool permission",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSkills/SignedContentArchive.swift",
+              "symbol": "SignedContentArchive"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeSkills/SkillPackageValidator.swift",
+              "symbol": "SkillPackageValidator"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "tampered/unsigned package",
+          "output": "rejection",
+          "assertions": [
+            "structure+signature validated before registration"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "MCP-REMOTE-TOOLS",
+          "op": "MCP remote tool sources over configured transports",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeTools/MCPRemoteToolSource.swift",
+              "symbol": "MCPRemoteToolSource"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "MCP server",
+          "output": "registered remote tools",
+          "assertions": [
+            "Linux/network transports per plan; cancellation honored"
+          ],
+          "status": "planned",
+          "alignment": "remote-equivalent"
+        },
+        {
+          "id": "SKL-CANCEL",
+          "op": "Skill-run cancellation is real",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeTools/ToolRunnerRegistry.swift",
+              "symbol": "ToolRunnerRegistry"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "running skill",
+          "output": "stopped state",
+          "assertions": [
+            "no orphaned processes"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "MAIL",
+      "name": "邮件",
+      "section2Row": "邮件",
+      "androidOwnerGoal": "G11",
+      "workPackages": [
+        "P3.6",
+        "P5.3"
+      ],
+      "operations": [
+        {
+          "id": "MAIL-LIST-SEARCH",
+          "op": "Paged mailbox listing/search",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/MailClient.swift",
+              "symbol": "MailClient"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/MailAccount.swift",
+              "symbol": "MailAccount"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "query + cursor",
+          "output": "paged results",
+          "assertions": [
+            "pagination behavior matches iOS"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "MAIL-ATTACH-MOVE",
+          "op": "Attachments and message moves journaled with failure reconciliation",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/MailMIME.swift",
+              "symbol": "MailMIME"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeExecution/MailMutationJournal.swift",
+              "symbol": "MailMutationJournal"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "move/attach ops",
+          "output": "verified mutation or explicit failure check",
+          "assertions": [],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "MAIL-SEND-AUTH",
+          "op": "Sending requires task authorization and records the real server outcome",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeExecution/MailDeliveryJournal.swift",
+              "symbol": "MailDeliveryJournal"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "draft send",
+          "output": "journal entry + server result",
+          "assertions": [
+            "external side effect uses existing approval safeguards"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "CAL",
+      "name": "日历与提醒",
+      "section2Row": "日历与提醒",
+      "androidOwnerGoal": "G11",
+      "workPackages": [
+        "P5.3"
+      ],
+      "operations": [
+        {
+          "id": "CAL-READ-WRITE",
+          "op": "Calendar read/write through system accounts with revocation handling",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Apple/AppleSystemTools.swift",
+              "symbol": "AppleSystemTools"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "calendar op",
+          "output": "paged results / created event",
+          "assertions": [
+            "task-bound; revoked permission degrades to an actionable state"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "CAL-TODO-DATA",
+          "op": "Reminders via authorized service or independent todo data",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Apple/PersonalToolPagination.swift",
+              "symbol": "PersonalToolPage"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "todo ops",
+          "output": "persisted items",
+          "assertions": [
+            "plan row permits independent data or authorized service; choice recorded at G11"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "NTF",
+      "name": "持续通知与任务控制",
+      "section2Row": "持续通知与任务控制",
+      "androidOwnerGoal": "G03",
+      "workPackages": [
+        "P1.12",
+        "P2.9"
+      ],
+      "operations": [
+        {
+          "id": "NTF-PROGRESS",
+          "op": "Applicable foreground-service notifications carry real progress on channels",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeModels/TaskNotificationDecision.swift",
+              "symbol": "TaskNotificationDecision"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeCore/TaskNotificationOutbox.swift",
+              "symbol": "TaskNotificationOutbox"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "long run",
+          "output": "progress updates",
+          "assertions": [
+            "PiP is never a background keep-alive device"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "NTF-VIEW-STOP",
+          "op": "Notification actions view/stop with task deep link",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Platform/NotificationResponseBridge.swift",
+              "symbol": "NotificationResponseStage"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Platform/TaskBannerCenter.swift",
+              "symbol": "TaskBannerCenter"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "action tap",
+          "output": "navigation or stop",
+          "assertions": [
+            "stop actually stops owned workers"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "NTF-LOCK-REDACT",
+          "op": "Lock-screen/background presentation stays redacted",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeCore/BackgroundVisualSurfacePolicy.swift",
+              "symbol": "BackgroundVisualSurfacePolicy"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeCore/BackgroundSurfaceCompletionPolicy.swift",
+              "symbol": "BackgroundSurfaceCompletionPolicy"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "sensitive task running",
+          "output": "redacted visible content",
+          "assertions": [
+            "no content leak through notifications or surfaces"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "NTF-DISMISSED-SEPARATION",
+          "op": "Notification removal ≠ task stop; background/inactive/lock preserves current session and route",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Platform/NotificationQualificationFixture.swift",
+              "symbol": "NotificationQualificationFixture"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Platform/BackgroundRunCoordinator.swift",
+              "symbol": "BackgroundRunCoordinator"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G03",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "dismissed notification",
+          "output": "run state unchanged",
+          "assertions": [
+            "distinguish removal, service stop, force-kill and reclaim (P1.12)"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "SCH",
+      "name": "调度与通知",
+      "section2Row": "调度与通知",
+      "androidOwnerGoal": "G11",
+      "workPackages": [
+        "P5.4"
+      ],
+      "operations": [
+        {
+          "id": "SCH-SNAPSHOT",
+          "op": "Schedule config snapshots stored with the task",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloePersistence/TaskScheduleStore.swift",
+              "symbol": "TaskScheduleStore"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeModels/TaskSchedule.swift",
+              "symbol": "TaskSchedule"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "schedule definition",
+          "output": "persisted snapshot",
+          "assertions": [
+            "WorkManager scheduling keeps snapshot semantics"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "SCH-DEDUP-FIRE",
+          "op": "Deduplicated triggering with after-run firing semantics",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Home/TaskScheduleSheet.swift",
+              "symbol": "TaskScheduleSheet"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "overlapping triggers",
+          "output": "single coherent firing",
+          "assertions": [],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "SCH-MISSED-CYCLE",
+          "op": "Missed cycles reported accurately, never silently skipped",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloePersistence/TaskScheduleStore.swift",
+              "symbol": "TaskScheduleStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "device-off period",
+          "output": "missed-cycle state",
+          "assertions": [
+            "no fabricated on-time status"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "SCH-STATE-TRUTH",
+          "op": "Schedule state truthful against shared task policy",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeModels/TaskPolicy.swift",
+              "symbol": "TaskPolicy"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "schedule list",
+          "output": "true next/last states",
+          "assertions": [
+            "shared-core policy reused for consistency"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "CNV",
+      "name": "画布与素材",
+      "section2Row": "画布与素材",
+      "androidOwnerGoal": "G09",
+      "workPackages": [
+        "P4.3"
+      ],
+      "operations": [
+        {
+          "id": "CNV-NODES-EDGES",
+          "op": "Edit canvas nodes and connections",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeCore/CanvasOperations.swift",
+              "symbol": "CanvasContextSnapshot"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Canvas/CanvasGeometry.swift",
+              "symbol": "CanvasViewportTransform"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "canvas fixture",
+          "output": "mutated graph saved",
+          "assertions": [
+            "node/edge counts stable through a save/reopen round trip"
+          ],
+          "fixtures": [
+            "canvas/canvas-with-assets.json"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CNV-ASSET-OWNERSHIP",
+          "op": "Assets carry ownership; dangling references are detected, not crashed",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloePersistence/CreativeAssetStore.swift",
+              "symbol": "CreativeAssetStore"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/CreativeAssetIngestionService.swift",
+              "symbol": "CreativeAssetIngestionService"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "canvas fixture with 1 known + 1 missing asset ref",
+          "output": "resolved/flagged states",
+          "assertions": [
+            "synthetic fixture ownership documented in the inventory"
+          ],
+          "fixtures": [
+            "canvas/canvas-with-assets.json",
+            "assets/png/gradient-8.png",
+            "assets/svg/marker.svg"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CNV-SAVE-RESTORE-BACKUP",
+          "op": "Canvas save/recovery with a versioned backup package",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeWorkspace/CanvasBackupPackage.swift",
+              "symbol": "CanvasBackupPackage"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/CanvasRunContextStore.swift",
+              "symbol": "CanvasRunContextStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "edited canvas then restore",
+          "output": "restored document",
+          "assertions": [
+            "failed operation keeps recoverable data"
+          ],
+          "fixtures": [
+            "canvas/canvas-with-assets.json"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CNV-VARIANTS",
+          "op": "Create variants/forks with revision lineage",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeCore/CanvasCopyForkPlanner.swift",
+              "symbol": "CanvasCopyForkPlanner"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeCore/CanvasDrawingRevisionHistory.swift",
+              "symbol": "CanvasDrawingRevisionHistory"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "variant request",
+          "output": "forked canvas with history",
+          "assertions": [
+            "lineage traceable to parent revision"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "GEN",
+      "name": "生图与视频生成",
+      "section2Row": "生图与视频生成",
+      "androidOwnerGoal": "G09",
+      "workPackages": [
+        "P4.3",
+        "P4.5"
+      ],
+      "operations": [
+        {
+          "id": "GEN-SUBMIT-QUERY",
+          "op": "Submit cloud image/video generation and query status",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeProviders/ImageProviderAdapter.swift",
+              "symbol": "ImageProviderAdapter"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeProviders/VideoProviderAdapter.swift",
+              "symbol": "VideoProviderAdapter"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/MediaGenerationJobStore.swift",
+              "symbol": "MediaGenerationJobStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "prompt + preset",
+          "output": "job state transitions",
+          "assertions": [
+            "upload target/usage explained before transfer (BYOK boundary)"
+          ],
+          "status": "planned",
+          "alignment": "remote-equivalent"
+        },
+        {
+          "id": "GEN-UNKNOWN-OUTCOME",
+          "op": "Unknown generation outcomes reconciled against evidence, not assumed",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeTools/ProviderImageEvidencePolicy.swift",
+              "symbol": "ProviderImageEvidencePolicy"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "ambiguous provider response",
+          "output": "reconciled state",
+          "assertions": [
+            "a success string is not evidence of a finished generation"
+          ],
+          "status": "planned",
+          "alignment": "remote-equivalent"
+        },
+        {
+          "id": "GEN-DOWNLOAD-ARCHIVE",
+          "op": "Generated media downloaded and archived into the task/asset store",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeTools/FloeArtifactStore.swift",
+              "symbol": "FloeArtifactStore"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Files/RemoteImageTools.swift",
+              "symbol": "RemoteImageTools"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "completed job",
+          "output": "asset with ownership",
+          "assertions": [
+            "staged commit after verification"
+          ],
+          "fixtures": [
+            "assets/png/gradient-8.png"
+          ],
+          "status": "planned",
+          "alignment": "remote-equivalent"
+        },
+        {
+          "id": "GEN-CANCEL-SEMANTICS",
+          "op": "Cancel semantics preserved even when a provider lacks a true cancel API",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeProviders/VideoEndpointRouting.swift",
+              "symbol": "VideoEndpointRouting"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "cancel mid-job",
+          "output": "documented provider-specific behavior",
+          "assertions": [
+            "user-visible semantics honest"
+          ],
+          "status": "planned",
+          "alignment": "remote-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "MED",
+      "name": "媒体工作台",
+      "section2Row": "媒体工作台",
+      "androidOwnerGoal": "G09",
+      "workPackages": [
+        "P1.9",
+        "P4.5"
+      ],
+      "operations": [
+        {
+          "id": "MED-PROJECT-SESSION",
+          "op": "Persistent media projects with proposal grants and transactions",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeWorkbench/MediaProjectModel.swift",
+              "symbol": "MediaProjectKind"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeWorkbench/MediaProjectStore.swift",
+              "symbol": "MediaProjectStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "project session",
+          "output": "saved/reopened project",
+          "assertions": [
+            "failure does not lose the original project"
+          ],
+          "fixtures": [
+            "media/audio/tone-440.wav"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "MED-TIMELINE-TRIM",
+          "op": "Timeline trimming/cropping including waveform-based and edge trims",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeMedia/MediaWaveform.swift",
+              "symbol": "MediaWaveform"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeWorkbench/MediaTimelineMath.swift",
+              "symbol": "MediaTimelineMath"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeWorkbench/MediaEditCommands.swift",
+              "symbol": "MediaEditCommand"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "wav/mp4 fixtures",
+          "output": "trimmed outputs",
+          "assertions": [
+            "frame/sample math matches expectations at boundaries"
+          ],
+          "fixtures": [
+            "media/audio/tone-440.wav",
+            "media/video/floe-test.mp4"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "MED-SUBTITLES-AUDIO",
+          "op": "Subtitle tracks and audio track operations",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeMedia/MediaAudioConversion.swift",
+              "symbol": "AudioConverter"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeMedia/MediaExtraTools.swift",
+              "symbol": "VideoRemuxTool"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "srt/vtt + wav fixtures",
+          "output": "remixed/burned media",
+          "assertions": [
+            "cue timing preserved"
+          ],
+          "fixtures": [
+            "media/subtitles/captions.srt",
+            "media/subtitles/captions.vtt",
+            "media/audio/tone-440.wav"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "MED-EXPORT-VERIFY",
+          "op": "Export followed by real playback verification",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeMedia/MediaExport.swift",
+              "symbol": "MediaExport"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeTools/MediaExportOutputContract.swift",
+              "symbol": "MediaExportOutputContract"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "edited project",
+          "output": "exported file that plays",
+          "assertions": [
+            "export success string is insufficient; frames/audio actually decoded"
+          ],
+          "fixtures": [
+            "media/audio/tone-440.wav",
+            "media/video/floe-test.mp4"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "MED-PLAYBACK-CODECS",
+          "op": "Playback via Media3/system codecs with on-demand tool fallback",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Media/MediaPlayerView.swift",
+              "symbol": "MediaPlayerView"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeMedia/MediaTranscodePipeline.swift",
+              "symbol": "MediaTranscodePipeline"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "fixture media",
+          "output": "playing frames and audio",
+          "assertions": [
+            "codec support probed per device class; labeled honestly"
+          ],
+          "fixtures": [
+            "media/video/floe-test.mp4",
+            "media/audio/tone-440.wav"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "ENH",
+      "name": "补帧与超分辨率",
+      "section2Row": "补帧与超分辨率",
+      "androidOwnerGoal": "G09",
+      "workPackages": [
+        "P5.2"
+      ],
+      "operations": [
+        {
+          "id": "ENH-IN-OUT-CONTRACT",
+          "op": "Enhancement capability exposes an explicit input/output contract",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeMedia/MediaEnhancementContract.swift",
+              "symbol": "MediaEnhancementRequest"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "video fixture",
+          "output": "declared-format result",
+          "assertions": [
+            "Android path is an optional component or configured remote backend; the iOS CoreML local engine is not assumed portable"
+          ],
+          "fixtures": [
+            "media/video/floe-test.mp4"
+          ],
+          "status": "planned",
+          "alignment": "on-demand-equivalent"
+        },
+        {
+          "id": "ENH-PROGRESS-ABORT",
+          "op": "Real progress and abort for enhancement jobs",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeMedia/MediaEnhancementPipeline.swift",
+              "symbol": "MediaEnhancementService"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "long job",
+          "output": "progress updates; abort keeps original",
+          "assertions": [],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "ENH-NO-FAKE-UPSCALE",
+          "op": "Plain scaling is never presented as super-resolution",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeMedia/MediaEnhancement.swift",
+              "symbol": "MediaEnhancement"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "enhanced output",
+          "output": "labeled actual method",
+          "assertions": [
+            "claim matches the executed engine"
+          ],
+          "fixtures": [
+            "media/video/floe-test.mp4"
+          ],
+          "status": "planned",
+          "alignment": "pending-gap",
+          "notes": "Android engine choice remains open (on-demand component vs remote backend)"
+        }
+      ]
+    },
+    {
+      "id": "CAD",
+      "name": "DXF 与 DWG",
+      "section2Row": "DXF 与 DWG",
+      "androidOwnerGoal": "G10",
+      "workPackages": [
+        "P4.6",
+        "P5.2"
+      ],
+      "operations": [
+        {
+          "id": "CAD-LAYER-SELECT-EDIT",
+          "op": "Layer listing, entity selection and editing on DXF",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeWorkbench/CadDocumentTool.swift",
+              "symbol": "CadDocumentTool"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeWorkbench/CadDocumentSupport.swift",
+              "symbol": "NativeCADCapabilityMatrix"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G10",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "dxf fixture (3 layers, CJK layer name)",
+          "output": "entity edits applied",
+          "assertions": [
+            "layers incl. unicode name listed; entity counts match inventory expectations"
+          ],
+          "fixtures": [
+            "cad/dxf/lines-text-layers.dxf"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CAD-MEASURE",
+          "op": "Measure length/radius from parsed geometry",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeWorkbench/CadDocumentSupport.swift",
+              "symbol": "CadDocumentIdentity"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/CADCanvasActionBridge.swift",
+              "symbol": "CADCanvasActionBridge"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G10",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "dxf fixture",
+          "output": "numeric measurements",
+          "assertions": [
+            "line endpoints and circle radius exact"
+          ],
+          "fixtures": [
+            "cad/dxf/lines-text-layers.dxf"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CAD-UNKNOWN-PRESERVE",
+          "op": "Unknown/unsupported objects preserved on save; no silent corruption",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeWorkbench/CadDocumentSupport.swift",
+              "symbol": "NativeCADPolicy"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G10",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "dxf with unusual content",
+          "output": "reopened file retains them",
+          "assertions": [
+            "DWG conversion gap documented: DWG is proprietary and not in this fixture set"
+          ],
+          "fixtures": [
+            "cad/dxf/lines-text-layers.dxf"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CAD-IMPORT-EXPORT",
+          "op": "Import/export DXF and OBJ",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/EngineeringFilePreview.swift",
+              "symbol": "EngineeringFilePreview"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/WorkspaceFileRouter.swift",
+              "symbol": "WorkspaceFileRouter"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G10",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "dxf + obj fixtures",
+          "output": "converted artifacts",
+          "assertions": [
+            "vertex/face counts preserved"
+          ],
+          "fixtures": [
+            "cad/dxf/lines-text-layers.dxf",
+            "cad/obj/cube.obj"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CAD-SAVE-REOPEN",
+          "op": "Save a CAD document and reopen with identical semantics",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/CanvasCADStorage.swift",
+              "symbol": "CanvasCADStorage"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/NativeCADProposalStore.swift",
+              "symbol": "NativeCADProposalStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G10",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "edited geometry",
+          "output": "reopened document",
+          "assertions": [
+            "AI CAD edits flow through proposal/store validation, task-owned"
+          ],
+          "fixtures": [
+            "cad/obj/cube.obj"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "CAD3D",
+      "name": "3D 与原生工程文档",
+      "section2Row": "3D 与原生工程文档",
+      "androidOwnerGoal": "G10",
+      "workPackages": [
+        "P1.10",
+        "P4.6"
+      ],
+      "operations": [
+        {
+          "id": "CAD3D-MODEL-KERNEL",
+          "op": "Real modeling through the pinned geometry kernel (OCCT on iOS; fixed-kernel Android build at G10)",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/FloeCAD3DBridge.swift",
+              "symbol": "FloeCAD3DBridge"
+            },
+            {
+              "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/SectionKit.swift",
+              "symbol": "SectionKit"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G10",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "modeling operations",
+          "output": "changed geometry saved/exported",
+          "assertions": [
+            "preview rendering never substitutes for kernel modeling",
+            "Android kernel ABI/page-size checked (P1.10)"
+          ],
+          "fixtures": [
+            "cad/obj/cube.obj"
+          ],
+          "status": "planned",
+          "alignment": "on-demand-equivalent"
+        },
+        {
+          "id": "CAD3D-ASSEMBLY-DRAWING",
+          "op": "Assembly and drawing views (sections) of 3D documents",
+          "ios": [
+            {
+              "path": "FloeAgent/ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyTests.swift",
+              "symbol": "CADAssemblyTests"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/Canvas3DDirectorView.swift",
+              "symbol": "Canvas3DDirectorView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G10",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "assembly",
+          "output": "drawings/sections",
+          "assertions": [],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CAD3D-DOC-REVISIONS",
+          "op": "Unified engineering document with variants and revisions",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/NativeCADTaskRegistry.swift",
+              "symbol": "NativeCADTaskRegistry"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeTools/DesignRevisionPayloadStore.swift",
+              "symbol": "DesignRevisionPayloadStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G10",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "revision ops",
+          "output": "traceable document versions",
+          "assertions": [],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CAD3D-EXPORT",
+          "op": "Export engineering geometry",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/CadDocumentCenter.swift",
+              "symbol": "CadDocumentCenter"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G10",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "3D document",
+          "output": "exported geometry files",
+          "assertions": [
+            "export format and units verified"
+          ],
+          "fixtures": [
+            "cad/obj/cube.obj"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "DSN",
+      "name": "设计流程",
+      "section2Row": "设计流程",
+      "androidOwnerGoal": "G09",
+      "workPackages": [
+        "P4.4"
+      ],
+      "operations": [
+        {
+          "id": "DSN-FREEZE-CANDIDATE",
+          "op": "Freeze a design, generate candidates, adopt or roll back",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeCore/DesignWorkflow.swift",
+              "symbol": "DesignWorkflow"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeCore/DesignFreezeRegistry.swift",
+              "symbol": "DesignFreezeRegistry"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "frozen design + candidates",
+          "output": "adopted or rolled-back state",
+          "assertions": [
+            "late callbacks cannot touch another session (immutability of adoption input)"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "DSN-ENTRY-ANCHORS",
+          "op": "Design entries from file/attachment/canvas with feedback anchors",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Workspace/DesignEntryStateCenter.swift",
+              "symbol": "DesignEntryStateCenter"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/DesignWorkflowPanel.swift",
+              "symbol": "DesignWorkflowPanel"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "docx attachment",
+          "output": "bound design session",
+          "assertions": [
+            "entry binding stays immutable after the adoption decision"
+          ],
+          "fixtures": [
+            "office/docx/paragraphs-unicode.docx"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "DSN-COMPARE-BRANCH",
+          "op": "Compare candidates side-by-side; branch the workflow",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeCore/DesignOwnerWorkflow.swift",
+              "symbol": "DesignOwnerWorkflow"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workbench/WorkbenchCandidateStore.swift",
+              "symbol": "WorkbenchCandidateStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "2 candidates",
+          "output": "comparison + branch",
+          "assertions": [],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "DSN-RESULT-VERIFY",
+          "op": "Outcome verified against goal evidence before publication",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeCore/DesignTargetService.swift",
+              "symbol": "DesignTargetService"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/GoalEvidenceReviewContract.swift",
+              "symbol": "GoalEvidenceReviewContract"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G09",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "completed design",
+          "output": "verified/published result",
+          "assertions": [
+            "publication requires evidence"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "VOI",
+      "name": "语音输入与转录",
+      "section2Row": "语音输入与转录",
+      "androidOwnerGoal": "G11",
+      "workPackages": [
+        "P5.3"
+      ],
+      "operations": [
+        {
+          "id": "VOI-INPUT-DRAFT",
+          "op": "Voice input to composer draft with permission and cancel",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Voice/VoiceInputController.swift",
+              "symbol": "VoiceInputController"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Chat/SpeechService.swift",
+              "symbol": "SpeechService"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "speech",
+          "output": "draft text",
+          "assertions": [
+            "Android uses system recognition or user cloud; optional offline component evaluated separately"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "VOI-FILE-TRANSCRIBE",
+          "op": "Audio file transcription with caption/subtitle export",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Voice/FileSpeechTranscriber.swift",
+              "symbol": "FileSpeechTranscriber"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Voice/SpeechCaptionExport.swift",
+              "symbol": "SpeechCaptionExport"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Media/AudioTranscribeTool.swift",
+              "symbol": "AudioTranscribeTool"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "audio fixture (speech sample is a documented gap: only tone wav in this set)",
+          "output": "transcript + srt/vtt",
+          "assertions": [
+            "caption format preserved; no local Whisper assumption on Android (no local models decision)"
+          ],
+          "fixtures": [
+            "media/audio/tone-440.wav",
+            "media/subtitles/captions.srt"
+          ],
+          "status": "planned",
+          "alignment": "remote-equivalent"
+        },
+        {
+          "id": "VOI-CONSENT-CANCEL",
+          "op": "Recording consent state and live-transcription cancellation",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Voice/VoiceInputLive.swift",
+              "symbol": "SystemSpeechAuthorizationProvider"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "record then cancel",
+          "output": "no leftover capture",
+          "assertions": [],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "BAK",
+      "name": "备份与跨端交换",
+      "section2Row": "备份与跨端交换",
+      "androidOwnerGoal": "G11",
+      "workPackages": [
+        "P6.1",
+        "P6.2"
+      ],
+      "operations": [
+        {
+          "id": "BAK-VERSIONED-PACKAGE",
+          "op": "Versioned document packages with resource manifests for exchange",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeWorkspace/EngineeringPreviewPackage.swift",
+              "symbol": "EngineeringPreviewPackage"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeNotes/NotesArchive.swift",
+              "symbol": "NotesArchive"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "notes/canvas/docx fixtures",
+          "output": "package + manifest with checksums",
+          "assertions": [],
+          "fixtures": [
+            "notes/note-basic.json",
+            "canvas/canvas-with-assets.json",
+            "office/docx/paragraphs-unicode.docx"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "BAK-VERIFY-REJECT-UNKNOWN",
+          "op": "Verify packages on import and reject unknown formats",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSkills/ContentPackageCodec.swift",
+              "symbol": "ContentPackageCodec"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeSkills/SignedContentArchive.swift",
+              "symbol": "SignedContentArchive"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "valid + corrupt fixtures",
+          "output": "accepted or rejected with reason",
+          "assertions": [
+            "corrupt docx and truncated pdf never partially commit"
+          ],
+          "fixtures": [
+            "office/docx/corrupt-missing-content-types.docx",
+            "pdf/truncated.pdf"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "BAK-RESTORE-SAFE",
+          "op": "Restore without losing originals",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeDocuments/DocumentRecovery.swift",
+              "symbol": "DocumentRecovery"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "restore onto modified target",
+          "output": "both versions retained",
+          "assertions": [],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "MIG-UPGRADE-PRESERVE",
+          "op": "Schema/data migration on app upgrade preserves user data",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloePersistence/Migrations/V1Initial.swift",
+              "symbol": "V1Initial"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Workspace/LegacySceneMigrationService.swift",
+              "symbol": "LegacySceneMigrationService"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "old-version data",
+          "output": "migrated data",
+          "assertions": [
+            "process death during migration is recoverable"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    },
+    {
+      "id": "SYNC",
+      "name": "跨端实时同步",
+      "section2Row": "跨端实时同步",
+      "androidOwnerGoal": "G11",
+      "workPackages": [
+        "P6.2"
+      ],
+      "gateNote": "Real-time cross-device sync is a separate user decision (plan 23.2: 跨端数据同步按单独确认范围). It must not be silently promised or rebuilt by default; the iOS sync service is not authorized for replacement here.",
+      "operations": [
+        {
+          "id": "SYNC-CONFIG-IOS-REFERENCE",
+          "op": "iOS config-sync path documented as reference only",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSync/ConfigSyncEngine.swift",
+              "symbol": "ConfigSyncEngine"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeSync/SyncControlPreferences.swift",
+              "symbol": "SyncControlPreferences"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "existing iOS behavior",
+          "output": "reference record",
+          "assertions": [
+            "not an Android delivery commitment"
+          ],
+          "status": "planned",
+          "alignment": "remote-equivalent"
+        },
+        {
+          "id": "SYNC-CROSSDEVICE-GATED",
+          "op": "Cross-device real-time sync implementation and backend choice",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeSync/CanvasCloudAssetService.swift",
+              "symbol": "CanvasCloudAssetService"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "pending user decision",
+          "output": "decision record first, then implementation",
+          "assertions": [
+            "G01–G15 proceed on import/export (BAK/WSF) without sync",
+            "never advertised as delivered in UI or docs"
+          ],
+          "gated": true,
+          "status": "planned",
+          "alignment": "pending-gap"
+        },
+        {
+          "id": "SYNC-QUEUE-CONFLICTS",
+          "op": "If and only if the gate opens: offline queue, deletion, version compatibility, asset references, conflict recovery",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloePersistence/CanvasSyncOperationStore.swift",
+              "symbol": "CanvasSyncOperationStore"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/ConfigSyncMetadataStore.swift",
+              "symbol": "ConfigSyncMetadataStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "sync decision outcome",
+          "output": "conflict semantics reuse",
+          "assertions": [
+            "reuses conflict semantics, no dual truth"
+          ],
+          "gated": true,
+          "status": "planned",
+          "alignment": "pending-gap"
+        }
+      ]
+    },
+    {
+      "id": "SET",
+      "name": "设置与数据管理",
+      "section2Row": "设置与数据管理",
+      "androidOwnerGoal": "G11",
+      "workPackages": [
+        "P5.5",
+        "P6.4"
+      ],
+      "operations": [
+        {
+          "id": "SET-CACHE-INSTALL-SIZE",
+          "op": "Settings separate cache vs installed/environment storage with accurate metering",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Settings/StorageDiagnosticService.swift",
+              "symbol": "StorageDiagnosticService"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Settings/DataManagementView.swift",
+              "symbol": "DataManagementView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "mixed usage state",
+          "output": "separated, accurate sizes",
+          "assertions": [
+            "environment occupancy distinguished from cache"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "SET-SAFE-CLEANUP",
+          "op": "Safe cleanup with retention rules; running/needed artifacts deferred with stated purpose",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloePersistence/RunLifecycleRetention.swift",
+              "symbol": "RunLifecycleRetention"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/MediaJobOwnership.swift",
+              "symbol": "MediaJobOwner"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "cleanup request",
+          "output": "measured reclaim, retained needed items",
+          "assertions": [
+            "no broad destructive delete"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "SET-FONT-DIAG",
+          "op": "Font management plus diagnostic export",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Fonts/DeviceFontStore.swift",
+              "symbol": "DeviceFontStore"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Settings/DiagnosticsExporter.swift",
+              "symbol": "DiagnosticsExporter"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "font import + diagnostics request",
+          "output": "managed fonts; redacted-safe diagnostic bundle",
+          "assertions": [
+            "diagnostics never expose secrets"
+          ],
+          "status": "planned",
+          "alignment": "system-equivalent"
+        },
+        {
+          "id": "SET-CAPABILITY-STATUS",
+          "op": "Settings report actual capability availability and actionable unavailable states (incl. channel-excluded modules)",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeCore/CapabilityProbe.swift",
+              "symbol": "CapabilityProbe"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Settings/SettingsCenter.swift",
+              "symbol": "SettingsCenter"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G11",
+          "verify": [
+            "G12",
+            "G13",
+            "G14"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "device capability matrix",
+          "output": "accurate status UI",
+          "assertions": [
+            "unavailable ≠ hidden silently; English/Simplified Chinese copy aligned"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent"
+        }
+      ]
+    }
+  ]
+}
