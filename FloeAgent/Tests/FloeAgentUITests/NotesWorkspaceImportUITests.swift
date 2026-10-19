@@ -2165,11 +2165,11 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     /// unsupported/placeholder state.
     ///
     /// Office accepts the two-tier product behavior: a real system Quick Look
-    /// content representation, or the explicitly labeled native content summary
+    /// content representation, or the source-identified native content summary
     /// while the non-guaranteed system host produced no content. A summary card
-    /// must additionally publish the `badge=summary` marker (the identity of
-    /// the visible "Summary" capsule). A settled `quickLook` card must never
-    /// report a generic icon fallback; a summary card may record the Quick Look
+    /// must additionally publish the diagnostic `summary=content` marker.
+    /// The card image stays free of explanatory labels. A settled `quickLook`
+    /// card must never report a generic icon fallback; a summary card may record the Quick Look
     /// icon failure in its diagnostics while the published cover remains the
     /// real content summary. CAD must satisfy the bundled viewer
     /// (`engineeringPreview`); `unsupported` and `quickLook` are not accepted
@@ -2186,7 +2186,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             .init(kind: "office", title: "封面验收-Word", allowed: officeSources),
             .init(kind: "office", title: "封面验收-Excel", allowed: officeSources),
             // The 9x25 workbook cannot be represented by the system whole-page
-            // render at card size; the bounded labeled summary is its settled
+            // render at card size; the bounded content summary is its settled
             // cover and no system request is started.
             .init(kind: "office", title: "封面验收-Excel-宽表", allowed: ["officeContentSummary"]),
             // The first tab is a hidden helper sheet: the bounded summary must
@@ -2208,15 +2208,15 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             let parsed = assertContentCover(app, cover: cover)
             if cover.title == "封面验收-Word" { firstWordRevision = parsed.revision }
             if ["封面验收-Excel-宽表", "封面验收-Excel-隐藏表", "封面验收-Excel-隐藏行列"].contains(cover.title) {
-                // These cards must publish the visible summary badge and their
-                // real accessibility value (a hidden-workbook card must also
+                // These cards must retain their summary source diagnostics
+                // (a hidden-workbook card must also
                 // report the tab-order fallback).
                 let card = revealCard(app, kind: cover.kind, title: cover.title)
                 let value = card.value as? String ?? ""
                 XCTAssertTrue(value.contains("officeContentSummary"),
                               "\(cover.title) cover must be the bounded summary: \(value)")
-                XCTAssertTrue(value.contains("badge=summary"),
-                              "\(cover.title) summary must carry the summary badge: \(value)")
+                XCTAssertTrue(value.contains("summary=content"),
+                              "\(cover.title) summary must retain its source diagnostics: \(value)")
                 if cover.title == "封面验收-Excel-隐藏表" {
                     XCTAssertTrue(value.contains("workbookEarlierSheet"),
                                   "the hidden first tab must be reported as an earlier-sheet fallback: \(value)")
@@ -2283,7 +2283,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     /// while the grid resorts), and the screenshot then proves the hidden-sheet
     /// / hidden-row workbook card itself. The cover matrix above is the
     /// behavioral gate; this is its pixel proof.
-    func testHiddenWorkbookCardsAreVisibleWithTheSummaryBadge() throws {
+    func testHiddenWorkbookCardsShowContentWithoutSummaryLabels() throws {
         continueAfterFailure = false
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true
             || UIDevice.current.userInterfaceIdiom == .pad
@@ -2311,12 +2311,12 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             let value = card.value as? String ?? ""
             XCTAssertTrue(card.identifier.contains("officeContentSummary"),
                           "\(title) must settle as the bounded summary: \(card.identifier)")
-            XCTAssertTrue(value.contains("badge=summary"),
-                          "\(title) must carry the summary badge: \(value)")
+            XCTAssertTrue(value.contains("summary=content"),
+                          "\(title) must retain its summary source diagnostics: \(value)")
             Thread.sleep(forTimeInterval: 0.8)
             capture("hidden-card-\(title)")
             // Element-scoped proof: the card's own frame, so the PNG is the
-            // card (cover + title + badge) and never a scrolled grid.
+            // card (cover + title) and never a scrolled grid.
             let cardImage = XCTAttachment(screenshot: card.screenshot())
             cardImage.name = "hidden-card-frame-\(title)"
             cardImage.lifetime = .keepAlways
@@ -2467,8 +2467,8 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     /// and any unexpected source fail; a generic icon is never a source. The
     /// card's accessibility value comes directly from its thumbnail state and must
     /// agree with the source; a summary source additionally requires the
-    /// `badge=summary` marker, so an unlabelled summary cannot pass as a
-    /// correct two-tier cover.
+    /// `summary=content` diagnostic marker, so a fallback cannot pass as an
+    /// original-layout render.
     @discardableResult
     private func assertContentCover(_ app: XCUIApplication, cover: CoverCase,
                                     file: StaticString = #filePath, line: UInt = #line) -> ParsedCover {
@@ -2491,7 +2491,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.5)
         }
         // Bounded, redacted generator identity (attempts, timeout, numeric
-        // error identity, fallback stage) plus the summary badge marker.
+        // error identity, fallback stage) plus the summary source marker.
         // Never a path, file name or content.
         let attachment = XCTAttachment(string: "\(cover.kind) \(cover.title) coverSource=\(parsed.source) revision=\(parsed.revision) allowed=\(cover.allowed.sorted()) thumbnailValue=[\(thumbnailValue)]")
         attachment.name = "cover-source-\(cover.kind)-\(cover.title)"
@@ -2505,7 +2505,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                              file: file, line: line)
         // `icon=true` records a failed Quick Look attempt, not the published
         // cover. It is only rejected when the settled source is the Quick Look
-        // content itself; a summary source keeps the real, badge-labeled
+        // content itself; a summary source keeps the real, source-identified
         // content render and may legitimately carry the recorded icon failure.
         if parsed.source == "quickLook" {
             XCTAssertFalse(thumbnailValue.contains("icon=true"),
@@ -2513,12 +2513,12 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                            file: file, line: line)
         }
         if parsed.source == "officeContentSummary" {
-            XCTAssertTrue(thumbnailValue.contains("badge=summary"),
-                          "\(cover.kind) \(cover.title) is a summary cover and must publish the Summary badge identity, got [\(thumbnailValue)]",
+            XCTAssertTrue(thumbnailValue.contains("summary=content"),
+                          "\(cover.kind) \(cover.title) is a summary cover and must publish its summary source identity, got [\(thumbnailValue)]",
                           file: file, line: line)
         } else {
-            XCTAssertFalse(thumbnailValue.contains("badge=summary"),
-                           "\(cover.kind) \(cover.title) is not a summary cover and must not carry the Summary badge",
+            XCTAssertFalse(thumbnailValue.contains("summary=content"),
+                           "\(cover.kind) \(cover.title) is not a summary cover and must not carry the summary source marker",
                            file: file, line: line)
         }
         return parsed

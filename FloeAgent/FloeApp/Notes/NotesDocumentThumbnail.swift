@@ -250,19 +250,12 @@ struct NotesDocumentThumbnail: View {
     }
 
     private var thumbnailContent: some View {
-        ZStack(alignment: .bottomTrailing) {
+        ZStack {
             Color(uiColor: .secondarySystemBackground)
             if let image {
                 Image(uiImage: image).resizable().scaledToFit()
             } else {
                 placeholder
-            }
-            if source == .officeContentSummary {
-                Text(String(localized: "notes.cover.badge.summary", defaultValue: "Summary"))
-                    .font(.caption2).padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(.thinMaterial, in: Capsule())
-                    .padding(6)
-                    .accessibilityHidden(true)
             }
         }
     }
@@ -271,16 +264,14 @@ struct NotesDocumentThumbnail: View {
     /// the bounded, redacted generator identity is appended so an acceptance
     /// artifact can name the exact failure stage (attempts, timeout, numeric
     /// error identity, fallback stage) without any path, file name or content.
-    /// The `badge=summary` marker is the test-visible identity of the visible
-    /// "Summary" capsule: it is appended only when this card is actually
-    /// publishing `.officeContentSummary`, so an acceptance run can reject an
-    /// unlabelled summary instead of trusting the source string alone.
+    /// The `summary=content` marker identifies the bounded content fallback
+    /// in diagnostics without adding a label over the document image.
     private var accessibilityCoverValue: String {
         guard ProcessInfo.processInfo.arguments.contains("-ui-testing") else { return source.rawValue }
-        let badge = source == .officeContentSummary ? "; badge=summary" : source == .customCover ? "; badge=custom" : ""
+        let detail = source == .officeContentSummary ? "; summary=content" : source == .customCover ? "; badge=custom" : ""
         let engineering = engineeringFailure.map { "; engineering=\($0)" } ?? ""
-        guard let diagnostics else { return source.rawValue + badge + engineering }
-        return "\(source.rawValue)\(badge); \(diagnostics.summary)"
+        guard let diagnostics else { return source.rawValue + detail + engineering }
+        return "\(source.rawValue)\(detail); \(diagnostics.summary)"
     }
 
     /// Document identity + immutable resource + revision + cover token; never
@@ -1215,7 +1206,7 @@ enum NotesDocumentCoverService {
         }
         // A workbook the system page renderer could only draw as one whole
         // used-extent page — or from an earlier, different sheet — keeps this
-        // bounded, labeled summary as its settled cover and never spends the
+        // bounded content summary as its settled cover and never spends the
         // shared host slot on that render. That page is exactly the unreadable
         // "tiny cells" cover the bounded summary exists to replace.
         if let summary, let workbookPlan, workbookPlan.prefersBoundedSummaryOverSystemRender {
@@ -1704,12 +1695,12 @@ enum NotesDocumentCoverService {
 
     // MARK: - Native OOXML content summary
 
-    /// Renders a bounded, clearly-labeled content summary from the document's
-    /// own parsed text/cells, and returns the bounded workbook layout plan the
-    /// cover was drawn from (nil for Word/PowerPoint). This is deliberately
-    /// not a replica of the Office layout; the card marks it as a summary.
+    /// Renders a bounded content summary from the document's own parsed
+    /// text/cells and returns its workbook layout plan (nil for Word/PowerPoint).
+    /// This is not a replica of the Office layout; provenance stays in the
+    /// cover source and diagnostics rather than being drawn over the content.
     ///
-    /// It returns nil — never a header-only image — when the document exposes
+    /// It returns nil — never an empty image — when the document exposes
     /// no addressable text/cell with visible content, and, for a workbook,
     /// when no worksheet has a visible cell: an empty grid must not be
     /// published as document content.
@@ -1732,27 +1723,13 @@ enum NotesDocumentCoverService {
         let image = renderer.image { context in
             UIColor.white.setFill()
             context.fill(CGRect(origin: .zero, size: size))
-            let accent = UIColor(red: 0.145, green: 0.388, blue: 0.922, alpha: 1)
-            accent.setFill()
-            context.fill(CGRect(x: 0, y: 0, width: size.width, height: 26))
-            let header: [NSAttributedString.Key: Any] = [
-                .font: UIFont.boldSystemFont(ofSize: 12),
-                .foregroundColor: UIColor.white
-            ]
-            let headerText: String
-            switch kind {
-            case .word: headerText = String(localized: "notes.cover.summary.word", defaultValue: "Word · Content summary")
-            case .workbook: headerText = String(localized: "notes.cover.summary.workbook", defaultValue: "Excel · Content summary")
-            case .presentation: headerText = String(localized: "notes.cover.summary.presentation", defaultValue: "PowerPoint · Content summary")
-            }
-            (headerText as NSString).draw(in: CGRect(x: 10, y: 6, width: size.width - 20, height: 16), withAttributes: header)
             switch kind {
             case .word, .presentation:
-                drawParagraphs(fields, origin: CGPoint(x: 14, y: 38), width: size.width - 28,
-                               height: size.height - 48)
+                drawParagraphs(fields, origin: CGPoint(x: 14, y: 14), width: size.width - 28,
+                               height: size.height - 28)
             case .workbook:
                 if let workbookPlan {
-                    drawGrid(workbookPlan, bounds: CGRect(x: 10, y: 34, width: size.width - 20, height: size.height - 44))
+                    drawGrid(workbookPlan, bounds: CGRect(x: 10, y: 10, width: size.width - 20, height: size.height - 20))
                 }
             }
         }
@@ -1916,7 +1893,7 @@ enum NotesOfficeThumbnailFixture {
         // A wide/tall workbook whose whole used extent cannot fit the bounded
         // summary window. The system page render would fit all 9 columns and
         // 25 rows into one page (unreadable at card size), so this card must
-        // settle on the bounded, labeled summary. It is the visual acceptance
+        // settle on the bounded content summary. It is the visual acceptance
         // fixture for the Excel cover policy.
         await importOffice("\(marker)-Excel-宽表.xlsx", title: "\(marker)-Excel-宽表") { url in
             let header = (1...9).map { "列\($0)" }
@@ -1930,7 +1907,7 @@ enum NotesOfficeThumbnailFixture {
         // A workbook whose first tab is a hidden helper sheet. The bounded
         // summary must select the first visible sheet by the workbook's own
         // tab order (never the hidden sheet's data) and keep it as the settled
-        // cover with the "Summary" badge.
+        // cover with explicit source diagnostics.
         await importOffice("\(marker)-Excel-隐藏表.xlsx", title: "\(marker)-Excel-隐藏表") { url in
             try OfficeDocumentBuilder.createWorkbook(at: url, sheets: [
                 .init(name: "内部", rows: [["内部编号", "仅内部"], ["H-01", "机密 200"]],

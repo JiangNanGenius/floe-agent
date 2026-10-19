@@ -3274,7 +3274,7 @@ struct OfficeDocumentEditorView: View {
     }
 
     private var backButton: some View {
-        Button("settings.document_recovery_list_view.back", systemImage: "chevron.left") {
+        Button {
             if session.phase == .failed { dismissEditor() }
             else if ownsStandaloneExit {
                 // Save/discard/cancel instead of an implicit save: every
@@ -3288,8 +3288,12 @@ struct OfficeDocumentEditorView: View {
             } else {
                 Task { await saveAndDismiss() }
             }
+        } label: {
+            Label("settings.document_recovery_list_view.back", systemImage: "chevron.left")
+                .labelStyle(.iconOnly)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
-        .labelStyle(.iconOnly).frame(width: 44, height: 44)
         .disabled(!session.canAct && session.phase != .failed)
         .accessibilityIdentifier("office.editor.back")
         .accessibilityHint(session.phase == .failed ? "workspace.office_document_editor_view.keep_an_edited_copy_and_close" : "workspace.office_document_editor_view.save_document_and_return_to_preview")
