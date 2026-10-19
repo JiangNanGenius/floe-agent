@@ -24,6 +24,27 @@ struct NotesOfficeView: View {
     /// can give it a bounded window to bind the generated preview instead of
     /// abandoning it one step before the library card updates.
     @State private var previewRefreshTask: Task<Void, Never>?
+    /// Typed separation for the passive cover backfill. Unlike `committing`
+    /// (a real Notes commit/save transaction), the backfill changes no user
+    /// data, so it must never freeze the editor's hit testing or refuse
+    /// navigation — it only serializes against other cover/store mutations
+    /// and marks the window in which a retained read-only close intent must
+    /// wait for the FULL preview result. Claimed synchronously at every
+    /// spawn site so a tap arriving between the schedule and the task's
+    /// first execution still waits instead of seeing a stale idle flag.
+    @State private var coverRefreshRunning = false
+    /// Narrow host-owned run identity for the cover backfill. `Task` is a
+    /// struct, so handle comparison (`===`) is not valid Swift; instead this
+    /// counter is bumped synchronously at the spawn site and captured /
+    /// re-checked by a parked close through the full settlement: a re-bump
+    /// means a new run replaced the captured context (refusal), while
+    /// completion without a re-bump is the permit. A close that prepares
+    /// the cover itself re-captures this token right after its own
+    /// synchronous spawn, so its own bump is never a false self-refusal
+    /// while a concurrent replacement still is. A genuinely opening,
+    /// failed or unavailable surface keeps the instant ordinary cancel
+    /// (no artificial wait, no blocked opening cancel).
+    @State private var coverRefreshRunToken = 0
     @State private var coverBackfillReady = false
     @State private var message: String?
     @State private var recoveryURL: URL?
@@ -71,7 +92,7 @@ struct NotesOfficeView: View {
                     HStack {
                         if canRetryOpen { Button("notes.notes_office_view.retry_opening") { Task { await prepare(force: true) } }.disabled(committing) }
                         if pendingCommit { Button("notes.notes_office_view.retry_saving_to_notes") { Task { if await office.saveInPlace() { await commit() } } }.disabled(committing) }
-                        if canRetryPreview { Button("notes.office.preview.retry") { previewRefreshTask = Task { await refreshPreviewOnly() } }.disabled(committing || !office.canAct) }
+                        if canRetryPreview { Button("notes.office.preview.retry") { startCoverRefresh() }.disabled(committing || coverRefreshRunning || !office.canAct) }
                         if let recoveryURL { ShareLink("notes.office.externalUpdate.exportCopy", item: recoveryURL) }
                     }
                 }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.regularMaterial)
@@ -91,7 +112,7 @@ struct NotesOfficeView: View {
                             externalUpdateActions
                         }
                     }
-                    .disabled(keepingCopy || externalRefreshRunning || committing)
+                    .disabled(keepingCopy || externalRefreshRunning || committing || coverRefreshRunning)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -113,8 +134,27 @@ struct NotesOfficeView: View {
                     // The Office host calls this only after a successful save,
                     // explicit discard, or closing its failed editor. Do not
                     // let SwiftUI dismiss the cover before Notes clears selection.
+                    // Fenced dismissal: a host that has already left, or a
+                    // session that now selects a different document, must
+                    // never have that selection torn down by this old view's
+                    // retained close intent.
+                    guard isVisible, session.document?.id == document.id else {
+                        recordStage("notes.exit.refused.staleClose")
+                        return
+                    }
                     session.removeLeaveGuard(for: document.id)
-                    Task { await session.select(nil) }
+                    Task {
+                        // Re-fence INSIDE the scheduled task, immediately
+                        // before the navigation: whatever selects a new
+                        // document (or leaves) after this close is enqueued
+                        // cannot be cleared by the old intent.
+                        guard !Task.isCancelled, isVisible,
+                              session.document?.id == document.id else {
+                            recordStage("notes.exit.refused.staleClose")
+                            return
+                        }
+                        await session.select(nil)
+                    }
                 }, inlineHeader: AnyView(
                     HStack(spacing: 4) {
                         NotesDocumentTabs(session: session)
@@ -127,7 +167,10 @@ struct NotesOfficeView: View {
                         }.accessibilityLabel("notes.office.assistantAndMindMaps")
                             .accessibilityIdentifier("notes.office.assistant")
                     }
-                ), requestsEditingOnAppear: false)
+                ), requestsEditingOnAppear: false,
+                   prepareForPassiveClose: {
+                    await allowCloseAfterCoverCommitted()
+                })
                 .allowsHitTesting(!committing)
                 // Notes owns the first intent: the remembered mode resolved
                 // in `prepare()` decides preview versus editor, so the editor
@@ -145,19 +188,34 @@ struct NotesOfficeView: View {
         .onAppear {
             isVisible = true
             session.registerLeaveGuard(for: document.id) {
-                if committing, !pendingCommit, office.readOnly {
+                if coverRefreshRunning, !pendingCommit, office.readOnly {
                     // The only in-flight work is the read-only cover backfill
-                    // (`refreshPreviewOnly` reuses `committing`). Refusing the
-                    // exit here would strand the just-generated preview one
-                    // step before it binds to the library card, so let the
-                    // backfill settle within a bounded window and re-check
-                    // below; a genuinely slow export keeps the previous
-                    // refusal instead of blocking navigation unbounded.
+                    // (typed `coverRefreshRunning`, never `committing`).
+                    // Refusing the exit here would strand the just-generated
+                    // preview one step before it binds to the library card,
+                    // so let the backfill settle within the same bounded
+                    // window the Back route waits on, then re-check below.
+                    // (The Back button route is additionally fenced by
+                    // `allowCloseAfterCoverCommitted` before the editor ever
+                    // dismisses; this guard remains the second wall for
+                    // sidebar/tab navigation.)
                     await settleInFlightPreviewRefresh()
                 }
                 guard !committing else {
                     recordStage("notes.exit.refused.committing")
                     session.errorMessage = FloeL10n.l("notes.notes_office_view.saving_the_office_document_switch_again")
+                    return false
+                }
+                if coverRefreshRunning, !pendingCommit, office.readOnly {
+                    // The bounded settle above elapsed with the backfill
+                    // still running: keep the editor mounted, exactly like
+                    // the committing refusal, and surface the existing
+                    // truthful, retryable preview failure instead of
+                    // silently abandoning the cover binding or blocking
+                    // navigation unbounded.
+                    recordStage("notes.exit.refused.coverRefresh")
+                    session.errorMessage = String(localized: "notes.office.preview.failed",
+                                                  defaultValue: "The preview could not be updated. Try again.")
                     return false
                 }
                 if !OfficeFileSession.available {
@@ -485,7 +543,7 @@ struct NotesOfficeView: View {
     }
 
     private func startExternalRefreshIfIdle() {
-        guard isVisible, !committing, !keepingCopy, !externalRefreshRunning else { return }
+        guard isVisible, !committing, !coverRefreshRunning, !keepingCopy, !externalRefreshRunning else { return }
         externalRefreshRunning = true
         externalRefreshTask = Task {
             await drainExternalResources()
@@ -500,7 +558,7 @@ struct NotesOfficeView: View {
         while isVisible, !Task.isCancelled, let value = pendingExternalResource {
             pendingExternalResource = nil
             guard value != baseResourceID else { continue }
-            if committing || pendingCommit {
+            if committing || coverRefreshRunning || pendingCommit {
                 externalUpdateAvailable = true
                 return
             }
@@ -574,7 +632,7 @@ struct NotesOfficeView: View {
     }
 
     private func keepCopyAndOpenLatest() async {
-        guard isVisible, !keepingCopy, !externalRefreshRunning, !committing,
+        guard isVisible, !keepingCopy, !externalRefreshRunning, !committing, !coverRefreshRunning,
               let store = session.store, let url = draftURL else { return }
         keepingCopy = true
         defer {
@@ -652,6 +710,23 @@ struct NotesOfficeView: View {
         }
     }
 
+    /// The single spawn site for the read-only cover backfill. It claims
+    /// `coverRefreshRunning` synchronously inside the scheduling turn —
+    /// before the task's first step — so a close intent landing between the
+    /// schedule and the task's first execution still sees, waits for and
+    /// fences the FULL preview result instead of dropping past a flag the
+    /// task had not yet raised. `refreshPreviewOnly` owns releasing the
+    /// claim on every path, including its early guard exits. The run token
+    /// bumps synchronously in the same turn, so a parked close can detect a
+    /// replacement of its captured run without comparing Task handles (Task
+    /// is a struct; handle identity is not a thing in Swift).
+    private func startCoverRefresh() {
+        guard !coverRefreshRunning else { return }
+        coverRefreshRunToken += 1
+        coverRefreshRunning = true
+        previewRefreshTask = Task { await refreshPreviewOnly() }
+    }
+
     /// Backfill existing Office notes while their real read-only editor is
     /// already open. Library cards never start an engine. An editable canvas
     /// waits for Save, so background cover work cannot interrupt handwriting.
@@ -664,13 +739,19 @@ struct NotesOfficeView: View {
     /// only once the document can actually be converted.
     private func scheduleMissingPreview() {
         guard coverBackfillReady, isVisible, office.readOnly, office.canAct,
-              office.coverRenderObserved, !committing,
+              office.coverRenderObserved, !committing, !coverRefreshRunning,
               !externalRefreshRunning, let source = baseResourceID,
               previewAttemptedSource != source,
               document.matchingOfficePreviewResourceID == nil else { return }
         previewAttemptedSource = source
-        previewRefreshTask = Task { await refreshPreviewOnly() }
+        startCoverRefresh()
     }
+
+    /// The one shared close-preparation budget. A retained read-only close
+    /// that must prepare the cover uses this single deadline across the real
+    /// first-paint readiness wait AND the full-preview settle together; the
+    /// two phases never stack a fresh window each (no 20 s + 20 s).
+    private static let closePreparationBudgetNanoseconds: UInt64 = 20_000_000_000
 
     /// Gives an in-flight read-only cover backfill a bounded window to finish
     /// before a read-only exit proceeds. Modeled on the session's real
@@ -681,11 +762,15 @@ struct NotesOfficeView: View {
     /// slow child. The export already holds the session fence (release defers
     /// to it); on timeout the exit keeps the previous behavior — the card
     /// stays on the content summary and the editor offered the retry action.
-    private func settleInFlightPreviewRefresh() async {
+    /// The default window is the full shared budget (the leave-guard and
+    /// already-running close paths); a prepared close that already spent part
+    /// of the same deadline on first-paint readiness passes only the time
+    /// left, so first paint plus full preview share one bounded budget.
+    private func settleInFlightPreviewRefresh(budgetNanoseconds: UInt64 = 20_000_000_000) async {
         guard let task = previewRefreshTask, !task.isCancelled else { return }
         let receipt = OfficeSaveReceipt()
         let timeoutTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            try? await Task.sleep(nanoseconds: budgetNanoseconds)
             receipt.resolve(.failure(NSError(domain: "org.floeagent.notes.office.preview",
                                              code: 3,
                                              userInfo: [NSLocalizedDescriptionKey: "preview-backfill-settle-timeout"])))
@@ -702,11 +787,259 @@ struct NotesOfficeView: View {
         }
     }
 
+    /// Outcome of the bounded first-paint readiness wait a retained
+    /// read-only close performs when the document is already logically
+    /// ready but its cover backfill has not been scheduled yet.
+    private enum PassiveCoverReadiness {
+        /// The host's real visible-render signal arrived for the mounted
+        /// document; the cover can be prepared now.
+        case renderObserved
+        /// A cover run was scheduled while waiting (the paint signal
+        /// arrived and the passive scheduler ran); its full result is
+        /// consumed instead of starting a second run.
+        case existingRunScheduled
+        /// A cover run started AND finished entirely between two polls,
+        /// committing the exact source+revision native cover. The
+        /// committed result is consumed as the prepared outcome instead
+        /// of refusing the close for a token that moved without a live
+        /// run.
+        case existingRunCommitted
+        /// The exact context is no longer a prepared-close candidate:
+        /// left, navigating away, failed, real work took over, the source
+        /// or revision was replaced, or the intent was cancelled.
+        case unavailable
+        /// The shared close-preparation deadline elapsed without the real
+        /// signal ever arriving.
+        case timedOut
+    }
+
+    /// The settled UI7 rule's entry decision: a live, logically-ready,
+    /// read-only document with a known source and revision, no matching
+    /// native preview and no cover run started or attempted yet — the
+    /// window where the passive scheduler cannot have run only because
+    /// the host's visible-render signal has not arrived. Everything else
+    /// keeps its prior behavior: a still-opening, failed or unavailable
+    /// surface exits through the ordinary instant cancel, an already
+    /// running backfill uses the original settle path, a previously
+    /// attempted (failed) backfill keeps its existing retry affordance,
+    /// and a pre-existing matching cover needs no new work.
+    private func passiveCoverPreparationNeeded(source: UUID) -> Bool {
+        guard coverBackfillReady, isVisible, session.document?.id == document.id,
+              office.readOnly, office.documentActionsReady,
+              !committing, !pendingCommit, !keepingCopy, !coverRefreshRunning,
+              !externalRefreshRunning, baseRevision != nil,
+              previewAttemptedSource != source,
+              session.document?.matchingOfficePreviewResourceID == nil else { return false }
+        return true
+    }
+
+    /// Bounded poll of the host's EXISTING real readiness state. This is
+    /// not a fixed readiness delay: every tick re-reads the live session
+    /// and host-owned flags, returns the moment genuine readiness (or an
+    /// already-scheduled run) arrives, and stops at the shared deadline,
+    /// on cancellation, or when the captured context changes. No new
+    /// observer API, queue or service is introduced; the only sleep is
+    /// between checks and is capped by the time left on the close-
+    /// preparation budget.
+    private func awaitPassiveCoverRenderReadiness(
+        until deadlineUptimeNanoseconds: UInt64,
+        capturedRunToken: Int,
+        capturedSource: UUID,
+        capturedRevision: Int
+    ) async -> PassiveCoverReadiness {
+        while !Task.isCancelled {
+            if coverRefreshRunning {
+                // A run was scheduled while waiting; consume it while the
+                // intent still owns the exact document context.
+                guard isVisible, session.document?.id == document.id,
+                      !committing, !pendingCommit, !keepingCopy, !externalRefreshRunning,
+                      baseResourceID == capturedSource, baseRevision == capturedRevision else {
+                    return .unavailable
+                }
+                return .existingRunScheduled
+            }
+            if coverRefreshRunToken != capturedRunToken {
+                // A run started AND finished entirely between two readiness
+                // polls: `coverRefreshRunning` has already dropped and the
+                // token moved. That completed run is consumed ONLY when it
+                // was the exact attempt for this captured context and it
+                // COMMITTED a matching source+revision cover — the store's
+                // `cacheOfficePreview` CAS on this revision plus the
+                // session reload are its own proof of success, never a
+                // fabricated flag. A failed run, a superseded binding,
+                // busy real work or a changed document keeps the refusal,
+                // so a concurrent replacement can never be accepted as
+                // readiness either.
+                guard isVisible, session.document?.id == document.id,
+                      office.readOnly, office.documentActionsReady,
+                      !committing, !pendingCommit, !keepingCopy, !externalRefreshRunning,
+                      baseResourceID == capturedSource, baseRevision == capturedRevision,
+                      previewAttemptedSource == capturedSource,
+                      session.document?.matchingOfficePreviewResourceID != nil else {
+                    return .unavailable
+                }
+                return .existingRunCommitted
+            }
+            guard isVisible, session.document?.id == document.id,
+                  office.readOnly, office.documentActionsReady,
+                  !committing, !pendingCommit, !keepingCopy, !externalRefreshRunning,
+                  baseResourceID == capturedSource, baseRevision == capturedRevision else { return .unavailable }
+            if office.coverRenderObserved { return .renderObserved }
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard deadlineUptimeNanoseconds > now else { return .timedOut }
+            do {
+                try await Task.sleep(nanoseconds: min(100_000_000, deadlineUptimeNanoseconds - now))
+            } catch {
+                return .unavailable
+            }
+        }
+        return .unavailable
+    }
+
+    /// Host-owned prepare-for-close allowance installed on the read-only
+    /// Office editor. A retained Back intent may only continue after the
+    /// FULL host preview result has committed — the native export, the PNG
+    /// render, `cacheOfficePreview` and the immutable source/revision card
+    /// binding — not merely after the export's own fence. Two cases exist.
+    /// A backfill ALREADY RUNNING is awaited through the existing bounded,
+    /// waiter-local settle (the producer task and its state are untouched).
+    /// A ready document whose backfill cannot have been scheduled only
+    /// because the real first paint has not arrived yet is PREPARED by
+    /// this intent: it waits the actual visible-render readiness, then
+    /// synchronously starts (or consumes) the one full cover run and
+    /// awaits its committed result, all under the single shared 20 s
+    /// close-preparation deadline. A run that both starts and finishes
+    /// between two readiness polls is consumed when — and only when — it
+    /// committed the exact source+revision matching cover. A close on a
+    /// surface that is genuinely still opening, failed, unavailable, or
+    /// already covered stays the instant ordinary cancel it was before
+    /// (no artificial delay, no new work for a preexisting matching
+    /// cover). Permission is granted only for the exact captured
+    /// context: the intent's own synchronous run-token bump is captured
+    /// as the waited run, while any concurrent replacement refuses. The
+    /// prepared path additionally proves the FULL result boundary: it may
+    /// only allow once a successful matching native cover binding is
+    /// actually committed, so a no-op schedule, a failed export/render/
+    /// cache step or a vanished binding never reads as success. A timed-
+    /// out, canceled, left or superseded context refuses and keeps the
+    /// editor mounted with the existing actionable state, so a vanished
+    /// capture can never be mistaken for readiness and a close never
+    /// arrives late.
+    private func allowCloseAfterCoverCommitted() async -> Bool {
+        let capturedRunToken = coverRefreshRunToken
+        let capturedSource = baseResourceID
+        let capturedRevision = baseRevision
+        // The run this intent waits on. It normally equals the captured
+        // token; own preparation (or consuming an exact already-scheduled
+        // task) re-captures it synchronously right after the start, so the
+        // intent's own spawn bump is never falsely read as a replacement,
+        // while any later bump is.
+        var settledRunToken = capturedRunToken
+        // Set only when this intent entered the prepare-the-cover path.
+        // The permit then additionally requires the committed matching
+        // native cover binding, never just an idle flag/token match. The
+        // legacy already-running settle path stays untouched.
+        var preparedCloseRequiresCommittedCover = false
+        if coverRefreshRunning {
+            await settleInFlightPreviewRefresh()
+        } else if let source = capturedSource, let revision = capturedRevision,
+                  passiveCoverPreparationNeeded(source: source) {
+            let deadlineUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+                + Self.closePreparationBudgetNanoseconds
+            let readiness = await awaitPassiveCoverRenderReadiness(
+                until: deadlineUptimeNanoseconds,
+                capturedRunToken: capturedRunToken,
+                capturedSource: source,
+                capturedRevision: revision)
+            switch readiness {
+            case .renderObserved, .existingRunScheduled, .existingRunCommitted:
+                // Synchronous start/claim: `scheduleMissingPreview` starts
+                // the run when the real paint just arrived, and is a no-op
+                // when the paint's own passive scheduler already started
+                // the exact run, or when that run already finished and
+                // committed the matching cover between polls (its own
+                // observable result is the committed binding, checked at
+                // the permit). The run captured here — bumped once by
+                // this same MainActor turn or by that existing schedule —
+                // is what the settlement then awaits in full, within the
+                // time left on the one shared deadline.
+                preparedCloseRequiresCommittedCover = true
+                scheduleMissingPreview()
+                settledRunToken = coverRefreshRunToken
+                recordStage("notes.exit.coverPrepare", ["run": String(settledRunToken)])
+                if coverRefreshRunning {
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    await settleInFlightPreviewRefresh(
+                        budgetNanoseconds: deadlineUptimeNanoseconds > now
+                            ? deadlineUptimeNanoseconds - now : 0)
+                }
+            case .timedOut:
+                // The real signal never arrived within the shared budget.
+                // Keep the editor mounted, surface the existing actionable
+                // copy only for the still-owned view, and never close late.
+                guard !Task.isCancelled, isVisible, session.document?.id == document.id else {
+                    recordStage("notes.exit.refused.staleClose")
+                    return false
+                }
+                recordStage("notes.exit.refused.coverPrepare")
+                session.errorMessage = String(localized: "notes.office.preview.failed",
+                                              defaultValue: "The preview could not be updated. Try again.")
+                return false
+            case .unavailable:
+                recordStage("notes.exit.refused.coverPrepareState")
+                return false
+            }
+        }
+        guard !Task.isCancelled, isVisible, session.document?.id == document.id else {
+            recordStage("notes.exit.refused.staleClose")
+            return false
+        }
+        if coverRefreshRunning {
+            // The bounded settle elapsed while the full task still ran: keep
+            // the editor mounted and surface the existing truthful,
+            // retryable preview failure instead of consuming the tap.
+            recordStage("notes.exit.refused.coverRefresh")
+            session.errorMessage = String(localized: "notes.office.preview.failed",
+                                          defaultValue: "The preview could not be updated. Try again.")
+            return false
+        }
+        guard !committing, !pendingCommit, !keepingCopy, !externalRefreshRunning,
+              coverRefreshRunToken == settledRunToken,
+              baseResourceID == capturedSource, baseRevision == capturedRevision else {
+            // A previously captured context disappeared or was superseded
+            // between the snapshot and the idle re-check: that is not a
+            // readiness signal for this intent.
+            recordStage("notes.exit.refused.staleContext")
+            return false
+        }
+        if preparedCloseRequiresCommittedCover,
+           session.document?.matchingOfficePreviewResourceID == nil {
+            // Full-result boundary for a prepared close: the exact
+            // source+revision native cover binding must have COMMITTED —
+            // `cacheOfficePreview` CAS'd on this revision plus the session
+            // reload that re-synced the live document. A schedule that
+            // no-opped (nothing spawned or consumed), an export/render/
+            // cache step that failed, or a binding that vanished during
+            // the wait never permits: the still-owned view keeps the
+            // editor mounted with the existing actionable retry state
+            // under the same single bounded deadline, and no success flag
+            // is invented. The legacy already-running settle path above
+            // is unchanged.
+            recordStage("notes.exit.refused.coverPrepareMissing")
+            session.errorMessage = String(localized: "notes.office.preview.failed",
+                                          defaultValue: "The preview could not be updated. Try again.")
+            return false
+        }
+        return true
+    }
+
     private func refreshPreviewOnly() async {
+        // `startCoverRefresh` claimed `coverRefreshRunning` before this task
+        // was enqueued; this task owns releasing it, including on every early
+        // guard exit, so no retained close can observe a stale idle flag.
+        defer { coverRefreshRunning = false }
         guard !committing, isVisible, office.canAct, let source = baseResourceID,
               let revision = baseRevision else { return }
-        committing = true
-        defer { committing = false }
         do {
             try await refreshGeneratedPreview(sourceID: source, revision: revision)
             canRetryPreview = false; message = nil

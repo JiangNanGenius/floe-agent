@@ -393,6 +393,13 @@ final class OfficeFileSession: ObservableObject {
     /// signal, so `activate` presets this to preserve the previous
     /// open-settled trigger for such pins.
     @Published private(set) var coverRenderObserved = false
+    /// True only while a committed-cover export (the passive read-only Notes
+    /// cover backfill) holds the session fence. A save, an attachment insert
+    /// or an external refresh never sets this: unlike those, the cover export
+    /// changes no user data, so a host that installed `prepareForPassiveClose`
+    /// keeps its primary exit enabled and parks the intent on the host's
+    /// FULL preview settlement instead of dropping it on the `canAct` gate.
+    @Published private(set) var coverExportInFlight = false
     /// True when the pinned host exposes the visible-render contract. The
     /// framework is pinned separately from this source: an older host keeps the
     /// previous open-only readiness (and the release gate keeps the Office
@@ -674,7 +681,17 @@ final class OfficeFileSession: ObservableObject {
               let workingURL = session?.workingURL, beginExternalRefresh(resigningFirstResponder: false) else {
             throw CocoaError(.featureUnsupported)
         }
-        defer { endExternalRefresh() }
+        coverExportInFlight = true
+        defer {
+            // Clear the passive-export carve-out before handing the operating
+            // fence back. The retained close now waits on the host's full
+            // preview settlement, so the export deliberately settles NOTHING
+            // itself: it owns no completion signal for the PNG render, cache
+            // and card binding that follow it, and must never poison or
+            // pre-resolve any host-side wait.
+            coverExportInFlight = false
+            endExternalRefresh()
+        }
         let wasReadOnly = readOnly
         var hadEdits = wasReadOnly ? false : await hasLocalEditsToProtect()
         // Writer can deliver its post-save ModifiedStatus after the save
@@ -2119,6 +2136,47 @@ final class OfficeFileSession: ObservableObject {
         }
     }
 
+    /// Identity of the mounted surface, captured when a read-only close
+    /// intent is accepted by `saveAndDismiss`. Release state is deliberately
+    /// NOT snapshotted: `release()` sets `released` immediately and defers the
+    /// teardown as `releaseRequested` while an operation (the export) holds
+    /// the fence, so both flags are re-read live by the checks below.
+    struct PassiveExitFence {
+        let generation: Int
+        let controllerID: ObjectIdentifier?
+        let workingCopyPath: String?
+    }
+
+    func capturePassiveExitFence() -> PassiveExitFence {
+        PassiveExitFence(generation: openGeneration.current,
+                         controllerID: controller.map { ObjectIdentifier($0) },
+                         workingCopyPath: session?.workingURL.path)
+    }
+
+    /// True while a retained intent still owns the exact mounted surface:
+    /// same open generation (every `activate` — reopen, external-version
+    /// replacement, recovery — advances it), same mounted controller
+    /// instance, same working copy, and neither released nor
+    /// teardown-requested. A parked close re-checks this after every await
+    /// and before it touches the session.
+    func passiveExitFenceIsCurrent(_ fence: PassiveExitFence) -> Bool {
+        !released && !releaseRequested
+            && openGeneration.isCurrent(fence.generation)
+            && controller.map { ObjectIdentifier($0) } == fence.controllerID
+            && session?.workingURL.path == fence.workingCopyPath
+    }
+
+    /// True directly before dismissal: the intent's own truthful close
+    /// (`keepChangesAndReturn`) legitimately tears the controller down while
+    /// it runs, so this revalidation keeps the generation, the live release
+    /// state and the working-copy identity but not the controller instance.
+    /// A released, teardown-requested or re-opened surface still refuses.
+    func passiveExitCloseRemainsOwn(_ fence: PassiveExitFence) -> Bool {
+        !released && !releaseRequested
+            && openGeneration.isCurrent(fence.generation)
+            && session?.workingURL.path == fence.workingCopyPath
+    }
+
     /// View removal never deletes an unsettled edit or pretends it was saved.
     func release() async {
         // Terminal from here on: a queued/replayed intent must never re-open
@@ -3094,6 +3152,15 @@ struct OfficeDocumentEditorView: View {
     /// everywhere else, where mounting this surface is already an explicit
     /// edit action.
     var requestsEditingOnAppear: Bool = true
+    /// Host-owned prepare-for-close allowance for the read-only surface.
+    /// Notes installs it so a Back intent arriving while passive cover work
+    /// runs is accepted, coalesced and parked on the host's FULL preview
+    /// result (native export + PNG render + cache + immutable source/
+    /// revision binding) before the unchanged truthful close path runs.
+    /// Default nil: FilePreview, IDE, standalone, recovery and qualification
+    /// hosts keep the previous behavior bit-for-bit — same drop-on-busy
+    /// disable, no coalescing, no wait, no carve-out.
+    var prepareForPassiveClose: (@MainActor () async -> Bool)? = nil
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
@@ -3110,6 +3177,14 @@ struct OfficeDocumentEditorView: View {
     @State private var showingAttachments = false
     @State private var showingInkControls = false
     @State private var attachmentError: String?
+    /// Coalesces the WHOLE retained read-only close intent — host
+    /// preparation, the existing close path and dismissal — for the
+    /// duration of one `saveAndDismiss`, so a repeat that arrives after the
+    /// export flag cleared (or while the truthful close already runs) can
+    /// neither start a second dismissal nor bypass the wait. The claim is
+    /// released at function exit, including refusals, so a retry tap on
+    /// the still-mounted surface always reaches the fresh state.
+    @State private var passiveCloseIntentInFlight = false
     /// In-flight share snapshot; reclaimed by `finishSaveCopy()` on dismiss.
     @State private var shareSnapshot: DocumentExportSnapshot?
 
@@ -3317,7 +3392,14 @@ struct OfficeDocumentEditorView: View {
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
-        .disabled(!session.canAct && session.phase != .failed)
+        // A passive read-only cover export changes no user data, so it must
+        // not drop the primary exit — but only for hosts that installed the
+        // prepare-for-close allowance, which park the intent on the host's
+        // full preview settlement instead of racing it. Without the callback
+        // the disable is bit-identical to before for every other host; with
+        // it, saves, attachments, external refreshes and editable sessions
+        // still keep the previous disable exactly.
+        .disabled(!session.canAct && session.phase != .failed && !(session.readOnly && session.coverExportInFlight && prepareForPassiveClose != nil))
         .accessibilityIdentifier("office.editor.back")
         .accessibilityHint(session.phase == .failed ? "workspace.office_document_editor_view.keep_an_edited_copy_and_close" : "workspace.office_document_editor_view.save_document_and_return_to_preview")
     }
@@ -3471,12 +3553,45 @@ struct OfficeDocumentEditorView: View {
     }
 
     private func saveAndDismiss() async {
+        // Host-allowed passive close (read-only surfaces that installed
+        // `prepareForPassiveClose`): the whole retained intent — host
+        // preparation plus the existing truthful close/dismiss below — is
+        // coalesced and fenced. Every other host, and every editable
+        // session, skips this entirely and runs the pre-existing path
+        // unchanged.
+        let prepare = prepareForPassiveClose
+        let passiveExitSurface = session.readOnly && prepare != nil
+        if passiveExitSurface {
+            guard !passiveCloseIntentInFlight else { return }
+            passiveCloseIntentInFlight = true
+        }
+        // The claim covers preparation AND the close/dismiss path: it is
+        // released only when this function exits (success, refusal or
+        // dismissal), never between the wait and the close.
+        defer { if passiveExitSurface { passiveCloseIntentInFlight = false } }
+        var passiveFence: OfficeFileSession.PassiveExitFence?
+        if passiveExitSurface, let prepare {
+            passiveFence = session.capturePassiveExitFence()
+            // Wait for the FULL host-owned preview result commit (export,
+            // PNG render, cache and immutable source/revision binding), not
+            // just the export fence. The host answers instantly when no
+            // backfill is running and refuses — keeping the editor mounted
+            // with its existing actionable state — on a bounded timeout or
+            // a superseded context, so this never waits artificially and
+            // never blocks an ordinary opening cancel.
+            guard await prepare() else { return }
+            // Re-fence after the wait and before any close mutation runs:
+            // a canceled intent and a released, teardown-requested,
+            // reopened or swapped surface cannot continue.
+            guard !Task.isCancelled, let fence = passiveFence,
+                  session.passiveExitFenceIsCurrent(fence) else { return }
+        }
         // An owning Notes transaction may still reject its resource commit.
         // Keep the native editor mounted until that owner confirms success,
         // so a conflict/error leaves a usable editor and export path.
         let saved = onSaved == nil ? await session.saveAndReturn() : await session.saveInPlace()
         if saved {
-            if await onSaved?() ?? true { dismissEditor() }
+            if await onSaved?() ?? true, passiveCloseMayDismiss(passiveFence) { dismissEditor() }
             return
         }
         // The save was refused before it could start — a still-read-only
@@ -3504,7 +3619,22 @@ struct OfficeDocumentEditorView: View {
         // commit pending: the bounded persist-and-leave path is truthful —
         // the retained working copy keeps any edits, the original file stays
         // untouched, and nothing claims a save that did not run.
-        if await session.keepChangesAndReturn() { dismissEditor() }
+        // The persist-and-leave itself suspends the MainActor for a bounded
+        // engine close: re-fence directly before dismissal so a released,
+        // teardown-requested or re-opened surface can never be dismissed by
+        // this retained intent.
+        if await session.keepChangesAndReturn(), passiveCloseMayDismiss(passiveFence) { dismissEditor() }
+    }
+
+    /// Directly-before-dismissal fence for a retained read-only close
+    /// intent. A nil fence means the intent never entered the passive path
+    /// (no host callback, or the surface was editable at entry): the
+    /// pre-existing dismissal runs untouched. Otherwise only the intent's
+    /// own truthful close — which legitimately released the controller
+    /// while it ran — may still dismiss the still-owned mounted surface.
+    private func passiveCloseMayDismiss(_ fence: OfficeFileSession.PassiveExitFence?) -> Bool {
+        guard let fence else { return true }
+        return !Task.isCancelled && session.passiveExitCloseRemainsOwn(fence)
     }
 }
 
