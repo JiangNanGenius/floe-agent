@@ -9,6 +9,7 @@ roundtrip (including that verification performs no writes). The actual rebuild
 is executed by the producer itself with its own evidence logs.
 """
 
+import difflib
 import hashlib
 import json
 import os
@@ -43,6 +44,10 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+SYNTHETIC_ORIGINAL = b"synthetic original bundle without the patch marker\n"
+SYNTHETIC_ORIGINAL_SHA = sha(SYNTHETIC_ORIGINAL)
+
+
 def _lock_with(mutate=None):
     lock = {
         "formatVersion": 1,
@@ -60,8 +65,9 @@ class LockValidationTests(unittest.TestCase):
         lock = json.loads(LOCK_PATH.read_text())
         repository, commit, entries = producer.validate_browser_lock(lock, LOCK_PATH.parent)
         self.assertEqual(commit, REAL_ENTRY["sourceCommit"])
-        self.assertEqual(len(entries), 1)
-        entry = entries[0]
+        self.assertEqual(len(entries), 3)
+        entry = next(item for item in entries
+                     if item["patch"] == REAL_ENTRY["patch"])
         self.assertEqual(entry["patchSHA256"], REAL_ENTRY["patchSHA256"])
         self.assertEqual(entry["originalSourceSHA256"], REAL_ENTRY["originalSourceSHA256"])
         self.assertEqual(entry["patchedSourceSHA256"], REAL_ENTRY["patchedSourceSHA256"])
@@ -91,13 +97,56 @@ class LockValidationTests(unittest.TestCase):
                 sourceFile="../../etc/passwd")),
             ("escaping patch path", lambda l: l["browserSourcePatches"][0].update(
                 patch="../outside.patch")),
-            ("duplicate target files", lambda l: l["browserSourcePatches"].append(dict(REAL_ENTRY))),
+            ("broken same-file chain", lambda l: l["browserSourcePatches"].append(dict(REAL_ENTRY))),
         ]
         for label, mutate in mutations:
             with self.subTest(label):
                 with tempfile.TemporaryDirectory() as tmp:
                     with self.assertRaises(producer.ProducerError):
                         self._validate_in_tmp(_lock_with(mutate), tmp)
+
+    def test_multi_patch_chain_and_bundle_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            patches = Path(tmp) / "patches"
+            patches.mkdir()
+            for name, data in (("cc1.patch", b"cc1"), ("cancel.patch", b"cancel"),
+                               ("live.patch", b"live")):
+                (patches / name).write_bytes(data)
+            base = dict(REAL_ENTRY, patch="patches/cc1.patch",
+                        patchSHA256=sha(b"cc1"))
+            cancel = dict(REAL_ENTRY, patch="patches/cancel.patch",
+                          patchSHA256=sha(b"cancel"),
+                          originalSourceSHA256=base["patchedSourceSHA256"],
+                          patchedSourceSHA256="a" * 64,
+                          bundleTokens=["this.propagateOnMultiTouchEnd("])
+            live = {
+                "patch": "patches/live.patch",
+                "patchSHA256": sha(b"live"),
+                "sourceRepository": REAL_ENTRY["sourceRepository"],
+                "sourceCommit": REAL_ENTRY["sourceCommit"],
+                "sourceFile": "browser/src/canvas/sections/ZoomControl.ts",
+                "originalSourceSHA256": "b" * 64,
+                "patchedSourceSHA256": "c" * 64,
+                "bundleMarker": "pinchLive",
+            }
+            lock = _lock_with(lambda l: l.update(browserSourcePatches=[
+                base, cancel, live]))
+            repository, commit, entries = producer.validate_browser_lock(
+                lock, Path(tmp))
+            self.assertEqual(len(entries), 3)
+            self.assertEqual(entries[1]["originalSourceSHA256"],
+                             entries[0]["patchedSourceSHA256"])
+            self.assertEqual(entries[2]["bundleMarker"], "pinchLive")
+            broken = json.loads(json.dumps(lock))
+            broken["browserSourcePatches"][1]["originalSourceSHA256"] = "0" * 64
+            with self.assertRaisesRegex(producer.ProducerError, "does not continue"):
+                producer.validate_browser_lock(broken, Path(tmp))
+            no_evidence = json.loads(json.dumps(lock))
+            no_evidence["browserSourcePatches"][2].pop("bundleMarker")
+            _repository, _commit, bare = producer.validate_browser_lock(
+                no_evidence, Path(tmp))
+            with self.assertRaisesRegex(producer.ProducerError, "no marker/token"):
+                producer.require_bundle_evidence(bare)
 
     def test_rejects_tampered_patch_digest(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -237,6 +286,21 @@ def _original_and_patched_from_patch(patch_text):
     return ("\n".join(original_lines) + "\n", "\n".join(patched_lines) + "\n")
 
 
+    def test_token_only_evidence_has_no_unconditional_marker_failure(self):
+        entry = {
+            "sourceFile": "browser/src/canvas/CanvasSectionContainer.ts",
+            "bundleTokens": ["this.propagateOnMultiTouchEnd("],
+        }
+        marker, tokens = producer.entry_evidence(entry)
+        self.assertIsNone(marker)
+        self.assertEqual(tokens, ("this.propagateOnMultiTouchEnd(",))
+        producer.require_bundle_evidence([entry])
+        with self.assertRaisesRegex(producer.ProducerError, "no marker/token"):
+            producer.require_bundle_evidence([{
+                "sourceFile": "browser/src/canvas/CanvasSectionContainer.ts",
+                "bundleTokens": [],
+            }])
+
     def test_marker_report_survives_esbuild_line_wraps(self):
         # esbuild --line-limit wraps identifiers after a dot with a newline;
         # counting must see the flattened token.
@@ -277,6 +341,92 @@ class GitApplyContractTests(unittest.TestCase):
             self.assertNotEqual(again.returncode, 0)
 
 
+
+class ProducerApplyTests(unittest.TestCase):
+    """The producer's real patch loop handles a same-file chain and a second file."""
+
+    def _patch(self, relative, before, after):
+        return "".join(difflib.unified_diff(
+            before.splitlines(True), after.splitlines(True),
+            fromfile=f"a/{relative}", tofile=f"b/{relative}", n=3))
+
+    def test_applies_chained_and_independent_patches_in_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            stage = tmp / "stage"
+            source = stage / "source"
+            source.mkdir(parents=True)
+            first = "browser/src/canvas/First.ts"
+            second = "browser/src/canvas/Second.ts"
+            original = "export const a = 1;\n"
+            middle = "export const a = 2;\n"
+            final = "export const a = 3;\n"
+            other = "export const b = 1;\n"
+            other_final = "export const b = 2;\n"
+            for relative, text in ((first, original), (second, other)):
+                target = source / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text)
+            patch_dir = tmp / "patches"
+            patch_dir.mkdir()
+            specs = []
+            for name, relative, before, after in (
+                ("one.patch", first, original, middle),
+                ("two.patch", first, middle, final),
+                ("other.patch", second, other, other_final),
+            ):
+                path = patch_dir / name
+                path.write_text(self._patch(relative, before, after))
+                specs.append((path, relative, before, after))
+            instance = producer.Producer(_producer_args(tmp, stage))
+            instance.entries = [
+                {
+                    "patch": path.name,
+                    "patchPath": str(path),
+                    "patchSHA256": sha(path.read_bytes()),
+                    "sourceFile": relative,
+                    "originalSourceSHA256": sha(before.encode()),
+                    "patchedSourceSHA256": sha(after.encode()),
+                }
+                for path, relative, before, after in specs
+            ]
+            result = instance.apply_patch()
+            self.assertEqual((source / first).read_text(), final)
+            self.assertEqual((source / second).read_text(), other_final)
+            self.assertEqual([item["patch"] for item in result["patches"]],
+                             ["one.patch", "two.patch", "other.patch"])
+            self.assertEqual(
+                [item["stagedPatchedSHA256"] for item in result["patches"]],
+                [sha(middle.encode()), sha(final.encode()), sha(other_final.encode())])
+
+    def test_wrong_pre_patch_state_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            stage = tmp / "stage"
+            source = stage / "source"
+            source.mkdir(parents=True)
+            relative = "browser/src/canvas/First.ts"
+            (source / relative).parent.mkdir(parents=True)
+            (source / relative).write_text("export const a = 1;\n")
+            patch_dir = tmp / "patches"
+            patch_dir.mkdir()
+            path = patch_dir / "two.patch"
+            path.write_text(self._patch(relative, "export const a = 2;\n",
+                                        "export const a = 3;\n"))
+            instance = producer.Producer(_producer_args(tmp, stage))
+            instance.entries = [{
+                "patch": path.name,
+                "patchPath": str(path),
+                "patchSHA256": sha(path.read_bytes()),
+                "sourceFile": relative,
+                "originalSourceSHA256": sha(b"export const a = 2;\n"),
+                "patchedSourceSHA256": sha(b"export const a = 3;\n"),
+            }]
+            with self.assertRaisesRegex(producer.ProducerError, "pre-patch state"):
+                instance.apply_patch()
+            self.assertEqual((source / relative).read_text(),
+                             "export const a = 1;\n")
+
 def _producer_args(tmp, stage):
     return producer.build_arg_parser().parse_args([
         "--restored-source", str(Path(tmp) / "restored"),
@@ -313,7 +463,7 @@ class StagingGuardTests(unittest.TestCase):
 class ReceiptVerifyTests(unittest.TestCase):
     """Self-consistent synthetic worlds verify; any tamper is detected."""
 
-    def _build_world(self, tmp):
+    def _build_world(self, tmp, token_only=False):
         tmp = Path(tmp)
         stage = tmp / "stage"
         browser = stage / "source/browser"
@@ -325,6 +475,16 @@ class ReceiptVerifyTests(unittest.TestCase):
             "prefix " + producer.PATCH_MARKER +
             " this.clearMousePositions() this.findSectionContainingPoint("
             "this.positionOnMouseDown) this.convertPositionToCanvasLocale(")
+        zoom_file = "browser/src/canvas/sections/ZoomControl.ts"
+        zoom_ts = None
+        zoom_patch = None
+        if token_only:
+            bundle_content += " this.layout.beginZoom("
+            zoom_ts = stage / "source" / zoom_file
+            zoom_ts.parent.mkdir(parents=True, exist_ok=True)
+            zoom_ts.write_bytes(b"synthetic patched ZoomControl TS")
+            (browser / "dist/src/canvas/sections").mkdir(parents=True, exist_ok=True)
+            (browser / "dist/src/canvas/sections/ZoomControl.js").write_text("zoom module")
         (browser / "dist/bundle.js").write_text(bundle_content)
         (browser / "dist/src/canvas/CanvasSectionContainer.js").write_text("module")
         (browser / "dist/extra.css").write_text("css")
@@ -345,45 +505,81 @@ class ReceiptVerifyTests(unittest.TestCase):
         patches.mkdir(parents=True)
         patch = patches / "ios-batched-touch-start.patch"
         patch.write_text("synthetic patch bytes")
+        cc1_entry = {
+            "patch": "patches/ios-batched-touch-start.patch",
+            "patchSHA256": sha(patch.read_bytes()),
+            "sourceRepository": "https://example.invalid/online.mirror.git",
+            "sourceCommit": "a" * 40,
+            "sourceFile": str(producer.LOCKED_SOURCEFILE_REL),
+            "originalSourceSHA256": sha(b"original"),
+            "patchedSourceSHA256": sha(ts.read_bytes()),
+        }
+        entries = [cc1_entry]
+        receipt_patches = [{
+            "patch": cc1_entry["patch"],
+            "sourceFile": cc1_entry["sourceFile"],
+            "patchPath": str(patch),
+            "patchSHA256": cc1_entry["patchSHA256"],
+            "originalSourceSHA256": cc1_entry["originalSourceSHA256"],
+            "patchedSourceSHA256": cc1_entry["patchedSourceSHA256"],
+            "stagedPatchedSHA256": sha(ts.read_bytes()),
+            "applied": True,
+        }]
+        if token_only:
+            zoom_patch = patches / "ios-live-pinch-zoom.patch"
+            zoom_patch.write_bytes(b"synthetic zoom patch bytes")
+            zoom_entry = {
+                "patch": "patches/ios-live-pinch-zoom.patch",
+                "patchSHA256": sha(zoom_patch.read_bytes()),
+                "sourceRepository": "https://example.invalid/online.mirror.git",
+                "sourceCommit": "a" * 40,
+                "sourceFile": zoom_file,
+                "originalSourceSHA256": sha(b"original zoom"),
+                "patchedSourceSHA256": sha(zoom_ts.read_bytes()),
+                "bundleTokens": ["this.layout.beginZoom("],
+            }
+            entries.append(zoom_entry)
+            receipt_patches.append({
+                "patch": zoom_entry["patch"],
+                "sourceFile": zoom_entry["sourceFile"],
+                "patchPath": str(zoom_patch),
+                "patchSHA256": zoom_entry["patchSHA256"],
+                "originalSourceSHA256": zoom_entry["originalSourceSHA256"],
+                "patchedSourceSHA256": zoom_entry["patchedSourceSHA256"],
+                "stagedPatchedSHA256": sha(zoom_ts.read_bytes()),
+                "applied": True,
+            })
         lock = {
             "formatVersion": 1,
             "engine": {"repository": "https://example.invalid/online.mirror.git",
                        "commit": "a" * 40},
-            "browserSourcePatches": [{
-                "patch": "patches/ios-batched-touch-start.patch",
-                "patchSHA256": sha(patch.read_bytes()),
-                "sourceRepository": "https://example.invalid/online.mirror.git",
-                "sourceCommit": "a" * 40,
-                "sourceFile": str(producer.LOCKED_SOURCEFILE_REL),
-                "originalSourceSHA256": sha(b"original"),
-                "patchedSourceSHA256": sha(ts.read_bytes()),
-            }],
+            "browserSourcePatches": entries,
         }
         lock_file = lock_dir / "browser.patch.lock.json"
         lock_file.write_text(json.dumps(lock))
 
         bundle_sha = sha((browser / "dist/bundle.js").read_bytes())
-        original_sha = producer.DEFAULT_EXPECTED_ORIGINAL_BUNDLE_SHA256
+        restored = tmp / "restored"
+        (restored / "browser/dist").mkdir(parents=True)
+        (restored / "browser/dist/bundle.js").write_bytes(SYNTHETIC_ORIGINAL)
+        original_sha = SYNTHETIC_ORIGINAL_SHA
         shr, cnt = producer.shrinkpack_manifest_digest(browser / "node_shrinkpack")
         rows = producer.dist_manifest(browser / "dist")
         receipt = {
             "formatVersion": producer.RECEIPT_FORMAT_VERSION,
             "kind": producer.RECEIPT_KIND,
-            "inputs": {"stageRoot": str(stage), "restoredOriginalBundleSHA256": original_sha},
+            "inputs": {
+                "stageRoot": str(stage),
+                "restoredSourceRoot": str(restored),
+                "restoredOriginalBundleSHA256": original_sha,
+            },
             "frontendIdentity": {
                 "browserPatchLock": str(lock_file),
                 "browserPatchLockSHA256": sha(lock_file.read_bytes()),
                 "engineRepository": "https://example.invalid/online.mirror.git",
                 "engineCommit": "a" * 40,
                 "coolVersionOverride": "aaaaaaaaaa",
-                "patches": [{
-                    "sourceFile": str(producer.LOCKED_SOURCEFILE_REL),
-                    "patchPath": str(patch),
-                    "patchSHA256": sha(patch.read_bytes()),
-                    "originalSourceSHA256": sha(b"original"),
-                    "patchedSourceSHA256": sha(ts.read_bytes()),
-                    "stagedPatchedSHA256": sha(ts.read_bytes()),
-                }],
+                "patches": receipt_patches,
             },
             "dependencyInstall": {
                 "npmShrinkwrapSHA256": sha((browser / "npm-shrinkwrap.json").read_bytes()),
@@ -395,6 +591,18 @@ class ReceiptVerifyTests(unittest.TestCase):
             "patchedBuild": {
                 "distBundleSHA256": bundle_sha,
                 "moduleSHA256": sha((browser / producer.MODULE_JS_REL).read_bytes()),
+                "modules": {
+                    str(producer.LOCKED_SOURCEFILE_REL): {
+                        "module": str(producer.MODULE_JS_REL),
+                        "moduleSHA256": sha((browser / producer.MODULE_JS_REL).read_bytes()),
+                    },
+                    **({
+                        zoom_file: {
+                            "module": str(producer.emitted_module_rel(zoom_file)),
+                            "moduleSHA256": sha((browser / "dist/src/canvas/sections/ZoomControl.js").read_bytes()),
+                        }
+                    } if token_only else {}),
+                },
                 "intermediates": {
                     "release/cool-src.js": sha((browser / "release/cool-src.js").read_bytes()),
                     "release/bundle.js": sha((browser / "release/bundle.js").read_bytes()),
@@ -422,10 +630,20 @@ class ReceiptVerifyTests(unittest.TestCase):
         receipt_path.write_text(json.dumps(receipt))
         return receipt_path, browser, receipt, lock_file
 
+    def verify(self, receipt_path, lock_file):
+        return producer.verify_receipt(
+            receipt_path, lock_path=lock_file,
+            expected_original_bundle_sha256=SYNTHETIC_ORIGINAL_SHA)
+
     def test_self_consistent_world_verifies(self):
         with tempfile.TemporaryDirectory() as tmp:
             receipt_path, _, _, lock_file = self._build_world(tmp)
-            self.assertEqual(producer.verify_receipt(receipt_path, lock_path=lock_file), [])
+            self.assertEqual(self.verify(receipt_path, lock_file), [])
+
+    def test_token_only_patch_verifies_without_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path, _, _, lock_file = self._build_world(tmp, token_only=True)
+            self.assertEqual(self.verify(receipt_path, lock_file), [])
 
     def test_verify_performs_no_writes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -437,7 +655,7 @@ class ReceiptVerifyTests(unittest.TestCase):
                     stat = path.stat()
                     snapshot[str(path)] = (stat.st_mtime_ns, stat.st_size)
             dir_count = sum(len(files) for _, _, files in os.walk(tmp))
-            self.assertEqual(producer.verify_receipt(receipt_path, lock_path=lock_file), [])
+            self.assertEqual(self.verify(receipt_path, lock_file), [])
             after = {}
             for root, dirs, files in os.walk(tmp):
                 for name in files:
@@ -447,11 +665,49 @@ class ReceiptVerifyTests(unittest.TestCase):
             self.assertEqual(snapshot, after)
             self.assertEqual(sum(len(files) for _, _, files in os.walk(tmp)), dir_count)
 
+    def test_same_file_chain_receipt_hashes_only_the_final_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path, browser, receipt, lock_file = self._build_world(
+                tmp, token_only=True)
+            lock = json.loads(lock_file.read_text())
+            first = lock["browserSourcePatches"][0]
+            second = lock["browserSourcePatches"][1]
+            ts = browser / producer.BROWSER_TS_REL
+            final_ts = ts.read_bytes() + b"\n// chained final source\n"
+            ts.write_bytes(final_ts)
+            second["sourceFile"] = first["sourceFile"]
+            second["originalSourceSHA256"] = first["patchedSourceSHA256"]
+            second["patchedSourceSHA256"] = sha(final_ts)
+            lock_file.write_text(json.dumps(lock))
+            lock_sha = sha(lock_file.read_bytes())
+            receipt["frontendIdentity"]["browserPatchLockSHA256"] = lock_sha
+            receipt["browserResources"]["browserPatchLockSHA256"] = lock_sha
+            claim = receipt["frontendIdentity"]["patches"][1]
+            claim["sourceFile"] = second["sourceFile"]
+            claim["originalSourceSHA256"] = second["originalSourceSHA256"]
+            claim["patchedSourceSHA256"] = second["patchedSourceSHA256"]
+            claim["stagedPatchedSHA256"] = second["patchedSourceSHA256"]
+            Path(receipt_path).write_text(json.dumps(receipt))
+            self.assertEqual(self.verify(receipt_path, lock_file), [])
+            # The final stage must actually be the second patch's result.
+            ts.write_bytes(b"wrong final stage")
+            failures = self.verify(receipt_path, lock_file)
+            self.assertTrue(any("staged final source" in failure
+                                for failure in failures))
+
+    def test_missing_restored_source_root_is_not_a_zero_baseline_exemption(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path, _, receipt, lock_file = self._build_world(tmp)
+            receipt["inputs"].pop("restoredSourceRoot")
+            Path(receipt_path).write_text(json.dumps(receipt))
+            failures = self.verify(receipt_path, lock_file)
+            self.assertTrue(any("restoredSourceRoot" in failure for failure in failures))
+
     def test_detects_bundle_tampering(self):
         with tempfile.TemporaryDirectory() as tmp:
             receipt_path, browser, _, lock_file = self._build_world(tmp)
             (browser / "dist/bundle.js").write_text("tampered")
-            failures = producer.verify_receipt(receipt_path, lock_path=lock_file)
+            failures = self.verify(receipt_path, lock_file)
             self.assertTrue(any("staged patched bundle" in f for f in failures))
             self.assertTrue(any("marker" in f for f in failures))
             self.assertTrue(any("dist tree" in f.lower() for f in failures))
@@ -463,7 +719,7 @@ class ReceiptVerifyTests(unittest.TestCase):
             entry = lock["browserSourcePatches"][0]
             entry["patchedSourceSHA256"] = sha(b"rogue patched source")
             lock_file.write_text(json.dumps(lock))
-            failures = producer.verify_receipt(receipt_path, lock_path=lock_file)
+            failures = self.verify(receipt_path, lock_file)
             self.assertTrue(any("browserPatchLockSHA256" in f for f in failures))
             self.assertTrue(any("patchedSourceSHA256 differs from the live lock" in f
                                 for f in failures))
@@ -473,7 +729,7 @@ class ReceiptVerifyTests(unittest.TestCase):
             receipt_path, _, receipt, lock_file = self._build_world(tmp)
             receipt["output"]["bundleSHA256"] = sha(b"different")
             Path(receipt_path).write_text(json.dumps(receipt))
-            failures = producer.verify_receipt(receipt_path, lock_path=lock_file)
+            failures = self.verify(receipt_path, lock_file)
             self.assertTrue(any("output.bundleSHA256 != patchedBuild.distBundleSHA256" in f
                                 for f in failures))
 
@@ -482,21 +738,38 @@ class ReceiptVerifyTests(unittest.TestCase):
             receipt_path, _, receipt, lock_file = self._build_world(tmp)
             receipt["inputs"]["restoredOriginalBundleSHA256"] = sha(b"not the baseline")
             Path(receipt_path).write_text(json.dumps(receipt))
-            failures = producer.verify_receipt(receipt_path, lock_path=lock_file)
+            failures = self.verify(receipt_path, lock_file)
             self.assertTrue(any("baseline" in f for f in failures))
         with tempfile.TemporaryDirectory() as tmp:
             receipt_path, _, receipt, lock_file = self._build_world(tmp)
             receipt["controlBuild"]["byteIdenticalToRestoredOriginal"] = False
             Path(receipt_path).write_text(json.dumps(receipt))
-            failures = producer.verify_receipt(receipt_path, lock_path=lock_file)
+            failures = self.verify(receipt_path, lock_file)
             self.assertTrue(any("control build was not byte-identical" in f for f in failures))
+
+    def test_browser_resources_patch_inventory_must_match_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path, _, receipt, lock_file = self._build_world(tmp, token_only=True)
+            fields = ("patch", "patchSHA256", "sourceFile",
+                      "originalSourceSHA256", "patchedSourceSHA256")
+            receipt["browserResources"]["patches"] = [
+                {key: patch[key] for key in fields}
+                for patch in receipt["frontendIdentity"]["patches"]
+            ]
+            Path(receipt_path).write_text(json.dumps(receipt))
+            self.assertEqual(self.verify(receipt_path, lock_file), [])
+            receipt["browserResources"]["patches"][1]["sourceFile"] = \
+                "browser/src/canvas/sections/Other.ts"
+            Path(receipt_path).write_text(json.dumps(receipt))
+            failures = self.verify(receipt_path, lock_file)
+            self.assertTrue(any("patches[1].sourceFile" in failure for failure in failures))
 
     def test_detects_path_leak_in_browser_resources_block(self):
         with tempfile.TemporaryDirectory() as tmp:
             receipt_path, _, receipt, lock_file = self._build_world(tmp)
             receipt["browserResources"]["bundleSHA256"] = "/abs/path/bundle.js"
             Path(receipt_path).write_text(json.dumps(receipt))
-            failures = producer.verify_receipt(receipt_path, lock_path=lock_file)
+            failures = self.verify(receipt_path, lock_file)
             self.assertTrue(any("inconsistent" in f for f in failures))
             self.assertTrue(any("path-free" in f for f in failures))
 
@@ -505,7 +778,7 @@ class ReceiptVerifyTests(unittest.TestCase):
             path = Path(tmp) / "receipt.json"
             path.write_text(json.dumps({"kind": "other", "formatVersion": 1}))
             with self.assertRaises(producer.ProducerError):
-                producer.verify_receipt(path)
+                self.verify(path, lock_file=None)
 
 
 if __name__ == "__main__":

@@ -9,12 +9,16 @@ say ``pinnedSourceReady``:
   deployment patch SHA-256;
 * ``browser.patch.lock.json`` may pin browser source patches
   (``browserSourcePatches``).  Every entry names exactly one source file, its
-  patch digest, and the original/patched source SHA-256.
+  patch digest, and the original/patched source SHA-256.  Entries may form a
+  contiguous chain on one file: each later entry's original must equal the
+  previous entry's patched result, and the patches are validated/applied in
+  lock order.
 
 All patches and every affected file are validated before anything is applied.
-Each affected file must be in one known state: the pinned original or the exact
-patched source.  The script never resets, checks out over or cleans the build
-root, so an unrelated local edit fails the run without being overwritten.
+Each affected file must be at the pinned original, an exact intermediate chain
+state or the exact final patched source.  The script never resets, checks out
+over or cleans the build root, so an unrelated local edit fails the run without
+being overwritten.
 Application is idempotent: a rerun into the same root verifies and reuses the
 already applied patches.
 """
@@ -171,7 +175,7 @@ def load_browser_patches(patch_lock_path, source, repository, commit):
             'browserSourcePatches must be a list')
     base = patch_lock_path.parent.resolve()
     patches = []
-    seen = set()
+    chains = {}
     for index, entry in enumerate(entries):
         label = f'browserSourcePatches[{index}]'
         require(isinstance(entry, dict), f'{label} is not an object')
@@ -185,9 +189,6 @@ def load_browser_patches(patch_lock_path, source, repository, commit):
                 f'{label} sourceCommit differs from the engine lock')
         source_file = validated_relative(entry.get('sourceFile'),
                                          f'{label}.sourceFile')
-        require(source_file not in seen,
-                f'{label} duplicates source file {source_file}')
-        seen.add(source_file)
         original_sha = entry.get('originalSourceSHA256')
         patched_sha = entry.get('patchedSourceSHA256')
         for key, value in (('originalSourceSHA256', original_sha),
@@ -211,7 +212,12 @@ def load_browser_patches(patch_lock_path, source, repository, commit):
                 f'{label} must change exactly its sourceFile {source_file}, '
                 f'found {targets}')
         contained_target(source, source_file, f'{label}.sourceFile')
-        patches.append({
+        chain = chains.setdefault(source_file, [])
+        if chain:
+            require(original_sha == chain[-1]['patchedSourceSHA256'],
+                    f'{label} originalSourceSHA256 does not continue the '
+                    f'previous patch for {source_file}')
+        chain.append({
             'patch': patch_relative,
             'patchFile': str(patch_file),
             'patchSHA256': patch_sha,
@@ -221,8 +227,9 @@ def load_browser_patches(patch_lock_path, source, repository, commit):
             'originalSourceSHA256': original_sha,
             'patchedSourceSHA256': patched_sha,
         })
+        patches.append(chain[-1])
     return {'path': str(patch_lock_path), 'sha256': sha256_bytes(raw),
-            'patches': patches}
+            'patches': patches, 'chains': chains}
 
 
 def head_blob_sha(source, relative):
@@ -259,6 +266,35 @@ def patched_blob_hashes(source, patch_file, paths):
                     f'{blob.stderr.decode("utf-8", "replace").strip()}')
             hashes[relative] = sha256_bytes(blob.stdout)
     return hashes
+
+
+def patched_chain_hashes(source, entries):
+    """Apply browser patches to HEAD in order in a temporary index.
+
+    The working tree is never touched.  Every patch is applied to the result
+    of the previous one, so a second patch for the same file is proven against
+    its locked pre-patch state rather than against HEAD.  Returns one
+    ``(entry, resulting SHA-256)`` pair per patch.
+    """
+    with tempfile.TemporaryDirectory(prefix='floe-office-chain-') as tmp:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(tmp) / 'index'))
+        run(['git', 'read-tree', 'HEAD'], cwd=source, env=env)
+        results = []
+        for entry in entries:
+            applied = run(['git', 'apply', '--cached', str(entry['patchFile'])],
+                          cwd=source, check=False, capture=True, env=env)
+            require(applied.returncode == 0,
+                    f"patch {entry['patchFile']} does not apply in the locked "
+                    f"browser chain: {applied.stderr.strip()}")
+            relative = entry['sourceFile']
+            blob = subprocess.run(
+                ['git', '-C', str(source), 'cat-file', 'blob', f':{relative}'],
+                env=env, capture_output=True)
+            require(blob.returncode == 0,
+                    f'temporary index does not contain {relative}: '
+                    f'{blob.stderr.decode("utf-8", "replace").strip()}')
+            results.append((entry, sha256_bytes(blob.stdout)))
+    return results
 
 
 def patch_applies(source, patch_file, paths, reverse=False):
@@ -403,40 +439,53 @@ def prepare(build_root, lock_path=None, deployment_patch=None,
         require(patch_applies(source, deployment_patch, deployment_paths),
                 'deployment patch does not apply cleanly to the pinned source')
 
-    for entry in browser_contract['patches']:
-        label = entry['sourceFile']
-        target = contained_target(source, label, 'browser patch target')
-        head_sha = head_blob_sha(source, label)
-        require(entry['originalSourceSHA256'] == head_sha,
-                f'{label} originalSourceSHA256 does not match the pinned '
-                f'commit blob {head_sha}')
-        generated_sha = patched_blob_hashes(
-            source, entry['patchFile'], [label])[label]
+    # Validate every browser patch against the result of its predecessor in
+    # the temporary index, then inspect each file chain's actual state.
+    chain_results = patched_chain_hashes(source, browser_contract['patches'])
+    for entry, generated_sha in chain_results:
         require(generated_sha == entry['patchedSourceSHA256'],
-                f'{label} patch produces {generated_sha}, but the lock pins '
-                f'{entry["patchedSourceSHA256"]}')
+                f"{entry['sourceFile']} patch produces {generated_sha}, but "
+                f"the lock pins {entry['patchedSourceSHA256']}")
+    for source_file, chain in browser_contract['chains'].items():
+        target = contained_target(source, source_file, 'browser patch target')
+        head_sha = head_blob_sha(source, source_file)
+        require(chain[0]['originalSourceSHA256'] == head_sha,
+                f'{source_file} originalSourceSHA256 does not match the '
+                f'pinned commit blob {head_sha}')
+        states = [chain[0]['originalSourceSHA256']]
+        states.extend(entry['patchedSourceSHA256'] for entry in chain)
         current_sha = sha256(target)
-        if current_sha == entry['originalSourceSHA256']:
-            entry['alreadyApplied'] = False
-            require(patch_applies(source, entry['patchFile'], [label]),
-                    f'{label} patch does not apply to the pinned source')
-        elif current_sha == entry['patchedSourceSHA256']:
-            entry['alreadyApplied'] = True
-            require(patch_applies(source, entry['patchFile'], [label],
+        require(current_sha in states,
+                f'{source_file} source is not in a known state: {current_sha} '
+                'matches neither the pinned original nor any locked patched '
+                'state')
+        applied_count = states.index(current_sha)
+        for index, entry in enumerate(chain):
+            entry['alreadyApplied'] = index < applied_count
+            entry['verifiedSourceSHA256'] = current_sha
+        if applied_count < len(chain):
+            pending = chain[applied_count]
+            require(patch_applies(source, pending['patchFile'], [source_file]),
+                    f"{source_file} patch {pending['patch']} does not apply "
+                    'to its locked pre-patch state')
+        elif applied_count:
+            require(patch_applies(source, chain[-1]['patchFile'], [source_file],
                                   reverse=True),
-                    f'{label} source matches the patched hash but the patch '
-                    'does not reverse cleanly')
-        else:
-            raise ValueError(
-                f'{label} source is not in a known state: {current_sha} '
-                'matches neither the pinned original nor the patched source')
-        entry['verifiedSourceSHA256'] = current_sha
+                    f'{source_file} final patched source does not reverse cleanly')
 
     if not deployment_already_applied:
         apply_patch(source, deployment_patch, deployment_paths)
     for entry in browser_contract['patches']:
-        if not entry['alreadyApplied']:
-            apply_patch(source, entry['patchFile'], [entry['sourceFile']])
+        if entry['alreadyApplied']:
+            continue
+        target = contained_target(source, entry['sourceFile'],
+                                  'browser patch target')
+        current_sha = sha256(target)
+        require(current_sha == entry['originalSourceSHA256'],
+                f"{entry['sourceFile']} is not at the expected pre-patch "
+                f"state before applying {entry['patch']}: {current_sha} != "
+                f"{entry['originalSourceSHA256']}")
+        apply_patch(source, entry['patchFile'], [entry['sourceFile']])
 
     require(patch_applies(source, deployment_patch, deployment_paths,
                           reverse=True),
@@ -454,17 +503,19 @@ def prepare(build_root, lock_path=None, deployment_patch=None,
             'verifiedSourceSHA256': applied_sha,
             'alreadyApplied': deployment_already_applied,
         })
-    for entry in browser_contract['patches']:
-        target = contained_target(source, entry['sourceFile'],
+    for source_file, chain in browser_contract['chains'].items():
+        target = contained_target(source, source_file,
                                   'browser patch target')
         applied_sha = sha256(target)
-        require(applied_sha == entry['patchedSourceSHA256'],
-                f"{entry['sourceFile']} patched SHA-256 mismatch: "
-                f"{applied_sha} != {entry['patchedSourceSHA256']}")
-        entry['verifiedSourceSHA256'] = applied_sha
-        require(patch_applies(source, entry['patchFile'],
-                              [entry['sourceFile']], reverse=True),
-                f"{entry['sourceFile']} patched source does not reverse cleanly")
+        final_sha = chain[-1]['patchedSourceSHA256']
+        require(applied_sha == final_sha,
+                f'{source_file} patched SHA-256 mismatch: '
+                f'{applied_sha} != {final_sha}')
+        for entry in chain:
+            entry['verifiedSourceSHA256'] = applied_sha
+        require(patch_applies(source, chain[-1]['patchFile'],
+                              [source_file], reverse=True),
+                f'{source_file} patched source does not reverse cleanly')
 
     changes = tracked_changes(source)
     require_only_known_changes(changes, expected, 'after preparation')

@@ -1,0 +1,168 @@
+diff --git a/browser/src/canvas/sections/ZoomControl.ts b/browser/src/canvas/sections/ZoomControl.ts
+index 4fbdd7a..c486c1d 100644
+--- a/browser/src/canvas/sections/ZoomControl.ts
++++ b/browser/src/canvas/sections/ZoomControl.ts
+@@ -173,14 +173,36 @@ class ZoomControl extends CanvasSectionObject {
+ 	// ---- Pinch zoom -----------------------------------------------------
+ 	// Distance between the two fingers when the gesture started, the
+ 	// document-space anchor (twips) under the pinch centre, and the running
+-	// requested zoom (unclamped; zoomTo limits it). The zoom is committed when
+-	// the gesture ends.
++	// requested zoom (unclamped; the end commit limits it). While the gesture
++	// runs, every two-finger move drives the layout's zoom-frame
++	// (beginZoom/stepZoom - the same machinery as the animated programmatic
++	// zoom), range-clamped at the supported zoom but never rounded, so the
++	// document visibly tracks the pinch. The end commit takes the nearest
++	// integer level to the range-clamped finger zoom and applies it
++	// synchronously in the same gesture, bounding the rounding step to at
++	// most half a zoom level instead of the original full level. The
++	// historical outward ceil/floor value is retained only as the
++	// beyond-range Overview guard input, so range-edge overview hand-offs
++	// behave exactly as before; programmatic zoom rules are unchanged.
+ 	private pinchStartDistance: number | null = null;
+ 	private pinchStartZoom: number | null = null;
+ 	private pinchAnchor: cool.SimplePoint | null = null;
+ 	private pinchTargetZoom: number | null = null;
++	private pinchLive: boolean = false;
+ 
+ 	public onMultiTouchStart(e: TouchEvent): void {
++		if (this.pinchLive) {
++			// Belt and braces: a cancel normally closes the frame at once via
++			// onMultiTouchEnd (the container now propagates touchcancel), but
++			// an interrupted gesture that never reached the container's cancel
++			// must not leave the layout in zoom-frame drawing.
++			if (this.layout) {
++				this.layout.stepZoom(1);
++				this.layout.endZoom(app.map.getZoom(), this.pinchAnchor);
++				app.sectionContainer.requestReDraw();
++			}
++			this.pinchLive = false;
++		}
+ 		this.pinchStartDistance = null;
+ 		this.pinchStartZoom = app.map.getZoom();
+ 		this.pinchAnchor = null;
+@@ -199,6 +221,15 @@ class ZoomControl extends CanvasSectionObject {
+ 		if (this.pinchStartDistance === null) {
+ 			this.pinchStartDistance = distance;
+ 			this.pinchAnchor = this.layout.canvasToDocumentPoint(point);
++			// Open the live zoom-frame at the pinch anchor unless another
++			// section is mid-animation (the frame is closed only by
++			// onMultiTouchEnd/onMultiTouchStart, so it must never be opened
++			// when it cannot be driven and closed reliably).
++			if (!app.sectionContainer.getAnimatingSectionName()) {
++				this.layout.beginZoom(this.pinchAnchor);
++				this.layout.stepZoom(1);
++				this.pinchLive = true;
++			}
+ 			return;
+ 		}
+ 		if (!distance || !this.pinchStartDistance) return;
+@@ -208,18 +239,102 @@ class ZoomControl extends CanvasSectionObject {
+ 			ratio,
+ 			this.pinchStartZoom,
+ 		);
++		if (this.pinchLive) {
++			// Paint this move at the finger-driven scale (1 = gesture start).
++			// The frame scale follows the clamped target so the live image
++			// never exceeds the supported zoom range. _limitZoom is a pure
++			// range clamp here; it does not round, so adjacent fractional
++			// finger moves paint distinct frames.
++			const clamped = app.map._limitZoom(this.pinchTargetZoom);
++			this.layout.stepZoom(
++				app.activeDocument.getZoomScale(clamped, this.pinchStartZoom),
++			);
++			app.sectionContainer.requestReDraw();
++		}
+ 	}
+ 
+ 	public onMultiTouchEnd(e: TouchEvent): void {
+-		if (this.pinchTargetZoom !== null && this.pinchAnchor) {
+-			const delta = this.pinchTargetZoom - this.pinchStartZoom;
+-			const finalZoom =
+-				delta > 0
++		if (e.type === 'touchcancel') {
++			// Aborted gesture: close the live frame WITHOUT committing any
++			// zoom, restoring the start scale so the hand-off is seamless.
++			if (
++				this.pinchLive &&
++				this.pinchAnchor &&
++				this.pinchStartZoom !== null &&
++				this.layout
++			) {
++				this.layout.stepZoom(1);
++				this.layout.endZoom(this.pinchStartZoom, this.pinchAnchor);
++				app.sectionContainer.requestReDraw();
++			}
++			this.pinchLive = false;
++			this.pinchStartDistance = null;
++			this.pinchStartZoom = null;
++			this.pinchTargetZoom = null;
++			this.pinchAnchor = null;
++			return;
++		}
++		const startZoom = this.pinchStartZoom;
++		// Outward ceil/floor is kept ONLY for the beyond-range Overview guard
++		// input: it decides the range-edge overview hand-off, and nearest
++		// rounding would hide a request just past the limit.
++		const guardZoom =
++			this.pinchTargetZoom !== null && startZoom !== null
++				? this.pinchTargetZoom - startZoom > 0
+ 					? Math.ceil(this.pinchTargetZoom)
+-					: Math.floor(this.pinchTargetZoom);
+-			this.zoomTo(finalZoom, this.pinchAnchor, false);
++					: Math.floor(this.pinchTargetZoom)
++				: null;
++		// The pinch commit level: the nearest integer to the range-clamped
++		// finger zoom (|commit - finger| <= 0.5 level). Clamping before the
++		// rounding keeps half-up rounding from stepping past the range at the
++		// maximum edge; the outer clamp makes both edges exact.
++		const commitZoom =
++			this.pinchTargetZoom !== null
++				? app.map._limitZoom(
++						Math.round(app.map._limitZoom(this.pinchTargetZoom)),
++					)
++				: null;
++		if (
++			this.pinchLive &&
++			this.pinchAnchor &&
++			startZoom !== null &&
++			this.layout
++		) {
++			// Commit through the same guards and hooks as zoomTo for every doc
++			// type, then close the frame map-free like the animated zoom's end.
++			if (
++				guardZoom !== null &&
++				commitZoom !== null &&
++				!OverviewFade.handleZoomBeyondLimit(guardZoom)
++			) {
++				const target = commitZoom;
++				if (
++					target !== app.map.getZoom() &&
++					app.map._docLayer._docType === 'spreadsheet'
++				)
++					OtherViewCellCursorSection.closePopups();
++				this.layout.stepZoom(
++					app.activeDocument.getZoomScale(target, startZoom),
++				);
++				this.layout.endZoom(target, this.pinchAnchor);
++			} else {
++				// Nothing to change (or the overview consumed the request):
++				// close the frame at the unchanged level.
++				this.layout.endZoom(app.map.getZoom(), this.pinchAnchor);
++			}
++			// endZoom leaves zoom-frame drawing; repaint once so an unchanged
++			// level (no zoomend) cannot keep a stale zoom-frame on screen.
++			app.sectionContainer.requestReDraw();
++			this.pinchLive = false;
++		} else if (guardZoom !== null && commitZoom !== null && this.pinchAnchor) {
++			// Live frame unavailable (another section was animating): keep the
++			// bounded end-only commit, at the nearest level behind the same
++			// Overview guard.
++			if (!OverviewFade.handleZoomBeyondLimit(guardZoom))
++				this.zoomTo(commitZoom, this.pinchAnchor, false);
+ 		}
+ 		this.pinchStartDistance = null;
++		this.pinchStartZoom = null;
+ 		this.pinchTargetZoom = null;
+ 		this.pinchAnchor = null;
+ 	}

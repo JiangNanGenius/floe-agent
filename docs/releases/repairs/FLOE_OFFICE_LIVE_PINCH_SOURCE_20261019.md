@@ -1,0 +1,122 @@
+# Office 连续双指缩放源码实现 / Office live pinch source implementation
+
+日期 / Date: 2026-10-19；最新进度 / Latest update: 2026-10-20。状态 / Status: **同步最近整数提交的浏览器资源、模拟器和设备原生组件及完整模拟器 App 已构建；真实手势验收仍有失败，尚未交付新版本。** / **Browser resources with synchronous nearest-integer commit, Simulator and device native components, and the full Simulator App are built; real-gesture acceptance still has failures and no new version is delivered.**
+
+本文记录新补丁、生产器及逐步集成证据。构建、模拟器行为和设备验收分别记录；不以组件或完整 App 编译成功宣称体验完成。 / This record covers the patches, producer and incremental integration evidence. Builds, Simulator behavior and device acceptance are recorded separately; successful component or App compilation does not qualify the experience.
+
+## 当前进度 / Current progress
+
+以下是当前状态；后文各阶段的“尚未构建／待执行”保留为当时的历史记录，不代表当前进度。 / This section is current; statements about pending builds or runs in later stage records describe their original checkpoints.
+
+- 实际浏览器 bundle 为 `1e2656306ec0888873325c8a827c40916575815bbe77b751008329df5ccd48a3`，绑定锁 `5e6b8222…` 和同步最近整数提交补丁 `12a1152f…`。模拟器组件及设备组件已实际构建，设备 ZIP 为 `e12d37dc3679c85f1f97f6bed4b2cfd0d92d2bff47efd34cdd72e3f071a85d68`，组件检查 74 项通过；匹配符号与原始证据已保存。设备组件构建不等于真机交互验收。 / The genuine browser bundle binds the current lock and synchronous nearest-commit patch. Both native components were built; the device ZIP passed 74 component checks, with matching symbols and original evidence retained. A device component build does not establish physical-device interaction acceptance.
+- 完整模拟器 App／测试宿主已通过对象编译。真实 UIKit 双向手势的 Word 画笔开启、Excel 普通、PPT 普通已有通过记录；PPT 画笔开启在保留原缩放、完整文字、无误写断言并修正返回页就绪判定后，独立复验 **1 通过、0 失败、0 跳过**。这些用例没有新增实际笔迹，不能替代笔迹保存卡片闭环。 / Full Simulator App and test hosts passed object compilation. Actual two-way UIKit gestures passed for Word drawing-on, Excel ordinary and PPT ordinary. PPT drawing-on independently passed once, with zero failures or skips, after correcting library readiness while retaining the original zoom, complete-text and no-ink assertions. These cases draw no new ink and do not close the saved-ink card loop.
+- Word 普通模式中，真实键盘已隐藏且画布恢复后，手势完成时键盘又可见；同时，旧测试把起始触点与手势后的画布比较，存在时间基准错误。两者分别调查，修正证据采集不能掩盖键盘回弹。Excel 画笔开启时，完整测量文字在向内手势后超出右侧可见区域；裁切已可见，锚点、滚动限幅或夹具几何的原因仍待查明。 / Word ordinary mode visibly reopens the keyboard by gesture completion after a real hide. Separately, an old assertion compares start points against the later canvas; correcting that timing must not mask keyboard reappearance. Excel drawing-on visibly clips the full measurement text at the right after an inward gesture; anchor, scroll-clamp or fixture-geometry causation remains unresolved.
+- 零移动点状笔迹三格式基线仍为 **0 通过、3 失败、0 跳过**；实际 Main-App 新笔迹经返回保存后显示在手记卡片中的三格式界面闭环仍未完成。真实 Pencil 手感、压力与手掌交互继续由设备验收确认。 / Three-format zero-motion dot baselines remain at zero passes, three failures and zero skips. The actual Main-App new-ink → Back/save → displayed Notes card UI loop remains unqualified in all three formats. Physical Pencil feel, pressure and palm behavior require device acceptance.
+
+本阶段整合可追溯源码与匹配组件，不晋升版本、不绕过上述失败，也不宣称有新的可安装内测。正式组件 pin 只有在同一源码的原归档传输校验和独立回读后更新。 / This stage integrates traceable source and matching components without changing versions, waiving failures or claiming a new installable beta. The production component pin is updated only after exact-source validation and independent read-back of the original archive.
+
+## 原因 / Cause
+
+固定前端 `ZoomControl.onMultiTouchMove` 只计算 `pinchTargetZoom`，不请求重绘；唯一的 `zoomTo`/`applyZoom` 提交发生在 `onMultiTouchEnd`。因此整个手势显示起始大小，抬手时一次跳到整数级。该路径由普通模式和画笔模式、Word/Excel/PPT 共用；Calc 只在提交钩子上不同。 / In the pinned frontend, `onMultiTouchMove` only computes the target and never repaints; the sole commit runs in `onMultiTouchEnd`. The document therefore stays at the start size and jumps once to an integer level when the fingers lift. Ordinary and pen modes share this path across Word/Excel/PPT; Calc differs only in its commit hook.
+
+## 补丁与闭包 / Patches and closure
+
+`FloeAgent/ThirdParty/Collabora/browser.patch.lock.json` 现在按顺序声明三项源码补丁；同一文件允许连续链式补丁，后一项的 `originalSourceSHA256` 必须等于前一项的 `patchedSourceSHA256`： / The lock now declares three source patches in order. Chained patches on one file are allowed only when each entry's original digest equals the previous entry's patched digest:
+
+| 顺序 / Order | 补丁 / Patch | 文件 / File | 原始 → 补丁 / Original → patched |
+| --- | --- | --- | --- |
+| 1 | `ios-batched-touch-start.patch` | `CanvasSectionContainer.ts` | `16389cde…` → `9c930d41…` |
+| 2 | `ios-pinch-cancel-propagation.patch` | `CanvasSectionContainer.ts` | `9c930d41…` → `74d0143b…` |
+| 3 | `ios-live-pinch-zoom.patch` | `ZoomControl.ts` | `d4af8083…` → `b4afe9ee…` |
+
+- cc1 的双指同时起始初始化、取消状态清理和原生 Pencil/手掌门控保持不变；`FloeOfficeNative.mm` 未修改。 / The cc1 batched-start initialization, cancellation cleanup and native Pencil/palm gate are unchanged; `FloeOfficeNative.mm` is untouched.
+- 每个双指移动在抬手前调用既有 `beginZoom`/`stepZoom` 帧机制并请求重绘。实时帧使用 `_limitZoom` 的范围限幅，但不取整；相邻比例（如 1.03、1.06）产生不同的帧比例。 / Every two-finger move drives the existing `beginZoom`/`stepZoom` frame machinery and requests a redraw before the gesture ends. The live frame is range-clamped by `_limitZoom` but never rounded; adjacent ratios (for example 1.03 and 1.06) produce distinct frame scales.
+- 结束提交在同一手势内同步取“范围限幅后手指缩放数值的最近整数级”（`Math.round(_limitZoom(raw))`，再用 `_limitZoom` 收边），舍入步长最多半个缩放级；历史向外 `ceil`/`floor` 值只作为 `OverviewFade` 越界判断的输入，`_limitZoom` 限幅和 Calc `closePopups` 钩子保持不变。相邻手指移动仍显示分数级实时帧，结束时才落到最近整数级，因此不宣称“全程无跳变”。 / The end commit takes the nearest integer level to the range-clamped finger zoom in the same synchronous gesture (`Math.round(_limitZoom(raw))`, then `_limitZoom` for both edges); the rounding step is at most half a zoom level. The historical outward `ceil`/`floor` value is used only as the `OverviewFade` beyond-range guard input; the `_limitZoom` clamp and Calc `closePopups` hook are unchanged. Live frames stay fractional and only the end lands on the nearest integer, so no universal "no jump" claim is made.
+- `touchcancel` 先传播到当前窗口区域，再由 `ZoomControl` 以起始缩放关闭帧且不提交缩放；无移动、首移动即结束、动画回退、越界切换和顺序手势都会清理临时状态并按需重绘。 / `touchcancel` propagates to the current window sections before the target is cleared; `ZoomControl` then closes the frame at the start zoom without committing. No-move, first-move-only, animation fallback, overview hand-off and sequential gestures all clear temporary state and repaint where needed.
+
+## 实际源码事实 / Actual source facts
+
+- 固定 `Map.js` 的 `_limitZoom` 实现是 `Math.max(min, Math.min(max, zoom))`，没有 `Math.round`/`floor`/`ceil`，固定 `browser/src` 也没有 `zoomSnap`。实时帧不会被静默量化。 / The pinned `_limitZoom` is exactly `Math.max(min, Math.min(max, zoom))`; it has no rounding and the pinned `browser/src` has no `zoomSnap`. Live frames are not silently quantized.
+- `DocumentBase.getZoomScale` 是纯 `1.2^to / 1.2^from`，`getScaleZoom` 是 `from + log(scale)/log(1.2)`，`InternPointUtil.SCALE = 1.2`。这支持分数缩放和相邻手指移动的独立帧。 / `DocumentBase.getZoomScale` is the pure `1.2^to / 1.2^from` ratio, `getScaleZoom` uses `from + log(scale)/log(1.2)`, and `InternPointUtil.SCALE = 1.2`. This supports fractional zooms and distinct frames for adjacent finger moves.
+- 动画槽的真实调用者只有程序化 `ZoomControl` 缩放、`ScrollSection` 平滑滚动和 `MouseControl` 惯性滑动；光标/选区闪烁不占用该槽。普通编辑中的闪烁光标不会禁用实时捏合。若确有滚动或程序化缩放动画重叠，首个移动会保留“仅结束时提交”的最近级回退（不开启实时帧）；该手势不宣称实时跟随。 / The animation slot's actual users are programmatic `ZoomControl` zoom, `ScrollSection` smooth scrolling and `MouseControl` kinetic swipe; caret/selection blinking does not occupy it. A blinking caret in ordinary editing therefore does not disable live pinch. If a scroll or programmatic-zoom animation genuinely overlaps, the first move keeps the end-only nearest-commit fallback (no live frame is opened); real-time following is not claimed for that gesture.
+
+## 生产器 / Producer
+
+`FloeAgent/scripts/build_office_browser_resources.py` 已从单补丁生产器泛化为多补丁、同文件链式生产器： / The producer was generalized from a single patch to multiple patches and same-file chains:
+
+- 按锁顺序逐项验证预状态、`git apply --numstat` 单目标、后状态摘要； / verifies each pre-state, single-target `git apply --numstat` and post-state digest in lock order;
+- 验证每个被修改源文件都真实生成对应 `dist/src/...js` 模块； / proves every patched source emitted its real `dist/src/...js` module;
+- 对每项要求 `bundleMarker` 或 `bundleTokens`，并在最终压缩 bundle 中检查标记存在和 token 计数增长； / requires `bundleMarker` or `bundleTokens` per patch and checks marker presence and token-count growth in the final minified bundle;
+- 回执保留逐项补丁清单和模块摘要；`--verify-receipt` 重新绑定实时锁、逐项 staged 源、原始 bundle 基线和每项 bundle 证据。缺少 `restoredSourceRoot` 会失败，不再把“原始基线缺失”当作零计数豁免。 / the receipt keeps the per-patch inventory and module digests; `--verify-receipt` re-binds the live lock, every staged source, the original bundle baseline and every patch's bundle evidence. A missing `restoredSourceRoot` fails instead of being treated as a zero-count exemption.
+
+`FloeAgent/scripts/office_real_simulator/prepare_simulator_source.py` 也已支持同文件链：在临时索引中按顺序应用补丁，逐项验证锁定结果，并识别原始、部分链和完整链状态。 / The preparation script now supports the same-file chain: patches are applied in order in a temporary index, each locked result is verified, and original/partial/full chain states are recognized.
+
+## 已执行检查 / Executed checks
+
+- `python3 FloeAgent/scripts/test_office_live_pinch_zoom.py --source <pinned checkout>`：本轮同步最近整数提交的测试为 **34 项通过**（v1 向外提交期间为 25 项，历史记录保留）。覆盖实际提取的 `ZoomControl`/`CanvasSectionContainer` 方法、1.03/1.06 分数帧、Word 实测 raw 12.844→13（旧向外为 12）、tiny/exact/半级 tie/bounds、Overview 两侧向外 guard、取消、无移动、顺序手势、动画回退、三种文档类型、程序化动画与直接提交、无新增异步状态、guard 扫描和半级步长上界。 / The current synchronous nearest-commit revision passes **34 checks** (25 during the v1 outward commit; the historical count is retained). Coverage includes actual extracted methods, fractional 1.03/1.06 frames, the measured Word raw 12.844→13 (old outward 12), tiny/exact/half-tie/bounds cases, outward Overview guards at both limits, cancel, no-move, sequential gestures, animation fallback, three document types, programmatic animated/direct zoom, no added asynchronous state, a guard sweep and the half-level step bound.
+- `python3 FloeAgent/scripts/test_office_batched_touch_start.py --source <pinned checkout>`：既有 15 项继续通过。 / The existing 15 cc1 checks still pass.
+- 109 项相关 Python 测试通过：浏览器资源 27、补丁准备 19、组件接入 20、本地传输 22、引擎修复 21；零失败。7 项与本轮无关的既有 pin fixture 失败在未修改的 `HEAD` 上可重复，未计入通过数。 / 109 related Python tests passed (27 browser resources, 19 patch preparation, 20 component integration, 22 local transport, 21 engine repair) with zero failures. Seven pre-existing pin-fixture failures unrelated to this round reproduce on unmodified `HEAD` and are not counted as passes.
+- 目标 TypeScript 检查：固定依赖下 `tsc --noEmit` 的控制（cc1 基线）和补丁树都只报告 6 个无关的既有 `ValueTooltip` 诊断，补丁文件没有新增诊断，两份输出逐字节一致。这不是 browser/App 构建。 / Targeted TypeScript check: with pinned dependencies, `tsc --noEmit` on both the cc1 control and patched tree reports only the same six pre-existing unrelated `ValueTooltip` diagnostics; no new diagnostics and byte-identical output. This is not a browser/App build.
+
+## 预期待办边界 / Expected pending boundary
+
+原生单成员修复锁 `engine.patch.lock.json`（`e3940bf9…`）未改动；实际源码图不需要新的原生修复契约。`engine.lock.json` 的合格宿主工件仍绑定旧前端（`cc1bcc58…`、旧锁摘要和单补丁清单），没有用未构建的摘要伪造新 pin。因此 `pin_office_host_artifact.py --check` 当前以退出码 2 报告锁摘要和补丁数量不一致；这是源码契约先于工件重建的预期 fail-closed 状态，未把检查改为通过。 / The native single-member repair lock `engine.patch.lock.json` (`e3940bf9…`) is unchanged; the actual source graph does not require a new native repair contract. `engine.lock.json` still binds the previously qualified host to the old frontend (`cc1bcc58…`, old lock digest and single-patch inventory); no unbuilt digest was used to fake a new pin. Consequently `pin_office_host_artifact.py --check` currently exits 2 with lock-digest and patch-count mismatches. This is the expected fail-closed source-ahead state, and the check was not weakened to green.
+
+后续按下文实际进度推进，原生设备组件与正式 pin 需独立完成；普通和画笔模式、Word/Calc/PPT 的真实可见中间帧验收通过后再交付新版本。 / Continue from the actual progress below. The device component and production pin require separate qualification; new-build delivery follows real visible-frame acceptance in ordinary and pen modes for Word/Calc/PPT.
+
+## 实际浏览器资源构建 / Genuine browser resource build
+
+固定依赖的真实构建已完成，未使用工具链漂移豁免。清除旧编译输出后，对照构建重新生成 525 个 JavaScript 模块，最终 bundle 与原始资源逐字节一致（`6320b78ccd3b08e55d4d861f78e696b15d750aca871a1c4a6c8f2027a795f574`）。随后按锁顺序应用三段补丁并重新构建，得到实际 bundle `85528b337b584075dadcdc2ddc4374fa4753eacc965ec0033013e3562a0bd52f`（10,529,079 字节）；回执摘要为 `f321c3140b5e2b93c88084063b6fead5e833aea47a57bedd2b9c145572bc9d4a`。保存后的回执及实际资源验证通过，`node --check` 通过。 / The genuine pinned-dependency build completed without a toolchain-drift waiver. The cold control emitted 525 JavaScript modules and reproduced the original bundle byte-for-byte. The three ordered patches then produced bundle `85528b33…` (10,529,079 bytes), with receipt `f321c314…`; saved receipt/resource verification and `node --check` passed.
+
+注：本段的 `85528b33…` bundle 及回执绑定 v1 向外提交补丁；本页末节的同步最近整数提交修订**尚未重建**资源，旧回执不能据新锁通过验证。 / Note: the `85528b33…` bundle and receipt in this section bind the v1 outward-commit patch; the synchronous nearest-commit revision at the end of this page has **not been rebuilt**, and the old receipt cannot verify against the new lock.
+
+完整 `dist` 树并非逐字节不变：除 bundle 和两份已修改模块外，另有与上一合格基线相同的 `docstatefunctions.js` 空白规范化及 TypeScript 构建元数据变化；对照最终 bundle 仍逐字节一致。原生/App 资源 pin 尚未晋升，不把真实前端构建成功当作手势可见跟手已通过。 / The complete `dist` tree is not byte-identical: besides the bundle and two changed modules, it contains the same `docstatefunctions.js` whitespace normalization as the previous qualified baseline and TypeScript build-metadata changes. The control bundle is still byte-identical. Native/App pins are not yet promoted, and frontend build success does not establish visible mid-gesture tracking.
+
+## 完整 App 与真实手势进展 / Full App and actual gesture progress
+
+在 `cac52a54` 加已记录的未提交 Office 修复图上，真实资源 `85528b33…` 已打入模拟器组件及完整 Debug App。组件归档 `ce2264d6…` 的 90 项校验和二进制／符号 UUID 核对通过，完整 App、测试宿主及 Swift 6 对象编译通过。首次缺少 dSYM 的校验失败保留；随后从同一次实际构建导出匹配符号。设备 pin 仍绑定旧资源，未用模拟器结果替代设备资格。 / On `cac52a54` plus the recorded uncommitted Office graph, genuine bundle `85528b33…` is packaged in the Simulator component and full Debug App. Archive `ce2264d6…` passed 90 checks and binary/symbol UUID verification; full App, test hosts and Swift 6 object compilation passed. The original missing-dSYM verification failure is retained; matching symbols were derived from the same actual build. The device pin still binds the prior resource.
+
+固定 iPad 的两项真实 UIKit 测试均失败、零跳过，原始截图、触摸记录和录像已保留。普通／画笔首次放大均有抬手前的连续可见变化。普通模式随后缩小也有可见中间变化，但当前测试未处理重复结束事件和有界记录淘汰。画笔模式随后缩小保持原大小；原始触点表明首指落在顶部工具栏，另指才落入画布，不能作为正文内双指缩放的有效验收。后续改用实际正文区域内的 UIKit 手势，并独立检查第一指被门控后第二指加入、无效手势结束及后续恢复；不为通过混合工具栏触点测试而抢占工具栏操作。 / Both actual UIKit cases failed with zero skips; raw screenshots, touch records and video are retained. First zoom-in visibly progresses before lift in both modes. Ordinary zoom-out also shows intermediate changes, but the current test mishandles duplicate end events and ring eviction. Pen zoom-out stays flat; its first touch starts on the top toolbar and the second on the canvas, so it does not qualify an in-document pinch. Next acceptance uses the actual document area and independently checks a suppressed first finger followed by the second, ignored-gesture cleanup and recovery. Toolbar actions will not be hijacked to pass this mixed-target test.
+
+录像包含多档实际尺寸，但 PTS 原点与录制就绪时间的偏差尚未校准，不能把两段时长接近写成输入延迟证明。普通／画笔首次放大在所测正向 500 ms 时间偏差下仍有多档结束前画面；普通缩小对更大偏差敏感。布局状态、呈现帧与真实 Pencil 手感分别记录。 / The video contains multiple visible sizes, but the PTS origin versus recorder-ready time is uncalibrated. Similar durations do not prove input latency. Both first zoom-ins retain multiple pre-end sizes under the tested positive 500 ms offset; ordinary zoom-out is more anchor-sensitive. Layout state, presented frames and physical Pencil feel remain distinct evidence.
+
+独立的新建手记／工具栏设置／返回保存用例通过，预览引用与实际保存资源一致，未新增预览错误。它没有写入 Pencil 笔迹，也没有复现旧的首次导入失败，缩略图问题仍未关闭。该本地 Debug App 虽显示 1.7.39（280），新修复不在已发布 280 的不可变源码和安装包中。固定模拟器已关机，数据保留；新设备组件、正式 pin、六种模式验收及新内测仍待完成。 / A separate fresh Note/toolbar/settings/back-save case passed with its preview bound to the saved resource and no fresh preview failure. It drew no Pencil ink and did not reproduce the older first-import failure, so thumbnails remain open. This local Debug App displays 1.7.39 (280), but these changes are absent from immutable published 280 source and package. The shared Simulator is shut down with data preserved; device component, pin, six-case acceptance and a new beta remain pending.
+
+## 同步最近整数提交源码修订 / Synchronous nearest-commit source revision
+
+2026-10-19：源码契约已在上述实时帧补丁之上修订为**同步最近整数提交**（SYNC-nearest），本次只改源码、锁和源码检查，**未重建浏览器 bundle、原生组件或 App，未运行模拟器／设备，未产生新版本或内测**。上文的 `85528b33…` bundle、v1 向外提交证据和 UI2 实测均保持历史原样。 / On 2026-10-19 the source contract was revised to a **synchronous nearest-integer commit** (SYNC-nearest) on top of the live-frame patch. This revision changes only source, lock and source checks: **no browser bundle, native component or App was rebuilt, no Simulator/device run was performed, and no version or beta was produced.** The `85528b33…` bundle, v1 outward-commit evidence and UI2 measurements above remain historical.
+
+### 原因与行为 / Cause and behaviour
+
+UI2 录像实测 Word 绘制开启、14→12 的外向手势：最后一个抬手前帧为 **0.810×**，提交后为 **0.694×**（12 级），额外收缩 **−14.29 %**。源码路径是结束提交把分数目标按向外 `ceil`/`floor` 一次落到整数级；最坏一整级为 20 % / 16.7 %。 / The UI2 video for the Word drawing-on 14→12 gesture measured the last pre-end frame at **0.810×** and the settled frame at **0.694×** (level 12), an extra **−14.29 %** shrink. The source path was the end commit applying the outward `ceil`/`floor` integer level to the fractional target in one frame; the worst case was a full level, 20 % / 16.7 %.
+
+修订后的提交规则： / Revised commit rule:
+
+- 实时帧不变：每个双指移动仍以 `_limitZoom` 限幅后的分数目标驱动 `beginZoom`/`stepZoom` 并重绘。 / Live frames are unchanged: every two-finger move drives `beginZoom`/`stepZoom` at the range-clamped fractional target and requests a redraw.
+- 结束提交：`Math.round(_limitZoom(rawTarget))` 后再 `_limitZoom`，同一 touchend 帧内通过原 `stepZoom`/`endZoom` 和 `requestReDraw` 提交；最近整数相对手指值的舍入步长不超过 **半级（向上 9.54 % / 向下 8.71 %）**，而不是原来的整级。 / End commit: `Math.round(_limitZoom(rawTarget))` followed by `_limitZoom`, applied synchronously in the same touchend frame through the existing `stepZoom`/`endZoom` and `requestReDraw`; the rounding step is at most **half a level (9.54 % up / 8.71 % down)** instead of a full level.
+- 历史向外 `ceil`/`floor` 数值只保留为 `OverviewFade.handleZoomBeyondLimit` 的守卫输入，越界 Overview 的边缘判断与旧行为一致；`_limitZoom`、Calc `closePopups`、取消、无移动、程序化缩放和 Ctrl+滚轮路径不变。 / The historical outward `ceil`/`floor` value is retained only as the `OverviewFade.handleZoomBeyondLimit` guard input, so range-edge Overview decisions stay as before. `_limitZoom`, Calc `closePopups`, cancel, no-move, programmatic zoom and the Ctrl+wheel path are unchanged.
+- 没有新增字段、方法、计时器、监听器或动画槽占用；本修订不是 150 ms glide 原型，也没有任何延迟 settle 回调。 / No fields, methods, timers, listeners or animation-slot occupancy were added. This is not the 150 ms glide prototype and has no deferred settle callback.
+
+实测 Word 用例现在提交 **13**（相对 0.810× 为 **+2.88 %**），旧向外规则提交 **12**（−14.27 %）。历史 UI2 的 12 级记录不追改，未来 UI3 应在同一夹具上看到 13 级。 / The measured Word case now commits **13** (**+2.88 %** relative to 0.810×); the old outward rule committed **12** (−14.27 %). The historical UI2 level-12 record is not rewritten; the future UI3 run should observe level 13 on the same fixture.
+
+### 源码与锁摘要 / Source and lock digests
+
+| 项 / Item | 值 / Value |
+| --- | --- |
+| `ZoomControl.ts` 原始 / original | `d4af808380c7610fdfb3e40749395833bb8d24bccd1f45eaffb8e66f9cb6e3fc` |
+| `ZoomControl.ts` 补丁后 / patched | `b4afe9ee63720e445f6e6579def565c3808ff846d063287dbb66120f55d973d8` |
+| `ios-live-pinch-zoom.patch` | `12a1152fa2455bb174462006ce8f097b2b874f397d3b1d2cabcfa9d198957b45` |
+| `browser.patch.lock.json` | `5e6b8222a581851dff57f44811b83bb89f50df8221acfc7daf705cfd84867b55` |
+
+补丁仍只修改 `browser/src/canvas/sections/ZoomControl.ts` 一个文件；`git apply --check`、正向应用、反向应用和 `patch -p1 --dry-run` 均通过，应用结果与上表补丁后摘要逐字节一致。 / The patch still modifies only `browser/src/canvas/sections/ZoomControl.ts`; `git apply --check`, forward apply, reverse apply and `patch -p1 --dry-run` pass, and the applied result matches the patched digest above byte-for-byte.
+
+### 已执行检查（仅源码） / Executed checks (source only)
+
+- `test_office_live_pinch_zoom.py`：**34 项通过**，使用固定源码中实际提取的方法与忠实 stub；包括 Word raw 12.844→13 vs 旧 12、tiny/exact/半级 tie、最大/最小限幅、两侧 Overview 向外 guard、取消、无移动、顺序手势、动画回退、三文档类型、普通/画笔同路径、程序化动画/直接提交、无新增异步状态、guard 扫描和半级步长上界。 / 34 checks pass against actual extracted methods and faithful stubs, including the Word raw 12.844→13 vs old 12, tiny/exact/half ties, max/min clamps, outward Overview guards at both limits, cancel, no-move, sequential gestures, animation fallback, three document types, ordinary/pen equivalence, programmatic animated/direct zoom, no added asynchronous state, a guard sweep and the half-level step bound.
+- `test_office_batched_touch_start.py`：既有 **15 项通过**。 / the existing 15 cc1 checks pass.
+- Python 契约测试：浏览器资源 **27**、补丁准备 **19**、组件接入 **20**、本地传输 **22**、引擎修复 **21**，共 **109 项通过、零失败**。 / Python contract tests: browser resources 27, patch preparation 19, component integration 20, local transport 22, engine repair 21 — **109 passed, zero failures**.
+- `pin_office_host_artifact.py --check` 仍以退出码 **2** 拒绝：`engine.lock.json` 的合格宿主工件仍绑定旧前端（`cc1bcc58…`、旧锁摘要和单补丁清单），这是源码先于工件重建的预期 fail-closed 状态，未改成通过。 / `pin_office_host_artifact.py --check` still exits **2** because the qualified host artifact in `engine.lock.json` still binds the old frontend (`cc1bcc58…`, old lock digest and single-patch inventory). This is the expected fail-closed source-ahead-of-artifact state and was not weakened to green.
+
+### 生产器与后续 / Producer and next steps
+
+生产器必须按锁顺序重新应用三项补丁、真实重建 TypeScript/bundle，并重新导出回执；**新 bundle 摘要只有在实际构建和验证后才能填写**，本记录不预填、不伪造。随后原生组件、完整 App、六模式真实 UI3（Word/Calc/PPT × 普通/画笔）及已保存笔迹/恢复验收仍由主负责人串行执行。源码检查不是 App 或设备验收。 / The producer must re-apply the three locked patches in order, genuinely rebuild TypeScript/bundle and export a new receipt; **a new bundle digest is recorded only after the actual build and verification**, never pre-filled here. Native component, full App, six-mode real UI3 (Word/Calc/PPT × ordinary/pen) and saved-ink/restoration acceptance remain with the primary owner. Source checks are not App or device acceptance.

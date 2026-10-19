@@ -14,7 +14,44 @@
       "sourceFile": "browser/src/canvas/CanvasSectionContainer.ts",
       "originalSourceSHA256": "16389cdebe77ddc98e4eddfcdeee6ca0a4432f35dbfd342c17c2d12be2349135",
       "patchedSourceSHA256": "9c930d4145196acffb6920bfc1573fdd39534dd86a3771bc2a0981d23ca71ec5",
-      "note": "Floe local frontend patch, not an upstream commit. A batched two-finger touchstart initializes the shared start/target from the first touch before entering the existing multi-touch path; retained positions from a completed gesture are discarded for the next batched birth, and touchcancel clears multiTouch. Engine.lock.json artifact and resource pins intentionally stay unchanged until the regenerated browser bundle is rebuilt and verified."
+      "bundleMarker": "this.positionOnMouseDown===null||this.touchEventInProgress",
+      "bundleTokens": [
+        "this.clearMousePositions()",
+        "this.findSectionContainingPoint(this.positionOnMouseDown)",
+        "this.convertPositionToCanvasLocale("
+      ],
+      "note": "Floe local frontend patch, not an upstream commit. A batched two-finger touchstart initializes the shared start/target from the first touch before entering the existing multi-touch path; retained positions from a completed gesture are discarded for the next batched birth, and touchcancel clears multiTouch."
+    },
+    {
+      "patch": "patches/ios-pinch-cancel-propagation.patch",
+      "patchSHA256": "1b8bd7d90246d361fb9cf6cb556e31f99e5b654e227d0343d1ab211d6644827b",
+      "sourceRepository": "https://github.com/CollaboraOnline/online.mirror.git",
+      "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+      "sourceFile": "browser/src/canvas/CanvasSectionContainer.ts",
+      "originalSourceSHA256": "9c930d4145196acffb6920bfc1573fdd39534dd86a3771bc2a0981d23ca71ec5",
+      "patchedSourceSHA256": "74d0143b3c0a82b58f1c7acf517d5e9db77aa926b72c65b6b905f485bd8095e1",
+      "bundleTokens": [
+        "this.propagateOnMultiTouchEnd(",
+        "this.getSectionWithName(this.sectionOnMouseDown)",
+        "this.multiTouch"
+      ],
+      "note": "Chained after ios-batched-touch-start.patch on the same file. onTouchCancel propagates the cancelled two-finger gesture to the current target before clearing the position/target state, so ZoomControl can close its live zoom-frame in the same gesture without committing a zoom. The native Pencil/palm gate is untouched."
+    },
+    {
+      "patch": "patches/ios-live-pinch-zoom.patch",
+      "patchSHA256": "12a1152fa2455bb174462006ce8f097b2b874f397d3b1d2cabcfa9d198957b45",
+      "sourceRepository": "https://github.com/CollaboraOnline/online.mirror.git",
+      "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+      "sourceFile": "browser/src/canvas/sections/ZoomControl.ts",
+      "originalSourceSHA256": "d4af808380c7610fdfb3e40749395833bb8d24bccd1f45eaffb8e66f9cb6e3fc",
+      "patchedSourceSHA256": "b4afe9ee63720e445f6e6579def565c3808ff846d063287dbb66120f55d973d8",
+      "bundleMarker": "pinchLive",
+      "bundleTokens": [
+        "this.layout.beginZoom(",
+        "this.layout.stepZoom(",
+        "this.layout.endZoom("
+      ],
+      "note": "Floe local frontend patch, not an upstream commit. Every two-finger move paints the existing zoom-frame at the range-clamped, unrounded target scale before the gesture ends. The end commit is synchronous in the same gesture and takes the nearest integer level to the range-clamped finger zoom (rounding step at most half a level), keeping the zoomTo guard/hook set (OverviewFade, _limitZoom, spreadsheet closePopups); the historical outward ceil/floor value is retained only as the beyond-range Overview guard input. touchcancel closes the frame at the start zoom without a commit."
     }
   ]
 }

@@ -1,0 +1,20 @@
+diff --git a/browser/src/canvas/CanvasSectionContainer.ts b/browser/src/canvas/CanvasSectionContainer.ts
+index 02c1eff..f935f14 100644
+--- a/browser/src/canvas/CanvasSectionContainer.ts
++++ b/browser/src/canvas/CanvasSectionContainer.ts
+@@ -1573,6 +1573,15 @@ class CanvasSectionContainer {
+ 	}
+ 
+ 	public onTouchCancel (e: TouchEvent) {
++		// An interrupted two-finger gesture must reach the window sections
++		// before its target is dropped: ZoomControl keeps a live zoom-frame
++		// open during a pinch and closes it from the propagated end without
++		// committing any zoom (it distinguishes the cancel event type).
++		if (this.multiTouch) {
++			var cancelSection: CanvasSectionObject = this.getSectionWithName(this.sectionOnMouseDown);
++			if (cancelSection)
++				this.propagateOnMultiTouchEnd(cancelSection, e);
++		}
+ 		this.clearMousePositions();
+ 		this.multiTouch = false;
+ 		this.stopLongPress();

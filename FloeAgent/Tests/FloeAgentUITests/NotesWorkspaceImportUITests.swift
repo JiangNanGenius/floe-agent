@@ -360,6 +360,29 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     /// last-finger touchend. This is not a substitute for root's external
     /// Simulator recording, which remains the presented-frame evidence.
     ///
+    /// The current contract additionally ties the accepted frames to the
+    /// input that produced them: every accepted live bubble frame must
+    /// equal the scale implied by ITS OWN event's raw recorded
+    /// finger-distance ratio against the gesture's immutable first-move
+    /// reference; the end commit is the production
+    /// `_limitZoom(Math.round(_limitZoom(rawTarget)))` policy evaluated
+    /// against the LAST input-owned live move (frozen
+    /// by the probe's monotonic passive dispatch sequence, so 0.1 ms
+    /// event-time ties cannot misselect it; the probe also records the
+    /// full-precision unclamped JS target and the consumer applies the
+    /// production clamp/round/clamp order with exact Math.round semantics,
+    /// floor(x + 0.5)); and the release's own
+    /// after-target sample must observe the frame CLOSED (`iz` 0, no live
+    /// scale) with the committed nearest level. A terminal frame that is
+    /// still open is a contract failure and is rejected — never resolved
+    /// through a later sample, a post-release record or a latest/global
+    /// fallback. The historical ceil/floor commit of recorded old-host runs
+    /// stays historical truth and is never relabelled; pairing this
+    /// acceptance with an old host is exactly the mixed qualification that
+    /// must fail. An explicitly marker-launched run also verifies the
+    /// on-page badge tokens for the recorded video (bounded gesture tokens
+    /// only).
+    ///
     /// Word, Calc and Impress each have an owned centered fixture; every case
     /// runs the same strict helper and keeps the original full-title OCR,
     /// growth/shrink thresholds, drawing-state, no-finger-ink and safe-exit
@@ -439,6 +462,13 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                                "--ui-test-skip-onboarding", fixtureLaunchArgument,
                                "--office-touch-qualification"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
+        // The on-page pinch marker badge is a separate, explicit opt-in:
+        // the runner appends the app-side marker argument only when the
+        // operator asked for recorded-video acceptance. Ordinary
+        // qualification runs never create the badge node.
+        if ProcessInfo.processInfo.environment["FLOE_OFFICE_PENCIL_VISIBLE_MARKER"] == "1" {
+            app.launchArguments.append("--office-touch-qualification-visible-marker")
+        }
         app.launch()
         defer { app.terminate() }
         if ipad { requireLandscapeAfterLaunch(app) }
@@ -613,6 +643,15 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let scale: Double
         let committedZoom: Double
         let source: String
+        /// Passive finger distance of the same event (`d`, recorded raw at
+        /// full JSON double precision) and the gesture's immutable
+        /// first-live-move reference (`d0`). The input-correlated contract
+        /// derives the scale the engine must paint from them. `eventSeq` is
+        /// the probe's monotonic passive dispatch sequence, which orders
+        /// 0.1 ms event-time ties by real dispatch order.
+        let distance: Double?
+        let reference: Double?
+        let eventSeq: Double?
     }
 
     private func assertOfficeTouchProbeBaseline(_ snapshot: [String: Any], drawingOn: Bool,
@@ -815,14 +854,23 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(source == "b" || source == "r",
                       "\(label): the terminal sample must name its source (bubble-after-target or render-step)",
                       file: file, line: line)
+        // Current synchronous nearest contract: the release handler
+        // closes the zoom frame and commits the nearest level, so the
+        // terminal record's own after-target sample MUST observe the closed
+        // frame. An open terminal frame is a contract failure — it is never
+        // resolved by a later frame, a post-release record or latest/global
+        // state.
         XCTAssertEqual(pinchNumber(sample["iz"]), 0,
-                       "\(label): the terminal sample must observe the closed zoom frame",
+                       "\(label): the terminal sample must observe the synchronously closed zoom frame",
                        file: file, line: line)
         XCTAssertNil(pinchNumber(sample["zfs"]),
                      "\(label): the terminal sample must not carry a live frame scale",
                      file: file, line: line)
         XCTAssertNotNil(pinchNumber(sample["z"]),
                         "\(label): the terminal sample must carry the committed zoom",
+                        file: file, line: line)
+        XCTAssertNotNil(pinchNumber(record["seq"]),
+                        "\(label): the terminal record must carry its passive dispatch sequence",
                         file: file, line: line)
         let sampleAt = try XCTUnwrap(pinchNumber(sample["at"]),
                                      "\(label): the terminal sample time is missing",
@@ -942,7 +990,10 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                 throw OfficeCanvasAnchorError(description: "\(label): every bounded first-live sample must be a trusted pre-end move of this gesture")
             }
             frames.append(OfficeLiveFrame(eventTime: eventTime, sampleTime: sampleTime,
-                                          scale: scale, committedZoom: committed, source: source))
+                                          scale: scale, committedZoom: committed, source: source,
+                                          distance: finitePinchNumber(value["d"]),
+                                          reference: finitePinchNumber(value["d0"]),
+                                          eventSeq: finitePinchNumber(value["seq"])))
         }
         return frames.min {
             if $0.eventTime != $1.eventTime { return $0.eventTime < $1.eventTime }
@@ -1017,6 +1068,9 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let cachedSample = try assertStrictOfficeTerminal(
             cachedTerminal, endT: endT, endGesture: endGesture,
             label: "\(label)-cache", file: file, line: line)
+        XCTAssertEqual(pinchNumber(cachedTerminal["seq"]), pinchNumber(after["eseq"]),
+                       "\(label): the cached terminal must carry the gesture's recorded end sequence",
+                       file: file, line: line)
         let ringTerminals = newEvents.filter {
             ($0["k"] as? String) == "te"
                 && pinchNumber($0["tr"]) == 1
@@ -1028,6 +1082,9 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             endSample = try assertStrictOfficeTerminal(
                 ringTerminal, endT: endT, endGesture: endGesture,
                 label: label, file: file, line: line)
+            XCTAssertEqual(pinchNumber(ringTerminal["seq"]), pinchNumber(cachedTerminal["seq"]),
+                           "\(label): the ring terminal must agree with the cached terminal's dispatch sequence",
+                           file: file, line: line)
             XCTAssertEqual(pinchNumber(endSample["z"]), pinchNumber(cachedSample["z"]),
                            "\(label): the ring terminal and cache must agree on committed zoom",
                            file: file, line: line)
@@ -1051,6 +1108,13 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertNil(pinchNumber(afterState["zfs"]),
                      "\(label): no zoom-frame scale may remain after touchend",
                      file: file, line: line)
+        let endSeq = try XCTUnwrap(pinchNumber(after["eseq"]),
+                                   "\(label): the release end sequence is missing")
+        // The terminal sample must be closed (asserted above) and carries
+        // the synchronous nearest commit directly.
+        XCTAssertEqual(pinchNumber(endSample["iz"]), 0,
+                       "\(label): the terminal sample must be closed at the synchronous commit",
+                       file: file, line: line)
         let committedEnd = try XCTUnwrap(pinchNumber(endSample["z"]),
                                          "\(label): the committed end zoom is missing")
         XCTAssertEqual(pinchNumber(afterState["z"]), committedEnd,
@@ -1125,7 +1189,10 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                   sampleTime <= endT + 0.5
             else { continue }
             live.append(OfficeLiveFrame(eventTime: eventTime, sampleTime: sampleTime,
-                                        scale: scale, committedZoom: committed, source: source))
+                                        scale: scale, committedZoom: committed, source: source,
+                                        distance: pinchNumber(sample["d"]),
+                                        reference: pinchNumber(sample["d0"]),
+                                        eventSeq: pinchNumber(record["seq"])))
         }
         XCTAssertGreaterThanOrEqual(live.count, 3,
                                     "\(label): at least three post-target live move samples must precede touchend; got \(live.count)",
@@ -1169,15 +1236,25 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                                      "\(label): the first fallback frame must be near the gesture start",
                                      file: file, line: line)
         }
-        for index in 1..<distinct.count {
-            if direction == .inward {
-                XCTAssertGreaterThan(distinct[index].scale, distinct[index - 1].scale,
-                                     "\(label): live frames must increase during a pinch-in",
-                                     file: file, line: line)
-            } else {
-                XCTAssertLessThan(distinct[index].scale, distinct[index - 1].scale,
-                                  "\(label): live frames must decrease during a pinch-out",
-                                  file: file, line: line)
+        // The historical pairwise "every distinct scale must move
+        // monotonically in the commanded direction" rule asserted a
+        // property of the INPUT that the synthesized UIKit pinch does not
+        // have: its first delivered touchmove can land mid an outward start
+        // ramp, and the engine faithfully paints that ramp (the recorded
+        // UI2 run: 1.0 → 1.0009). Under the current contract the live frames
+        // must instead TRACK the input — verified per-event by the
+        // input-correlation block below — while ordering is proven by the
+        // probe's own arrival counters, which remain correct even when
+        // event times tie at the 0.1 ms recording resolution.
+        var lastArrival: Double?
+        for frame in live {
+            if let seq = frame.eventSeq {
+                if let previous = lastArrival {
+                    XCTAssertGreaterThan(seq, previous,
+                                         "\(label): live move arrival counters must strictly increase in ring order",
+                                         file: file, line: line)
+                }
+                lastArrival = seq
             }
         }
         let final = try XCTUnwrap(distinct.last, "\(label): no final live frame")
@@ -1197,12 +1274,170 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                                     "\(label): the supported minimum zoom is missing")
         let maxZoom = try XCTUnwrap(pinchNumber(afterState["maxz"]),
                                     "\(label): the supported maximum zoom is missing")
-        let impliedFinal = startZoom + log(final.scale) / log(1.2)
-        let expected = expectedCommittedZoom(implied: impliedFinal, direction: direction,
-                                             minZoom: minZoom, maxZoom: maxZoom)
-        XCTAssertEqual(committedEnd, expected, accuracy: 1e-6,
-                       "\(label): the end commit must keep the original outward integer-level rule (last live scale \(final.scale), implied \(impliedFinal))",
+        // Input-correlated live scale (current contract). The pinned engine
+        // computes the live frame scale as exactly this function of the
+        // event's own finger distance: ratio = distance /
+        // pinchStartDistance (ZoomControl.onMultiTouchMove), target =
+        // getScaleZoom(ratio, pinchStartZoom) (the reviewed 1.2 log/pow
+        // inverse pair in DocumentBase), clamped = map._limitZoom(target)
+        // (a pure Math.min/max range clamp in Map.js), painted =
+        // getZoomScale(clamped, pinchStartZoom), which ViewLayout.stepZoom
+        // publishes and CanvasTileLayer.zoomFrameScale exposes. The probe
+        // records the SAME event's distance at capture time with the
+        // container's own sqrt(pow(abs(dx),2)+pow(abs(dy),2)) formula, RAW
+        // and full-precision: touch lists are immutable during dispatch, so
+        // the recorded value is bit-identical to the engine's input, and no
+        // distance quantization must be bounded across the fixture
+        // reference sizes. Only the synchronous window-bubble samples
+        // (`src` "b") pair an event's own input with the engine state that
+        // event produced; rAF fallback samples never serve as correlation
+        // evidence. The remaining recorded quantization is num4 on zfs
+        // (<= 5e-5 absolute); the consumer's Swift log/pow versus the
+        // engine's JavaScript log/pow differ by a few ulps at these
+        // magnitudes (|level delta| within the supported range), far below
+        // that bound. 1e-4 absolute therefore covers the recorded
+        // representation as a derived bound, not an observed delta.
+        var bubbleLive = 0
+        var bubbleReference: Double?
+        for frame in live where frame.source == "b" {
+            bubbleLive += 1
+            let distance = try XCTUnwrap(frame.distance,
+                                         "\(label): every bubble live frame must carry its event's passive finger distance")
+            let reference = try XCTUnwrap(frame.reference,
+                                          "\(label): every bubble live frame must carry the gesture's first-move reference")
+            XCTAssertGreaterThan(distance, 0,
+                                 "\(label): the recorded finger distance must be positive",
+                                 file: file, line: line)
+            XCTAssertGreaterThan(reference, 0,
+                                 "\(label): the recorded first-move reference must be positive",
+                                 file: file, line: line)
+            if let existing = bubbleReference {
+                XCTAssertEqual(reference, existing, accuracy: 0,
+                               "\(label): d0 must be immutable across every verified consumer of the same gesture",
+                               file: file, line: line)
+            }
+            bubbleReference = reference
+            let ratio = distance / reference
+            let target = startZoom + log(ratio) / log(1.2)
+            let clamped = min(maxZoom, max(minZoom, target))
+            let inputScale = pow(1.2, clamped - startZoom)
+            XCTAssertEqual(frame.scale, inputScale, accuracy: 1e-4,
+                           "\(label): bubble live scale must match the input-distance ratio (d=\(distance) d0=\(reference) ratio=\(ratio) expected=\(inputScale) recorded=\(frame.scale))",
+                           file: file, line: line)
+        }
+        XCTAssertGreaterThanOrEqual(bubbleLive, 3,
+                                    "\(label): at least three same-event bubble live frames must carry the input-correlation proof; got \(bubbleLive)",
+                                    file: file, line: line)
+
+        // Current sync commit policy, exactly as accepted in production:
+        // range-clamp the FULL-PRECISION JS raw end target with the pinned
+        // map._limitZoom, round with exact JavaScript Math.round semantics
+        // (floor(x + 0.5), no epsilon), then range-clamp again —
+        // _limitZoom(Math.round(_limitZoom(rawTarget))) — committed
+        // synchronously in the release handler. The policy is evaluated
+        // against the LAST actual input-owned live move: `lfin`, frozen by
+        // the probe's monotonic passive dispatch sequence and retained
+        // independently of the bounded ring, so event times that tie at the
+        // 0.1 ms recording resolution (the recorded UI2 run has exactly such
+        // a tie between the last move and the last-finger end) cannot
+        // misselect it.
+        let lfin = try XCTUnwrap(after["lfin"] as? [String: Any],
+                                 "\(label): the probe must retain the last input-owned live move")
+        XCTAssertEqual(pinchNumber(lfin["gi"]), endGesture,
+                       "\(label): the commit input must belong to the accepted gesture", file: file, line: line)
+        XCTAssertEqual(pinchNumber(lfin["tr"]), 1,
+                       "\(label): the commit input must be trusted", file: file, line: line)
+        XCTAssertEqual(lfin["src"] as? String, "b",
+                       "\(label): the commit input must be the same-event synchronous bubble sample",
                        file: file, line: line)
+        let lfinTime = try XCTUnwrap(finitePinchNumber(lfin["t"]),
+                                     "\(label): the commit input time is missing")
+        let lfinAt = try XCTUnwrap(finitePinchNumber(lfin["at"]),
+                                   "\(label): the commit input sample time is missing")
+        let lfinMove = try XCTUnwrap(finitePinchNumber(lfin["mv"]),
+                                     "\(label): the commit input arrival counter is missing")
+        let lfinDistance = try XCTUnwrap(finitePinchNumber(lfin["d"]),
+                                         "\(label): the commit input must carry its raw finger distance")
+        let lfinReference = try XCTUnwrap(finitePinchNumber(lfin["d0"]),
+                                          "\(label): the commit input must carry the gesture reference")
+        let lfinScale = try XCTUnwrap(finitePinchNumber(lfin["zfs"]),
+                                      "\(label): the commit input must carry the live frame scale")
+        let lfinSeq = try XCTUnwrap(finitePinchNumber(lfin["seq"]),
+                                    "\(label): the commit input must carry its passive dispatch sequence")
+        let lfinStartZoom = try XCTUnwrap(finitePinchNumber(lfin["z0"]),
+                                          "\(label): the commit input must carry the raw start zoom")
+        let lfinTarget = try XCTUnwrap(finitePinchNumber(lfin["rt"]),
+                                       "\(label): the commit input must carry the unclamped JS target")
+        XCTAssertTrue(lfinStartZoom.isFinite && lfinTarget.isFinite,
+                      "\(label): the commit input's zoom/target values must be finite",
+                      file: file, line: line)
+        XCTAssertGreaterThan(lfinDistance, 0,
+                             "\(label): the commit input distance must be positive", file: file, line: line)
+        XCTAssertGreaterThan(lfinReference, 0,
+                             "\(label): the commit input reference must be positive", file: file, line: line)
+        XCTAssertLessThanOrEqual(lfinTime, endT,
+                                 "\(label): the commit input must not postdate the release", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(lfinAt, lfinTime,
+                                   "\(label): the commit input sample must not predate its own event",
+                                   file: file, line: line)
+        if let existing = bubbleReference {
+            XCTAssertEqual(lfinReference, existing, accuracy: 0,
+                           "\(label): the commit input must share the gesture's immutable reference",
+                           file: file, line: line)
+        }
+        // The frozen commit input must precede the input end in the
+        // probe's monotonic passive dispatch sequence, even when both
+        // records round to the same 0.1 ms timestamp; and it must be the
+        // gesture's LAST trusted move, otherwise the engine's raw end
+        // target came from a move the probe could not correlate and the
+        // exact policy is unverifiable.
+        XCTAssertLessThan(lfinSeq, endSeq,
+                          "\(label): the frozen commit input must precede the release in dispatch sequence",
+                          file: file, line: line)
+        XCTAssertEqual(pinchNumber(after["lmseq"]), lfinSeq,
+                       "\(label): the commit input must be the gesture's last trusted move sequence (a later move without a same-event bubble distance makes the exact policy unverifiable)",
+                       file: file, line: line)
+        XCTAssertEqual(pinchNumber(gesture["mv"]), lfinMove,
+                       "\(label): no trusted move may arrive after the commit input",
+                       file: file, line: line)
+        // The engine's own unclamped target must equal the full-precision
+        // JS value the probe recorded (same Math.log formula). Recompute it
+        // independently from the raw distance and the immutable reference:
+        // a mismatch means the recorded target does not describe this input
+        // and the commit cannot be verified.
+        XCTAssertEqual(lfinStartZoom, startZoom, accuracy: 1e-9,
+                       "\(label): the frozen input's start zoom must match the baseline commit level",
+                       file: file, line: line)
+        let recomputedTarget = lfinStartZoom + log(lfinDistance / lfinReference) / log(1.2)
+        XCTAssertEqual(lfinTarget, recomputedTarget, accuracy: 1e-9,
+                       "\(label): the recorded unclamped JS target must match the independent input-math recomputation",
+                       file: file, line: line)
+        let rawTarget = lfinTarget
+        let lfinClamped = min(maxZoom, max(minZoom, rawTarget))
+        XCTAssertEqual(lfinScale, pow(1.2, lfinClamped - startZoom), accuracy: 1e-4,
+                       "\(label): the commit input's live scale must match its own distance ratio",
+                       file: file, line: line)
+        let expectedSync = expectedCommittedZoomSync(rawTarget: rawTarget,
+                                                     minZoom: minZoom, maxZoom: maxZoom)
+        XCTAssertEqual(committedEnd, expectedSync, accuracy: 1e-6,
+                       "\(label): the synchronous commit must equal _limitZoom(Math.round(_limitZoom(raw))) (raw \(rawTarget), live \(lfinScale), recorded \(committedEnd))",
+                       file: file, line: line)
+        // CONTRACT CHANGE (root decision, superseding the old outward
+        // ceil/floor rule): the pinch-end commit is produced by the
+        // production _limitZoom(Math.round(_limitZoom(rawTarget))) order —
+        // range-clamp the raw target, round to the nearest integer, then
+        // range-clamp again; the ordinary programmatic zoom and the legacy
+        // Overview pre-clamp guard are unchanged (production-owned, b334
+        // lane). The historical UI2 host
+        // recorded the outward commit (pinch-out z12 where the current
+        // nearest rule is 13) and that data stays historical truth under the
+        // OLD rule; it is never relabelled. Running this acceptance against
+        // an old host must fail exactly here — that is the intended
+        // protection against mixed old-host/new-nearest qualification, not
+        // a loosened threshold.
+        let impliedFinal = startZoom + log(final.scale) / log(1.2)
+        let legacyExpected = expectedCommittedZoom(implied: impliedFinal, direction: direction,
+                                                   minZoom: minZoom, maxZoom: maxZoom)
         for frame in distinct {
             let implied = startZoom + log(frame.scale) / log(1.2)
             XCTAssertGreaterThanOrEqual(implied, minZoom - 1e-6,
@@ -1225,6 +1460,36 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                                           "\(label): the baseline Pencil stroke count is missing")
         XCTAssertEqual(pinchNumber(pen["str"]), strokesBefore,
                        "\(label): finger touches must not create Pencil ink", file: file, line: line)
+        // Marker-badge machine check. The badge itself is for the recorded
+        // video (a human-readable, bounded gesture overlay in the same frame
+        // as the canvas); the snapshot's `mk` tokens let the SAME gesture be
+        // verified numerically here. Asserted only when the run explicitly
+        // enabled the badge, because then the badge is part of the evidence
+        // chain; ordinary probe runs leave `mk` present with node=0 and are
+        // not judged on it.
+        let markerRequested = ProcessInfo.processInfo.environment["FLOE_OFFICE_PENCIL_VISIBLE_MARKER"] == "1"
+        var markerDescription = "not-requested"
+        if markerRequested {
+            let mk = try XCTUnwrap(after["mk"] as? [String: Any],
+                                   "\(label): the marker-enabled probe must publish the marker state")
+            XCTAssertEqual(pinchNumber(mk["n"]), 1,
+                           "\(label): the marker-enabled probe must have created the badge node",
+                           file: file, line: line)
+            XCTAssertEqual(pinchNumber(mk["g"]), endGesture,
+                           "\(label): the badge must describe the just-ended gesture", file: file, line: line)
+            XCTAssertEqual(pinchNumber(mk["mv"]), lfinMove,
+                           "\(label): the badge move counter must equal the commit input's arrival counter",
+                           file: file, line: line)
+            XCTAssertEqual(pinchNumber(mk["t"]), 0,
+                           "\(label): the badge must show the actual touch count 0 at read time",
+                           file: file, line: line)
+            XCTAssertEqual(pinchNumber(mk["c"]), 1,
+                           "\(label): the badge must show the closed frame/map-commit phase at read time",
+                           file: file, line: line)
+            markerDescription = "node=1 g=\(pinchNumber(mk["g"]) ?? -1) mv=\(pinchNumber(mk["mv"]) ?? -1) t=\(pinchNumber(mk["t"]) ?? -1) c=\(pinchNumber(mk["c"]) ?? -1)"
+        } else if let mk = after["mk"] as? [String: Any] {
+            markerDescription = "node=\(pinchNumber(mk["n"]) ?? -1) g=\(pinchNumber(mk["g"]) ?? -1) mv=\(pinchNumber(mk["mv"]) ?? -1) t=\(pinchNumber(mk["t"]) ?? -1) c=\(pinchNumber(mk["c"]) ?? -1)"
+        }
 
         func penSummary(_ value: [String: Any]?) -> String {
             guard let value else { return "missing" }
@@ -1242,8 +1507,12 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         direction=\(direction == .inward ? "inward" : "outward")
         baseline-t=\(baseT) after-t=\(afterT)
         gesture=\(endGesture) start=\(gestureStart) end=\(gestureEnd)
-        start-zoom=\(startZoom) committed-end=\(committedEnd) expected-end=\(expected)
-        live-samples=\(live.count) distinct-scales=\(distinct.count)
+        start-zoom=\(startZoom) committed-end=\(committedEnd)
+        sync-nearest=\(expectedSync) raw-target=\(rawTarget) legacy-outward=\(legacyExpected)
+        lfin=seq=\(lfinSeq)<end-seq=\(endSeq) t=\(lfinTime),at=\(lfinAt),mv=\(lfinMove),d=\(lfinDistance),d0=\(lfinReference),z0=\(lfinStartZoom),zfs=\(lfinScale)
+        commit=synchronous-_limitZoom(Math.round(_limitZoom(raw)))
+        marker=\(markerDescription)
+        bubble-frames=\(bubbleLive) live-samples=\(live.count) distinct-scales=\(distinct.count)
         dropped-fallback-samples=\(pinchNumber(after["pd"]) ?? -1)
         sample-sources=\(sources)
         frames=\(frames)
@@ -1254,12 +1523,40 @@ final class NotesWorkspaceImportUITests: XCTestCase {
 
     private func expectedCommittedZoom(implied: Double, direction: OfficePinchDirection,
                                        minZoom: Double, maxZoom: Double) -> Double {
-        // The source keeps the original outward ceil/floor commit. The
-        // epsilon only absorbs floating-point noise from log(scale)/log(1.2),
-        // so an exact integer boundary is not turned into the next level.
+        // HISTORICAL interpretation helper only: the old host's outward
+        // ceil/floor commit (recorded UI2 runs executed exactly this rule,
+        // and their stored evidence is described by it — including the old
+        // host's z12 where the current nearest rule gives 13; that
+        // difference is an intentional contract change, never a relabelling
+        // of past data). The current acceptance path uses
+        // `expectedCommittedZoomSync`; this helper survives only so the
+        // evidence attachment can state the delta.
+        // The epsilon only absorbs floating-point noise from
+        // log(scale)/log(1.2), so an exact integer boundary is not turned
+        // into the next level.
         let epsilon = 1e-6
         let level = direction == .inward ? ceil(implied - epsilon) : floor(implied + epsilon)
         return min(max(level, minZoom), maxZoom)
+    }
+
+    /// The current synchronous pinch commit policy, exactly as accepted in
+    /// the production lane: `_limitZoom(Math.round(_limitZoom(rawTarget)))`.
+    /// The FULL-PRECISION JS raw end target of the last owned input move is
+    /// FIRST range-clamped with the pinned map._limitZoom, then rounded with
+    /// exact JavaScript `Math.round` semantics — `floor(x + 0.5)` — and then
+    /// range-clamped again. Clamping first is the production order and keeps
+    /// fractional range edges (for example a fractional minimum) faithful;
+    /// the legacy Overview pre-clamp guard and the ordinary programmatic
+    /// zoom stay untouched in the product lane. No epsilon window is used:
+    /// the probe records the same full-precision target the engine computes
+    /// with the same Math.log formula, the consumer validates that target
+    /// independently, and a constructed harness half-integer still rounds
+    /// deterministically upward exactly as the engine's Math.round does.
+    private func expectedCommittedZoomSync(rawTarget: Double, minZoom: Double,
+                                           maxZoom: Double) -> Double {
+        let clampedRaw = min(maxZoom, max(minZoom, rawTarget))
+        let nearest = (clampedRaw + 0.5).rounded(.down)
+        return min(maxZoom, max(minZoom, nearest))
     }
 
     private struct OfficeTouchProbeRead {

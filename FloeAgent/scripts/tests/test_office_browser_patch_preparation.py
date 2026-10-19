@@ -6,6 +6,7 @@ real browser patch, then runs ``prepare_simulator_source.prepare`` against it.
 No network, fetch, Office/engine/App build, Simulator or shared checkout is
 used; these tests prove preparation behavior only.
 """
+import difflib
 import hashlib
 import json
 from pathlib import Path
@@ -40,6 +41,18 @@ BROWSER_PATCHED = '''export class CanvasSectionContainer {
 		this.multiTouch = true;
 		// fixture: the locked browser patch adds one line
 		this.seedFirstTouch(e);
+	}
+}
+'''
+BROWSER_PATCHED_SECOND = '''export class CanvasSectionContainer {
+	public multiTouch: boolean = false;
+	public onTouchStart(e: TouchEvent) {
+		if (this.multiTouch) return;
+		this.multiTouch = true;
+		// fixture: the locked browser patch adds one line
+		this.seedFirstTouch(e);
+		// fixture: the chained patch adds a second line
+		this.seedSecondTouch(e);
 	}
 }
 '''
@@ -86,6 +99,7 @@ class PreparationFixture(unittest.TestCase):
         self.deployment_patch = self.patch_dir / 'ios-deployment-target.patch'
         self.browser_patch = self.patch_dir / 'ios-batched-touch-start.patch'
         self.second_patch = self.patch_dir / 'ios-second-browser.patch'
+        self.chained_patch = self.patch_dir / 'ios-chained-canvas.patch'
         self.deployment_patch.write_text(
             self.make_patch(DEPLOYMENT_FILE, DEPLOYMENT_ORIGINAL,
                             DEPLOYMENT_PATCHED))
@@ -94,6 +108,11 @@ class PreparationFixture(unittest.TestCase):
         self.second_patch.write_text(
             self.make_patch(SECOND_BROWSER_FILE, SECOND_ORIGINAL,
                             SECOND_PATCHED))
+        self.chained_patch.write_text(self.make_chained_patch(
+            BROWSER_FILE, BROWSER_PATCHED, BROWSER_PATCHED_SECOND))
+        # Keep the committed fixture at the pinned original; the first browser
+        # patch is applied by each test that needs it.
+        (self.source / BROWSER_FILE).write_text(BROWSER_ORIGINAL)
         self.engine_lock = contract / 'engine.lock.json'
         self.patch_lock = contract / 'browser.patch.lock.json'
         self.write_contracts()
@@ -115,6 +134,13 @@ class PreparationFixture(unittest.TestCase):
         target.write_text(original)
         self.assertIn(f'diff --git a/{relative} b/{relative}', diff)
         return diff
+
+    def make_chained_patch(self, relative, before, after):
+        """Diff two texts without committing the first patch to HEAD."""
+        diff = difflib.unified_diff(
+            before.splitlines(True), after.splitlines(True),
+            fromfile=f'a/{relative}', tofile=f'b/{relative}', n=3)
+        return ''.join(diff)
 
     def sha_file(self, path):
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -144,6 +170,19 @@ class PreparationFixture(unittest.TestCase):
             'sourceFile': SECOND_BROWSER_FILE,
             'originalSourceSHA256': self.sha_text(SECOND_ORIGINAL),
             'patchedSourceSHA256': self.sha_text(SECOND_PATCHED),
+        }
+        entry.update(overrides)
+        return entry
+
+    def chained_entry(self, **overrides):
+        entry = {
+            'patch': 'patches/ios-chained-canvas.patch',
+            'patchSHA256': self.sha_file(self.chained_patch),
+            'sourceRepository': REPOSITORY,
+            'sourceCommit': self.commit,
+            'sourceFile': BROWSER_FILE,
+            'originalSourceSHA256': self.sha_text(BROWSER_PATCHED),
+            'patchedSourceSHA256': self.sha_text(BROWSER_PATCHED_SECOND),
         }
         entry.update(overrides)
         return entry
@@ -279,6 +318,43 @@ class CleanPreparationTests(PreparationFixture):
         self.assertEqual(entries[SECOND_BROWSER_FILE]['verifiedSourceSHA256'],
                          self.sha_text(SECOND_PATCHED))
 
+    def test_same_file_chained_patches_apply_in_order(self):
+        self.write_contracts(browser_entries=[self.browser_entry(),
+                                               self.chained_entry()])
+        receipt = self.prepare()
+        self.assertEqual((self.source / BROWSER_FILE).read_text(),
+                         BROWSER_PATCHED_SECOND)
+        self.assertEqual((self.source / DEPLOYMENT_FILE).read_text(),
+                         DEPLOYMENT_PATCHED)
+        self.assertEqual(self.changed_paths(), {BROWSER_FILE, DEPLOYMENT_FILE})
+        self.assertEqual(len(receipt['browserSourcePatches']), 2)
+        for entry in receipt['browserSourcePatches']:
+            self.assertEqual(entry['verifiedSourceSHA256'],
+                             self.sha_text(BROWSER_PATCHED_SECOND))
+            self.assertFalse(entry['alreadyApplied'])
+        # A rerun recognizes the full chain as already applied.
+        second = self.prepare()
+        for entry in second['browserSourcePatches']:
+            self.assertTrue(entry['alreadyApplied'])
+            self.assertEqual(entry['verifiedSourceSHA256'],
+                             self.sha_text(BROWSER_PATCHED_SECOND))
+
+    def test_partial_same_file_chain_applies_only_the_remainder(self):
+        self.git('apply', str(self.browser_patch))
+        self.assertEqual(self.changed_paths(), {BROWSER_FILE})
+        self.write_contracts(browser_entries=[self.browser_entry(),
+                                               self.chained_entry()])
+        receipt = self.prepare()
+        self.assertEqual((self.source / BROWSER_FILE).read_text(),
+                         BROWSER_PATCHED_SECOND)
+        entries = receipt['browserSourcePatches']
+        self.assertTrue(entries[0]['alreadyApplied'])
+        self.assertFalse(entries[1]['alreadyApplied'])
+        self.assertEqual(entries[0]['verifiedSourceSHA256'],
+                         self.sha_text(BROWSER_PATCHED_SECOND))
+        self.assertEqual(entries[1]['verifiedSourceSHA256'],
+                         self.sha_text(BROWSER_PATCHED_SECOND))
+
     def test_absent_browser_patch_list_keeps_deployment_only_behavior(self):
         self.write_contracts(include_browser_list=False)
         receipt = self.prepare()
@@ -335,6 +411,13 @@ class RejectedPreparationTests(PreparationFixture):
         self.browser_patch.write_text(diff)
         self.write_contracts(browser_entries=[self.browser_entry()])
         self.assert_rejected_without_mutation('exactly its sourceFile')
+
+    def test_broken_same_file_chain_is_rejected_without_mutation(self):
+        self.write_contracts(browser_entries=[
+            self.browser_entry(),
+            self.chained_entry(originalSourceSHA256=self.sha_text(BROWSER_ORIGINAL)),
+        ])
+        self.assert_rejected_without_mutation('does not continue')
 
     def test_missing_patch_lock_is_rejected_without_mutation(self):
         self.patch_lock.unlink()

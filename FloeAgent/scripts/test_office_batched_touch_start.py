@@ -100,11 +100,15 @@ def load_contract(lock_path, patch_path):
             'browser.patch.lock.json formatVersion is not 1')
     engine = lock.get('engine') or {}
     entries = lock.get('browserSourcePatches')
-    require(isinstance(entries, list) and len(entries) == 1,
-            'browser.patch.lock.json must carry exactly one browserSourcePatches entry')
-    entry = entries[0]
-    require(entry.get('patch') == 'patches/ios-batched-touch-start.patch',
-            'browserSourcePatches entry names an unexpected patch')
+    require(isinstance(entries, list) and bool(entries),
+            'browser.patch.lock.json must carry browserSourcePatches entries')
+    resolved_patch = patch_path.resolve()
+    entry = next(
+        (candidate for candidate in entries
+         if (lock_path.parent / candidate.get('patch', '')).resolve() == resolved_patch),
+        None)
+    require(entry is not None,
+            'browserSourcePatches does not name the tracked batched-touch patch')
     require(digest(patch_path.read_bytes()) == entry.get('patchSHA256'),
             'tracked patch SHA-256 differs from the lock entry')
     require(entry.get('sourceFile') == SOURCE_FILE,

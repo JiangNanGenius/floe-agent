@@ -124,6 +124,7 @@ class BrowserFixture:
             "kind": producer.RECEIPT_KIND,
             "inputs": {
                 "stageRoot": str(self.stage),
+                "restoredSourceRoot": str(self.base),
                 "restoredOriginalBundleSHA256": sha(self.original_bundle),
                 "restoredOriginalTSSHA256": sha(self.original_ts),
             },
@@ -253,10 +254,10 @@ class ReceiptAndStagingTests(unittest.TestCase):
             engine_commit="27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc")
         self.assertEqual(
             contract["lockSHA256"],
-            "081d64a19302e4e83404bffbc86fd7a4f98c0a8d0ee8e68cda6f7a6416a3bf89")
-        self.assertEqual(len(contract["patches"]), 1)
-        patch = contract["patches"][0]
-        self.assertEqual(patch["patch"], "patches/ios-batched-touch-start.patch")
+            "5e6b8222a581851dff57f44811b83bb89f50df8221acfc7daf705cfd84867b55")
+        self.assertEqual(len(contract["patches"]), 3)
+        by_patch = {patch["patch"]: patch for patch in contract["patches"]}
+        patch = by_patch["patches/ios-batched-touch-start.patch"]
         self.assertEqual(
             patch["sourceFile"], "browser/src/canvas/CanvasSectionContainer.ts")
         self.assertEqual(
@@ -265,6 +266,25 @@ class ReceiptAndStagingTests(unittest.TestCase):
         self.assertEqual(
             patch["patchedSourceSHA256"],
             "9c930d4145196acffb6920bfc1573fdd39534dd86a3771bc2a0981d23ca71ec5")
+        chained = by_patch["patches/ios-pinch-cancel-propagation.patch"]
+        self.assertEqual(
+            chained["originalSourceSHA256"],
+            "9c930d4145196acffb6920bfc1573fdd39534dd86a3771bc2a0981d23ca71ec5")
+        self.assertEqual(
+            chained["sourceFile"],
+            "browser/src/canvas/CanvasSectionContainer.ts")
+        live = by_patch["patches/ios-live-pinch-zoom.patch"]
+        self.assertEqual(
+            live["sourceFile"], "browser/src/canvas/sections/ZoomControl.ts")
+        self.assertEqual(
+            live["patchSHA256"],
+            "12a1152fa2455bb174462006ce8f097b2b874f397d3b1d2cabcfa9d198957b45")
+        self.assertEqual(
+            live["originalSourceSHA256"],
+            "d4af808380c7610fdfb3e40749395833bb8d24bccd1f45eaffb8e66f9cb6e3fc")
+        self.assertEqual(
+            live["patchedSourceSHA256"],
+            "b4afe9ee63720e445f6e6579def565c3808ff846d063287dbb66120f55d973d8")
         self.assertNotIn("lockPath", browser.compact_block(contract, "6" * 64, "7" * 64))
 
     def test_valid_receipt_and_owned_materialization(self):

@@ -19,6 +19,25 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     func testDOCXTenNativeVectorStrokesSaveAndReopen() async throws { try await exercise("docx") }
     func testXLSXTenNativeVectorStrokesSaveAndReopen() async throws { try await exercise("xlsx") }
     func testPPTXTenNativeVectorStrokesSaveAndReopen() async throws { try await exercise("pptx") }
+
+    /// Opt-in PRE-FIX baseline for the human dot contract. A short real native
+    /// vector stroke is saved and reopened first as the positive control (the
+    /// route/tool proof). Then the actual production pen bridge receives
+    /// exactly one pen pointerdown and one pointerup at the same client point,
+    /// with no pointermove and no epsilon, and the final save is reopened for
+    /// an XML and engine-page-pixel check. The pinned v1 engine is expected to
+    /// drop the zero-length FreehandLine, so this test intentionally fails
+    /// with retained diagnostics when the dot is absent or invisible; it is
+    /// never skipped, weakened or reported as a pass. No physical Pencil claim.
+    func testDOCXZeroMotionNativePenDotPersistsAndReopens() async throws {
+        try await exerciseZeroMotionPenDot("docx")
+    }
+    func testXLSXZeroMotionNativePenDotPersistsAndReopens() async throws {
+        try await exerciseZeroMotionPenDot("xlsx")
+    }
+    func testPPTXZeroMotionNativePenDotPersistsAndReopens() async throws {
+        try await exerciseZeroMotionPenDot("pptx")
+    }
     func testXLSXControlledStaleShapeHandleSelectionReplayStillDraws() async throws {
         try await exerciseStaleShapeHandleReplay("xlsx")
     }
@@ -575,6 +594,473 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         } catch { await reopen.release(); throw error }
     }
 
+    /// PRE-FIX baseline. See the three opt-in selectors above. This never
+    /// weakens the human dot contract: a missing or invisible dot fails. A
+    /// control-only save/reopen is produced from the same fixture first, so
+    /// the control proves the route/tool before the zero-motion contact and
+    /// provides the exact render baseline for the reopened-page pixel diff.
+    private func exerciseZeroMotionPenDot(_ format: String) async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in native zero-motion dot baseline; not executed")
+        }
+        executionTimeAllowance = 600
+        // Keep collecting the control/save/reopen evidence after a failed dot
+        // assertion. The test still fails because every contract assertion is
+        // retained; nothing is skipped or converted to an expected pass.
+        continueAfterFailure = true
+        let fm = FileManager.default
+        let documents = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let root = documents.appendingPathComponent("Qualification/OfficeZeroMotionDot-\(format)-\(UUID().uuidString)",
+                                                     isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        print("FLOE_ZERO_MOTION_DOT_ARTIFACT_ROOT=\(root.path)")
+        let source = root.appendingPathComponent("original.\(format)")
+        switch format {
+        case "docx":
+            try OfficeDocumentBuilder.createWord(at: source, title: "中文零位移圆点验收",
+                paragraphs: ["BASELINE-DOT-KEEP 中文正文 12345", "Second paragraph remains editable."])
+        case "xlsx":
+            try OfficeDocumentBuilder.createWorkbook(at: source, sheets: [
+                OfficeWorkbookSheet(name: "圆点", rows: [["BASELINE-DOT-KEEP", "数值"], ["原值", "12"], ["公式", "=B2*2"]])
+            ])
+        default:
+            try OfficeDocumentBuilder.createPresentation(at: source, title: "中文零位移圆点验收", slides: [
+                OfficePresentationSlide(title: "BASELINE-DOT-KEEP", bullets: ["中文原文 12345", "Editable original content"],
+                                        notes: "DOT-NOTES-KEEP")
+            ])
+        }
+        let sourceHash = try hash(source)
+        let baseline = try package(source, format: format)
+        XCTAssertEqual(baseline.customGeometryPaths.count, 0, "Fixture must contain no preinserted strokes")
+        attach(source, name: "dot-source-\(format)")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = mount(session, in: scene)
+        defer { window.isHidden = true; window.rootViewController = nil; previousKeyWindow?.makeKey() }
+        let checkpoint: URL
+        let exported: URL
+        var controlPackage: DrawingQualificationXML?
+        var controlPersisted = false
+        var dotRouteAccepted = false
+        var dotFraction: [Double]?
+        var controlStyleEMU = 0
+        var dotStyleEMU = 0
+        var controlShapeCount = 0
+        var dotShapeCount = 0
+        do {
+            await session.open(source)
+            try await wait(120, "initial native open") {
+                session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            if session.readOnly {
+                let accepted = await session.requestEditing()
+                XCTAssertTrue(accepted, "Actual App edit entry rejected: \(session.error ?? "unknown")")
+            }
+            try await wait(150, "editable native document") {
+                !session.readOnly && session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            session.useInkPreferences(workspaceIdentity: root.path, documentKey: source.lastPathComponent)
+            let preferences = session.inkPreferences
+            let previousStroke = preferences.stroke
+            defer {
+                preferences.setPreset(previousStroke.preset)
+                preferences.setColorHex(previousStroke.colorHex)
+                preferences.setWidthMillimeters(previousStroke.widthMillimeters)
+                preferences.setTransparencyPercent(previousStroke.transparencyPercent)
+            }
+            // Positive control: one short real native vector stroke through
+            // the existing production pen bridge, then a control-only save
+            // and reopen (below). This proves the route/tool before the dot.
+            preferences.setPreset(.pen)
+            preferences.setColorHex("#FF0000")
+            preferences.setTransparencyPercent(0)
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode, "the real App drawing toggle must arm")
+            await session.applyInkPreferences()
+            XCTAssertNil(session.inkError, "control pen preferences must apply")
+            let controlInkAck = session.inkApplyOutcome.map {
+                $0 == .verified ? "verified" : "dispatchedUnverified"
+            } ?? "nil"
+            XCTAssertEqual(try nativeDrawingFlag(native), true)
+            let controlStroke = preferences.stroke
+            let preControlFacts = try await officePenFacts(web)
+            XCTAssertEqual(preControlFacts["drawing"] as? Bool, true)
+            XCTAssertEqual(preControlFacts["activeStroke"] as? Bool, false)
+            let controlStimulus = StrokeStimulus(index: 0, kind: .band, gapMilliseconds: 30, style: .pen)
+            let controlReceipt = try await receiveStroke(0, web: web, native: native, window: window, root: root,
+                syntheticSource: source, stimulus: controlStimulus, previousPoints: [])
+            try validateHitDiagnostics(controlReceipt, stimulus: controlStimulus)
+            XCTAssertEqual(controlReceipt["strokeDelta"] as? Int, 1,
+                           "The positive control did not complete through the actual pen bridge")
+            XCTAssertEqual(controlReceipt["downAccepted"] as? Bool, true,
+                           "The positive control down was not accepted by the production bridge")
+            let postControlFacts = try await officePenFacts(web)
+            XCTAssertEqual((postControlFacts["strokes"] as? Int ?? -1),
+                           (preControlFacts["strokes"] as? Int ?? -1) + 1,
+                           "The positive control must be counted by the actual pen bridge")
+            if session.drawingMode { try await session.toggleDrawing() }
+            XCTAssertFalse(session.drawingMode)
+            let controlCopy = root.appendingPathComponent("control.\(format)")
+            try fm.copyItem(at: try await session.exportDocument(format: format), to: controlCopy)
+            checkpoint = controlCopy
+            attach(controlCopy, name: "dot-control-saved-\(format)")
+            let controlSaved = try package(controlCopy, format: format)
+            controlPackage = controlSaved
+            XCTAssertEqual(controlSaved.customGeometryPaths.count, 1,
+                           "Positive control must save exactly one real native vector path before the dot")
+            XCTAssertTrue(controlSaved.text.contains("BASELINE-DOT-KEEP"), "Control save lost original content")
+            controlStyleEMU = controlStroke.lineWidthValue * 360
+            let controlShapes = controlSaved.vectorShapes.filter { shape in
+                shape.colorHex?.uppercased() == "FF0000"
+                    && shape.widthEMU.map { abs($0 - controlStyleEMU) <= 635 } == true
+                    && !shape.paths.isEmpty
+            }
+            controlShapeCount = controlShapes.count
+            let prematureDotShapes = controlSaved.vectorShapes.filter { shape in
+                shape.colorHex?.uppercased() == "0000FF" && !shape.paths.isEmpty
+            }
+            controlPersisted = controlSaved.customGeometryPaths.count == 1
+                && controlShapes.count == 1 && prematureDotShapes.isEmpty
+            XCTAssertTrue(controlPersisted,
+                          "Positive control did not persist as exactly one red 0.5 mm vector: \(controlSaved.vectorShapes)")
+            // Exact zero-motion contact: the dedicated seam dispatches only
+            // pointerdown+pointerup at one identical client point. There is no
+            // pointermove, no preview-only substitute and no epsilon.
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode, "the App must re-arm drawing for the dot")
+            preferences.setPreset(.marker)
+            preferences.setColorHex("#0000FF")
+            preferences.setTransparencyPercent(0)
+            await session.applyInkPreferences()
+            XCTAssertNil(session.inkError, "dot marker preferences must apply")
+            let dotInkAck = session.inkApplyOutcome.map {
+                $0 == .verified ? "verified" : "dispatchedUnverified"
+            } ?? "nil"
+            XCTAssertEqual(preferences.stroke.preset, .marker)
+            XCTAssertEqual(preferences.stroke.widthMillimeters, 2.0)
+            XCTAssertEqual(preferences.stroke.colorHex, "#0000FF")
+            let dotStroke = preferences.stroke
+            dotStyleEMU = dotStroke.lineWidthValue * 360
+            let nativeFlagBeforeDot = try nativeDrawingFlag(native)
+            let nativeRenderBeforeDot = OfficeFileSession.hostRenderDiagnostics(native)
+            let preDotFacts = try await officePenFacts(web)
+            XCTAssertEqual(nativeFlagBeforeDot, true, "the native host must mirror armed drawing before the dot")
+            XCTAssertEqual(preDotFacts["drawing"] as? Bool, true)
+            XCTAssertEqual(preDotFacts["activeStroke"] as? Bool, false,
+                           "a previous stroke must not remain active before the dot")
+            let zeroMotion = try await receiveZeroMotionDot(web: web, native: native, window: window,
+                                                            root: root, syntheticSource: source)
+            if let raw = zeroMotion["dotFraction"] as? [Any], raw.count == 2,
+               let fx = (raw[0] as? NSNumber)?.doubleValue,
+               let fy = (raw[1] as? NSNumber)?.doubleValue, fx.isFinite, fy.isFinite {
+                dotFraction = [fx, fy]
+            }
+            let routeReady = zeroMotion["routeReady"] as? Bool == true
+            XCTAssertTrue(routeReady,
+                          "The exact zero-motion input route was not prepared; this is not classified as an engine dot defect: \(zeroMotion)")
+            if routeReady {
+                XCTAssertEqual(zeroMotion["eventsDispatched"] as? Int, 2,
+                               "The zero-motion seam must dispatch exactly one down and one up")
+                XCTAssertEqual(zeroMotion["movesDispatched"] as? Int, 0,
+                               "The zero-motion seam must not fabricate a move")
+                if let rawPoints = zeroMotion["clientPoints"] as? [[Any]], rawPoints.count == 2,
+                   let x0 = (rawPoints[0][0] as? NSNumber)?.doubleValue,
+                   let y0 = (rawPoints[0][1] as? NSNumber)?.doubleValue,
+                   let x1 = (rawPoints[1][0] as? NSNumber)?.doubleValue,
+                   let y1 = (rawPoints[1][1] as? NSNumber)?.doubleValue {
+                    XCTAssertEqual(x0, x1, "The zero-motion down and up must use one identical X")
+                    XCTAssertEqual(y0, y1, "The zero-motion down and up must use one identical Y")
+                } else {
+                    XCTFail("The zero-motion receipt did not expose its two identical client points")
+                }
+                if let pressure = zeroMotion["pressure"] as? [String: Any],
+                   let down = (pressure["down"] as? NSNumber)?.doubleValue,
+                   let up = (pressure["up"] as? NSNumber)?.doubleValue {
+                    XCTAssertTrue(down.isFinite && up.isFinite,
+                                  "The synthetic pressure facts must be finite")
+                } else {
+                    XCTFail("The zero-motion receipt did not expose finite pressure facts")
+                }
+                XCTAssertEqual(zeroMotion["downAccepted"] as? Bool, true,
+                               "The actual production pen bridge did not accept the zero-motion down; not a dot-persistence defect")
+                XCTAssertEqual(zeroMotion["activeAfterDown"] as? Bool, true,
+                               "The production bridge must own the contact after the zero-motion down")
+                XCTAssertEqual(zeroMotion["activeAfterUp"] as? Bool, false,
+                               "The production bridge must finish the zero-motion contact")
+                XCTAssertEqual(zeroMotion["strokeDelta"] as? Int, 1,
+                               "The production bridge must count the completed zero-motion contact")
+                XCTAssertEqual(zeroMotion["coreEventDelta"] as? Int, 2,
+                               "The canonical replay for a zero-motion contact must be exactly mousedown+mouseup")
+                dotRouteAccepted = zeroMotion["downAccepted"] as? Bool == true
+                    && zeroMotion["activeAfterDown"] as? Bool == true
+                    && zeroMotion["activeAfterUp"] as? Bool == false
+                    && zeroMotion["strokeDelta"] as? Int == 1
+                    && zeroMotion["coreEventDelta"] as? Int == 2
+            }
+            try await Task.sleep(for: .milliseconds(350))
+            let postDotFacts = try await officePenFacts(web)
+            XCTAssertEqual(postDotFacts["activeStroke"] as? Bool, false,
+                           "A rejected zero-motion contact must not leave an active stroke")
+            if dotRouteAccepted {
+                XCTAssertEqual((postDotFacts["strokes"] as? Int ?? -1),
+                               (preDotFacts["strokes"] as? Int ?? -1) + 1,
+                               "The production bridge must count the completed zero-motion contact")
+            }
+            let nativeFlagAfterDot = try nativeDrawingFlag(native)
+            let nativeRenderAfterDot = OfficeFileSession.hostRenderDiagnostics(native)
+            XCTAssertEqual(nativeFlagAfterDot, true,
+                           "the native host drawing mirror must remain armed after the dot")
+            let dotSurface = root.appendingPathComponent("dot-before-save-\(format).png")
+            let configuration = WKSnapshotConfiguration(); configuration.afterScreenUpdates = true
+            if let image = try? await web.takeSnapshot(configuration: configuration), let png = image.pngData() {
+                try png.write(to: dotSurface); attach(dotSurface, name: "dot-before-save-\(format)")
+            }
+            if session.drawingMode { try await session.toggleDrawing() }
+            XCTAssertFalse(session.drawingMode)
+            let nativeFlagAfterDisable = try nativeDrawingFlag(native)
+            XCTAssertEqual(nativeFlagAfterDisable, false)
+            let finalCopy = root.appendingPathComponent("drawn.\(format)")
+            try fm.copyItem(at: try await session.exportDocument(format: format), to: finalCopy)
+            exported = finalCopy
+            attach(finalCopy, name: "dot-native-saved-\(format)")
+            XCTAssertEqual(try hash(source), sourceHash, "Native copy export altered original")
+            let saved = try package(finalCopy, format: format)
+            XCTAssertTrue(saved.text.contains("BASELINE-DOT-KEEP"), "Final save lost original content")
+            let finalControlShapes = saved.vectorShapes.filter { shape in
+                shape.colorHex?.uppercased() == "FF0000"
+                    && shape.widthEMU.map { abs($0 - controlStyleEMU) <= 635 } == true
+                    && !shape.paths.isEmpty
+            }
+            // Every saved vector shape that is not the red 0.5 mm control is
+            // the dot candidate. This separates "the dot did not persist"
+            // from "the dot persisted with the wrong selected style".
+            let dotShapes = saved.vectorShapes.filter { shape in
+                !(shape.colorHex?.uppercased() == "FF0000"
+                  && shape.widthEMU.map { abs($0 - controlStyleEMU) <= 635 } == true)
+                    && !shape.paths.isEmpty
+            }
+            controlShapeCount = finalControlShapes.count
+            dotShapeCount = dotShapes.count
+            XCTAssertGreaterThanOrEqual(finalControlShapes.count, 1,
+                                        "The positive control must still be present after the dot contact")
+            if dotRouteAccepted && controlPersisted {
+                XCTAssertFalse(dotShapes.isEmpty,
+                    "BASELINE DEFECT (EXPECTED on pinned v1, not a weakened test): zero-motion dot accepted by the production pen bridge "
+                    + "(down/up identical point, coreEventDelta=2, strokeDelta=1) but the saved \(format) has "
+                    + "\(saved.customGeometryPaths.count) custom geometry path(s); control=\(finalControlShapes.count), dot=\(dotShapes.count). "
+                    + "The human contract requires a persisted dot.")
+            } else {
+                XCTAssertFalse(dotShapes.isEmpty,
+                    "Zero-motion dot was not persisted, but the control/route preconditions did not pass, so this is "
+                    + "not classified as an engine dot defect: controlPersisted=\(controlPersisted) dotRouteAccepted=\(dotRouteAccepted) "
+                    + "dotShapes=\(dotShapes.count) paths=\(saved.customGeometryPaths.count).")
+            }
+            if dotShapes.count > 0 {
+                XCTAssertEqual(dotShapes.count, 1,
+                               "The zero-motion contact must save exactly one new dot object")
+                XCTAssertTrue(dotShapes.allSatisfy { $0.colorHex?.uppercased() == "0000FF" },
+                              "The persisted dot must retain its selected marker blue: \(dotShapes)")
+                XCTAssertTrue(dotShapes.allSatisfy {
+                    $0.widthEMU.map { abs($0 - dotStyleEMU) <= 635 } == true
+                }, "The persisted dot must retain its selected 2.0 mm marker width: \(dotShapes)")
+                XCTAssertTrue(dotShapes.allSatisfy { $0.alphaValue == nil || $0.alphaValue == 100_000 },
+                              "Opaque marker dot must not save a transparent line alpha: \(dotShapes)")
+            }
+            if format == "xlsx" {
+                XCTAssertEqual(saved.cells["B2"], "12", "Excel basic value lost")
+                XCTAssertEqual(saved.formulas["B3"], "B2*2", "Excel formula lost or flattened")
+                XCTAssertGreaterThanOrEqual(saved.validAnchors, 1, "Positive control needs a valid Excel sheet anchor")
+            }
+            if format == "pptx" { XCTAssertTrue(saved.text.contains("DOT-NOTES-KEEP"), "Speaker notes lost") }
+            let manifest: [String: Any] = [
+                "format": format, "sourceSHA256": sourceHash,
+                "controlCheckpointSHA256": try hash(checkpoint),
+                "outputSHA256": try hash(finalCopy),
+                "humanContract": "A zero-motion Pencil contact at one client point must persist a real native vector dot and survive save/reopen with visible engine pixels.",
+                "expectedBaseline": "Pinned v1 may reject the single-point FreehandLine; this test must fail then with accepted down/up and control-persistence evidence, not pass or skip.",
+                "route": "OfficeFileSession.toggleDrawing/applyInkPreferences/real pen pointerdown+pointerup at one point/FloeOfficeNative production gate/DOM mousedown+mouseup/core/exportDocument/reopen",
+                "zeroMotionSeam": "dedicated real production-bridge seam: exactly pointerdown+pointerup at one identical client point; no pointermove, no epsilon, no preview-only substitute",
+                "controlStimulus": controlStimulus.facts,
+                "controlReceipt": controlReceipt,
+                "zeroMotionReceipt": zeroMotion,
+                "preControlPenFacts": preControlFacts,
+                "postControlPenFacts": postControlFacts,
+                "preDotPenFacts": preDotFacts,
+                "postDotPenFacts": postDotFacts,
+                "nativeAck": [
+                    "drawingModeBeforeDot": nativeFlagBeforeDot,
+                    "drawingModeAfterDot": nativeFlagAfterDot,
+                    "drawingModeAfterDisable": nativeFlagAfterDisable,
+                    "renderBeforeDot": nativeRenderBeforeDot,
+                    "renderAfterDot": nativeRenderAfterDot,
+                    "controlInkApplyOutcome": controlInkAck,
+                    "dotInkApplyOutcome": dotInkAck,
+                    "inkApplyOutcomeAtManifest": session.inkApplyOutcome.map {
+                        $0 == .verified ? "verified" : "dispatchedUnverified"
+                    } ?? "nil",
+                    "sessionError": session.error ?? "nil",
+                    "inkError": session.inkError ?? "nil",
+                    "hasUncommittedChangesAfterDot": session.hasUncommittedChanges
+                ] as [String: Any],
+                "controlStyle": ["color": "#FF0000", "widthEMU": controlStyleEMU, "alpha": 100_000],
+                "dotStyle": ["color": "#0000FF", "widthEMU": dotStyleEMU, "alpha": 100_000],
+                "controlPersisted": controlPersisted,
+                "dotRouteAccepted": dotRouteAccepted,
+                "controlSavedShapes": controlShapeCount,
+                "dotSavedShapes": dotShapeCount,
+                "controlCheckpointVectorPaths": controlPackage?.customGeometryPaths.count ?? -1,
+                "savedVectorPaths": saved.customGeometryPaths.count,
+                "savedVectorPointCounts": saved.customGeometryPaths.indices.map { saved.customGeometryPointCounts[$0] },
+                "savedVectorLineStyles": saved.vectorShapes.map {
+                    ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1,
+                     "paths": $0.paths.count, "alpha": $0.alphaValue ?? -1] as [String: Any]
+                },
+                "dotShapes": dotShapes.map {
+                    ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1,
+                     "paths": $0.paths.count, "alpha": $0.alphaValue ?? -1,
+                     "placement": $0.placement ?? "none", "anchor": $0.anchor ?? "none"] as [String: Any]
+                },
+                "dotFraction": dotFraction ?? [],
+                "visualVisibilityCheck": "pending reopened control-only vs final same-fixture engine page pixel diff",
+                "hardwarePointerInput": "not-tested",
+                "pressure": "synthetic-known-finite-not-hardware",
+                "visualReview": "pending-primary-image-review"
+            ]
+            let receiptURL = root.appendingPathComponent("zero-motion-verification.json")
+            try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+                .write(to: receiptURL, options: .atomic)
+            attach(receiptURL, name: "zero-motion-verification-\(format)")
+            await session.release()
+        } catch {
+            await session.release()
+            throw error
+        }
+
+        // Reopen the control-only checkpoint and the final saved copy in the
+        // same production App surface. The engine page snapshots are the
+        // visibility gate: XML shape count alone is never enough.
+        let savedHash = try hash(exported)
+        let reopenControl = OfficeFileSession()
+        let controlWindow = mount(reopenControl, in: scene)
+        defer { controlWindow.isHidden = true; controlWindow.rootViewController = nil }
+        let controlImage: UIImage
+        let controlProbe: [String: Any]
+        do {
+            await reopenControl.open(checkpoint)
+            try await wait(120, "control-only saved copy reopen") {
+                reopenControl.canAct && reopenControl.documentActionsReady && reopenControl.controller != nil
+            }
+            let native = try XCTUnwrap(reopenControl.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            try await Task.sleep(for: .milliseconds(400))
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            let configuration = WKSnapshotConfiguration(); configuration.afterScreenUpdates = true
+            controlImage = try await web.takeSnapshot(configuration: configuration)
+            let png = root.appendingPathComponent("control-reopened-\(format).png")
+            try XCTUnwrap(controlImage.pngData()).write(to: png); attach(png, name: "dot-control-reopened-\(format)")
+            controlProbe = try await zeroMotionRenderProbe(web)
+            await reopenControl.release()
+            controlWindow.isHidden = true
+            controlWindow.rootViewController = nil
+        } catch { await reopenControl.release(); throw error }
+
+        let reopenFinal = OfficeFileSession()
+        let finalWindow = mount(reopenFinal, in: scene)
+        defer { finalWindow.isHidden = true; finalWindow.rootViewController = nil }
+        do {
+            await reopenFinal.open(exported)
+            try await wait(120, "final saved copy reopen") {
+                reopenFinal.canAct && reopenFinal.documentActionsReady && reopenFinal.controller != nil
+            }
+            let native = try XCTUnwrap(reopenFinal.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            try await Task.sleep(for: .milliseconds(400))
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            let configuration = WKSnapshotConfiguration(); configuration.afterScreenUpdates = true
+            let finalImage = try await web.takeSnapshot(configuration: configuration)
+            let png = root.appendingPathComponent("reopened-native-\(format).png")
+            try XCTUnwrap(finalImage.pngData()).write(to: png); attach(png, name: "dot-reopened-native-\(format)")
+            let finalProbe = try await zeroMotionRenderProbe(web)
+            let reopened = try package(exported, format: format)
+            XCTAssertTrue(reopened.text.contains("BASELINE-DOT-KEEP"), "Reopened copy lost original content")
+            let reopenedControlShapes = reopened.vectorShapes.filter { shape in
+                shape.colorHex?.uppercased() == "FF0000"
+                    && shape.widthEMU.map { abs($0 - controlStyleEMU) <= 635 } == true
+                    && !shape.paths.isEmpty
+            }
+            let reopenedDotShapes = reopened.vectorShapes.filter { shape in
+                !(shape.colorHex?.uppercased() == "FF0000"
+                  && shape.widthEMU.map { abs($0 - controlStyleEMU) <= 635 } == true)
+                    && !shape.paths.isEmpty
+            }
+            XCTAssertFalse(reopenedControlShapes.isEmpty,
+                           "The persisted positive control did not survive reopen")
+            if dotShapeCount > 0 {
+                XCTAssertEqual(reopenedDotShapes.count, dotShapeCount,
+                               "The zero-motion dot shape did not survive reopen")
+            }
+            var visibility: [String: Any] = ["available": false]
+            if dotShapeCount > 0, let dotFraction, dotFraction.count == 2 {
+                guard let x1 = (finalProbe["x1"] as? NSNumber)?.doubleValue,
+                      let y1 = (finalProbe["y1"] as? NSNumber)?.doubleValue,
+                      let x2 = (finalProbe["x2"] as? NSNumber)?.doubleValue,
+                      let y2 = (finalProbe["y2"] as? NSNumber)?.doubleValue,
+                      let viewportWidth = (finalProbe["viewportWidth"] as? NSNumber)?.doubleValue,
+                      let viewportHeight = (finalProbe["viewportHeight"] as? NSNumber)?.doubleValue,
+                      x2 > x1, y2 > y1, viewportWidth > 1, viewportHeight > 1 else {
+                    XCTFail("The reopened final page did not expose finite geometry for the visibility check")
+                    throw NSError(domain: "OfficeNativeDrawingQualification", code: 68, userInfo: [
+                        NSLocalizedDescriptionKey: "reopened final page geometry unavailable"
+                    ])
+                }
+                let dotPoint = CGPoint(x: x1 + dotFraction[0] * (x2 - x1),
+                                       y: y1 + dotFraction[1] * (y2 - y1))
+                visibility = dotRenderFacts(control: controlImage, final: finalImage,
+                                            point: dotPoint, viewport: CGSize(width: viewportWidth,
+                                                                              height: viewportHeight))
+                XCTAssertEqual(visibility["available"] as? Bool, true,
+                               "The reopened-page pixel comparison was unavailable: \(visibility)")
+                let blue = visibility["bluePixelsInCrop"] as? Int ?? 0
+                let changed = visibility["changedPixelsInCrop"] as? Int ?? 0
+                XCTAssertGreaterThanOrEqual(blue, 12,
+                    "VISIBILITY DEFECT: the saved dot XML exists but its reopened engine page has only \(blue) blue pixel(s) "
+                    + "in the expected dot region; a zero-area/invisible shape is not a persisted human dot. \(visibility)")
+                XCTAssertGreaterThanOrEqual(changed, 12,
+                    "VISIBILITY DEFECT: control-only vs control+dot reopened-page pixel diff has only \(changed) changed "
+                    + "pixel(s) in the expected dot region; XML alone is not accepted. \(visibility)")
+            } else if dotShapeCount == 0 {
+                visibility = ["available": false, "reason": "no saved dot shape to render; baseline contract already failed"]
+            } else {
+                XCTFail("The saved dot shape exists but its original point fraction was unavailable, so the reopened-page visibility gate could not run")
+                visibility = ["available": false, "reason": "dot-fraction-unavailable"]
+            }
+            let hashAfter = try hash(exported)
+            XCTAssertEqual(hashAfter, savedHash, "The saved copy changed while it was reopened")
+            let receiptURL = root.appendingPathComponent("zero-motion-verification.json")
+            var receipt = (try? JSONSerialization.jsonObject(with: Data(contentsOf: receiptURL))) as? [String: Any] ?? [:]
+            receipt["savedCopyReopened"] = true
+            receipt["savedCopySHA256BeforeReopen"] = savedHash
+            receipt["savedCopySHA256AfterReopen"] = hashAfter
+            receipt["savedCopyUnchangedAfterReopen"] = hashAfter == savedHash
+            receipt["reopenedVectorPaths"] = reopened.customGeometryPaths.count
+            receipt["reopenedControlSavedShapes"] = reopenedControlShapes.count
+            receipt["reopenedDotSavedShapes"] = reopenedDotShapes.count
+            receipt["reopenNativeRenderDiagnostics"] = OfficeFileSession.hostRenderDiagnostics(native)
+            receipt["reopenRenderProbe"] = ["control": controlProbe, "final": finalProbe]
+            receipt["visualVisibilityCheck"] = visibility
+            receipt["visualReview"] = "pending-primary-image-review"
+            try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys])
+                .write(to: receiptURL, options: .atomic)
+            attach(receiptURL, name: "zero-motion-reopen-verification-\(format)")
+            await reopenFinal.release()
+        } catch { await reopenFinal.release(); throw error }
+    }
+
     /// Deterministic regression for the real S1 routing branch. A real engine
     /// freehand curve is selected by its post-stroke selection echo or with the
     /// pinned core's own select tool plus a real DOM down/up/click sequence
@@ -1025,6 +1511,142 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                                       error: error, web: web, native: native, window: window, root: root, syntheticSource: syntheticSource)
             throw error
         }
+    }
+
+    /// Dedicated zero-motion seam. It only calls the real production bridge
+    /// with a bounded JSON receipt; all acceptance facts stay on the page and
+    /// no assertion is inferred from the preview.
+    private func receiveZeroMotionDot(web: WKWebView, native: FloeOfficeNativeViewController,
+                                      window: UIWindow, root: URL,
+                                      syntheticSource: URL) async throws -> [String: Any] {
+        var resultType = "not-returned"
+        var jsonByteCount: Int?
+        var stage = "call-zero-motion-pen-bridge"
+        do {
+            let receipt: Any? = try await web.callAsyncJavaScript(Self.zeroMotionDotScript,
+                arguments: [:], in: nil, contentWorld: .page)
+            resultType = receipt.map { String(reflecting: type(of: $0)) } ?? "nil"
+            stage = "decode-zero-motion-WK-JSON-string"
+            guard let json = receipt as? String else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 70,
+                    userInfo: [NSLocalizedDescriptionKey: "Zero-motion pen bridge did not return its JSON-string receipt (type=\(resultType))"])
+            }
+            jsonByteCount = json.utf8.count
+            guard json.utf8.count <= 65_536 else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 71,
+                    userInfo: [NSLocalizedDescriptionKey: "Zero-motion receipt exceeded its bounded transport"])
+            }
+            let receiptURL = root.appendingPathComponent("zero-motion-dot-receipt.json")
+            try Data(json.utf8).write(to: receiptURL, options: .atomic)
+            attach(receiptURL, name: "zero-motion-dot-actual-WK-receipt")
+            guard let decoded = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 72,
+                    userInfo: [NSLocalizedDescriptionKey: "Zero-motion receipt was not a JSON object"])
+            }
+            return decoded
+        } catch {
+            let nsError = error as NSError
+            let facts: [String: Any] = ["stage": stage, "WKResultType": resultType,
+                "receiptJSONBytes": jsonByteCount ?? -1, "errorDomain": nsError.domain,
+                "errorCode": nsError.code]
+            let url = root.appendingPathComponent("zero-motion-dot-transport-failure.json")
+            if let bytes = try? JSONSerialization.data(withJSONObject: facts, options: [.prettyPrinted, .sortedKeys]) {
+                try? bytes.write(to: url, options: .atomic)
+                attach(url, name: "zero-motion-dot-transport-failure")
+            }
+            await retainStrokeFailure(1, stage: "zero-motion-dot", resultType: resultType,
+                                      jsonByteCount: jsonByteCount, error: error, web: web, native: native,
+                                      window: window, root: root, syntheticSource: syntheticSource)
+            throw error
+        }
+    }
+
+    /// Re-derive the visible document rectangle in a fresh reopened session so
+    /// the original dot fraction maps to the current engine page pixels.
+    private func zeroMotionRenderProbe(_ web: WKWebView) async throws -> [String: Any] {
+        let receipt = try await web.callAsyncJavaScript(Self.zeroMotionRenderProbeScript,
+            arguments: [:], in: nil, contentWorld: .page)
+        guard let json = receipt as? String, json.utf8.count <= 16_384,
+              let value = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
+            throw NSError(domain: "OfficeNativeDrawingQualification", code: 73, userInfo: [
+                NSLocalizedDescriptionKey: "Reopened page geometry probe was not a bounded JSON object"
+            ])
+        }
+        return value
+    }
+
+    /// Count blue dot pixels in the expected region and compare the reopened
+    /// control-only and control+dot engine pages at the same region. A saved
+    /// shape whose zero-area geometry renders nothing cannot pass.
+    private func dotRenderFacts(control: UIImage, final: UIImage, point: CGPoint,
+                                viewport: CGSize, radiusCSS: CGFloat = 26) -> [String: Any] {
+        guard let controlCG = control.cgImage, let finalCG = final.cgImage,
+              controlCG.width == finalCG.width, controlCG.height == finalCG.height,
+              viewport.width > 1, viewport.height > 1,
+              let controlBytes = rgbaBytes(controlCG), let finalBytes = rgbaBytes(finalCG) else {
+            return ["available": false, "reason": "image-or-bitmap-unavailable"]
+        }
+        let width = controlCG.width, height = controlCG.height
+        let scaleX = CGFloat(width) / viewport.width
+        let scaleY = CGFloat(height) / viewport.height
+        let centerX = point.x * scaleX, centerY = point.y * scaleY
+        let radius = radiusCSS * max(scaleX, scaleY)
+        let left = max(0, Int((centerX - radius).rounded(.down)))
+        let right = min(width - 1, Int((centerX + radius).rounded(.up)))
+        let top = max(0, Int((centerY - radius).rounded(.down)))
+        let bottom = min(height - 1, Int((centerY + radius).rounded(.up)))
+        guard left <= right, top <= bottom else {
+            return ["available": false, "reason": "dot-region-outside-image"]
+        }
+        var blueCrop = 0, blueWhole = 0, changedCrop = 0, changedWhole = 0
+        var minX = width, minY = height, maxX = -1, maxY = -1
+        for y in 0..<height {
+            for x in 0..<width {
+                let offset = (y * width + x) * 4
+                let r0 = Int(controlBytes[offset]), g0 = Int(controlBytes[offset + 1])
+                let b0 = Int(controlBytes[offset + 2])
+                let r1 = Int(finalBytes[offset]), g1 = Int(finalBytes[offset + 1])
+                let b1 = Int(finalBytes[offset + 2])
+                let inCrop = x >= left && x <= right && y >= top && y <= bottom
+                if b1 > 110 && b1 > r1 + 35 && b1 > g1 + 35 {
+                    blueWhole += 1
+                    if inCrop { blueCrop += 1 }
+                }
+                if max(abs(r1 - r0), max(abs(g1 - g0), abs(b1 - b0))) > 24 {
+                    changedWhole += 1
+                    if inCrop {
+                        changedCrop += 1
+                        minX = min(minX, x); maxX = max(maxX, x)
+                        minY = min(minY, y); maxY = max(maxY, y)
+                    }
+                }
+            }
+        }
+        return [
+            "available": true, "imagePixels": [width, height],
+            "pixelScale": [Double(scaleX), Double(scaleY)],
+            "dotPixelPoint": [Double(centerX), Double(centerY)],
+            "cropPixels": [left, top, right, bottom],
+            "bluePixelsInCrop": blueCrop, "bluePixelsWhole": blueWhole,
+            "changedPixelsInCrop": changedCrop, "changedPixelsWhole": changedWhole,
+            "changedBBox": changedCrop > 0 ? [minX, minY, maxX, maxY] : []
+        ]
+    }
+
+    private func rgbaBytes(_ image: CGImage) -> [UInt8]? {
+        let width = image.width, height = image.height
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        let flags = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        let rendered = bytes.withUnsafeMutableBytes { storage -> Bool in
+            guard let context = CGContext(data: storage.baseAddress, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width * 4,
+                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: flags) else {
+                return false
+            }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        return rendered ? bytes : nil
     }
 
     /// Decode the exact client coordinates that were dispatched, so the next
@@ -1797,6 +2419,172 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         hardwarePointerInput:'not-tested', pressure:'synthetic-not-hardware-tested',
         socketObservation:observation.finish()});
     } finally { observation.finish(); }
+    """#
+
+    /// Dedicated zero-motion seam for the human dot baseline. The existing
+    /// stroke convenience plan requires four client points and three moves,
+    /// which cannot represent a tap; this seam dispatches exactly one real pen
+    /// pointerdown and one pointerup at one identical client point through the
+    /// same production window-capture bridge. It never fabricates a move, an
+    /// epsilon, a preview-only substitute or an SVG/bitmap shape.
+    private static let zeroMotionDotScript = #"""
+    const app = window.app;
+    const container = app && app.sectionContainer;
+    const canvas = container && container.canvas;
+    const layout = app && app.activeDocument && app.activeDocument.activeLayout;
+    const size = app && app.activeDocument && app.activeDocument.fileSize;
+    if (!canvas || !layout || !size || !container
+        || typeof container.getDocumentAnchorSection !== 'function'
+        || typeof window.PointerEvent !== 'function'
+        || typeof window.__floeOfficePenState !== 'function')
+        throw new Error('production pen bridge or native document canvas unavailable');
+    const finite = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const round2 = (value) => Math.round(value * 100) / 100;
+    const bounded = (value, limit) => typeof value === 'string'
+        ? (value.length > limit ? value.slice(0, limit) : value) : null;
+    const before = window.__floeOfficePenState();
+    const canvasContainer = (() => {
+        const byId = document.getElementById('canvas-container');
+        if (byId && byId.contains(canvas)) return byId;
+        return canvas.parentElement || null;
+    })();
+    const classOf = (element) => element && typeof element.getAttribute === 'function'
+        ? bounded(element.getAttribute('class'), 96) : null;
+    const ownerOf = (element) => {
+        if (!element) return 'unresolved';
+        if (element === canvas) return 'canvas';
+        if (canvas.contains(element)) return 'canvas-descendant';
+        if (canvasContainer && canvasContainer.contains(element)) return 'canvas-container-overlay';
+        if (element === document.body) return 'document-body';
+        if (document.documentElement && document.documentElement.contains(element))
+            return 'outside-canvas-container';
+        return 'detached';
+    };
+    const targetFacts = (element) => {
+        if (!element) return {tag:null,id:null,class:null,ownership:'unresolved',
+            insideCanvas:false,insideCanvasContainer:false,connected:false};
+        return {tag: bounded(element.tagName ? String(element.tagName).toLowerCase() : null, 24),
+            id: bounded(typeof element.id === 'string' ? element.id : null, 64),
+            class: classOf(element), ownership: ownerOf(element),
+            insideCanvas: canvas.contains(element),
+            insideCanvasContainer: !!(canvasContainer && canvasContainer.contains(element)),
+            connected: element.isConnected === true};
+    };
+    const rect = canvas.getBoundingClientRect();
+    const section = container.getDocumentAnchorSection();
+    const scaleX = rect.width / canvas.width, scaleY = rect.height / canvas.height;
+    if (!section || !section.myTopLeft || !section.size || !Number.isFinite(scaleX) || !Number.isFinite(scaleY))
+        throw new Error('actual document viewport geometry unavailable');
+    const origin = size.clone(); origin.pX = 0; origin.pY = 0;
+    const end = size.clone();
+    const dx1 = layout.documentToViewX(origin), dy1 = layout.documentToViewY(origin);
+    const dx2 = layout.documentToViewX(end), dy2 = layout.documentToViewY(end);
+    const x1 = rect.left + Math.max(0, section.myTopLeft[0], Math.min(dx1, dx2)) * scaleX;
+    const y1 = rect.top + Math.max(0, section.myTopLeft[1], Math.min(dy1, dy2)) * scaleY;
+    const x2 = rect.left + Math.min(canvas.width, section.myTopLeft[0] + section.size[0], Math.max(dx1, dx2)) * scaleX;
+    const y2 = rect.top + Math.min(canvas.height, section.myTopLeft[1] + section.size[1], Math.max(dy1, dy2)) * scaleY;
+    if (![x1, y1, x2, y2].every(Number.isFinite) || x2 - x1 < 120 || y2 - y1 < 120)
+        throw new Error('no safely visible document drawing area');
+    const base = {
+        route: 'zero-motion-canvas-pointer', eventsDispatched: 0, movesDispatched: 0,
+        before, canvasRect: {x:rect.x,y:rect.y,width:rect.width,height:rect.height},
+        visibleDocumentRect: {x1,y1,x2,y2}, candidateProbes: [],
+        hardwarePointerInput: 'not-tested', pressureSource: 'synthetic-known-finite'
+    };
+    if (before.drawing !== true || before.activeStroke === true) {
+        base.reason = before.drawing !== true ? 'drawing-not-armed' : 'previous-active-stroke';
+        return JSON.stringify(Object.assign({routeReady:false}, base));
+    }
+    // Pick a clean empty document area where the actual topmost DOM element is
+    // inside the canvas. The candidates are real layout fractions, never a
+    // fabricated target; the control band is at the upper-left.
+    const candidates = [[.72,.72],[.72,.58],[.58,.72],[.81,.66],[.66,.81],[.84,.30],[.30,.84]];
+    let chosen = null;
+    for (const [fx, fy] of candidates) {
+        const px = x1 + fx * (x2 - x1), py = y1 + fy * (y2 - y1);
+        let hit = null;
+        try { hit = document.elementFromPoint(px, py); } catch (ignored) {}
+        const facts = targetFacts(hit);
+        base.candidateProbes.push({fraction:[fx,fy], point:[round2(px),round2(py)], target:facts});
+        if (hit && canvas.contains(hit)) { chosen = {point:[px,py], fraction:[fx,fy], hit}; break; }
+    }
+    if (!chosen) {
+        base.reason = 'no-clean-canvas-dot-target';
+        return JSON.stringify(Object.assign({routeReady:false}, base));
+    }
+    const point = chosen.point;
+    const dispatchTarget = chosen.hit;
+    const pointerId = 941;
+    const eventOptions = (buttons, pressure) => ({
+        bubbles:true, cancelable:true, composed:true, pointerType:'pen',
+        pointerId, isPrimary:true, clientX:point[0], clientY:point[1],
+        button:0, buttons, pressure
+    });
+    const downEvent = new PointerEvent('pointerdown', eventOptions(1, .5));
+    const upEvent = new PointerEvent('pointerup', eventOptions(0, 0));
+    const dispatchFacts = targetFacts(dispatchTarget);
+    const observedHitFacts = targetFacts(chosen.hit);
+    dispatchTarget.dispatchEvent(downEvent);
+    const afterDown = window.__floeOfficePenState();
+    const previewAfterDown = typeof window.__floeOfficePenPreview === 'function'
+        ? window.__floeOfficePenPreview() : null;
+    await new Promise(resolve => setTimeout(resolve, 40));
+    dispatchTarget.dispatchEvent(upEvent);
+    const afterUp = window.__floeOfficePenState();
+    const previewAfterUp = typeof window.__floeOfficePenPreview === 'function'
+        ? window.__floeOfficePenPreview() : null;
+    const strokeDelta = afterUp.strokes - before.strokes;
+    const coreEventDelta = afterUp.coreEvents - before.coreEvents;
+    return JSON.stringify({
+        routeReady: true, route: base.route,
+        pointClient: [round2(point[0]), round2(point[1])],
+        clientPoints: [[point[0], point[1]], [point[0], point[1]]],
+        dotFraction: chosen.fraction,
+        pressure: {down: finite(downEvent.pressure), up: finite(upEvent.pressure)},
+        eventsDispatched: 2, movesDispatched: 0, pointerId,
+        dispatchTarget: dispatchFacts, observedHitTarget: observedHitFacts,
+        candidateProbes: base.candidateProbes,
+        before, afterDown, afterUp,
+        activeAfterDown: afterDown.activeStroke === true,
+        activeAfterUp: afterUp.activeStroke === true,
+        downAccepted: afterDown.activeStroke === true,
+        strokeDelta, coreEventDelta,
+        previewAfterDown, previewAfterUp,
+        visibleDocumentRect: base.visibleDocumentRect, canvasRect: base.canvasRect,
+        hardwarePointerInput: 'not-tested', pressureSource: 'synthetic-known-finite'
+    });
+    """#
+
+    /// Fresh reopened-page geometry for mapping the original dot fraction to
+    /// current engine-page snapshot pixels. Read-only, bounded and text-free.
+    private static let zeroMotionRenderProbeScript = #"""
+    const app = window.app;
+    const container = app && app.sectionContainer;
+    const canvas = container && container.canvas;
+    const layout = app && app.activeDocument && app.activeDocument.activeLayout;
+    const size = app && app.activeDocument && app.activeDocument.fileSize;
+    if (!canvas || !layout || !size || !container || typeof container.getDocumentAnchorSection !== 'function')
+        return JSON.stringify({available:false, reason:'document-geometry-unavailable'});
+    const section = container.getDocumentAnchorSection();
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width / canvas.width, scaleY = rect.height / canvas.height;
+    if (!section || !section.myTopLeft || !section.size || !Number.isFinite(scaleX) || !Number.isFinite(scaleY))
+        return JSON.stringify({available:false, reason:'section-geometry-unavailable'});
+    const origin = size.clone(); origin.pX = 0; origin.pY = 0;
+    const end = size.clone();
+    const dx1 = layout.documentToViewX(origin), dy1 = layout.documentToViewY(origin);
+    const dx2 = layout.documentToViewX(end), dy2 = layout.documentToViewY(end);
+    const x1 = rect.left + Math.max(0, section.myTopLeft[0], Math.min(dx1, dx2)) * scaleX;
+    const y1 = rect.top + Math.max(0, section.myTopLeft[1], Math.min(dy1, dy2)) * scaleY;
+    const x2 = rect.left + Math.min(canvas.width, section.myTopLeft[0] + section.size[0], Math.max(dx1, dx2)) * scaleX;
+    const y2 = rect.top + Math.min(canvas.height, section.myTopLeft[1] + section.size[1], Math.max(dy1, dy2)) * scaleY;
+    return JSON.stringify({available:true, x1,y1,x2,y2,
+        canvasRect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},
+        viewportWidth:window.innerWidth, viewportHeight:window.innerHeight,
+        scrollX:window.scrollX, scrollY:window.scrollY,
+        visualScale:window.visualViewport ? window.visualViewport.scale : null,
+        devicePixelRatio:window.devicePixelRatio,
+        zoom:app.map && typeof app.map.getZoom === 'function' ? app.map.getZoom() : null});
     """#
 
     /// Qualification-only capture of a real core graphic selection. The pinned

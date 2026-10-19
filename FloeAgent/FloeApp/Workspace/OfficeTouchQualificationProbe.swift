@@ -34,7 +34,11 @@
 // diagnostic install) plus an all-start counter, per-type capture/bubble/
 // defaultPrevented counters, per-event isTrusted / touches.length /
 // changedTouches.length / pointerType / pointerId / rounded client
-// coordinates / bounded target tag, id and first class token. Touch and
+// coordinates / bounded target tag, id and first class token. Trusted
+// two-finger touchmove records additionally carry the RAW full-precision
+// passive finger distance `d` (the pinned container's own distance formula
+// over this event's immutable touch list) and the per-gesture arrival
+// counter `mv`. Touch and
 // pointer-down records additionally carry an in-flight compact section
 // snapshot (`q`: multiTouch, positionOnMouseDown, sectionOnMouseDown.name,
 // touchEventInProgress, getZoom) captured INSIDE the passive handler, so
@@ -57,15 +61,70 @@
 // 1 only when the sample ran at or after its own gesture's last-finger
 // touchend/touchcancel, and `stale` is 1 when a newer gesture had already
 // started. `q` remains the synchronous pre-handler snapshot. A post-end or
-// stale sample is never pre-end live-frame evidence.
+// stale sample is never pre-end live-frame evidence. Trusted two-finger
+// touchmove records carry `d`: the passive Euclidean finger distance of
+// THIS event's own touch list, computed with the pinned container's own
+// formula and recorded at RAW JSON double precision (no num4 rounding).
+// Touch lists are immutable during dispatch, so the recorded value is the
+// bit-identical double the engine latched; recording it raw removes any
+// need for a distance-quantization bound across the fixture reference
+// sizes. `d0` is the first bubble-sampled live move distance that fixed
+// this gesture's engine pinch-start reference: set once per gesture at the
+// first synchronous window-bubble sample observing the just-opened live
+// frame, reset only at gesture birth, never established from the bounded
+// rAF fallback, and snapshotted into every sample so its immutability is
+// verifiable by every consumer of the same gesture. `mv` is the probe's
+// own per-gesture arrival counter, which orders 0.1 ms event-time ties by
+// real dispatch order instead of by the recorded timestamps. `lfin`
+// retains the LAST qualifying same-event bubble live move independently
+// of the bounded ring, together with its raw start zoom and its UNCLAMPED
+// input target (z0 + Math.log(d/d0)/Math.log(1.2), the engine's own
+// DocumentBase.getScaleZoom formula). Every record carries a monotonic
+// `seq` from the probe's passive dispatch order, so the frozen move is
+// proven to precede the release (seq < endSeq) even when their recorded
+// times tie at the 0.1 ms resolution; the consumer rounds the
+// full-precision JS target with exact Math.round semantics (floor(x+0.5)),
+// never a rounded frame scale.
+//
+// SYNCHRONOUS NEAREST COMMIT (current candidate): the trusted last-finger
+// touchend record remains a RAW INPUT-END record and is never rewritten as
+// closed/final. The release handler commits the NEAREST integer level
+// (floor(rawTarget + 0.5), then the pure range clamp) synchronously, so its
+// own after-target sample must observe `iz` 0, no live frame scale (`zfs`
+// nil) and the committed zoom. There is no asynchronous settle observer,
+// watchdog, timer or post-release record: an open terminal frame is a
+// contract failure and the consumer rejects it, even if a later frame or a
+// fabricated post-release record looks valid. The marker badge's closed
+// token comes only from a real after-target sample that actually read the
+// closed frame; it proves handler-level state, not compositor presentation.
+//
+// When the probe session was launched with BOTH qualification arguments,
+// the page also shows a marker badge: one fixed-position, fixed-size,
+// pointer-events:none DOM node outside the canvas content flow. Its text
+// carries ONLY the gesture serial, the move counter, the CURRENT actual
+// touch count (0/1/2, display-capped) and the frame-closed phase (C only
+// when a real after-target sample saw a closed committed frame; O
+// otherwise — closed means frame/map commit, not raster ready). It is
+// updated only from the probe's own passive real-event path: no
+// manufactured time, touches or zoom, no document or user text, no engine
+// mutation and no requestReDraw. It proves handler-level state transitions,
+// not compositor presentation timing.
 //
 // The snapshot adds `gid/ga/gst/lmt/gend/gc`, a four-entry `gest` summary
 // (start, last-finger end, move count, start/end zoom, frame state), a
 // single `latest` current-gesture sample, `terminal` (the one record that
 // actually ended the current gesture, retained independently of the ring),
 // `fl` (the first eight pre-end live move samples of the current gesture,
-// reset at birth), and `pd` (fallback samples dropped by the bounded pending
-// cap), so a bounded ring that overwrites early events still exposes the
+// reset at birth, and now carrying the per-sample `d`/`d0`/`mv` input
+// correlation fields), `lfin` (the LAST trusted same-event bubble live
+// move of the current gesture, frozen by the probe's monotonic dispatch
+// sequence and retained independently of the ring, so a 0.1 ms event-time
+// tie with the release cannot misselect it), `eseq`/`lmseq` (the
+// current gesture's last-finger end sequence and its last trusted move
+// sequence), `mk` (the marker badge's current bounded tokens, with `n` = 1
+// only when the badge node exists), and `pd` (fallback samples dropped by
+// the bounded pending cap), so a bounded ring that overwrites early events
+// still exposes the
 // latest start/end timestamps, the terminal record and the gesture-start
 // live frame. `st` adds `iza`, `zfs`, `minz` and `maxz`. These fields describe
 // the requested layout/zoom-frame state only; they do not prove that the
@@ -83,6 +142,11 @@ final class OfficeTouchQualificationProbe {
     static let shared = OfficeTouchQualificationProbe()
 
     static let launchArgument = "--office-touch-qualification"
+    /// Second, narrower gate for the on-page pinch marker badge. The badge
+    /// node is created only in a DEBUG build launched with BOTH this
+    /// explicit argument and `launchArgument`; ordinary qualification runs
+    /// never create it, and Release never compiles it at all.
+    static let visibleMarkerLaunchArgument = "--office-touch-qualification-visible-marker"
     static let snapshotAccessibilityIdentifier = "office.touch-qualification.snapshot"
     static let snapshotAccessibilityLabel = "FLOE_TOUCH_PROBE"
     static let canvasAnchorIdentifier = "office.touch-qualification.canvas-anchor"
@@ -93,6 +157,13 @@ final class OfficeTouchQualificationProbe {
     /// itself does not compile there).
     static var isRequested: Bool {
         ProcessInfo.processInfo.arguments.contains(launchArgument)
+    }
+
+    /// True only when BOTH qualification arguments are present. The page
+    /// still records everything without the marker argument; the badge DOM
+    /// node is the single additional side effect gated here.
+    static var isMarkerRequested: Bool {
+        isRequested && ProcessInfo.processInfo.arguments.contains(visibleMarkerLaunchArgument)
     }
 
     /// Page-side transfer budget (JSON.stringify length). Swift accepts up to
@@ -238,7 +309,7 @@ final class OfficeTouchQualificationProbe {
             // sent to the page at all. The script re-checks page ownership.
             guard let current = self.installation, current.token == token,
                   current.webView === web else { return }
-            let script = Self.domInstallScript(owner: token)
+            let script = Self.domInstallScript(owner: token, marker: Self.isMarkerRequested)
             let raw = try? await web.evaluateJavaScript(script)
             guard let current = self.installation, current.token == token,
                   current.webView === web else { return }
@@ -440,11 +511,15 @@ final class OfficeTouchQualificationProbe {
     /// registration order is untouched relative to the pinned gate (observed
     /// later, which is itself reported: pointer records missing under
     /// drawing ON with touches present proves the gate's pointer-level stop
-    /// upstream).
-    private static func domInstallScript(owner token: Int) -> String {
+    /// upstream). The optional on-page pinch marker badge is created only
+    /// when the explicit marker argument accompanied the qualification
+    /// launch; the badge and its node reference are owned by this
+    /// installation and removed by its teardown.
+    private static func domInstallScript(owner token: Int, marker: Bool) -> String {
         #"""
 (() => {
   const OWNER = \#(token);
+  const MARKER = \#(marker ? 1 : 0);
   try {
     const old = window.__floeTouchProbe;
     if (old && typeof old.owner === 'number' && old.owner > OWNER) { return 'probe-stale:' + old.owner; }
@@ -461,7 +536,10 @@ final class OfficeTouchQualificationProbe {
       cntD: {ts: 0, tm: 0, te: 0, tc: 0, pd: 0, pm: 0, pu: 0, pc: 0},
       dr: 0, ns: 0, starts: [], ring: [], handles: [], fl: [],
       gid: 0, ga: 0, gst: null, lmt: null, gend: null, gc: null,
-      gmv: 0, gz0: null, latest: null, terminal: null, gest: [],
+      gmv: 0, gz0: null, gz0r: null, d0: null, lfin: null,
+      mk: { g: 0, mv: 0, t: 0, c: 1, n: 0 },
+      seq: 0, eseq: null, lmseq: null,
+      latest: null, terminal: null, gest: [],
       pending: new Map(), pdrop: 0, ends: {}, endOrder: []
     };
     const R = (x) => (typeof x === 'number' && isFinite(x)) ? Math.round(x * 10) / 10 : null;
@@ -469,6 +547,36 @@ final class OfficeTouchQualificationProbe {
     const now = () => Math.round((performance.now() - P.pn0) * 10) / 10;
     const clip = (s, n) => (typeof s === 'string') ? s.slice(0, n) : null;
     const coord = (p) => [R(p && p.clientX), R(p && p.clientY)];
+    // Optional on-page pinch marker badge (only when the probe session was
+    // explicitly launched with the marker argument). One fixed-size,
+    // fixed-position node in the same WK frame as the canvas, outside the
+    // content flow, pointer-events:none and user-select:none, appended
+    // outside the canvas element. Its text carries ONLY the gesture serial,
+    // the move counter, the current actual touch count (0/1/2, capped for
+    // display) and the frame-closed phase (C = a real after-target sample
+    // saw the frame/map commit closed, NOT raster readiness; O otherwise).
+    // It never touches engine state (no mutation, no requestReDraw, no
+    // synthetic input, no fabricated timestamps or touches) and updates
+    // only from the probe's own passive real-event path.
+    let markerEl = null;
+    const updateMarker = () => {
+      if (!MARKER || !markerEl) return;
+      try {
+        markerEl.textContent = 'FLOE G' + P.mk.g + ' M' + P.mk.mv + ' T' + P.mk.t + ' '
+          + (P.mk.c ? 'C' : 'O');
+      } catch (e) {}
+    };
+    if (MARKER) {
+      try {
+        markerEl = document.createElement('div');
+        markerEl.setAttribute('data-floe-pinch-marker', '1');
+        markerEl.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:2147483647;'
+          + 'pointer-events:none;user-select:none;background:rgba(0,0,0,0.82);color:#fff;'
+          + 'font:700 20px/1.25 -apple-system,monospace;padding:5px 12px;border-radius:8px;';
+        (document.body || document.documentElement).appendChild(markerEl);
+        P.mk.n = markerEl ? 1 : 0;
+      } catch (e) { markerEl = null; }
+    }
     // Read only the pinned public/internal accessors already used by the
     // engine's own zoom-frame consumers. No mutation, no dispatch and no
     // layout side effect: an absent getter reports null instead of throwing.
@@ -510,8 +618,30 @@ final class OfficeTouchQualificationProbe {
         const ownEnd = P.ends[rec.gi];
         const post = (typeof ownEnd === 'number' && at >= ownEnd) ? 1 : 0;
         const stale = (P.gid !== rec.gi) ? 1 : 0;
+        const d = (typeof rec.d === 'number' && isFinite(rec.d)) ? rec.d : null;
+        // The engine fixes its pinch reference at the first move it actually
+        // processes (ZoomControl.onMultiTouchMove latches pinchStartDistance
+        // and opens the live zoom frame in that same call). Only a
+        // synchronous window-bubble sample of THIS event proves the target
+        // handler ran for it; the bounded rAF fallback may observe a later
+        // move's state and must never establish the reference. Once set, d0
+        // never changes for the gesture (reset only at birth) and is
+        // snapshotted into every sample, so every verified consumer of the
+        // same gesture reads the identical immutable reference.
+        if (src === 'b' && !stale && !post && key === 'tm' && rec.tr === 1 &&
+            rec.gi === P.gid && st.iz === 1 && d !== null && P.d0 === null) {
+          P.d0 = d;
+        }
+        const d0 = (typeof P.d0 === 'number' && isFinite(P.d0)) ? P.d0 : null;
         rec.s = { at: at, iz: st.iz, zfs: st.zfs, z: st.z, post: post,
-                  stale: stale, src: src };
+                  stale: stale, src: src, d: d, d0: d0 };
+        if (!stale) {
+          // Badge phase exclusively from this real after-target read of the
+          // engine's frame state: closed (C) only when the frame actually
+          // is closed, open (O) otherwise.
+          P.mk.c = (st.iz === 0) ? 1 : 0;
+          updateMarker();
+        }
         // Bounded first-live window: only a trusted move of the current,
         // still-open gesture with a live finite frame scale qualifies. The
         // stored identity/time fields let the consumer reject a late or
@@ -523,7 +653,30 @@ final class OfficeTouchQualificationProbe {
             P.fl.length < 8) {
           P.fl.push({ t: rec.t, at: at, gi: rec.gi, tr: rec.tr,
                       iz: st.iz, zfs: st.zfs, z: st.z,
-                      post: post, stale: stale, src: src });
+                      post: post, stale: stale, src: src,
+                      d: d, d0: d0, mv: rec.mv });
+        }
+        // Last input-owned live move, retained independently of the bounded
+        // ring and frozen by real dispatch order: the current commit policy is
+        // evaluated by the consumer against exactly this sample. Because it
+        // advances with every qualifying synchronous bubble move and is
+        // never rewritten after the release, a 0.1 ms event-time tie with
+        // the terminal end cannot misselect it (the recorded UI2 run
+        // contains exactly such a tie).
+        if (src === 'b' && !stale && !post && key === 'tm' && rec.tr === 1 &&
+            rec.gi === P.gid && st.iz === 1 && d !== null && d > 0 &&
+            d0 !== null && d0 > 0 &&
+            typeof P.gz0r === 'number' && isFinite(P.gz0r) &&
+            typeof st.zfs === 'number' && isFinite(st.zfs)) {
+          // Unclamped target of the engine's own formula
+          // (DocumentBase.getScaleZoom), carried at full precision so the
+          // consumer never rounds a rounded frame scale.
+          const rt = P.gz0r + Math.log(d / d0) / Math.log(1.2);
+          P.lfin = { gi: rec.gi, t: rec.t, at: at, mv: rec.mv, seq: rec.seq,
+                     tr: 1, d: d, d0: d0, z0: P.gz0r,
+                     rt: isFinite(rt) ? rt : null,
+                     zfs: st.zfs, z: st.z, src: src };
+          updateMarker();
         }
         if (!stale) {
           P.latest = { at: at, gi: rec.gi, ph: rec.ph, k: key,
@@ -537,6 +690,11 @@ final class OfficeTouchQualificationProbe {
                             post: post, c: key === 'tc' ? 1 : 0 };
           P.gest.push(summary);
           while (P.gest.length > 4) { P.gest.shift(); }
+          // The terminal record remains exactly what the after-target
+          // sample observed. The current synchronous contract closes the
+          // zoom frame in the release handler, so no post-release observer
+          // exists and the marker's closed token can only come from the
+          // real sample above; an open frame is rejected by the consumer.
         }
       } catch (e) {
         rec.s = { at: now(), err: 1, stale: (P.gid !== rec.gi) ? 1 : 0, src: src };
@@ -624,6 +782,12 @@ final class OfficeTouchQualificationProbe {
         const touch = key.charAt(0) === 't';
         const rec = { k: key, t: Math.round((performance.now() - P.pn0) * 10) / 10,
                       tr: e.isTrusted ? 1 : 0, dp: e.defaultPrevented ? 1 : 0 };
+        // Monotonic passive dispatch sequence: every record (touch and
+        // pointer) advances it exactly once in the probe's own capture
+        // order, so "the last owned move before the release" is proven by
+        // sequence, never by rounded timestamps (0.1 ms ties included).
+        P.seq += 1;
+        rec.seq = P.seq;
         if (touch) {
           rec.n = e.touches ? e.touches.length : null;
           rec.c = e.changedTouches ? e.changedTouches.length : null;
@@ -633,6 +797,27 @@ final class OfficeTouchQualificationProbe {
             for (let j = 0; j < m; j++) { pts.push(coord(e.changedTouches[j])); }
           }
           rec.o = pts;
+          // Passive finger distance for the input-correlated live-frame and
+          // commit evidence: the pinned container's own formula
+          // (CanvasSectionContainer.onTouchMove:
+          // Math.sqrt(Math.pow(diffX,2)+Math.pow(diffY,2)) of the absolute
+          // client deltas of the two active touches) evaluated on THIS
+          // event's own touch list in the capture phase. Touch lists are
+          // immutable during dispatch, so the engine's target handler
+          // computes the bit-identical double for the same event. Recorded
+          // RAW (no num4): the acceptance needs no quantization bound
+          // across the fixture reference distances because the recorded
+          // value carries no distance quantization at all. touchmove only;
+          // the live-frame contract never needs it elsewhere.
+          rec.d = null;
+          if (key === 'tm' && e.touches && e.touches.length === 2) {
+            try {
+              const ddx = Math.abs(e.touches[0].clientX - e.touches[1].clientX);
+              const ddy = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
+              const dist = Math.sqrt(Math.pow(ddx, 2) + Math.pow(ddy, 2));
+              rec.d = (isFinite(dist) && dist > 0) ? dist : null;
+            } catch (x) { rec.d = null; }
+          }
         } else {
           rec.p = e.pointerType || null;
           rec.pi = (typeof e.pointerId === 'number') ? e.pointerId : null;
@@ -653,12 +838,18 @@ final class OfficeTouchQualificationProbe {
           P.lmt = null;
           P.gmv = 0;
           P.gz0 = null;
+          P.gz0r = null;
+          P.eseq = null;
+          P.lmseq = null;
+          P.d0 = null;
+          P.lfin = null;
           P.latest = null;
           P.fl = [];
           P.terminal = null;
           try {
             const m = window.app && window.app.map;
             P.gz0 = m && typeof m.getZoom === 'function' ? num4(m.getZoom()) : null;
+            P.gz0r = m && typeof m.getZoom === 'function' ? m.getZoom() : null;
           } catch (x) {}
         }
         if ((key === 'te' && P.ga && e.touches && e.touches.length === 0) ||
@@ -672,6 +863,7 @@ final class OfficeTouchQualificationProbe {
           // therefore never becomes terminal.
           rec.term = 1;
           P.terminal = rec;
+          P.eseq = rec.seq;
           // Per-gesture end time: a delayed rAF sample is judged against its
           // own gesture, never against a newer gesture's global end/reset.
           P.ends[P.gid] = rec.t;
@@ -681,12 +873,35 @@ final class OfficeTouchQualificationProbe {
             delete P.ends[oldGid];
           }
         }
-        if (key === 'tm' && P.ga) { P.gmv += 1; P.lmt = rec.t; }
+        if (key === 'tm' && P.ga) {
+          P.gmv += 1;
+          P.lmt = rec.t;
+          rec.mv = P.gmv;
+          // Only a trusted two-touch move is pinch input: a one-finger move
+          // (for example one finger lifted mid-gesture) never updates the
+          // engine's target and must not masquerade as the commit input's
+          // last sequence. gmv/mv still count every real move for the
+          // badge; the commit-input sequence tracks only engine input.
+          if (rec.tr === 1 && e.touches && e.touches.length === 2) {
+            P.lmseq = rec.seq;
+          }
+        }
         rec.gi = P.gid;
         rec.ph = (key === 'ts' || key === 'pd') ? 's'
           : (key === 'tm' || key === 'pm') ? 'm'
           : (key === 'te' || key === 'pu') ? 'e' : 'c';
         if (key === 'ts' || key === 'tm' || key === 'pd') { quickState(rec); }
+        if (touch) {
+          // The badge mirrors only this probe's own real-event ownership
+          // state at the moment the real event arrived: gesture serial,
+          // move counter and the CURRENT actual touch count (0/1/2; the
+          // badge display caps at 2). No time, zoom, document text or
+          // synthesized input is shown or implied.
+          P.mk.g = P.gid;
+          P.mk.mv = P.gmv;
+          P.mk.t = e.touches ? Math.min(2, e.touches.length) : 0;
+          updateMarker();
+        }
         P.cnt[key] = (P.cnt[key] || 0) + 1;
         if (key === 'ts' || key === 'pd') {
           P.ns += 1;
@@ -724,6 +939,13 @@ final class OfficeTouchQualificationProbe {
         try { window.removeEventListener(h[0], h[1], { capture: h[2] }); } catch (e) {}
       }
       P.handles.length = 0;
+      // The badge node is owned by this installation and removed on
+      // teardown; no DOM residue can outlive the session. A newer install
+      // has already torn this probe down before re-creating its own state.
+      if (markerEl && markerEl.parentNode) {
+        try { markerEl.parentNode.removeChild(markerEl); } catch (e) {}
+      }
+      markerEl = null;
       try {
         for (const entry of P.pending.values()) {
           entry.done = 1;
@@ -824,7 +1046,9 @@ final class OfficeTouchQualificationProbe {
                    cnt: P.cnt, cntB: P.cntB, cntD: P.cntD, dr: P.dr, ns: P.ns,
                    gid: P.gid, ga: P.ga, gst: P.gst, lmt: P.lmt, gend: P.gend,
                    gc: P.gc, gest: P.gest, latest: P.latest,
-                   terminal: P.terminal, fl: P.fl, pd: P.pdrop,
+                   terminal: P.terminal, fl: P.fl, lfin: P.lfin,
+                   eseq: P.eseq, lmseq: P.lmseq,
+                   mk: P.mk, pd: P.pdrop,
                    starts: P.starts, ring: P.ring, rtv: 0, st: st, pen: pen, vp: vp,
                    cv: cv, rs: document.readyState.slice(0, 12) };
     let text = JSON.stringify(body);

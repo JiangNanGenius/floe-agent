@@ -68,6 +68,17 @@ BROWSER_TS_REL = Path("src/canvas/CanvasSectionContainer.ts")
 LOCKED_SOURCEFILE_REL = Path("browser") / BROWSER_TS_REL
 MODULE_JS_REL = Path("dist/src/canvas/CanvasSectionContainer.js")
 
+
+def emitted_module_rel(source_file):
+    """Map a locked ``browser/src/...`` TypeScript source to its emitted JS."""
+    source = Path(source_file)
+    try:
+        relative = source.relative_to(Path("browser/src"))
+    except ValueError:
+        raise ProducerError(
+            "locked sourceFile must be under browser/src: %s" % source_file)
+    return Path("dist/src") / relative.with_suffix(".js")
+
 # Exactly the generated outputs of the dist/bundle.js chain. These stamps and
 # intermediates are removed so make re-executes the genuine chain; the rest of
 # dist (css, images, l10n, admin) is untouched because the patch has no
@@ -251,9 +262,15 @@ def validate_browser_lock(lock_obj, lock_dir):
         if fields["originalSourceSHA256"] == fields["patchedSourceSHA256"]:
             raise ProducerError("browserSourcePatches[%d] original equals patched digest" % index)
         source_file = Path(fields["sourceFile"])
-        if source_file.is_absolute() or ".." in source_file.parts:
+        if (source_file.is_absolute() or ".." in source_file.parts
+                or "\\" in fields["sourceFile"]):
             raise ProducerError(
                 "browserSourcePatches[%d].sourceFile must be a contained relative path" % index)
+        try:
+            source_file.relative_to(Path("browser/src"))
+        except ValueError:
+            raise ProducerError(
+                "browserSourcePatches[%d].sourceFile must be under browser/src" % index)
         patch_path = (lock_dir / fields["patch"]).resolve()
         try:
             patch_path.relative_to(lock_dir.resolve())
@@ -264,6 +281,18 @@ def validate_browser_lock(lock_obj, lock_dir):
             raise ProducerError("browser patch lock patch file missing: %s" % patch_path)
         if sha256_file(patch_path) != fields["patchSHA256"]:
             raise ProducerError("browser patch lock patch digest mismatch: %s" % patch_path)
+        marker = entry.get("bundleMarker")
+        if marker is not None and (not isinstance(marker, str) or not marker):
+            raise ProducerError(
+                "browserSourcePatches[%d].bundleMarker must be a non-empty string" % index)
+        tokens = entry.get("bundleTokens")
+        if tokens is None:
+            tokens = []
+        if not isinstance(tokens, list) or any(
+                not isinstance(token, str) or not token for token in tokens):
+            raise ProducerError(
+                "browserSourcePatches[%d].bundleTokens must be a list of non-empty strings"
+                % index)
         normalized.append(
             {
                 "patch": fields["patch"],
@@ -272,13 +301,21 @@ def validate_browser_lock(lock_obj, lock_dir):
                 "sourceFile": fields["sourceFile"],
                 "originalSourceSHA256": fields["originalSourceSHA256"],
                 "patchedSourceSHA256": fields["patchedSourceSHA256"],
+                "bundleMarker": marker,
+                "bundleTokens": tokens,
             }
         )
-    seen = set()
-    for entry in normalized:
-        if entry["sourceFile"] in seen:
-            raise ProducerError("two browser patch entries touch the same source file")
-        seen.add(entry["sourceFile"])
+    # A file may be patched more than once, but only as a contiguous chain in
+    # the declared order: the next patch's original must be the previous
+    # patch's result. Independent files start from the pinned original.
+    chains = {}
+    for index, entry in enumerate(normalized):
+        chain = chains.setdefault(entry["sourceFile"], [])
+        if chain and entry["originalSourceSHA256"] != chain[-1]["patchedSourceSHA256"]:
+            raise ProducerError(
+                "browserSourcePatches[%d] does not continue the source chain for %s"
+                % (index, entry["sourceFile"]))
+        chain.append(entry)
     return repository, commit, normalized
 
 
@@ -352,12 +389,32 @@ def flatten_minified(text):
     return text.replace("\n", "")
 
 
-def marker_report(text):
+def marker_report(text, marker=PATCH_MARKER, tokens=PATCH_TOKEN_COUNTS):
     flat = flatten_minified(text)
     return {
-        "patchMarkerPresent": PATCH_MARKER in flat,
-        "tokenCounts": {token: flat.count(token) for token in PATCH_TOKEN_COUNTS},
+        "patchMarkerPresent": marker is not None and marker in flat,
+        "tokenCounts": {token: flat.count(token) for token in tokens},
     }
+
+
+def entry_evidence(entry):
+    """Return the bundle marker/tokens that must prove one patch is applied."""
+    marker = entry.get("bundleMarker")
+    tokens = tuple(entry.get("bundleTokens") or ())
+    if marker is None and not tokens and Path(entry["sourceFile"]) == LOCKED_SOURCEFILE_REL:
+        # Backward-compatible default for the historical single Canvas patch
+        # (synthetic fixtures and older lock copies).
+        return PATCH_MARKER, PATCH_TOKEN_COUNTS
+    return marker, tokens
+
+
+def require_bundle_evidence(entries):
+    """Fail closed unless every locked patch has a bundle-level proof."""
+    for index, entry in enumerate(entries):
+        marker, tokens = entry_evidence(entry)
+        if marker is None and not tokens:
+            raise ProducerError(
+                "locked patch %d has no marker/token bundle evidence" % index)
 
 
 def dist_manifest(dist_dir):
@@ -383,6 +440,34 @@ def tree_digest(rows):
     for rel, sha, size in sorted(rows):
         digest.update(("%s %s %d\n" % (rel, sha, size)).encode("utf-8"))
     return digest.hexdigest()
+
+
+def patch_targets(patch_path, cwd):
+    """Return the single worktree path a locked patch changes.
+
+    ``git apply --numstat`` parses the patch without touching the tree; using
+    git's own parser avoids accepting a patch that silently edits a second file
+    outside its locked ``sourceFile``.
+    """
+    proc = subprocess.run(
+        ["git", "apply", "--numstat", str(patch_path)],
+        cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        raise ProducerError(
+            "cannot parse locked patch %s: %s" % (patch_path, proc.stderr.strip()))
+    paths = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) != 3:
+            raise ProducerError(
+                "unexpected git apply --numstat line for %s: %r" % (patch_path, line))
+        added, removed, path = parts
+        if added == "-" or removed == "-":
+            raise ProducerError("binary locked patch is unsupported: %s" % patch_path)
+        paths.append(path)
+    return paths
 
 
 class Producer:
@@ -411,13 +496,6 @@ class Producer:
             raise ProducerError("browser patch lock is not valid JSON: %s" % error)
         self.engine_repository, self.engine_commit, self.entries = validate_browser_lock(
             lock_obj, self.lock_path.parent)
-        if len(self.entries) != 1:
-            raise ProducerError(
-                "this producer expects exactly one locked browser source patch; got %d"
-                % len(self.entries))
-        entry = self.entries[0]
-        if Path(entry["sourceFile"]) != LOCKED_SOURCEFILE_REL:
-            raise ProducerError("unexpected locked sourceFile: %s" % entry["sourceFile"])
         restored_browser = self.restored / "browser"
         checks = {
             "restored browser tree": restored_browser.is_dir(),
@@ -425,7 +503,6 @@ class Producer:
             "package.json": (restored_browser / "package.json").is_file(),
             "npm-shrinkwrap.json": (restored_browser / "npm-shrinkwrap.json").is_file(),
             "node_shrinkpack": (restored_browser / "node_shrinkpack").is_dir(),
-            "locked source file": (restored_browser / BROWSER_TS_REL).is_file(),
             "original dist/bundle.js": (restored_browser / "dist/bundle.js").is_file(),
             "top scripts (genlangmaps/unocommands/unoshortcuts)": (
                 (self.restored / "scripts/genlangmaps.py").is_file()
@@ -436,11 +513,24 @@ class Producer:
         missing = [name for name, ok in checks.items() if not ok]
         if missing:
             raise ProducerError("restored input lacks required build inputs: %s" % ", ".join(missing))
-        self.original_ts_sha = sha256_file(restored_browser / BROWSER_TS_REL)
-        if self.original_ts_sha != entry["originalSourceSHA256"]:
-            raise ProducerError(
-                "restored TypeScript digest mismatch: %s != locked %s"
-                % (self.original_ts_sha, entry["originalSourceSHA256"]))
+        # Every independent file chain must start from the restored pinned
+        # original; later entries in the same chain were checked against the
+        # previous patch result by validate_browser_lock.
+        self.source_chains = {}
+        for entry in self.entries:
+            self.source_chains.setdefault(entry["sourceFile"], []).append(entry)
+        self.original_sources = {}
+        for source_file, chain in self.source_chains.items():
+            source_path = self.restored / source_file
+            if not source_path.is_file():
+                raise ProducerError("restored locked source file missing: %s" % source_file)
+            original = sha256_file(source_path)
+            if original != chain[0]["originalSourceSHA256"]:
+                raise ProducerError(
+                    "restored source digest mismatch for %s: %s != locked %s"
+                    % (source_file, original, chain[0]["originalSourceSHA256"]))
+            self.original_sources[source_file] = original
+        self.original_ts_sha = self.original_sources.get(str(LOCKED_SOURCEFILE_REL))
         self.original_bundle_sha = sha256_file(restored_browser / "dist/bundle.js")
         if self.original_bundle_sha != self.args.expected_original_bundle_sha256:
             raise ProducerError(
@@ -468,9 +558,9 @@ class Producer:
                                   self.logs / ("02-stage-cp-plain-%s.log" % name))
                 if code != 0:
                     raise ProducerError("staging copy failed for %s" % name)
-        for rel in (BROWSER_TS_REL, Path("dist/bundle.js")):
-            staged = sha256_file(self.stage_browser / rel)
-            original = sha256_file(self.restored / "browser" / rel)
+        for rel in (*self.source_chains.keys(), "browser/dist/bundle.js"):
+            staged = sha256_file(self.stage_source / rel)
+            original = sha256_file(self.restored / rel)
             if staged != original:
                 raise ProducerError("staged digest mismatch after clone for %s" % rel)
 
@@ -519,16 +609,18 @@ class Producer:
         restored_src = self.restored / "browser/dist/src"
         if not stage_src.is_dir():
             raise ProducerError("%s did not produce dist/src at all" % phase_label)
-        # Both sets are keyed relative to the browser root so EMIT_PROBE_REL
-        # ("dist/src/...") matches directly.
+        # Both sets are keyed relative to the browser root so the emitted
+        # module names ("dist/src/...") match directly.
         staged = {str(p.relative_to(self.stage_browser)) for p in stage_src.rglob("*.js")}
         original = {str(p.relative_to(self.restored / "browser")) for p in restored_src.rglob("*.js")}
-        probe = EMIT_PROBE_REL
-        if probe not in staged:
+        probes = sorted({str(emitted_module_rel(source_file))
+                         for source_file in self.source_chains})
+        missing_probes = [probe for probe in probes if probe not in staged]
+        if missing_probes:
             raise ProducerError(
                 "%s: tsc emitted no %s; incremental buildinfo likely skipped the "
                 "compile (staged JS count %d vs restored %d)"
-                % (phase_label, EMIT_PROBE_REL, len(staged), len(original)))
+                % (phase_label, ", ".join(missing_probes), len(staged), len(original)))
         # The patch never adds/removes modules: the emitted set must equal the
         # restored one exactly. Report the real deltas if not.
         missing = sorted(original - staged)
@@ -572,36 +664,55 @@ class Producer:
             "byteIdenticalToRestoredOriginal": identical,
         }
 
-    # -- phase 5: apply the locked patch ----------------------------------------
+    # -- phase 5: apply the locked patches --------------------------------------
     def apply_patch(self):
-        entry = self.entries[0]
-        ts = self.stage_browser / BROWSER_TS_REL
-        if sha256_file(ts) != entry["originalSourceSHA256"]:
-            raise ProducerError("staged TS is not the locked original before patching")
-        argv = ["git", "apply", "--check", "-p1", entry["patchPath"]]
-        log = self.logs / "05-patch-check.log"
-        code, _ = run(argv, self.stage_source, log)
-        self.recorder.add("05-patch-check", argv, self.stage_source, code, log)
-        if code != 0:
-            raise ProducerError("locked patch does not apply cleanly to the staged tree")
-        argv = ["git", "apply", "-p1", entry["patchPath"]]
-        log = self.logs / "05-patch-apply.log"
-        code, _ = run(argv, self.stage_source, log)
-        self.recorder.add("05-patch-apply", argv, self.stage_source, code, log)
-        if code != 0:
-            raise ProducerError("git apply failed for the locked patch")
-        patched = sha256_file(ts)
-        if patched != entry["patchedSourceSHA256"]:
-            raise ProducerError(
-                "patched staged TS digest mismatch: %s != locked %s"
-                % (patched, entry["patchedSourceSHA256"]))
+        applied = []
+        for index, entry in enumerate(self.entries):
+            target = self.stage_source / entry["sourceFile"]
+            current = sha256_file(target)
+            if current != entry["originalSourceSHA256"]:
+                raise ProducerError(
+                    "staged source %s is not the locked pre-patch state for patch %d: "
+                    "%s != %s"
+                    % (entry["sourceFile"], index, current,
+                       entry["originalSourceSHA256"]))
+            targets = patch_targets(entry["patchPath"], self.stage_source)
+            if targets != [entry["sourceFile"]]:
+                raise ProducerError(
+                    "locked patch %d changes %r, not exactly its sourceFile %r"
+                    % (index, targets, entry["sourceFile"]))
+            check_log = self.logs / ("05-patch-%02d-check.log" % index)
+            argv = ["git", "apply", "--check", "-p1", entry["patchPath"]]
+            code, _ = run(argv, self.stage_source, check_log)
+            self.recorder.add("05-patch-%02d-check" % index, argv, self.stage_source,
+                              code, check_log)
+            if code != 0:
+                raise ProducerError(
+                    "locked patch %d does not apply cleanly to the staged tree" % index)
+            apply_log = self.logs / ("05-patch-%02d-apply.log" % index)
+            argv = ["git", "apply", "-p1", entry["patchPath"]]
+            code, _ = run(argv, self.stage_source, apply_log)
+            self.recorder.add("05-patch-%02d-apply" % index, argv, self.stage_source,
+                              code, apply_log)
+            if code != 0:
+                raise ProducerError("git apply failed for locked patch %d" % index)
+            patched = sha256_file(target)
+            if patched != entry["patchedSourceSHA256"]:
+                raise ProducerError(
+                    "patch %d produced %s, not the locked patched source %s"
+                    % (index, patched, entry["patchedSourceSHA256"]))
+            applied.append({
+                "patch": entry["patch"],
+                "sourceFile": entry["sourceFile"],
+                "stagedPatchedSHA256": patched,
+            })
         dropped = []
         for rel in PATCH_REBUILD_STAMPS:
             path = self.stage_browser / rel
             if path.exists():
                 path.unlink()
                 dropped.append(rel)
-        return {"patchedStagedSHA256": patched, "stampsDroppedForRebuild": dropped}
+        return {"patches": applied, "stampsDroppedForRebuild": dropped}
 
     # -- phase 6: patched rebuild -----------------------------------------------
     def patched_build(self):
@@ -613,35 +724,62 @@ class Producer:
             raise ProducerError(
                 "patched build produced the original bundle digest: the patch was "
                 "silently omitted from the bundle chain")
-        module_js = self.stage_browser / MODULE_JS_REL
-        if not module_js.is_file():
-            raise ProducerError("patched build did not emit the transpiled module")
+        modules = {}
+        for source_file in self.source_chains:
+            module_js = self.stage_browser / emitted_module_rel(source_file)
+            if not module_js.is_file():
+                raise ProducerError(
+                    "patched build did not emit the transpiled module for %s" % source_file)
+            modules[source_file] = {
+                "module": str(emitted_module_rel(source_file)),
+                "moduleSHA256": sha256_file(module_js),
+            }
         patched_text = dist_bundle.read_text(errors="replace")
         original_text = (self.restored / "browser/dist/bundle.js").read_text(errors="replace")
-        patched_markers = marker_report(patched_text)
-        original_markers = marker_report(original_text)
-        if original_markers["patchMarkerPresent"]:
-            raise ProducerError("the restored ORIGINAL bundle unexpectedly already carries the patch")
-        if not patched_markers["patchMarkerPresent"]:
-            raise ProducerError(
-                "the final minified patched bundle does not carry the locked patch "
-                "marker even though the chain rebuilt; refusing to emit an unproven resource")
-        for token in PATCH_TOKEN_COUNTS[:2]:
-            if patched_markers["tokenCounts"][token] <= original_markers["tokenCounts"][token]:
+        require_bundle_evidence(self.entries)
+        marker_evidence = []
+        for index, entry in enumerate(self.entries):
+            marker, tokens = entry_evidence(entry)
+            if marker is None and not tokens:
                 raise ProducerError(
-                    "patch token %r count did not increase in the patched bundle "
-                    "(patched %d vs original %d)"
-                    % (token, patched_markers["tokenCounts"][token],
-                       original_markers["tokenCounts"][token]))
+                    "locked patch %d has no marker/token bundle evidence" % index)
+            patched_markers = marker_report(patched_text, marker, tokens)
+            original_markers = marker_report(original_text, marker, tokens)
+            if original_markers["patchMarkerPresent"]:
+                raise ProducerError(
+                    "the restored ORIGINAL bundle unexpectedly already carries patch %d's marker"
+                    % index)
+            if marker is not None and not patched_markers["patchMarkerPresent"]:
+                raise ProducerError(
+                    "the final minified patched bundle does not carry patch %d's "
+                    "marker even though the chain rebuilt; refusing to emit an "
+                    "unproven resource" % index)
+            for token in tokens:
+                if patched_markers["tokenCounts"][token] <= original_markers["tokenCounts"][token]:
+                    raise ProducerError(
+                        "patch %d token %r count did not increase in the patched "
+                        "bundle (patched %d vs original %d)"
+                        % (index, token, patched_markers["tokenCounts"][token],
+                           original_markers["tokenCounts"][token]))
+            marker_evidence.append({
+                "patch": entry["patch"],
+                "sourceFile": entry["sourceFile"],
+                "bundleMarker": marker,
+                "bundleTokens": list(tokens),
+                "patchedBundle": patched_markers,
+                "originalBundle": original_markers,
+            })
+        first_module = modules[self.entries[0]["sourceFile"]]["moduleSHA256"]
         return {
             "emitProof": emit_proof,
             "distBundleSHA256": patched_bundle_sha,
-            "moduleSHA256": sha256_file(module_js),
+            "moduleSHA256": first_module,
+            "modules": modules,
             "intermediates": {
                 "release/cool-src.js": sha256_file(self.stage_browser / "release/cool-src.js"),
                 "release/bundle.js": sha256_file(self.stage_browser / "release/bundle.js"),
             },
-            "markers": {"patchedBundle": patched_markers, "originalBundle": original_markers},
+            "markers": marker_evidence,
         }
 
     # -- phase 7: outputs + receipt ----------------------------------------------
@@ -658,7 +796,21 @@ class Producer:
         restored_manifest_path = self.evidence / "dist-manifest-restored.tsv"
         write_manifest(patched_rows, patched_manifest_path)
         write_manifest(restored_rows, restored_manifest_path)
-        entry = self.entries[0]
+        applied_by_patch = {item["patch"]: item for item in patch_info["patches"]}
+        patch_identity = [
+            {
+                "patch": entry["patch"],
+                "patchPath": entry["patchPath"],
+                "patchSHA256": entry["patchSHA256"],
+                "sourceFile": entry["sourceFile"],
+                "originalSourceSHA256": entry["originalSourceSHA256"],
+                "patchedSourceSHA256": entry["patchedSourceSHA256"],
+                "stagedPatchedSHA256": applied_by_patch[entry["patch"]]["stagedPatchedSHA256"],
+                "applied": True,
+                "stampsDroppedForRebuild": patch_info["stampsDroppedForRebuild"],
+            }
+            for entry in self.entries
+        ]
         receipt = {
             "formatVersion": RECEIPT_FORMAT_VERSION,
             "kind": RECEIPT_KIND,
@@ -677,19 +829,7 @@ class Producer:
                 "engineRepository": self.engine_repository,
                 "engineCommit": self.engine_commit,
                 "coolVersionOverride": self.engine_commit[:10],
-                "patches": [
-                    {
-                        "patch": entry["patch"],
-                        "patchPath": entry["patchPath"],
-                        "patchSHA256": entry["patchSHA256"],
-                        "sourceFile": entry["sourceFile"],
-                        "originalSourceSHA256": entry["originalSourceSHA256"],
-                        "patchedSourceSHA256": entry["patchedSourceSHA256"],
-                        "stagedPatchedSHA256": patch_info["patchedStagedSHA256"],
-                        "applied": True,
-                        "stampsDroppedForRebuild": patch_info["stampsDroppedForRebuild"],
-                    }
-                ],
+                "patches": patch_identity,
             },
             "dependencyInstall": {
                 "mode": "gmake node_modules -> npm ci --offline (pinned node_shrinkpack)",
@@ -722,14 +862,22 @@ class Producer:
                 "patchedManifest": str(patched_manifest_path),
                 "restoredManifest": str(restored_manifest_path),
             },
-            # Portable path-free frontend identity for root pinning.
+            # Portable path-free frontend identity for root pinning. The patch
+            # inventory mirrors the live contract order and closure.
             "browserResources": {
+                "formatVersion": 1,
                 "engineCommit": self.engine_commit,
                 "browserPatchLockSHA256": self.lock_sha,
-                "patchSHA256": entry["patchSHA256"],
-                "sourceFile": entry["sourceFile"],
-                "originalSourceSHA256": entry["originalSourceSHA256"],
-                "patchedSourceSHA256": entry["patchedSourceSHA256"],
+                "patches": [
+                    {
+                        "patch": entry["patch"],
+                        "patchSHA256": entry["patchSHA256"],
+                        "sourceFile": entry["sourceFile"],
+                        "originalSourceSHA256": entry["originalSourceSHA256"],
+                        "patchedSourceSHA256": entry["patchedSourceSHA256"],
+                    }
+                    for entry in self.entries
+                ],
                 "originalBundleSHA256": self.original_bundle_sha,
                 "bundleSHA256": sha256_file(out_bundle),
                 "sizeBytes": out_bundle.stat().st_size,
@@ -752,6 +900,9 @@ class Producer:
                  "dependencyInstall.pinnedVersions."),
                 ("This receipt proves genuine patched-source bundle reproduction only. "
                  "UIKit/WebKit/App behavior acceptance remains the root Simulator/device gate."),
+                ("Rebuilding this bundle does not update engine.lock.json's qualified "
+                 "host artifact or resource pins; those remain pinned to the previously "
+                 "built bundle until the root rebuilds and re-qualifies the native host."),
             ],
         }
         receipt_text = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
@@ -816,6 +967,7 @@ def verify_receipt(receipt_path, lock_path=None, expected_original_bundle_sha256
     except (OSError, ProducerError, ValueError, json.JSONDecodeError) as error:
         failures.append("live browser patch lock invalid: %s" % error)
     identity = receipt["frontendIdentity"]
+    identity_patches = identity.get("patches")
     if live_entries is not None:
         if identity.get("engineCommit") != live_commit:
             failures.append("receipt engineCommit %r != live lock %r"
@@ -858,38 +1010,104 @@ def verify_receipt(receipt_path, lock_path=None, expected_original_bundle_sha256
         for value in block.values():
             if isinstance(value, str) and (value.startswith("/") or ":/" in value):
                 failures.append("browserResources block must stay path-free")
+        block_patches = block.get("patches")
+        if block_patches is not None:
+            if not isinstance(block_patches, list):
+                failures.append("browserResources.patches is not a list")
+            elif not isinstance(identity_patches, list) or len(block_patches) != len(identity_patches):
+                failures.append("browserResources.patches count differs from frontendIdentity")
+            else:
+                for index, (claim, detail) in enumerate(zip(block_patches, identity_patches)):
+                    if not isinstance(claim, dict):
+                        failures.append("browserResources.patches[%d] is not an object" % index)
+                        continue
+                    for key in ("patch", "patchSHA256", "sourceFile",
+                                "originalSourceSHA256", "patchedSourceSHA256"):
+                        if claim.get(key) != detail.get(key):
+                            failures.append(
+                                "browserResources.patches[%d].%s inconsistent" % (index, key))
+                    for key in ("patch", "sourceFile"):
+                        value = claim.get(key)
+                        if isinstance(value, str) and (value.startswith("/") or ":/" in value):
+                            failures.append("browserResources.patches must stay path-free")
+        elif isinstance(identity_patches, list) and identity_patches:
+            # Legacy single-patch receipt block.
+            first = identity_patches[0]
+            for key in ("patchSHA256", "sourceFile", "originalSourceSHA256",
+                        "patchedSourceSHA256"):
+                if block.get(key) != first.get(key):
+                    failures.append("browserResources.%s inconsistent with patch[0]" % key)
     # -- live patch contract against the staged and repo bytes -----------------
-    stage_browser = Path(receipt["inputs"]["stageRoot"]) / "source" / "browser"
-    for patch in identity.get("patches", []):
-        live_match = None
-        if live_entries is not None:
+    stage_root = Path(receipt["inputs"]["stageRoot"]) / "source"
+    stage_browser = stage_root / "browser"
+    if live_entries is not None:
+        if not isinstance(identity_patches, list):
+            failures.append("receipt has no browser patch inventory")
+        elif len(identity_patches) != len(live_entries):
+            failures.append("receipt browser patch inventory count differs from the live lock")
+        else:
+            for index, (patch, live) in enumerate(zip(identity_patches, live_entries)):
+                for field in ("patch", "patchSHA256", "sourceFile",
+                              "originalSourceSHA256", "patchedSourceSHA256"):
+                    if patch.get(field) != live[field]:
+                        failures.append("receipt patch %d %s differs from the live lock"
+                                        % (index, field))
+                if patch.get("stagedPatchedSHA256") != live["patchedSourceSHA256"]:
+                    failures.append(
+                        "receipt patch %d stagedPatchedSHA256 differs from the live lock"
+                        % index)
+                if patch.get("applied") is not True:
+                    failures.append("receipt patch %d was not applied" % index)
+                check("live patch file %d" % index, patch.get("patchPath"),
+                      live["patchSHA256"])
+            # The staged tree carries the final source of each file chain, not
+            # each intermediate state. Re-hash the final file once per chain;
+            # the live lock's chained original/patched digests and the
+            # receipt's per-entry stagedPatchedSHA256 bind the intermediate
+            # states that the producer verified while applying them.
+            final_sources = {}
             for live in live_entries:
-                if live["sourceFile"] == patch.get("sourceFile"):
-                    live_match = live
-                    break
-            if live_match is None:
-                failures.append("receipt patch %s not present in the current live browser lock"
-                                % patch.get("sourceFile"))
-        if live_match is not None:
-            for field in ("patchSHA256", "originalSourceSHA256", "patchedSourceSHA256"):
-                if patch.get(field) != live_match[field]:
-                    failures.append("receipt patch %s %s differs from the live lock"
-                                    % (patch.get("sourceFile"), field))
-        check("live patch file", patch.get("patchPath"),
-              (live_match or patch)["patchSHA256"])
-        if Path(str(patch.get("sourceFile"))) == LOCKED_SOURCEFILE_REL:
-            live_patched = (live_match or patch)["patchedSourceSHA256"]
-            check("staged patched TS", stage_browser / BROWSER_TS_REL, live_patched)
-            if patch.get("stagedPatchedSHA256") != live_patched:
-                failures.append("receipt stagedPatchedSHA256 differs from the live lock patched digest")
+                final_sources[live["sourceFile"]] = live
+            for source_file, final in final_sources.items():
+                check("staged final source %s" % source_file,
+                      stage_root / source_file,
+                      final["patchedSourceSHA256"])
     # -- output and staged bundle bytes ----------------------------------------
     check("staged patched bundle", stage_browser / "dist/bundle.js",
           receipt["patchedBuild"]["distBundleSHA256"])
     check("output bundle", receipt["output"]["bundle"], receipt["output"]["bundleSHA256"])
     try:
         bundle_text = flatten_minified(Path(stage_browser / "dist/bundle.js").read_text(errors="replace"))
-        if PATCH_MARKER not in bundle_text:
-            failures.append("patch marker absent from staged patched bundle")
+        restored_source = receipt["inputs"].get("restoredSourceRoot")
+        original_text = None
+        if isinstance(restored_source, str) and restored_source:
+            restored_root = Path(restored_source) / "browser/dist/bundle.js"
+            check("restored original bundle", restored_root, recorded_original)
+            original_text = flatten_minified(restored_root.read_text(errors="replace"))
+        else:
+            failures.append(
+                "receipt inputs.restoredSourceRoot is missing; the original "
+                "bundle baseline cannot be checked")
+        for index, live in enumerate(live_entries or []):
+            marker, tokens = entry_evidence(live)
+            if marker is None and not tokens:
+                failures.append("live patch %d has no marker/token bundle evidence" % index)
+                continue
+            patched_report = marker_report(bundle_text, marker, tokens)
+            if marker is not None and not patched_report["patchMarkerPresent"]:
+                failures.append("patch %d marker absent from staged patched bundle" % index)
+            if original_text is None:
+                # The missing baseline is already a failure; never treat an
+                # absent original as a zero-count trust exemption.
+                continue
+            original_report = marker_report(original_text, marker, tokens)
+            if marker is not None and original_report["patchMarkerPresent"]:
+                failures.append("restored original bundle already carries patch %d marker" % index)
+            for token in tokens:
+                if patched_report["tokenCounts"][token] <= original_report["tokenCounts"][token]:
+                    failures.append(
+                        "patch %d token %r count did not increase in the staged bundle"
+                        % (index, token))
     except OSError as error:
         failures.append("staged patched bundle unreadable: %s" % error)
     dep = receipt["dependencyInstall"]
@@ -903,7 +1121,14 @@ def verify_receipt(receipt_path, lock_path=None, expected_original_bundle_sha256
         failures.append("node_shrinkpack recheck failed: %s" % error)
     for rel, expected in receipt["patchedBuild"]["intermediates"].items():
         check(rel, stage_browser / rel, expected)
-    check("patched module JS", stage_browser / MODULE_JS_REL, receipt["patchedBuild"]["moduleSHA256"])
+    modules = receipt["patchedBuild"].get("modules")
+    if isinstance(modules, dict) and modules:
+        for source_file, spec in modules.items():
+            check("patched module JS %s" % source_file,
+                  stage_browser / spec["module"], spec["moduleSHA256"])
+    else:
+        check("patched module JS", stage_browser / MODULE_JS_REL,
+              receipt["patchedBuild"]["moduleSHA256"])
     try:
         rows = dist_manifest(stage_browser / "dist")  # in-memory only; never writes
         if tree_digest(rows) != receipt["distTree"]["patchedTreeSHA256"]:
