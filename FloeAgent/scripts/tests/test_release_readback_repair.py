@@ -23,6 +23,7 @@ Feather workflow so delivery cannot complete without its live feed readback.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -46,6 +47,132 @@ READBACK_STEP = 'Read back the published release as an installable delivery'
 SOURCE_SHA = '0c9b0864d6e5bbae48f3f4917d5175fcd542b25c'
 IPA_SHA256 = '461f2d59e42da38e5546e87e3393702ff8f285f5ef084906fe0ea64e0e14f48c'
 BASH = '/bin/bash' if Path('/bin/bash').exists() else shutil.which('bash')
+
+# Snapshot of the pre-fallback job definitions from 9918a7c9, excluding the
+# selector and dependency list. The focused test below proves the fallback added
+# only the route-gate dependency on legacy roots: every selector and every other
+# job key and step is byte-identical.
+LEGACY_JOB_BASELINE = {'developer-recovery': ("${{ inputs.local_artifact_sha256 == '' && github.event_name == "
+                        "'workflow_dispatch' && inputs.recover_developer_build191 && inputs.tag == "
+                        "'v1.7.0-beta.48' && inputs.publish && !inputs.direct_testflight && "
+                        '!inputs.recover_build_156 && !inputs.build191_ui_waiver && '
+                        "inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}",
+                        None,
+                        '7fd5f2d0149067564f3fb25444487739e7655d324f6978b98558b2f85172921d'),
+ 'direct-testflight': ("${{ inputs.local_artifact_sha256 == '' && "
+                       '!inputs.recover_developer_build191 && !inputs.build191_ui_waiver && '
+                       "github.event_name == 'workflow_dispatch' && inputs.direct_testflight && "
+                       "inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}",
+                       None,
+                       '1ed438d01d534441cb09787f02aa8f40fa9b14266ffe233c4231d622434814b4'),
+ 'expedited-testflight': ("${{ inputs.local_artifact_sha256 == '' && "
+                          '!inputs.recover_developer_build191 && github.event_name == '
+                          "'workflow_dispatch' && inputs.reuse_accepted_run != '' && "
+                          "inputs.component_recovery_run == '' && (!inputs.build191_ui_waiver || "
+                          "(inputs.tag == 'v1.7.0-beta.48' && inputs.reuse_accepted_run == "
+                          "'35337960392' && !inputs.publish && !inputs.direct_testflight)) }}",
+                          None,
+                          '05e7d162d89167ad73960af7e91ba506c0a86f74660d9a50bf6f29f02e3c5a73'),
+ 'recover-testflight': ("${{ inputs.local_artifact_sha256 == '' && "
+                        '!inputs.recover_developer_build191 && !inputs.build191_ui_waiver && '
+                        "github.event_name == 'workflow_dispatch' && inputs.recover_build_156 && "
+                        "inputs.tag == 'v1.7.0-beta.13' && !inputs.publish && "
+                        "inputs.component_recovery_run == '' }}",
+                        None,
+                        '300f57c5255c2873ee1ceea27c445b6a26be93a69082914d7f9434305bbeabd2'),
+ 'component-recovery': ("${{ inputs.local_artifact_sha256 == '' && "
+                        '!inputs.recover_developer_build191 && !inputs.build191_ui_waiver && '
+                        "github.event_name == 'workflow_dispatch' && inputs.component_recovery_run "
+                        "!= '' }}",
+                        None,
+                        '6cacef668ceb7c74157a55911c4efff233328ff9a6ebacbd9fb92a5830e310d0'),
+ 'prepare-release': ("${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 "
+                     '&& !inputs.build191_ui_waiver && !inputs.direct_testflight && '
+                     "!inputs.recover_build_156 && inputs.reuse_accepted_run == '' && "
+                     "inputs.component_recovery_run == '' && !inputs.lean_release && "
+                     "inputs.reuse_direct_run == '' }}",
+                     None,
+                     'f4de4c9d349acb04e31009bb057ec41acb744e9ac21a175460c5e9e8f767f877'),
+ 'notes-component': ("${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 "
+                     '&& !inputs.build191_ui_waiver && !inputs.direct_testflight && '
+                     "!inputs.recover_build_156 && inputs.reuse_accepted_run == '' && "
+                     "inputs.component_recovery_run == '' && !inputs.lean_release && "
+                     "inputs.reuse_direct_run == '' }}",
+                     'prepare-release',
+                     'f6115eb8440b998c33db64c7c7a2d61547584f1902a560142ad0cd46a6da2f5f'),
+ 'build-verify-release': ("${{ inputs.local_artifact_sha256 == '' && "
+                          '!inputs.recover_developer_build191 && !inputs.build191_ui_waiver && '
+                          '!inputs.direct_testflight && !inputs.recover_build_156 && '
+                          "inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' "
+                          "&& !inputs.lean_release && inputs.reuse_direct_run == '' }}",
+                          'prepare-release',
+                          '94e57a774155ddc2f9a404d2866e467e959d3aa63b24e37d56339a942d7dac26'),
+ 'accepted-sdk-build': (None,
+                        'prepare-release',
+                        '84b01b49d45f220f0d21749e58847574e7fb30ee58ecb406ee39197c57c1f08e'),
+ 'testflight': (None,
+                ['build-verify-release', 'accepted-sdk-build', 'notes-component'],
+                '24d55c82ee53ab8775343f283da79cb42cb937098dd47397d3f2aa9027aa16ce'),
+ 'publish-release': ("(github.event_name == 'push' && "
+                     "!contains(needs.build-verify-release.outputs.tag, '-beta.')) || "
+                     'inputs.publish',
+                     ['build-verify-release', 'testflight'],
+                     '824587373763197c1bc6a21c6bb25a5d25b74d6d1bf3df2041238f08ae101e92'),
+ 'feather-normal-release': ("needs.publish-release.result == 'success'",
+                            ['publish-release'],
+                            'bf3cf41cbd49062ea9c457680a7a6dc46cacf8cb31307857b1344aed708e42cd'),
+ 'lean-request-check': ("${{ inputs.local_artifact_sha256 == '' && github.event_name == "
+                        "'workflow_dispatch' && inputs.reuse_direct_run != '' && "
+                        '!inputs.lean_release }}',
+                        None,
+                        '5405556c8d96fcad379fcaae0b8830f2458a7f8b74aaadf626346f18f7923c16'),
+ 'lean-source': ("${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && "
+                 '!inputs.build191_ui_waiver && !inputs.recover_build_156 && github.event_name == '
+                 "'workflow_dispatch' && inputs.lean_release && inputs.reuse_accepted_run == '' && "
+                 "inputs.component_recovery_run == '' }}",
+                 None,
+                 'fed3aeb7bc595149f3362671aa0f0fbfe5252eefb7f1a258a0f63d2a724fb8e4'),
+ 'lean-build': ("${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && "
+                '!inputs.build191_ui_waiver && !inputs.recover_build_156 && github.event_name == '
+                "'workflow_dispatch' && inputs.lean_release && !inputs.direct_testflight && "
+                "inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}",
+                ['lean-source'],
+                '913785b6a00039d68fd3455b4ae31ed48f494ebdfa4717fe2904654b605604c3'),
+ 'lean-publish': ("${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && "
+                  '!inputs.build191_ui_waiver && !inputs.recover_build_156 && github.event_name == '
+                  "'workflow_dispatch' && inputs.lean_release && inputs.publish && "
+                  "!inputs.direct_testflight && inputs.reuse_accepted_run == '' && "
+                  "inputs.component_recovery_run == '' }}",
+                  ['lean-source', 'lean-build'],
+                  'dfd72a2e45d5c4414a041f46acb7d0eb2794c8235f330a80fe47eea02553e33b'),
+ 'feather-lean-release': ("needs.lean-publish.result == 'success'",
+                          ['lean-publish'],
+                          '68493eff65ce4aca9322cf2bd20fa4ad94833ca4e561987c6a73fefbe7e6cfb1'),
+ 'local-artifact-testflight': ("${{ github.event_name == 'workflow_dispatch' && "
+                               "inputs.local_artifact_sha256 != '' && !inputs.publish && "
+                               '!inputs.lean_release && !inputs.direct_testflight }}',
+                               None,
+                               '3b1d75bbf9ecb7dd6150880892f59b95a754472c7af11ebaf3b75afdceccf293'),
+ 'local-publish': ("${{ github.event_name == 'workflow_dispatch' && inputs.local_artifact_sha256 "
+                   "!= '' && inputs.publish && !inputs.lean_release && !inputs.direct_testflight "
+                   "&& inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' && "
+                   '!inputs.recover_developer_build191 && !inputs.recover_build_156 && '
+                   '!inputs.build191_ui_waiver }}',
+                   None,
+                   '191ac9a9872e6cb631992281bc67ebd4be64a5a92d8b0b74201cd06ffbaba990'),
+ 'feather-local-release': ("needs.local-publish.result == 'success'",
+                           ['local-publish'],
+                           '2cc3a0efbc34f16327218d60400f89a5815676ebf23b12305cf61cfcbf39980b')}
+
+OLD_INPUT_ORDER = [
+    'tag', 'local_artifact_sha256', 'transport_tag', 'direct_testflight',
+    'lean_release', 'github_prerelease', 'reuse_direct_run',
+    'reuse_accepted_run', 'recover_developer_build191', 'build191_ui_waiver',
+    'component_recovery_run', 'recover_build_156', 'publish',
+]
+OLD_INPUTS_SHA256 = 'eb0d0605a315fd74db3708ac7a1f24d7c5443fd96e723ed7f83412872f0f7ee0'
+RECOVERY_JOB = 'published-readback-recovery'
+GATE_JOB = 'published-readback-route-gate'
 
 
 class BashOptionalArrayExpansionTests(unittest.TestCase):
@@ -195,6 +322,7 @@ class BashOptionalArrayExpansionTests(unittest.TestCase):
         for job in ('publish-release', 'lean-publish', 'local-publish'):
             with self.subTest(job=job):
                 run = self.readback_run(job)
+                self.assertIn('python3 FloeAgent/scripts/verify_github_release_publication.py', run)
                 self.assertIn('"${LATEST_ARGS[@]+"${LATEST_ARGS[@]}"}"', run)
                 self.assertIn('"${MODE_ARGS[@]+"${MODE_ARGS[@]}"}"', run)
                 self.assertNotIn('"${LATEST_ARGS[@]}" "${MODE_ARGS[@]}"', run)
@@ -231,12 +359,28 @@ class RepairWorkflowContractTests(unittest.TestCase):
                         for job in cls.jobs.values() for step in job.get('steps', [])]
 
     def test_dispatch_inputs_are_exactly_the_release_identity(self):
-        self.assertEqual(list(self.triggers), ['workflow_dispatch'])
+        self.assertIn('workflow_dispatch', self.triggers)
         inputs = self.triggers['workflow_dispatch']['inputs']
         self.assertEqual(set(inputs), {'tag', 'expected_source_sha', 'expected_ipa_sha256'})
         for name, spec in inputs.items():
             self.assertIs(spec.get('required'), True, name)
             self.assertEqual(spec.get('type'), 'string', name)
+
+    def test_workflow_call_accepts_the_same_three_required_proofs(self):
+        # The registered publisher calls this exact file at the same commit;
+        # the reusable contract must carry the same identity proofs and no
+        # additional input that could change what is verified or published.
+        self.assertIn('workflow_call', self.triggers)
+        dispatch = self.triggers['workflow_dispatch']['inputs']
+        call = self.triggers['workflow_call']['inputs']
+        self.assertEqual(set(call), {'tag', 'expected_source_sha', 'expected_ipa_sha256'})
+        for name, spec in call.items():
+            with self.subTest(input=name):
+                self.assertIs(spec.get('required'), True, name)
+                self.assertEqual(spec.get('type'), 'string', name)
+                self.assertEqual(spec.get('required'), dispatch[name].get('required'))
+                self.assertEqual(spec.get('type'), dispatch[name].get('type'))
+                self.assertNotIn('default', spec, name)
 
     def test_recovery_never_writes_release_assets_tags_or_attestations(self):
         self.assertEqual(REPAIR['permissions'], {'contents': 'read'})
@@ -376,6 +520,204 @@ class RepairWorkflowContractTests(unittest.TestCase):
         self.assertEqual(self.readback.get('timeout-minutes'), 30)
 
 
+class RegisteredEntryRecoveryRouteTests(unittest.TestCase):
+    """The fallback runs through the registered publisher, not a new workflow."""
+
+    GATED_ROOTS = {
+        'developer-recovery', 'direct-testflight', 'expedited-testflight',
+        'recover-testflight', 'component-recovery', 'prepare-release',
+        'lean-request-check', 'lean-source', 'local-artifact-testflight',
+        'local-publish',
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.triggers = RELEASE.get('on', RELEASE.get(True))
+        cls.inputs = cls.triggers['workflow_dispatch']['inputs']
+        cls.jobs = RELEASE['jobs']
+        cls.recovery = cls.jobs[RECOVERY_JOB]
+        cls.gate = cls.jobs[GATE_JOB]
+
+    @staticmethod
+    def digest(value) -> str:
+        return hashlib.sha256(json.dumps(
+            value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+    @staticmethod
+    def needs(job) -> list:
+        needs = job.get('needs', [])
+        return [needs] if isinstance(needs, str) else list(needs)
+
+    def test_recovery_inputs_are_explicit_and_old_inputs_are_unchanged(self):
+        self.assertEqual(set(self.triggers), {'workflow_dispatch'})
+        self.assertEqual(list(self.inputs)[:len(OLD_INPUT_ORDER)], OLD_INPUT_ORDER)
+        old = {name: self.inputs[name] for name in OLD_INPUT_ORDER}
+        self.assertEqual(self.digest(old), OLD_INPUTS_SHA256)
+        self.assertEqual(list(self.inputs)[len(OLD_INPUT_ORDER):],
+                         ['published_readback_only', 'expected_source_sha',
+                          'expected_ipa_sha256'])
+        selector = self.inputs['published_readback_only']
+        self.assertEqual(selector['required'], False)
+        self.assertIs(selector['default'], False)
+        self.assertEqual(selector['type'], 'boolean')
+        for name in ('expected_source_sha', 'expected_ipa_sha256'):
+            proof = self.inputs[name]
+            self.assertEqual(proof['required'], False)
+            self.assertEqual(proof['default'], '')
+            self.assertEqual(proof['type'], 'string')
+        self.assertEqual(RELEASE['permissions'], {'contents': 'read'})
+
+    def test_legacy_selectors_and_all_other_keys_are_unchanged(self):
+        self.assertEqual(set(self.jobs),
+                         set(LEGACY_JOB_BASELINE) | {RECOVERY_JOB, GATE_JOB})
+        for name, (old_if, old_needs, signature) in LEGACY_JOB_BASELINE.items():
+            with self.subTest(job=name):
+                job = self.jobs[name]
+                payload = {key: value for key, value in job.items()
+                           if key not in ('if', 'needs')}
+                self.assertEqual(self.digest(payload), signature)
+                self.assertEqual(job.get('if'), old_if)
+                if name in self.GATED_ROOTS:
+                    # The only legacy change is the explicit route dependency.
+                    self.assertEqual(self.needs(job), [GATE_JOB])
+                else:
+                    expected = ([] if old_needs is None else
+                                [old_needs] if isinstance(old_needs, str)
+                                else old_needs)
+                    self.assertEqual(self.needs(job), expected)
+                # A status-function selector would escape a skipped need.
+                for token in ('always()', 'failure()', 'cancelled()'):
+                    self.assertNotIn(token, job.get('if') or '', name)
+
+    def test_every_legacy_job_transitively_depends_on_the_route_gate(self):
+        def reaches_gate(start: str) -> bool:
+            pending, seen = [start], set()
+            while pending:
+                current = pending.pop()
+                if current == GATE_JOB:
+                    return True
+                if current in seen:
+                    continue
+                seen.add(current)
+                pending.extend(self.needs(self.jobs.get(current, {})))
+            return False
+
+        for name in LEGACY_JOB_BASELINE:
+            with self.subTest(job=name):
+                self.assertTrue(reaches_gate(name),
+                                f'{name} does not depend on {GATE_JOB}')
+
+    def test_route_gate_is_selected_only_by_the_recovery_flag(self):
+        self.assertEqual(self.gate['if'], '${{ !inputs.published_readback_only }}')
+        self.assertEqual(self.gate['runs-on'], 'ubuntu-latest')
+        self.assertEqual(self.gate.get('timeout-minutes'), 2)
+        self.assertNotIn('uses', self.gate)
+        self.assertEqual(len(self.gate.get('steps', [])), 1)
+        self.assertIn('legacy release routing is enabled',
+                      self.gate['steps'][0]['run'])
+        self.assertNotIn('uses', self.gate['steps'][0])
+        # The gate is exactly !published_readback_only. Its default false keeps
+        # the normal no-op gate selected; true skips it and the skip propagates
+        # through every legacy dependency edge proven below.
+        self.assertIs(self.inputs['published_readback_only']['default'], False)
+
+    def test_only_the_registered_recovery_job_calls_the_module(self):
+        callers = [name for name, job in self.jobs.items()
+                   if job.get('uses') == './.github/workflows/repair-release-readback.yml']
+        self.assertEqual(callers, [RECOVERY_JOB])
+        for job in self.jobs.values():
+            for step in job.get('steps', []):
+                self.assertNotIn('./.github/workflows/repair-release-readback.yml',
+                                 step.get('uses', ''))
+
+    def test_recovery_job_calls_the_same_strict_module_at_the_same_commit(self):
+        self.assertEqual(
+            self.recovery['if'],
+            "${{ github.event_name == 'workflow_dispatch' && inputs.published_readback_only }}")
+        self.assertEqual(self.recovery['uses'],
+                         './.github/workflows/repair-release-readback.yml')
+        self.assertEqual(self.recovery['with'], {
+            'tag': '${{ inputs.tag }}',
+            'expected_source_sha': '${{ inputs.expected_source_sha }}',
+            'expected_ipa_sha256': '${{ inputs.expected_ipa_sha256 }}',
+        })
+        self.assertNotIn('needs', self.recovery)
+        self.assertNotIn('steps', self.recovery)
+        self.assertNotIn('secrets', self.recovery)
+
+    def test_recovery_job_grants_only_the_nested_feed_write_scope(self):
+        self.assertEqual(self.recovery['permissions'], {
+            'contents': 'write', 'actions': 'read', 'attestations': 'read'})
+        self.assertNotIn('id-token', self.recovery['permissions'])
+        self.assertNotEqual(self.recovery['permissions'].get('attestations'),
+                            'write')
+        rendered = json.dumps(self.recovery)
+        self.assertNotIn('attest-build-provenance', rendered)
+        self.assertNotIn('verify_github_release_publication.py', rendered)
+        self.assertNotIn('generate_feather_source.py', rendered)
+        self.assertNotIn('run', self.recovery)
+
+    def test_called_jobs_stay_within_the_registered_route_permissions(self):
+        caller = self.recovery['permissions']
+        for job_name in ('verify-published-readback', 'await-feather-publication'):
+            for scope, level in REPAIR['jobs'][job_name]['permissions'].items():
+                with self.subTest(job=job_name, scope=scope):
+                    self.assertIn(scope, caller)
+                    if level == 'write':
+                        self.assertEqual(caller[scope], 'write')
+        self.assertEqual(REPAIR['permissions'], {'contents': 'read'})
+        self.assertNotIn('attestations: write', REPAIR_TEXT)
+        self.assertNotIn('id-token: write', REPAIR_TEXT)
+
+    def test_recovery_proofs_and_dummy_values_do_not_reach_legacy_routes(self):
+        forbidden = (
+            'publish', 'local_artifact_sha256', 'transport_tag', 'lean_release',
+            'direct_testflight', 'reuse_direct_run', 'reuse_accepted_run',
+            'component_recovery_run', 'recover_developer_build191',
+            'recover_build_156', 'build191_ui_waiver')
+        for key in forbidden:
+            self.assertNotIn(key, self.recovery['with'])
+        for name, job in self.jobs.items():
+            if name in (RECOVERY_JOB, GATE_JOB):
+                continue
+            rendered = json.dumps(job)
+            # "expected_source_sha" is also an existing lean-build with: key
+            # bound to lean-source.outputs.source_sha; only the new dispatch
+            # input references would cross the routes.
+            self.assertNotIn('inputs.expected_source_sha', rendered, name)
+            self.assertNotIn('inputs.expected_ipa_sha256', rendered, name)
+
+    def test_concurrency_serializes_recovery_with_the_normal_tag_run(self):
+        self.assertEqual(RELEASE['concurrency'], {
+            'group': 'floe-release-${{ github.ref }}',
+            'cancel-in-progress': False})
+        self.assertEqual(self.recovery['concurrency'], {
+            'group': 'floe-release-refs/tags/${{ inputs.tag }}',
+            'cancel-in-progress': False})
+        tag = 'v1.7.39'
+        self.assertEqual('floe-release-refs/tags/' + tag,
+                         'floe-release-' + 'refs/tags/' + tag)
+        self.assertNotEqual('floe-release-refs/tags/' + tag,
+                            'floe-release-refs/heads/main')
+        self.assertEqual(REPAIR['concurrency']['group'],
+                         'floe-published-readback-${{ inputs.tag }}')
+        self.assertEqual(FEATHER['concurrency']['group'], 'floe-feather-source')
+        self.assertNotEqual('floe-release-refs/tags/' + tag,
+                            REPAIR['concurrency']['group'].replace(
+                                '${{ inputs.tag }}', tag))
+        self.assertNotEqual('floe-release-refs/tags/' + tag,
+                            FEATHER['concurrency']['group'])
+
+    def test_default_false_keeps_the_original_selector_and_gate_result(self):
+        # With the default false the gate runs and every original selector is
+        # evaluated exactly as recorded in the baseline; nothing above changes
+        # the selector text. The Bash 3 fixture also executes the unchanged
+        # readback commands themselves.
+        self.assertIs(self.inputs['published_readback_only']['default'], False)
+        for name, (old_if, _, _) in LEGACY_JOB_BASELINE.items():
+            self.assertEqual(self.jobs[name].get('if'), old_if, name)
+
+
 class ReleasePublishRouteIsUnchangedTests(unittest.TestCase):
     """The Bash fix must not alter what the normal routes publish or attest."""
 
@@ -417,7 +759,9 @@ class PublicRepairRecordTests(unittest.TestCase):
         text = note.read_text(encoding='utf-8')
         for token in ('39202881875', 'v1.7.39', SOURCE_SHA, IPA_SHA256,
                       'MODE_ARGS[@]: unbound variable',
-                      'Delivery is not yet complete.', 'local-publish'):
+                      'Delivery is not yet complete.', 'local-publish',
+                      'published_readback_only', 'workflow_call', '404',
+                      'registered-entry'):
             self.assertIn(token, text)
 
 

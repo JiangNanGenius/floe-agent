@@ -24,6 +24,24 @@ on:
         description: SHA256 of the already published canonical unsigned IPA
         required: true
         type: string
+  # The registered release entry calls this exact file at the caller's commit
+  # with the same three identity proofs. Keep one strict implementation: the
+  # call route adds no verifier, feed generator, write permission or
+  # attestation path. The dispatch trigger remains for a future direct run.
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing published stable App release tag whose readback must be completed
+        required: true
+        type: string
+      expected_source_sha:
+        description: Full 40-hex commit the immutable annotated tag must peel to
+        required: true
+        type: string
+      expected_ipa_sha256:
+        description: SHA256 of the already published canonical unsigned IPA
+        required: true
+        type: string
 
 permissions:
   contents: read

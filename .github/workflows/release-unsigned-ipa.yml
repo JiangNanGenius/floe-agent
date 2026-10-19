@@ -67,6 +67,21 @@ on:
         required: true
         default: false
         type: boolean
+      published_readback_only:
+        description: Recover only the post-publish readback of an existing public stable release through the strict repair module; every normal build, signing, publish and legacy recovery job is skipped. Requires expected_source_sha and expected_ipa_sha256
+        required: false
+        default: false
+        type: boolean
+      expected_source_sha:
+        description: Recovery proof only. Full 40-hex commit the existing annotated tag must peel to; ignored unless published_readback_only is true
+        required: false
+        default: ''
+        type: string
+      expected_ipa_sha256:
+        description: Recovery proof only. SHA256 of the already published canonical unsigned IPA; ignored unless published_readback_only is true
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -76,8 +91,49 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The strict repair module is not registered with the Actions service on the
+  # default branch, so it cannot be dispatched directly yet. This job reaches
+  # the same file at the same commit through the already registered publisher.
+  # It is selected only by an explicit published_readback_only dispatch.
+  published-readback-recovery:
+    name: Recover the published release readback through the registered entry
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.published_readback_only }}
+    # A recovery is dispatched at main but must not overlap a normal release
+    # for the same immutable tag, whose run holds refs/tags/<tag>. The repair
+    # module and the Feather generator use their own groups, so the nested
+    # calls cannot deadlock. The normal group above is unchanged.
+    concurrency:
+      group: floe-release-refs/tags/${{ inputs.tag }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    uses: ./.github/workflows/repair-release-readback.yml
+    with:
+      tag: ${{ inputs.tag }}
+      expected_source_sha: ${{ inputs.expected_source_sha }}
+      expected_ipa_sha256: ${{ inputs.expected_ipa_sha256 }}
+
+  # One skipped dependency gates every legacy route. GitHub skips a job whose
+  # needs were skipped unless its selector uses always()/failure()/cancelled();
+  # no legacy job does. Every legacy root below needs this job, and every other
+  # legacy job depends on a gated root, so no build, signing, TestFlight,
+  # publish or recovery path can run while published_readback_only is true.
+  # With the default false the gate succeeds and every original selector,
+  # argument, need and permission keeps its previous behavior.
+  published-readback-route-gate:
+    name: Gate legacy release routes off a readback recovery
+    if: ${{ !inputs.published_readback_only }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Confirm a normal release request
+        run: echo 'published_readback_only is false; legacy release routing is enabled.'
+
   developer-recovery:
     if: ${{ inputs.local_artifact_sha256 == '' && github.event_name == 'workflow_dispatch' && inputs.recover_developer_build191 && inputs.tag == 'v1.7.0-beta.48' && inputs.publish && !inputs.direct_testflight && !inputs.recover_build_156 && !inputs.build191_ui_waiver && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    needs: published-readback-route-gate
     permissions:
       contents: write
       actions: read
@@ -87,6 +143,7 @@ jobs:
 
   direct-testflight:
     if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    needs: published-readback-route-gate
     permissions:
       contents: read
       actions: read
@@ -97,6 +154,7 @@ jobs:
 
   expedited-testflight:
     if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && github.event_name == 'workflow_dispatch' && inputs.reuse_accepted_run != '' && inputs.component_recovery_run == '' && (!inputs.build191_ui_waiver || (inputs.tag == 'v1.7.0-beta.48' && inputs.reuse_accepted_run == '35337960392' && !inputs.publish && !inputs.direct_testflight)) }}
+    needs: published-readback-route-gate
     permissions:
       contents: read
       actions: read
@@ -109,6 +167,7 @@ jobs:
 
   recover-testflight:
     if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.recover_build_156 && inputs.tag == 'v1.7.0-beta.13' && !inputs.publish && inputs.component_recovery_run == '' }}
+    needs: published-readback-route-gate
     permissions:
       contents: read
       actions: read
@@ -117,6 +176,7 @@ jobs:
 
   component-recovery:
     if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.component_recovery_run != '' }}
+    needs: published-readback-route-gate
     permissions:
       contents: read
       actions: read
@@ -129,6 +189,7 @@ jobs:
 
   prepare-release:
     if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' && !inputs.lean_release && inputs.reuse_direct_run == '' }}
+    needs: published-readback-route-gate
     runs-on: macos-26
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -1687,6 +1748,7 @@ jobs:
   lean-request-check:
     name: Reject reuse without a lean request
     if: ${{ inputs.local_artifact_sha256 == '' && github.event_name == 'workflow_dispatch' && inputs.reuse_direct_run != '' && !inputs.lean_release }}
+    needs: published-readback-route-gate
     runs-on: ubuntu-latest
     steps:
       - name: Require lean_release for reuse_direct_run
@@ -1697,6 +1759,7 @@ jobs:
   lean-source:
     name: Bind the immutable release tag without a triggering tag push
     if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.recover_build_156 && github.event_name == 'workflow_dispatch' && inputs.lean_release && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    needs: published-readback-route-gate
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -2114,6 +2177,7 @@ jobs:
 
   local-artifact-testflight:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.local_artifact_sha256 != '' && !inputs.publish && !inputs.lean_release && !inputs.direct_testflight }}
+    needs: published-readback-route-gate
     permissions:
       contents: write
       actions: read
@@ -2146,6 +2210,7 @@ jobs:
   local-publish:
     name: Attest and publish the verified local unsigned build
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.local_artifact_sha256 != '' && inputs.publish && !inputs.lean_release && !inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' && !inputs.recover_developer_build191 && !inputs.recover_build_156 && !inputs.build191_ui_waiver }}
+    needs: published-readback-route-gate
     runs-on: macos-26
     timeout-minutes: 45
     outputs:
