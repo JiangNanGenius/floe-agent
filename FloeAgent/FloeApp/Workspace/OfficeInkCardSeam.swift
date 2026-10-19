@@ -867,7 +867,7 @@ final class OfficeInkCardSeamModel: ObservableObject {
     /// It returns only a fixed reason code — never a path, name, token,
     /// document text or error text — and fails closed at the call site.
     private static let ownerCaptureScript = #"""
-    (() => {
+    return (() => {
         const canonicalLocalPath = (raw) => {
             if (typeof raw !== 'string' || !raw) return null;
             let s = raw;
@@ -965,7 +965,7 @@ final class OfficeInkCardSeamModel: ObservableObject {
     /// the same path is therefore a LOST owner, not a pass. Returns only a
     /// fixed code.
     private static let ownerVerifyScript = #"""
-    (() => {
+    return (() => {
         const code = (ok, reason) => ({ v: true, ok, code: reason });
         try {
             if (typeof ownerToken !== 'string'

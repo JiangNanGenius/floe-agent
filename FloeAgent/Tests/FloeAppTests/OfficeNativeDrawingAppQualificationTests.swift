@@ -649,6 +649,16 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         var dotStyleEMU = 0
         var controlShapeCount = 0
         var dotShapeCount = 0
+        // A persisted zero-motion dot is either the native filled circle the
+        // engine finalizes for a tap (prstGeom ellipse, selected colour, no
+        // outline) or, if another representation ever persisted, the previous
+        // path-based candidate.
+        let isNativeDotShape: (DrawingQualificationXML.VectorShape) -> Bool = { shape in
+            shape.prstGeometry == "ellipse"
+                && (shape.fillColorHex ?? "").uppercased() == "0000FF"
+                && shape.lineIsNoFill
+                && shape.paths.isEmpty
+        }
         do {
             await session.open(source)
             try await wait(120, "initial native open") {
@@ -722,7 +732,8 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             }
             controlShapeCount = controlShapes.count
             let prematureDotShapes = controlSaved.vectorShapes.filter { shape in
-                shape.colorHex?.uppercased() == "0000FF" && !shape.paths.isEmpty
+                (shape.colorHex?.uppercased() == "0000FF" && !shape.paths.isEmpty)
+                    || isNativeDotShape(shape)
             }
             controlPersisted = controlSaved.customGeometryPaths.count == 1
                 && controlShapes.count == 1 && prematureDotShapes.isEmpty
@@ -837,12 +848,13 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                     && !shape.paths.isEmpty
             }
             // Every saved vector shape that is not the red 0.5 mm control is
-            // the dot candidate. This separates "the dot did not persist"
-            // from "the dot persisted with the wrong selected style".
+            // the dot candidate: either the semantic native filled circle or
+            // any real persisted path. This separates "the dot did not
+            // persist" from "the dot persisted with the wrong selected style".
             let dotShapes = saved.vectorShapes.filter { shape in
-                !(shape.colorHex?.uppercased() == "FF0000"
-                  && shape.widthEMU.map { abs($0 - controlStyleEMU) <= 635 } == true)
-                    && !shape.paths.isEmpty
+                let isControl = shape.colorHex?.uppercased() == "FF0000"
+                    && shape.widthEMU.map { abs($0 - controlStyleEMU) <= 635 } == true
+                return !isControl && (isNativeDotShape(shape) || !shape.paths.isEmpty)
             }
             controlShapeCount = finalControlShapes.count
             dotShapeCount = dotShapes.count
@@ -863,13 +875,31 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             if dotShapes.count > 0 {
                 XCTAssertEqual(dotShapes.count, 1,
                                "The zero-motion contact must save exactly one new dot object")
-                XCTAssertTrue(dotShapes.allSatisfy { $0.colorHex?.uppercased() == "0000FF" },
-                              "The persisted dot must retain its selected marker blue: \(dotShapes)")
-                XCTAssertTrue(dotShapes.allSatisfy {
-                    $0.widthEMU.map { abs($0 - dotStyleEMU) <= 635 } == true
-                }, "The persisted dot must retain its selected 2.0 mm marker width: \(dotShapes)")
-                XCTAssertTrue(dotShapes.allSatisfy { $0.alphaValue == nil || $0.alphaValue == 100_000 },
-                              "Opaque marker dot must not save a transparent line alpha: \(dotShapes)")
+                let dot = dotShapes[0]
+                if isNativeDotShape(dot) {
+                    // Native filled-circle persistence: the diameter is the
+                    // square extent, the colour/alpha live in the fill, and an
+                    // outline is structurally forbidden (it would paint 2W).
+                    XCTAssertTrue(dot.widthEMU == nil || dot.widthEMU == 0,
+                                  "A native dot must not save an outline width: \(dot)")
+                    XCTAssertEqual(dot.extentEMU?.count, 2,
+                                   "The native dot must save its own spPr extent: \(dot)")
+                    let diameterEMU = dot.extentEMU?[0] ?? -1
+                    let heightEMU = dot.extentEMU?[1] ?? -2
+                    XCTAssertEqual(diameterEMU, heightEMU,
+                                   "The native dot extent must be square (a true circle): \(dot)")
+                    XCTAssertTrue(abs(diameterEMU - dotStyleEMU) <= 635,
+                                  "The native dot diameter must equal the 2.0 mm marker width: \(dot)")
+                    XCTAssertTrue(dot.fillAlphaValue == nil || dot.fillAlphaValue == 100_000,
+                                  "Opaque marker dot must not save a transparent fill alpha: \(dot)")
+                } else {
+                    XCTAssertTrue(dot.colorHex?.uppercased() == "0000FF",
+                                  "The persisted dot must retain its selected marker blue: \(dot)")
+                    XCTAssertTrue(dot.widthEMU.map { abs($0 - dotStyleEMU) <= 635 } == true,
+                                  "The persisted dot must retain its selected 2.0 mm marker width: \(dot)")
+                    XCTAssertTrue(dot.alphaValue == nil || dot.alphaValue == 100_000,
+                                  "Opaque marker dot must not save a transparent line alpha: \(dot)")
+                }
             }
             if format == "xlsx" {
                 XCTAssertEqual(saved.cells["B2"], "12", "Excel basic value lost")
@@ -923,6 +953,9 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                 "dotShapes": dotShapes.map {
                     ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1,
                      "paths": $0.paths.count, "alpha": $0.alphaValue ?? -1,
+                     "prst": $0.prstGeometry ?? "none", "fillColor": $0.fillColorHex ?? "MISSING",
+                     "fillAlpha": $0.fillAlphaValue ?? -1, "lineNoFill": $0.lineIsNoFill,
+                     "extentEMU": $0.extentEMU ?? [],
                      "placement": $0.placement ?? "none", "anchor": $0.anchor ?? "none"] as [String: Any]
                 },
                 "dotFraction": dotFraction ?? [],
@@ -994,9 +1027,9 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                     && !shape.paths.isEmpty
             }
             let reopenedDotShapes = reopened.vectorShapes.filter { shape in
-                !(shape.colorHex?.uppercased() == "FF0000"
-                  && shape.widthEMU.map { abs($0 - controlStyleEMU) <= 635 } == true)
-                    && !shape.paths.isEmpty
+                let isControl = shape.colorHex?.uppercased() == "FF0000"
+                    && shape.widthEMU.map { abs($0 - controlStyleEMU) <= 635 } == true
+                return !isControl && (isNativeDotShape(shape) || !shape.paths.isEmpty)
             }
             XCTAssertFalse(reopenedControlShapes.isEmpty,
                            "The persisted positive control did not survive reopen")
@@ -3378,6 +3411,18 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
         /// (100000 = fully opaque). Absent for an opaque line whose fill
         /// carries no explicit alpha element.
         var alphaValue: Int?
+        /// Native filled-ellipse dot support: `spPr/a:prstGeom@prst`
+        /// (e.g. "ellipse"), the shape's own `spPr/a:solidFill` colour/alpha,
+        /// an explicit `spPr/a:ln/a:noFill` outline marker and the `a:ext`
+        /// size in EMU. A filled zero-motion dot carries these instead of
+        /// `a:ln` stroke attributes and must never be forced into the
+        /// line-width shape model.
+        var prstGeometry: String?
+        var fillColorHex: String?
+        var fillAlphaValue: Int?
+        var lineIsNoFill = false
+        var extentEMU: [Int]?
+        var spFillDepth: Int?
         /// The shape's own `spPr/a:xfrm` placement, canonicalized for an
         /// exact before/after comparison. This is the presentation anchor and
         /// the spreadsheet shape frame, never the surrounding xdr anchor.
@@ -3388,7 +3433,7 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
         var xfrmDepth: Int?
         var xfrmOffset: String?
         var xfrmExtent: String?
-        var description: String { "vector(color=\(colorHex ?? "missing"), widthEMU=\(widthEMU ?? -1), alpha=\(alphaValue.map(String.init) ?? "none"), paths=\(paths.count))" }
+        var description: String { "vector(color=\(colorHex ?? "missing"), widthEMU=\(widthEMU ?? -1), alpha=\(alphaValue.map(String.init) ?? "none"), paths=\(paths.count), prst=\(prstGeometry ?? "none"), fillColor=\(fillColorHex ?? "none"), fillAlpha=\(fillAlphaValue.map(String.init) ?? "none"), lineNoFill=\(lineIsNoFill), extent=\(extentEMU.map { "\($0)" } ?? "none"))" }
     }
     var vectorShapes: [VectorShape] = []
     private var activeShapes: [VectorShape] = []
@@ -3424,6 +3469,38 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
                elements[properties - 1] == "spPr" {
                 if local == "ln", elements.count == properties + 1, drawingNamespaces.contains(namespaceURI ?? "") {
                     activeShapes[last].widthEMU = Int(attributes["w"] ?? "")
+                }
+                // A filled native dot is identified by its own spPr parts,
+                // never by an inferred line width: prstGeom preset, the direct
+                // spPr solidFill colour (and optional alpha) and an explicit
+                // a:ln/a:noFill. These are exactly the direct spPr children
+                // the verified exporter writes for a no-outline filled circle.
+                if local == "prstGeom", elements.count == properties + 1,
+                   drawingNamespaces.contains(namespaceURI ?? "") {
+                    activeShapes[last].prstGeometry = attributes["prst"]
+                }
+                if local == "noFill", elements.count == properties + 2,
+                   elements[properties] == "ln",
+                   drawingNamespaces.contains(namespaceURI ?? ""),
+                   drawingNamespaces.contains(elementNamespaces[properties] ?? "") {
+                    activeShapes[last].lineIsNoFill = true
+                }
+                if local == "solidFill", elements.count == properties + 1,
+                   drawingNamespaces.contains(namespaceURI ?? "") {
+                    activeShapes[last].spFillDepth = elements.count
+                }
+                if let fillDepth = activeShapes[last].spFillDepth,
+                   elements.count == fillDepth + 1,
+                   elements[fillDepth - 1] == "solidFill",
+                   local == "srgbClr", drawingNamespaces.contains(namespaceURI ?? "") {
+                    activeShapes[last].fillColorHex = attributes["val"]
+                }
+                if let fillDepth = activeShapes[last].spFillDepth,
+                   elements.count == fillDepth + 2,
+                   elements[fillDepth - 1] == "solidFill",
+                   elements[fillDepth] == "srgbClr",
+                   local == "alpha", drawingNamespaces.contains(namespaceURI ?? "") {
+                    activeShapes[last].fillAlphaValue = Int(attributes["val"] ?? "")
                 }
                 // Only shape/spPr/a:ln/a:solidFill/a:srgbClr can establish
                 // this path's line color. Text runs and shape fills never do.
@@ -3466,6 +3543,8 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
                     if local == "ext" {
                         activeShapes[last].xfrmExtent =
                             "cx=\(attributes["cx"] ?? "");cy=\(attributes["cy"] ?? "")"
+                        activeShapes[last].extentEMU = [Int(attributes["cx"] ?? "") ?? -1,
+                                                        Int(attributes["cy"] ?? "") ?? -1]
                     }
                 }
             }
@@ -3535,7 +3614,9 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
                 finished.anchor = kind + ":" + anchorFields.keys.sorted()
                     .map { "\($0)=\(anchorFields[$0]!)" }.joined(separator: ",")
             }
-            if !finished.paths.isEmpty { vectorShapes.append(finished) }
+            let carriesCustomPath = !finished.paths.isEmpty
+            let isFilledPresetShape = finished.prstGeometry != nil && finished.fillColorHex != nil
+            if carriesCustomPath || isFilledPresetShape { vectorShapes.append(finished) }
             activeShapes.removeLast()
         }
         elements.removeLast(); elementNamespaces.removeLast()
