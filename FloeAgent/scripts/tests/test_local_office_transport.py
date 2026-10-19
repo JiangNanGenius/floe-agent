@@ -110,6 +110,45 @@ class LocalOfficeTransportTests(unittest.TestCase):
         return {'patch': relative, 'sha256': transport.pinning.digest(target),
                 'files': {'synthetic/' + name: {'preparedSHA256': '4' * 64}}}
 
+    def browser_contract(self):
+        """Add a synthetic live browser contract and a patched bundle fixture.
+
+        This exercises the validator seam only: the patch is never applied and
+        the bundle is not an Office frontend build. The contract follows the
+        same field/hash shape the real tracked browser patch lock uses.
+        """
+        patch = self.base / 'patches/browser.patch'
+        patch.write_bytes(b'synthetic browser patch bytes')
+        entry = {
+            'patch': 'patches/browser.patch',
+            'patchSHA256': transport.pinning.digest(patch),
+            'sourceRepository': 'https://example.invalid/office.mirror.git',
+            'sourceCommit': self.commit,
+            'sourceFile': 'browser/src/CanvasSectionContainer.ts',
+            'originalSourceSHA256': 'a' * 64,
+            'patchedSourceSHA256': 'b' * 64,
+        }
+        browser_lock = self.base / 'browser.patch.lock.json'
+        browser_lock.write_text(json.dumps({
+            'formatVersion': 1, 'kind': 'synthetic browser source patches',
+            'engine': {'repository': entry['sourceRepository'],
+                       'commit': self.commit},
+            'browserSourcePatches': [entry]}))
+        bundle = self.host / 'OfficeRuntimeResources/bundle.js'
+        bundle.write_bytes(b'synthetic patched browser bundle')
+        self.manifest['runtimeResourceSHA256']['bundle.js'] = transport.pinning.digest(bundle)
+        module = transport.pinning.browser_resources_module(required=True)
+        self.manifest['browserResources'] = {
+            'formatVersion': 1,
+            'engineCommit': self.commit,
+            'browserPatchLockSHA256': transport.pinning.digest(browser_lock),
+            'patches': [{key: entry[key] for key in (
+                'patch', 'patchSHA256', 'sourceFile',
+                'originalSourceSHA256', 'patchedSourceSHA256')}],
+            'originalBundleSHA256': module.EXPECTED_ORIGINAL_BUNDLE_SHA256,
+            'bundleSHA256': transport.pinning.digest(bundle),
+        }
+
     def pack(self, extras=()):
         (self.host / 'native-host.json').write_text(json.dumps(self.manifest))
         with zipfile.ZipFile(self.archive, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
@@ -130,6 +169,104 @@ class LocalOfficeTransportTests(unittest.TestCase):
         self.assertEqual(self.archive.read_bytes(), original)
         self.assertEqual(report['capabilityQualification'], false_capabilities())
         self.assertFalse(report['nativeManifestModified'])
+
+    def test_rebuilt_browser_claim_and_contract_are_forwarded_byte_identically(self):
+        self.browser_contract()
+        self.pack()
+        expected_lock = (self.base / 'browser.patch.lock.json').read_bytes()
+        expected_patch = (self.base / 'patches/browser.patch').read_bytes()
+        observed = {}
+        real = transport.bootstrap.checked_lock
+
+        def capture(path):
+            observed['lock'] = json.loads(Path(path).read_text())
+            observed['browser_lock'] = (Path(path).parent / 'browser.patch.lock.json').read_bytes()
+            observed['patch'] = (Path(path).parent / 'patches/browser.patch').read_bytes()
+            return real(path)
+
+        with patch.object(transport.bootstrap, 'checked_lock', side_effect=capture):
+            report = self.validate()
+        self.assertEqual(observed['browser_lock'], expected_lock)
+        self.assertEqual(observed['patch'], expected_patch)
+        self.assertEqual(
+            observed['lock']['qualifiedHostArtifact']['browserResources'],
+            self.manifest['browserResources'])
+        self.assertFalse(report['nativeManifestModified'])
+
+    def test_missing_tampered_or_stale_browser_claim_refused(self):
+        self.browser_contract()
+        claim = copy.deepcopy(self.manifest['browserResources'])
+        del self.manifest['browserResources']
+        self.pack()
+        with self.assertRaisesRegex(ValueError, 'verified browser resources'):
+            self.validate()
+        for field, value, message in (
+                ('bundleSHA256', '0' * 64, 'packaged runtime bundle'),
+                ('engineCommit', '0' * 40, 'engine commit'),
+                ('browserPatchLockSHA256', '0' * 64, 'browser patch lock')):
+            with self.subTest(field=field):
+                self.manifest['browserResources'] = {**claim, field: value}
+                self.pack()
+                with self.assertRaisesRegex(ValueError, message):
+                    self.validate()
+        tampered = copy.deepcopy(claim)
+        tampered['patches'][0]['patchSHA256'] = '0' * 64
+        self.manifest['browserResources'] = tampered
+        self.pack()
+        with self.assertRaisesRegex(ValueError, 'patchSHA256'):
+            self.validate()
+
+    def test_runtime_bundle_bytes_must_match_the_claim(self):
+        self.browser_contract()
+        bundle = self.host / 'OfficeRuntimeResources/bundle.js'
+        bundle.write_bytes(b'patched bytes replaced after the build receipt')
+        self.manifest['runtimeResourceSHA256']['bundle.js'] = transport.pinning.digest(bundle)
+        self.pack()
+        with self.assertRaisesRegex(ValueError, 'packaged runtime bundle'):
+            self.validate()
+
+    def test_tampered_or_missing_tracked_browser_patch_refused(self):
+        self.browser_contract()
+        patch = self.base / 'patches/browser.patch'
+        patch.write_bytes(b'tampered browser patch bytes')
+        self.pack()
+        with self.assertRaisesRegex(ValueError, 'patch digest mismatch'):
+            self.validate()
+        patch.unlink()
+        self.pack()
+        with self.assertRaisesRegex(ValueError, 'patch file missing'):
+            self.validate()
+
+    def test_browser_claim_without_a_tracked_contract_refused(self):
+        self.manifest['browserResources'] = {'formatVersion': 1}
+        self.pack()
+        with self.assertRaisesRegex(ValueError, 'without a tracked browser patch contract'):
+            self.validate()
+
+    def test_non_baseline_bundle_without_a_contract_refused(self):
+        bundle = self.host / 'OfficeRuntimeResources/bundle.js'
+        bundle.write_bytes(b'non-baseline bundle without a tracked contract')
+        self.manifest['runtimeResourceSHA256']['bundle.js'] = transport.pinning.digest(bundle)
+        self.pack()
+        with self.assertRaisesRegex(ValueError, 'non-baseline browser bundle'):
+            self.validate()
+
+    def test_legacy_fixture_without_browser_helper_stays_compatible(self):
+        self.pack()
+        with patch.object(transport.pinning, 'browser_resources', None):
+            report = self.validate()
+        self.assertFalse(report['nativeManifestModified'])
+
+    def test_prior_pin_browser_claim_cannot_be_downgraded(self):
+        self.lock['qualifiedHostArtifact']['browserResources'] = {'formatVersion': 1}
+        (self.base / 'engine.lock.json').write_text(json.dumps(self.lock))
+        self.git('add', '.')
+        self.git('-c', 'user.name=Transport fixture', '-c', 'user.email=fixture@example.invalid',
+                 'commit', '-qm', 'prior pin claims browser resources')
+        self.source = self.git('rev-parse', 'HEAD').strip()
+        self.pack()
+        with self.assertRaisesRegex(ValueError, 'prior pin claims browser resources'):
+            self.validate()
 
     def test_cli_copies_original_zip_with_separate_truthful_provenance(self):
         sha = self.pack()

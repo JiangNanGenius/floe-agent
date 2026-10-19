@@ -215,6 +215,45 @@ def validate_archive(archive, expected_sha256, repo, source_commit):
                                 for value in declared.get('objectSHA256ByMember', {}).values()), 'Additional filter archive evidence differs')
             candidate['filterOverlay'] = overlay
         hashes = pinning.artifact_hashes(folder)
+        # The browser frontend claim is a separate identity from the source,
+        # overlay and repair proofs. Reuse the pin helper's strict comparison
+        # against the live browser contract and the packaged bundle bytes so
+        # this private validation candidate receives only the exact canonical
+        # claim. A prior pin that already delivered the patched frontend must
+        # never be replaced by a candidate that silently drops the claim, and
+        # a non-baseline bundle never becomes acceptable merely because no
+        # contract is tracked.
+        browser_lock_path = lock_path.parent / 'browser.patch.lock.json'
+        browser_tracked = (
+            browser_lock_path.exists() or browser_lock_path.is_symlink()
+            or manifest.get('browserResources') is not None
+            or lock['qualifiedHostArtifact'].get('browserResources') is not None
+            or (hashes['runtimeResourceSHA256'] or {}).get('bundle.js') is not None)
+        browser_module = pinning.browser_resources_module(required=browser_tracked)
+        browser_contract = (
+            browser_module.live_contract(lock_path, engine_commit=lock['commit'])
+            if browser_module is not None else None)
+        if browser_module is None:
+            # No tracked contract, claim or browser bundle: a legacy/custom
+            # fixture keeps its historical contract-only validation.
+            browser_failures, browser_claim = [], None
+        else:
+            browser_failures, browser_claim = pinning.browser_resource_claim(
+                manifest, browser_contract, hashes, module=browser_module)
+        require(not browser_failures, '; '.join(browser_failures))
+        require(lock['qualifiedHostArtifact'].get('browserResources') is None
+                or browser_claim is not None,
+                'The prior pin claims browser resources but the artifact carries no verified browser resource claim')
+        if browser_claim is not None:
+            candidate['browserResources'] = browser_claim
+        else:
+            candidate.pop('browserResources', None)
+            if browser_module is not None:
+                runtime_bundle = browser_module.runtime_bundle_sha256(
+                    hashes['runtimeResourceSHA256'])
+                require(runtime_bundle is None
+                        or runtime_bundle == browser_module.EXPECTED_ORIGINAL_BUNDLE_SHA256,
+                        'Native Office host carries a non-baseline browser bundle without a browser resource claim')
         auxiliary = hashes['frameworkAuxiliarySHA256']
         require(set(auxiliary) == set(lock['qualifiedHostArtifact']['frameworkAuxiliarySHA256']), 'Unknown/missing framework executable or auxiliary file')
         require(auxiliary.get('Headers/FloeOfficeNative.h') == sources.get('FloeOfficeNative.h'), 'Exported public header differs from source')
@@ -251,6 +290,12 @@ def validate_archive(archive, expected_sha256, repo, source_commit):
             paths.update(spec['patch'] for spec in filters.get('headerDependencies', {}).values() if spec.get('patch'))
         if repair is not None:
             paths.update(('engine.patch.lock.json', repair_lock['repair']['patch']))
+        if browser_contract is not None:
+            # Copy the tracked browser contract and every patch it validates;
+            # bootstrap.checked_lock and the runtime inventory re-check the
+            # private copies, so they must be byte-identical to the checkout.
+            paths.add(browser_module.LOCK_NAME)
+            paths.update(entry['patch'] for entry in browser_contract['patches'])
         for name in paths:
             relative = bootstrap.relative(name)
             source, target = base / relative, contracts / relative
