@@ -83,3 +83,8 @@ have to pass.
 
 The original failed run is retained as evidence; its failed step is not rewritten
 or hidden, the tag is not moved, and the published bytes are not replaced.
+
+
+## Primary independent readback
+
+The primary downloaded the published IPA and checksum and ran the unchanged strict verifier locally. It passed with no violations: arm64 iOS device executable, version 1.7.39/build 280, annotated tag source `0c9b0864d6e5bbae48f3f4917d5175fcd542b25c`, matching remote SHA-256 and stable latest pointer. The original publisher attestation also verified for these exact bytes and source. This establishes the published asset independently; the automated recovery and awaited live feed remain separate pending checks.
