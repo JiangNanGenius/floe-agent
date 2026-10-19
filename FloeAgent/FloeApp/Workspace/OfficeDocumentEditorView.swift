@@ -2975,6 +2975,14 @@ struct OfficeDocumentSurface: View {
                     .padding(16)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             }
+            #if DEBUG
+            // Launch-argument-gated injected-pen fixture seam for the actual
+            // Main-App saved-ink library-card UI loop acceptance. Compiles
+            // out of release builds and renders nothing at all without the
+            // explicit fixture family; the passive office.touch-qualification
+            // probe family is disjoint and untouched. See OfficeInkCardSeam.
+            OfficeInkCardSeamOverlay(session: session)
+            #endif
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(FloeTheme.readingSurface)

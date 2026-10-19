@@ -1836,6 +1836,19 @@ final class AppEnvironment: ObservableObject {
                 await OfficeWorkspaceStageFixture.seedCenteredPinchPresentationDocumentIfRequested()
             }
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains(OfficeInkCardLoopFixture.wordLaunchArgument)
+                || ProcessInfo.processInfo.arguments.contains(OfficeInkCardLoopFixture.calcLaunchArgument)
+                || ProcessInfo.processInfo.arguments.contains(OfficeInkCardLoopFixture.presentationLaunchArgument) {
+                // OWNED synthetic Office documents for the actual Main-App
+                // saved-ink library-card UI loop acceptance (one unique
+                // tokenized document per run, per format). Seeded through the
+                // same Notes importer path as a user file import before the
+                // first library load, only under -ui-testing plus the
+                // explicit fixture family; nothing else in the library is
+                // touched. See OfficeInkCardLoopFixture.
+                await OfficeInkCardLoopFixture.seedIfRequested()
+            }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains("--ui-test-task-management-fixture") {
                 // OWNED synthetic tasks for the bulk task-management UI
                 // acceptance. Fixed identities, idempotent: a missing task is
