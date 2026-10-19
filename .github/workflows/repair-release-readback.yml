@@ -1,0 +1,235 @@
+name: Repair published App release readback
+
+# Narrow recovery for an ALREADY PUBLIC stable App release whose normal publish
+# run completed publication but failed its own post-publish readback (for
+# example run 39202881875, where the macOS runner's Bash 3.2 aborted on an empty
+# optional-array expansion after the release was published). This workflow never
+# publishes, creates, edits or deletes releases, assets or tags, never builds or
+# signs, and never creates an attestation: it only re-runs the existing strict
+# installable-delivery verification against the published bytes and the original
+# publisher attestation, then awaits the existing Feather generator in the same
+# run. The normal release-unsigned-ipa.yml route remains the primary path.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing published stable App release tag whose readback must be completed
+        required: true
+        type: string
+      expected_source_sha:
+        description: Full 40-hex commit the immutable annotated tag must peel to
+        required: true
+        type: string
+      expected_ipa_sha256:
+        description: SHA256 of the already published canonical unsigned IPA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: floe-published-readback-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  verify-published-readback:
+    name: Verify the published release bytes and the original publisher attestation
+    if: github.repository == 'JiangNanGenius/floe-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+      EXPECTED_IPA_SHA256: ${{ inputs.expected_ipa_sha256 }}
+    steps:
+      - name: Validate the repair request
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_IPA_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          echo "Recovery target: $RELEASE_TAG source=$EXPECTED_SOURCE_SHA ipa=$EXPECTED_IPA_SHA256"
+      - name: Check out the immutable tag source that owns the strict verifier
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Bind the checked-out tag source to the expected commit
+        run: |
+          set -euo pipefail
+          # The verifier code and the release identity come from the exact
+          # immutable tag, never from the dispatching branch. The preflight that
+          # the normal route runs is reused unchanged and reports version, build
+          # and canonical asset name from that same source.
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+          # The recovery input promises an annotated immutable tag. A
+          # lightweight tag (or a rewritten ref) is refused instead of being
+          # silently accepted through the verifier's generic peel path.
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          manifest="$RUNNER_TEMP/published-readback-preflight.out"
+          : > "$manifest"
+          GITHUB_OUTPUT="$manifest" bash FloeAgent/scripts/release_preflight.sh "$RELEASE_TAG"
+          version="$(awk -F= '$1 == "version" {print $2}' "$manifest")"
+          build="$(awk -F= '$1 == "build" {print $2}' "$manifest")"
+          asset_name="$(awk -F= '$1 == "asset_name" {print $2}' "$manifest")"
+          test -n "$version" && test -n "$build" && test -n "$asset_name"
+          {
+            echo "VERSION=$version"
+            echo "BUILD=$build"
+            echo "ASSET_NAME=$asset_name"
+          } >> "$GITHUB_ENV"
+      - name: Capture the published release, latest pointer and tag binding
+        run: |
+          set -euo pipefail
+          READBACK="$RUNNER_TEMP/PublishedReadback"
+          mkdir -p "$READBACK"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$READBACK/release.json"
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > "$READBACK/tag-ref.json"
+          REF_TYPE="$(jq -r '.object.type' "$READBACK/tag-ref.json")"
+          REF_SHA="$(jq -r '.object.sha' "$READBACK/tag-ref.json")"
+          # Only the promised annotated tag object is accepted; a lightweight
+          # ref must never fall back to a synthetic commit object here.
+          test "$REF_TYPE" = tag
+          gh api "repos/$GITHUB_REPOSITORY/git/tags/$REF_SHA" > "$READBACK/tag-object.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$READBACK/latest.json"
+          python3 - "$READBACK" "$RELEASE_TAG" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          folder, tag = Path(sys.argv[1]), sys.argv[2]
+          release = json.loads((folder / 'release.json').read_text())
+          latest = json.loads((folder / 'latest.json').read_text())
+          assert release.get('tag_name') == tag, release.get('tag_name')
+          assert release.get('draft') is False, (
+              'this recovery only finishes the readback of an ALREADY PUBLIC release; '
+              'finish the publication with the normal release route')
+          assert release.get('prerelease') is False, (
+              'only a published stable App release can be repaired here')
+          assert release.get('published_at'), 'the release has no published_at timestamp'
+          assert latest.get('tag_name') == tag, (
+              'releases/latest', latest.get('tag_name'))
+          print('Published stable latest release confirmed:', release['id'], release['html_url'])
+          PY
+      - name: Download the published canonical IPA, checksum and provenance
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/PublishedAssets"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$ASSET_NAME" --pattern "$ASSET_NAME.sha256" \
+            --pattern PROVENANCE.json --dir "$RUNNER_TEMP/PublishedAssets"
+          echo "$EXPECTED_IPA_SHA256  $RUNNER_TEMP/PublishedAssets/$ASSET_NAME" | sha256sum -c -
+          python3 - "$RUNNER_TEMP/PublishedAssets/PROVENANCE.json" "$ASSET_NAME" \
+            "$RELEASE_TAG" "$VERSION" "$BUILD" "$EXPECTED_SOURCE_SHA" \
+            "$EXPECTED_IPA_SHA256" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          path, asset, tag, version, build, source, digest = sys.argv[1:8]
+          record = json.loads(Path(path).read_text())
+          # Exact field set and types produced by the local-publish packaging
+          # step; a partial or drifted provenance record cannot satisfy this.
+          assert set(record) == {
+              'schemaVersion', 'tag', 'version', 'build', 'sourceCommit',
+              'bundleIdentifier', 'assetName', 'ipaSHA256', 'ipaBytes',
+              'unsigned', 'appRebuilt'}, record
+          assert record['schemaVersion'] == 1, record
+          assert isinstance(record['ipaBytes'], int) and record['ipaBytes'] > 0, record
+          assert record['unsigned'] is True and record['appRebuilt'] is False, record
+          assert record['bundleIdentifier'] == 'org.floeagent.ios', record
+          assert record['tag'] == tag and record['version'] == version, record
+          assert record['build'] == build, record
+          assert record['sourceCommit'] == source, record
+          assert record['assetName'] == asset and record['ipaSHA256'] == digest, record
+          print('Published provenance matches the expected source, identity and digest')
+          PY
+      - name: Run the strict published-release verifier on the published bytes
+        run: |
+          set -euo pipefail
+          READBACK="$RUNNER_TEMP/PublishedReadback"
+          # Same verifier, same staged device audit (unsigned app bundle,
+          # identity, sidecar content, arm64 iphoneos executable) and the same
+          # remote digest/latest/tag-source binding as the normal post-publish
+          # readback. A stable release only: no prerelease waiver is offered.
+          python3 FloeAgent/scripts/verify_github_release_publication.py \
+            --mode app \
+            --release-json "$READBACK/release.json" \
+            --tag-ref-json "$READBACK/tag-ref.json" \
+            --tag-object-json "$READBACK/tag-object.json" \
+            --latest-json "$READBACK/latest.json" \
+            --expect-tag "$RELEASE_TAG" --expect-version "$VERSION" --expect-build "$BUILD" \
+            --expect-source-sha "$EXPECTED_SOURCE_SHA" \
+            --expect-ipa-sha256 "$EXPECTED_IPA_SHA256" \
+            --staged-dir "$RUNNER_TEMP/PublishedAssets" \
+            --report "$READBACK/report.json"
+      - name: Verify the original publisher attestation on the exact bytes
+        run: |
+          set -euo pipefail
+          # Read-only: this checks the attestation that the publishing run
+          # already created for these exact bytes. No new attestation is issued
+          # and no trust exception is added; the signer workflow and source
+          # digest must be the original normal publisher and the tag commit.
+          verified=false
+          for attempt in 1 2 3; do
+            if gh attestation verify "$RUNNER_TEMP/PublishedAssets/$ASSET_NAME" \
+                 --repo "$GITHUB_REPOSITORY" \
+                 --source-digest "$EXPECTED_SOURCE_SHA" \
+                 --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-unsigned-ipa.yml" \
+                 > "$RUNNER_TEMP/PublishedReadback/attestation-verify.txt" 2>&1; then
+              verified=true
+              break
+            fi
+            echo "Published attestation not readable yet (attempt $attempt); retrying" >&2
+            sleep 15
+          done
+          cat "$RUNNER_TEMP/PublishedReadback/attestation-verify.txt"
+          test "$verified" = true
+          {
+            echo "tag=$RELEASE_TAG"
+            echo "source_commit=$EXPECTED_SOURCE_SHA"
+            echo "ipa_sha256=$EXPECTED_IPA_SHA256"
+            echo "release_assets_mutated=false"
+            echo "tags_moved=false"
+            echo "verifier=verify_github_release_publication.py:strict"
+            echo "device_audit=arm64:iphoneos"
+            echo "attestation=original-publisher:release-unsigned-ipa.yml"
+            echo "attestation_created_by_repair=false"
+            echo "feather_publication=awaited:publish-feather-source.yml"
+          } > "$RUNNER_TEMP/PUBLISHED-READBACK-EVIDENCE.txt"
+          cat "$RUNNER_TEMP/PUBLISHED-READBACK-EVIDENCE.txt"
+      - name: Retain the published readback evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: published-readback-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/PublishedReadback/report.json
+            ${{ runner.temp }}/PublishedReadback/release.json
+            ${{ runner.temp }}/PublishedReadback/tag-ref.json
+            ${{ runner.temp }}/PublishedReadback/tag-object.json
+            ${{ runner.temp }}/PublishedReadback/latest.json
+            ${{ runner.temp }}/PublishedReadback/attestation-verify.txt
+            ${{ runner.temp }}/PUBLISHED-READBACK-EVIDENCE.txt
+            ${{ runner.temp }}/published-readback-preflight.out
+          if-no-files-found: ignore
+          retention-days: 30
+
+  await-feather-publication:
+    name: Await the existing Feather source publication and live readback
+    needs: [verify-published-readback]
+    if: needs.verify-published-readback.result == 'success'
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    uses: ./.github/workflows/publish-feather-source.yml
+    with:
+      tag: ${{ inputs.tag }}

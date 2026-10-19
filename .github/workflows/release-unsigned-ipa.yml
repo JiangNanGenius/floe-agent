@@ -1631,12 +1631,14 @@ jobs:
             gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$READBACK/latest.json"
             LATEST_ARGS=(--latest-json "$READBACK/latest.json")
           fi
+          # The macOS runner's Bash 3.2 aborts on an empty array expansion
+          # under set -u; guard both optional mode arrays explicitly.
           python3 FloeAgent/scripts/verify_github_release_publication.py \
             --mode app \
             --release-json "$READBACK/release.json" \
             --tag-ref-json "$READBACK/tag-ref.json" \
             --tag-object-json "$READBACK/tag-object.json" \
-            "${LATEST_ARGS[@]}" "${MODE_ARGS[@]}" \
+            "${LATEST_ARGS[@]+"${LATEST_ARGS[@]}"}" "${MODE_ARGS[@]+"${MODE_ARGS[@]}"}" \
             --expect-tag "$RELEASE_TAG" --expect-version "$VERSION" --expect-build "$BUILD" \
             --expect-source-sha "$SOURCE_SHA" \
             --staged-dir release-assets \
@@ -2043,12 +2045,14 @@ jobs:
             gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$READBACK/latest.json"
             LATEST_ARGS=(--latest-json "$READBACK/latest.json")
           fi
+          # The macOS runner's Bash 3.2 aborts on an empty array expansion
+          # under set -u; guard both optional mode arrays explicitly.
           python3 FloeAgent/scripts/verify_github_release_publication.py \
             --mode app \
             --release-json "$READBACK/release.json" \
             --tag-ref-json "$READBACK/tag-ref.json" \
             --tag-object-json "$READBACK/tag-object.json" \
-            "${LATEST_ARGS[@]}" "${MODE_ARGS[@]}" \
+            "${LATEST_ARGS[@]+"${LATEST_ARGS[@]}"}" "${MODE_ARGS[@]+"${MODE_ARGS[@]}"}" \
             --expect-tag "$RELEASE_TAG" --expect-version "$VERSION" --expect-build "$BUILD" \
             --expect-source-sha "$SOURCE_SHA" \
             --expect-ipa-sha256 "${{ steps.fetch.outputs.ipa_sha256 }}" \
@@ -2462,12 +2466,14 @@ jobs:
             gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$READBACK/latest.json"
             LATEST_ARGS=(--latest-json "$READBACK/latest.json")
           fi
+          # The macOS runner's Bash 3.2 aborts on an empty array expansion
+          # under set -u; guard both optional mode arrays explicitly.
           python3 FloeAgent/scripts/verify_github_release_publication.py \
             --mode app \
             --release-json "$READBACK/release.json" \
             --tag-ref-json "$READBACK/tag-ref.json" \
             --tag-object-json "$READBACK/tag-object.json" \
-            "${LATEST_ARGS[@]}" "${MODE_ARGS[@]}" \
+            "${LATEST_ARGS[@]+"${LATEST_ARGS[@]}"}" "${MODE_ARGS[@]+"${MODE_ARGS[@]}"}" \
             --expect-tag "$RELEASE_TAG" --expect-version "$VERSION" --expect-build "$BUILD" \
             --expect-source-sha "$SOURCE_SHA" \
             --expect-ipa-sha256 "${{ steps.package.outputs.ipa_sha256 }}" \
