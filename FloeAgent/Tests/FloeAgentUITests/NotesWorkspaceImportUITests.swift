@@ -644,6 +644,17 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(waitForDrawingValue(toggle, on: drawingOn, timeout: 10),
                       "Repeated pinching must leave the drawing state unchanged")
 
+        if requireVisibleKeyboardBeforeHide {
+            // Blocking the consumed pinch click must preserve the next real
+            // text-editing tap. Require hidden state before that fresh tap,
+            // then actual visible input and a real Hide action afterward.
+            let nextTap = "\(mode)-next-tap"
+            try requireVisibleWordKeyboardBeforePinchHide(
+                app, label: nextTap, requireFreshCanvasTap: true)
+            XCTAssertTrue(dismissSoftwareKeyboardBeforePinchBaseline(app, label: nextTap),
+                          "the genuine next tap must still open a keyboard that can be hidden through its system key")
+        }
+
         // Safe exit through the product's own back/save path. This remains
         // the original save/reopen route check, not a replacement for the
         // separate live-ink/placement/save cases.
@@ -2714,9 +2725,15 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     /// programmatic focus, keyboard preference change or skip can substitute
     /// for this precondition; failure leaves decision-point evidence.
     private func requireVisibleWordKeyboardBeforePinchHide(
-        _ app: XCUIApplication, label: String,
+        _ app: XCUIApplication, label: String, requireFreshCanvasTap: Bool = false,
         file: StaticString = #filePath, line: UInt = #line
     ) throws {
+        if requireFreshCanvasTap && !officeKeyboardOnscreenReadiness(app).endsOnscreenOcclusion {
+            attachKeyboardVisibilityFacts(app, label: label, phase: "before-required-fresh-tap")
+            XCTFail("\(label): the keyboard must still be hidden before the next genuine document tap",
+                    file: file, line: line)
+            return
+        }
         switch officeKeyboardOnscreenReadiness(app) {
         case .noKeyboard, .offscreenStale:
             let web = app.webViews.firstMatch
