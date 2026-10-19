@@ -320,7 +320,26 @@ def _select_lifecycle_archive_single(root, output, platform, lock_path=DEFAULT_L
         additions = spec.get('compileOverrides', {})
         default_flags = ['-DVCL_DLLIMPLEMENTATION'] if primary else []
         default_includes = ['engine/vcl/inc', 'engine/vcl/source/app'] if primary else []
-        vcl_spec['compile']['flags'] = list(compile_spec['flags']) + default_flags + additions.get('flags', [])
+        flags = list(compile_spec['flags']) + default_flags + additions.get('flags', [])
+        # Bounded compile-language substitution: the contract restricts
+        # `language` to a pinned enum (see office_compiled_lifecycle) and
+        # compileOverrides.flags only admits literal -D defines, so this can
+        # never become an arbitrary compiler-flag escape. It exists because the
+        # recorded vcl recipe's `-x objective-c++` is library-specific: the
+        # svxcore child was CI-compiled as `-x c++`, the only substitution with
+        # byte-identity evidence (2026-10-20 baseline receipts).
+        language = additions.get('language')
+        if language is not None:
+            if flags.count('-x') != 1:
+                raise ValueError(
+                    'Lifecycle compile language override requires exactly one '
+                    'recorded -x flag in the base recipe')
+            index = flags.index('-x')
+            if index + 1 >= len(flags):
+                raise ValueError(
+                    'Lifecycle compile language override found a dangling -x flag')
+            flags[index + 1] = language
+        vcl_spec['compile']['flags'] = flags
         vcl_spec['compile']['sourceIncludes'] = default_includes + additions.get('sourceIncludes', []) + list(compile_spec['sourceIncludes'])
         vcl_spec['compile']['bundleIncludes'] = additions.get('bundleIncludes', []) + list(compile_spec.get('bundleIncludes', []))
         extra_aux = additions.get('auxiliaryIncludes', [])

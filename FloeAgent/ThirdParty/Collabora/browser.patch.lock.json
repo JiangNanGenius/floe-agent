@@ -66,6 +66,34 @@
         "_afterViewportHeightChange"
       ],
       "note": "Floe local frontend patch, not an upstream commit. Calc re-syncs its tile container synchronously at zoom finalization (_updateTileTwips -> applyZoom/endZoom and _restrictDocumentSize -> _onZoomRowColumns) without changing the visible frame height. The mobile/tablet keyboard-resize checks now run only when oldFrame.pY actually differs from the new frame.pY, so an unchanged-height zoom keeps its anchor instead of scrolling the previously selected cell back into view. A genuine height decrease still runs _onUpdateCursor and _scrollCellCursorIntoView; a genuine increase still restores the mobile input state. Geometry/range/clamp/layout updates, explicit cell navigation and frozen panes are untouched. Does not address the separate Word keyboard precondition and makes no Word claim."
+    },
+    {
+      "patch": "patches/ios-zoomend-focus-preservation.patch",
+      "patchSHA256": "12b8c2ac01a0a46b65d623cb0d4dd8e9849a758a082d78dbeb63222477ec90dd",
+      "sourceRepository": "https://github.com/CollaboraOnline/online.mirror.git",
+      "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+      "sourceFile": "browser/src/layer/tile/CanvasTileLayer.js",
+      "originalSourceSHA256": "98bde012d77a2971230b07084a6d991571d24afda14dcc591e966b170dac9ae0",
+      "patchedSourceSHA256": "82c6abba52ee0c9e4c04eabcea685eafe4578d6a1b38808d8de605b1c359dfef",
+      "bundleMarker": "finally{app.sectionContainer.setPostZoomReplay(!1)",
+      "bundleTokens": [
+        "app.sectionContainer.isInZoomAnimation()"
+      ],
+      "note": "Floe local frontend patch, not an upstream commit. A zoom (owned pinch, wheel or programmatic) is not a text-input intent: _onZoomEnd now holds the container's existing post-zoom replay scope across the zoom's own final _onUpdateCursor(null, true) instead of closing it first, so the passive cursor/overlay redraw can no longer force map.focus(true) + TextInput.focus(true) 7-42ms after an owned pinch rawend (the actual App20 call path) while caret geometry/scroll/selection redraw still runs. The replay scope and the final cursor update are fenced with try/finally: if the replay or the final cursor update throws (stale cursor, torn-down section or a failing render callback), the scope flag is always cleared so the next genuine input is not suppressed, and the original error still propagates untouched. _updateCursorAndOverlay's keyboard guard additionally checks the container's real isInZoomAnimation() (the map-free layout never fires 'zoomstart', leaving the old this._isZooming check permanently false), so a core cursor message arriving while the live zoom-frame is open cannot force focus either. The next genuine tap/edit/command reaches _updateCursorAndOverlay outside these scopes and focuses exactly as before; readonly, wizard, dialog and search guards are unchanged. Does not change zoom levels, anchors, replay contents or Calc's unchanged-height anchor fix."
+    },
+    {
+      "patch": "patches/ios-pinch-owned-end-cancel.patch",
+      "patchSHA256": "8d65a5eceb7cd28076b5aac4c0e9c400bb695247926b7bb08568db9de24b1dc6",
+      "sourceRepository": "https://github.com/CollaboraOnline/online.mirror.git",
+      "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+      "sourceFile": "browser/src/canvas/sections/ZoomControl.ts",
+      "originalSourceSHA256": "b4afe9ee63720e445f6e6579def565c3808ff846d063287dbb66120f55d973d8",
+      "patchedSourceSHA256": "1ae123f98edd11740f7a9f1fe7b6141c7e49a08ada5d20bf38a5a0232c2609a8",
+      "bundleTokens": [
+        "this.pinchStartDistance!==null",
+        ".preventDefault()"
+      ],
+      "note": "Floe local frontend patch, not an upstream commit. Chained after ios-live-pinch-zoom.patch on the same file. A pinch that latched onto the document (first in-document move fixed the start distance/anchor) is consumed entirely by this owner, so its final touchend now calls e.preventDefault(): WebKit then does not synthesize the compatibility mousedown/click that the App20 trace recorded as a trusted canvas click ~27-129ms after rawend - an event that blurs the real text input mid-session and re-arms the input intent through Map click handling after a completed pinch. One-finger taps (never latched here), two-finger taps without an in-document move, gestures starting outside the document area, non-cancelable events and touchcancel keep their existing default behavior; the live-frame commit (nearest integer level) and cancel/restore paths are byte-identical. This complements, and does not replace, the passive focus preservation in ios-zoomend-focus-preservation.patch."
     }
   ]
 }

@@ -390,6 +390,146 @@ class MultiSourceLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'missing/modified lifecycle source: engine/vcl/source/gdi/second.cxx'):
                 wrapper.validate_build_inputs(self.prior.case.lock_path,engine_source=source)
 
+class LanguageOverrideContractTests(unittest.TestCase):
+    """Bounded compile-language override (svxcore zero-motion dot member).
+
+    The recorded vcl recipe compiles as `-x objective-c++`; the svxcore child
+    was CI-compiled `-x c++` (the only byte-identity-proven substitution).
+    `compileOverrides.language` expresses exactly that and nothing else: the
+    contract bounds it to a pinned enum and compileOverrides.flags still only
+    admits literal -D defines, so no arbitrary compiler-flag escape is possible.
+    """
+    def setUp(self):
+        prior = MultiSourceLifecycleTests('test_producer_compiles_each_real_source_and_preserves_unrelated_members')
+        prior.setUp(); self.addCleanup(prior.doCleanups)
+        self.prior = prior; self.f = f = prior.f
+        self.spec = f.lock['embeddedLifecycleOverlay']['compiledMembers']['IOS']
+        self.base_overrides = copy.deepcopy(
+            self.spec['additionalMembers']['second.o']['compileOverrides'])
+
+    def overrides(self, **updates):
+        value = copy.deepcopy(self.base_overrides)
+        value.update(updates)
+        return value
+
+    def test_language_bounded_enum_and_unknown_or_typed_values_rejected(self):
+        spec = copy.deepcopy(self.spec)
+        spec['additionalMembers']['second.o']['compileOverrides'] = self.overrides(language='c++')
+        lifecycle.contract(self.f.lock, 'IOS', spec=spec)
+        for bad in ('objective-c++', 'c', 'assembler', '', 'c++ ', 'c++\t', 'C++'):
+            spec['additionalMembers']['second.o']['compileOverrides'] = self.overrides(language=bad)
+            with self.subTest(language=bad), self.assertRaises(ValueError):
+                lifecycle.contract(self.f.lock, 'IOS', spec=spec)
+        for bad in (123, ['c++'], {'lang': 'c++'}, True, None):
+            spec['additionalMembers']['second.o']['compileOverrides'] = self.overrides(language=bad)
+            with self.subTest(language=bad), self.assertRaises(ValueError):
+                lifecycle.contract(self.f.lock, 'IOS', spec=spec)
+        # Unknown override keys stay rejected alongside a valid language.
+        value = self.overrides(language='c++')
+        value['languageX'] = 'c++'
+        spec['additionalMembers']['second.o']['compileOverrides'] = value
+        with self.assertRaises(ValueError):
+            lifecycle.contract(self.f.lock, 'IOS', spec=spec)
+        # A -x escape attempt through flags stays rejected even with a valid
+        # language present: the flags regex still only allows literal -D adds.
+        value = self.overrides(language='c++', flags=['-DSVXCORE_DLLIMPLEMENTATION', '-xobjective-c++'])
+        spec['additionalMembers']['second.o']['compileOverrides'] = value
+        with self.assertRaises(ValueError):
+            lifecycle.contract(self.f.lock, 'IOS', spec=spec)
+        value = self.overrides(language='c++', flags=['-x', 'c'])
+        spec['additionalMembers']['second.o']['compileOverrides'] = value
+        with self.assertRaises(ValueError):
+            lifecycle.contract(self.f.lock, 'IOS', spec=spec)
+
+    def test_language_absent_keeps_recorded_objective_cxx_recipe(self):
+        spec = copy.deepcopy(self.spec)
+        lifecycle.contract(self.f.lock, 'IOS', spec=spec)
+        receipts = lifecycle.member_specs(spec)
+        self.assertNotIn('language', receipts['second.o']['compileOverrides'])
+
+    def test_language_flows_to_member_specs_and_child_receipt(self):
+        # Mirrors the real libsvxcorelo.a additionalArchive child: a fresh
+        # single-member archive contract carrying the bounded language enum.
+        child = {'sourceFile': 'engine/svx/source/svdraw/svdcrtv.cxx',
+                 'originalSHA256': 'f' * 64, 'patchedSHA256': '8' * 64,
+                 'archive': 'source/engine/instdir/program/libsvxcorelo.a',
+                 'members': {'svdcrtv.o': 'engine/svx/source/svdraw/svdcrtv.cxx'},
+                 'patch': 'patches/compiled.patch',
+                 'patchSHA256': self.spec['patchSHA256'],
+                 'compileOverrides': {'flags': ['-DSVXCORE_DLLIMPLEMENTATION'],
+                                      'sourceIncludes': ['engine/svx/source/inc'],
+                                      'language': 'c++'}}
+        for platform in ('IOS', 'IOSSIMULATOR'):
+            spec = copy.deepcopy(self.f.lock['embeddedLifecycleOverlay']['compiledMembers'][platform])
+            spec['additionalArchives'] = {'libsvxcorelo.a': copy.deepcopy(child)}
+            lifecycle.contract(self.f.lock, platform, spec=spec)
+            receipts = lifecycle.member_specs(child)
+            self.assertEqual(receipts['svdcrtv.o']['compileOverrides']['language'], 'c++')
+            block = lifecycle.identity(lifecycle.single_lock(self.f.lock, platform, child), platform)
+            self.assertEqual(block['compileOverrides']['language'], 'c++')
+            self.assertEqual(block['compileOverrides']['flags'], ['-DSVXCORE_DLLIMPLEMENTATION'])
+
+    def write_recorded_recipe(self, language_token='objective-c++'):
+        """Give the fixture engine.patch.lock.json a realistic recorded vcl recipe."""
+        recipe_path = self.f.base / 'engine.patch.lock.json'
+        data = json.loads(recipe_path.read_text())
+        flags = ['-std=c++20', '-O2', '-g0']
+        if language_token is not None:
+            flags += ['-x', language_token]
+        data['platforms']['IOS']['compile']['flags'] = flags
+        recipe_path.write_text(json.dumps(data))
+
+    def test_producer_substitutes_recorded_language_for_overridden_member_only(self):
+        root, out, src, command, run, ar = self.prior.producer_fixture()
+        self.write_recorded_recipe()
+        self.spec['additionalMembers']['second.o']['compileOverrides'] = self.overrides(language='c++')
+        with patch.object(producer.subprocess, 'check_output', return_value=self.f.lock['commit'] + '\n'), \
+             patch.object(producer.subprocess, 'run', side_effect=run), \
+             patch.object(repair, 'build_compile_command', side_effect=command):
+            producer._select_lifecycle_archive_single(root, out, 'IOS', self.prior.prior.case.lock_path,
+                                                      src, self.spec)
+        overridden = next(recipe for recipe, source, obj in self.prior.commands if obj.name == 'second.o')
+        base = next(recipe for recipe, source, obj in self.prior.commands if obj.name == 'svdata.o')
+        self.assertEqual({path.name for path in self.prior.compiled}, {'svdata.cxx', 'second.cxx'})
+        flags = overridden['compile']['flags']
+        self.assertEqual(flags.count('-x'), 1)
+        self.assertEqual(flags[flags.index('-x') + 1], 'c++')
+        self.assertIn('-DSECOND_IMPLEMENTATION', flags)
+        base_flags = base['compile']['flags']
+        self.assertEqual(base_flags.count('-x'), 1)
+        self.assertEqual(base_flags[base_flags.index('-x') + 1], 'objective-c++')
+
+    def test_producer_rejects_language_override_without_recorded_x_flag(self):
+        root, out, src, command, run, ar = self.prior.producer_fixture()
+        self.write_recorded_recipe(language_token=None)
+        self.spec['additionalMembers']['second.o']['compileOverrides'] = self.overrides(language='c++')
+        with patch.object(producer.subprocess, 'check_output', return_value=self.f.lock['commit'] + '\n'), \
+             patch.object(producer.subprocess, 'run', side_effect=run), \
+             patch.object(repair, 'build_compile_command', side_effect=command):
+            with self.assertRaisesRegex(ValueError, 'exactly one recorded -x flag'):
+                producer._select_lifecycle_archive_single(root, out, 'IOS', self.prior.prior.case.lock_path,
+                                                          src, self.spec)
+        self.assertNotIn('second.cxx', [p.name for p in self.prior.compiled])
+
+    def test_producer_rejects_dangling_x_flag_with_language_override(self):
+        root, out, src, command, run, ar = self.prior.producer_fixture()
+        # Exactly one recorded -x, dangling at the end of the recipe; a child
+        # archive (primary=False) adds no default flags, so nothing pads the
+        # dangling token and the fail-closed branch is reachable.
+        recipe_path = self.f.base / 'engine.patch.lock.json'
+        data = json.loads(recipe_path.read_text())
+        data['platforms']['IOS']['compile']['flags'] = ['-std=c++20', '-O2', '-g0', '-x']
+        recipe_path.write_text(json.dumps(data))
+        self.spec['additionalMembers']['second.o']['compileOverrides'] = self.overrides(language='c++', flags=[])
+        with patch.object(producer.subprocess, 'check_output', return_value=self.f.lock['commit'] + '\n'), \
+             patch.object(producer.subprocess, 'run', side_effect=run), \
+             patch.object(repair, 'build_compile_command', side_effect=command):
+            with self.assertRaisesRegex(ValueError, 'dangling -x flag'):
+                producer._select_lifecycle_archive_single(root, out, 'IOS', self.prior.prior.case.lock_path,
+                                                          src, self.spec, primary=False)
+        self.assertNotIn('second.cxx', [p.name for p in self.prior.compiled])
+
+
 class PinnedSourceFallbackTests(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)

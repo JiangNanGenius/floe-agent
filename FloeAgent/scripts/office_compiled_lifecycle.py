@@ -15,6 +15,11 @@ import subprocess
 HEX64 = re.compile(r'[0-9a-f]{64}\Z')
 HEX40 = re.compile(r'[0-9a-f]{40}\Z')
 HASH_FIELDS = ('originalArchiveSHA256', 'archiveSHA256', 'linkerListSHA256')
+# Bounded compile-language substitution enum. The only byte-proven override is
+# the svxcore child recipe (recorded `-x objective-c++` -> `-x c++`, proved by
+# the 2026-10-20 unmodified-member byte-identity receipts); new values enter
+# this enum only with equivalent byte-identity evidence, never ad hoc.
+LANGUAGE_VALUES = ('c++',)
 
 
 def require(condition, message):
@@ -76,7 +81,7 @@ def contract(lock, platform, *, spec=None):
         contract(lock, platform, spec=child)
         require(Path(child['archive']).name == name, 'additional archive path/name differ')
     overrides = selected.get('compileOverrides', {})
-    require(isinstance(overrides, dict) and set(overrides) <= {'flags', 'sourceIncludes', 'bundleIncludes', 'auxiliaryIncludes', 'officecfgHeaders'},
+    require(isinstance(overrides, dict) and set(overrides) <= {'flags', 'sourceIncludes', 'bundleIncludes', 'auxiliaryIncludes', 'officecfgHeaders', 'language'},
             'invalid compile overrides')
     for key, values in overrides.items():
         if key == 'officecfgHeaders':
@@ -89,6 +94,10 @@ def contract(lock, platform, *, spec=None):
                     'schemaSHA256', 'stylesheetSHA256', 'dtdSHA256', 'generatedSHA256'}
                     and all(isinstance(value, str) and HEX64.fullmatch(value) for value in header.values()),
                     'invalid officecfg input/output hashes')
+            continue
+        if key == 'language':
+            require(isinstance(values, str) and values in LANGUAGE_VALUES,
+                    'invalid compile language override')
             continue
         require(isinstance(values, list) and all(isinstance(v, str) and v and '\x00' not in v for v in values),
                 'invalid compile override values')

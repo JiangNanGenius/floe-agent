@@ -1,0 +1,118 @@
+--- a/engine/svx/source/svdraw/svdcrtv.cxx
++++ b/engine/svx/source/svdraw/svdcrtv.cxx
+@@ -29,6 +29,9 @@
+ #include <svx/xfillit0.hxx>
+ #include <svx/xflclit.hxx>
+ #include <svx/xlineit0.hxx>
++#include <svx/xfltrit.hxx>
++#include <svx/xlntrit.hxx>
++#include <svx/xlnwtit.hxx>
+ #include <svx/svdouno.hxx>
+ #include <svx/svdopath.hxx>
+ #include <svx/sdr/overlay/overlaypolypolygon.hxx>
+@@ -39,6 +42,7 @@
+ #include <svx/sdr/contact/viewcontact.hxx>
+ #include <svx/sdr/overlay/overlayprimitive2dsequenceobject.hxx>
+ #include <vcl/ptrstyle.hxx>
++#include <vcl/outdev.hxx>
+ #include <officecfg/Office/Common.hxx>
+ 
+ using namespace com::sun::star;
+@@ -590,6 +594,97 @@
+     if (mpCurrentCreate!=nullptr)
+     {
+         sal_uInt32 nCount=maDragStat.GetPointCount();
++
++        // FLOE-OFFICE-ZERO-MOTION-DOT begin
++        // The production Pencil bridge finalizes a tap as exactly one
++        // mousedown+mouseup at one identical document point: the DragStat has
++        // one point and MinMove was never exceeded. The general single-point
++        // guards below then discard the freehand create in every app (Writer
++        // via ForceEnd, Calc/Impress because a 1-point freehand EndCreate
++        // fails with NextPoint). For the ink tool only, finalize that exact
++        // zero-motion contact as a real native filled circle: diameter = the
++        // effective stroke line width (the item value is 1/100 mm; converted
++        // to the model unit), centered on the contact point, carrying the
++        // stroke colour and its transparency as the fill, and no outline (an
++        // outline of W around a W-diameter circle would paint outer 2W).
++        // The object goes through the same factory, layer, grid-offset and
++        // InsertObjectAtView ownership/undo lifecycle a completed stroke uses,
++        // and the temporary create is torn down exactly like BrkCreateObj()
++        // first, so no stale create object or overlay reference survives.
++        // Cancels (Escape/back/right-click), other tools, multi-point creates,
++        // MinMove-satisfied interactive creates, the selection fallback and a
++        // zero configured line width keep their current behaviour untouched.
++        if (nCount == 1
++            && (eCmd == SdrCreateCmd::ForceEnd || !maDragStat.IsMinMoved())
++            && mpCurrentCreate->GetObjInventor() == SdrInventor::Default
++            && mpCurrentCreate->GetObjIdentifier() == SdrObjKind::FreehandLine)
++        {
++            const SfxItemSet& rCreateSet = mpCurrentCreate->GetMergedItemSet();
++            const sal_uInt32 nLineWidthHmm = rCreateSet.Get(XATTR_LINEWIDTH).GetValue();
++            const Color aInkColor = rCreateSet.Get(XATTR_LINECOLOR).GetColorValue();
++            const sal_uInt16 nInkTransparence = rCreateSet.Get(XATTR_LINETRANSPARENCE).GetValue();
++            sal_Int32 nDiameter = 0;
++            if (nLineWidthHmm >= 1)
++            {
++                const MapUnit eModelUnit = GetModel().GetScaleUnit();
++                if (eModelUnit == MapUnit::Map100thMM)
++                {
++                    nDiameter = static_cast<sal_Int32>(nLineWidthHmm);
++                }
++                else
++                {
++                    nDiameter = static_cast<sal_Int32>(OutputDevice::LogicToLogic(
++                        Size(static_cast<tools::Long>(nLineWidthHmm), 0),
++                        MapMode(MapUnit::Map100thMM), MapMode(eModelUnit)).Width());
++                }
++            }
++            if (nDiameter >= 1 && mpCreatePV != nullptr)
++            {
++                const Point aContact(maDragStat.GetPoint(0));
++                const sal_Int32 nHalf = nDiameter / 2;
++                const tools::Rectangle aCircleRect(
++                    aContact.X() - nHalf, aContact.Y() - nHalf,
++                    aContact.X() - nHalf + nDiameter - 1,
++                    aContact.Y() - nHalf + nDiameter - 1);
++
++                // Same teardown order as BrkCreateObj(): overlay down, create
++                // state reset, references cleared; the page view is kept in a
++                // local because the members are cleared first.
++                rtl::Reference<SdrObject> aCreate = mpCurrentCreate;
++                HideCreateObj();
++                aCreate->BrkCreate(maDragStat);
++                SdrPageView* pDotPV = mpCreatePV;
++                mpCurrentCreate = nullptr;
++                mpCreatePV = nullptr;
++
++                rtl::Reference<SdrObject> pDot = SdrObjFactory::MakeNewObject(
++                    GetModel(), SdrInventor::Default, SdrObjKind::CircleOrEllipse, &aCircleRect);
++                if (pDot.is())
++                {
++                    SfxItemSet aDotSet(GetModel().GetItemPool());
++                    aDotSet.Put(XFillStyleItem(drawing::FillStyle_SOLID));
++                    aDotSet.Put(XFillColorItem(OUString(), aInkColor));
++                    aDotSet.Put(XFillTransparenceItem(nInkTransparence));
++                    aDotSet.Put(XLineStyleItem(drawing::LineStyle_NONE));
++                    pDot->SetMergedItemSet(aDotSet);
++                    SetupObjLayer(pDotPV, maActualLayer, pDot.get());
++                    basegfx::B2DVector aGridOffset(0.0, 0.0);
++                    if (getPossibleGridOffsetForSdrObject(aGridOffset, pDot.get(), pDotPV))
++                    {
++                        const Size aOffset(
++                            basegfx::fround<tools::Long>(-aGridOffset.getX()),
++                            basegfx::fround<tools::Long>(-aGridOffset.getY()));
++                        pDot->NbcMove(aOffset);
++                    }
++                    // Identical ownership/undo/marking path as a completed
++                    // stroke (InsertObjectAtView at the normal exit below).
++                    InsertObjectAtView(pDot.get(), *pDotPV);
++                    return true; // true = event interpreted, exactly like a stroke
++                }
++                return false; // factory failure: same rejection as before the change
++            }
++        }
++        // FLOE-OFFICE-ZERO-MOTION-DOT end
+ 
+         if (nCount<=1 && eCmd==SdrCreateCmd::ForceEnd)
+         {

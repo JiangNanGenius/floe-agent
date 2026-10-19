@@ -1,0 +1,48 @@
+diff --git a/browser/src/layer/tile/CanvasTileLayer.js b/browser/src/layer/tile/CanvasTileLayer.js
+index d721ced..dce0d12 100644
+--- a/browser/src/layer/tile/CanvasTileLayer.js
++++ b/browser/src/layer/tile/CanvasTileLayer.js
+@@ -2917,11 +2917,23 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
+ 
+ 	_onZoomEnd: function () {
+ 		this._isZooming = false;
++		// The replay scope also covers this zoom's own final cursor/overlay
++		// update: a zoom (pinch, wheel or programmatic) is not a text-input
++		// intent, so its passive cursor geometry redraw must not force DOM
++		// focus or the software keyboard. The pre-zoom input state is
++		// preserved exactly; the next genuine tap, edit or command reaches
++		// _updateCursorAndOverlay outside this scope and focuses as before.
++		// The scope is closed in a finally: a throwing replay or final cursor
++		// update must not leave the flag latched and silently suppress the
++		// next genuine input, and the original error still propagates.
+ 		app.sectionContainer.setPostZoomReplay(true);
+-		if (!this.isCalc())
+-			this._replayPrintTwipsMsgs(false);
+-		app.sectionContainer.setPostZoomReplay(false);
+-		this._onUpdateCursor(null, true);
++		try {
++			if (!this.isCalc())
++				this._replayPrintTwipsMsgs(false);
++			this._onUpdateCursor(null, true);
++		} finally {
++			app.sectionContainer.setPostZoomReplay(false);
++		}
+ 		TextCursorSection.updateVisibilities();
+ 	},
+ 
+@@ -3100,9 +3112,14 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
+ 			var hasMobileWizardOpened = this._map.uiManager.mobileWizard ? this._map.uiManager.mobileWizard.isOpen() : false;
+ 			var hasIframeModalOpened = $('.iframe-dialog-modal').is(':visible');
+ 			// Don't show the keyboard when the Wizard is visible, or when we have just been in a zoom
++			// (the replay scope now spans the zoom's own final cursor update), or while the owned
++			// live zoom-frame is open: the map-free layout never fires 'zoomstart', so the dead
++			// this._isZooming check is backed by the container's real inZoomAnimation state and a
++			// mid-gesture core cursor message cannot force focus/keyboard either.
+ 			if (!window.mobileWizard && !window.pageMobileWizard &&
+ 				!window.insertionMobileWizard && !hasMobileWizardOpened &&
+-				!JSDialog.IsAnyInputFocused() && !hasIframeModalOpened && !app.sectionContainer.isPostZoomReplay()) {
++				!JSDialog.IsAnyInputFocused() && !hasIframeModalOpened && !app.sectionContainer.isPostZoomReplay() &&
++				!app.sectionContainer.isInZoomAnimation()) {
+ 				// If the user is editing, show the keyboard, but don't change
+ 				// anything if nothing is changed.
+ 

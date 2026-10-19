@@ -1,0 +1,24 @@
+diff --git a/browser/src/canvas/sections/ZoomControl.ts b/browser/src/canvas/sections/ZoomControl.ts
+index c486c1d..4ff631e 100644
+--- a/browser/src/canvas/sections/ZoomControl.ts
++++ b/browser/src/canvas/sections/ZoomControl.ts
+@@ -274,6 +274,19 @@ class ZoomControl extends CanvasSectionObject {
+ 			this.pinchAnchor = null;
+ 			return;
+ 		}
++		// A pinch that latched onto the document (its first in-document move
++		// fixed the start distance and anchor) is consumed entirely by this
++		// owner: the live frame and the synchronous commit/close below. Cancel
++		// the final touchend's default action so WebKit does not synthesize a
++		// compatibility mousedown/click out of the completed owned gesture.
++		// That synthetic click is not a user editing intent: it blurs the real
++		// text input mid-session and re-arms the input intent through the map's
++		// click handling after a pinch. One-finger taps (never latched here),
++		// two-finger taps without an in-document move, gestures starting
++		// outside the document and touchcancel keep their existing defaults.
++		const ownedPinch =
++			this.pinchStartDistance !== null && this.pinchAnchor !== null;
++		if (ownedPinch && e.cancelable !== false) e.preventDefault();
+ 		const startZoom = this.pinchStartZoom;
+ 		// Outward ceil/floor is kept ONLY for the beyond-range Overview guard
+ 		// input: it decides the range-edge overview hand-off, and nearest

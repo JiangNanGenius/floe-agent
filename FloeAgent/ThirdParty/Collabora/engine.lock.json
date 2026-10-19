@@ -701,6 +701,34 @@
                 }
               }
             }
+          },
+          "libsvxcorelo.a": {
+            "sourceFile": "engine/svx/source/svdraw/svdcrtv.cxx",
+            "originalSHA256": "f95838f7e7cf1b49e0c8ca1f853bf2f20997d927b7a8accbc02a42e0a30f529e",
+            "patchedSHA256": "485111e9dc0d9c060c9b12598fe0fda057199b73cb2dfab8365257f45f4c1bc9",
+            "archive": "source/engine/instdir/program/libsvxcorelo.a",
+            "members": {
+              "svdcrtv.o": "engine/svx/source/svdraw/svdcrtv.cxx"
+            },
+            "patch": "patches/ios-svdcrtv-zero-motion-dot.patch",
+            "patchSHA256": "2cb5d64199a33b96fa2a742218c602f2f479b08e1d11dcc47e5ffc1570a6d285",
+            "compileOverrides": {
+              "flags": [
+                "-DSVXCORE_DLLIMPLEMENTATION"
+              ],
+              "sourceIncludes": [
+                "engine/svx/source/inc"
+              ],
+              "language": "c++",
+              "officecfgHeaders": {
+                "Office/Common": {
+                  "schemaSHA256": "61502860517a904e3591bcbe5d48f5cf6bb5867cff1172cbde886e64b708a812",
+                  "stylesheetSHA256": "c18d6167f2807b8ce747e7f077f7a474fb5b94f7b8bdc6617b1422570b8c82dd",
+                  "dtdSHA256": "e0a91098484770dec8f571fb115f2f0567e13a416bed36a5f4717e4a37a71d30",
+                  "generatedSHA256": "5b5203f6be114ba6440884f9f9936743e727c4e048a5670fc66d001c9ac41f1b"
+                }
+              }
+            }
           }
         },
         "additionalMembers": {
@@ -790,6 +818,34 @@
                   "stylesheetSHA256": "c18d6167f2807b8ce747e7f077f7a474fb5b94f7b8bdc6617b1422570b8c82dd",
                   "dtdSHA256": "e0a91098484770dec8f571fb115f2f0567e13a416bed36a5f4717e4a37a71d30",
                   "generatedSHA256": "7a47a1cd71c61bd3f4e51cbe90bceb48bbf4f5977251c380d7e693ba3a42eed0"
+                }
+              }
+            }
+          },
+          "libsvxcorelo.a": {
+            "sourceFile": "engine/svx/source/svdraw/svdcrtv.cxx",
+            "originalSHA256": "f95838f7e7cf1b49e0c8ca1f853bf2f20997d927b7a8accbc02a42e0a30f529e",
+            "patchedSHA256": "485111e9dc0d9c060c9b12598fe0fda057199b73cb2dfab8365257f45f4c1bc9",
+            "archive": "source/engine/instdir/program/libsvxcorelo.a",
+            "members": {
+              "svdcrtv.o": "engine/svx/source/svdraw/svdcrtv.cxx"
+            },
+            "patch": "patches/ios-svdcrtv-zero-motion-dot.patch",
+            "patchSHA256": "2cb5d64199a33b96fa2a742218c602f2f479b08e1d11dcc47e5ffc1570a6d285",
+            "compileOverrides": {
+              "flags": [
+                "-DSVXCORE_DLLIMPLEMENTATION"
+              ],
+              "sourceIncludes": [
+                "engine/svx/source/inc"
+              ],
+              "language": "c++",
+              "officecfgHeaders": {
+                "Office/Common": {
+                  "schemaSHA256": "61502860517a904e3591bcbe5d48f5cf6bb5867cff1172cbde886e64b708a812",
+                  "stylesheetSHA256": "c18d6167f2807b8ce747e7f077f7a474fb5b94f7b8bdc6617b1422570b8c82dd",
+                  "dtdSHA256": "e0a91098484770dec8f571fb115f2f0567e13a416bed36a5f4717e4a37a71d30",
+                  "generatedSHA256": "5b5203f6be114ba6440884f9f9936743e727c4e048a5670fc66d001c9ac41f1b"
                 }
               }
             }
