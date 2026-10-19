@@ -48,6 +48,10 @@ final class OfficePinchDiagnosticsUITests: XCTestCase {
         try runRealPinchDiagnostic(drawingOn: true, landscape: true)
     }
 
+    func testRealModeratePinchDrawingOnLandscape() throws {
+        try runRealPinchDiagnostic(drawingOn: true, landscape: true, pinchScale: 1.1)
+    }
+
     /// Optional portrait variants — root chooses which selectors to execute.
     func testRealPinchDrawingOffPortrait() throws {
         try runRealPinchDiagnostic(drawingOn: false, landscape: false)
@@ -59,12 +63,13 @@ final class OfficePinchDiagnosticsUITests: XCTestCase {
 
     // MARK: - Paired real-pinch diagnostic
 
-    private func runRealPinchDiagnostic(drawingOn: Bool, landscape: Bool) throws {
+    private func runRealPinchDiagnostic(drawingOn: Bool, landscape: Bool, pinchScale: CGFloat = 1.25) throws {
         guard ProcessInfo.processInfo.environment["FLOE_OFFICE_PINCH_DIAGNOSTIC_UI"] == "1" else {
             throw XCTSkip("Opt-in Office pinch diagnostics; set FLOE_OFFICE_PINCH_DIAGNOSTIC_UI=1 in the test runner environment.")
         }
         continueAfterFailure = false
-        let caseName = "draw-\(drawingOn ? "on" : "off")-\(landscape ? "landscape" : "portrait")"
+        let scaleSuffix = pinchScale == 1.25 ? "" : "-scale-\(Int((pinchScale * 100).rounded()))"
+        let caseName = "draw-\(drawingOn ? "on" : "off")-\(landscape ? "landscape" : "portrait")\(scaleSuffix)"
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true
             || UIDevice.current.userInterfaceIdiom == .pad
         let app = XCUIApplication()
@@ -157,6 +162,7 @@ final class OfficePinchDiagnosticsUITests: XCTestCase {
         let gestureFacts = XCTAttachment(string: """
             case=\(caseName)
             requested-orientation=\(landscape ? "landscapeLeft" : "portrait")
+            requested-pinch-scale=\(pinchScale)
             xcui-device-orientation=\(XCUIDevice.shared.orientation.rawValue)
             device-orientation=\(UIDevice.current.orientation == .unknown ? "unknown" : UIDevice.current.orientation.name)
             window-frame=\(app.windows.firstMatch.frame)
@@ -175,7 +181,7 @@ final class OfficePinchDiagnosticsUITests: XCTestCase {
         // Observations first, all of them, BEFORE any diagnostic assertion.
         let beforePinch = web.screenshot()
         attachScreenshot(beforePinch, name: "pinch-diag-\(caseName)-web-before")
-        web.pinch(withScale: 1.25, velocity: 1)
+        web.pinch(withScale: pinchScale, velocity: 1)
         Thread.sleep(forTimeInterval: 1.5)
         let afterPinch = web.screenshot()
         attachScreenshot(afterPinch, name: "pinch-diag-\(caseName)-web-after")
