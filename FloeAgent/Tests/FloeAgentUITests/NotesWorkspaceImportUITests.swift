@@ -211,6 +211,21 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 10),
                       "Pinching must leave the drawing tool enabled")
 
+        // A second independent gesture must establish its own start after
+        // the first ends; require visible zoom-out without leaving drawing.
+        web.pinch(withScale: 0.8, velocity: -1)
+        Thread.sleep(forTimeInterval: 1)
+        let afterPinchOut = web.screenshot()
+        let pinchOutAttachment = XCTAttachment(screenshot: afterPinchOut)
+        pinchOutAttachment.name = "office-pencil-after-real-pinch-out"
+        pinchOutAttachment.lifetime = .keepAlways
+        add(pinchOutAttachment)
+        let afterOutTitle = try officeTitleBounds(in: afterPinchOut.image)
+        XCTAssertLessThan(afterOutTitle.width, afterTitle.width * 0.95,
+                          "A subsequent UIKit pinch must visibly shrink the document")
+        XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 10),
+                      "Repeated pinching must leave the drawing tool enabled")
+
         settings.tap()
         let panel = app.staticTexts["office.ink.panel"]
         XCTAssertTrue(panel.waitForExistence(timeout: 15),
