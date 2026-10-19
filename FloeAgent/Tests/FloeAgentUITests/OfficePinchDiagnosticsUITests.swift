@@ -18,6 +18,16 @@ import Vision
 ///   * Evidence of the telemetry contract itself: the probe must be present,
 ///     parseable, same-generation, monotonic and bounded. That is what these
 ///     methods assert.
+///   * Observation of the additive live-pinch fields: per-touch `s` is an
+///     after-target/fallback sample (`src` b = window bubble after the
+///     target handler, r = bounded render-step fallback; `iz` =
+///     `isInZoomAnimation`, `zfs` = `zoomFrameScale`, `z` = committed getZoom,
+///     `post` marks samples at/after that gesture's last-finger end, `stale`
+///     marks a newer gesture), `gi`/`ph` identify the gesture phase, and
+///     `gst/lmt/gend/gest/latest` retain bounded start/end/latest state.
+///     Reports below show these fields but still do not assert zoom success;
+///     the real-UIKit live-frame acceptance lives in
+///     `NotesWorkspaceImportUITests` with the unchanged OCR thresholds.
 /// What this suite is NOT:
 ///   * Feature acceptance. The untouched
 ///     `NotesWorkspaceImportUITests.testOfficePencilToolbarToggleAndSettings`
@@ -369,7 +379,10 @@ final class OfficePinchDiagnosticsUITests: XCTestCase {
             let q = (record["q"] as? [String: Any]).map { dict in
                 " q{mt:\(number(dict["mt"]) ?? -2) pmd:\(number(dict["pmd"]) ?? -2) som:\(dict["som"] ?? "nil") tei:\(number(dict["tei"]) ?? -2) z:\(number(dict["z"]) ?? -1)}"
             } ?? ""
-            return "k=\(record["k"] ?? "?") t=\(number(record["t"]) ?? -1) n=\(number(record["n"]) ?? -2) c=\(number(record["c"]) ?? -2) trusted=\(number(record["tr"]) ?? -2) dp=\(number(record["dp"]) ?? -2) p=\(record["p"] ?? "nil") pi=\(number(record["pi"]) ?? -2) tgt=\(record["g"] as? [String: Any] ?? [:]) coords=\(coords)\(q)"
+            let s = (record["s"] as? [String: Any]).map { dict in
+                " s{at:\(number(dict["at"]) ?? -1) iz:\(number(dict["iz"]) ?? -2) zfs:\(number(dict["zfs"]) ?? -1) z:\(number(dict["z"]) ?? -1) post:\(number(dict["post"]) ?? -2) stale:\(number(dict["stale"]) ?? -2) src:\(dict["src"] ?? "nil")}"
+            } ?? ""
+            return "k=\(record["k"] ?? "?") ph=\(record["ph"] ?? "?") gi=\(number(record["gi"]) ?? -1) t=\(number(record["t"]) ?? -1) n=\(number(record["n"]) ?? -2) c=\(number(record["c"]) ?? -2) trusted=\(number(record["tr"]) ?? -2) dp=\(number(record["dp"]) ?? -2) p=\(record["p"] ?? "nil") pi=\(number(record["pi"]) ?? -2) tgt=\(record["g"] as? [String: Any] ?? [:]) coords=\(coords)\(q)\(s)"
         }
         func counts(_ dict: [String: Any]?, _ field: String) -> String {
             guard let counts = dict?[field] as? [String: Any] else { return "missing" }
@@ -378,7 +391,7 @@ final class OfficePinchDiagnosticsUITests: XCTestCase {
         }
         func state(_ dict: [String: Any]?) -> String {
             guard let st = dict?["st"] as? [String: Any] else { return "missing" }
-            return "zoom=\(number(st["z"]) ?? -1) multiTouch=\(number(st["mt"]) ?? -2) positionOnMouseDown=\(number(st["pmd"]) ?? -2) sectionOnMouseDown=\(st["som"] ?? "nil") touchEventInProgress=\(number(st["tei"]) ?? -2) dpiScale=\(number(st["dpi"]) ?? -2)"
+            return "zoom=\(number(st["z"]) ?? -1) iza=\(number(st["iza"]) ?? -2) zfs=\(number(st["zfs"]) ?? -1) minZoom=\(number(st["minz"]) ?? -1) maxZoom=\(number(st["maxz"]) ?? -1) gid=\(number(dict?["gid"]) ?? -1) ga=\(number(dict?["ga"]) ?? -2) gst=\(number(dict?["gst"]) ?? -1) lmt=\(number(dict?["lmt"]) ?? -1) gend=\(number(dict?["gend"]) ?? -1) pd=\(number(dict?["pd"]) ?? -1) multiTouch=\(number(st["mt"]) ?? -2) positionOnMouseDown=\(number(st["pmd"]) ?? -2) sectionOnMouseDown=\(st["som"] ?? "nil") touchEventInProgress=\(number(st["tei"]) ?? -2) dpiScale=\(number(st["dpi"]) ?? -2)"
         }
         func viewport(_ dict: [String: Any]?) -> String {
             guard let vp = dict?["vp"] as? [String: Any] else { return "missing" }
@@ -400,6 +413,24 @@ final class OfficePinchDiagnosticsUITests: XCTestCase {
         let cancels = newEvents.filter { (($0["k"] as? String) == "tc") || (($0["k"] as? String) == "pc") }
         let zoomDelta = (number((after["st"] as? [String: Any])?["z"]) ?? -1)
             - (number((baseline["st"] as? [String: Any])?["z"]) ?? -1)
+        // Observation only: after-target/fallback `s` samples taken before
+        // the last-finger end. `post=1`/`stale=1` samples are deliberately
+        // excluded so an end-of-gesture or newer-gesture snapshot is never
+        // reported as a live frame.
+        let liveFrames = newEvents.filter { record in
+            guard (record["k"] as? String) == "tm" else { return false }
+            guard let s = record["s"] as? [String: Any] else { return false }
+            return number(s["iz"]) == 1 && number(s["post"]) == 0 && number(s["stale"]) == 0 && number(s["zfs"]) != nil
+        }
+        let liveSummary = liveFrames.suffix(24).map { record -> String in
+            let s = record["s"] as? [String: Any] ?? [:]
+            return "t=\(number(record["t"]) ?? -1) at=\(number(s["at"]) ?? -1) zfs=\(number(s["zfs"]) ?? -1) z=\(number(s["z"]) ?? -1) gi=\(number(record["gi"]) ?? -1) src=\(s["src"] ?? "nil")"
+        }.joined(separator: " ; ")
+        func summary(_ value: Any?) -> String {
+            guard let item = value as? [String: Any] else { return "none" }
+            return "g=\(number(item["g"]) ?? -1) st=\(number(item["st"]) ?? -1) en=\(number(item["en"]) ?? -1) mv=\(number(item["mv"]) ?? -1) z0=\(number(item["z0"]) ?? -1) ze=\(number(item["ze"]) ?? -1) iz=\(number(item["iz"]) ?? -2) zfs=\(number(item["zfs"]) ?? -1) post=\(number(item["post"]) ?? -2) stale=\(number(item["stale"]) ?? -2) src=\(item["src"] ?? "nil") c=\(number(item["c"]) ?? -2)"
+        }
+        let gestures = (after["gest"] as? [[String: Any]] ?? []).map { summary($0) }.joined(separator: " ; ")
         return """
         case=\(caseName)
         \(ocrFacts)
@@ -417,6 +448,10 @@ final class OfficePinchDiagnosticsUITests: XCTestCase {
         first-new-touchstart: \(describe(firstTouchStart))
         first-new-pointerdown: \(describe(firstPointerDown))
         cancel-records: \(cancels.map { describe($0) }.joined(separator: " ; ").isEmpty ? "none" : cancels.map { describe($0) }.joined(separator: " ; "))
+        live-frame-samples(pre-end, iz=1, post=0, stale=0): \(liveSummary.isEmpty ? "none" : liveSummary)
+        dropped-fallback-samples(pd)=\(number(after["pd"]) ?? -1)
+        latest-sample: \(summary(after["latest"]))
+        bounded-gesture-summaries: \(gestures.isEmpty ? "none" : gestures)
         capture-counts(after): \(counts(after, "cnt"))
         bubble-counts(after): \(counts(after, "cntB"))
         defaultPrevented-bubbles(after): \(counts(after, "cntD"))

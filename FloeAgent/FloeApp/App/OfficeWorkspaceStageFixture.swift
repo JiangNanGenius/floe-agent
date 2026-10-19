@@ -126,5 +126,115 @@ enum OfficeWorkspaceStageFixture {
             // acceptance test then fails honestly on its own visibility gate.
         }
     }
+
+    // MARK: - Centered real-UIKit pinch: Calc and Impress fixtures
+
+    /// Real XLSX fixture for the strict centered real-UIKit acceptance. The
+    /// measured line sits in cell G10 so the complete OCR target stays inside
+    /// the landscape viewport at the committed pinch scales. Calc applies no
+    /// fit-to-window zoom in the pinned engine (Writer alone gets a dynamic
+    /// fit), so it starts at the same default zoom 10 measured for the Word
+    /// fixture; the placement was swept across default header/column/row
+    /// metrics at that zoom. A calc fixture failure is a placement signal, not
+    /// a threshold signal.
+    static let pinchCenterCalcLaunchArgument = "--ui-test-office-pinch-center-calc-fixture"
+    static let pinchCenterCalcDocumentName = "捏合验收-居中-表格-2.xlsx"
+    /// The complete, deterministic OCR target for the Calc case. Duplicated
+    /// verbatim in `NotesWorkspaceImportUITests` (the test target cannot import
+    /// the app target); keep both in sync.
+    static let pinchCenterCalcMeasuredText = "Pen UI 7C3MV1K9"
+
+    /// Real PPTX fixture for the strict centered real-UIKit acceptance. The
+    /// deck is one 16:9 slide whose measurement text object is centred on the
+    /// slide by EMU geometry. Impress is refit to the window when the editor
+    /// container settles and a fitting slide is centred in the viewport, so
+    /// the object lands on the public gesture's anchor; the no-refit default
+    /// zoom 10 projection also keeps the complete title visible. Identity is
+    /// the owned note title; the OCR label is fixed and duplicated in the test.
+    static let pinchCenterPresentationLaunchArgument = "--ui-test-office-pinch-center-presentation-fixture"
+    static let pinchCenterPresentationDocumentName = "捏合验收-居中-演示-2.pptx"
+    static let pinchCenterPresentationMeasuredText = "Pen UI 2Q8WZ4R6"
+
+    static func seedCenteredPinchCalcDocumentIfRequested() async {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard arguments.contains("-ui-testing"),
+              arguments.contains(pinchCenterCalcLaunchArgument) else { return }
+        await seedOwnedOfficePinchDocument(name: pinchCenterCalcDocumentName) { url in
+            // Sparse sheet kept identical to the builder probe fixture: a few
+            // real cells for content, empty rows so the measured line stays
+            // isolated for OCR, and the measured line in G10 (row 10, column G)
+            // so the full 15-character title overflows into empty neighbours.
+            var rows: [[String]] = [
+                ["Region", "Q1", "Q2"],
+                ["North", "120", "150"],
+                ["South", "96", "210"],
+            ]
+            while rows.count < 9 { rows.append(["", "", "", "", "", "", ""]) }
+            rows.append(["", "", "", "", "", "", pinchCenterCalcMeasuredText])
+            try OfficeDocumentBuilder.createWorkbook(at: url, sheets: [
+                OfficeWorkbookSheet(name: "Pinch Anchor", rows: rows),
+            ])
+        }
+    }
+
+    static func seedCenteredPinchPresentationDocumentIfRequested() async {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard arguments.contains("-ui-testing"),
+              arguments.contains(pinchCenterPresentationLaunchArgument) else { return }
+        await seedOwnedOfficePinchDocument(name: pinchCenterPresentationDocumentName) { url in
+            // The box is comfortable for the tested 24 pt metrics (283.5 pt
+            // versus ~204 pt of text) and its geometry is the same one
+            // asserted from the generated slide XML in the fixture evidence;
+            // rendered wrapping and placement still await the actual UI run.
+            try OfficeDocumentBuilder.createPresentation(at: url, title: "Pinch Center Deck", slides: [
+                OfficePresentationSlide(title: "Pinch Center Deck", bullets: [
+                    "Centered UIKit pinch acceptance fixture.",
+                ], objects: [
+                    OfficePresentationObject(kind: .text, name: "Measure",
+                                             x: 4_296_000, y: 3_246_120,
+                                             width: 3_600_000, height: 365_760,
+                                             text: [pinchCenterPresentationMeasuredText],
+                                             fontSize: 24),
+                ]),
+            ])
+        }
+    }
+
+    /// Builds and imports one owned Office document through the same user-file
+    /// import path as the Word fixture, idempotent by exact owned title
+    /// (including Trash). Existing documents and every other library entry are
+    /// left untouched; a failure is swallowed here and surfaces as the test's
+    /// own honest visibility gate.
+    private static func seedOwnedOfficePinchDocument(name: String,
+                                                     _ build: (URL) throws -> Void) async {
+        do {
+            let store = try await NotesRepository.shared.store()
+            let ownedTitle = (name as NSString).deletingPathExtension
+            let existing = try await store.documents(includeTrash: true)
+            guard !existing.contains(where: { $0.title == ownedTitle }) else { return }
+            let scratch = try await StorageCleanupLeaseCenter.shared.makeLeasedScratch(purpose: "notes")
+            let root = scratch.url
+            defer {
+                try? FileManager.default.removeItem(at: root)
+                scratch.lease.release()
+            }
+            let url = root.appendingPathComponent(name)
+            try build(url)
+            let draft = try await NoteFileImporter.importFile(url, notebookID: nil, store: store)
+            _ = try await store.create(draft)
+        } catch {
+            // A fixture failure leaves the pre-existing library untouched; the
+            // acceptance test then fails honestly on its own visibility gate.
+            // Record only the content-free NSError identity in the existing
+            // Office stage trace, so a seeding failure is diagnosable without
+            // logging a path, document text or the error description.
+            let nsError = error as NSError
+            OfficeStageRecorder.shared.record(
+                session: "ui-test-pinch-fixture",
+                generation: 0,
+                stage: "pinchFixture.seedFailed",
+                detail: ["domain": nsError.domain, "code": String(nsError.code)])
+        }
+    }
 }
 #endif

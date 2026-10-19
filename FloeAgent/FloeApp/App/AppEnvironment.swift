@@ -1824,6 +1824,18 @@ final class AppEnvironment: ObservableObject {
                 await OfficeWorkspaceStageFixture.seedCenteredPinchDocumentIfRequested()
             }
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains(OfficeWorkspaceStageFixture.pinchCenterCalcLaunchArgument) {
+                // Calc companion fixture for the same strict real-UIKit pinch
+                // acceptance; seeded before the first library load so the real
+                // card is listed by the ordinary session open path.
+                await OfficeWorkspaceStageFixture.seedCenteredPinchCalcDocumentIfRequested()
+            }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains(OfficeWorkspaceStageFixture.pinchCenterPresentationLaunchArgument) {
+                // Impress companion fixture, same owned seeding route.
+                await OfficeWorkspaceStageFixture.seedCenteredPinchPresentationDocumentIfRequested()
+            }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains("--ui-test-task-management-fixture") {
                 // OWNED synthetic tasks for the bulk task-management UI
                 // acceptance. Fixed identities, idempotent: a missing task is

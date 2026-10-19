@@ -39,11 +39,41 @@
 // snapshot (`q`: multiTouch, positionOnMouseDown, sectionOnMouseDown.name,
 // touchEventInProgress, getZoom) captured INSIDE the passive handler, so
 // gesture-birth container state survives even though touchend resets it
-// before the next poll. The periodic snapshot adds engine numerics:
-// app.map.getZoom, the same sectionContainer fields, app.dpiScale, the
-// gate's __floeOfficePenState fields, and viewport facts (innerWidth/Height,
-// devicePixelRatio, visualViewport width/height/scale, screen size and
-// orientation type).
+// before the next poll.
+//
+// Live-pinch fields (additive, schema `v` remains 1): every event carries
+// `gi` (gesture serial) and `ph` (start/move/end/cancel). Touch records also
+// carry `s`, a sample taken after the event has run through the canvas/
+// `ZoomControl` target handler. The primary source is the event's own window
+// bubble listener (`src='b'`); if propagation is stopped before that
+// listener, a bounded requestAnimationFrame fallback samples at the render
+// step (`src='r'`). A capture-handler microtask is NOT used: HTML can run a
+// microtask checkpoint between listeners, before the target handler. `at` is
+// the monotonic sample time, `iz` is
+// `app.sectionContainer.isInZoomAnimation()` (pinned
+// `CanvasSectionContainer.ts`), `zfs` is
+// `app.map._docLayer._painter.zoomFrameScale()` (pinned
+// `CanvasTileLayer.js`), `z` is the committed `app.map.getZoom()`, `post` is
+// 1 only when the sample ran at or after its own gesture's last-finger
+// touchend/touchcancel, and `stale` is 1 when a newer gesture had already
+// started. `q` remains the synchronous pre-handler snapshot. A post-end or
+// stale sample is never pre-end live-frame evidence.
+//
+// The snapshot adds `gid/ga/gst/lmt/gend/gc`, a four-entry `gest` summary
+// (start, last-finger end, move count, start/end zoom, frame state), a
+// single `latest` current-gesture sample, `terminal` (the one record that
+// actually ended the current gesture, retained independently of the ring),
+// `fl` (the first eight pre-end live move samples of the current gesture,
+// reset at birth), and `pd` (fallback samples dropped by the bounded pending
+// cap), so a bounded ring that overwrites early events still exposes the
+// latest start/end timestamps, the terminal record and the gesture-start
+// live frame. `st` adds `iza`, `zfs`, `minz` and `maxz`. These fields describe
+// the requested layout/zoom-frame state only; they do not prove that the
+// WebKit compositor presented a frame. The periodic snapshot retains engine
+// numerics: app.map.getZoom, the same sectionContainer fields, app.dpiScale,
+// the gate's __floeOfficePenState fields, and viewport facts
+// (innerWidth/Height, devicePixelRatio, visualViewport width/height/scale,
+// screen size and orientation type).
 #if DEBUG && canImport(UIKit) && canImport(WebKit)
 import UIKit
 import WebKit
@@ -55,6 +85,8 @@ final class OfficeTouchQualificationProbe {
     static let launchArgument = "--office-touch-qualification"
     static let snapshotAccessibilityIdentifier = "office.touch-qualification.snapshot"
     static let snapshotAccessibilityLabel = "FLOE_TOUCH_PROBE"
+    static let canvasAnchorIdentifier = "office.touch-qualification.canvas-anchor"
+    static let canvasAnchorLabel = "FLOE_CANVAS_ANCHOR"
 
     /// True only in a DEBUG build launched with the explicit qualification
     /// argument. Absent in normal UI runs and impossible in Release (the type
@@ -81,6 +113,7 @@ final class OfficeTouchQualificationProbe {
         weak var controller: UIViewController?
         weak var webView: WKWebView?
         var overlay: UIView?
+        var anchor: UIView?
         var jsInstalled = false
         var webRetryScheduled = false
 
@@ -139,6 +172,8 @@ final class OfficeTouchQualificationProbe {
         installation = nil
         current.overlay?.removeFromSuperview()
         current.overlay = nil
+        current.anchor?.removeFromSuperview()
+        current.anchor = nil
         if let web = current.webView {
             let token = current.token
             Task { @MainActor [weak self] in
@@ -235,10 +270,18 @@ final class OfficeTouchQualificationProbe {
     }
 
     private func refreshSnapshot(_ inst: Installation) async {
-        guard let web = inst.webView else { return }
+        guard let web = inst.webView else {
+            resetCanvasAnchor(inst, reason: "web-unavailable")
+            return
+        }
         let raw = (try? await web.evaluateJavaScript(Self.domSnapshotScript)) as? String
-        guard let json = raw, installation === inst else { return }
+        guard installation === inst else { return }
+        guard let json = raw else {
+            resetCanvasAnchor(inst, reason: "snapshot-unavailable")
+            return
+        }
         setOverlayValue(inst, json)
+        updateCanvasAnchor(inst, json: json)
     }
 
     /// The page already bounds the snapshot structurally (shrinking the
@@ -256,7 +299,119 @@ final class OfficeTouchQualificationProbe {
         inst.overlay?.accessibilityValue = bounded
     }
 
+    private static func finiteDouble(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber else { return nil }
+        let result = number.doubleValue
+        return result.isFinite ? result : nil
+    }
+
+    private static func snapshotObject(_ json: String) -> [String: Any]? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    /// DEBUG-only passive pinch anchor. It is a plain accessibility element
+    /// whose frame is a safe sub-rectangle of the real document canvas,
+    /// inserted at the bottom of the host view exactly like the 1x1 snapshot
+    /// overlay. It is explicitly non-interactive and has no autoresizing or
+    /// constraint participation, so it cannot intercept touches or alter
+    /// layout. XCUITest pinches synthesize real UIKit touches whose hit
+    /// testing still reaches the WebView underneath.
+    private func attachCanvasAnchor(to controller: UIViewController, in inst: Installation) {
+        let anchor = UIView(frame: .zero)
+        anchor.backgroundColor = .clear
+        anchor.isUserInteractionEnabled = false   // never intercept any touch
+        anchor.autoresizingMask = []              // never participates in layout
+        anchor.isHidden = true                    // no stale frame before valid geometry
+        anchor.isAccessibilityElement = true
+        anchor.accessibilityIdentifier = Self.canvasAnchorIdentifier
+        anchor.accessibilityLabel = Self.canvasAnchorLabel
+        anchor.accessibilityTraits = .staticText
+        anchor.accessibilityValue = "{\"ok\":0,\"reason\":\"awaiting-geometry\"}"
+        controller.view.insertSubview(anchor, at: 0)
+        inst.anchor = anchor
+    }
+
+    /// Maps the page-reported canvas rectangle (CSS px, viewport relative)
+    /// into a safe native sub-rectangle. The scale comes from the actual
+    /// WKWebView bounds and the page's live `innerWidth/innerHeight`; the
+    /// rectangle is intersected with the visible web/host/window bounds before
+    /// the classical 72 pt side/bottom and 96 pt top insets. Every invalid or
+    /// stale input clears the previous frame and value instead of leaving a
+    /// formerly-valid anchor in place.
+    private func updateCanvasAnchor(_ inst: Installation, json: String) {
+        guard let host = inst.controller?.view, let anchor = inst.anchor else { return }
+        guard let web = inst.webView,
+              web.window != nil, host.window != nil, web.window === host.window,
+              web === host || web.isDescendant(of: host),
+              let window = host.window else {
+            resetCanvasAnchor(inst, reason: "web-not-attached")
+            return
+        }
+        guard let object = Self.snapshotObject(json),
+              (object["ok"] as? NSNumber)?.intValue == 1,
+              (object["owner"] as? NSNumber)?.intValue == inst.token,
+              let ready = object["rs"] as? String,
+              ready == "interactive" || ready == "complete",
+              let viewport = object["vp"] as? [String: Any],
+              let canvas = object["cv"] as? [String: Any],
+              let innerWidth = Self.finiteDouble(viewport["iw"]), innerWidth > 0,
+              let innerHeight = Self.finiteDouble(viewport["ih"]), innerHeight > 0,
+              let x = Self.finiteDouble(canvas["x"]),
+              let y = Self.finiteDouble(canvas["y"]),
+              let width = Self.finiteDouble(canvas["w"]), width > 0,
+              let height = Self.finiteDouble(canvas["h"]), height > 0 else {
+            resetCanvasAnchor(inst, reason: "geometry-unavailable")
+            return
+        }
+        let scaleX = web.bounds.width / CGFloat(innerWidth)
+        let scaleY = web.bounds.height / CGFloat(innerHeight)
+        guard scaleX.isFinite, scaleY.isFinite, scaleX > 0, scaleY > 0 else {
+            resetCanvasAnchor(inst, reason: "scale-unavailable")
+            return
+        }
+        let canvasInWeb = CGRect(x: CGFloat(x) * scaleX, y: CGFloat(y) * scaleY,
+                                 width: CGFloat(width) * scaleX,
+                                 height: CGFloat(height) * scaleY)
+        let visibleWeb = canvasInWeb.intersection(web.bounds)
+        guard !visibleWeb.isNull, visibleWeb.width > 0, visibleWeb.height > 0 else {
+            resetCanvasAnchor(inst, reason: "canvas-not-visible")
+            return
+        }
+        let visibleWindow = web.convert(visibleWeb, to: nil).intersection(window.bounds)
+        guard !visibleWindow.isNull, visibleWindow.width > 0, visibleWindow.height > 0 else {
+            resetCanvasAnchor(inst, reason: "canvas-off-window")
+            return
+        }
+        let visibleHost = host.convert(visibleWindow, from: nil).intersection(host.bounds)
+        guard !visibleHost.isNull, visibleHost.width > 0, visibleHost.height > 0 else {
+            resetCanvasAnchor(inst, reason: "canvas-off-host")
+            return
+        }
+        let inset = visibleHost.insetBy(dx: 72, dy: 72)
+        let top = max(inset.minY, visibleHost.minY + 96)
+        let safe = CGRect(x: inset.minX, y: top,
+                          width: inset.width, height: inset.maxY - top)
+        guard safe.width.isFinite, safe.height.isFinite,
+              safe.width >= 200, safe.height >= 160,
+              visibleHost.contains(safe) else {
+            resetCanvasAnchor(inst, reason: "safe-area-too-small")
+            return
+        }
+        anchor.isHidden = false
+        anchor.frame = safe
+        anchor.accessibilityValue = "{\"ok\":1}"
+    }
+
+    private func resetCanvasAnchor(_ inst: Installation, reason: String) {
+        guard let anchor = inst.anchor else { return }
+        anchor.isHidden = true
+        anchor.frame = .zero
+        anchor.accessibilityValue = "{\"ok\":0,\"reason\":\"\(reason)\"}"
+    }
+
     private func attachOverlay(to controller: UIViewController, in inst: Installation) {
+        attachCanvasAnchor(to: controller, in: inst)
         let overlay = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
         overlay.backgroundColor = .clear
         overlay.isUserInteractionEnabled = false   // cannot intercept any touch
@@ -304,11 +459,137 @@ final class OfficeTouchQualificationProbe {
       cnt: {ts: 0, tm: 0, te: 0, tc: 0, pd: 0, pm: 0, pu: 0, pc: 0},
       cntB: {ts: 0, tm: 0, te: 0, tc: 0, pd: 0, pm: 0, pu: 0, pc: 0},
       cntD: {ts: 0, tm: 0, te: 0, tc: 0, pd: 0, pm: 0, pu: 0, pc: 0},
-      dr: 0, ns: 0, starts: [], ring: [], handles: []
+      dr: 0, ns: 0, starts: [], ring: [], handles: [], fl: [],
+      gid: 0, ga: 0, gst: null, lmt: null, gend: null, gc: null,
+      gmv: 0, gz0: null, latest: null, terminal: null, gest: [],
+      pending: new Map(), pdrop: 0, ends: {}, endOrder: []
     };
     const R = (x) => (typeof x === 'number' && isFinite(x)) ? Math.round(x * 10) / 10 : null;
+    const num4 = (x) => (typeof x === 'number' && isFinite(x)) ? Math.round(x * 10000) / 10000 : null;
+    const now = () => Math.round((performance.now() - P.pn0) * 10) / 10;
     const clip = (s, n) => (typeof s === 'string') ? s.slice(0, n) : null;
     const coord = (p) => [R(p && p.clientX), R(p && p.clientY)];
+    // Read only the pinned public/internal accessors already used by the
+    // engine's own zoom-frame consumers. No mutation, no dispatch and no
+    // layout side effect: an absent getter reports null instead of throwing.
+    const zoomState = () => {
+      const out = { iz: null, zfs: null, z: null, minz: null, maxz: null };
+      try {
+        const app = window.app, sc = app && app.sectionContainer, map = app && app.map;
+        if (sc && typeof sc.isInZoomAnimation === 'function') {
+          try { out.iz = sc.isInZoomAnimation() ? 1 : 0; } catch (e) {}
+        }
+        if (map) {
+          if (typeof map.getZoom === 'function') { try { out.z = num4(map.getZoom()); } catch (e) {} }
+          if (typeof map.getMinZoom === 'function') { try { out.minz = num4(map.getMinZoom()); } catch (e) {} }
+          if (typeof map.getMaxZoom === 'function') { try { out.maxz = num4(map.getMaxZoom()); } catch (e) {} }
+          const layer = map._docLayer;
+          const painter = layer && layer._painter;
+          if (painter && typeof painter.zoomFrameScale === 'function') {
+            try { out.zfs = num4(painter.zoomFrameScale()); } catch (e) {}
+          }
+        }
+      } catch (e) {}
+      return out;
+    };
+    // Sampling MUST NOT rely on a capture-handler microtask: HTML can run a
+    // microtask checkpoint between event listeners, before the canvas/
+    // `ZoomControl` target handler. The primary sample is the event's own
+    // window bubble listener, which runs after the target handler. If
+    // propagation is stopped before the window bubble, a bounded
+    // requestAnimationFrame fallback samples at the render step instead.
+    // Every sample records its source (`b` bubble-after-target, `r` render
+    // step) and its event's captured gesture serial; delayed samples can
+    // never be reinterpreted as live frames of a newer gesture.
+    const MAXPENDING = 8;
+    const sample = (entry, src) => {
+      const rec = entry.rec, key = entry.key;
+      try {
+        const st = zoomState();
+        const at = now();
+        const ownEnd = P.ends[rec.gi];
+        const post = (typeof ownEnd === 'number' && at >= ownEnd) ? 1 : 0;
+        const stale = (P.gid !== rec.gi) ? 1 : 0;
+        rec.s = { at: at, iz: st.iz, zfs: st.zfs, z: st.z, post: post,
+                  stale: stale, src: src };
+        // Bounded first-live window: only a trusted move of the current,
+        // still-open gesture with a live finite frame scale qualifies. The
+        // stored identity/time fields let the consumer reject a late or
+        // relabelled sample instead of treating the oldest retained ring
+        // record as the gesture start.
+        if (!stale && !post && key === 'tm' && rec.tr === 1 &&
+            rec.gi === P.gid && st.iz === 1 &&
+            typeof st.zfs === 'number' && isFinite(st.zfs) &&
+            P.fl.length < 8) {
+          P.fl.push({ t: rec.t, at: at, gi: rec.gi, tr: rec.tr,
+                      iz: st.iz, zfs: st.zfs, z: st.z,
+                      post: post, stale: stale, src: src });
+        }
+        if (!stale) {
+          P.latest = { at: at, gi: rec.gi, ph: rec.ph, k: key,
+                       iz: st.iz, zfs: st.zfs, z: st.z, post: post,
+                       stale: stale, src: src };
+        }
+        const terminal = key === 'tc' || (key === 'te' && ownEnd === rec.t);
+        if (terminal && !stale) {
+          const summary = { g: rec.gi, st: P.gst, en: rec.t, mv: P.gmv,
+                            z0: P.gz0, ze: st.z, iz: st.iz, zfs: st.zfs,
+                            post: post, c: key === 'tc' ? 1 : 0 };
+          P.gest.push(summary);
+          while (P.gest.length > 4) { P.gest.shift(); }
+        }
+      } catch (e) {
+        rec.s = { at: now(), err: 1, stale: (P.gid !== rec.gi) ? 1 : 0, src: src };
+      }
+    };
+    const cancelPending = (entry) => {
+      if (entry.raf === null) return;
+      try {
+        if (entry.kind === 'raf' && typeof window.cancelAnimationFrame === 'function') {
+          window.cancelAnimationFrame(entry.raf);
+        } else if (typeof clearTimeout === 'function') {
+          clearTimeout(entry.raf);
+        }
+      } catch (e) {}
+      entry.raf = null;
+    };
+    const takePending = (event, src) => {
+      const entry = P.pending.get(event);
+      if (!entry || entry.done) return;
+      entry.done = 1;
+      P.pending.delete(event);
+      cancelPending(entry);
+      sample(entry, src);
+    };
+    const scheduleSample = (rec, key, event) => {
+      if (P.pending.size >= MAXPENDING) { P.pdrop += 1; return; }
+      const entry = { rec: rec, key: key, done: 0, raf: null, kind: null };
+      P.pending.set(event, entry);
+      const run = () => {
+        if (entry.done) return;
+        entry.done = 1;
+        P.pending.delete(event);
+        entry.raf = null;
+        sample(entry, 'r');
+      };
+      try {
+        if (typeof window.requestAnimationFrame === 'function') {
+          entry.kind = 'raf';
+          entry.raf = window.requestAnimationFrame(run);
+        } else if (typeof setTimeout === 'function') {
+          entry.kind = 'timer';
+          entry.raf = setTimeout(run, 16);
+        } else {
+          entry.done = 1;
+          P.pending.delete(event);
+          P.pdrop += 1;
+        }
+      } catch (e) {
+        entry.done = 1;
+        P.pending.delete(event);
+        P.pdrop += 1;
+      }
+    };
     const tgt = (e) => {
       const t = e && e.target;
       let firstCls = null;
@@ -358,6 +639,53 @@ final class OfficeTouchQualificationProbe {
           rec.o = [coord(e)];
         }
         rec.g = tgt(e);
+        // Gesture identity is bound to single- versus two-finger birth:
+        // increments only when no touch gesture is active, so a second
+        // touchstart of the same pinch and a sequential two-finger start keep
+        // one serial. A batched two-finger touchstart (touches=2) also starts
+        // a gesture, matching the observed real UIKit birth.
+        if (key === 'ts' && !P.ga) {
+          P.gid += 1;
+          P.ga = 1;
+          P.gst = rec.t;
+          P.gend = null;
+          P.gc = null;
+          P.lmt = null;
+          P.gmv = 0;
+          P.gz0 = null;
+          P.latest = null;
+          P.fl = [];
+          P.terminal = null;
+          try {
+            const m = window.app && window.app.map;
+            P.gz0 = m && typeof m.getZoom === 'function' ? num4(m.getZoom()) : null;
+          } catch (x) {}
+        }
+        if ((key === 'te' && P.ga && e.touches && e.touches.length === 0) ||
+            (key === 'tc' && P.ga)) {
+          P.ga = 0;
+          P.gend = rec.t;
+          if (key === 'tc') { P.gc = rec.t; }
+          // The one record that actually ended the gesture. The cache holds
+          // the same object reference, so its own post-target sample remains
+          // attached; a duplicate touches=0 end never enters this branch and
+          // therefore never becomes terminal.
+          rec.term = 1;
+          P.terminal = rec;
+          // Per-gesture end time: a delayed rAF sample is judged against its
+          // own gesture, never against a newer gesture's global end/reset.
+          P.ends[P.gid] = rec.t;
+          P.endOrder.push(P.gid);
+          while (P.endOrder.length > 4) {
+            const oldGid = P.endOrder.shift();
+            delete P.ends[oldGid];
+          }
+        }
+        if (key === 'tm' && P.ga) { P.gmv += 1; P.lmt = rec.t; }
+        rec.gi = P.gid;
+        rec.ph = (key === 'ts' || key === 'pd') ? 's'
+          : (key === 'tm' || key === 'pm') ? 'm'
+          : (key === 'te' || key === 'pu') ? 'e' : 'c';
         if (key === 'ts' || key === 'tm' || key === 'pd') { quickState(rec); }
         P.cnt[key] = (P.cnt[key] || 0) + 1;
         if (key === 'ts' || key === 'pd') {
@@ -366,6 +694,10 @@ final class OfficeTouchQualificationProbe {
         }
         if (P.ring.length >= CAP) { P.ring.shift(); P.dr += 1; }
         P.ring.push(rec);
+        // The after-target/fallback sample is only needed for the trusted
+        // touch pipeline; adding it to pointer records would spend
+        // ring/transfer budget without changing the live-frame contract.
+        if (touch) { scheduleSample(rec, key, e); }
       } catch (x) {}
     };
     const types = { touchstart: 'ts', touchmove: 'tm', touchend: 'te', touchcancel: 'tc',
@@ -377,6 +709,10 @@ final class OfficeTouchQualificationProbe {
         try {
           P.cntB[key] = (P.cntB[key] || 0) + 1;
           if (e.defaultPrevented) { P.cntD[key] = (P.cntD[key] || 0) + 1; }
+          // Window bubble runs after the target/`ZoomControl` handler. This
+          // is the primary post-target sample; a stopped-propagation event
+          // stays pending for the bounded rAF fallback.
+          takePending(e, 'b');
         } catch (x) {}
       };
       window.addEventListener(name, cap, { capture: true, passive: true });
@@ -388,6 +724,13 @@ final class OfficeTouchQualificationProbe {
         try { window.removeEventListener(h[0], h[1], { capture: h[2] }); } catch (e) {}
       }
       P.handles.length = 0;
+      try {
+        for (const entry of P.pending.values()) {
+          entry.done = 1;
+          cancelPending(entry);
+        }
+      } catch (e) {}
+      try { P.pending.clear(); } catch (e) {}
       try { delete window.__floeTouchProbe; } catch (e) { window.__floeTouchProbe = undefined; }
     };
     window.__floeTouchProbe = P;
@@ -415,11 +758,27 @@ final class OfficeTouchQualificationProbe {
   const MAX = 42000;
   try {
     const num = (x) => (typeof x === 'number' && isFinite(x)) ? Math.round(x * 1000) / 1000 : null;
+    const num4 = (x) => (typeof x === 'number' && isFinite(x)) ? Math.round(x * 10000) / 10000 : null;
     const app = window.app || null;
     const map = app && app.map;
     const sc = app && app.sectionContainer;
-    const st = { hasApp: app ? 1 : 0, z: null, mt: null, pmd: null, som: null, tei: null, dpi: null };
-    if (map && typeof map.getZoom === 'function') { try { st.z = num(map.getZoom()); } catch (e) {} }
+    const live = { iz: null, zfs: null, z: null, minz: null, maxz: null };
+    if (sc && typeof sc.isInZoomAnimation === 'function') {
+      try { live.iz = sc.isInZoomAnimation() ? 1 : 0; } catch (e) {}
+    }
+    if (map) {
+      if (typeof map.getZoom === 'function') { try { live.z = num4(map.getZoom()); } catch (e) {} }
+      if (typeof map.getMinZoom === 'function') { try { live.minz = num4(map.getMinZoom()); } catch (e) {} }
+      if (typeof map.getMaxZoom === 'function') { try { live.maxz = num4(map.getMaxZoom()); } catch (e) {} }
+      const layer = map._docLayer;
+      const painter = layer && layer._painter;
+      if (painter && typeof painter.zoomFrameScale === 'function') {
+        try { live.zfs = num4(painter.zoomFrameScale()); } catch (e) {}
+      }
+    }
+    const st = { hasApp: app ? 1 : 0, z: live.z, mt: null, pmd: null, som: null,
+                 tei: null, dpi: null, iza: live.iz, zfs: live.zfs,
+                 minz: live.minz, maxz: live.maxz };
     if (sc) {
       if (typeof sc.multiTouch === 'boolean') { st.mt = sc.multiTouch ? 1 : 0; }
       if ('positionOnMouseDown' in sc) { st.pmd = (sc.positionOnMouseDown == null) ? 0 : 1; }
@@ -450,11 +809,24 @@ final class OfficeTouchQualificationProbe {
     const vp = { iw: num(window.innerWidth), ih: num(window.innerHeight), dpr: num(window.devicePixelRatio),
                  vw: vv ? num(vv.width) : null, vh: vv ? num(vv.height) : null, vs: vv ? num(vv.scale) : null,
                  sw: num(window.screen && screen.width), sh: num(window.screen && screen.height), so: so };
+    // Read-only canvas rectangle (CSS px, viewport relative) used by the
+    // DEBUG-only passive pinch anchor; no DOM mutation and no event hook.
+    let cv = null;
+    try {
+      const cvCanvas = app && app.sectionContainer && app.sectionContainer.canvas;
+      if (cvCanvas && typeof cvCanvas.getBoundingClientRect === 'function') {
+        const r = cvCanvas.getBoundingClientRect();
+        cv = { x: num(r.left), y: num(r.top), w: num(r.width), h: num(r.height) };
+      }
+    } catch (e) {}
     const body = { v: 1, ok: 1, gen: P.gen, owner: P.owner, wall0: P.wall0,
                    t: Math.round((performance.now() - P.pn0) * 10) / 10,
                    cnt: P.cnt, cntB: P.cntB, cntD: P.cntD, dr: P.dr, ns: P.ns,
+                   gid: P.gid, ga: P.ga, gst: P.gst, lmt: P.lmt, gend: P.gend,
+                   gc: P.gc, gest: P.gest, latest: P.latest,
+                   terminal: P.terminal, fl: P.fl, pd: P.pdrop,
                    starts: P.starts, ring: P.ring, rtv: 0, st: st, pen: pen, vp: vp,
-                   rs: document.readyState.slice(0, 12) };
+                   cv: cv, rs: document.readyState.slice(0, 12) };
     let text = JSON.stringify(body);
     if (text.length > MAX) {
       let limit = Math.floor(P.ring.length / 2);

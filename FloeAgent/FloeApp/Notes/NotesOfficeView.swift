@@ -621,7 +621,8 @@ struct NotesOfficeView: View {
                     canRetryPreview = true
                     message = String(localized: "notes.office.preview.failed",
                                      defaultValue: "The preview could not be updated. Try again.")
-                    recordStage("notes.preview.failed", ["domain": (error as NSError).domain])
+                    recordStage("notes.preview.failed", ["domain": (error as NSError).domain,
+                                                         "code": String((error as NSError).code)])
                 }
             }
             do {
@@ -658,7 +659,8 @@ struct NotesOfficeView: View {
             canRetryPreview = true
             message = String(localized: "notes.office.preview.failed",
                              defaultValue: "The preview could not be updated. Try again.")
-            recordStage("notes.preview.failed", ["domain": (error as NSError).domain])
+            recordStage("notes.preview.failed", ["domain": (error as NSError).domain,
+                                                 "code": String((error as NSError).code)])
         }
     }
 
