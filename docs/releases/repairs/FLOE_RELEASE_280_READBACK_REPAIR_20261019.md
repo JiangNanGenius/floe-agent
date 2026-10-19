@@ -121,22 +121,14 @@ serializes the run. The repair module uses
 `floe-feather-source`; neither shares the recovery job's group, so the nested
 calls cannot deadlock.
 
-The fallback has not been executed yet. While direct workflow registration is
-unavailable, it is the only supported way to finish this readback.
+The registered-entry fallback completed successfully in run [39207989677](https://github.com/JiangNanGenius/floe-agent/actions/runs/39207989677) at caller source `7fa6d746ae50d78956ca709dc170b031edbcb947`. Both the strict published-byte/attestation verification and the awaited nested Feather publication succeeded. All legacy build, signing, upload and publish jobs were skipped.
 
-## Still required
+## Recovery execution and completion
 
-1. Review and commit the workflow, focused test and documentation change.
-2. Dispatch the registered `release-unsigned-ipa.yml` once with
-   `--ref main` and `published_readback_only=true`, `publish=false`,
-   `tag=v1.7.39`,
-   `expected_source_sha=0c9b0864d6e5bbae48f3f4917d5175fcd542b25c`,
-   `expected_ipa_sha256=461f2d59e42da38e5546e87e3393702ff8f285f5ef084906fe0ea64e0e14f48c`.
-   Direct dispatch of the new module remains unavailable.
-3. Read back its evidence artifact (passing `report.json`, attestation output)
-   and the live `feather.json` feed entry for `v1.7.39`, build 280.
-4. Only then record delivery as complete. The Gitee mirror request is a
-   separate delivery gate and is not performed by this recovery.
+1. The four scoped changes were committed and pushed as `7fa6d746`; the registered publisher was dispatched once at `main`, with `publish=false`, `published_readback_only=true` and the exact source/IPA proofs above.
+2. The retained evidence artifact reports `installableDelivery=true` and no violations. The original publisher attestation verifies the exact bytes and immutable source; recovery created no new attestation.
+3. The existing Feather reusable workflow ran and completed inside that same run. Its feed commit is `0d4058c2`; the primary independently read the public `feather.json` over HTTP 200 and checked version `1.7.39`, build `280`, source `0c9b0864d6e5bbae48f3f4917d5175fcd542b25c`, SHA-256 `461f2d59e42da38e5546e87e3393702ff8f285f5ef084906fe0ea64e0e14f48c`, size `768111079` and the canonical release asset URL.
+4. This closes the GitHub/Feather readback for Build 280. Its internal TestFlight remains `VALID`, unexpired and available in Floe QA. Formal App Store publication and an additional external review were not performed; the Gitee mirror remains a separate delivery check.
 
 The original failed run is retained as evidence; its failed step is not rewritten
 or hidden, the tag is not moved, and the published bytes are not replaced.
@@ -144,4 +136,4 @@ or hidden, the tag is not moved, and the published bytes are not replaced.
 
 ## Primary independent readback
 
-The primary downloaded the published IPA and checksum and ran the unchanged strict verifier locally. It passed with no violations: arm64 iOS device executable, version 1.7.39/build 280, annotated tag source `0c9b0864d6e5bbae48f3f4917d5175fcd542b25c`, matching remote SHA-256 and stable latest pointer. The original publisher attestation also verified for these exact bytes and source. This establishes the published asset independently; the automated recovery and awaited live feed remain separate pending checks.
+The primary downloaded the published IPA and checksum and ran the unchanged strict verifier locally. It passed with no violations: arm64 iOS device executable, version 1.7.39/build 280, annotated tag source `0c9b0864d6e5bbae48f3f4917d5175fcd542b25c`, matching remote SHA-256 and stable latest pointer. The original publisher attestation also verified for these exact bytes and source. This establishes the published asset independently. The subsequent registered-entry recovery and independent live feed readback described above also passed.
