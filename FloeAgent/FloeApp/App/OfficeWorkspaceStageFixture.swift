@@ -79,12 +79,21 @@ enum OfficeWorkspaceStageFixture {
     // MARK: - Centered real-UIKit pinch acceptance document
 
     /// Real DOCX fixture positioned around the landscape gesture anchor.
-    /// Leading spaces and preceding paragraphs keep the complete OCR target
-    /// visible after the public XCTest pinch's observed 2.488x zoom. The UI
-    /// test measures actual rendering with unchanged growth/shrink thresholds.
-    /// Existing entries, including Trash, are left untouched.
+    /// Leading spaces indent the complete OCR target onto the anchor's
+    /// horizontal centre, and the seven numbered spacer rows above it place
+    /// the target about 39% down the landscape canvas from the page top.
+    /// The 2026-10-20 keyboard-run evidence measured the reachable pre-pinch
+    /// scroll states: the page-top state framed the old target at 10.6% of
+    /// the web view (pushed out by an inward pinch about the far-below
+    /// anchor pivot), while the hide-keyboard cursor reveal framed it at
+    /// ~43%. At 39-44% the complete title stays inside the viewport across
+    /// the observed committed scales (1.197x-2.488x) about the canvas-anchor
+    /// pivot, with the UI test's growth/shrink thresholds unchanged.
+    /// Existing entries, including Trash, are left untouched; the owned
+    /// title is versioned (-3) because seeding is idempotent by title and
+    /// the shared device may still hold the previous layout.
     static let pinchCenterLaunchArgument = "--ui-test-office-pinch-center-fixture"
-    static let pinchCenterDocumentName = "捏合验收-居中-2.docx"
+    static let pinchCenterDocumentName = "捏合验收-居中-3.docx"
     /// The complete, deterministic OCR target. It is duplicated verbatim in
     /// `NotesWorkspaceImportUITests.officeMeasuredTitleBounds` (the test
     /// target cannot import the app target); keep both in sync. No random
@@ -115,6 +124,12 @@ enum OfficeWorkspaceStageFixture {
             try OfficeDocumentBuilder.createWord(at: url, title: "Pinch Center Anchor", paragraphs: [
                 "Centered UIKit pinch acceptance fixture.",
                 "anchor spacer row one",
+                "anchor spacer row two",
+                "anchor spacer row three",
+                "anchor spacer row four",
+                "anchor spacer row five",
+                "anchor spacer row six",
+                "anchor spacer row seven",
                 measured,
                 "anchor footer row one",
                 "anchor footer row two",

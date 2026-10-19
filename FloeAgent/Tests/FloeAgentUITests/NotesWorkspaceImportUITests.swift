@@ -451,7 +451,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     /// measured text and attachment prefix.
     private func runOfficeCenteredPinchAcceptance(
         drawingOn: Bool,
-        fixtureTitle: String = "捏合验收-居中-2",
+        fixtureTitle: String = "捏合验收-居中-3",
         fixtureLaunchArgument: String = "--ui-test-office-pinch-center-fixture",
         measuredText: String = "Pen UI 5X8KQ2M7",
         casePrefix: String = "office-pencil-center",
