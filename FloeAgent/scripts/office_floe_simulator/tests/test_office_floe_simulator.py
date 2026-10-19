@@ -1062,12 +1062,24 @@ class NokitLockPathContractTests(unittest.TestCase):
             lock = json.loads(path.read_text())
             self.assertNotIn('kitCallbackLifecycleOverlay', lock)
             facts = build_simulator_framework.validate_lock_resources(path)
-            required = {lock[name]['patch'] for name in ('embeddingOverlay',
-                        'schemeTaskLifecycleOverlay', 'forwardingLifecycleOverlay', 'embeddedLifecycleOverlay')}
-            if lock.get('sourcePatch'): required.add(lock['sourcePatch'])
-            for spec in lock['embeddedLifecycleOverlay'].get('compiledMembers', {}).values():
-                required.add(spec['patch'])
-                required.update(child['patch'] for child in spec.get('additionalArchives', {}).values())
+            # The nokit build phases resolve three overlay patches
+            # (embedding, scheme, forwarding) plus the compiled member/archive
+            # patches and the deployment-target source patch. The embedded
+            # lifecycle parent patch is applied during prepared-source staging,
+            # not here, so it is not part of this count. Declare the identities
+            # explicitly instead of deriving them from the function under test.
+            required = {
+                'patches/ios-embedding-boundaries.patch',
+                'patches/ios-scheme-task-lifecycle.patch',
+                'patches/ios-forwarding-lifecycle.patch',
+                'patches/ios-embedded-lifecycle-compiled.patch',
+                'patches/ios-notebookbar-lifetime.patch',
+                'patches/ios-aqua-chart-path-probe.patch',
+                'patches/ios-foreign-bitmap-readback.patch',
+                'patches/ios-jsdialog-treeview-utf8.patch',
+                'patches/ios-deployment-target.patch',
+            }
+            self.assertEqual(len(required), 9)
             self.assertEqual(facts['patchCount'], len(required))
             self.assertEqual(set(build_simulator_framework.overlay_patch_refs(lock)), required)
             # Every referenced overlay input resolves next to the copied lock.
@@ -1144,6 +1156,87 @@ class NokitLockPathContractTests(unittest.TestCase):
             self.assertFalse(result['persistencePassed'])
 
 
+# Explicit fixture contract for the current compiled lifecycle member. These
+# identities are declared independently so a silent lock shape change cannot
+# quietly rewrite the receipt fixture; update them only with the lock contract.
+SIM_COMPILED_MEMBER_SOURCES = {
+    'svdata.o': 'engine/vcl/source/app/svdata.cxx',
+    'AquaGraphicsBackend.o': 'engine/vcl/quartz/AquaGraphicsBackend.cxx',
+    'salios.o': 'engine/vcl/ios/salios.cxx',
+    'executor.o': 'engine/vcl/jsdialog/executor.cxx',
+}
+SIM_COMPILED_ARCHIVE_MEMBER_SOURCES = {
+    'libsallo.a': {'thread.o': 'engine/sal/osl/unx/thread.cxx'},
+    'libsfxlo.a': {'SfxNotebookBar.o': 'engine/sfx2/source/notebookbar/SfxNotebookBar.cxx'},
+}
+
+
+def fixture_sha256(label):
+    return hashlib.sha256(label.encode()).hexdigest()
+
+
+def fixture_member_sources(selected):
+    base = {key: selected[key] for key in
+            ('sourceFile', 'originalSHA256', 'patchedSHA256', 'patch', 'patchSHA256')}
+    if selected.get('compileOverrides'):
+        base['compileOverrides'] = json.loads(json.dumps(selected['compileOverrides']))
+    sources = {name: json.loads(json.dumps(base)) for name in selected['members']}
+    sources.update(json.loads(json.dumps(selected.get('additionalMembers', {}))))
+    return sources
+
+
+def fixture_schema_version(selected):
+    if selected.get('additionalMembers'):
+        return 3
+    if any(fixture_schema_version(child) == 3
+           for child in selected.get('additionalArchives', {}).values()):
+        return 3
+    return 2 if selected.get('additionalArchives') else 1
+
+
+def compiled_lifecycle_fixture(selected, platform):
+    """Synthetic receipt for the lock's current compiled member contract.
+
+    Archive/object/linker hashes are deterministic fixture bytes, never build
+    evidence. Only the lock-declared original member digests are copied
+    verbatim because the production validator compares them exactly.
+    """
+    sources = fixture_member_sources(selected)
+    archive_name = Path(selected['archive']).name
+    version = fixture_schema_version(selected)
+    objects = {name: fixture_sha256(f'fixture {archive_name} object {name}')
+               for name in sources}
+    originals = {name: (sources[name].get('originalMemberSHA256')
+                        or fixture_sha256(f'fixture {archive_name} original {name}'))
+                 for name in sources}
+    block = {
+        'schemaVersion': version,
+        'platform': platform,
+        'archive': selected['archive'],
+        'members': {name: spec['sourceFile'] for name, spec in sources.items()},
+        'sourceCommit': LOCK['commit'],
+        'patchSHA256': LOCK['embeddedLifecycleOverlay']['sha256'],
+        'compiledPatchSHA256': selected['patchSHA256'],
+        'sourceFile': selected['sourceFile'],
+        'originalSourceSHA256': selected['originalSHA256'],
+        'patchedSourceSHA256': selected['patchedSHA256'],
+        'compilePassed': True,
+        'archiveReplacementPassed': True,
+        'originalArchiveSHA256': fixture_sha256(f'fixture {archive_name} original archive'),
+        'archiveSHA256': fixture_sha256(f'fixture {archive_name} compiled archive'),
+        'linkerListSHA256': fixture_sha256(f'fixture {archive_name} linker list'),
+        'objectSHA256ByMember': objects,
+    }
+    if selected.get('compileOverrides'):
+        block['compileOverrides'] = json.loads(json.dumps(selected['compileOverrides']))
+    if version == 3:
+        block['memberSources'] = sources
+        block['originalObjectSHA256ByMember'] = originals
+        block['objectABIByMember'] = {name: {'arch': 'arm64', 'platform': platform}
+                                      for name in objects}
+    return block
+
+
 def make_fake_host_bundle(root, *, variant='kit', kit_applied=True):
     bundle = Path(root) / 'OfficeNativeHostSimulator'
     framework = bundle / 'FloeOfficeNative.framework'
@@ -1202,36 +1295,46 @@ def make_fake_host_bundle(root, *, variant='kit', kit_applied=True):
         'sourceCommit': LOCK['commit'],
         'files': {n: spec['preparedSHA256'] for n, spec in
                   LOCK['embeddedLifecycleOverlay']['files'].items()}}
-    receipt['platformOriginalArchives'] = {'sdk': 'iphonesimulator',
-                                           'archives': {'libscfiltlo.a': 's' * 64,
-                                                        'libvcllo.a': '6' * 64}}
-    if (LOCK.get('embeddedLifecycleOverlay', {}).get('compiledMembers') or {}
-            ).get('IOSSIMULATOR'):
-        import office_compiled_lifecycle as lifecycle
-        receipt['embeddedLifecycleMember'] = {
-            **lifecycle.identity(LOCK, 'IOSSIMULATOR'),
-            'originalArchiveSHA256': '6' * 64,
-            'archiveSHA256': '7' * 64,
-            'objectSHA256ByMember': {'svdata.o': '8' * 64},
-            'linkerListSHA256': '9' * 64}
-    selected = (LOCK.get('embeddedLifecycleOverlay', {}).get('compiledMembers') or {}).get('IOSSIMULATOR', {})
-    extras = selected.get('additionalArchives', {})
-    if extras:
-        block = receipt['embeddedLifecycleMember']
-        block['additionalArchives'] = {}
-        for name, spec in extras.items():
-            block['additionalArchives'][name] = {
-                **lifecycle.identity(lifecycle.single_lock(LOCK, 'IOSSIMULATOR', spec), 'IOSSIMULATOR'),
-                'originalArchiveSHA256': 'a' * 64, 'archiveSHA256': 'b' * 64,
-                'objectSHA256ByMember': {member: 'c' * 64 for member in spec['members']},
-                'linkerListSHA256': 'd' * 64}
-            receipt['platformOriginalArchives']['archives'][name] = 'a' * 64
-        block['linkOwnership'] = {'linkMapSHA256': 'e' * 64, 'linkerListSHA256': 'f' * 64,
-            'archives': {name: {'archiveSHA256': item['archiveSHA256'], 'objectSHA256ByMember': item['objectSHA256ByMember']}
-                         for name, item in {Path(block['archive']).name:block, **block['additionalArchives']}.items()},
-            'preparedObjects': {name: {'preparedSourceSHA256': spec['preparedSHA256'], 'objectSHA256': '0' * 64,
-                                      'objectName': Path(name).stem + '.o'}
-                                for name, spec in LOCK['embeddedLifecycleOverlay']['files'].items()}}
+    selected = (LOCK.get('embeddedLifecycleOverlay', {}).get('compiledMembers') or {}).get('IOSSIMULATOR')
+    if selected:
+        sources = fixture_member_sources(selected)
+        declared_members = {name: spec['sourceFile'] for name, spec in sources.items()}
+        if declared_members != SIM_COMPILED_MEMBER_SOURCES:
+            raise AssertionError('compiled lifecycle fixture member identities changed: '
+                                 + repr(sorted(declared_members.items())))
+        declared_archives = {
+            name: dict(child['members'])
+            for name, child in selected.get('additionalArchives', {}).items()}
+        if declared_archives != SIM_COMPILED_ARCHIVE_MEMBER_SOURCES:
+            raise AssertionError('compiled lifecycle fixture archive identities changed: '
+                                 + repr(sorted(declared_archives)))
+        member = compiled_lifecycle_fixture(selected, 'IOSSIMULATOR')
+        member['additionalArchives'] = {
+            name: compiled_lifecycle_fixture(spec, 'IOSSIMULATOR')
+            for name, spec in selected.get('additionalArchives', {}).items()}
+        member['linkOwnership'] = {
+            'linkMapSHA256': fixture_sha256('fixture simulator link map'),
+            'linkerListSHA256': fixture_sha256('fixture simulator linker list'),
+            'archives': {
+                name: {'archiveSHA256': block['archiveSHA256'],
+                       'objectSHA256ByMember': dict(block['objectSHA256ByMember'])}
+                for name, block in {Path(member['archive']).name: member,
+                                    **member['additionalArchives']}.items()},
+            'preparedObjects': {
+                name: {'preparedSourceSHA256': spec['preparedSHA256'],
+                       'objectSHA256': fixture_sha256('fixture prepared object ' + name),
+                       'objectName': Path(name).stem + '.o'}
+                for name, spec in LOCK['embeddedLifecycleOverlay']['files'].items()},
+        }
+        receipt['embeddedLifecycleMember'] = member
+        receipt['platformOriginalArchives'] = {
+            'sdk': 'iphonesimulator',
+            'archives': {Path(block['archive']).name: block['originalArchiveSHA256']
+                         for block in [member, *member['additionalArchives'].values()]},
+        }
+    else:
+        receipt['platformOriginalArchives'] = {'sdk': 'iphonesimulator',
+                                               'archives': {'libvcllo.a': '6' * 64}}
     if kit_applied:
         receipt['kitCallbackLifecycle'] = {
             'patchSHA256': LOCK['kitCallbackLifecycleOverlay']['sha256'],
@@ -1398,7 +1501,7 @@ class SimulatorHostVerifyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Compiled embedded lifecycle'):
                 bootstrap_office_host.verify_simulator_host(bundle)
 
-    def test_historical_receipt_remains_explicitly_noncanonical(self):
+    def test_historical_receipt_cannot_downgrade_multisource_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             bundle = make_fake_host_bundle(tmp)
             path = bundle / 'native-host-simulator.json'
@@ -1407,8 +1510,13 @@ class SimulatorHostVerifyTests(unittest.TestCase):
                     'objectSHA256ByMember', 'members', 'linkerListSHA256', 'patchSHA256', 'sourceCommit'}
             receipt['embeddedLifecycleMember'] = {k: v for k, v in receipt['embeddedLifecycleMember'].items() if k in keys}
             path.write_text(json.dumps(receipt))
-            result = bootstrap_office_host.verify_simulator_host(bundle)
-            self.assertEqual(result['compiledLifecycleContract'], 'historical-pre-schema-not-canonical')
+            # The current contract has several members/archives, so the
+            # historical single-member compatibility path is not permitted.
+            with self.assertRaisesRegex(
+                    ValueError, 'multi-source contracts cannot use historical compatibility'):
+                bootstrap_office_host.verify_simulator_host(bundle)
+            # A versioned receipt is validated against the canonical contract;
+            # it cannot smuggle the historical shape in through a field.
             receipt['embeddedLifecycleMember']['schemaVersion'] = 0
             path.write_text(json.dumps(receipt))
             with self.assertRaisesRegex(ValueError, 'Compiled embedded lifecycle'):
