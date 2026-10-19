@@ -35,7 +35,7 @@
 
 已增加双指同时起始的初始化补丁，并修复取消后遗留的多指状态；新手势会丢弃上一手势结束后保留的旧区域，而同一次先后落指保持原区域。实际源码提取的 15 项行为检查通过，包含旧写法失败的连续手势对照。补丁准备的 16 项临时 Git 行为测试通过；设备与模拟器构建入口现复用同一准备流程，设备入口通过 shell 语法检查。/ The patch initializes batched starts, clears cancellation state and distinguishes a fresh gesture from a sequential second finger. Fifteen source-behavior checks and sixteen preparation tests passed; both build entrypoints now share preparation. The device entrypoint passed shell syntax checking.
 
-补丁已进入新生成的 Office 前端 JavaScript、模拟器组件和本地 Debug App；设备组件与新内测尚未生成。前端补丁独立记录于 `browser.patch.lock.json`，随重建资源记录其来源和摘要；原生核心的 `engine.patch.lock.json` 恢复原始字节，保留未改动核心的既有证明。不能用旧资源宣称已携带新修复。/ The patch is included in regenerated Office JavaScript, a rebuilt Simulator component and a local Debug App; the device component and new beta remain pending. A separate browser patch lock will bind rebuilt resources to their source. The native engine repair lock retains its original bytes and evidence; unchanged old resources do not carry the frontend fix.
+补丁已进入新生成的 Office 前端 JavaScript、模拟器组件和本地 Debug App；设备组件后续构建结果见末段，新内测尚未生成。前端补丁独立记录于 `browser.patch.lock.json`，随重建资源记录其来源和摘要；原生核心的 `engine.patch.lock.json` 恢复原始字节，保留未改动核心的既有证明。不能用旧资源宣称已携带新修复。/ The patch is included in regenerated Office JavaScript, a rebuilt Simulator component and a local Debug App; the subsequent device component result is recorded below; a new beta remains pending. A separate browser patch lock will bind rebuilt resources to their source. The native engine repair lock retains its original bytes and evidence; unchanged old resources do not carry the frontend fix.
 
 ## 实际前端资源 / Rebuilt frontend resource
 
@@ -53,3 +53,6 @@
 - 原工具栏验收仍失败：第一次放大后，页面标题被视口裁切，完整标题 OCR 无法匹配，尚未走到 1.08 放大和 0.95 缩小的比较；原阈值未修改，原失败保留。独立的 1.10 手势实验仍出现裁切（10 → 14 → 12），不能以降低请求倍率宣称解决。/ The original toolbar test still fails because zoom crops its full title before the unchanged width comparisons. An independent 1.10 experiment also cropped the title; it is not an acceptance pass.
 
 可信双指从约 6.265 CSS 像素间距开始；1.25 请求的首个移动间距约 7.632，最终约 17.357。需要区分 XCTest 实际几何、引擎缩放梯级与锚点行为，确认自然缩放和可复核的真实手势验收后再推进设备包。不会用程序设置缩放或接受残缺标题替代原断言。所有原始截图和状态已保存，固定模拟器已关机。/ Trusted finger geometry, zoom steps and anchor behavior require further review before device packaging. Programmatic zoom or partial-title matching will not replace acceptance. Raw evidence is retained and the shared Simulator is shut down.
+
+
+设备组件随后从源码 `c7b7dc33ec60adf9057490a9d2fd43cffa82c597` 完成 iphoneos/arm64 实际编译、链接与 Swift 模块导入，源码未变。组件归档 SHA-256 为 `5785f2b43d9c260f5118a4dae8bc3600247164f3937a256511779399f1fad37b`（126,656,298 字节）；独立核对 ZIP CRC、归档内实际前端 `cc1bcc58…`、原生回执及二进制／dSYM UUID 一致。产物与符号已保存。尚未更新正式设备组件 pin、完整设备 App 归档或内测，不能将组件成功视为真机交互通过。/ The device component compiled, linked and passed Swift import from unchanged source. ZIP integrity, actual packaged frontend, native receipt and matching binary/dSYM identity were independently verified; exact artifacts and symbols are retained. The tracked device pin, full device App archive and beta are still pending; this is not physical interaction acceptance.
