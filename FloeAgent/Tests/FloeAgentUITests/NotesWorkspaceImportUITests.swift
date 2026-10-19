@@ -469,9 +469,20 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // The probe is DEBUG-only and activates only with its explicit launch
         // argument. A build without it fails the baseline gate below instead
         // of silently running without live-frame evidence.
+        // The passive-only control is an explicit operator choice for the
+        // runner: the SAME original case runs with the app-side probe
+        // installed in passive mode (no call-site wrappers), while every
+        // passive touch/geometry journal, the fixed DOM input-state facts
+        // and the native input-state element stay active. Flag absent
+        // means exactly the previous behaviour: call-site instrumentation
+        // enabled; nothing is silently turned off.
+        let probePassiveOnly = ProcessInfo.processInfo.environment["FLOE_OFFICE_TOUCH_PROBE_PASSIVE_ONLY"] == "1"
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing",
                                "--ui-test-skip-onboarding", fixtureLaunchArgument,
                                "--office-touch-qualification"]
+        if probePassiveOnly {
+            app.launchArguments.append("--office-touch-qualification-passive-only")
+        }
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         // The on-page pinch marker badge is a separate, explicit opt-in:
         // the runner appends the app-side marker argument only when the
@@ -568,6 +579,19 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                       "the DEBUG touch probe must publish ok=1 before the real pinch; last value: \(baselineRead.raw.prefix(200))")
         let baseline = try XCTUnwrap(baselineRead.dict, "the probe baseline must be valid JSON")
         try assertOfficeTouchProbeBaseline(baseline, drawingOn: drawingOn, label: mode)
+        // Control integrity, asserted ONLY in the operator-requested
+        // passive-only run: the page must report the mode and the call-site
+        // counters must be honestly zero because nothing was wrapped. The
+        // ordinary (wrappers-enabled) case above is completely unchanged.
+        if probePassiveOnly {
+            XCTAssertEqual(pinchNumber(baseline["po"]), 1,
+                           "the passive-only launch must be reported by the probe (po=1)")
+            XCTAssertEqual(pinchNumber(baseline["ctn"]), 0,
+                           "passive-only must install zero call-site wrappers (ctn=0)")
+            XCTAssertEqual(pinchNumber(baseline["clN"]), 0,
+                           "passive-only keeps the trace/moment ring empty (clN=0)")
+            attachNativeInputState(app, label: "office-live-pinch", phase: "passive-only-baseline")
+        }
 
         // XCTest synthesizes real UIKit touches here. Require a change in the
         // document's rendered measured line, in addition to the separate
@@ -596,6 +620,15 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         try assertOfficeLivePinch(baseline: baseline, after: after, direction: .inward,
                                   drawingOn: drawingOn, label: "\(mode)-pinch-in")
         try assertCanvasBoundedStarts(after: after, label: "\(mode)-pinch-in")
+        if probePassiveOnly {
+            XCTAssertEqual(pinchNumber(after["ctn"]), 0,
+                           "\(mode)-pinch-in: passive-only must still report zero installed wrappers")
+            XCTAssertEqual(pinchNumber(after["clN"]), 0,
+                           "\(mode)-pinch-in: passive-only trace/moment ring must stay empty (clN=0)")
+            XCTAssertEqual((after["cl"] as? [Any])?.count ?? -1, 0,
+                           "\(mode)-pinch-in: passive-only exported trace ring must be empty")
+            attachNativeInputState(app, label: "\(mode)", phase: "passive-only-after-pinch-in")
+        }
         // Ordinary mode: once the baseline actually ended the keyboard's
         // onscreen occlusion through its own public hide key, the real pinch
         // must leave that state alone. Checked before the OCR phases so a
@@ -633,6 +666,15 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         try assertOfficeLivePinch(baseline: after, after: afterOut, direction: .outward,
                                   drawingOn: drawingOn, label: "\(mode)-pinch-out")
         try assertCanvasBoundedStarts(after: afterOut, label: "\(mode)-pinch-out")
+        if probePassiveOnly {
+            XCTAssertEqual(pinchNumber(afterOut["ctn"]), 0,
+                           "\(mode)-pinch-out: passive-only must still report zero installed wrappers")
+            XCTAssertEqual(pinchNumber(afterOut["clN"]), 0,
+                           "\(mode)-pinch-out: passive-only trace/moment ring must stay empty (clN=0)")
+            XCTAssertEqual((afterOut["cl"] as? [Any])?.count ?? -1, 0,
+                           "\(mode)-pinch-out: passive-only exported trace ring must be empty")
+            attachNativeInputState(app, label: "\(mode)", phase: "passive-only-after-pinch-out")
+        }
         if !drawingOn {
             assertKeyboardHiddenAfterPinch(app, label: mode, phase: "after-pinch-out")
         }
@@ -1871,6 +1913,29 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
+    /// Read-only attachment of the FIXED native input-state element
+    /// published by the DEBUG probe under its own identifier
+    /// `office.touch-qualification.input-state` (label FLOE_INPUT_STATE).
+    /// One bounded accessibility read of a fixed primitive JSON value: it
+    /// never waits, taps, focuses or forces anything, derives no acceptance
+    /// threshold and never fails the case on its own — it is the honest
+    /// native key-window/scene/first-responder/GCKeyboard evidence the
+    /// visible-keyboard precondition question needs, attached at the same
+    /// decision points as the existing keyboard-visibility facts. Without
+    /// the qualification launch the element simply does not exist and the
+    /// attachment records the fixed missing marker.
+    private func attachNativeInputState(_ app: XCUIApplication, label: String, phase: String) {
+        let element = app.descendants(matching: .any)
+            .matching(identifier: "office.touch-qualification.input-state").firstMatch
+        let raw: String
+        if element.exists, let value = element.value as? String {
+            raw = value
+        } else {
+            raw = "{\"v\":1,\"ok\":0,\"reason\":\"element-missing\"}"
+        }
+        attachText(raw, name: "\(label)-native-input-state-\(phase)")
+    }
+
     private func pinchNumber(_ value: Any?) -> Double? {
         if let number = value as? NSNumber { return number.doubleValue }
         return nil
@@ -2730,6 +2795,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     ) throws {
         if requireFreshCanvasTap && !officeKeyboardOnscreenReadiness(app).endsOnscreenOcclusion {
             attachKeyboardVisibilityFacts(app, label: label, phase: "before-required-fresh-tap")
+            attachNativeInputState(app, label: label, phase: "before-required-fresh-tap")
             XCTFail("\(label): the keyboard must still be hidden before the next genuine document tap",
                     file: file, line: line)
             return
@@ -2745,6 +2811,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             break
         case .invalidGeometry(let reason):
             attachKeyboardVisibilityFacts(app, label: label, phase: "required-visible-invalid-geometry")
+            attachNativeInputState(app, label: label, phase: "required-visible-invalid-geometry")
             XCTFail("\(label): cannot establish keyboard input precondition from invalid geometry: \(reason)",
                     file: file, line: line)
             return
@@ -2757,6 +2824,10 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             return !overlap.isNull && overlap.width > 0 && overlap.height > 0
         }
         attachKeyboardVisibilityFacts(app, label: label, phase: "required-visible-before-hide")
+        // The native key-window/scene/first-responder/GCKeyboard facts are
+        // attached on BOTH paths (pass and fail) at this exact decision
+        // point: they are evidence for interpretation, never a new gate.
+        attachNativeInputState(app, label: label, phase: "required-visible-before-hide")
         XCTAssertTrue(visible,
                       "\(label): the visible-hide regression requires an actual positive-area software keyboard before using its public Hide key; last state: \(last)",
                       file: file, line: line)
@@ -2781,6 +2852,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             return false
         case .onscreen(let visibleHeight, let hittable):
             attachKeyboardVisibilityFacts(app, label: label, phase: "before-hide-lookup")
+            attachNativeInputState(app, label: label, phase: "before-hide-lookup")
             attachText("onscreen-keyboard visible-height=\(visibleHeight) hittable=\(hittable)",
                        name: "\(label)-keyboard-readiness-onscreen")
             var hideKey: XCUIElement?
@@ -2801,6 +2873,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             }
             guard let hideKey else {
                 attachKeyboardVisibilityFacts(app, label: label, phase: "hide-key-not-hittable")
+                attachNativeInputState(app, label: label, phase: "hide-key-not-hittable")
                 let exposed = keyboard.buttons.allElementsBoundByIndex.prefix(24)
                     .map { "\($0.identifier)|\($0.label)" }.joined(separator: ", ")
                 attachText("keyboard-hide-key-missing: \(exposed)", name: "\(label)-keyboard-keys")
@@ -2817,6 +2890,11 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                 return settled >= 2
             }
             attachKeyboardVisibilityFacts(app, label: label, phase: "after-hide")
+            // Post-hide native facts: with App12's genuinely positive
+            // keyboard this records the state the public Hide actually left
+            // behind; with an App13-style zero-height node it is attached
+            // the same way. Evidence only, no new gate.
+            attachNativeInputState(app, label: label, phase: "after-hide")
             XCTAssertTrue(cleared,
                           "\(label): the keyboard's own hide key must end its onscreen occlusion before the pinch canvas baseline; last readiness: \(last)",
                           file: file, line: line)

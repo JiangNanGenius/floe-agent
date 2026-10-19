@@ -245,9 +245,64 @@
 // function names with line/column are kept.
 // No message bodies, document text, selection, caret, URLs, paths, HTML or
 // error strings are ever read into an exported field.
+//
+// PUBLIC INPUT-STATE OBSERVATION (additive; same DEBUG + explicit launch
+// gate). Two bounded fixed-fact surfaces exist to explain a genuine
+// visible-keyboard precondition failure WITHOUT changing any input, window,
+// focus or selection behaviour:
+//   * Page-side fixed facts: the periodic snapshot additionally carries `po`
+//     (passive-only mode 0/1), `is` (the current fixed DOM input-state group)
+//     and a never-evicted-first ring `sf` (max 8 entries, honest counters
+//     `sfn`/`sfd`, own ordinal `q` fed by the SAME passive listeners that
+//     already produce the raw end-touch, trusted-click and focus-in moments;
+//     no new listener and no new teardown surface). Each `is`/`sf.is` group
+//     exports ONLY booleans, fixed enums and nulls read from the live
+//     document: active-element class enum `ae`, editor-textarea identity
+//     match `ta`, contenteditable attribute enum `ce`, computed
+//     `isContentEditable` `cev`, `readOnly`/`disabled` where the property
+//     exists, `map.isEditMode()` `em`, the TextInput intent flag
+//     `_acceptInput` `ai`, `map.editorHasFocus()` `ef`, `document.hasFocus()`
+//     `hf` and `navigator.userActivation` `ui`/`ub` (null when absent). No
+//     document text, selection, caret, HTML, URL or attribute value beyond
+//     the whitelisted contenteditable token enum is ever read.
+//   * Native fixed facts are published on their OWN bounded accessibility
+//     element (identifier `office.touch-qualification.input-state`, label
+//     `FLOE_INPUT_STATE`; a 1x1pt non-interactive static-text element like
+//     the snapshot overlay, so the event JSON is never restructured or
+//     reserialized). On every snapshot poll it reports wall time `wt`, the
+//     passive-only mode `po`, owned-window key state `kw`, owned scene
+//     activation enum `as` + foreground-activity bool `fa`, a bounded
+//     read-only first-responder walk result `fr` (0 none in THIS owned
+//     window, 1 the WebView or a descendant, 2 another owned-window view,
+//     3 cap reached before a conclusive answer; with visited count `vn` and
+//     cap flag `vc`), WebView `canBecomeFirstResponder` `wc` and
+//     `isFirstResponder` `wf`, and the public `GCKeyboard.coalesced`
+//     presence facts `gc`/`gk`. The walk touches only public `subviews` /
+//     `isFirstResponder` / `isDescendant(of:)` inside the probe's OWN window:
+//     no UIApplication global first-session or foreign-window scan, no
+//     private UIKit class, selector, KVC or swizzle, and no
+//     become/resign/reloadInputViews or keyboard forcing. `GCKeyboard`
+//     presence is a public service report, never a claim of physical-
+//     keyboard truth on a Simulator.
+//
+// PASSIVE-ONLY CONTROL (explicit DEBUG launch argument
+// `--office-touch-qualification-passive-only`, meaningful only together with
+// `--office-touch-qualification`): the probe installs its full passive touch/
+// geometry journal, the focus/resize/click journal, the fixed input-state
+// facts and both accessibility surfaces EXACTLY as before, but the bounded
+// call-site instrumentation is never installed: `ctInstall` returns 0 and
+// resets `ctn` to 0 without wrapping anything, moment entries are not pushed
+// (the trace ring stays empty: `cl`= [], `clN`/`clD`/`clW`/`ctO` absent or
+// zero), and a new-owner install still tears down any older generation's
+// wrappers first, so neither teardown nor a new owner can keep stale
+// wrappers. Ordinary (non-flagged) launches keep the current call-trace
+// behaviour unchanged; nothing is silently turned off.
 #if DEBUG && canImport(UIKit) && canImport(WebKit)
 import UIKit
 import WebKit
+#if canImport(GameController)
+import GameController
+#endif
 
 @MainActor
 final class OfficeTouchQualificationProbe {
@@ -259,10 +314,25 @@ final class OfficeTouchQualificationProbe {
     /// explicit argument and `launchArgument`; ordinary qualification runs
     /// never create it, and Release never compiles it at all.
     static let visibleMarkerLaunchArgument = "--office-touch-qualification-visible-marker"
+    /// Third, control-shaped gate: it only DISABLES the bounded call-site
+    /// instrumentation (method wrappers and their trace/moment records).
+    /// Every passive touch/geometry journal, the fixed DOM input-state facts
+    /// and the native input-state element stay exactly as in an ordinary
+    /// qualification run. Meaningful only together with `launchArgument`;
+    /// without it the probe never exists at all, so the default (flag
+    /// absent) is unambiguous: current behaviour, wrappers enabled.
+    static let passiveOnlyLaunchArgument = "--office-touch-qualification-passive-only"
     static let snapshotAccessibilityIdentifier = "office.touch-qualification.snapshot"
     static let snapshotAccessibilityLabel = "FLOE_TOUCH_PROBE"
     static let canvasAnchorIdentifier = "office.touch-qualification.canvas-anchor"
     static let canvasAnchorLabel = "FLOE_CANVAS_ANCHOR"
+    /// Fixed read-only identifier for the native public input-state facts.
+    /// It carries only the fixed boolean/enum/integer group described in
+    /// the header — never user content — and is published on its own 1x1pt
+    /// non-interactive element so the snapshot event JSON is never
+    /// restructured or reserialized.
+    static let inputStateAccessibilityIdentifier = "office.touch-qualification.input-state"
+    static let inputStateAccessibilityLabel = "FLOE_INPUT_STATE"
 
     /// True only in a DEBUG build launched with the explicit qualification
     /// argument. Absent in normal UI runs and impossible in Release (the type
@@ -278,6 +348,17 @@ final class OfficeTouchQualificationProbe {
         isRequested && ProcessInfo.processInfo.arguments.contains(visibleMarkerLaunchArgument)
     }
 
+    /// True only in a DEBUG build launched with BOTH the qualification
+    /// argument and the explicit passive-only control. Passive-only keeps
+    /// the whole passive observation surface (raw touch/pointer records,
+    /// start window, focus/resize/click journal, in-flight anchor, fixed
+    /// input-state facts, both accessibility surfaces) and installs NO
+    /// call-site wrapper at all. Launch-argument based, so it is constant
+    /// for the whole process lifetime.
+    static var isPassiveOnly: Bool {
+        isRequested && ProcessInfo.processInfo.arguments.contains(passiveOnlyLaunchArgument)
+    }
+
     /// Page-side transfer budget (JSON.stringify length). Swift accepts up to
     /// `maxSnapshotCharacters` and, on any violation, replaces the value with
     /// a complete valid bounded failure object — never a sliced JSON string.
@@ -285,6 +366,12 @@ final class OfficeTouchQualificationProbe {
     private static let pollIntervalNanoseconds: UInt64 = 250_000_000
     private static let webViewSearchAttempts = 8
     private static let webViewSearchIntervalNanoseconds: UInt64 = 250_000_000
+    /// Bounds for the read-only first-responder walk. The walk never leaves
+    /// the probe's OWN window, only reads `subviews`/`isFirstResponder` and
+    /// stops at the first responder or at these caps (an inconclusive cap is
+    /// reported honestly as `fr`:3 with `vc`:1 instead of guessing).
+    private static let responderScanMaxNodes = 800
+    private static let responderScanMaxDepth = 48
 
     /// One document-controller installation. All references are weak except
     /// the overlay it owns; a replaced controller or a close clears the whole
@@ -297,6 +384,7 @@ final class OfficeTouchQualificationProbe {
         weak var webView: WKWebView?
         var overlay: UIView?
         var anchor: UIView?
+        var stateView: UIView?
         var jsInstalled = false
         var webRetryScheduled = false
 
@@ -357,6 +445,11 @@ final class OfficeTouchQualificationProbe {
         current.overlay = nil
         current.anchor?.removeFromSuperview()
         current.anchor = nil
+        // The input-state element is owned by this installation exactly like
+        // the overlay: a removed installation cannot keep publishing a stale
+        // native snapshot, and a new owner always creates its own element.
+        current.stateView?.removeFromSuperview()
+        current.stateView = nil
         if let web = current.webView {
             let token = current.token
             Task { @MainActor [weak self] in
@@ -409,6 +502,8 @@ final class OfficeTouchQualificationProbe {
                   current.webView == nil else { return }
             current.webRetryScheduled = false
             self.setOverlayValue(current, "{\"v\":1,\"ok\":0,\"reason\":\"no-webview\"}")
+            // Failure paths publish the native fixed facts too.
+            self.updateInputState(current)
         }
     }
 
@@ -421,7 +516,8 @@ final class OfficeTouchQualificationProbe {
             // sent to the page at all. The script re-checks page ownership.
             guard let current = self.installation, current.token == token,
                   current.webView === web else { return }
-            let script = Self.domInstallScript(owner: token, marker: Self.isMarkerRequested)
+            let script = Self.domInstallScript(owner: token, marker: Self.isMarkerRequested,
+                                                passive: Self.isPassiveOnly)
             let raw = try? await web.evaluateJavaScript(script)
             guard let current = self.installation, current.token == token,
                   current.webView === web else { return }
@@ -431,6 +527,9 @@ final class OfficeTouchQualificationProbe {
                 self.startPolling(current)
             } else {
                 self.setOverlayValue(current, "{\"v\":1,\"ok\":0,\"reason\":\"js-install-refused\"}")
+                // The failure path still publishes the native fixed facts:
+                // they need no page-side installation at all.
+                self.updateInputState(current)
             }
         }
     }
@@ -453,6 +552,10 @@ final class OfficeTouchQualificationProbe {
     }
 
     private func refreshSnapshot(_ inst: Installation) async {
+        // The native fixed facts are collected on EVERY snapshot attempt,
+        // including attempts where the page read fails: the keyboard-state
+        // question must not depend on the page-side pipeline succeeding.
+        updateInputState(inst)
         guard let web = inst.webView else {
             resetCanvasAnchor(inst, reason: "web-unavailable")
             return
@@ -608,6 +711,126 @@ final class OfficeTouchQualificationProbe {
         // geometry and z-order; the diagnostic marker only adds an AX element.
         controller.view.insertSubview(overlay, at: 0)
         inst.overlay = overlay
+        attachInputStateView(to: controller, in: inst)
+    }
+
+    /// Creates the fixed native input-state element. Identical diagnostic
+    /// shape to the snapshot overlay (1x1pt, clear, non-interactive, no
+    /// layout participation, bottom of the host's own view): it can never
+    /// intercept a touch, alter document geometry or change focus, and it
+    /// exists only under the explicit qualification launch gate.
+    private func attachInputStateView(to controller: UIViewController, in inst: Installation) {
+        let view = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false   // cannot intercept any touch
+        view.autoresizingMask = []              // never participates in layout
+        view.isAccessibilityElement = true
+        view.accessibilityIdentifier = Self.inputStateAccessibilityIdentifier
+        view.accessibilityLabel = Self.inputStateAccessibilityLabel
+        view.accessibilityTraits = .staticText
+        view.accessibilityValue = "{\"v\":1,\"ok\":0,\"reason\":\"awaiting-snapshot\",\"po\":\(Self.isPassiveOnly ? 1 : 0)}"
+        controller.view.insertSubview(view, at: 0)
+        inst.stateView = view
+    }
+
+    /// Publishes the fixed native input-state facts on this installation's
+    /// own element. All inputs are public UIKit/GameController APIs read on
+    /// the main actor; every value is a bool, a fixed enum integer, an
+    /// integer count or null. No user content, class name, path, error
+    /// description or private API is ever exported.
+    private func updateInputState(_ inst: Installation) {
+        guard let view = inst.stateView else { return }
+        view.accessibilityValue = Self.nativeInputStateJSON(webView: inst.webView,
+                                                             controller: inst.controller)
+    }
+
+    /// Collects the native fixed facts. Scope is deliberately this
+    /// installation's OWN surface only: the hosted WKWebView, the window it
+    /// currently lives in and that window's scene. There is no
+    /// UIApplication-wide first-responder or connected-scenes scan, no
+    /// foreign-window probe, no responder mutation and no keyboard forcing;
+    /// absent surfaces report null instead of being guessed.
+    static func nativeInputStateJSON(webView web: WKWebView?, controller: UIViewController?) -> String {
+        let window = web?.window ?? controller?.viewIfLoaded?.window
+        var parts: [String] = ["\"v\":1", "\"ok\":1",
+                               "\"po\":\(isPassiveOnly ? 1 : 0)",
+                               "\"wt\":\(Int(Date().timeIntervalSince1970 * 1000))"]
+        if let window {
+            parts.append("\"kw\":\(window.isKeyWindow ? 1 : 0)")
+            if let scene = window.windowScene {
+                parts.append("\"as\":\(scene.activationState.rawValue)")
+                parts.append("\"fa\":\(scene.activationState == .foregroundActive ? 1 : 0)")
+            } else {
+                parts.append("\"as\":null")
+                parts.append("\"fa\":null")
+            }
+            let walk = firstResponderScan(in: window, web: web)
+            parts.append("\"fr\":\(walk.result)")
+            parts.append("\"vn\":\(walk.visited)")
+            parts.append("\"vc\":\(walk.capped ? 1 : 0)")
+        } else {
+            parts.append("\"kw\":null")
+            parts.append("\"as\":null")
+            parts.append("\"fa\":null")
+            parts.append("\"fr\":null")
+            parts.append("\"vn\":null")
+            parts.append("\"vc\":null")
+        }
+        if let web {
+            parts.append("\"wc\":\(web.canBecomeFirstResponder ? 1 : 0)")
+            parts.append("\"wf\":\(web.isFirstResponder ? 1 : 0)")
+        } else {
+            parts.append("\"wc\":null")
+            parts.append("\"wf\":null")
+        }
+        #if canImport(GameController)
+        // Public report only: whether the coalesced keyboard service sees a
+        // keyboard and an input profile. This is NOT a claim about the
+        // Simulator's physical keyboard state, and nothing here observes or
+        // changes key input.
+        let coalesced = GCKeyboard.coalesced
+        parts.append("\"gc\":\(coalesced != nil ? 1 : 0)")
+        parts.append("\"gk\":\(coalesced?.keyboardInput != nil ? 1 : 0)")
+        #else
+        parts.append("\"gc\":null")
+        parts.append("\"gk\":null")
+        #endif
+        return "{" + parts.joined(separator: ",") + "}"
+    }
+
+    /// Bounded read-only first-responder walk inside THIS owned window.
+    /// Only public properties are read (`subviews`, `isFirstResponder`,
+    /// `isDescendant(of:)`); nothing becomes, resigns or reloads anything.
+    /// Result: 0 = none found (complete scan), 1 = the WebView itself or a
+    /// descendant holds the responder status, 2 = another view in the owned
+    /// window, 3 = the node/depth cap was reached before a conclusive
+    /// answer (reported honestly via `vc` 1; never silently rounded to 0).
+    static func firstResponderScan(in window: UIWindow,
+                                   web: WKWebView?) -> (result: Int, visited: Int, capped: Bool) {
+        var queue: [(view: UIView, depth: Int)] = [(window, 0)]
+        var visited = 0
+        while !queue.isEmpty {
+            if visited >= responderScanMaxNodes {
+                return (3, visited, true)
+            }
+            let (view, depth) = queue.removeFirst()
+            visited += 1
+            if view.isFirstResponder {
+                if let web, view === web || view.isDescendant(of: web) {
+                    return (1, visited, false)
+                }
+                return (2, visited, false)
+            }
+            if depth >= responderScanMaxDepth {
+                // Deeper content cannot be answered within the cap; stop
+                // and report inconclusive instead of guessing "none".
+                return (3, visited, true)
+            }
+            for sub in view.subviews {
+                queue.append((sub, depth + 1))
+            }
+        }
+        return (0, visited, false)
     }
 
     // MARK: - DOM scripts
@@ -626,12 +849,21 @@ final class OfficeTouchQualificationProbe {
     /// upstream). The optional on-page pinch marker badge is created only
     /// when the explicit marker argument accompanied the qualification
     /// launch; the badge and its node reference are owned by this
-    /// installation and removed by its teardown.
-    private static func domInstallScript(owner token: Int, marker: Bool) -> String {
+    /// installation and removed by its teardown. `passive` is the explicit
+    /// passive-only control: every passive listener, the journals, the
+    /// fixed-moment input-state ring and the accessibility publication stay
+    /// exactly as in an ordinary qualification run, while NO engine method
+    /// is wrapped at all and the trace/moment counters stay honestly zero.
+    private static func domInstallScript(owner token: Int, marker: Bool, passive: Bool) -> String {
         #"""
 (() => {
   const OWNER = \#(token);
   const MARKER = \#(marker ? 1 : 0);
+  // PASSIVE 1 = explicit passive-only control: install the full passive
+  // observation surface but NEVER install the bounded call-site wrappers.
+  // It is a launch-time constant of this process, mirrored onto P.passive
+  // so the page, the snapshot and the runner agree on the mode.
+  const PASSIVE = \#(passive ? 1 : 0);
   try {
     const old = window.__floeTouchProbe;
     if (old && typeof old.owner === 'number' && old.owner > OWNER) { return 'probe-stale:' + old.owner; }
@@ -653,6 +885,7 @@ final class OfficeTouchQualificationProbe {
       ia: null, iaT: 0, iaN: 0,
       cl: [], clN: 0, clD: 0, clS: 0, ctK: 0, ctKc: 0, ctO: 0,
       cw: [], _sci: 0, _scf: 0, ctn: 0,
+      passive: PASSIVE, sf: [], sfn: 0, sfd: 0, sfq: 0,
       mk: { g: 0, mv: 0, t: 0, c: 1, n: 0 },
       seq: 0, eseq: null, lmseq: null,
       latest: null, terminal: null, gest: [],
@@ -1187,6 +1420,97 @@ final class OfficeTouchQualificationProbe {
       } catch (e) {}
       return out;
     };
+    // ------------------------------------------------------------------
+    // FIXED DOM INPUT-STATE FACTS (public read-only properties only).
+    // Every exported value is a 0/1 boolean, a FIXED enum integer or null.
+    // Nothing here reads document text, selection, caret, HTML, URLs or
+    // attribute values beyond the whitelisted contenteditable token
+    // mapping; nothing writes focus, selection, attributes or state. Each
+    // accessor lives in its own try so an absent engine object reports
+    // null (unknown) instead of throwing or guessing.
+    //   ae:  active element: 0 none/body/html, 1 textarea, 2 input, 3 other
+    //   ta:  1/0 identity match against the TextInput's own activeElement()
+    //        (the editor textarea/contenteditable); null when unavailable
+    //   ce:  contenteditable ATTRIBUTE enum: 0 absent (inherit), 1 'true'
+    //        (including the empty-string synonym), 2 'false',
+    //        3 'plaintext-only', 4 other token; null without an element
+    //   cev: computed el.isContentEditable (0/1); null when absent
+    //   ro:  el.readOnly where the property exists; di: el.disabled likewise
+    //   em:  map.isEditMode() (0/1); ai: TextInput intent flag _acceptInput
+    //        ONLY when it is a real boolean; ef: map.editorHasFocus()
+    //   hf:  document.hasFocus(); ui/ub: navigator.userActivation
+    //        isActive/hasBeenActive, null when the API is absent
+    const inputFacts = () => {
+      const out = { ae: null, ta: null, ce: null, cev: null, ro: null, di: null,
+                    em: null, ai: null, ef: null, hf: null, ui: null, ub: null };
+      try {
+        const el = document.activeElement;
+        if (el && typeof el.tagName === 'string') {
+          const tag = String(el.tagName).toUpperCase();
+          out.ae = (tag === 'BODY' || tag === 'HTML') ? 0
+            : (tag === 'TEXTAREA' ? 1 : (tag === 'INPUT' ? 2 : 3));
+          try {
+            const attr = (typeof el.getAttribute === 'function') ? el.getAttribute('contenteditable') : null;
+            if (attr === null || attr === undefined) { out.ce = 0; }
+            else {
+              const tok = String(attr).toLowerCase();
+              out.ce = (tok === '' || tok === 'true') ? 1
+                : (tok === 'false') ? 2 : (tok === 'plaintext-only') ? 3 : 4;
+            }
+          } catch (x) { out.ce = null; }
+          try { if (typeof el.isContentEditable === 'boolean') out.cev = el.isContentEditable ? 1 : 0; } catch (x) {}
+          try { if ('readOnly' in el) out.ro = el.readOnly ? 1 : 0; } catch (x) {}
+          try { if ('disabled' in el) out.di = el.disabled ? 1 : 0; } catch (x) {}
+          try {
+            const map = window.app && window.app.map;
+            const ti = map && map._textInput;
+            if (ti && typeof ti.activeElement === 'function') {
+              const target = ti.activeElement();
+              if (target) out.ta = (el === target) ? 1 : 0;
+            }
+          } catch (x) {}
+        } else {
+          out.ae = 0;
+        }
+        const map = window.app && window.app.map;
+        if (map) {
+          try { if (typeof map.isEditMode === 'function') out.em = map.isEditMode() ? 1 : 0; } catch (x) {}
+          try { if (typeof map.editorHasFocus === 'function') out.ef = map.editorHasFocus() ? 1 : 0; } catch (x) {}
+          try {
+            const ti = map._textInput;
+            if (ti && typeof ti._acceptInput === 'boolean') out.ai = ti._acceptInput ? 1 : 0;
+          } catch (x) {}
+        }
+        try { out.hf = document.hasFocus() ? 1 : 0; } catch (x) {}
+        try {
+          const ua = navigator.userActivation;
+          if (ua) {
+            if (typeof ua.isActive === 'boolean') out.ui = ua.isActive ? 1 : 0;
+            if (typeof ua.hasBeenActive === 'boolean') out.ub = ua.hasBeenActive ? 1 : 0;
+          }
+        } catch (x) {}
+      } catch (e) {}
+      return out;
+    };
+    P.inputFacts = inputFacts;
+    // Bounded fixed-MOMENT state ring, fed by the SAME passive listeners
+    // that already produce the terminal touchend, trusted-click and focus-in
+    // moments. It is independent of the call-site instrumentation (it keeps
+    // working under the passive-only control), owns NO new listener (so no
+    // new teardown surface), never evicts the first MAXSF entries (honest
+    // `sfd` drop counter mirrors the journal), and carries only fixed
+    // numeric fields plus the `is` group above.
+    const MAXSF = 8;
+    const sfPush = (m, tr) => {
+      try {
+        const cur = window.__floeTouchProbe;
+        if (!cur || cur.owner !== OWNER || cur.gen !== P.gen) return;
+        P.sfn += 1;
+        if (P.sf.length >= MAXSF) { P.sfd += 1; return; }
+        P.sf.push({ m: m, tr: tr, t: now(), q: (P.sfq += 1), is: inputFacts() });
+      } catch (e) {}
+    };
+    // ------------------------------------------------------------------
     const ctPush = (rec) => {
       try {
         P.clN += 1;
@@ -1205,6 +1529,10 @@ final class OfficeTouchQualificationProbe {
     // entries so one honest counter set covers the whole gesture window.
     const moment = (m) => {
       try {
+        // Moment entries belong to the call-site instrumentation ring and
+        // are disabled together with it under the passive-only control.
+        // The fixed-moment state facts keep flowing through sfPush.
+        if (PASSIVE) return;
         if (!ctFence()) return;
         const ff = ctFocusFacts();
         ctPush({ k: 'fx', m: m, t: now(), gi: P.gid,
@@ -1287,6 +1615,10 @@ final class OfficeTouchQualificationProbe {
       } catch (e) { return false; }
     };
     const ctInstall = () => {
+      // Passive-only control: NO method is ever wrapped in this mode, the
+      // wrapper table stays empty (so teardown/new-owner have nothing stale
+      // to keep), and the exported call-site counters stay honestly zero.
+      if (PASSIVE) { P.ctn = 0; return 0; }
       let n = 0;
       try {
         const cur = window.__floeTouchProbe;
@@ -1464,6 +1796,9 @@ final class OfficeTouchQualificationProbe {
           // Raw end-touch focus attribution: active element + editor focus at
           // the real terminal event, independent of any later poll.
           moment(key);
+          // Fixed DOM input-state facts at the same real moment; unlike the
+          // moment entry above this survives the passive-only control.
+          sfPush('te', rec.tr);
           // Per-gesture end time: a delayed rAF sample is judged against its
           // own gesture, never against a newer gesture's global end/reset.
           P.ends[P.gid] = rec.t;
@@ -1596,7 +1931,9 @@ final class OfficeTouchQualificationProbe {
         journal(key, { g: clip(t && t.tagName, 16), i: clip(t && t.id, 32) });
         // Focus-in moment: active element and editor focus right after the
         // real focus transition (focusout keeps only the journal entry).
-        if (key === 'fi') moment('fi');
+        // The sf push carries the fixed DOM input-state facts and stays
+        // active even under the passive-only control.
+        if (key === 'fi') { moment('fi'); sfPush('fi', (e && e.isTrusted) ? 1 : 0); }
       };
       const hFi = mkFocus('fi');
       const hFo = mkFocus('fo');
@@ -1616,8 +1953,9 @@ final class OfficeTouchQualificationProbe {
                        i: clip(e && e.target && e.target.id, 32),
                        x: gnum(e && e.clientX), y: gnum(e && e.clientY) });
         // Trusted click moment: what actually held focus when the click the
-        // engine documents as its focus trigger arrived.
-        if (key === 'ck') moment('ck');
+        // engine documents as its focus trigger arrived. The sf push again
+        // carries the fixed input-state facts under every launch mode.
+        if (key === 'ck') { moment('ck'); sfPush('ck', (e && e.isTrusted) ? 1 : 0); }
       };
       const hCk = mkClick('ck');
       const hDc = mkClick('dc');
@@ -1777,6 +2115,14 @@ final class OfficeTouchQualificationProbe {
                    ia: P.ia, iaT: P.iaT, iaN: P.iaN,
                    cl: (P.cl || []), clN: P.clN, clD: P.clD, clW: 0,
                    ctn: (typeof P.ctn === 'number' ? P.ctn : 0),
+                   // Passive-only mode, the settled fixed DOM input-state
+                   // group and the bounded moment-state ring (independent
+                   // of the call-site instrumentation; see the header).
+                   po: (P.passive ? 1 : 0),
+                   is: (() => { try { return typeof P.inputFacts === 'function' ? P.inputFacts() : null; } catch (e) { return null; } })(),
+                   sf: (P.sf || []),
+                   sfn: (typeof P.sfn === 'number' ? P.sfn : 0),
+                   sfd: (typeof P.sfd === 'number' ? P.sfd : 0),
                    starts: P.starts, ring: P.ring, rtv: 0, st: st, pen: pen, vp: vp,
                    cv: cv, jr: P.jr, jns: P.jns, jdr: P.jdr,
                    eg: (() => { try { return P.calcGeo(Math.round((performance.now() - P.pn0) * 10) / 10); } catch (e) { return null; } })(),
@@ -1817,11 +2163,11 @@ final class OfficeTouchQualificationProbe {
       // object instead of an over-budget or partially sliced snapshot. The
       // consumer requires ok=1, so this is an honest instrumentation failure,
       // never silent loss or a start/journal eviction.
-      if (text.length > MAX) {
-        return JSON.stringify({ v: 1, ok: 0, reason: 'snapshot-over-budget',
-                                length: text.length, starts: P.starts.length,
-                                ns: P.ns, jr: P.jr.length });
-      }
+        if (text.length > MAX) {
+          return JSON.stringify({ v: 1, ok: 0, reason: 'snapshot-over-budget',
+                                  length: text.length, starts: P.starts.length,
+                                  ns: P.ns, jr: P.jr.length, sf: P.sf.length });
+        }
     }
     return text;
   } catch (e) {
