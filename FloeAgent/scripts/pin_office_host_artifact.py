@@ -48,6 +48,25 @@ from pathlib import Path, PurePosixPath
 from office_release_gates import (CAPABILITY_FLAGS, capability_status, false_capabilities,
                                   validate_capability_claims)
 
+try:
+    import office_browser_resources as browser_resources
+except ModuleNotFoundError:
+    # Standalone/copied review harnesses may ship only the pin script and its
+    # pre-existing dependencies. Real build environments always carry the
+    # helper; any artifact that actually carries browser bytes requires it.
+    browser_resources = None
+
+
+def browser_resources_module(*, required):
+    if browser_resources is None:
+        if required:
+            raise ValueError(
+                "office_browser_resources.py and its producer must ship beside "
+                "the Office pin scripts for a browser resource claim")
+        return None
+    return browser_resources
+
+
 ROOT = Path(__file__).resolve().parent.parent
 LOCK = ROOT / "ThirdParty/Collabora/engine.lock.json"
 HOST_SOURCES = ROOT / "ThirdParty/Collabora/FloeOfficeNative"
@@ -131,6 +150,35 @@ def engine_repair_claim_failures(block, claim: dict, label: str) -> list:
 def engine_repair_provenance_failures(manifest: dict, claim: dict) -> list:
     return engine_repair_claim_failures(
         manifest.get("engineRepair"), claim, "artifact")
+
+
+def browser_resource_claim(manifest: dict, contract, hashes: dict, module=None):
+    """Validate one artifact's portable browser resource identity.
+
+    A live browser patch contract requires the exact compact block whose
+    ``bundleSHA256`` equals the packaged runtime ``bundle.js``. Locks without a
+    browser contract keep the historical fixture/custom compatibility; an
+    unexpected block there is rejected rather than trusted.
+    """
+    module = module or browser_resources
+    if module is None:
+        return (["the browser resource helper is unavailable"], None)
+    block = manifest.get("browserResources")
+    if contract is None:
+        if block is not None:
+            return (["the artifact claims browser resources without a tracked "
+                     "browser patch contract"], None)
+        return [], None
+    if not isinstance(block, dict):
+        return (["the artifact carries no verified browser resources for the "
+                 "tracked browser patch contract"], None)
+    actual = module.runtime_bundle_sha256(
+        (hashes or {}).get("runtimeResourceSHA256"))
+    failures = module.compact_block_failures(
+        block, contract, actual_bundle_sha256=actual)
+    if failures:
+        return (["browser resources: " + failure for failure in failures], None)
+    return [], module.canonical_block(block)
 
 
 def storage_provenance_failures(pin: dict) -> list:
@@ -294,6 +342,31 @@ def check(lock_path: Path) -> int:
                 ("engine repair claim", failure)
                 for failure in engine_repair_claim_failures(
                     pin_block, repair_claim, "pin"))
+    # The separate frontend browser identity. An immutable legacy pin without
+    # the block remains a valid baseline (it never claims the patched
+    # frontend); once a pin carries the block, the live contract must match it
+    # exactly. A malformed live contract is corruption, not a rebuild request.
+    browser_block = pin.get("browserResources")
+    try:
+        module = browser_resources_module(required=browser_block is not None)
+        browser_contract = (
+            module.live_contract(lock_path, engine_commit=lock.get("commit"))
+            if module is not None else None)
+    except ValueError as failure:
+        print(f"pin: REJECTED browser resources — {failure}")
+        return 2
+    if browser_block is not None:
+        if browser_contract is None:
+            rejected.append(("browser resources claim",
+                             "no live browser patch contract is tracked beside the engine lock"))
+        else:
+            rejected.extend(
+                ("browser resources claim", failure)
+                for failure in module.compact_block_failures(
+                    browser_block, browser_contract))
+    elif browser_contract is not None:
+        print("pin: browser frontend patch is not claimed by this pin "
+              "(legacy baseline; the patched browser bundle is not delivered)")
     if rejected:
         for label, failure in rejected:
             print(f"pin: REJECTED {label} — {failure}")
@@ -432,6 +505,36 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
     declared_resources = manifest.get("runtimeResourceSHA256", {})
     if declared_resources and declared_resources != hashes["runtimeResourceSHA256"]:
         failures.append("the artifact's runtime resources do not match its manifest")
+    # The separate browser frontend identity: a live contract requires the
+    # exact compact block and the actual packaged runtime bundle bytes. A pin
+    # that already claims the frontend cannot be replaced by one that drops it.
+    # Synthetic review artifacts that carry no browser bundle at all stay
+    # compatible with the historical pin fixtures; every real Office component
+    # packages bundle.js, so this cannot bypass the frontend gate there.
+    browser_block = manifest.get("browserResources")
+    runtime_hashes = hashes.get("runtimeResourceSHA256") or {}
+    has_runtime_bundle = runtime_hashes.get("bundle.js") is not None
+    rebuilt_browser = None
+    if pin.get("browserResources") is not None and browser_block is None:
+        failures.append("the pin claims browser resources but the artifact carries "
+                        "no browser resource claim")
+    if browser_block is not None or has_runtime_bundle:
+        try:
+            module = browser_resources_module(required=True)
+            browser_contract = module.live_contract(
+                lock_path, engine_commit=lock.get("commit"))
+        except ValueError as failure:
+            print(f"pin: refusing to pin this artifact: {failure}", file=sys.stderr)
+            return 2
+        browser_failures, rebuilt_browser = browser_resource_claim(
+            manifest, browser_contract, hashes, module=module)
+        failures.extend(browser_failures)
+        if browser_block is None and browser_contract is None:
+            actual_bundle = module.runtime_bundle_sha256(runtime_hashes)
+            if (actual_bundle is not None
+                    and actual_bundle != module.EXPECTED_ORIGINAL_BUNDLE_SHA256):
+                failures.append("the artifact carries a non-baseline browser bundle "
+                                "without a tracked browser patch contract")
     # The filter overlay archive is reassembled for every host build, so the
     # pin must record the rebuilt values in the same key space it already
     # tracks; bootstrap_office_host.py compares them key by key against the
@@ -499,6 +602,10 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
         # strict provenance above already rejected missing/changed/extra
         # fields, and the pin must stay byte-portable for bootstrap.
         updated["engineRepair"] = repair_claim
+    if rebuilt_browser is not None:
+        updated["browserResources"] = rebuilt_browser
+    else:
+        updated.pop("browserResources", None)
     if rebuilt_overlay:
         updated["filterOverlay"] = rebuilt_overlay
     if native_run:

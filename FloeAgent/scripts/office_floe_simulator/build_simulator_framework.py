@@ -146,6 +146,12 @@ def variant_lock(variant, workdir):
     repair_lock = tracked_root / 'engine.patch.lock.json'
     if repair_lock.is_file():
         shutil.copyfile(repair_lock, staged / repair_lock.name)
+    # The browser frontend identity is independent of the kit callback overlay,
+    # so the staged diagnostic lock keeps the same live browser contract and a
+    # nokit component still requires its verified browser resource receipt.
+    browser_lock = tracked_root / 'browser.patch.lock.json'
+    if browser_lock.is_file():
+        shutil.copyfile(browser_lock, staged / browser_lock.name)
     lock = copy.deepcopy(tracked_lock)
     lock.pop('kitCallbackLifecycleOverlay', None)
     path = staged / 'engine.lock.json'
@@ -158,6 +164,9 @@ def variant_lock(variant, workdir):
                 f'staged nokit overlay diverged from the pin: {ref}')
     if facts['fontOverlaySHA256'] != digest(tracked_root / FONT_OVERLAY_NAME):
         raise SimulatorHostBuildError('staged nokit font overlay diverged from the pin')
+    if (browser_lock.is_file()
+            and digest(staged / browser_lock.name) != digest(browser_lock)):
+        raise SimulatorHostBuildError('staged nokit browser patch lock diverged from the pin')
     return path, False
 
 
@@ -257,6 +266,8 @@ def package_host(build_report, restored_dir, output_dir, *, variant,
         'note': 'Compile/link/framework packaging only. Preview/edit/idle/save '
                 'acceptance is the separate cloud simulator scenario gate.',
     }
+    if build_report.get('browserResources') is not None:
+        receipt['browserResources'] = build_report['browserResources']
     (bundle / HOST_RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + '\n')
     return bundle, receipt
 
@@ -334,7 +345,8 @@ def validate_build_inputs(lock_path, *, engine_source=None, filter_overlay=None)
 
 
 def build_framework(restored_dir, output_dir, *, variant, base_run_id,
-                    github_run_id=None, engine_source=None, filter_overlay=None):
+                    github_run_id=None, engine_source=None, filter_overlay=None,
+                    browser_resource_receipt=None):
     if variant not in VARIANTS:
         raise SimulatorHostBuildError(f'unknown variant {variant!r}; expected one of {VARIANTS}')
     output_dir = Path(output_dir).resolve()
@@ -351,7 +363,8 @@ def build_framework(restored_dir, output_dir, *, variant, base_run_id,
         identity = sdk_identity()
         report = build_host(Path(restored_dir).resolve(), build_dir, build=True,
                             sdk=SDK, lock_path=lock_path, engine_source=source,
-                            filter_overlay=overlay)
+                            filter_overlay=overlay,
+                            browser_resource_receipt=browser_resource_receipt)
         report['buildInputs'] = metadata
     if github_run_id:
         report['simulatorHostWorkflowRunID'] = str(github_run_id)
@@ -368,6 +381,8 @@ def build_framework(restored_dir, output_dir, *, variant, base_run_id,
                 'baseEngineRunID': str(base_run_id),
                 'platform': SDK, 'arch': 'arm64',
                 'hostReceipt': receipt['kind']}
+    if receipt.get('browserResources') is not None:
+        manifest['browserResources'] = receipt['browserResources']
     (output_dir / 'package-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     return manifest
 
@@ -386,11 +401,15 @@ def main():
                         help='Pinned online.mirror Git checkout with pristine engine sources (required for compiled lifecycle repairs)')
     parser.add_argument('--filter-overlay', type=Path,
                         help='Existing verified simulator filter producer output; create it separately with --sdk iphonesimulator')
+    parser.add_argument('--browser-resource-receipt', type=Path, default=None,
+                        help='Verified patched browser resource producer receipt '
+                             '(output/receipt.json); required by a live browser contract')
     args = parser.parse_args()
     manifest = build_framework(args.restored, args.output, variant=args.variant,
                                base_run_id=args.base_run_id,
                                github_run_id=args.github_run_id,
-                               engine_source=args.engine_source, filter_overlay=args.filter_overlay)
+                               engine_source=args.engine_source, filter_overlay=args.filter_overlay,
+                               browser_resource_receipt=args.browser_resource_receipt)
     print(json.dumps(manifest, indent=2))
 
 

@@ -11,6 +11,25 @@ import tempfile
 import time
 import zipfile
 
+try:
+    import office_browser_resources as browser_resources
+except ModuleNotFoundError:
+    # Standalone/copied review harnesses may ship only the bootstrap script
+    # and its pre-existing dependencies. Every artifact that actually carries
+    # browser bytes or a claim requires the helper below.
+    browser_resources = None
+
+
+def browser_resources_module(*, required):
+    if browser_resources is None:
+        if required:
+            raise ValueError(
+                'office_browser_resources.py and its producer must ship beside '
+                'the Office bootstrap scripts for a browser resource claim')
+        return None
+    return browser_resources
+
+
 ROOT = Path(__file__).resolve().parent.parent
 LOCK = ROOT / 'ThirdParty/Collabora/engine.lock.json'
 FRAMEWORK = 'FloeOfficeNative.framework'
@@ -77,6 +96,24 @@ def checked_lock(lock_path):
             raise ValueError('Native host engine repair claim does not match its lock')
     if pin.get('embeddedLifecycleMember') is not None:
         compiled_lifecycle.validate(pin['embeddedLifecycleMember'], lock, 'IOS', lock_path=lock_path)
+    # The separate browser frontend identity. An immutable legacy pin without
+    # the block stays a usable baseline; once the pin claims it, the live
+    # adjacent browser contract must match the portable block exactly.
+    browser_block = pin.get('browserResources')
+    if browser_block is not None:
+        try:
+            module = browser_resources_module(required=True)
+            browser_contract = module.live_contract(
+                lock_path, engine_commit=lock.get('commit'))
+        except ValueError as failure:
+            raise ValueError('Native host browser resources contract is invalid: '
+                             + str(failure))
+        if browser_contract is None:
+            raise ValueError('Native host claims browser resources without a tracked browser patch contract')
+        failures = module.compact_block_failures(browser_block, browser_contract)
+        if failures:
+            raise ValueError('Native host browser resources claim does not match its lock: '
+                             + '; '.join(failures))
     for name, checksum in pin['hostSourceSHA256'].items():
         relative(name)
         if digest(lock_path.parent / 'FloeOfficeNative' / name) != checksum:
@@ -259,6 +296,38 @@ def verify_simulator_host(folder, lock_path=LOCK):
         check(json.dumps(receipt.get('engineRepair'), sort_keys=True)
               == json.dumps(expected, sort_keys=True),
               'simulator host engine repair provenance mismatch')
+    # The browser frontend identity is independent of the native repair
+    # contract. A new host carries the exact portable block and its packaged
+    # bundle digest; a pre-patch host without the block remains compatible
+    # while it has no bundle resource or still embeds the pinned original,
+    # and is never treated as frontend delivery evidence.
+    browser_block = receipt.get('browserResources')
+    raw_runtime = receipt.get('runtimeResourceSHA256') or {}
+    has_runtime_bundle = (isinstance(raw_runtime, dict)
+                          and raw_runtime.get('bundle.js') is not None)
+    if browser_block is not None or has_runtime_bundle:
+        module = None
+        browser_contract = None
+        runtime_bundle = None
+        try:
+            module = browser_resources_module(required=True)
+            runtime_bundle = module.runtime_bundle_sha256(raw_runtime)
+            browser_contract = module.live_contract(
+                lock_path, engine_commit=lock.get('commit'))
+        except ValueError as failure:
+            failures.append(str(failure))
+        if module is not None:
+            if browser_contract is not None:
+                if isinstance(browser_block, dict):
+                    failures.extend(module.compact_block_failures(
+                        browser_block, browser_contract,
+                        actual_bundle_sha256=runtime_bundle))
+                elif runtime_bundle != module.EXPECTED_ORIGINAL_BUNDLE_SHA256:
+                    failures.append('simulator host carries a non-baseline browser bundle '
+                                    'without a browser resource claim')
+            elif browser_block is not None:
+                failures.append('simulator host claims browser resources without a '
+                                'tracked browser patch contract')
 
     files = {SIMULATOR_RECEIPT: None,
              SIMULATOR_FRAMEWORK + '/FloeOfficeNative': receipt.get('executableSHA256')}
@@ -352,6 +421,28 @@ def inventory(folder, lock, pin):
         if (not selected.get('compilePassed') or not selected.get('archiveReplacementPassed')
                 or any(selected.get(key) != value for key, value in pin['filterOverlay'].items())):
             raise ValueError('Native Office filter qualification does not match its pin')
+    # The browser frontend block must match the pin and the bytes this host
+    # actually packages. A legacy pin without the claim is accepted only while
+    # the host still embeds the pinned original bundle, so it can never be
+    # read as frontend delivery evidence.
+    browser_block = pin.get('browserResources')
+    raw_runtime = report.get('runtimeResourceSHA256') or {}
+    has_runtime_bundle = (isinstance(raw_runtime, dict)
+                          and raw_runtime.get('bundle.js') is not None)
+    if browser_block is not None or has_runtime_bundle:
+        try:
+            module = browser_resources_module(required=True)
+        except ValueError as failure:
+            raise ValueError(str(failure))
+        runtime_bundle = module.runtime_bundle_sha256(raw_runtime)
+        if browser_block is not None:
+            if report.get('browserResources') != browser_block:
+                raise ValueError('Native Office host lacks the pinned browser resource identity')
+            if runtime_bundle != browser_block.get('bundleSHA256'):
+                raise ValueError('Native Office host browser bundle digest differs from its pin')
+        elif runtime_bundle != module.EXPECTED_ORIGINAL_BUNDLE_SHA256:
+            raise ValueError('Native Office host carries a non-baseline browser bundle '
+                             'without a browser resource claim')
     files = {'native-host.json': pin['manifestSHA256'],
              FRAMEWORK + '/FloeOfficeNative': pin['executableSHA256']}
     files.update({FRAMEWORK + '/' + str(relative(name)): checksum

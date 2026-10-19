@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 
+import office_browser_resources as browser_resources
 from package_office_engine import digest
 from prepare_office_native_sources import DEFAULT_LOCK
 from qualify_office_mobile import qualify
@@ -481,7 +482,8 @@ def lifecycle_link_ownership(report, root, output, lock, platform, linker):
 
 
 def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
-               lock_path=DEFAULT_LOCK, engine_source=None, aux_bundle=None):
+               lock_path=DEFAULT_LOCK, engine_source=None, aux_bundle=None,
+               browser_resource_receipt=None):
     """Build the Floe native Office framework for one Apple platform SDK.
 
     The pinned device qualification keeps the ``iphoneos`` default. The cloud
@@ -495,23 +497,39 @@ def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
     against. The cloud before/after diagnostic passes a lock copy without the
     kit callback overlay to build the unpatched variant from the same staged
     engine; the pinned device flow always uses the tracked default lock.
+
+    ``browser_resource_receipt`` is the verified producer receipt for the
+    patched browser bundle. When the selected lock carries a live adjacent
+    ``browser.patch.lock.json`` contract, a new component build must supply
+    it; the verified bytes are staged into the owned shadow before Xcode runs
+    and only a compact portable identity enters the report.
     """
     if sdk not in SWIFT_IMPORT_TARGET_BY_SDK:
         raise ValueError(f'Unsupported native host SDK: {sdk}')
     lock_path = Path(lock_path).resolve()
     root, output = Path(root).resolve(), Path(output).resolve()
+    lock = json.loads(lock_path.read_text())
     base = qualify(root, output, build=False, sdk=sdk, lock_path=lock_path)
+    browser_block = browser_resources.stage_for_build(
+        lock_path=lock_path,
+        receipt_path=browser_resource_receipt,
+        shadow=output / 'source',
+        base_source=root / 'source',
+        build=build,
+        engine_commit=lock.get('commit'),
+    )
     report = {**base, 'kind': 'Floe native framework qualification', 'target': NAME,
               'stage': 'prepare-host', 'hostCompilePassed': False,
               'hostLinkPassed': False, 'swiftModuleImportPassed': False,
               'originalFileWritebackPassed': False}
+    if browser_block is not None:
+        report['browserResources'] = browser_block
     # A compile/link qualification can never prove the release capabilities.
     # The block is explicit so a pin can never read an absent flag as passed.
     report['capabilityQualification'] = false_capabilities()
     # Provenance of the scheme lifecycle overlay carried in the produced host:
     # an older host (absent block) cannot satisfy a new-overlay claim, and
     # bootstrap_office_host enforces it once the host pin records the hash.
-    lock = json.loads(lock_path.read_text())
     scheme_overlay = lock.get("schemeTaskLifecycleOverlay")
     if scheme_overlay is not None:
         report['schemeTaskLifecycle'] = {
@@ -675,6 +693,13 @@ def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
         for path in sorted(resources.rglob('*')) if path.is_file()}
     report['runtimeResourceDirectories'] = [str(path.relative_to(resources))
         for path in sorted(resources.rglob('*')) if path.is_dir()]
+    # The packaged runtime bundle must be exactly the verified producer bytes;
+    # a pin records this digest and must never accept a different copy.
+    browser_block = report.get('browserResources')
+    if (browser_block is not None
+            and report['runtimeResourceSHA256'].get(
+                browser_resources.RUNTIME_RESOURCE_KEY) != browser_block['bundleSHA256']):
+        raise ValueError('Packaged browser bundle differs from the verified browser resource receipt')
     report['stage'] = 'host-packaged'
     save()
     report.update(check_built_framework_import(output, framework, base['sdk']))
@@ -696,6 +721,9 @@ if __name__ == '__main__':
                              'built engine bundle does not carry as source')
     parser.add_argument('--aux-bundle', type=Path, default=None,
                         help='Verified same-commit auxiliary bundle providing headers only')
+    parser.add_argument('--browser-resource-receipt', type=Path, default=None,
+                        help='Verified patched browser resource producer receipt '
+                             '(output/receipt.json); required by a live browser contract')
     parser.add_argument('--verify-swift-import-probe', action='store_true',
                         help='type-check the generated ImportProbe against the real header without a build')
     args = parser.parse_args()
@@ -706,5 +734,6 @@ if __name__ == '__main__':
             parser.error('bundle and output are required unless --verify-swift-import-probe is set')
         result = build_host(args.bundle, args.output, build=not args.prepare_only,
                             filter_overlay=args.filter_overlay,
-                            engine_source=args.engine_source, aux_bundle=args.aux_bundle)
+                            engine_source=args.engine_source, aux_bundle=args.aux_bundle,
+                            browser_resource_receipt=args.browser_resource_receipt)
         print(json.dumps({key: value for key, value in result.items() if key != 'runtimeResourceSHA256'}, indent=2))
