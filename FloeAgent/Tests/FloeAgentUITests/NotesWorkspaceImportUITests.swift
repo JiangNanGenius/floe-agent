@@ -396,6 +396,16 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         try runOfficeCenteredPinchAcceptance(drawingOn: false)
     }
 
+    /// The real visible-keyboard branch is distinct from an already-hidden
+    /// or stale offscreen keyboard. Enter it through public document input,
+    /// then retain the shared hide/pinch/hidden-state acceptance unchanged.
+    func testOfficePencilRealPinchAfterHidingVisibleWordKeyboard() throws {
+        try runOfficeCenteredPinchAcceptance(
+            drawingOn: false,
+            casePrefix: "office-word-visible-keyboard",
+            requireVisibleKeyboardBeforeHide: true)
+    }
+
     /// Calc companion: the owned XLSX fixture with the measured line in G10.
     func testOfficePencilRealPinchOnCenteredCalcFixture() throws {
         try runOfficeCenteredPinchAcceptance(
@@ -444,7 +454,8 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         fixtureTitle: String = "捏合验收-居中-2",
         fixtureLaunchArgument: String = "--ui-test-office-pinch-center-fixture",
         measuredText: String = "Pen UI 5X8KQ2M7",
-        casePrefix: String = "office-pencil-center"
+        casePrefix: String = "office-pencil-center",
+        requireVisibleKeyboardBeforeHide: Bool = false
     ) throws {
         guard ProcessInfo.processInfo.environment["FLOE_OFFICE_PENCIL_UI_QUALIFICATION"] == "1" else {
             throw XCTSkip("Opt-in Office pen toolbar UI qualification; set FLOE_OFFICE_PENCIL_UI_QUALIFICATION=1 in the test runner environment.")
@@ -538,7 +549,14 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // needs this public-UI step: no synthetic touch, no fixed sleep,
         // no lowered canvas floor and no product debug control.
         if !drawingOn {
-            dismissSoftwareKeyboardBeforePinchBaseline(app, label: mode)
+            if requireVisibleKeyboardBeforeHide {
+                try requireVisibleWordKeyboardBeforePinchHide(app, label: mode)
+            }
+            let didHideVisibleKeyboard = dismissSoftwareKeyboardBeforePinchBaseline(app, label: mode)
+            if requireVisibleKeyboardBeforeHide {
+                XCTAssertTrue(didHideVisibleKeyboard,
+                              "the visible-keyboard regression must actually use the system Hide key and settle before pinching")
+            }
         }
 
         // The real centered fixture and the public XCTest gesture are shared
@@ -2690,23 +2708,60 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     /// the hide animation's retained offscreen node cannot re-fail an
     /// otherwise clean canvas; two consecutive samples keep a transient
     /// mid-animation reading from settling early.
+    /// A genuine positive-area software keyboard is required for the
+    /// visible-hide regression. If opening Word left it hidden, tap the real
+    /// document through the existing canvas anchor once. No text insertion,
+    /// programmatic focus, keyboard preference change or skip can substitute
+    /// for this precondition; failure leaves decision-point evidence.
+    private func requireVisibleWordKeyboardBeforePinchHide(
+        _ app: XCUIApplication, label: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        switch officeKeyboardOnscreenReadiness(app) {
+        case .noKeyboard, .offscreenStale:
+            let web = app.webViews.firstMatch
+            XCTAssertTrue(web.waitForExistence(timeout: 10), file: file, line: line)
+            let anchor = try waitForReadyCanvasAnchor(
+                app, web: web, label: "\(label)-show-visible-word-keyboard")
+            anchor.tap()
+        case .onscreen:
+            break
+        case .invalidGeometry(let reason):
+            attachKeyboardVisibilityFacts(app, label: label, phase: "required-visible-invalid-geometry")
+            XCTFail("\(label): cannot establish keyboard input precondition from invalid geometry: \(reason)",
+                    file: file, line: line)
+            return
+        }
+        var last: OfficeKeyboardReadiness = .noKeyboard
+        let visible = waitUntil(timeout: 15) {
+            last = officeKeyboardOnscreenReadiness(app)
+            guard case .onscreen = last else { return false }
+            let overlap = app.keyboards.firstMatch.frame.intersection(app.frame)
+            return !overlap.isNull && overlap.width > 0 && overlap.height > 0
+        }
+        attachKeyboardVisibilityFacts(app, label: label, phase: "required-visible-before-hide")
+        XCTAssertTrue(visible,
+                      "\(label): the visible-hide regression requires an actual positive-area software keyboard before using its public Hide key; last state: \(last)",
+                      file: file, line: line)
+    }
+
     private func dismissSoftwareKeyboardBeforePinchBaseline(
         _ app: XCUIApplication, label: String,
         file: StaticString = #filePath, line: UInt = #line
-    ) {
+    ) -> Bool {
         let keyboard = app.keyboards.firstMatch
-        guard keyboard.waitForExistence(timeout: 5) else { return }
+        guard keyboard.waitForExistence(timeout: 5) else { return false }
         switch officeKeyboardOnscreenReadiness(app) {
         case .noKeyboard:
-            return
+            return false
         case .offscreenStale:
             attachKeyboardVisibilityFacts(app, label: label, phase: "before-hide-lookup-offscreen-stale")
-            return
+            return false
         case .invalidGeometry(let reason):
             attachKeyboardVisibilityFacts(app, label: label, phase: "before-hide-lookup-invalid-geometry")
             XCTFail("\(label): the keyboard node's onscreen readiness could not be established from public geometry (\(reason)); refusing to guess",
                     file: file, line: line)
-            return
+            return false
         case .onscreen(let visibleHeight, let hittable):
             attachKeyboardVisibilityFacts(app, label: label, phase: "before-hide-lookup")
             attachText("onscreen-keyboard visible-height=\(visibleHeight) hittable=\(hittable)",
@@ -2734,7 +2789,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                 attachText("keyboard-hide-key-missing: \(exposed)", name: "\(label)-keyboard-keys")
                 XCTFail("\(label): the software keyboard is onscreen but its public hide key was not exposed; refusing to pinch a keyboard-shrunk canvas",
                         file: file, line: line)
-                return
+                return false
             }
             hideKey.tap()
             var last: OfficeKeyboardReadiness = .noKeyboard
@@ -2748,6 +2803,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             XCTAssertTrue(cleared,
                           "\(label): the keyboard's own hide key must end its onscreen occlusion before the pinch canvas baseline; last readiness: \(last)",
                           file: file, line: line)
+            return cleared
         }
     }
 
