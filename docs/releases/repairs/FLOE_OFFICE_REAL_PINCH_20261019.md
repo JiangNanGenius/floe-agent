@@ -41,7 +41,7 @@
 
 2026-10-19：从固定源码和锁定依赖执行实际编译、打包。原始资源复现摘要为 `6320b78ccd3b08e55d4d861f78e696b15d750aca871a1c4a6c8f2027a795f574`，与保留版本字节一致；补丁资源为 `cc1bcc58cffbea171a7b5644cd0ca9b236f7466136c870c290fa216042f29ae6`（10,527,618 字节）。主负责人独立运行只读回执验证并核对源码未变，随后对实际模拟器、设备基线分别执行接收校验，均通过。精确资源、回执和原始失败记录已保存；构建缓存保留供接下来组件打包校验。/ The pinned frontend was genuinely rebuilt with locked dependencies. The control reproduced the retained original byte-for-byte; the patched JavaScript and its receipt passed independent verification and both actual-base consumer checks. Exact outputs and original failures are retained.
 
-组件接入新增 19 项契约测试通过，发布预检 19 项通过；旧模拟器夹具修正后 104 项通过，未弱化产品验证。原工具栏可见放大 1.08 阈值保持，新增随后缩小至放大后宽度 0.95 以下及画笔保持开启的真实 UIKit 验收。这些实际 App 手势测试尚未在新资源上运行。/ Nineteen component contract tests and nineteen release preflight tests passed; the corrected simulator fixture suite passed all 104 tests without relaxing product checks. The original 1.08 visible zoom threshold remains, with subsequent zoom-out and drawing-state checks added. Actual App gesture acceptance on the new resource is pending.
+组件接入新增 19 项契约测试通过，发布预检 19 项通过；旧模拟器夹具修正后 104 项通过，未弱化产品验证。原工具栏可见放大 1.08 阈值保持，新增随后缩小至放大后宽度 0.95 以下及画笔保持开启的真实 UIKit 验收。这些实际 App 手势测试的后续结果见下一节。/ Nineteen component contract tests and nineteen release preflight tests passed; the corrected simulator fixture suite passed all 104 tests without relaxing product checks. The original 1.08 visible zoom threshold remains, with subsequent zoom-out and drawing-state checks added. Subsequent actual App gesture results are recorded below.
 
 
 ## 新资源上的实际 App 验证 / Actual App verification on the new resource
