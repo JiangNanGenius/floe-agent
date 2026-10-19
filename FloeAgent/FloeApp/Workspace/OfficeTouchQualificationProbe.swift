@@ -43,7 +43,70 @@
 // snapshot (`q`: multiTouch, positionOnMouseDown, sectionOnMouseDown.name,
 // touchEventInProgress, getZoom) captured INSIDE the passive handler, so
 // gesture-birth container state survives even though touchend resets it
-// before the next poll.
+// before the next poll. Start records (`ts`/`pd`) additionally carry `cg`:
+// the page canvas `getBoundingClientRect` plus `window.innerWidth/innerHeight`
+// read synchronously inside the SAME passive capture dispatch and bound to
+// the record's own time (`cg.t` equals the record `t`). The rounded client
+// coordinates in the record are CSS-viewport coordinates at that same
+// dispatch, so `cg` is the only geometry a consumer may use to prove a start
+// point lay inside the canvas: a later periodic snapshot can legitimately
+// report a different layout viewport (a keyboard re-presenting resizes it),
+// and substituting that post-event geometry for start-time geometry is an
+// event-time error, not a product fact. The rect read flushes pending layout
+// but mutates nothing; it is DEBUG-only, runs at most once per start record,
+// and reports null instead of throwing when the canvas accessor is
+// unavailable, so the consumer fails closed honestly.
+// The snapshot additionally carries a bounded passive focus/resize journal
+// (`jr`, plus honest totals `jns` and no-eviction drops `jdr`, own dispatch
+// ordinal `j`): window resize, visualViewport resize, focusin, focusout,
+// click and dblclick observed through capture-phase passive listeners
+// registered and removed by this installation only. Entries hold ONLY
+// internal event tags, rounded numeric geometry (layout viewport, canvas
+// height, visualViewport size, click client coordinates), the dispatch
+// time/ordinal and the focus/click target's clipped tagName/id. The click
+// entries additionally carry `tr` (isTrusted) so a WebKit-synthesized mouse
+// click is not mistaken for a fresh trusted gesture, and `x`/`y` (rounded
+// finite client CSS coordinates) so the documented Map.js click path can be
+// attributed without reading any text. No document text, selection, caret,
+// URL, user data or key values; the probe never preventDefaults, stops
+// propagation, moves focus or changes layout. The journal exists to
+// calibrate WHEN a viewport resize, focus transition or click happens
+// relative to trusted gesture records; the consumer attaches and reports
+// it, and no acceptance threshold is derived from it.
+// Start records and the periodic snapshot additionally carry `eg`, the
+// minimum read-only numeric group needed to separate the documented
+// center-then-clamp view math from a residual anchor-capture error (pinned
+// ViewLayout.setViewRectangleFromPointAndScale). `eg` copies PRIMITIVES only
+// with explicit unit suffixes: `x/y` twips, `pX/pY` core (canvas) pixels,
+// `cX/cY` CSS pixels, `dpi` = app.dpiScale for unit conversion. Groups:
+// viewedRectangle (v*), live `_viewSize` (vs*), `frameSize` (fs*, derived
+// from the document anchor section's core size), document-anchor section
+// `myTopLeft`/`size` (da*), `_documentAnchorPosition` (dap*), settled
+// `scrollProperties.viewX/viewY` (sc*), and the actual ZoomControl
+// `pinchAnchor` SimplePoint (pa*, present per flag `paN`). No object
+// references, arrays or section instances are retained, and no layout write
+// or redraw is triggered: an absent getter yields null fields. `eg` is
+// captured synchronously at a trusted start record (event-time) and once in
+// each periodic snapshot (settled state); it is bounded per record, so the
+// existing transfer budget and the never-evicted start window are unchanged.
+// This timing matters for the engine's actual anchor: pinned
+// ZoomControl.onMultiTouchStart clears `pinchAnchor`, the anchor is created
+// only inside the FIRST `onMultiTouchMove` target handler, and the release
+// handler clears it again before the touchend bubble sample. A start-time
+// `eg` (correctly) reports no anchor, and the settled snapshot after the
+// gesture reports none either. Therefore the probe retains ONE bounded
+// in-flight record (`ia`) read from the post-target window-bubble sample (or
+// a genuinely pre-end render-step fallback) of a trusted two-finger move.
+// `ia` carries the same primitive SimplePoint units (`paX/paY` twips,
+// `papX/papY` core pixels, `pacX/pacY` CSS pixels, `dpi`), plus its own
+// event time `t`, sample time `at`, phase `ph='m'`, event key `k='tm'`,
+// passive `seq`, per-gesture move ordinal `mv`, sampling `src`, gesture `gi`
+// and the install owner/generation (`og`/`ng`). `iaT` counts eligible
+// capture attempts and `iaN` counts honest unavailable (null) results. The
+// retained record is never overwritten by a null; a null in-flight anchor
+// means the engine exposed none, never invented coordinates. This capture
+// is one read per gesture (bounded attempts) and is NOT added to every ring
+// record; the settled layout/scroll group remains the periodic snapshot `eg`.
 //
 // Live-pinch fields (additive, schema `v` remains 1): every event carries
 // `gi` (gesture serial) and `ph` (start/move/end/cancel). Touch records also
@@ -524,7 +587,7 @@ final class OfficeTouchQualificationProbe {
     const old = window.__floeTouchProbe;
     if (old && typeof old.owner === 'number' && old.owner > OWNER) { return 'probe-stale:' + old.owner; }
     if (old && typeof old.teardown === 'function') { try { old.teardown(); } catch (e) {} }
-    const CAP = 128, MAXSTARTS = 16, COORDS = 4;
+    const CAP = 128, MAXSTARTS = 16, COORDS = 4, JMAX = 40;
     const P = {
       v: 1,
       gen: (old && typeof old.gen === 'number') ? old.gen + 1 : 1,
@@ -535,8 +598,10 @@ final class OfficeTouchQualificationProbe {
       cntB: {ts: 0, tm: 0, te: 0, tc: 0, pd: 0, pm: 0, pu: 0, pc: 0},
       cntD: {ts: 0, tm: 0, te: 0, tc: 0, pd: 0, pm: 0, pu: 0, pc: 0},
       dr: 0, ns: 0, starts: [], ring: [], handles: [], fl: [],
+      jr: [], jns: 0, jdr: 0, jseq: 0, jhandles: [],
       gid: 0, ga: 0, gst: null, lmt: null, gend: null, gc: null,
       gmv: 0, gz0: null, gz0r: null, d0: null, lfin: null,
+      ia: null, iaT: 0, iaN: 0,
       mk: { g: 0, mv: 0, t: 0, c: 1, n: 0 },
       seq: 0, eseq: null, lmseq: null,
       latest: null, terminal: null, gest: [],
@@ -544,9 +609,27 @@ final class OfficeTouchQualificationProbe {
     };
     const R = (x) => (typeof x === 'number' && isFinite(x)) ? Math.round(x * 10) / 10 : null;
     const num4 = (x) => (typeof x === 'number' && isFinite(x)) ? Math.round(x * 10000) / 10000 : null;
+    const gnum = (x) => (typeof x === 'number' && isFinite(x)) ? Math.round(x * 1000) / 1000 : null;
     const now = () => Math.round((performance.now() - P.pn0) * 10) / 10;
     const clip = (s, n) => (typeof s === 'string') ? s.slice(0, n) : null;
     const coord = (p) => [R(p && p.clientX), R(p && p.clientY)];
+    // Synchronous read-only canvas + layout-viewport geometry for start
+    // records. Mirrors the periodic snapshot `cv`/`vp` accessors exactly
+    // (sectionContainer.canvas bounding rect, window inner sizes) so the
+    // consumer's coordinates stay in matching CSS viewport numbers with the
+    // same rounding. Null-safe and mutation-free; DEBUG-only passive path.
+    const canvasGeom = (t) => {
+      try {
+        const c = window.app && window.app.sectionContainer && window.app.sectionContainer.canvas;
+        if (!c || typeof c.getBoundingClientRect !== 'function') { return null; }
+        const r = c.getBoundingClientRect();
+        const g = { t: t, x: gnum(r.left), y: gnum(r.top), w: gnum(r.width), h: gnum(r.height),
+                    iw: gnum(window.innerWidth), ih: gnum(window.innerHeight) };
+        if (g.x === null || g.y === null || g.w === null || g.h === null ||
+            g.iw === null || g.ih === null) { return null; }
+        return g;
+      } catch (e) { return null; }
+    };
     // Optional on-page pinch marker badge (only when the probe session was
     // explicitly launched with the marker argument). One fixed-size,
     // fixed-position node in the same WK frame as the canvas, outside the
@@ -600,6 +683,31 @@ final class OfficeTouchQualificationProbe {
       } catch (e) {}
       return out;
     };
+    // The actual in-flight anchor, read ONLY from a post-target sample of a
+    // trusted two-finger move. Pinned ZoomControl.onMultiTouchStart clears
+    // `pinchAnchor`; the first `onMultiTouchMove` target handler creates it;
+    // every later move keeps it; the release handler clears it before the
+    // touchend bubble listener. A capture-phase start read or the settled
+    // periodic snapshot therefore cannot see it. Returns null rather than
+    // fabricating coordinates when the section/getter is absent.
+    const anchorGeo = () => {
+      try {
+        const appw = window.app;
+        if (!appw) return null;
+        const sc = appw.sectionContainer;
+        const name = appw.CSections && appw.CSections.ZoomControl
+          && appw.CSections.ZoomControl.name;
+        const zc = sc && name && typeof sc.getSectionWithName === 'function'
+          ? sc.getSectionWithName(name) : null;
+        const pa = zc ? zc.pinchAnchor : null;
+        if (!pa) return null;
+        const px = gnum(pa.x), py = gnum(pa.y);
+        if (px === null || py === null) return null;
+        return { dpi: gnum(appw.dpiScale), paX: px, paY: py,
+                 papX: gnum(pa.pX), papY: gnum(pa.pY),
+                 pacX: gnum(pa.cX), pacY: gnum(pa.cY) };
+      } catch (e) { return null; }
+    };
     // Sampling MUST NOT rely on a capture-handler microtask: HTML can run a
     // microtask checkpoint between event listeners, before the canvas/
     // `ZoomControl` target handler. The primary sample is the event's own
@@ -610,6 +718,7 @@ final class OfficeTouchQualificationProbe {
     // step) and its event's captured gesture serial; delayed samples can
     // never be reinterpreted as live frames of a newer gesture.
     const MAXPENDING = 8;
+    const EGA = 8;
     const sample = (entry, src) => {
       const rec = entry.rec, key = entry.key;
       try {
@@ -619,6 +728,28 @@ final class OfficeTouchQualificationProbe {
         const post = (typeof ownEnd === 'number' && at >= ownEnd) ? 1 : 0;
         const stale = (P.gid !== rec.gi) ? 1 : 0;
         const d = (typeof rec.d === 'number' && isFinite(rec.d)) ? rec.d : null;
+        // Bounded in-flight anchor capture: at most EGA=8 post-target,
+        // pre-end samples per gesture, and only until the first non-null
+        // anchor is retained. A null result is counted, never replaced by a
+        // fabricated point or by the later cleared state. The record carries
+        // its own event/sample times, phase, event key, dispatch sequence,
+        // move ordinal, sampling source, gesture serial and owner/generation,
+        // so an after-gesture snapshot cannot misattribute it.
+        if (!stale && !post && P.ga === 1 && key === 'tm' && rec.tr === 1 &&
+            rec.n === 2 && rec.gi === P.gid && P.ia === null && P.iaT < EGA) {
+          P.iaT += 1;
+          const ag = anchorGeo();
+          if (ag) {
+            P.ia = { gi: rec.gi, ph: 'm', k: key, t: rec.t, at: at,
+                     seq: rec.seq, mv: rec.mv, src: src,
+                     og: P.owner, ng: P.gen,
+                     dpi: ag.dpi, paN: 1, paX: ag.paX, paY: ag.paY,
+                     papX: ag.papX, papY: ag.papY,
+                     pacX: ag.pacX, pacY: ag.pacY };
+          } else {
+            P.iaN += 1;
+          }
+        }
         // The engine fixes its pinch reference at the first move it actually
         // processes (ZoomControl.onMultiTouchMove latches pinchStartDistance
         // and opens the live zoom frame in that same call). Only a
@@ -754,6 +885,80 @@ final class OfficeTouchQualificationProbe {
       try { firstCls = t && t.className != null ? String(t.className).trim().split(/\s+/)[0] : null; } catch (x) { firstCls = null; }
       return { g: clip(t && t.tagName, 16), i: clip(t && t.id, 32), c: clip(firstCls, 24) };
     };
+    // Minimum passive numeric group for the Calc anchor/clamp question:
+    // view math primitives (units in the field names) plus the actual
+    // ZoomControl pinch anchor. Every read is guarded; nothing is retained.
+    const fnum = (v) => (typeof v === 'number' && isFinite(v)) ? Math.round(v * 1000) / 1000 : null;
+    const calcGeo = (t) => {
+      const out = { t: t, dpi: null,
+                    vrx: null, vry: null, vrw: null, vrh: null,
+                    vrpX1: null, vrpY1: null, vrpX2: null, vrpY2: null,
+                    vrcX1: null, vrcY1: null, vrcX2: null, vrcY2: null,
+                    vsx: null, vsy: null, vspX: null, vspY: null, vscX: null, vscY: null,
+                    fsx: null, fsy: null, fspX: null, fspY: null, fscX: null, fscY: null,
+                    dax: null, day: null, daw: null, dah: null, dapx: null, dapy: null,
+                    scx: null, scy: null,
+                    paN: 0, paX: null, paY: null, papX: null, papY: null, pacX: null, pacY: null };
+      try {
+        const appw = window.app;
+        if (!appw) return out;
+        out.dpi = fnum(appw.dpiScale);
+        const doc = appw.activeDocument;
+        const layout = doc && doc.activeLayout;
+        if (!layout) return out;
+        const tryGet = (fn) => { try { return fn(); } catch (e) { return null; } };
+        const vr = layout._viewedRectangle;
+        if (vr) {
+          out.vrx = fnum(tryGet(() => vr.x1)); out.vry = fnum(tryGet(() => vr.y1));
+          out.vrw = fnum(tryGet(() => vr.width)); out.vrh = fnum(tryGet(() => vr.height));
+          out.vrpX1 = fnum(tryGet(() => vr.pX1)); out.vrpY1 = fnum(tryGet(() => vr.pY1));
+          out.vrpX2 = fnum(tryGet(() => vr.pX2)); out.vrpY2 = fnum(tryGet(() => vr.pY2));
+          out.vrcX1 = fnum(tryGet(() => vr.cX1)); out.vrcY1 = fnum(tryGet(() => vr.cY1));
+          out.vrcX2 = fnum(tryGet(() => vr.cX2)); out.vrcY2 = fnum(tryGet(() => vr.cY2));
+        }
+        const vs = layout._viewSize;
+        if (vs) {
+          out.vsx = fnum(tryGet(() => vs.x)); out.vsy = fnum(tryGet(() => vs.y));
+          out.vspX = fnum(tryGet(() => vs.pX)); out.vspY = fnum(tryGet(() => vs.pY));
+          out.vscX = fnum(tryGet(() => vs.cX)); out.vscY = fnum(tryGet(() => vs.cY));
+        }
+        const fs = tryGet(() => layout.frameSize);
+        if (fs) {
+          out.fsx = fnum(tryGet(() => fs.x)); out.fsy = fnum(tryGet(() => fs.y));
+          out.fspX = fnum(tryGet(() => fs.pX)); out.fspY = fnum(tryGet(() => fs.pY));
+          out.fscX = fnum(tryGet(() => fs.cX)); out.fscY = fnum(tryGet(() => fs.cY));
+        }
+        const sc = appw.sectionContainer;
+        const anchor = sc && typeof sc.getDocumentAnchorSection === 'function'
+          ? tryGet(() => sc.getDocumentAnchorSection()) : null;
+        if (anchor) {
+          out.dax = fnum(tryGet(() => anchor.myTopLeft[0]));
+          out.day = fnum(tryGet(() => anchor.myTopLeft[1]));
+          out.daw = fnum(tryGet(() => anchor.size[0]));
+          out.dah = fnum(tryGet(() => anchor.size[1]));
+        }
+        const dap = layout._documentAnchorPosition;
+        if (dap) { out.dapx = fnum(tryGet(() => dap[0])); out.dapy = fnum(tryGet(() => dap[1])); }
+        const sp = layout.scrollProperties;
+        if (sp) {
+          out.scx = fnum(tryGet(() => sp.viewX)); out.scy = fnum(tryGet(() => sp.viewY));
+        }
+        const zcName = appw.CSections && appw.CSections.ZoomControl && appw.CSections.ZoomControl.name;
+        const zc = sc && zcName && typeof sc.getSectionWithName === 'function'
+          ? tryGet(() => sc.getSectionWithName(zcName)) : null;
+        const pa = zc ? zc.pinchAnchor : null;
+        if (pa) {
+          const px = fnum(tryGet(() => pa.x)), py = fnum(tryGet(() => pa.y));
+          if (px !== null && py !== null) {
+            out.paN = 1; out.paX = px; out.paY = py;
+            out.papX = fnum(tryGet(() => pa.pX)); out.papY = fnum(tryGet(() => pa.pY));
+            out.pacX = fnum(tryGet(() => pa.cX)); out.pacY = fnum(tryGet(() => pa.cY));
+          }
+        }
+      } catch (e) {}
+      return out;
+    };
+    P.calcGeo = calcGeo;
     // In-flight container facts, sampled synchronously inside the passive
     // capture handler: this is the only chance to see positionOnMouseDown /
     // sectionOnMouseDown / multiTouch / getZoom DURING the gesture, because
@@ -846,6 +1051,9 @@ final class OfficeTouchQualificationProbe {
           P.latest = null;
           P.fl = [];
           P.terminal = null;
+          P.ia = null;
+          P.iaT = 0;
+          P.iaN = 0;
           try {
             const m = window.app && window.app.map;
             P.gz0 = m && typeof m.getZoom === 'function' ? num4(m.getZoom()) : null;
@@ -891,6 +1099,16 @@ final class OfficeTouchQualificationProbe {
           : (key === 'tm' || key === 'pm') ? 'm'
           : (key === 'te' || key === 'pu') ? 'e' : 'c';
         if (key === 'ts' || key === 'tm' || key === 'pd') { quickState(rec); }
+        // Event-time canvas geometry: read synchronously inside THIS passive
+        // capture dispatch and bound to this record. The start coordinates
+        // in `rec.o` are CSS-viewport numbers for the same dispatch, so a
+        // consumer can prove target containment against `rec.cg` alone and
+        // must never rebind them to a later `cv`. A failed read stays null
+        // so the consumer fails closed instead of guessing.
+        if (key === 'ts' || key === 'pd') {
+          rec.cg = canvasGeom(rec.t);
+          rec.eg = calcGeo(rec.t);
+        }
         if (touch) {
           // The badge mirrors only this probe's own real-event ownership
           // state at the moment the real event arrived: gesture serial,
@@ -934,11 +1152,98 @@ final class OfficeTouchQualificationProbe {
       window.addEventListener(name, bub, { capture: false, passive: true });
       P.handles.push([name, cap, true], [name, bub, false]);
     }
+    // Bounded passive focus/resize journal. Capture-phase, `passive: true`
+    // listeners only: they cannot preventDefault, cannot reorder product
+    // handlers relative to each other and cannot touch focus or layout.
+    // Entries carry internal tags, rounded numeric geometry and the probe's
+    // own monotonic ordinal/time. Never evicted: past JMAX the oldest
+    // entries are kept and later ones are counted in `jdr` (an honest drop
+    // counter mirroring the first-start window), so a consumer can always
+    // see the FIRST resize/focus transition of the session.
+    const journal = (k, extra) => {
+      try {
+        P.jns += 1;
+        if (P.jr.length >= JMAX) { P.jdr += 1; return; }
+        const e = { k: k, t: now(), j: (P.jseq += 1) };
+        if (extra) { try { for (const key in extra) { e[key] = extra[key]; } } catch (x) {} }
+        P.jr.push(e);
+      } catch (x) {}
+    };
+    const jgeom = () => {
+      const out = { ih: gnum(window.innerHeight), iw: gnum(window.innerWidth), cvh: null,
+                    dpi: null, vrpX1: null, vrpY1: null, vrpX2: null, vrpY2: null,
+                    vspX: null, vspY: null, scx: null, scy: null };
+      try {
+        const appw = window.app;
+        const c = appw && appw.sectionContainer && appw.sectionContainer.canvas;
+        if (c && typeof c.getBoundingClientRect === 'function') {
+          out.cvh = gnum(c.getBoundingClientRect().height);
+        }
+        if (appw) {
+          out.dpi = gnum(appw.dpiScale);
+          const layout = appw.activeDocument && appw.activeDocument.activeLayout;
+          const vr = layout && layout._viewedRectangle;
+          if (vr) {
+            out.vrpX1 = gnum(vr.pX1); out.vrpY1 = gnum(vr.pY1);
+            out.vrpX2 = gnum(vr.pX2); out.vrpY2 = gnum(vr.pY2);
+          }
+          const vs = layout && layout._viewSize;
+          if (vs) { out.vspX = gnum(vs.pX); out.vspY = gnum(vs.pY); }
+          const sp = layout && layout.scrollProperties;
+          if (sp) { out.scx = gnum(sp.viewX); out.scy = gnum(sp.viewY); }
+        }
+      } catch (e) {}
+      return out;
+    };
+    {
+      const hResize = () => { journal('wr', jgeom()); };
+      window.addEventListener('resize', hResize, { capture: true, passive: true });
+      P.jhandles.push([window, 'resize', hResize, true]);
+      const mkFocus = (key) => (e) => {
+        const t = e && e.target;
+        journal(key, { g: clip(t && t.tagName, 16), i: clip(t && t.id, 32) });
+      };
+      const hFi = mkFocus('fi');
+      const hFo = mkFocus('fo');
+      window.addEventListener('focusin', hFi, { capture: true, passive: true });
+      window.addEventListener('focusout', hFo, { capture: true, passive: true });
+      P.jhandles.push([window, 'focusin', hFi, true], [window, 'focusout', hFo, true]);
+      // Capture-only passive click/dblclick journal: WebKit may synthesize a
+      // mouse click even when the probe saw no DOM pointer events, and the
+      // documented iOS focus path in pinned Map.js is an actual click/dblclick
+      // in edit mode. Entries carry only isTrusted, clipped target tag/id and
+      // finite rounded client coordinates; no text, selection, focus call,
+      // preventDefault or propagation change. Reuses the same JMAX/drop/
+      // teardown ownership as every other journal entry.
+      const mkClick = (key) => (e) => {
+        journal(key, { tr: (e && e.isTrusted) ? 1 : 0,
+                       g: clip(e && e.target && e.target.tagName, 16),
+                       i: clip(e && e.target && e.target.id, 32),
+                       x: gnum(e && e.clientX), y: gnum(e && e.clientY) });
+      };
+      const hCk = mkClick('ck');
+      const hDc = mkClick('dc');
+      window.addEventListener('click', hCk, { capture: true, passive: true });
+      window.addEventListener('dblclick', hDc, { capture: true, passive: true });
+      P.jhandles.push([window, 'click', hCk, true], [window, 'dblclick', hDc, true]);
+      if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
+        const vv = window.visualViewport;
+        const hVr = () => {
+          journal('vr', { vh: gnum(vv.height), vw: gnum(vv.width), vs: gnum(vv.scale) });
+        };
+        vv.addEventListener('resize', hVr, { capture: true, passive: true });
+        P.jhandles.push([vv, 'resize', hVr, true]);
+      }
+    }
     P.teardown = () => {
       for (const h of P.handles) {
         try { window.removeEventListener(h[0], h[1], { capture: h[2] }); } catch (e) {}
       }
       P.handles.length = 0;
+      for (const h of P.jhandles) {
+        try { h[0].removeEventListener(h[1], h[2], { capture: h[3] }); } catch (e) {}
+      }
+      P.jhandles.length = 0;
       // The badge node is owned by this installation and removed on
       // teardown; no DOM residue can outlive the session. A newer install
       // has already torn this probe down before re-creating its own state.
@@ -1049,8 +1354,11 @@ final class OfficeTouchQualificationProbe {
                    terminal: P.terminal, fl: P.fl, lfin: P.lfin,
                    eseq: P.eseq, lmseq: P.lmseq,
                    mk: P.mk, pd: P.pdrop,
+                   ia: P.ia, iaT: P.iaT, iaN: P.iaN,
                    starts: P.starts, ring: P.ring, rtv: 0, st: st, pen: pen, vp: vp,
-                   cv: cv, rs: document.readyState.slice(0, 12) };
+                   cv: cv, jr: P.jr, jns: P.jns, jdr: P.jdr,
+                   eg: (() => { try { return P.calcGeo(Math.round((performance.now() - P.pn0) * 10) / 10); } catch (e) { return null; } })(),
+                   rs: document.readyState.slice(0, 12) };
     let text = JSON.stringify(body);
     if (text.length > MAX) {
       let limit = Math.floor(P.ring.length / 2);
@@ -1065,6 +1373,16 @@ final class OfficeTouchQualificationProbe {
         body.ring = [];
         body.rtv = P.ring.length;
         text = JSON.stringify(body);
+      }
+      // If even the ring-free payload (all starts and the whole journal kept
+      // whole) exceeds the page budget, return a complete, explicit failure
+      // object instead of an over-budget or partially sliced snapshot. The
+      // consumer requires ok=1, so this is an honest instrumentation failure,
+      // never silent loss or a start/journal eviction.
+      if (text.length > MAX) {
+        return JSON.stringify({ v: 1, ok: 0, reason: 'snapshot-over-budget',
+                                length: text.length, starts: P.starts.length,
+                                ns: P.ns, jr: P.jr.length });
       }
     }
     return text;

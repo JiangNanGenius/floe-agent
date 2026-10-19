@@ -578,6 +578,13 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         try assertOfficeLivePinch(baseline: baseline, after: after, direction: .inward,
                                   drawingOn: drawingOn, label: "\(mode)-pinch-in")
         try assertCanvasBoundedStarts(after: after, label: "\(mode)-pinch-in")
+        // Ordinary mode: once the baseline actually ended the keyboard's
+        // onscreen occlusion through its own public hide key, the real pinch
+        // must leave that state alone. Checked before the OCR phases so a
+        // keyboard-driven relayout cannot contaminate the title evidence.
+        if !drawingOn {
+            assertKeyboardHiddenAfterPinch(app, label: mode, phase: "after-pinch-in")
+        }
         let phaseSuffix = drawingOn ? "" : "-drawing-off"
         let beforeTitle = try officeMeasuredTitleBounds(
             in: beforePinch.image, phase: "before\(phaseSuffix)",
@@ -608,6 +615,9 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         try assertOfficeLivePinch(baseline: after, after: afterOut, direction: .outward,
                                   drawingOn: drawingOn, label: "\(mode)-pinch-out")
         try assertCanvasBoundedStarts(after: afterOut, label: "\(mode)-pinch-out")
+        if !drawingOn {
+            assertKeyboardHiddenAfterPinch(app, label: mode, phase: "after-pinch-out")
+        }
         let afterOutTitle = try officeMeasuredTitleBounds(
             in: afterPinchOut.image, phase: "after-out\(phaseSuffix)",
             expected: measuredText, attachmentPrefix: prefix)
@@ -630,6 +640,11 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         }), "the Office editor must finish its safe exit into the actionable Notes library")
         XCTAssertFalse(back.exists)
         capture("\(prefix)-notes-library-returned")
+        // Evaluate the retained in-flight-anchor evidence only after every
+        // product/OCR/safe-exit assertion above has run, so an instrumentation
+        // mismatch cannot truncate the original-case evidence.
+        assertInFlightAnchorRetained(after: after, label: "\(mode)-pinch-in")
+        assertInFlightAnchorRetained(after: afterOut, label: "\(mode)-pinch-out")
     }
 
     private enum OfficePinchDirection: Equatable {
@@ -882,8 +897,22 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     }
 
     /// Both trusted touchstarts of the just-ended gesture must target the
-    /// document canvas and lie inside the page-reported canvas rectangle.
-    /// This is the actual-UIKit start proof, not a serialized injection hint.
+    /// document canvas and lie inside the canvas geometry captured AT THEIR
+    /// OWN DISPATCH. Each trusted start record carries `cg`: the page canvas
+    /// rect plus layout-viewport inner sizes read synchronously inside the
+    /// same passive capture handler, bound to the record's own time. The
+    /// rounded client coordinates in `o` are CSS-viewport numbers for that
+    /// same dispatch, so containment is proven against `cg` — never against
+    /// the later snapshot `cv`: a keyboard re-presenting during or after the
+    /// gesture legitimately resizes the layout viewport, and rebinding
+    /// start-time coordinates to post-event geometry would be an event-time
+    /// error that can both falsely fail a real canvas pinch and mask a real
+    /// viewport change. Missing, non-finite or non-positive per-start
+    /// geometry fails closed: this proof requires it. The snapshot's own
+    /// `cv` keeps the previous finite-positive sanity guards, and the probe
+    /// keeps only the first 16 starts with the all-start completeness
+    /// contract unchanged. This is the actual-UIKit start proof, not a
+    /// serialized injection hint.
     private func assertCanvasBoundedStarts(after: [String: Any], label: String,
                                            file: StaticString = #filePath,
                                            line: UInt = #line) throws {
@@ -905,55 +934,259 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertLessThanOrEqual(allStarts, 16,
                                  "\(label): start-buffer completeness requires the probe session to stay within 16 starts (ns=\(allStarts))",
                                  file: file, line: line)
-        var points: [(String, Double, Double)] = []
+        // The snapshot canvas rectangle remains the current-state sanity
+        // bound with the same finite-positive guards; it no longer serves as
+        // the bound for start-time coordinates.
+        let canvas = try XCTUnwrap(after["cv"] as? [String: Any],
+                                   "\(label): the probe must expose the canvas rectangle",
+                                   file: file, line: line)
+        let snapshotWidth = try XCTUnwrap(finitePinchNumber(canvas["w"]),
+                                          "\(label): canvas width is missing", file: file, line: line)
+        let snapshotHeight = try XCTUnwrap(finitePinchNumber(canvas["h"]),
+                                           "\(label): canvas height is missing", file: file, line: line)
+        XCTAssertGreaterThan(snapshotWidth, 0,
+                             "\(label): canvas width must be positive", file: file, line: line)
+        XCTAssertGreaterThan(snapshotHeight, 0,
+                             "\(label): canvas height must be positive", file: file, line: line)
+        var provenPoints = 0
         for record in starts {
             guard (record["k"] as? String) == "ts",
                   pinchNumber(record["tr"]) == 1,
                   pinchNumber(record["gi"]) == gesture,
                   let target = record["g"] as? [String: Any],
                   let tag = target["g"] as? String else { continue }
+            XCTAssertEqual(tag, "CANVAS",
+                           "\(label): every trusted start must target the document canvas",
+                           file: file, line: line)
+            let seq = pinchNumber(record["seq"]).map { "#\(Int($0))" } ?? "<no-seq>"
+            let geom = try XCTUnwrap(record["cg"] as? [String: Any],
+                                     "\(label): trusted start \(seq) carries no canvas geometry captured at its own dispatch; refusing to bind start coordinates to later snapshot geometry",
+                                     file: file, line: line)
+            let recordT = try XCTUnwrap(finitePinchNumber(record["t"]),
+                                        "\(label): trusted start \(seq) is missing a finite dispatch time",
+                                        file: file, line: line)
+            XCTAssertGreaterThan(recordT, 0,
+                                 "\(label): trusted start \(seq) dispatch time must be positive",
+                                 file: file, line: line)
+            let geomT = try XCTUnwrap(finitePinchNumber(geom["t"]),
+                                      "\(label): trusted start \(seq) geometry is missing a finite capture time",
+                                      file: file, line: line)
+            XCTAssertGreaterThan(geomT, 0,
+                                 "\(label): trusted start \(seq) geometry capture time must be positive",
+                                 file: file, line: line)
+            XCTAssertEqual(geomT, recordT,
+                           "\(label): trusted start \(seq) geometry must be captured at the record's own dispatch time",
+                           file: file, line: line)
+            let x = try XCTUnwrap(finitePinchNumber(geom["x"]),
+                                  "\(label): trusted start \(seq) canvas x is missing", file: file, line: line)
+            let y = try XCTUnwrap(finitePinchNumber(geom["y"]),
+                                  "\(label): trusted start \(seq) canvas y is missing", file: file, line: line)
+            let width = try XCTUnwrap(finitePinchNumber(geom["w"]),
+                                      "\(label): trusted start \(seq) canvas width is missing", file: file, line: line)
+            let height = try XCTUnwrap(finitePinchNumber(geom["h"]),
+                                       "\(label): trusted start \(seq) canvas height is missing", file: file, line: line)
+            let innerWidth = try XCTUnwrap(finitePinchNumber(geom["iw"]),
+                                           "\(label): trusted start \(seq) layout viewport width is missing", file: file, line: line)
+            let innerHeight = try XCTUnwrap(finitePinchNumber(geom["ih"]),
+                                            "\(label): trusted start \(seq) layout viewport height is missing", file: file, line: line)
+            XCTAssertGreaterThan(width, 0,
+                                 "\(label): trusted start \(seq) canvas width must be positive", file: file, line: line)
+            XCTAssertGreaterThan(height, 0,
+                                 "\(label): trusted start \(seq) canvas height must be positive", file: file, line: line)
+            XCTAssertGreaterThan(innerWidth, 0,
+                                 "\(label): trusted start \(seq) layout viewport width must be positive", file: file, line: line)
+            XCTAssertGreaterThan(innerHeight, 0,
+                                 "\(label): trusted start \(seq) layout viewport height must be positive", file: file, line: line)
             for point in record["o"] as? [[Any]] ?? [] {
                 guard point.count >= 2,
                       let px = finitePinchNumber(point[0]),
                       let py = finitePinchNumber(point[1]) else { continue }
-                points.append((tag, px, py))
+                provenPoints += 1
+                XCTAssertGreaterThanOrEqual(px, x - 2,
+                                            "\(label): trusted start \(seq) x must be inside the canvas geometry captured at that start",
+                                            file: file, line: line)
+                XCTAssertLessThanOrEqual(px, x + width + 2,
+                                         "\(label): trusted start \(seq) x must be inside the canvas geometry captured at that start",
+                                         file: file, line: line)
+                XCTAssertGreaterThanOrEqual(py, y - 2,
+                                            "\(label): trusted start \(seq) y must be inside the canvas geometry captured at that start",
+                                            file: file, line: line)
+                XCTAssertLessThanOrEqual(py, y + height + 2,
+                                         "\(label): trusted start \(seq) y must be inside the canvas geometry captured at that start",
+                                         file: file, line: line)
             }
         }
-        XCTAssertGreaterThanOrEqual(points.count, 2,
+        XCTAssertGreaterThanOrEqual(provenPoints, 2,
                                     "\(label): the gesture must expose both trusted touchstarts",
                                     file: file, line: line)
-        let canvas = try XCTUnwrap(after["cv"] as? [String: Any],
-                                   "\(label): the probe must expose the canvas rectangle",
-                                   file: file, line: line)
-        let x = try XCTUnwrap(finitePinchNumber(canvas["x"]),
-                              "\(label): canvas x is missing", file: file, line: line)
-        let y = try XCTUnwrap(finitePinchNumber(canvas["y"]),
-                              "\(label): canvas y is missing", file: file, line: line)
-        let width = try XCTUnwrap(finitePinchNumber(canvas["w"]),
-                                  "\(label): canvas width is missing", file: file, line: line)
-        let height = try XCTUnwrap(finitePinchNumber(canvas["h"]),
-                                   "\(label): canvas height is missing", file: file, line: line)
-        XCTAssertGreaterThan(width, 0,
-                             "\(label): canvas width must be positive", file: file, line: line)
-        XCTAssertGreaterThan(height, 0,
-                             "\(label): canvas height must be positive", file: file, line: line)
-        for (tag, px, py) in points {
-            XCTAssertEqual(tag, "CANVAS",
-                           "\(label): every trusted start must target the document canvas",
+    }
+
+    /// Consumes the probe's bounded in-flight anchor record (`ia`). The
+    /// pinned engine clears `ZoomControl.pinchAnchor` at gesture start,
+    /// creates it only in the first two-finger move target handler, and
+    /// clears it again before the touchend bubble sample. Therefore the
+    /// per-start `eg` and the settled snapshot `eg` must both report no
+    /// anchor (`paN == 0`), while `ia` must retain the one actual anchor read
+    /// from a post-target, genuinely pre-end move sample. `ia` carries its
+    /// own event/sample times, phase, event key, dispatch sequence, move
+    /// ordinal, sampling source, gesture serial and install
+    /// owner/generation, so it cannot be confused with the later cleared
+    /// state or another gesture. A null `ia` is accepted only as an honest
+    /// unavailable result with at least one counted attempt; it is never
+    /// replaced by invented coordinates. This is evidence collection and
+    /// does not change any acceptance threshold.
+    private func assertInFlightAnchorRetained(
+        after: [String: Any], label: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let gesture = pinchNumber(after["gid"])
+        let startT = pinchNumber(after["gst"])
+        let endT = pinchNumber(after["gend"])
+        let endSeq = pinchNumber(after["eseq"])
+        let snapshotT = pinchNumber(after["t"])
+        let owner = pinchNumber(after["owner"])
+        let generation = pinchNumber(after["gen"])
+        let attempts = pinchNumber(after["iaT"]) ?? -1
+        let unavailable = pinchNumber(after["iaN"]) ?? -1
+        XCTAssertGreaterThanOrEqual(attempts, 0,
+                                    "\(label): the in-flight anchor attempt counter must be present",
+                                    file: file, line: line)
+        XCTAssertGreaterThanOrEqual(unavailable, 0,
+                                    "\(label): the honest null-anchor counter must be present",
+                                    file: file, line: line)
+        XCTAssertLessThanOrEqual(unavailable, attempts,
+                                 "\(label): null in-flight reads cannot exceed attempted reads",
+                                 file: file, line: line)
+
+        guard let anchor = after["ia"] as? [String: Any] else {
+            XCTAssertGreaterThan(attempts, 0,
+                                 "\(label): a missing in-flight anchor must be an honestly attempted, counted result (iaT=\(attempts))",
+                                 file: file, line: line)
+            XCTAssertEqual(unavailable, attempts,
+                           "\(label): every attempted null anchor read must be counted",
                            file: file, line: line)
-            XCTAssertGreaterThanOrEqual(px, x - 2,
-                                        "\(label): trusted start x must be inside the canvas",
-                                        file: file, line: line)
-            XCTAssertLessThanOrEqual(px, x + width + 2,
-                                     "\(label): trusted start x must be inside the canvas",
-                                     file: file, line: line)
-            XCTAssertGreaterThanOrEqual(py, y - 2,
-                                        "\(label): trusted start y must be inside the canvas",
-                                        file: file, line: line)
-            XCTAssertLessThanOrEqual(py, y + height + 2,
-                                     "\(label): trusted start y must be inside the canvas",
-                                     file: file, line: line)
+            attachText("ia=null\niaT=\(attempts)\niaN=\(unavailable)\ngid=\(String(describing: gesture))"
+                + "\nnote=engine exposed no pinchAnchor at any eligible post-target pre-end move sample",
+                name: "\(label)-in-flight-anchor-unavailable")
+            return
         }
+
+        XCTAssertEqual(pinchNumber(anchor["paN"]), 1,
+                       "\(label): a retained in-flight anchor must carry paN=1",
+                       file: file, line: line)
+        XCTAssertEqual(anchor["ph"] as? String, "m",
+                       "\(label): the in-flight anchor must be captured in the move phase",
+                       file: file, line: line)
+        XCTAssertEqual(anchor["k"] as? String, "tm",
+                       "\(label): the in-flight anchor must come from a touchmove record",
+                       file: file, line: line)
+        XCTAssertEqual(pinchNumber(anchor["gi"]), gesture,
+                       "\(label): the in-flight anchor must belong to the just-ended gesture",
+                       file: file, line: line)
+        XCTAssertEqual(pinchNumber(anchor["og"]), owner,
+                       "\(label): the in-flight anchor must carry the snapshot's install owner",
+                       file: file, line: line)
+        XCTAssertEqual(pinchNumber(anchor["ng"]), generation,
+                       "\(label): the in-flight anchor must carry the snapshot's page generation",
+                       file: file, line: line)
+        let source = anchor["src"] as? String
+        XCTAssertTrue(source == "b" || source == "r",
+                      "\(label): the in-flight anchor must name its post-target sampling source",
+                      file: file, line: line)
+        let eventT = pinchNumber(anchor["t"])
+        let sampleT = pinchNumber(anchor["at"])
+        let seq = pinchNumber(anchor["seq"])
+        let moveOrdinal = pinchNumber(anchor["mv"])
+        XCTAssertNotNil(eventT, "\(label): the in-flight anchor event time is missing",
+                        file: file, line: line)
+        XCTAssertNotNil(sampleT, "\(label): the in-flight anchor sample time is missing",
+                        file: file, line: line)
+        XCTAssertNotNil(seq, "\(label): the in-flight anchor dispatch sequence is missing",
+                        file: file, line: line)
+        XCTAssertGreaterThanOrEqual(moveOrdinal ?? 0, 1,
+                                    "\(label): the in-flight anchor must belong to a real move",
+                                    file: file, line: line)
+        if let eventT, let sampleT {
+            XCTAssertGreaterThan(eventT, 0,
+                                 "\(label): the in-flight anchor event time must be positive",
+                                 file: file, line: line)
+            XCTAssertGreaterThanOrEqual(sampleT, eventT,
+                                        "\(label): the in-flight sample cannot predate its event",
+                                        file: file, line: line)
+            if let snapshotT {
+                XCTAssertLessThanOrEqual(sampleT, snapshotT,
+                                         "\(label): the in-flight sample cannot postdate the after snapshot",
+                                         file: file, line: line)
+            }
+            if let startT {
+                XCTAssertGreaterThanOrEqual(eventT, startT,
+                                            "\(label): the in-flight anchor must be inside the gesture",
+                                            file: file, line: line)
+            }
+            if let endT {
+                XCTAssertLessThanOrEqual(eventT, endT,
+                                         "\(label): the in-flight anchor must precede the release",
+                                         file: file, line: line)
+                // The producer only retains a sample that was genuinely
+                // pre-end (`post == 0`), so its sample time must not postdate
+                // the release. The accepted 0.1 ms rounding may tie; strict
+                // event order stays with `seq < endSeq` below. This keeps an
+                // after-end fallback independently rejectable even if its
+                // event time is still inside the gesture.
+                XCTAssertLessThanOrEqual(sampleT, endT,
+                                         "\(label): the in-flight sample cannot postdate the release time",
+                                         file: file, line: line)
+            }
+        }
+        if let seq, let endSeq {
+            XCTAssertLessThan(seq, endSeq,
+                              "\(label): the move sample must precede the terminal release in dispatch order",
+                              file: file, line: line)
+        }
+        for key in ["paX", "paY"] {
+            XCTAssertNotNil(finitePinchNumber(anchor[key]),
+                            "\(label): the in-flight anchor \(key) must be finite",
+                            file: file, line: line)
+        }
+        if let dpi = pinchNumber(anchor["dpi"]) {
+            XCTAssertGreaterThan(dpi, 0,
+                                 "\(label): the in-flight anchor dpi must be positive",
+                                 file: file, line: line)
+        } else {
+            XCTFail("\(label): the in-flight anchor dpi is missing", file: file, line: line)
+        }
+
+        // The start capture is BEFORE the engine clears its anchor, and the
+        // settled capture is AFTER the release cleared it. For the first
+        // gesture both are null; after a prior gesture the engine's start
+        // handler still clears it. Either way, a non-null value here would
+        // mean this is not the actual in-flight anchor.
+        let gestureStarts = (after["starts"] as? [[String: Any]] ?? []).filter {
+            (($0["k"] as? String) == "ts")
+                && pinchNumber($0["tr"]) == 1
+                && pinchNumber($0["gi"]) == gesture
+        }
+        for (index, record) in gestureStarts.enumerated() {
+            guard let startGeo = record["eg"] as? [String: Any] else {
+                XCTFail("\(label): start \(index) must carry the start-time numeric group",
+                        file: file, line: line)
+                continue
+            }
+            XCTAssertEqual(pinchNumber(startGeo["paN"]), 0,
+                           "\(label): start \(index) must honestly report no engine anchor; the anchor is latched only on first move",
+                           file: file, line: line)
+        }
+        guard let settled = after["eg"] as? [String: Any] else {
+            XCTFail("\(label): the settled numeric group must be present", file: file, line: line)
+            return
+        }
+        XCTAssertEqual(pinchNumber(settled["paN"]), 0,
+                       "\(label): the settled snapshot must observe the cleared anchor after release",
+                       file: file, line: line)
+        attachText("ia=\(anchor)\niaT=\(attempts)\niaN=\(unavailable)"
+            + "\ngid=\(String(describing: gesture)) startT=\(String(describing: startT))"
+            + " endT=\(String(describing: endT)) endSeq=\(String(describing: endSeq))",
+            name: "\(label)-in-flight-anchor")
     }
 
     /// Validates every entry of the bounded first-live window and returns the
@@ -2516,6 +2749,35 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                           "\(label): the keyboard's own hide key must end its onscreen occlusion before the pinch canvas baseline; last readiness: \(last)",
                           file: file, line: line)
         }
+    }
+
+    /// Ordinary-mode keyboard RETENTION proof. Once
+    /// `dismissSoftwareKeyboardBeforePinchBaseline` has actually ended the
+    /// onscreen occlusion through the platform's own hide key (or no
+    /// keyboard was ever onscreen), a real canvas pinch must not bring the
+    /// software keyboard back: a pinch is not text entry, and the user
+    /// expects ordinary-mode zoom to work naturally. A keyboard that becomes
+    /// visible again is therefore a product focus regression, not a test
+    /// artifact — this is asserted at the decision point using the same
+    /// public positive-area/actionable classifier as the pre-baseline gate.
+    /// It never taps Hide again, never waits for the keyboard to leave, and
+    /// never re-reads an earlier decision: the state AT the assertion is the
+    /// state proven. `.noKeyboard` and the retained zero-overlap
+    /// `.offscreenStale` node remain allowed (both end onscreen occlusion);
+    /// a newly onscreen keyboard or invalid geometry fails closed with the
+    /// actual decision-point facts, a whole-screen capture and the live
+    /// viewport probe snapshot attached via the existing fact collector.
+    /// Drawing-on mode never reaches this: the pen toggle already asserts
+    /// its own dismissal path, unchanged.
+    private func assertKeyboardHiddenAfterPinch(
+        _ app: XCUIApplication, label: String, phase: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let readiness = officeKeyboardOnscreenReadiness(app)
+        guard !readiness.endsOnscreenOcclusion else { return }
+        attachKeyboardVisibilityFacts(app, label: label, phase: phase)
+        XCTFail("\(label)/\(phase): the pinch must not re-present the software keyboard after the baseline ended its onscreen occlusion; decision-point readiness: \(readiness)",
+                file: file, line: line)
     }
 
     /// Readiness of the software keyboard from public onscreen geometry
