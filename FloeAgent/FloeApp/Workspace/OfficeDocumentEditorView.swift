@@ -384,6 +384,15 @@ final class OfficeFileSession: ObservableObject {
     /// instead of an unbounded spinner or a dead-end error. A late render
     /// observation clears it.
     @Published private(set) var renderUnverified = false
+    /// Set when the host's fenced visible-render callback observed a decoded
+    /// document tile for the CURRENT open generation; cleared on every
+    /// `activate`. Read-only cover backfills key off this exact signal
+    /// instead of racing the engine's document load (open-only formats used
+    /// to export into a half-loaded document and fail the native conversion,
+    /// code 32). A host without the visible-render contract cannot send the
+    /// signal, so `activate` presets this to preserve the previous
+    /// open-settled trigger for such pins.
+    @Published private(set) var coverRenderObserved = false
     /// True when the pinned host exposes the visible-render contract. The
     /// framework is pinned separately from this source: an older host keeps the
     /// previous open-only readiness (and the release gate keeps the Office
@@ -2393,6 +2402,7 @@ final class OfficeFileSession: ObservableObject {
         // capture it, so a stale callback from a controller an earlier
         // generation mounted can never settle this session's state.
         let generation = openGeneration.advance()
+        coverRenderObserved = false
         runtimeFailed = false
         engineSessionReadOnly = nil
         resolveEnginePermission(nil)
@@ -2418,6 +2428,10 @@ final class OfficeFileSession: ObservableObject {
         openingPolicy = OfficeOpeningPolicy(
             requiresVisibleRender: requirement == .visibleRenderRequired,
             readOnly: readOnly)
+        // A host that cannot report a painted surface keeps the previous
+        // open-settled cover trigger; a host with the contract waits for the
+        // real fenced signal (see `coverRenderObserved`).
+        coverRenderObserved = !hostSupportsVisibleRender
         renderUnverified = false
         recordStage("render.gate", ["requirement": requirement == .visibleRenderRequired
                                         ? "visibleRenderRequired" : "openOnly",
@@ -2490,6 +2504,7 @@ final class OfficeFileSession: ObservableObject {
                     }
                     self.renderUnverified = false
                     self.phase = .ready
+                    self.coverRenderObserved = true
                     #if DEBUG
                     OfficeTouchQualificationProbe.shared.installIfNeeded(for: native)
                     #endif

@@ -20,6 +20,10 @@ struct NotesOfficeView: View {
     @State private var committing = false
     @State private var previewAttemptedSource: UUID?
     @State private var canRetryPreview = false
+    /// Handle for the in-flight read-only cover backfill so a read-only exit
+    /// can give it a bounded window to bind the generated preview instead of
+    /// abandoning it one step before the library card updates.
+    @State private var previewRefreshTask: Task<Void, Never>?
     @State private var coverBackfillReady = false
     @State private var message: String?
     @State private var recoveryURL: URL?
@@ -67,7 +71,7 @@ struct NotesOfficeView: View {
                     HStack {
                         if canRetryOpen { Button("notes.notes_office_view.retry_opening") { Task { await prepare(force: true) } }.disabled(committing) }
                         if pendingCommit { Button("notes.notes_office_view.retry_saving_to_notes") { Task { if await office.saveInPlace() { await commit() } } }.disabled(committing) }
-                        if canRetryPreview { Button("notes.office.preview.retry") { Task { await refreshPreviewOnly() } }.disabled(committing || !office.canAct) }
+                        if canRetryPreview { Button("notes.office.preview.retry") { previewRefreshTask = Task { await refreshPreviewOnly() } }.disabled(committing || !office.canAct) }
                         if let recoveryURL { ShareLink("notes.office.externalUpdate.exportCopy", item: recoveryURL) }
                     }
                 }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.regularMaterial)
@@ -134,10 +138,23 @@ struct NotesOfficeView: View {
         .onChange(of: office.documentActionsReady) { _, ready in
             if ready { scheduleMissingPreview() }
         }
+        .onChange(of: office.coverRenderObserved) { _, observed in
+            if observed { scheduleMissingPreview() }
+        }
         .onChange(of: baseResourceID) { _, _ in scheduleMissingPreview() }
         .onAppear {
             isVisible = true
             session.registerLeaveGuard(for: document.id) {
+                if committing, !pendingCommit, office.readOnly {
+                    // The only in-flight work is the read-only cover backfill
+                    // (`refreshPreviewOnly` reuses `committing`). Refusing the
+                    // exit here would strand the just-generated preview one
+                    // step before it binds to the library card, so let the
+                    // backfill settle within a bounded window and re-check
+                    // below; a genuinely slow export keeps the previous
+                    // refusal instead of blocking navigation unbounded.
+                    await settleInFlightPreviewRefresh()
+                }
                 guard !committing else {
                     recordStage("notes.exit.refused.committing")
                     session.errorMessage = FloeL10n.l("notes.notes_office_view.saving_the_office_document_switch_again")
@@ -638,13 +655,51 @@ struct NotesOfficeView: View {
     /// Backfill existing Office notes while their real read-only editor is
     /// already open. Library cards never start an engine. An editable canvas
     /// waits for Save, so background cover work cannot interrupt handwriting.
+    /// The export needs the engine's document loaded: for open-only formats
+    /// `documentActionsReady` settles at the open, which used to make this
+    /// backfill export into a half-loaded document and fail the native
+    /// conversion (code 32). `coverRenderObserved` is set only by the host's
+    /// fenced visible-render callback for the current open generation (and
+    /// preset for hosts without that contract), so the latch below is taken
+    /// only once the document can actually be converted.
     private func scheduleMissingPreview() {
-        guard coverBackfillReady, isVisible, office.readOnly, office.documentActionsReady, !committing,
+        guard coverBackfillReady, isVisible, office.readOnly, office.canAct,
+              office.coverRenderObserved, !committing,
               !externalRefreshRunning, let source = baseResourceID,
               previewAttemptedSource != source,
               document.matchingOfficePreviewResourceID == nil else { return }
         previewAttemptedSource = source
-        Task { await refreshPreviewOnly() }
+        previewRefreshTask = Task { await refreshPreviewOnly() }
+    }
+
+    /// Gives an in-flight read-only cover backfill a bounded window to finish
+    /// before a read-only exit proceeds. Modeled on the session's real
+    /// one-shot/deadline pattern (`OfficeSaveReceipt` / `withNativeDeadline`):
+    /// the receipt is settled by either the backfill's actual completion or
+    /// the deadline, so this returns at the deadline even when the backfill
+    /// never finishes — unlike a task group, which would keep waiting for the
+    /// slow child. The export already holds the session fence (release defers
+    /// to it); on timeout the exit keeps the previous behavior — the card
+    /// stays on the content summary and the editor offered the retry action.
+    private func settleInFlightPreviewRefresh() async {
+        guard let task = previewRefreshTask, !task.isCancelled else { return }
+        let receipt = OfficeSaveReceipt()
+        let timeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            receipt.resolve(.failure(NSError(domain: "org.floeagent.notes.office.preview",
+                                             code: 3,
+                                             userInfo: [NSLocalizedDescriptionKey: "preview-backfill-settle-timeout"])))
+        }
+        Task { @MainActor in
+            await task.value
+            receipt.resolve(.success(()))
+        }
+        do {
+            try await receipt.wait()
+            timeoutTask.cancel()
+        } catch {
+            timeoutTask.cancel()
+        }
     }
 
     private func refreshPreviewOnly() async {
