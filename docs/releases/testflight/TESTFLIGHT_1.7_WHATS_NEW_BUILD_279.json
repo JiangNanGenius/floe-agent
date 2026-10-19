@@ -1,4 +1,4 @@
 {
-  "en-US": "Test drawing continuously in Word, Excel and PowerPoint, and pinch to zoom while drawing mode stays on. Check saved ink and Notes thumbnails after reopening. PiP background sound now uses gentle meditation piano instead of synthesized noise; previous volume and switches are preserved. Audio tone and physical Pencil feel still need device feedback.",
-  "zh-Hans": "请测试 Word、Excel、PPT 连续书写，以及画笔模式下双指缩放；保存重开后检查笔迹和手记缩略图。画中画背景音已替换为柔和的冥想钢琴音乐，保留原有音量和开关设置。音色听感和真实 Pencil 手感仍需真机反馈。"
+  "en-US": "Test drawing continuously in Word, Excel and PowerPoint, and pinch to zoom while drawing mode stays on. Check saved ink and Notes thumbnails after reopening. PiP background sound now uses gentle meditation piano instead of synthesized noise; previous volume and switches are preserved. Audio tone and physical Pencil feel still need device feedback. Known ongoing work: stationary ink dots and some Notes preview recovery prompts remain under investigation.",
+  "zh-Hans": "请测试 Word、Excel、PPT 连续书写，以及画笔模式下双指缩放；保存重开后检查笔迹和手记缩略图。画中画背景音已替换为柔和的冥想钢琴音乐，保留原有音量和开关设置。音色听感和真实 Pencil 手感仍需真机反馈。 仍在处理：零移动点状笔迹，以及部分手记预览恢复提示。"
 }
