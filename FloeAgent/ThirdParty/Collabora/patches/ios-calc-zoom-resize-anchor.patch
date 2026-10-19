@@ -1,0 +1,34 @@
+diff --git a/browser/src/layer/tile/CalcTileLayer.js b/browser/src/layer/tile/CalcTileLayer.js
+--- a/browser/src/layer/tile/CalcTileLayer.js
++++ b/browser/src/layer/tile/CalcTileLayer.js
+@@ -410,8 +410,13 @@
+ 		const widthIncreased = oldFrame.pX < frame.pX;
+ 		const heightIncreased = oldFrame.pY < frame.pY;
+ 
+-		this._mobileChecksAfterResizeEvent(heightIncreased);
+-		this._nonDesktopChecksAfterResizeEvent(heightIncreased);
++		// These checks compensate for the on-screen keyboard changing the visible
++		// frame height. A zoom finalization also re-syncs the container, but keeps
++		// the frame height; running them there would scroll the previously selected
++		// cell back into view and discard the zoom anchor. Only a genuine height
++		// change is a resize for this purpose.
++		if (oldFrame.pY !== frame.pY)
++			this._afterViewportHeightChange(heightIncreased);
+ 
+ 		// Keep the cell edit cursor in view after the relayout (was a map
+ 		// 'resize' listener; folded here now that resize is map-free).
+@@ -422,6 +427,14 @@
+ 		// A larger frame exposes area whose tiles may not be cached yet.
+ 		if (heightIncreased || widthIncreased)
+ 			this._map.fire('sizeincreased');
++	},
++
++	// Run the mobile/tablet checks that compensate for a real on-screen-keyboard
++	// height change. Kept separate from the zoom-finalization sync, which has no
++	// height change and must preserve the current view.
++	_afterViewportHeightChange: function(heightIncreased) {
++		this._mobileChecksAfterResizeEvent(heightIncreased);
++		this._nonDesktopChecksAfterResizeEvent(heightIncreased);
+ 	},
+ 
+ 	_onStatusMsg: function (textMsg) {

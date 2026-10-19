@@ -52,6 +52,20 @@
         "this.layout.endZoom("
       ],
       "note": "Floe local frontend patch, not an upstream commit. Every two-finger move paints the existing zoom-frame at the range-clamped, unrounded target scale before the gesture ends. The end commit is synchronous in the same gesture and takes the nearest integer level to the range-clamped finger zoom (rounding step at most half a level), keeping the zoomTo guard/hook set (OverviewFade, _limitZoom, spreadsheet closePopups); the historical outward ceil/floor value is retained only as the beyond-range Overview guard input. touchcancel closes the frame at the start zoom without a commit."
+    },
+    {
+      "patch": "patches/ios-calc-zoom-resize-anchor.patch",
+      "patchSHA256": "a464a956c3958a0cac8472a7403f9db918ab3c38d5d4eaf0baf774c354758d83",
+      "sourceRepository": "https://github.com/CollaboraOnline/online.mirror.git",
+      "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+      "sourceFile": "browser/src/layer/tile/CalcTileLayer.js",
+      "originalSourceSHA256": "c2428eb9ed834e469192e0d931493aeb1c00fbbedd179f7454a5143c27b0acd0",
+      "patchedSourceSHA256": "71274e17db52be059c9a0e7612ad2b31da43faddd4fb752bdf5b5b6f7874041f",
+      "bundleMarker": "this._afterViewportHeightChange",
+      "bundleTokens": [
+        "_afterViewportHeightChange"
+      ],
+      "note": "Floe local frontend patch, not an upstream commit. Calc re-syncs its tile container synchronously at zoom finalization (_updateTileTwips -> applyZoom/endZoom and _restrictDocumentSize -> _onZoomRowColumns) without changing the visible frame height. The mobile/tablet keyboard-resize checks now run only when oldFrame.pY actually differs from the new frame.pY, so an unchanged-height zoom keeps its anchor instead of scrolling the previously selected cell back into view. A genuine height decrease still runs _onUpdateCursor and _scrollCellCursorIntoView; a genuine increase still restores the mobile input state. Geometry/range/clamp/layout updates, explicit cell navigation and frozen panes are untouched. Does not address the separate Word keyboard precondition and makes no Word claim."
     }
   ]
 }

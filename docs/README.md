@@ -36,7 +36,8 @@
 | [USER_GUIDE.md](USER_GUIDE.md) / [USER_GUIDE.zh-CN.md](USER_GUIDE.zh-CN.md) | 使用说明（工具、后台任务、Python、字体、工作区、远端） |
 | [FEATHER_SOURCE.md](FEATHER_SOURCE.md) | Feather/AltStore 安装源：稳定源地址、官网深层链接、发布校验与手动添加步骤 |
 | [Build 256 stability work](releases/repairs/FLOE_256_STABILITY.md) | 候选修复：Linux 配置恢复、按任务选性能、本地终端和 Office 自由绘制；非发布记录 |
-| [Office 连续双指缩放源码实现](releases/repairs/FLOE_OFFICE_LIVE_PINCH_SOURCE_20261019.md) | 双补丁链、生产器泛化与源码级检查；真实中间帧/Simulator/设备验收未完成（2026-10-19） |
+| [Office 连续双指缩放源码实现](releases/repairs/FLOE_OFFICE_LIVE_PINCH_SOURCE_20261019.md) | 连续缩放源码、组件及分模式验收历史；剩余 S1 问题分别跟踪 |
+| [Excel 双指缩放锚点修复](releases/repairs/FLOE_CALC_ZOOM_ANCHOR_20261020.md) | 修复旧单元格重定位；普通／画笔完整 App 模拟器用例 2 通过，匹配设备组件及新安装包待交付 |
 | [FLOE_156_FEEDBACK_REPAIR.md](releases/repairs/FLOE_156_FEEDBACK_REPAIR.md) | 反馈修复记录、PPTX 可见渲染门禁与 2026-09-22 宿主重建/重新固定更新 |
 | [ARCHITECTURE_OVERVIEW.md](ARCHITECTURE_OVERVIEW.md) | 总体架构 |
 | [ARCHITECTURE_LOCAL_SHELL.md](ARCHITECTURE_LOCAL_SHELL.md) | 本地 Shell / 终端 / apt·pkg 能力层架构（安全边界、Linux 兼容性、第三方许可） |
