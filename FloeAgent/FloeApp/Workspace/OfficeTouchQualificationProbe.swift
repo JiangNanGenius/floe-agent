@@ -196,6 +196,55 @@
 // the gate's __floeOfficePenState fields, and viewport facts
 // (innerWidth/Height, devicePixelRatio, visualViewport width/height/scale,
 // screen size and orientation type).
+//
+// BOUNDED CALL-SITE INSTRUMENTATION (same DEBUG + explicit launch gate,
+// separate owner/generation fence, and NOT a purely passive listener): the
+// probe additionally wraps a FIXED list of already-existing engine methods on
+// the live instances of this document — Map.focus, Map._changeFocusWidget,
+// TextInput.focus, docLayer._onInvalidateCursorMsg/_onCursorVisibleMsg/
+// _onCellCursorMsg, _onUpdateCursor, _updateCursorAndOverlay,
+// _onStatusMsg, _syncTileContainerSize, _mobileChecksAfterResizeEvent,
+// _nonDesktopChecksAfterResizeEvent, _scrollCellCursorIntoView,
+// _calculateScrollForNewCellCursor, and the exact scroll writer
+// activeLayout.scrollTo. There is no generic execution surface: only these
+// fixed names are wrapped, and installation is idempotent per instance (the
+// existing snapshot poll retries wrapping while a method is not yet
+// available). Every wrapper forwards the receiver, all arguments and the
+// original return value, lets an original throw propagate, and never calls
+// preventDefault, stops propagation, or writes model/focus/scroll/selection/
+// zoom/frame state. This is deliberately labelled call-site instrumentation,
+// not an observation of the event pipeline: it proves WHICH internal call ran
+// and with what primitive arguments, not that the call produced a visible
+// effect.
+//
+// Recording is fenced twice: a wrapped call only records while
+// `window.__floeTouchProbe` still belongs to this installation's owner token
+// AND page generation, and only after the current gesture serial is non-zero
+// (`gid > 0`). The bounded trace ring (`cl`, 32 entries) is reset at each
+// gesture birth so startup/page-load calls cannot fill it; the post-end
+// window keeps recording until the NEXT gesture starts. `clN` counts every
+// traced entry since birth, `clD` counts ring drops, and `clW` counts entries
+// withheld by the export budget for THIS transfer (see the snapshot trimming
+// order). Entries carry only fixed internal method tags (`k`), the probe's
+// monotonic ordinal (`q`), install-relative milliseconds (`t`), the gesture
+// serial (`gi`), fixed-schema primitive argument slots (`a`), whitelisted
+// message-type constants (`tp`, only cursorvisible/invalidatecursor/
+// cellcursor), read-only Calc/entry flag groups (`g`, `exg`), a derived
+// height-increase flag (`hi`) and the exact scroll delta (`d`), and 2–3
+// sanitized stack FUNCTION names with line/column (`sk`) whose source URLs are
+// discarded. At the raw end-touch, a trusted click and a focusin the ring
+// also receives one moment entry (`k='fx'`) with the active element's clipped
+// tag/id, a whitelisted `role` constant and `map.editorHasFocus()` as 0/1.
+// Stack capture is budgeted per gesture — 48 general attempts plus 24 slots
+// reserved for the decisive focus/cursor/scroll tags — so a newly retained
+// record still carries its product caller after the bounded ring has
+// overflowed; retained records that receive no stack are counted honestly in
+// `ctO` (exported only when non-zero, so the no-trace worst case is
+// unchanged). `Object.floeCTwrap`-style dotted probe frames, anonymous/eval
+// frames and source URLs are all discarded; only up to three sanitized product
+// function names with line/column are kept.
+// No message bodies, document text, selection, caret, URLs, paths, HTML or
+// error strings are ever read into an exported field.
 #if DEBUG && canImport(UIKit) && canImport(WebKit)
 import UIKit
 import WebKit
@@ -602,6 +651,8 @@ final class OfficeTouchQualificationProbe {
       gid: 0, ga: 0, gst: null, lmt: null, gend: null, gc: null,
       gmv: 0, gz0: null, gz0r: null, d0: null, lfin: null,
       ia: null, iaT: 0, iaN: 0,
+      cl: [], clN: 0, clD: 0, clS: 0, ctK: 0, ctKc: 0, ctO: 0,
+      cw: [], _sci: 0, _scf: 0, ctn: 0,
       mk: { g: 0, mv: 0, t: 0, c: 1, n: 0 },
       seq: 0, eseq: null, lmseq: null,
       latest: null, terminal: null, gest: [],
@@ -982,6 +1033,333 @@ final class OfficeTouchQualificationProbe {
         rec.q = q;
       } catch (x) { rec.q = { err: 1 }; }
     };
+    // ------------------------------------------------------------------
+    // Fixed call-site instrumentation (DEBUG + explicit launch gate only).
+    // Wraps exactly the methods listed in `ctInstall` on THIS document's live
+    // instances, fenced by this installation's owner token and page
+    // generation. A wrapper always forwards the receiver, every argument and
+    // the original return value, and never catches or rewrites an original
+    // throw. Records carry only primitive numbers/booleans, fixed internal
+    // tags, whitelisted role names and sanitized function names with
+    // line/column; source URLs and message bodies are discarded. Recording
+    // starts only after the current gesture serial is non-zero and the
+    // bounded ring is reset at each gesture birth.
+    const CTMAX = 32, CTSTK = 3, CTSTKMAX = 48, CTSTKCRIT = 24;
+    const CTROLES = ['textbox', 'searchbox', 'combobox', 'button', 'checkbox',
+                     'radio', 'slider', 'spinbutton', 'document', 'application',
+                     'group', 'link', 'none'];
+    const CTINTERNAL = ['floeCTwrap', 'ctStack', 'ctInstall', 'ctPush', 'moment'];
+    const CTNONPROD = ['<anonymous>', 'anonymous', 'eval'];
+    // The decisive attribution tags keep a reserved stack budget so a newly
+    // retained record still carries its caller after the ring overflowed.
+    const CTCRIT = ['mf', 'cfw', 'tif', 'icm', 'cvm', 'ccm', 'ucr', 'uco',
+                    'stm', 'sci', 'csc', 'scl'];
+    const tri = (v) => (v === undefined || v === null) ? null : (v ? 1 : 0);
+    const ctFence = () => {
+      try {
+        const cur = window.__floeTouchProbe;
+        return !!(cur && cur.owner === OWNER && cur.gen === P.gen &&
+                  typeof P.gid === 'number' && P.gid > 0);
+      } catch (e) { return false; }
+    };
+    // 2-3 caller frames: a whitelisted identifier-like function name plus
+    // line/column only. The captured stack's source URLs/paths are never
+    // retained, and frames belonging to this probe's own wrapper/helpers are
+    // skipped so the first kept frame is the real product caller.
+    const ctStack = () => {
+      try {
+        const raw = String((new Error()).stack || '');
+        const out = [];
+        const lines = raw.split('\n');
+        for (let i = 0; i < lines.length && out.length < CTSTK; i++) {
+          const ln = lines[i];
+          if (!ln) continue;
+          let name = '', lineNo = 0, colNo = 0, m = null;
+          if ((m = ln.match(/^\s*at\s+(.*?)\s*\((.*?):(\d+):(\d+)\)\s*$/))) {
+            // V8/WebKit: "at fn (url:line:col)".
+            name = m[1]; lineNo = parseInt(m[3], 10); colNo = parseInt(m[4], 10);
+          } else if ((m = ln.match(/^\s*at\s+(.*?):(\d+):(\d+)\s*$/))) {
+            // V8 bare form: "at url:line:col" (no function name, drop).
+            lineNo = parseInt(m[2], 10); colNo = parseInt(m[3], 10);
+          } else if ((m = ln.match(/^\s*(.*?)@(.*?):(\d+):(\d+)\s*$/))) {
+            // JavaScriptCore/WebKit: "fn@url:line:col" or "@url:line:col".
+            name = m[1]; lineNo = parseInt(m[3], 10); colNo = parseInt(m[4], 10);
+          } else continue;
+          name = String(name || '').trim();
+          if (!/^[A-Za-z0-9_$.#<>\[\]-]{1,40}$/.test(name)) continue;
+          // Skip this probe's own frames even when the engine prefixes the
+          // receiver type (for example "Object.floeCTwrap").
+          const seg = name.slice(name.lastIndexOf('.') + 1);
+          if (CTINTERNAL.indexOf(seg) >= 0) continue;
+          if (CTNONPROD.indexOf(name) >= 0) continue;
+          if (!(lineNo > 0) || !(colNo > 0)) continue;
+          out.push([name, lineNo, colNo]);
+        }
+        return out.length ? out : null;
+      } catch (e) { return null; }
+    };
+    // Read-only Calc/entry flag group: viewed-rectangle origin, text-cursor
+    // and cell-cursor visibility, and whether the Calc input bar has focus.
+    // Both are the exact branch inputs of the traced decision points; no
+    // layout write, redraw or focus change is triggered.
+    const ctFlags = () => {
+      const out = { vx: null, vy: null, ccv: null, tcv: null, cib: null };
+      try {
+        const a = window.app;
+        const layout = a && a.activeDocument && a.activeDocument.activeLayout;
+        const vr = layout && layout._viewedRectangle;
+        if (vr) { out.vx = gnum(vr.x1); out.vy = gnum(vr.y1); }
+        const tc = a && a.file && a.file.textCursor;
+        out.tcv = tc ? (tc.visible ? 1 : 0) : null;
+        const calc = a && a.calc;
+        out.ccv = calc ? (calc.cellCursorVisible ? 1 : 0) : null;
+        const map = a && a.map;
+        if (map && typeof map.calcInputBarHasFocus === 'function') {
+          out.cib = map.calcInputBarHasFocus() ? 1 : 0;
+        }
+      } catch (e) {}
+      return out;
+    };
+    const ctNdrFlags = () => {
+      const out = { sm: null, tb: null, dl: null, hv: null, ccv: null, cib: null };
+      try {
+        const md = window.mode;
+        if (md && typeof md.isSmallScreenDevice === 'function') out.sm = md.isSmallScreenDevice() ? 1 : 0;
+        if (md && typeof md.isTablet === 'function') out.tb = md.isTablet() ? 1 : 0;
+        const a = window.app, map = a && a.map, layer = map && map._docLayer;
+        out.dl = (map && typeof map._docLoaded !== 'undefined') ? (map._docLoaded ? 1 : 0) : null;
+        try {
+          const tc = a.file.textCursor;
+          const marker = layer && layer._cursorMarker;
+          out.hv = (tc && tc.visible && marker &&
+                    typeof marker.isDomAttached === 'function' && marker.isDomAttached()) ? 1 : 0;
+        } catch (e) {}
+        const calc = a && a.calc;
+        out.ccv = calc ? (calc.cellCursorVisible ? 1 : 0) : null;
+        if (map && typeof map.calcInputBarHasFocus === 'function') out.cib = map.calcInputBarHasFocus() ? 1 : 0;
+      } catch (e) {}
+      return out;
+    };
+    const ctMbrFlags = () => {
+      const out = { sm: null, bg: null };
+      try {
+        const md = window.mode;
+        if (md && typeof md.isSmallScreenDevice === 'function') out.sm = md.isSmallScreenDevice() ? 1 : 0;
+        out.bg = (document.activeElement === document.body) ? 1 : 0;
+      } catch (e) {}
+      return out;
+    };
+    const ctFramePY = () => {
+      try {
+        const a = window.app;
+        const layout = a && a.activeDocument && a.activeDocument.activeLayout;
+        const fs = layout && layout.frameSize;
+        return fs ? gnum(fs.pY) : null;
+      } catch (e) { return null; }
+    };
+    // Whitelisted role token of the active element. Only the fixed list above
+    // may be exported; any other/missing role is null.
+    const ctRole = (el) => {
+      try {
+        if (!el || typeof el.getAttribute !== 'function') return null;
+        const r = el.getAttribute('role');
+        if (typeof r !== 'string') return null;
+        const low = r.toLowerCase();
+        return CTROLES.indexOf(low) >= 0 ? low : null;
+      } catch (e) { return null; }
+    };
+    // Focus attribution at one real moment: clipped active-element tag/id, a
+    // whitelisted role constant and editorHasFocus() as a primitive. No text,
+    // selection, caret, URL or metadata is read.
+    const ctFocusFacts = () => {
+      const out = { a: null, d: null, r: null, f: null };
+      try {
+        const el = document.activeElement;
+        if (el) {
+          out.a = clip(el.tagName, 16);
+          out.d = clip(el.id, 32);
+          out.r = ctRole(el);
+        }
+      } catch (e) {}
+      try {
+        const map = window.app && window.app.map;
+        if (map && typeof map.editorHasFocus === 'function') out.f = map.editorHasFocus() ? 1 : 0;
+      } catch (e) {}
+      return out;
+    };
+    const ctPush = (rec) => {
+      try {
+        P.clN += 1;
+        // Newest-kept bounded ring: once full, the oldest record is dropped
+        // (counted in `clD`) so the post-end focus/scroll window — which is
+        // the evidence this instrumentation exists for — is never crowded
+        // out by earlier calls of the same gesture.
+        if (P.cl.length >= CTMAX) { P.cl.shift(); P.clD += 1; }
+        P.clS += 1;
+        rec.q = P.clS;
+        P.cl.push(rec);
+      } catch (e) {}
+    };
+    // Moment entry for the raw end-touch, a trusted click and a focusin. It
+    // shares the trace ring's bound/ordinal/drop accounting with the call
+    // entries so one honest counter set covers the whole gesture window.
+    const moment = (m) => {
+      try {
+        if (!ctFence()) return;
+        const ff = ctFocusFacts();
+        ctPush({ k: 'fx', m: m, t: now(), gi: P.gid,
+                 a: ff.a, d: ff.d, r: ff.r, f: ff.f });
+      } catch (e) {}
+    };
+    // Bounded per-gesture stack budget. Every attempt consumes a slot; the
+    // reserved critical slots are only reachable once the general budget is
+    // spent, so post-overflow focus/cursor-scroll records stay attributable.
+    const ctStackBudget = (tag) => {
+      if (P.ctK < CTSTKMAX) { P.ctK += 1; return true; }
+      if (CTCRIT.indexOf(tag) >= 0 && P.ctKc < CTSTKCRIT) { P.ctKc += 1; return true; }
+      return false;
+    };
+    // Idempotent per (instance, method). `enter` returns the record's extra
+    // fixed-schema fields, or `false` to skip this call (used by the scroll
+    // writer unless it is nested in _scrollCellCursorIntoView). `exit` may
+    // only add primitive fields to the already-pushed record.
+    const ctWrap = (obj, key, tag, enter, exit) => {
+      try {
+        if (!obj || typeof obj[key] !== 'function') return false;
+        const cur = obj[key];
+        if (cur.__floeCT && cur.__floeCT.o === OWNER) return true;
+        if (!P.cw) P.cw = [];
+        if (P.cw.length >= 64) return false;
+        const hadOwn = Object.prototype.hasOwnProperty.call(obj, key);
+        const orig = cur;
+        const wrapped = function floeCTwrap() {
+          let rec = null;
+          try {
+            if (ctFence()) {
+              // A schema/stack problem may degrade the optional fields but
+              // must never drop the record itself.
+              let extra = {};
+              try { extra = (typeof enter === 'function') ? enter(arguments) : {}; }
+              catch (e) { extra = {}; }
+              if (extra !== false) {
+                rec = { k: tag, t: now(), gi: P.gid };
+                if (extra) {
+                  try {
+                    for (const kk in extra) {
+                      if (Object.prototype.hasOwnProperty.call(extra, kk)) rec[kk] = extra[kk];
+                    }
+                  } catch (e) {}
+                }
+                // Stack capture is bounded per gesture: CTSTKMAX attempts
+                // for any record, plus CTSTKCRIT reserved for the decisive
+                // focus/cursor/scroll tags, so a newly retained critical
+                // record still gets its product caller after ring overflow.
+                try {
+                  if (ctStackBudget(tag)) {
+                    const st = ctStack();
+                    if (st) { rec.sk = st; } else { P.ctO += 1; }
+                  } else {
+                    P.ctO += 1;
+                  }
+                } catch (e) { P.ctO += 1; }
+              }
+            }
+          } catch (e) {}
+          if (rec) ctPush(rec);
+          if (tag === 'sci') {
+            P._sci += 1;
+            P._scf = 0;
+            try {
+              return orig.apply(this, arguments);
+            } finally {
+              P._sci -= 1;
+              try { if (rec && typeof exit === 'function') exit(rec); } catch (e) {}
+            }
+          }
+          const out = orig.apply(this, arguments);
+          try { if (rec && typeof exit === 'function') exit(rec, out); } catch (e) {}
+          return out;
+        };
+        wrapped.__floeCT = { o: OWNER, g: P.gen, orig: orig };
+        obj[key] = wrapped;
+        P.cw.push([obj, key, orig, hadOwn]);
+        return true;
+      } catch (e) { return false; }
+    };
+    const ctInstall = () => {
+      let n = 0;
+      try {
+        const cur = window.__floeTouchProbe;
+        if (!cur || cur.owner !== OWNER || cur.gen !== P.gen) return 0;
+        const a = window.app, map = a && a.map;
+        if (!map) return 0;
+        if (ctWrap(map, 'focus', 'mf',
+                   (args) => ({ a: tri(args[0]) }))) n++;
+        if (ctWrap(map, '_changeFocusWidget', 'cfw',
+                   (args) => ({ a: [args[0] ? 1 : 0,
+                     (typeof args[1] === 'number' && isFinite(args[1])) ? Math.round(args[1]) : null,
+                     tri(args[2])] }))) n++;
+        if (ctWrap(map._textInput, 'focus', 'tif',
+                   (args) => ({ a: tri(args[0]) }))) n++;
+        const layer = map._docLayer;
+        if (layer) {
+          if (ctWrap(layer, '_onInvalidateCursorMsg', 'icm',
+                     () => ({ tp: 'invalidatecursor' }))) n++;
+          if (ctWrap(layer, '_onCursorVisibleMsg', 'cvm',
+                     () => ({ tp: 'cursorvisible' }))) n++;
+          if (ctWrap(layer, '_onCellCursorMsg', 'ccm',
+                     () => ({ tp: 'cellcursor' }))) n++;
+          if (ctWrap(layer, '_onUpdateCursor', 'ucr',
+                     (args) => ({ a: [tri(args[0]), tri(args[1]), tri(args[2])],
+                                  g: ctFlags() }))) n++;
+          if (ctWrap(layer, '_updateCursorAndOverlay', 'uco',
+                     () => ({ g: ctFlags() }))) n++;
+          if (ctWrap(layer, '_onStatusMsg', 'stm',
+                     () => ({ g: ctFlags() }))) n++;
+          if (ctWrap(layer, '_syncTileContainerSize', 'syn',
+                     () => ({ g: ctFlags(), fp: ctFramePY() }),
+                     (rec) => {
+                       const py = ctFramePY();
+                       rec.hi = (rec.fp !== null && py !== null) ? ((rec.fp < py) ? 1 : 0) : null;
+                     })) n++;
+          if (ctWrap(layer, '_mobileChecksAfterResizeEvent', 'mbr',
+                     (args) => ({ a: tri(args[0]), g: ctMbrFlags() }))) n++;
+          if (ctWrap(layer, '_nonDesktopChecksAfterResizeEvent', 'ndr',
+                     (args) => ({ a: tri(args[0]), g: ctNdrFlags() }))) n++;
+          if (ctWrap(layer, '_scrollCellCursorIntoView', 'sci',
+                     () => ({ g: ctFlags() }),
+                     (rec) => {
+                       rec.sc = P._scf ? 1 : 0;
+                       rec.ex = now();
+                       const g2 = ctFlags();
+                       rec.exg = { vx: g2.vx, vy: g2.vy };
+                     })) n++;
+          if (ctWrap(layer, '_calculateScrollForNewCellCursor', 'csc',
+                     () => ({}),
+                     (rec, out) => {
+                       rec.ex = now();
+                       rec.d = (out && typeof out.x === 'number' && typeof out.y === 'number')
+                         ? [gnum(out.x), gnum(out.y)] : null;
+                     })) n++;
+        }
+        const layout = a && a.activeDocument && a.activeDocument.activeLayout;
+        if (layout) {
+          if (ctWrap(layout, 'scrollTo', 'scl',
+                     (args) => {
+                       // Only the exact writer invoked from the traced cursor
+                       // scroll path; every unrelated scroll is untraced.
+                       if (P._sci <= 0) return false;
+                       P._scf = 1;
+                       return { a: [(typeof args[0] === 'number' && isFinite(args[0])) ? gnum(args[0]) : null,
+                                    (typeof args[1] === 'number' && isFinite(args[1])) ? gnum(args[1]) : null,
+                                    tri(args[2])] };
+                     })) n++;
+        }
+      } catch (e) { n = -1; }
+      P.ctn = n;
+      return n;
+    };
+    P.ctInstall = ctInstall;
     const record = (key, e) => {
       try {
         const touch = key.charAt(0) === 't';
@@ -1054,6 +1432,17 @@ final class OfficeTouchQualificationProbe {
           P.ia = null;
           P.iaT = 0;
           P.iaN = 0;
+          // Per-gesture trace reset: the bounded call/moment ring never
+          // carries the previous gesture or any startup/page-load calls.
+          P.cl = [];
+          P.clN = 0;
+          P.clD = 0;
+          P.clS = 0;
+          P.ctK = 0;
+          P.ctKc = 0;
+          P.ctO = 0;
+          P._sci = 0;
+          P._scf = 0;
           try {
             const m = window.app && window.app.map;
             P.gz0 = m && typeof m.getZoom === 'function' ? num4(m.getZoom()) : null;
@@ -1072,6 +1461,9 @@ final class OfficeTouchQualificationProbe {
           rec.term = 1;
           P.terminal = rec;
           P.eseq = rec.seq;
+          // Raw end-touch focus attribution: active element + editor focus at
+          // the real terminal event, independent of any later poll.
+          moment(key);
           // Per-gesture end time: a delayed rAF sample is judged against its
           // own gesture, never against a newer gesture's global end/reset.
           P.ends[P.gid] = rec.t;
@@ -1202,6 +1594,9 @@ final class OfficeTouchQualificationProbe {
       const mkFocus = (key) => (e) => {
         const t = e && e.target;
         journal(key, { g: clip(t && t.tagName, 16), i: clip(t && t.id, 32) });
+        // Focus-in moment: active element and editor focus right after the
+        // real focus transition (focusout keeps only the journal entry).
+        if (key === 'fi') moment('fi');
       };
       const hFi = mkFocus('fi');
       const hFo = mkFocus('fo');
@@ -1220,6 +1615,9 @@ final class OfficeTouchQualificationProbe {
                        g: clip(e && e.target && e.target.tagName, 16),
                        i: clip(e && e.target && e.target.id, 32),
                        x: gnum(e && e.clientX), y: gnum(e && e.clientY) });
+        // Trusted click moment: what actually held focus when the click the
+        // engine documents as its focus trigger arrived.
+        if (key === 'ck') moment('ck');
       };
       const hCk = mkClick('ck');
       const hDc = mkClick('dc');
@@ -1236,6 +1634,21 @@ final class OfficeTouchQualificationProbe {
       }
     }
     P.teardown = () => {
+      // Restore only product methods still carrying THIS installation's
+      // wrapper marker. A newer owner's wrapper is left untouched, and an
+      // inherited method is restored by deleting the own property this
+      // installation created.
+      try {
+        for (const w of P.cw) {
+          try {
+            const obj = w[0], key = w[1], orig = w[2], hadOwn = w[3];
+            if (obj && obj[key] && obj[key].__floeCT && obj[key].__floeCT.o === OWNER) {
+              if (hadOwn) { obj[key] = orig; } else { delete obj[key]; }
+            }
+          } catch (e) {}
+        }
+      } catch (e) {}
+      try { P.cw.length = 0; } catch (e) {}
       for (const h of P.handles) {
         try { window.removeEventListener(h[0], h[1], { capture: h[2] }); } catch (e) {}
       }
@@ -1261,6 +1674,9 @@ final class OfficeTouchQualificationProbe {
       try { delete window.__floeTouchProbe; } catch (e) { window.__floeTouchProbe = undefined; }
     };
     window.__floeTouchProbe = P;
+    // Best-effort first wrap pass; the snapshot poll retries idempotently
+    // until the live instances/methods exist.
+    try { P.ctInstall(); } catch (e) {}
     return 'probe-ok:' + P.gen + ':' + P.owner;
   } catch (e) {
     return 'probe-fail';
@@ -1282,6 +1698,10 @@ final class OfficeTouchQualificationProbe {
 (() => {
   const P = window.__floeTouchProbe;
   if (!P) { return JSON.stringify({ v: 1, ok: 0, reason: 'not-installed' }); }
+  // Existing snapshot polling also completes the fixed call-site wrapping
+  // once the map/section/layout instances and their methods exist. The wrap
+  // pass is idempotent and records nothing itself.
+  if (typeof P.ctInstall === 'function') { try { P.ctInstall(); } catch (e) {} }
   const MAX = 42000;
   try {
     const num = (x) => (typeof x === 'number' && isFinite(x)) ? Math.round(x * 1000) / 1000 : null;
@@ -1355,12 +1775,30 @@ final class OfficeTouchQualificationProbe {
                    eseq: P.eseq, lmseq: P.lmseq,
                    mk: P.mk, pd: P.pdrop,
                    ia: P.ia, iaT: P.iaT, iaN: P.iaN,
+                   cl: (P.cl || []), clN: P.clN, clD: P.clD, clW: 0,
+                   ctn: (typeof P.ctn === 'number' ? P.ctn : 0),
                    starts: P.starts, ring: P.ring, rtv: 0, st: st, pen: pen, vp: vp,
                    cv: cv, jr: P.jr, jns: P.jns, jdr: P.jdr,
                    eg: (() => { try { return P.calcGeo(Math.round((performance.now() - P.pn0) * 10) / 10); } catch (e) { return null; } })(),
                    rs: document.readyState.slice(0, 12) };
+    // Honest omission counter: retained trace records that carry no `sk`
+    // because the per-gesture stack budget was spent (or no sanitizable
+    // frame was produced). Absent when zero, so the no-trace worst case is
+    // unchanged.
+    if (P.ctO > 0) { body.ctO = P.ctO; }
     let text = JSON.stringify(body);
     if (text.length > MAX) {
+      // Trim order (never starts, never the journal): exported trace records
+      // first (oldest first, counted in `clW`), then the recent-event ring
+      // exactly as before (counted in `rtv`). Only if even the ring-free,
+      // trace-free payload is over budget does the complete explicit failure
+      // object below replace the snapshot.
+      if (Array.isArray(body.cl) && body.cl.length) { body.cl = P.cl.slice(); }
+      while (text.length > MAX && body.cl && body.cl.length > 0) {
+        body.cl.shift();
+        body.clW = (body.clW || 0) + 1;
+        text = JSON.stringify(body);
+      }
       let limit = Math.floor(P.ring.length / 2);
       while (text.length > MAX && limit > 0) {
         const keep = P.ring.slice(Math.max(0, P.ring.length - limit));
