@@ -206,6 +206,18 @@ final class OfficePinchDiagnosticsUITests: XCTestCase {
                                           keyboardBefore: keyboardBefore, keyboardAfter: keyboardAfter)
         attachText(report, name: "pinch-diag-\(caseName)-interpretation")
 
+        // Observe a second, independent real gesture without requiring any
+        // particular visual zoom result in this diagnostic suite.
+        web.pinch(withScale: 0.8, velocity: -1)
+        Thread.sleep(forTimeInterval: 1.5)
+        attachScreenshot(web.screenshot(), name: "pinch-diag-\(caseName)-web-after-out")
+        let outRead = readProbeSnapshot(app, timeout: 15)
+        attachText(outRead.raw, name: "pinch-diag-\(caseName)-probe-after-out")
+        XCTAssertTrue(outRead.ok, "the probe must remain available after the second real gesture")
+        guard let afterOut = outRead.dict else { return }
+        XCTAssertEqual(number(afterOut["gen"]), number(baseline["gen"]),
+                       "both gestures must be observed in the same document session")
+
         // The telemetry contract itself is what these cases verify. A broken
         // probe must fail loudly; a non-zooming pinch must not.
         XCTAssertEqual(number(after["gen"]), number(baseline["gen"]),
