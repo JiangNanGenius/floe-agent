@@ -449,7 +449,10 @@ final class OfficePinchDiagnosticsUITests: XCTestCase {
     /// Duplicated from the untouched feature suite because it is private
     /// there; used only to OBSERVE (never to accept) the visual zoom delta.
     private func officeTitleBounds(in image: UIImage) throws -> CGRect {
-        let cg = try XCTUnwrap(image.cgImage)
+        guard let cg = image.cgImage else {
+            throw NSError(domain: "OfficePinchDiagnostics", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Screenshot has no CGImage"])
+        }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.recognitionLanguages = ["en-US"]
@@ -459,7 +462,13 @@ final class OfficePinchDiagnosticsUITests: XCTestCase {
             guard let text = observation.topCandidates(1).first?.string else { return false }
             return text.replacingOccurrences(of: " ", with: "").lowercased().contains("penui")
         }
-        return try XCTUnwrap(title, "the synthetic document title must be visible for the pinch comparison").boundingBox
+        guard let title else {
+            // OCR is an optional observation here. A missing landmark must
+            // not terminate the diagnostic before its event report attaches.
+            throw NSError(domain: "OfficePinchDiagnostics", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "Synthetic document title not visible"])
+        }
+        return title.boundingBox
     }
 }
 
