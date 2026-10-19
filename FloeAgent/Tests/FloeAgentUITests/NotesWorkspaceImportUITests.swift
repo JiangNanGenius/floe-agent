@@ -110,7 +110,26 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // UIKit's nested menu retains the visible title but drops SwiftUI's
         // accessibilityIdentifier on its generated action buttons.
         let word = app.buttons["Word 文档"]
-        XCTAssertTrue(word.waitForExistence(timeout: 10)); word.tap()
+        XCTAssertTrue(word.waitForExistence(timeout: 10))
+        // The nested UIKit menu exposes its AX button before its slide
+        // animation finishes. Wait for the actual target frame to settle.
+        var previousWordFrame = CGRect.null
+        var wordFrameStableSince = Date()
+        XCTAssertTrue(waitUntil(timeout: 10, {
+            guard word.exists, word.isEnabled, word.isHittable else {
+                previousWordFrame = .null
+                return false
+            }
+            let frame = word.frame
+            guard !frame.isEmpty else { return false }
+            if frame != previousWordFrame {
+                previousWordFrame = frame
+                wordFrameStableSince = Date()
+                return false
+            }
+            return Date().timeIntervalSince(wordFrameStableSince) >= 0.5
+        }), "the Word menu action must settle before selection")
+        word.tap()
         let title = app.textFields["notes.create.title"]
         XCTAssertTrue(title.waitForExistence(timeout: 10))
         title.tap()
@@ -358,7 +377,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(notes.waitForExistence(timeout: 15)); notes.tap()
         // The fixture is seeded at launch through the same Notes importer as a
         // user file import; open it through the real library card.
-        let card = revealCard(app, kind: "office", title: "捏合验收-居中")
+        let card = revealCard(app, kind: "office", title: "捏合验收-居中-2")
         XCTAssertTrue(card.isHittable, "the centered pinch fixture card must be reachable in the library")
         card.tap()
 
@@ -409,8 +428,8 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             let attachment = XCTAttachment(screenshot: shot)
             attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
         }
-        let beforeTitle = try officeMeasuredTitleBounds(in: beforePinch.image)
-        let afterTitle = try officeMeasuredTitleBounds(in: afterPinch.image)
+        let beforeTitle = try officeMeasuredTitleBounds(in: beforePinch.image, phase: "before")
+        let afterTitle = try officeMeasuredTitleBounds(in: afterPinch.image, phase: "after-in")
         XCTAssertGreaterThan(afterTitle.width, beforeTitle.width * 1.08,
                              "A UIKit pinch in drawing mode must visibly enlarge the document")
         XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 10),
@@ -425,7 +444,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         pinchOutAttachment.name = "office-pencil-center-after-real-pinch-out"
         pinchOutAttachment.lifetime = .keepAlways
         add(pinchOutAttachment)
-        let afterOutTitle = try officeMeasuredTitleBounds(in: afterPinchOut.image)
+        let afterOutTitle = try officeMeasuredTitleBounds(in: afterPinchOut.image, phase: "after-out")
         XCTAssertLessThan(afterOutTitle.width, afterTitle.width * 0.95,
                           "A subsequent UIKit pinch must visibly shrink the document")
         XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 10),
@@ -445,7 +464,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     /// acceptance and no widened probe — so the cropped-title failure the
     /// diagnosis recorded still fails here rather than passing softly.
     /// Keep the literal in sync with `OfficeWorkspaceStageFixture.pinchCenterMeasuredText`.
-    private func officeMeasuredTitleBounds(in image: UIImage) throws -> CGRect {
+    private func officeMeasuredTitleBounds(in image: UIImage, phase: String) throws -> CGRect {
         let expected = "Pen UI 5X8KQ2M7"
         let normalizedExpected = expected.replacingOccurrences(of: " ", with: "").lowercased()
         let cg = try XCTUnwrap(image.cgImage)
@@ -454,7 +473,15 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         request.recognitionLanguages = ["en-US"]
         request.usesLanguageCorrection = false
         try VNImageRequestHandler(cgImage: cg).perform([request])
-        let title = request.results?.first { observation in
+        let observations = request.results ?? []
+        let details = observations.map { observation in
+            "\(observation.topCandidates(1).first?.string ?? "") bounds=\(observation.boundingBox)"
+        }.joined(separator: "\n")
+        let ocrAttachment = XCTAttachment(string: details)
+        ocrAttachment.name = "office-pencil-center-ocr-\(phase)"
+        ocrAttachment.lifetime = .keepAlways
+        add(ocrAttachment)
+        let title = observations.first { observation in
             guard let text = observation.topCandidates(1).first?.string else { return false }
             return text.replacingOccurrences(of: " ", with: "").lowercased() == normalizedExpected
         }

@@ -84,7 +84,7 @@ enum OfficeWorkspaceStageFixture {
     /// test measures actual rendering with unchanged growth/shrink thresholds.
     /// Existing entries, including Trash, are left untouched.
     static let pinchCenterLaunchArgument = "--ui-test-office-pinch-center-fixture"
-    static let pinchCenterDocumentName = "捏合验收-居中.docx"
+    static let pinchCenterDocumentName = "捏合验收-居中-2.docx"
     /// The complete, deterministic OCR target. It is duplicated verbatim in
     /// `NotesWorkspaceImportUITests.officeMeasuredTitleBounds` (the test
     /// target cannot import the app target); keep both in sync. No random
@@ -115,9 +115,6 @@ enum OfficeWorkspaceStageFixture {
             try OfficeDocumentBuilder.createWord(at: url, title: "Pinch Center Anchor", paragraphs: [
                 "Centered UIKit pinch acceptance fixture.",
                 "anchor spacer row one",
-                "anchor spacer row two",
-                "anchor spacer row three",
-                "anchor spacer row four",
                 measured,
                 "anchor footer row one",
                 "anchor footer row two",
