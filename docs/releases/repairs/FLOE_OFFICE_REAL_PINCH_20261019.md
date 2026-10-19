@@ -72,3 +72,6 @@
 
 
 组件交付预检另定位到传输校验器遗漏新前端证明：它从旧 pin 建立候选清单，并遗漏复制浏览器补丁契约，导致真实新组件被正确拒绝。现复用既有严格证明校验，将已验证声明和字节一致的完整契约转交给私有候选；保留丢失证明、旧 pin 降级、补丁／实际资源摘要不符等拒绝路径。22 项传输测试及 76 项相关检查通过，保存的原始设备 ZIP 未重建、未改写。正式 pin、设备 App 归档与新内测仍是后续步骤。/ Transport preflight found that a candidate inherited the old pin without the new browser claim or complete contract graph. It now forwards only the already validated claim and byte-identical contracts, retaining strict rejection and downgrade guards. Twenty-two transport tests and 76 related checks passed; the original device ZIP is unchanged. Device pinning, App archiving and beta delivery remain separate steps.
+
+
+设备组件 pin 已切换到已独立回读的原始设备归档 `5785f2b4…`，实际前端为 `cc1bcc58…`。本地源固定复验及 pin 检查通过；Actions 仅存储本地编译的原字节，没有重新编译或提升运行资格。对应临时私有中转已删除，回查零草稿、无临时标签引用。设备 App 归档和新内测上传尚未开始。/ The device pin now references the independently downloaded original archive and rebuilt frontend. Clean-source validation and pin checks passed. Actions stored exact locally compiled bytes without rebuilding or promoting runtime claims. The temporary private transport was deleted, with zero drafts and no temporary tag ref remaining. Device App archiving and new beta upload are still pending.
