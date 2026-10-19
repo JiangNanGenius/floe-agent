@@ -491,6 +491,26 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let prefix = drawingOn ? casePrefix : casePrefix + "-drawing-off"
         capture("\(prefix)-document-opened")
 
+        // Ordinary mode can legitimately keep the Office text keyboard
+        // onscreen after the document opens (the toolbar test asserts that
+        // same opening state). A visibly covering keyboard shrinks the
+        // layout viewport to the 160 px canvas recorded in the drawing-off
+        // baseline, below the fixed visible-canvas floor, so the anchor
+        // contract correctly refuses to pinch until it is dismissed.
+        // Require the actual onscreen keyboard to leave through the
+        // platform's own hide key before the probe/geometry baseline; the
+        // readiness helper decides that from public onscreen geometry and
+        // actionable state, so the retained zero-height offscreen AX node
+        // seen in Word UI4 does not block an already-full canvas while a
+        // real docked or floating keyboard still forces dismissal, and
+        // unknown geometry fails closed. Drawing-on already asserts
+        // dismissal when the pen toggle is tapped, so only ordinary mode
+        // needs this public-UI step: no synthetic touch, no fixed sleep,
+        // no lowered canvas floor and no product debug control.
+        if !drawingOn {
+            dismissSoftwareKeyboardBeforePinchBaseline(app, label: mode)
+        }
+
         // The real centered fixture and the public XCTest gesture are shared
         // by both modes. The probe must be installed before any evidence is
         // interpreted; it is read as a bounded, content-free AX value.
@@ -571,9 +591,15 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // separate live-ink/placement/save cases.
         XCTAssertTrue(waitUntil(timeout: 15, { back.isEnabled && back.isHittable }))
         back.tap()
-        XCTAssertTrue(creationControl(app).waitForExistence(timeout: 60),
-                      "the Office editor must return to the Notes library through its safe exit")
+        // The library's create control can exist behind the editor while
+        // its asynchronous save/exit is still completing. Require the real
+        // foreground destination and closed editor within the same deadline.
+        let libraryCreate = creationControl(app)
+        XCTAssertTrue(waitUntil(timeout: 60, {
+            libraryCreate.exists && libraryCreate.isHittable && !back.exists
+        }), "the Office editor must finish its safe exit into the actionable Notes library")
         XCTAssertFalse(back.exists)
+        capture("\(prefix)-notes-library-returned")
     }
 
     private enum OfficePinchDirection: Equatable {
@@ -2108,6 +2134,172 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             let value = ((toggle.value as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             return on ? (value == "已开启" || value == "On") : (value == "已关闭" || value == "Off")
         }
+    }
+
+    /// Establishes that no software keyboard visibly occludes the Office
+    /// canvas before the pinch baseline, dismissing an actually onscreen
+    /// keyboard through the platform's own hide key. Ordinary mode can
+    /// legitimately open with this keyboard onscreen (the toolbar test
+    /// asserts the same opening state); pinching a keyboard-shrunk
+    /// viewport would fail the fixed visible-canvas floor by design.
+    /// Readiness is judged from public onscreen geometry and actionable
+    /// state, never raw node existence or count: a retained zero-height
+    /// offscreen AX node (Word UI4 recorded keyboard (0,744,1133,0)
+    /// against app (0,0,1133,744) with every key offscreen and
+    /// non-hittable while the layout already reported the full 568 px
+    /// canvas) does not block the pinch, but a real docked or floating
+    /// keyboard must still be dismissed through its exposed public hide
+    /// key, and unknown or invalid geometry fails closed instead of
+    /// silently passing. This is public UI input only: no synthetic
+    /// touch, no fixed sleep, no lowered canvas bound and no product
+    /// debug control. The hide lookup stays fail-closed: when an
+    /// onscreen keyboard exposes no hittable public hide key the test
+    /// fails with a bounded dump of the keyboard's actually exposed
+    /// identifiers and labels instead of guessing coordinates or edges.
+    /// After the hide tap the wait is for onscreen occlusion to end, so
+    /// the hide animation's retained offscreen node cannot re-fail an
+    /// otherwise clean canvas; two consecutive samples keep a transient
+    /// mid-animation reading from settling early.
+    private func dismissSoftwareKeyboardBeforePinchBaseline(
+        _ app: XCUIApplication, label: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let keyboard = app.keyboards.firstMatch
+        guard keyboard.waitForExistence(timeout: 5) else { return }
+        switch officeKeyboardOnscreenReadiness(app) {
+        case .noKeyboard:
+            return
+        case .offscreenStale:
+            attachKeyboardVisibilityFacts(app, label: label, phase: "before-hide-lookup-offscreen-stale")
+            return
+        case .invalidGeometry(let reason):
+            attachKeyboardVisibilityFacts(app, label: label, phase: "before-hide-lookup-invalid-geometry")
+            XCTFail("\(label): the keyboard node's onscreen readiness could not be established from public geometry (\(reason)); refusing to guess",
+                    file: file, line: line)
+            return
+        case .onscreen(let visibleHeight, let hittable):
+            attachKeyboardVisibilityFacts(app, label: label, phase: "before-hide-lookup")
+            attachText("onscreen-keyboard visible-height=\(visibleHeight) hittable=\(hittable)",
+                       name: "\(label)-keyboard-readiness-onscreen")
+            var hideKey: XCUIElement?
+            for identifier in ["UIKeyboardDismissButton", "keyboard.dismiss"] {
+                let candidate = keyboard.buttons[identifier]
+                if candidate.exists && candidate.isHittable { hideKey = candidate; break }
+            }
+            if hideKey == nil {
+                for text in ["隐藏键盘", "Hide Keyboard", "Hide keyboard"] {
+                    let candidate = keyboard.buttons
+                        .matching(NSPredicate(format: "label == %@", text)).firstMatch
+                    if candidate.exists && candidate.isHittable { hideKey = candidate; break }
+                }
+            }
+            if hideKey == nil {
+                let compactDown = app.buttons["keyboard.chevron.compact.down"]
+                if compactDown.exists && compactDown.isHittable { hideKey = compactDown }
+            }
+            guard let hideKey else {
+                attachKeyboardVisibilityFacts(app, label: label, phase: "hide-key-not-hittable")
+                let exposed = keyboard.buttons.allElementsBoundByIndex.prefix(24)
+                    .map { "\($0.identifier)|\($0.label)" }.joined(separator: ", ")
+                attachText("keyboard-hide-key-missing: \(exposed)", name: "\(label)-keyboard-keys")
+                XCTFail("\(label): the software keyboard is onscreen but its public hide key was not exposed; refusing to pinch a keyboard-shrunk canvas",
+                        file: file, line: line)
+                return
+            }
+            hideKey.tap()
+            var last: OfficeKeyboardReadiness = .noKeyboard
+            var settled = 0
+            let cleared = waitUntil(timeout: 15) {
+                last = officeKeyboardOnscreenReadiness(app)
+                if last.endsOnscreenOcclusion { settled += 1 } else { settled = 0 }
+                return settled >= 2
+            }
+            attachKeyboardVisibilityFacts(app, label: label, phase: "after-hide")
+            XCTAssertTrue(cleared,
+                          "\(label): the keyboard's own hide key must end its onscreen occlusion before the pinch canvas baseline; last readiness: \(last)",
+                          file: file, line: line)
+        }
+    }
+
+    /// Readiness of the software keyboard from public onscreen geometry
+    /// and actionable state only. Raw `.exists`/`.count` cannot decide:
+    /// a dismissed keyboard can leave a retained offscreen node, while
+    /// an actually covering keyboard must block the pinch until its own
+    /// public hide key has been used.
+    private enum OfficeKeyboardReadiness {
+        case noKeyboard
+        case offscreenStale
+        case onscreen(visibleHeight: CGFloat, hittable: Bool)
+        case invalidGeometry(reason: String)
+
+        /// True when nothing visibly occludes the canvas: no node at all,
+        /// or only a retained node with no positive-area onscreen overlap.
+        /// Onscreen and unknown-geometry states never satisfy readiness.
+        var endsOnscreenOcclusion: Bool {
+            switch self {
+            case .noKeyboard, .offscreenStale: return true
+            case .onscreen, .invalidGeometry: return false
+            }
+        }
+    }
+
+    private func officeKeyboardOnscreenReadiness(
+        _ app: XCUIApplication
+    ) -> OfficeKeyboardReadiness {
+        let keyboard = app.keyboards.firstMatch
+        guard keyboard.exists else { return .noKeyboard }
+        let appFrame = app.frame
+        let keyboardFrame = keyboard.frame
+        let components = [appFrame.origin.x, appFrame.origin.y,
+                          appFrame.size.width, appFrame.size.height,
+                          keyboardFrame.origin.x, keyboardFrame.origin.y,
+                          keyboardFrame.size.width, keyboardFrame.size.height]
+        // Raw stored sizes: CGRect's .width/.height standardize away a
+        // negative size, which would hide invalid geometry behind a
+        // plausible positive extent.
+        guard components.allSatisfy({ $0.isFinite }),
+              appFrame.size.width > 0, appFrame.size.height > 0,
+              keyboardFrame.size.width >= 0, keyboardFrame.size.height >= 0 else {
+            return .invalidGeometry(reason: "app=\(appFrame) keyboard=\(keyboardFrame)")
+        }
+        let overlap = keyboardFrame.intersection(appFrame)
+        let visibleHeight = overlap.isNull ? 0 : max(overlap.height, 0)
+        // The public actionable state outranks geometry: a hittable
+        // keyboard node is treated as live even if its window-frame
+        // snapshot momentarily reads degenerate.
+        let hittable = keyboard.isHittable
+        let hasVisibleArea = !overlap.isNull && overlap.width > 0 && overlap.height > 0
+        if hittable || hasVisibleArea {
+            return .onscreen(visibleHeight: visibleHeight, hittable: hittable)
+        }
+        return .offscreenStale
+    }
+
+    /// Bounded public AX facts from the actual decision point. Earlier tap
+    /// snapshots cannot establish a later keyboard's frame or hittability.
+    /// This collects evidence only; it changes no readiness or pinch guard.
+    private func attachKeyboardVisibilityFacts(
+        _ app: XCUIApplication, label: String, phase: String
+    ) {
+        let keyboard = app.keyboards.firstMatch
+        var facts = ["phase=\(phase)", "wall=\(Date().timeIntervalSince1970)",
+                     "app-frame=\(app.frame)", "keyboard-count=\(app.keyboards.count)",
+                     "keyboard-exists=\(keyboard.exists)"]
+        if keyboard.exists {
+            facts.append("keyboard-frame=\(keyboard.frame)")
+            facts.append("keyboard-hittable=\(keyboard.isHittable)")
+            facts.append("keyboard-enabled=\(keyboard.isEnabled)")
+            for button in keyboard.buttons.allElementsBoundByIndex.prefix(24) {
+                facts.append("key=\(button.identifier.prefix(96))|\(button.label.prefix(96))"
+                    + " frame=\(button.frame) hittable=\(button.isHittable) enabled=\(button.isEnabled)")
+            }
+        }
+        attachText(facts.joined(separator: "\n"), name: "\(label)-keyboard-visibility-\(phase)")
+        let screen = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screen.name = "\(label)-whole-screen-\(phase)"; screen.lifetime = .keepAlways
+        add(screen)
+        let viewport = readOfficeTouchProbe(app, timeout: 3)
+        attachText(viewport.raw, name: "\(label)-keyboard-viewport-\(phase)")
     }
 
     /// Redacted, bounded toolbar evidence for the visual host: identities,
