@@ -2,6 +2,7 @@
 #if canImport(UIKit) && DEBUG
 import Foundation
 import FloeDocuments
+import FloeNotes
 import FloePersistence
 import FloeWorkspace
 
@@ -14,6 +15,13 @@ import FloeWorkspace
 /// Notes entry paths be driven against real documents without a native
 /// engine, and with no test-only control inside the product UI. Gated on
 /// `-ui-testing` plus an explicit launch argument; idempotent per install.
+///
+/// It also seeds one separate, independently owned Notes document for the
+/// real-UIKit pinch acceptance (see `seedCenteredPinchDocumentIfRequested`),
+/// created through the same `NoteFileImporter` path as a user file import but
+/// laid out so its measured line sits around the public gesture anchor
+/// instead of the page top-left. The ordinary Notes document creation flow,
+/// the Office builders and the product gesture code are untouched.
 @MainActor
 enum OfficeWorkspaceStageFixture {
     static let launchArgument = "--ui-test-office-workspace-fixture"
@@ -64,6 +72,60 @@ enum OfficeWorkspaceStageFixture {
             }
         } catch {
             // A fixture failure leaves the pre-existing workspace untouched.
+        }
+    }
+
+    // MARK: - Centered real-UIKit pinch acceptance document
+
+    /// Real DOCX fixture positioned around the landscape gesture anchor.
+    /// Leading spaces and preceding paragraphs keep the complete OCR target
+    /// visible after the public XCTest pinch's observed 2.488x zoom. The UI
+    /// test measures actual rendering with unchanged growth/shrink thresholds.
+    /// Existing entries, including Trash, are left untouched.
+    static let pinchCenterLaunchArgument = "--ui-test-office-pinch-center-fixture"
+    static let pinchCenterDocumentName = "捏合验收-居中.docx"
+    /// The complete, deterministic OCR target. It is duplicated verbatim in
+    /// `NotesWorkspaceImportUITests.officeMeasuredTitleBounds` (the test
+    /// target cannot import the app target); keep both in sync. No random
+    /// token is needed: identity comes from the owned document, and a fixed
+    /// label avoids OCR noise from a changing suffix.
+    static let pinchCenterMeasuredText = "Pen UI 5X8KQ2M7"
+
+    static func seedCenteredPinchDocumentIfRequested() async {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard arguments.contains("-ui-testing"),
+              arguments.contains(pinchCenterLaunchArgument) else { return }
+        do {
+            let store = try await NotesRepository.shared.store()
+            let ownedTitle = (pinchCenterDocumentName as NSString).deletingPathExtension
+            let existing = try await store.documents(includeTrash: true)
+            guard !existing.contains(where: { $0.title == ownedTitle }) else { return }
+            let scratch = try await StorageCleanupLeaseCenter.shared.makeLeasedScratch(purpose: "notes")
+            let root = scratch.url
+            defer {
+                try? FileManager.default.removeItem(at: root)
+                scratch.lease.release()
+            }
+            let url = root.appendingPathComponent(pinchCenterDocumentName)
+            // The measured line is a body paragraph: the 26 pt Title line is
+            // the first paragraph by construction and would sit at the page
+            // top (the geometry the original diagnosis documented).
+            let measured = String(repeating: " ", count: 44) + pinchCenterMeasuredText
+            try OfficeDocumentBuilder.createWord(at: url, title: "Pinch Center Anchor", paragraphs: [
+                "Centered UIKit pinch acceptance fixture.",
+                "anchor spacer row one",
+                "anchor spacer row two",
+                "anchor spacer row three",
+                "anchor spacer row four",
+                measured,
+                "anchor footer row one",
+                "anchor footer row two",
+            ])
+            let draft = try await NoteFileImporter.importFile(url, notebookID: nil, store: store)
+            _ = try await store.create(draft)
+        } catch {
+            // A fixture failure leaves the pre-existing library untouched; the
+            // acceptance test then fails honestly on its own visibility gate.
         }
     }
 }

@@ -1819,6 +1819,11 @@ final class AppEnvironment: ObservableObject {
                 }
             }
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains(OfficeWorkspaceStageFixture.pinchCenterLaunchArgument) {
+                // Seed the owned document before the first Notes library load.
+                await OfficeWorkspaceStageFixture.seedCenteredPinchDocumentIfRequested()
+            }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains("--ui-test-task-management-fixture") {
                 // OWNED synthetic tasks for the bulk task-management UI
                 // acceptance. Fixed identities, idempotent: a missing task is

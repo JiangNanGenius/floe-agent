@@ -190,41 +190,9 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.4)
         capture("office-pencil-toggle-on")
 
-        // XCTest synthesizes real UIKit touches here. Require a change in
-        // the document's rendered title, in addition to the separate native
-        // tests of frontend TouchEvents and saved vectors.
-        let web = app.webViews.firstMatch
-        XCTAssertTrue(web.waitForExistence(timeout: 10))
-        let beforePinch = web.screenshot()
-        web.pinch(withScale: 1.25, velocity: 1)
-        Thread.sleep(forTimeInterval: 1)
-        let afterPinch = web.screenshot()
-        for (name, shot) in [("office-pencil-before-real-pinch", beforePinch),
-                             ("office-pencil-after-real-pinch", afterPinch)] {
-            let attachment = XCTAttachment(screenshot: shot)
-            attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
-        }
-        let beforeTitle = try officeTitleBounds(in: beforePinch.image)
-        let afterTitle = try officeTitleBounds(in: afterPinch.image)
-        XCTAssertGreaterThan(afterTitle.width, beforeTitle.width * 1.08,
-                             "A UIKit pinch in drawing mode must visibly enlarge the document")
-        XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 10),
-                      "Pinching must leave the drawing tool enabled")
-
-        // A second independent gesture must establish its own start after
-        // the first ends; require visible zoom-out without leaving drawing.
-        web.pinch(withScale: 0.8, velocity: -1)
-        Thread.sleep(forTimeInterval: 1)
-        let afterPinchOut = web.screenshot()
-        let pinchOutAttachment = XCTAttachment(screenshot: afterPinchOut)
-        pinchOutAttachment.name = "office-pencil-after-real-pinch-out"
-        pinchOutAttachment.lifetime = .keepAlways
-        add(pinchOutAttachment)
-        let afterOutTitle = try officeTitleBounds(in: afterPinchOut.image)
-        XCTAssertLessThan(afterOutTitle.width, afterTitle.width * 0.95,
-                          "A subsequent UIKit pinch must visibly shrink the document")
-        XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 10),
-                      "Repeated pinching must leave the drawing tool enabled")
+        // Visible pinch acceptance uses the centered document in the separate
+        // test below; the created document's top-left title leaves the viewport
+        // under the public gesture. Creation and control checks stay here.
 
         settings.tap()
         let panel = app.staticTexts["office.ink.panel"]
@@ -363,7 +331,123 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertFalse(back.exists)
     }
 
-    private func officeTitleBounds(in image: UIImage) throws -> CGRect {
+    /// Real UIKit gestures must visibly scale a complete centered text target
+    /// in both directions while drawing stays enabled. The ordinary creation
+    /// and settings flow is qualified separately above.
+    func testOfficePencilRealPinchOnCenteredFixture() throws {
+        guard ProcessInfo.processInfo.environment["FLOE_OFFICE_PENCIL_UI_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in Office pen toolbar UI qualification; set FLOE_OFFICE_PENCIL_UI_QUALIFICATION=1 in the test runner environment.")
+        }
+        continueAfterFailure = false
+        let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true
+            || UIDevice.current.userInterfaceIdiom == .pad
+        let app = XCUIApplication()
+        app.terminate()
+        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing",
+                               "--ui-test-skip-onboarding", "--ui-test-office-pinch-center-fixture"]
+        if ipad { app.launchArguments.append("-ui-testing-ipad") }
+        app.launch()
+        defer { app.terminate() }
+        if ipad { requireLandscapeAfterLaunch(app) }
+        if !ipad {
+            let sidebar = app.buttons["phone.sidebar.open"]
+            XCTAssertTrue(sidebar.waitForExistence(timeout: 15)); sidebar.tap()
+        }
+        let notes = app.staticTexts["sidebar.notes"].firstMatch
+        XCTAssertTrue(notes.waitForExistence(timeout: 15)); notes.tap()
+        // The fixture is seeded at launch through the same Notes importer as a
+        // user file import; open it through the real library card.
+        let card = revealCard(app, kind: "office", title: "捏合验收-居中")
+        XCTAssertTrue(card.isHittable, "the centered pinch fixture card must be reachable in the library")
+        card.tap()
+
+        let back = openedDocumentBackControl(app)
+        let readyDeadline = Date().addingTimeInterval(60)
+        while !(back.isEnabled && back.isHittable) && Date() < readyDeadline { Thread.sleep(forTimeInterval: 0.5) }
+        XCTAssertTrue(back.isEnabled && back.isHittable,
+                      "the native Office editor must finish opening the centered fixture")
+
+        // An existing document can settle in the read-only preview first; use
+        // the host Edit action exactly like the toolbar test, then require the
+        // real pen toolbar.
+        let toggle = app.buttons["office.drawing.toggle"]
+        let edit = app.buttons["office.preview.edit"]
+        XCTAssertTrue(waitUntil(timeout: 60, { toggle.exists || edit.exists }),
+                      "the Office surface must reach either the editable pen toolbar or the host Edit action")
+        if !toggle.exists {
+            XCTAssertTrue(edit.exists, "the Office preview must expose its Edit action")
+            XCTAssertTrue(waitUntil(timeout: 30, { edit.isEnabled && edit.isHittable }),
+                          "the preview's Edit action must become actionable")
+            assertTouchTarget(edit)
+            edit.tap()
+        }
+        XCTAssertTrue(toggle.waitForExistence(timeout: 60),
+                      "the editable Office toolbar must expose the direct pen toggle after the native engine is ready")
+        XCTAssertTrue(waitUntil(timeout: 60, { toggle.exists && toggle.isEnabled && toggle.isHittable }),
+                      "the pen toggle must become actionable once editing is ready")
+        XCTAssertTrue(waitForDrawingValue(toggle, on: false, timeout: 15),
+                      "the pen toggle must start in the real Off state for the fixture document")
+        toggle.tap()
+        XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 30),
+                      "one tap on the direct toggle must turn drawing on")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 15),
+                      "enabling drawing must dismiss the Office text keyboard")
+        capture("office-pencil-center-document-opened")
+
+        // XCTest synthesizes real UIKit touches here. Require a change in the
+        // document's rendered measured line, in addition to the separate
+        // native tests of frontend TouchEvents and saved vectors.
+        let web = app.webViews.firstMatch
+        XCTAssertTrue(web.waitForExistence(timeout: 10))
+        let beforePinch = web.screenshot()
+        web.pinch(withScale: 1.25, velocity: 1)
+        Thread.sleep(forTimeInterval: 1)
+        let afterPinch = web.screenshot()
+        for (name, shot) in [("office-pencil-center-before-real-pinch", beforePinch),
+                             ("office-pencil-center-after-real-pinch", afterPinch)] {
+            let attachment = XCTAttachment(screenshot: shot)
+            attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        }
+        let beforeTitle = try officeMeasuredTitleBounds(in: beforePinch.image)
+        let afterTitle = try officeMeasuredTitleBounds(in: afterPinch.image)
+        XCTAssertGreaterThan(afterTitle.width, beforeTitle.width * 1.08,
+                             "A UIKit pinch in drawing mode must visibly enlarge the document")
+        XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 10),
+                      "Pinching must leave the drawing tool enabled")
+
+        // A second independent gesture must establish its own start after
+        // the first ends; require visible zoom-out without leaving drawing.
+        web.pinch(withScale: 0.8, velocity: -1)
+        Thread.sleep(forTimeInterval: 1)
+        let afterPinchOut = web.screenshot()
+        let pinchOutAttachment = XCTAttachment(screenshot: afterPinchOut)
+        pinchOutAttachment.name = "office-pencil-center-after-real-pinch-out"
+        pinchOutAttachment.lifetime = .keepAlways
+        add(pinchOutAttachment)
+        let afterOutTitle = try officeMeasuredTitleBounds(in: afterPinchOut.image)
+        XCTAssertLessThan(afterOutTitle.width, afterTitle.width * 0.95,
+                          "A subsequent UIKit pinch must visibly shrink the document")
+        XCTAssertTrue(waitForDrawingValue(toggle, on: true, timeout: 10),
+                      "Repeated pinching must leave the drawing tool enabled")
+
+        // Safe exit through the product's own back/save path.
+        XCTAssertTrue(waitUntil(timeout: 15, { back.isEnabled && back.isHittable }))
+        back.tap()
+        XCTAssertTrue(creationControl(app).waitForExistence(timeout: 60),
+                      "the Office editor must return to the Notes library through its safe exit")
+        XCTAssertFalse(back.exists)
+    }
+
+    /// Bounds of the centered fixture's measured line. The match requires the
+    /// COMPLETE deterministic fixture title after whitespace-and-case
+    /// normalization only — no confusable substitution, no partial-ID
+    /// acceptance and no widened probe — so the cropped-title failure the
+    /// diagnosis recorded still fails here rather than passing softly.
+    /// Keep the literal in sync with `OfficeWorkspaceStageFixture.pinchCenterMeasuredText`.
+    private func officeMeasuredTitleBounds(in image: UIImage) throws -> CGRect {
+        let expected = "Pen UI 5X8KQ2M7"
+        let normalizedExpected = expected.replacingOccurrences(of: " ", with: "").lowercased()
         let cg = try XCTUnwrap(image.cgImage)
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
@@ -372,9 +456,9 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         try VNImageRequestHandler(cgImage: cg).perform([request])
         let title = request.results?.first { observation in
             guard let text = observation.topCandidates(1).first?.string else { return false }
-            return text.replacingOccurrences(of: " ", with: "").lowercased().contains("penui")
+            return text.replacingOccurrences(of: " ", with: "").lowercased() == normalizedExpected
         }
-        return try XCTUnwrap(title, "The synthetic document title must be visible for the pinch comparison").boundingBox
+        return try XCTUnwrap(title, "The complete centered fixture title must be visible for the pinch comparison").boundingBox
     }
 
     func testWorkspaceImportAndDocumentAssistant() throws {
