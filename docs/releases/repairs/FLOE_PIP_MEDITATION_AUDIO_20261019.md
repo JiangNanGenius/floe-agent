@@ -1,0 +1,25 @@
+# PiP 冥想音乐替换（2026-10-19）
+
+已将程序合成的雨声、棕噪声替换为随 App 打包的冥想钢琴氛围音乐。旧的音色值在解码时迁移；既有开关、音量（含 0）、播报和提示音设置保留。设置页显示简洁的音源名称，音量和试听入口保留。加载失败会释放旧播放器并走原有错误提示。
+
+## 音源与处理
+
+- 曲目：Yoiyami 的 [The Budding of Consciousness](https://opengameart.org/node/182247)，作者页面声明 CC0 1.0；来源与修改说明随 App 许可证页面提供。
+- 原始文件 SHA-256：`c879c57f4353c16926026e05fea372be64a73356ea663475aa1f54bf5499b513`。
+- 取原曲 110–176 秒，以 6 秒交叉淡化组成 60 秒循环；48 kHz、双声道、16-bit PCM WAV，11,520,078 字节。
+- 打包文件 SHA-256：`ad2a74c17c43a67159f90407f84adf6ffb940303ce83a6eb6e11cad5248a6bf5`。
+- 使用 PCM 保留确定的采样边界；不在运行时下载，也不回退到合成噪声。保留短提示音合成器。
+
+## 当前验证
+
+源码：`1b92696e372f0f3f5536db44ab66b1312dc5eb7c`；Xcode 27.0（27A266a）、iOS Simulator 27、arm64。使用本地主机、6 个编译任务和既有唯一 iPad 模拟器，未清除其数据。
+
+- `bash FloeAgent/scripts/gen_project.sh`：生成并提交对应工程后，干净源码复检通过。
+- `bash FloeAgent/scripts/license_inventory.sh --check`：通过；新音源列入 App 许可证清单。
+- 完整 App `build-for-testing`：通过，源码保持不变。实际产物内的 WAV、许可证、Office 浏览器和模拟器原生库摘要均符合预期。
+- `test-without-building`，`PiPAudioServiceTests` / `PiPAudioPreferencesTests`：42 项通过，0 失败、0 跳过。
+- 单独执行 `PiPAudioBackendAppTests`：3 项通过，0 失败、0 跳过；实际 Apple 解码、有限非静音采样、接缝连续性，以及真实播放器的零音量、即时音量、暂停、恢复、停止均通过。
+- 初次启动检查遗漏命令级 `DEVELOPER_DIR`，在测试前报 simctl 72；随后指定 Xcode 路径执行上述测试。Xcode 的附加诊断收集仍有 simctl 路径警告，已保留原始日志；两次测试本身均正常完成。
+- 测试后独立查询已启动模拟器列表为空；临时测试计划已保存并移出可再生构建目录。
+
+音频频谱和接缝检查只证明测量属性，不能代替听感。已提供试听片段，真机音色、听感及长时间循环仍由用户验收。本文不是新 TestFlight 上传或可安装证明；Build 278 保持不变，后续内测由发布阶段交付。
