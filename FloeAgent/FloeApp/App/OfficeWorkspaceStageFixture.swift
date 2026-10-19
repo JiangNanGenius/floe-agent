@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit) && DEBUG
 import Foundation
+import FloeCore
 import FloeDocuments
 import FloeNotes
 import FloePersistence
