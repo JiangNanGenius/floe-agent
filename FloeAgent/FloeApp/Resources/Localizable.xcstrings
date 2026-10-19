@@ -47821,6 +47821,23 @@
         }
       }
     },
+    "settings.licenses.document.pip_meditation.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meditation music — Yoiyami"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "冥想音乐 — Yoiyami"
+          }
+        }
+      }
+    },
     "settings.licenses.document.cad.title": {
       "extractionState": "manual",
       "localizations": {
@@ -89218,36 +89235,19 @@
         }
       }
     },
-    "pip.audio.sound.rain": {
+    "pip.audio.sound.meditation": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Rain"
+            "value": "Meditation"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "雨声"
-          }
-        }
-      }
-    },
-    "pip.audio.sound.brown": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Brown noise"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "棕噪声"
+            "value": "冥想音乐"
           }
         }
       }

@@ -11,6 +11,7 @@
 		01646694EFAB7D7FE8DD7F94 /* DesignFreezeProtectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 790388040FBC66D6F19B4C85 /* DesignFreezeProtectionCoordinator.swift */; };
 		022DCFD99F85967EC9162972 /* NotesSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C6C6EF70E9F50E66B502984 /* NotesSession.swift */; };
 		02F586BA29B4424553D3F6B9 /* WorkbenchPanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B87DFCBA3F761A6B096C481 /* WorkbenchPanels.swift */; };
+		030EB2951523E502E849BA6A /* PiPAmbientMeditation.wav in Resources */ = {isa = PBXBuildFile; fileRef = 05AC8D7D5BBFE2B1EBC303DB /* PiPAmbientMeditation.wav */; };
 		0412D9153FD15A02015A84CC /* ChildRunPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17A7A8B7BDFD357955631513 /* ChildRunPersistenceTests.swift */; };
 		055638376ECC9A707A9821B8 /* OfficeStageDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE65014636ACB54B9D39D3A4 /* OfficeStageDiagnostics.swift */; };
 		05635906778159CE3C3DEA14 /* EngineeringReviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4944CFBAEA7D26E2EB1FF8C0 /* EngineeringReviewSheet.swift */; };
@@ -688,6 +689,7 @@
 		036B56AC987CE799669752B9 /* PDFOperationJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFOperationJournal.swift; sourceTree = "<group>"; };
 		04A1276E61D10A592E4FF3AA /* OfficeLiveInkAppQualificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeLiveInkAppQualificationTests.swift; sourceTree = "<group>"; };
 		056D48997010E93B1EA2BD84 /* IDELanguageRunPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDELanguageRunPolicy.swift; sourceTree = "<group>"; };
+		05AC8D7D5BBFE2B1EBC303DB /* PiPAmbientMeditation.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = PiPAmbientMeditation.wav; sourceTree = "<group>"; };
 		05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffView.swift; sourceTree = "<group>"; };
 		0666A055F3421665937B663C /* CredentialManageTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialManageTool.swift; sourceTree = "<group>"; };
 		06853BE10BFB38CC6601C0AE /* EngineeringViewers */ = {isa = PBXFileReference; lastKnownFileType = folder; name = EngineeringViewers; path = FloeApp/Resources/EngineeringViewers; sourceTree = SOURCE_ROOT; };
@@ -2445,12 +2447,21 @@
 				A6F5C96BCCB2084068B87229 /* TinyEMU-LICENSES.txt */,
 				7858BFEF9F60D96BAA0E621E /* Whisper */,
 				E5AC44E2A3E68DA153AED855 /* ZLImageEditor-LICENSE.txt */,
+				DB36F422ADE950777B8304AD /* Audio */,
 				B52C94351F1E33240FA5A1D5 /* Fonts */,
 				EB3F3DF9DADE5E378FE9D27A /* js-packages */,
 				14B61A20D41D1CAFC00997DE /* PrivacyManifests */,
 				F213B64AF72D70128C90D328 /* Shell */,
 			);
 			path = Resources;
+			sourceTree = "<group>";
+		};
+		DB36F422ADE950777B8304AD /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				05AC8D7D5BBFE2B1EBC303DB /* PiPAmbientMeditation.wav */,
+			);
+			path = Audio;
 			sourceTree = "<group>";
 		};
 		DE2148C9CCDCBA9991A8CE58 /* ScreenShare */ = {
@@ -2785,6 +2796,7 @@
 				FB8488F3E0E117198916DA0E /* Licenses in Resources */,
 				EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */,
 				82A6523A97E32F6261F639AA /* PDFiumLicenses in Resources */,
+				030EB2951523E502E849BA6A /* PiPAmbientMeditation.wav in Resources */,
 				720A576246CF124A1F9524C4 /* PrivacyInfo.xcprivacy in Resources */,
 				AF790906898107BF9A5B2C1C /* ProviderCatalog.json in Resources */,
 				217DCF6650FFED12E80CAD40 /* TinyEMU-LICENSES.txt in Resources */,

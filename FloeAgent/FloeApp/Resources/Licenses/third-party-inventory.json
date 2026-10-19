@@ -68,6 +68,19 @@
   ],
   "documents": [
     {
+      "id": "pip-ambient-meditation",
+      "repositoryPath": "FloeApp/Resources/Licenses/PiPAmbientMeditation-CC0.txt",
+      "bundlePath": "Licenses/PiPAmbientMeditation-CC0.txt",
+      "titleKey": "settings.licenses.document.pip_meditation.title",
+      "titleFallback": "Meditation music — Yoiyami",
+      "titleArgument": null,
+      "license": "CC0-1.0",
+      "kindKey": "settings.licenses.kind.notices",
+      "required": true,
+      "section": "media",
+      "noteKey": null
+    },
+    {
       "id": "tinyemu",
       "repositoryPath": "FloeApp/Resources/TinyEMU-LICENSES.txt",
       "bundlePath": "TinyEMU-LICENSES.txt",
@@ -2793,7 +2806,7 @@
   ],
   "counts": {
     "components": 234,
-    "documents": 44,
+    "documents": 45,
     "pins": 38
   }
 }

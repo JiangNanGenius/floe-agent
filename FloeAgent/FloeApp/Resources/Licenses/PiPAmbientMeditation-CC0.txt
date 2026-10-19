@@ -1,0 +1,23 @@
+PiP ambient meditation loop (bundled audio)
+
+"The Budding of Consciousness – CC0 Ambient / Minimalist Theme
+Yoiyami Blue Series – No.4"
+
+Music by Yoiyami (CC0)
+Source: https://opengameart.org/node/182247
+License: CC0 1.0 Universal (public domain dedication)
+         https://creativecommons.org/publicdomain/zero/1.0/
+
+CC0 requires no attribution. This credit is the optional courtesy credit the
+author suggested on the source page ("Optional credit: Music by Yoiyami
+(CC0)").
+
+Bundled file: FloeApp/Resources/Audio/PiPAmbientMeditation.wav
+Modification: a 66 s excerpt (110–176 s of the author's 223.96 s WAV) was
+stitched into a 60.000 s seamless loop with a 6 s equal-power tail-to-head
+crossfade, peak-normalized to 0.9, and converted to 48 kHz stereo 16-bit PCM.
+The original source file and the processing/verification record are retained
+in the private qualification evidence, not in the repository.
+
+No percussion, no vocals: the source page describes the piece as gentle,
+minimal ambient piano with no percussion and no groove.

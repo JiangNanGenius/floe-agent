@@ -90,15 +90,10 @@ struct PiPAudioSettingsView: View {
                 ))
                 .accessibilityIdentifier("pip.audio.ambient.toggle")
 
-                Picker("pip.audio.sound", selection: Binding(
-                    get: { center.pipAudioPreferences.ambientSound },
-                    set: { value in updateAudio { $0.ambientSound = value } }
-                )) {
-                    ForEach(PiPAmbientSound.allCases, id: \.self) { sound in
-                        Text(sound.title).tag(sound)
-                    }
+                LabeledContent("pip.audio.sound") {
+                    Text(center.pipAudioPreferences.ambientSound.title)
+                        .foregroundStyle(.secondary)
                 }
-                .pickerStyle(.menu)
                 .accessibilityIdentifier("pip.audio.sound")
 
                 volumeRow(

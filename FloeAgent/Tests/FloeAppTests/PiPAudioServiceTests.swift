@@ -1,12 +1,12 @@
 // FloeAppTests — task PiP audio lifecycle contract.
 //
 // These tests drive the REAL `PiPAudioService` state machine and the REAL
-// procedural synthesizer through injected seams (fake playback/speech/cue/
+// attention-cue synthesizer through injected seams (fake playback/speech/cue/
 // session), so they exercise actual owner, pause, route, interruption,
 // bounded-preview, batch-terminal, session-lease and stale-callback
-// behavior — not mirrors of the implementation. The AVFoundation backends
-// themselves (root-owned PiPAudioBackendAppTests) and full-App compilation
-// are root-owned gates.
+// behavior — not mirrors of the implementation. The actual bundled loop,
+// the AVFoundation backends (root-owned PiPAudioBackendAppTests) and full-App
+// compilation are root-owned gates.
 
 #if canImport(UIKit)
 import Foundation
@@ -241,16 +241,16 @@ struct PiPAudioServiceTests {
     @Test("Stored preferences survive later opens — no reset-to-zero per session")
     func storedPreferencesSurviveReopen() {
         var stored = PiPAudioPreferences()
-        stored.ambientSound = .brownNoise
+        stored.ambientSound = .meditation
         stored.ambientGain = 0.6
         let harness = PiPAudioHarness.make(stored)
         harness.service.handleTaskPiPActiveChanged(true)
-        #expect(harness.ambient.lastSound == .brownNoise)
+        #expect(harness.ambient.lastSound == .meditation)
         #expect(harness.ambient.lastGain == 0.6)
         harness.service.handleTaskPiPActiveChanged(false)
         #expect(harness.ambient.stopCount == 1)
         harness.service.handleTaskPiPActiveChanged(true)
-        #expect(harness.ambient.lastSound == .brownNoise)
+        #expect(harness.ambient.lastSound == .meditation)
         #expect(harness.ambient.lastGain == 0.6)
     }
 
@@ -586,9 +586,9 @@ struct PiPAudioServiceTests {
 
     @Test("Preview plays the explicitly requested sound at the exact slider gain — including 0")
     func previewHonorsRequestedSoundAndGain() {
-        let harness = PiPAudioHarness.make(PiPAudioPreferences()) // rain, gain 0
-        harness.service.startPreview(.brownNoise)
-        #expect(harness.ambient.lastSound == .brownNoise) // never the stored rain
+        let harness = PiPAudioHarness.make(PiPAudioPreferences()) // meditation, gain 0
+        harness.service.startPreview(.meditation)
+        #expect(harness.ambient.lastSound == .meditation) // the bundled loop
         #expect(harness.ambient.lastGain == 0) // respects gain 0, no floor override
         #expect(harness.ambient.isPlaying) // really running while muted
         #expect(harness.service.state == .muted)
@@ -613,10 +613,10 @@ struct PiPAudioServiceTests {
     func previewStopsAfterBound() async {
         let harness = PiPAudioHarness.make(PiPAudioPreferences())
         harness.service.previewBound = 0.2
-        harness.service.startPreview(.rain)
+        harness.service.startPreview(.meditation)
         #expect(harness.service.isPreviewing)
         try? await Task.sleep(for: .milliseconds(80))
-        harness.service.startPreview(.rain) // explicit re-tap re-arms the bound
+        harness.service.startPreview(.meditation) // explicit re-tap re-arms the bound
         try? await Task.sleep(for: .milliseconds(150))
         #expect(harness.service.isPreviewing) // first timer was superseded
         try? await Task.sleep(for: .milliseconds(150))
@@ -698,11 +698,11 @@ struct PiPAudioServiceTests {
         let harness = PiPAudioHarness.make(PiPAudioPreferences())
         var videoHoldsSession = true
         harness.service.setSessionReleaseCheck { !videoHoldsSession }
-        harness.service.startPreview(.rain)
+        harness.service.startPreview(.meditation)
         harness.service.stopPreview()
         #expect(harness.session.deactivateCount == 0) // PiP video still owns it
         videoHoldsSession = false
-        harness.service.startPreview(.rain)
+        harness.service.startPreview(.meditation)
         harness.service.stopPreview()
         #expect(harness.session.deactivateCount == 1)
     }
@@ -832,55 +832,33 @@ struct PiPAudioServiceTests {
         ) == nil)
     }
 
-    // MARK: - Procedural synthesis (real generated audio)
+    // MARK: - Retired ambient choices and the retained attention cue
 
-    @Test("Rain and brown noise are deterministic, audibly distinct, seamless and bounded")
-    func synthesisIsRealDistinctSeamlessAndBounded() {
-        let rain = AmbientAudioSynthesizer.loopSamples(for: .rain)
-        let rainAgain = AmbientAudioSynthesizer.loopSamples(for: .rain)
-        let brown = AmbientAudioSynthesizer.loopSamples(for: .brownNoise)
-        #expect(rain == rainAgain) // fixed seed → byte-identical
-        #expect(rain.count == Int(
-            AmbientAudioSynthesizer.rainLoopSeconds * AmbientAudioSynthesizer.sampleRate
-        ))
-        #expect(brown.count == Int(
-            AmbientAudioSynthesizer.brownLoopSeconds * AmbientAudioSynthesizer.sampleRate
-        ))
-
-        // Audibly distinct: rain keeps strong treble (droplets + hiss);
-        // brown noise is a low rumble. Verified margins ≈ 23× / 0.97 vs 0.08.
-        let rainHigh = AmbientAudioSynthesizer.highFrequencyEnergy(rain)
-        let brownHigh = AmbientAudioSynthesizer.highFrequencyEnergy(brown)
-        let rainLow = AmbientAudioSynthesizer.lowFrequencyEnergy(rain)
-        let brownLow = AmbientAudioSynthesizer.lowFrequencyEnergy(brown)
-        #expect(rainHigh > brownHigh * 5)
-        #expect(brownLow / (brownLow + brownHigh) > rainLow / (rainLow + rainHigh))
-
-        // Seamless: the wrap-around step stays inside the loop's natural
-        // sample-to-sample variation.
-        for loop in [rain, brown] {
-            var maxDelta: Float = 0
-            for index in 1..<loop.count {
-                maxDelta = max(maxDelta, abs(loop[index] - loop[index - 1]))
-            }
-            let seam = abs(loop[0] - loop[loop.count - 1])
-            #expect(seam <= maxDelta) // no hard discontinuity at the wrap
+    @Test("Only the meditation loop is selectable; retired choices decode to it")
+    func retiredAmbientChoicesCollapseToMeditation() throws {
+        #expect(PiPAmbientSound.allCases == [.meditation])
+        for retired in ["rain", "brownNoise"] {
+            let stored = try #require(
+                #"{"ambientSound":"\#(retired)"}"#.data(using: .utf8)
+            )
+            let decoded = try JSONDecoder().decode(PiPAudioPreferences.self, from: stored)
+            #expect(decoded.ambientSound == .meditation)
         }
+    }
 
-        // Bounded rendering: exact PCM size and hard caps.
-        let rainWAV = AmbientAudioSynthesizer.wavData(for: .rain)
-        let brownWAV = AmbientAudioSynthesizer.wavData(for: .brownNoise)
-        let cueWAV = AmbientAudioSynthesizer.cueWavData()
-        #expect(rainWAV.count == 44 + rain.count * 2)
-        #expect(brownWAV.count == 44 + brown.count * 2)
-        #expect(rainWAV.count < 700_000)
-        #expect(brownWAV.count < 900_000)
-        #expect(cueWAV.count == 44 + AmbientAudioSynthesizer.cueSampleCount * 2)
-        #expect(cueWAV.count < 64_000)
-        #expect(rainWAV.prefix(4) == Data("RIFF".utf8))
-        #expect(rainWAV.dropFirst(8).prefix(4) == Data("WAVE".utf8))
+    @Test("The attention cue stays synthesized, deterministic and bounded")
+    func cueSynthesisIsDeterministicAndBounded() {
+        let cue = AmbientAudioSynthesizer.cueWavData()
+        // Mono 16-bit PCM framing at the documented rate, always finite size.
+        #expect(cue.count == 44 + AmbientAudioSynthesizer.cueSampleCount * 2)
+        #expect(AmbientAudioSynthesizer.cueSampleCount == Int(
+            0.30 * AmbientAudioSynthesizer.sampleRate
+        ))
+        #expect(cue.count < 64_000)
+        #expect(cue.prefix(4) == Data("RIFF".utf8))
+        #expect(cue.dropFirst(8).prefix(4) == Data("WAVE".utf8))
         // Rendering is cached: the second call returns identical bytes.
-        #expect(AmbientAudioSynthesizer.wavData(for: .rain) == rainWAV)
+        #expect(AmbientAudioSynthesizer.cueWavData() == cue)
     }
 }
 #endif

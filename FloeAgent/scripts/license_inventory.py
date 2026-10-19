@@ -978,6 +978,18 @@ STATIC_COMPONENTS = (
 # (id, repositoryPath, bundlePath, titleKey, title, titleArgument, license, kind, required, section)
 DOCUMENTS = (
     (
+        "pip-ambient-meditation",
+        "FloeApp/Resources/Licenses/PiPAmbientMeditation-CC0.txt",
+        "Licenses/PiPAmbientMeditation-CC0.txt",
+        "settings.licenses.document.pip_meditation.title",
+        "Meditation music — Yoiyami",
+        None,
+        "CC0-1.0",
+        "notices",
+        True,
+        "media",
+    ),
+    (
         "tinyemu",
         "FloeApp/Resources/TinyEMU-LICENSES.txt",
         "TinyEMU-LICENSES.txt",

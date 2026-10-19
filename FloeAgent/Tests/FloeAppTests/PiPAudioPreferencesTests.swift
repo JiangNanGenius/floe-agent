@@ -49,7 +49,7 @@ struct PiPAudioPreferencesTests {
         let defaults = PiPAudioPreferences()
         #expect(defaults.ambientEnabled == true) // ambient on by default…
         #expect(defaults.ambientGain == 0) // …but muted: zero-volume playback
-        #expect(defaults.ambientSound == .rain)
+        #expect(defaults.ambientSound == .meditation) // one bundled CC0 loop
         #expect(defaults.taskSpeechEnabled == false)
         #expect(defaults.taskSpeechGain == 0.7)
         #expect(defaults.cuesEnabled == false)
@@ -85,7 +85,7 @@ struct PiPAudioPreferencesTests {
         let decoded = try JSONDecoder().decode(PiPAudioPreferences.self, from: partial)
         #expect(decoded.ambientGain == 0.4)
         #expect(decoded.ambientEnabled == true) // default preserved
-        #expect(decoded.ambientSound == .rain)
+        #expect(decoded.ambientSound == .meditation)
         #expect(decoded.taskSpeechGain == 0.7)
         #expect(decoded.cuesEnabled == false)
 
@@ -93,8 +93,24 @@ struct PiPAudioPreferencesTests {
             #"{"ambientSound":"ocean","taskSpeechEnabled":true}"#.data(using: .utf8)
         )
         let fallback = try JSONDecoder().decode(PiPAudioPreferences.self, from: unknownSound)
-        #expect(fallback.ambientSound == .rain) // unknown choice → default sound
+        #expect(fallback.ambientSound == .meditation) // unknown choice → bundled default
         #expect(fallback.taskSpeechEnabled == true)
+
+        // Retired version-1 choices migrate to the bundled loop without
+        // touching the enabled/gain/narration/cue fields around them.
+        for retired in ["rain", "brownNoise"] {
+            let legacy = try #require(
+                #"{"version":1,"ambientEnabled":false,"ambientSound":"\#(retired)","ambientGain":0,"taskSpeechEnabled":true,"taskSpeechGain":0.25,"cuesEnabled":true}"#
+                    .data(using: .utf8)
+            )
+            let migrated = try JSONDecoder().decode(PiPAudioPreferences.self, from: legacy).normalized
+            #expect(migrated.ambientSound == .meditation)
+            #expect(migrated.ambientEnabled == false) // preserved
+            #expect(migrated.ambientGain == 0) // preserved muted-but-playing state
+            #expect(migrated.taskSpeechEnabled == true)
+            #expect(migrated.taskSpeechGain == 0.25)
+            #expect(migrated.cuesEnabled == true)
+        }
 
         let roundTrip = try JSONEncoder().encode(PiPAudioPreferences())
         #expect(
@@ -184,7 +200,7 @@ struct PiPAudioPreferencesTests {
         #expect(missing == PiPAudioPreferences())
 
         var custom = PiPAudioPreferences()
-        custom.ambientSound = .brownNoise
+        custom.ambientSound = .meditation
         custom.ambientGain = 0.35
         custom.taskSpeechEnabled = true
         custom.cuesEnabled = true
@@ -202,6 +218,8 @@ struct PiPAudioPreferencesTests {
             #"{"version":1,"ambientEnabled":true,"ambientSound":"rain","ambientGain":1.7,"taskSpeechEnabled":false,"taskSpeechGain":-0.2,"cuesEnabled":false}"#
         )
         let repaired = await repository.loadPipAudioPreferences()
+        #expect(repaired.ambientSound == .meditation) // stored "rain" migrated
+        #expect(repaired.ambientEnabled == true) // surrounding fields preserved
         #expect(repaired.ambientGain == 1.0)
         #expect(repaired.taskSpeechGain == 0)
     }

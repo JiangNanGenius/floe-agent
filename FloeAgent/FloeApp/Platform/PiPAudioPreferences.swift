@@ -11,27 +11,29 @@
 import Foundation
 import FloeCore
 
-/// The ambient loop the user picks for the PiP surface. Both sounds are
-/// generated locally from a deterministic seed (no network, no bundled
-/// assets, no third-party licence) and are audibly distinct.
+/// The ambient loop the user hears on the PiP surface. One gentle, seamlessly
+/// looped meditation track ships with the app (CC0; see
+/// `Resources/Licenses/PiPAmbientMeditation-CC0.txt`). The synthesized rain
+/// and brown-noise choices were retired because their hiss was not what the
+/// feature should sound like; stored selections of either migrate here.
 enum PiPAmbientSound: String, Codable, Sendable, CaseIterable {
-    case rain
-    case brownNoise
+    case meditation
 
-    var localizationKey: String {
-        switch self {
-        case .rain: "pip.audio.sound.rain"
-        case .brownNoise: "pip.audio.sound.brown"
-        }
-    }
+    var localizationKey: String { "pip.audio.sound.meditation" }
 
     var title: String { FloeL10n.l(localizationKey) }
 
-    /// Unknown stored values decode to the default sound instead of failing
-    /// the whole preference object.
+    /// Bundled file name registered as an App resource in `project.yml`.
+    var bundledResourceName: String { "PiPAmbientMeditation" }
+    var bundledResourceExtension: String { "wav" }
+
+    /// Lenient decoding: version 1 persisted `rain` and `brownNoise`, both
+    /// retired and migrated to the bundled meditation loop. Any other unknown
+    /// value repairs to the same default, so the record's enabled/gain/
+    /// narration/cue fields always survive instead of failing as a whole.
     init(from decoder: Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
-        self = PiPAmbientSound(rawValue: raw) ?? .rain
+        let stored = try decoder.singleValueContainer().decode(String.self)
+        self = PiPAmbientSound(rawValue: stored) ?? .meditation
     }
 }
 
@@ -40,7 +42,10 @@ enum PiPAmbientSound: String, Codable, Sendable, CaseIterable {
 /// actual migration is required; `normalized` clamps stored values so a
 /// corrupted record can never drive the audio backend out of range.
 struct PiPAudioPreferences: Codable, Equatable, Sendable {
-    /// Persisted schema version. Version 1 is the first shipped shape.
+    /// Persisted schema version. Version 1 is the first shipped shape. The
+    /// rain/brown-noise retirement is a decode-time field migration, not a new
+    /// object shape, so the key and version stay unchanged and every stored
+    /// toggle/gain survives.
     static let currentVersion = 1
     /// The single `app_settings` key carrying the whole object atomically.
     static let settingsKey = "pip.audio.preferences.v1"
@@ -48,8 +53,8 @@ struct PiPAudioPreferences: Codable, Equatable, Sendable {
     var version: Int = PiPAudioPreferences.currentVersion
     /// Ambient sound: independent switch, default on.
     var ambientEnabled: Bool = true
-    /// Which generated loop plays.
-    var ambientSound: PiPAmbientSound = .rain
+    /// Which loop plays: the single bundled meditation track.
+    var ambientSound: PiPAmbientSound = .meditation
     /// Ambient gain 0…1. The feature ships muted: 0 means the loop is
     /// really playing, just silent, so raising it is instant.
     var ambientGain: Double = 0

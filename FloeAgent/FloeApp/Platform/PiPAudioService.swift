@@ -897,20 +897,34 @@ enum PiPAudioSystemEvents {
 
 // MARK: - Real AVFoundation backends
 
-/// AVAudioPlayer-backed infinite loop. One bounded decoded buffer per sound
-/// (the WAV bytes come from the local synthesizer, never from disk growth or
-/// the network). Gain changes apply live; zero gain is real playback.
+/// AVAudioPlayer-backed infinite loop of the bundled meditation asset. The
+/// file is decoded once per start, never from the network or an expanding
+/// on-disk cache. Gain changes apply live; zero gain is real playback.
 @MainActor
 final class AVPiPAmbientPlayer: PiPAmbientPlaying {
     private var player: AVAudioPlayer?
 
     var isPlaying: Bool { player?.isPlaying ?? false }
 
+    /// Location of the bundled loop for a sound choice. A missing asset is a
+    /// real, reportable playback failure (the service surfaces
+    /// `pip.audio.error.playback`), never a silent fallback to synthesized
+    /// or streamed audio.
+    static func bundledURL(for sound: PiPAmbientSound) -> URL? {
+        Bundle.main.url(
+            forResource: sound.bundledResourceName,
+            withExtension: sound.bundledResourceExtension
+        )
+    }
+
     func play(sound: PiPAmbientSound, gain: Double) -> Bool {
-        let data = AmbientAudioSynthesizer.wavData(for: sound)
-        player?.stop()
+        // Release the previous loop BEFORE validating the new asset: a failed
+        // replacement must never leave the old sound playing while the
+        // service reports a playback failure and marks the loop stopped.
+        stop()
+        guard let url = Self.bundledURL(for: sound) else { return false }
         do {
-            let next = try AVAudioPlayer(data: data)
+            let next = try AVAudioPlayer(contentsOf: url)
             next.numberOfLoops = -1
             next.volume = Float(max(0, min(1, gain)))
             next.prepareToPlay()
