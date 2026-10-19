@@ -990,6 +990,18 @@ DOCUMENTS = (
         "media",
     ),
     (
+        "pip-ambient-expansion",
+        "FloeApp/Resources/Licenses/PiPAmbientExpansion-CC0.txt",
+        "Licenses/PiPAmbientExpansion-CC0.txt",
+        "settings.licenses.document.pip_ambient_expansion.title",
+        "Additional meditation music — Yoiyami",
+        None,
+        "CC0-1.0",
+        "notices",
+        True,
+        "media",
+    ),
+    (
         "tinyemu",
         "FloeApp/Resources/TinyEMU-LICENSES.txt",
         "TinyEMU-LICENSES.txt",

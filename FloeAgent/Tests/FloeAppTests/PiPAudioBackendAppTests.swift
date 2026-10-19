@@ -6,26 +6,39 @@ import AVFoundation
 
 @MainActor
 final class PiPAudioBackendAppTests: XCTestCase {
-    /// The bundled meditation loop is a real App resource: decode it through
-    /// Apple's audio stack, prove it is finite, non-silent and bounded, and
-    /// measure that the wrap step stays inside the loop's natural
-    /// sample-to-sample variation. This is waveform continuity, not a
+    /// Every bundled ambient loop is a real App resource: decode each one
+    /// through Apple's audio stack, prove it is finite, non-silent and
+    /// bounded, and measure that the wrap step stays inside that loop's
+    /// natural sample-to-sample variation. This is waveform continuity, not a
     /// listening test; subjective seam acceptance belongs to the primary.
-    func testBundledMeditationLoopDecodesAndWrapsContinuously() throws {
+    func testEveryBundledAmbientLoopDecodesAndWrapsContinuously() throws {
+        XCTAssertEqual(PiPAmbientSound.allCases.count, 4)
+        for sound in PiPAmbientSound.allCases {
+            try assertBundledLoopDecodesAndWraps(sound)
+        }
+    }
+
+    private func assertBundledLoopDecodesAndWraps(
+        _ sound: PiPAmbientSound,
+        sourceFile: StaticString = #filePath,
+        sourceLine: UInt = #line
+    ) throws {
         let url = try XCTUnwrap(
-            AVPiPAmbientPlayer.bundledURL(for: .meditation),
-            "PiPAmbientMeditation.wav is missing from the app bundle; regenerate the project so the project.yml Resources/Audio entry applies"
+            AVPiPAmbientPlayer.bundledURL(for: sound),
+            "\(sound.bundledResourceName).wav is missing from the app bundle; regenerate the project so the project.yml Resources/Audio entries apply",
+            file: sourceFile,
+            line: sourceLine
         )
-        let file = try AVAudioFile(forReading: url)
-        XCTAssertEqual(file.fileFormat.sampleRate, 48_000)
-        XCTAssertEqual(file.fileFormat.channelCount, 2)
-        XCTAssertEqual(Double(file.length) / 48_000, 60.0, accuracy: 0.001)
+        let audioFile = try AVAudioFile(forReading: url)
+        XCTAssertEqual(audioFile.fileFormat.sampleRate, 48_000, "\(sound.rawValue)", file: sourceFile, line: sourceLine)
+        XCTAssertEqual(audioFile.fileFormat.channelCount, 2, "\(sound.rawValue)", file: sourceFile, line: sourceLine)
+        XCTAssertEqual(Double(audioFile.length) / 48_000, 60.0, accuracy: 0.001)
         let buffer = try XCTUnwrap(AVAudioPCMBuffer(
-            pcmFormat: file.processingFormat,
-            frameCapacity: AVAudioFrameCount(file.length)
+            pcmFormat: audioFile.processingFormat,
+            frameCapacity: AVAudioFrameCount(audioFile.length)
         ))
-        try file.read(into: buffer)
-        XCTAssertEqual(Int64(buffer.frameLength), file.length)
+        try audioFile.read(into: buffer)
+        XCTAssertEqual(Int64(buffer.frameLength), audioFile.length)
         let channels = try XCTUnwrap(buffer.floatChannelData)
         let frameCount = Int(buffer.frameLength)
         let left = UnsafeBufferPointer(start: channels[0], count: frameCount)
@@ -42,9 +55,9 @@ final class PiPAudioBackendAppTests: XCTestCase {
             energy += Double(sample) * Double(sample)
             steps[index - 1] = abs(sample - left[index - 1])
         }
-        XCTAssertLessThanOrEqual(peak, 0.95)
+        XCTAssertLessThanOrEqual(peak, 0.95, "\(sound.rawValue) peak")
         let rms = sqrt(energy / Double(frameCount))
-        XCTAssertGreaterThan(rms, 0.01, "The loop must carry real audio before gain is applied")
+        XCTAssertGreaterThan(rms, 0.01, "\(sound.rawValue) must carry real audio before gain is applied")
         XCTAssertLessThan(rms, 0.5)
 
         steps.sort()
@@ -53,7 +66,9 @@ final class PiPAudioBackendAppTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             wrapStep,
             p999,
-            "The loop wrap must stay inside the natural sample-to-sample variation"
+            "\(sound.rawValue) loop wrap must stay inside the natural sample-to-sample variation",
+            file: sourceFile,
+            line: sourceLine
         )
     }
 
@@ -87,6 +102,14 @@ final class PiPAudioBackendAppTests: XCTestCase {
         XCTAssertLessThanOrEqual(samples.map { abs($0) }.max() ?? 0, 1)
     }
 
+    /// One real playback backend and one AVAudioSession visit every shipped
+    /// choice: each bundled URL must resolve, each track must really play at
+    /// zero gain, accept a live gain change to audible and back, and survive
+    /// pause/resume. The next iteration calls `play` directly, so this also
+    /// proves live replacement of the loaded item, not just decoding.
+    /// The decode/wrap test proves the bytes; this proves the actual player
+    /// selection and switching. Bounded sleeps keep it quick; run it alone
+    /// because it owns the shared AVAudioSession.
     func testRealAmbientBackendKeepsPlayingAtZeroAndAcceptsLiveGainChanges() async throws {
         let session = AVAudioSession.sharedInstance()
         let previous = (session.category, session.mode, session.categoryOptions)
@@ -98,23 +121,44 @@ final class PiPAudioBackendAppTests: XCTestCase {
         }
         try session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
         try session.setActive(true)
-        XCTAssertNotNil(
-            AVPiPAmbientPlayer.bundledURL(for: .meditation),
-            "The bundled meditation loop must ship with the app"
-        )
-        XCTAssertTrue(backend.play(sound: .meditation, gain: 0))
-        try await Task.sleep(for: .milliseconds(80))
-        XCTAssertTrue(backend.isPlaying, "Zero output gain must not pause the actual AVAudioPlayer")
-        backend.setGain(0.01)
-        try await Task.sleep(for: .milliseconds(80))
-        XCTAssertTrue(backend.isPlaying)
-        backend.setGain(0)
-        try await Task.sleep(for: .milliseconds(80))
-        XCTAssertTrue(backend.isPlaying)
-        backend.pause()
-        XCTAssertFalse(backend.isPlaying)
-        XCTAssertTrue(backend.resume())
-        XCTAssertTrue(backend.isPlaying)
+
+        var visited: [PiPAmbientSound] = []
+        var bundledURLs: [URL] = []
+        for sound in PiPAmbientSound.allCases {
+            visited.append(sound)
+            let url = AVPiPAmbientPlayer.bundledURL(for: sound)
+            XCTAssertNotNil(url, "\(sound.bundledResourceName).wav must ship with the app")
+            XCTAssertEqual(
+                url?.lastPathComponent,
+                "\(sound.bundledResourceName).wav",
+                "\(sound.rawValue) must resolve its own bundled file"
+            )
+            if let url { bundledURLs.append(url) }
+            XCTAssertTrue(
+                backend.play(sound: sound, gain: 0),
+                "\(sound.rawValue) must start from its bundled resource"
+            )
+            try await Task.sleep(for: .milliseconds(80))
+            XCTAssertTrue(
+                backend.isPlaying,
+                "\(sound.rawValue): zero output gain must not pause the actual AVAudioPlayer"
+            )
+            backend.setGain(0.01)
+            try await Task.sleep(for: .milliseconds(80))
+            XCTAssertTrue(backend.isPlaying, "\(sound.rawValue): audible gain must keep playing")
+            backend.setGain(0)
+            try await Task.sleep(for: .milliseconds(80))
+            XCTAssertTrue(
+                backend.isPlaying,
+                "\(sound.rawValue): returning to zero gain must keep playing"
+            )
+            backend.pause()
+            XCTAssertFalse(backend.isPlaying, "\(sound.rawValue): pause must stop the player")
+            XCTAssertTrue(backend.resume(), "\(sound.rawValue): resume must restart the loaded item")
+            XCTAssertTrue(backend.isPlaying, "\(sound.rawValue): resumed playback must be running")
+        }
+        XCTAssertEqual(visited, PiPAmbientSound.allCases) // all four choices visited
+        XCTAssertEqual(Set(bundledURLs).count, 4, "each choice must resolve a distinct bundled file")
         backend.stop()
         XCTAssertFalse(backend.isPlaying)
     }

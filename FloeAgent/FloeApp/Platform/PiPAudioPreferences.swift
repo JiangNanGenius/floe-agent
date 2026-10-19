@@ -11,26 +11,50 @@
 import Foundation
 import FloeCore
 
-/// The ambient loop the user hears on the PiP surface. One gentle, seamlessly
-/// looped meditation track ships with the app (CC0; see
-/// `Resources/Licenses/PiPAmbientMeditation-CC0.txt`). The synthesized rain
-/// and brown-noise choices were retired because their hiss was not what the
+/// The ambient loop the user hears on the PiP surface. Four gentle, seamlessly
+/// looped tracks ship with the app (CC0; see
+/// `Resources/Licenses/PiPAmbientMeditation-CC0.txt` and
+/// `Resources/Licenses/PiPAmbientExpansion-CC0.txt`). `.meditation` keeps the
+/// original raw value and stays the default; the three additions are distinct
+/// compositions, never speed/volume variants. The synthesized rain and
+/// brown-noise choices were retired because their hiss was not what the
 /// feature should sound like; stored selections of either migrate here.
 enum PiPAmbientSound: String, Codable, Sendable, CaseIterable {
+    /// Original shipped loop; also the decode fallback for every unknown or
+    /// retired stored value, so the record's other fields always survive.
     case meditation
+    case firstLight
+    case deepBlue
+    case starfield
 
-    var localizationKey: String { "pip.audio.sound.meditation" }
+    var localizationKey: String {
+        switch self {
+        case .meditation: "pip.audio.sound.meditation"
+        case .firstLight: "pip.audio.sound.first_light"
+        case .deepBlue: "pip.audio.sound.deep_blue"
+        case .starfield: "pip.audio.sound.starfield"
+        }
+    }
 
     var title: String { FloeL10n.l(localizationKey) }
 
-    /// Bundled file name registered as an App resource in `project.yml`.
-    var bundledResourceName: String { "PiPAmbientMeditation" }
+    /// Bundled file names registered as App resources in `project.yml`.
+    var bundledResourceName: String {
+        switch self {
+        case .meditation: "PiPAmbientMeditation"
+        case .firstLight: "PiPAmbientFirstLight"
+        case .deepBlue: "PiPAmbientDeepBlue"
+        case .starfield: "PiPAmbientStarfield"
+        }
+    }
     var bundledResourceExtension: String { "wav" }
 
     /// Lenient decoding: version 1 persisted `rain` and `brownNoise`, both
     /// retired and migrated to the bundled meditation loop. Any other unknown
     /// value repairs to the same default, so the record's enabled/gain/
     /// narration/cue fields always survive instead of failing as a whole.
+    /// The three added raw values decode as themselves and never need a
+    /// version bump: the object shape and settings key are unchanged.
     init(from decoder: Decoder) throws {
         let stored = try decoder.singleValueContainer().decode(String.self)
         self = PiPAmbientSound(rawValue: stored) ?? .meditation
@@ -53,7 +77,7 @@ struct PiPAudioPreferences: Codable, Equatable, Sendable {
     var version: Int = PiPAudioPreferences.currentVersion
     /// Ambient sound: independent switch, default on.
     var ambientEnabled: Bool = true
-    /// Which loop plays: the single bundled meditation track.
+    /// Which bundled loop plays. Defaults to the original meditation track.
     var ambientSound: PiPAmbientSound = .meditation
     /// Ambient gain 0…1. The feature ships muted: 0 means the loop is
     /// really playing, just silent, so raising it is instant.

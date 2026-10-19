@@ -47838,6 +47838,23 @@
         }
       }
     },
+    "settings.licenses.document.pip_ambient_expansion.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Additional meditation music — Yoiyami"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更多冥想音乐 — Yoiyami"
+          }
+        }
+      }
+    },
     "settings.licenses.document.cad.title": {
       "extractionState": "manual",
       "localizations": {
@@ -89248,6 +89265,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "冥想音乐"
+          }
+        }
+      }
+    },
+    "pip.audio.sound.deep_blue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deep Blue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "深蓝"
+          }
+        }
+      }
+    },
+    "pip.audio.sound.first_light": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "First Light"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "晨光"
+          }
+        }
+      }
+    },
+    "pip.audio.sound.starfield": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Starfield"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "星河"
           }
         }
       }

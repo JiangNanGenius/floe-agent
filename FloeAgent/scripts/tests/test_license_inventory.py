@@ -170,11 +170,19 @@ class LicenseInventoryTests(unittest.TestCase):
         self.assertEqual(counts["components"], len(self.manifest["components"]))
         self.assertEqual(counts["documents"], len(self.manifest["documents"]))
         self.assertEqual(counts["pins"], sum(1 for c in self.manifest["components"] if c["section"] == "swift"))
-        # The TinyEMU/slirp notice stays first and required; every other
-        # previously bundled notice family is still declared.
-        self.assertEqual(self.manifest["documents"][0]["id"], "tinyemu")
-        self.assertTrue(self.manifest["documents"][0]["required"])
-        ids = {document["id"] for document in self.manifest["documents"]}
+        # Notices are identified independently of display order: media
+        # notices can precede the engine section without dropping TinyEMU.
+        documents = {document["id"]: document for document in self.manifest["documents"]}
+        self.assertEqual(len(documents), len(self.manifest["documents"]))
+        tinyemu = documents["tinyemu"]
+        self.assertTrue(tinyemu["required"])
+        self.assertEqual(tinyemu["bundlePath"], "TinyEMU-LICENSES.txt")
+        self.assertEqual(tinyemu["section"], "engines")
+        for music in ("pip-ambient-meditation", "pip-ambient-expansion"):
+            self.assertTrue(documents[music]["required"])
+            self.assertEqual(documents[music]["license"], "CC0-1.0")
+            self.assertEqual(documents[music]["section"], "media")
+        ids = set(documents)
         for required in ("occt", "occt-exception", "whisperkit", "royalvnc", "pdfium", "libarchive"):
             self.assertIn(required, ids)
 

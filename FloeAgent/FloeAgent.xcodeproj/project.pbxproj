@@ -203,6 +203,7 @@
 		4C6D341323D93B1251394C2D /* ArchiveBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73DFAEDB946E98188CAB234D /* ArchiveBrowserView.swift */; };
 		4C7FF69D1B96FB25A810A2D7 /* IDEStatusBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4436E97C0C66AC0471B1FDA2 /* IDEStatusBar.swift */; };
 		4D049C59BE30C5C32FD786A1 /* OfficeSaveAdmissionRetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D716CE16C6EB90A334A68B4F /* OfficeSaveAdmissionRetry.swift */; };
+		4D4BE23B3E31425E28D67A1C /* PiPAmbientStarfield.wav in Resources */ = {isa = PBXBuildFile; fileRef = 4568A39850673C5B27640756 /* PiPAmbientStarfield.wav */; };
 		4DA4FE4D075259455908EC22 /* PDFOperationJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 036B56AC987CE799669752B9 /* PDFOperationJournal.swift */; };
 		4E9234D4AE5B18951D0AF3C2 /* MailMutationJournalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B04D7DD1035E02FD30F6A99 /* MailMutationJournalTests.swift */; };
 		4F0087B53DCD7A416DB6E4AF /* CadWebEngineSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96BF3F9C76C1DF1B6DFAED3A /* CadWebEngineSession.swift */; };
@@ -215,6 +216,7 @@
 		51C31674061060F51630FA8A /* NotificationQualificationFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41E2EABF299874D4FB2E787A /* NotificationQualificationFixture.swift */; };
 		51FC0B9E3FDE98C725F6BA0E /* ConversationListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66624FE4F8480041F7602716 /* ConversationListViewModel.swift */; };
 		52A8476FF309A8252EB8AEC2 /* IDEGitHubActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEE385662E04046A5263BBC8 /* IDEGitHubActionsTests.swift */; };
+		538AD6B7D9C4176AC052D2CA /* PiPAmbientDeepBlue.wav in Resources */ = {isa = PBXBuildFile; fileRef = 78EAFE2944E0A80DBAAA4EED /* PiPAmbientDeepBlue.wav */; };
 		53B0B28D58E300B08FE02EF0 /* GeneralSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E788D879DCEB044587CF121 /* GeneralSettingsView.swift */; };
 		53B27391A46184754D48D72B /* DocumentRecoveryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36E68916820B033030E49814 /* DocumentRecoveryListView.swift */; };
 		53C5DF929A29A202B41358EA /* ApprovalModelBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436B2C5C853B7C60DCEF2059 /* ApprovalModelBackend.swift */; };
@@ -417,6 +419,7 @@
 		B030CB108442D9B3CEA7F61B /* HostEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 085605503DC285FC91B0449B /* HostEditorView.swift */; };
 		B0BDB3CA122FB2E3DB12EBC9 /* office-native-real-budget.xlsx in Resources */ = {isa = PBXBuildFile; fileRef = 3140A589CB280EA648135829 /* office-native-real-budget.xlsx */; };
 		B122E4C91387683F2EDBC728 /* FileTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */; };
+		B199FBC38876EBAC805A25FC /* PiPAmbientFirstLight.wav in Resources */ = {isa = PBXBuildFile; fileRef = B7C0FC5807EE4A7DEB47AEC1 /* PiPAmbientFirstLight.wav */; };
 		B1F89118F7A6EE0A5B0D65E8 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 11F36D93E8A8CE056D5761D1 /* PrivacyInfo.xcprivacy */; };
 		B2196F0D1CCA995A3F4F8C0D /* FloeAgentRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = EF4C9E5ED2F18E4E1CB8A527 /* FloeAgentRuntime */; };
 		B2561307059E6C4776EC8B06 /* CredentialManageTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0666A055F3421665937B663C /* CredentialManageTool.swift */; };
@@ -857,6 +860,7 @@
 		43D7F54EF158BB08BE04D76A /* CADWorkbenchHostUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADWorkbenchHostUITests.swift; sourceTree = "<group>"; };
 		4436E97C0C66AC0471B1FDA2 /* IDEStatusBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDEStatusBar.swift; sourceTree = "<group>"; };
 		4513E1515D5F4AA4DB38E469 /* DesignConversationPageUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignConversationPageUITests.swift; sourceTree = "<group>"; };
+		4568A39850673C5B27640756 /* PiPAmbientStarfield.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = PiPAmbientStarfield.wav; sourceTree = "<group>"; };
 		4569AFF846A00690A85FD4F6 /* NoteCoverStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteCoverStoreTests.swift; sourceTree = "<group>"; };
 		462A0FA6B124D564FB44297B /* BackgroundExecutionOptionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundExecutionOptionsTests.swift; sourceTree = "<group>"; };
 		465921DF6176ED9F56F80549 /* FinalUIReviewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinalUIReviewUITests.swift; sourceTree = "<group>"; };
@@ -967,6 +971,7 @@
 		760ECB0E6B01EA7AC99B8744 /* NetworkStatusMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkStatusMonitor.swift; sourceTree = "<group>"; };
 		7846CD1BBE3A01E9CFE5CDFE /* LocalSkillCreator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalSkillCreator.swift; sourceTree = "<group>"; };
 		7858BFEF9F60D96BAA0E621E /* Whisper */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Whisper; path = FloeApp/Resources/Whisper; sourceTree = SOURCE_ROOT; };
+		78EAFE2944E0A80DBAAA4EED /* PiPAmbientDeepBlue.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = PiPAmbientDeepBlue.wav; sourceTree = "<group>"; };
 		790388040FBC66D6F19B4C85 /* DesignFreezeProtectionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignFreezeProtectionCoordinator.swift; sourceTree = "<group>"; };
 		79F6F5D551AD66D3EADD5EC5 /* CanvasNativeCADNodeContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasNativeCADNodeContent.swift; sourceTree = "<group>"; };
 		7A23E7E08860487A8333BE4F /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
@@ -1125,6 +1130,7 @@
 		B5E373AD5E7E721591E5441B /* WorkspacePickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspacePickerView.swift; sourceTree = "<group>"; };
 		B6A4F2725D43F6C6B1C0F704 /* LocalLinuxStaticServiceRealVMTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalLinuxStaticServiceRealVMTests.swift; sourceTree = "<group>"; };
 		B79C8C2B8701925AEC218168 /* BrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
+		B7C0FC5807EE4A7DEB47AEC1 /* PiPAmbientFirstLight.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = PiPAmbientFirstLight.wav; sourceTree = "<group>"; };
 		B7CA2C01CEE850FC7B6F1D6A /* ProvidersSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProvidersSettingsView.swift; sourceTree = "<group>"; };
 		B824A33C95B77EA91060D106 /* TemporaryChatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemporaryChatTests.swift; sourceTree = "<group>"; };
 		B91CD5A983CE9340539D00A0 /* IDEGitHubActionsPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDEGitHubActionsPolicy.swift; sourceTree = "<group>"; };
@@ -2459,7 +2465,10 @@
 		DB36F422ADE950777B8304AD /* Audio */ = {
 			isa = PBXGroup;
 			children = (
+				78EAFE2944E0A80DBAAA4EED /* PiPAmbientDeepBlue.wav */,
+				B7C0FC5807EE4A7DEB47AEC1 /* PiPAmbientFirstLight.wav */,
 				05AC8D7D5BBFE2B1EBC303DB /* PiPAmbientMeditation.wav */,
+				4568A39850673C5B27640756 /* PiPAmbientStarfield.wav */,
 			);
 			path = Audio;
 			sourceTree = "<group>";
@@ -2796,7 +2805,10 @@
 				FB8488F3E0E117198916DA0E /* Licenses in Resources */,
 				EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */,
 				82A6523A97E32F6261F639AA /* PDFiumLicenses in Resources */,
+				538AD6B7D9C4176AC052D2CA /* PiPAmbientDeepBlue.wav in Resources */,
+				B199FBC38876EBAC805A25FC /* PiPAmbientFirstLight.wav in Resources */,
 				030EB2951523E502E849BA6A /* PiPAmbientMeditation.wav in Resources */,
+				4D4BE23B3E31425E28D67A1C /* PiPAmbientStarfield.wav in Resources */,
 				720A576246CF124A1F9524C4 /* PrivacyInfo.xcprivacy in Resources */,
 				AF790906898107BF9A5B2C1C /* ProviderCatalog.json in Resources */,
 				217DCF6650FFED12E80CAD40 /* TinyEMU-LICENSES.txt in Resources */,

@@ -1,0 +1,39 @@
+PiP ambient meditation loops — additional tracks (bundled audio)
+
+All three tracks are original compositions by Yoiyami, published on
+OpenGameArt under CC0 1.0 Universal (public domain dedication).
+CC0 requires no attribution; the credits below are the optional courtesy
+credits the author suggests ("Music by Yoiyami (CC0)").
+
+1. "First Light Particles – CC0 Atmospheric Piano/Ambient Track"
+   Source: https://opengameart.org/node/182244
+   Licence: CC0 1.0 Universal — https://creativecommons.org/publicdomain/zero/1.0/
+   Bundled file: FloeApp/Resources/Audio/PiPAmbientFirstLight.wav
+   Modification: a 66 s excerpt (49–115 s of the author's 131.72 s WAV) was
+   stitched into a 60.000 s seamless loop with a 6 s equal-power tail-to-head
+   crossfade and converted to 48 kHz stereo 16-bit PCM. Peak 0.900, no clipping.
+   The source page describes calm atmospheric piano with ambient pads and
+   "no groove, no percussion".
+
+2. "Yoiyami Core Theme – Deep Blue Ambient Piano"
+   Source: https://opengameart.org/node/182243
+   Licence: CC0 1.0 Universal — https://creativecommons.org/publicdomain/zero/1.0/
+   Bundled file: FloeApp/Resources/Audio/PiPAmbientDeepBlue.wav
+   Modification: a 66 s excerpt (64–130 s of the author's 234.96 s WAV) was
+   stitched into a 60.000 s seamless loop with a 6 s equal-power tail-to-head
+   crossfade and converted to 48 kHz stereo 16-bit PCM. Peak 0.560, no clipping.
+   The source page describes soft piano with airy pads and no heavy groove.
+
+3. "Starfield Romance – CC0 Ambient / Emotional Space Theme
+    Yoiyami Blue Series – No.3"
+   Source: https://opengameart.org/node/182246
+   Licence: CC0 1.0 Universal — https://creativecommons.org/publicdomain/zero/1.0/
+   Bundled file: FloeApp/Resources/Audio/PiPAmbientStarfield.wav
+   Modification: a 66 s excerpt (65–131 s of the author's 218.96 s WAV) was
+   stitched into a 60.000 s seamless loop with a 6 s equal-power tail-to-head
+   crossfade and converted to 48 kHz stereo 16-bit PCM. Peak 0.757, no clipping.
+   The source page describes gentle piano, airy pads and "no percussion,
+   no groove".
+
+The original source files and the processing/verification record are retained
+in private qualification evidence, not in the repository.

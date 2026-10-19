@@ -90,10 +90,15 @@ struct PiPAudioSettingsView: View {
                 ))
                 .accessibilityIdentifier("pip.audio.ambient.toggle")
 
-                LabeledContent("pip.audio.sound") {
-                    Text(center.pipAudioPreferences.ambientSound.title)
-                        .foregroundStyle(.secondary)
+                Picker("pip.audio.sound", selection: Binding(
+                    get: { center.pipAudioPreferences.ambientSound },
+                    set: { value in selectSound(value) }
+                )) {
+                    ForEach(PiPAmbientSound.allCases, id: \.self) { sound in
+                        Text(sound.title).tag(sound)
+                    }
                 }
+                .pickerStyle(.menu)
                 .accessibilityIdentifier("pip.audio.sound")
 
                 volumeRow(
@@ -184,6 +189,21 @@ struct PiPAudioSettingsView: View {
             var preferences = center.pipAudioPreferences
             mutate(&preferences)
             await center.setPiPAudioPreferences(preferences)
+        }
+    }
+
+    /// Persist the picker's choice before touching an open preview. Closing
+    /// the preview then returns to the newly stored track, never to the
+    /// pre-selection one. Without a preview the stored change reaches the
+    /// service through `SettingsCenter`; selection alone never starts audio.
+    private func selectSound(_ sound: PiPAmbientSound) {
+        Task { @MainActor in
+            var preferences = center.pipAudioPreferences
+            preferences.ambientSound = sound
+            await center.setPiPAudioPreferences(preferences)
+            guard center.pipAudioPreferences.ambientSound == sound,
+                  audioService.isPreviewing else { return }
+            audioService.startPreview(sound)
         }
     }
 }

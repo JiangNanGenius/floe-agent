@@ -49,7 +49,8 @@ struct PiPAudioPreferencesTests {
         let defaults = PiPAudioPreferences()
         #expect(defaults.ambientEnabled == true) // ambient on by default…
         #expect(defaults.ambientGain == 0) // …but muted: zero-volume playback
-        #expect(defaults.ambientSound == .meditation) // one bundled CC0 loop
+        #expect(defaults.ambientSound == .meditation) // default bundled CC0 loop
+        #expect(PiPAmbientSound.allCases.count == 4) // original + three additions
         #expect(defaults.taskSpeechEnabled == false)
         #expect(defaults.taskSpeechGain == 0.7)
         #expect(defaults.cuesEnabled == false)
@@ -96,7 +97,7 @@ struct PiPAudioPreferencesTests {
         #expect(fallback.ambientSound == .meditation) // unknown choice → bundled default
         #expect(fallback.taskSpeechEnabled == true)
 
-        // Retired version-1 choices migrate to the bundled loop without
+        // Retired version-1 choices migrate to the default loop without
         // touching the enabled/gain/narration/cue fields around them.
         for retired in ["rain", "brownNoise"] {
             let legacy = try #require(
@@ -117,6 +118,48 @@ struct PiPAudioPreferencesTests {
             try JSONDecoder().decode(PiPAudioPreferences.self, from: roundTrip)
                 == PiPAudioPreferences()
         )
+    }
+
+    @Test("Every ambient choice is distinct, resource-backed and persists with the version-1 record")
+    func everySoundChoiceIsResourceBackedAndPersists() async throws {
+        let sounds = PiPAmbientSound.allCases
+        #expect(sounds.count == 4)
+        #expect(Set(sounds.map(\.rawValue)).count == 4)
+        #expect(Set(sounds.map(\.localizationKey)).count == 4)
+        #expect(Set(sounds.map(\.bundledResourceName)).count == 4)
+        #expect(sounds.allSatisfy { $0.bundledResourceExtension == "wav" })
+        // The original raw value stays the decode fallback and default.
+        #expect(PiPAmbientSound(rawValue: "meditation") == .meditation)
+        #expect(PiPAmbientSound(rawValue: "firstLight") == .firstLight)
+        #expect(PiPAmbientSound(rawValue: "deepBlue") == .deepBlue)
+        #expect(PiPAmbientSound(rawValue: "starfield") == .starfield)
+
+        // Each choice encodes as itself and decodes back unchanged; no new
+        // value silently collapses onto the meditation fallback.
+        for sound in sounds {
+            let encoded = try JSONEncoder().encode(sound)
+            let decoded = try JSONDecoder().decode(PiPAmbientSound.self, from: encoded)
+            #expect(decoded == sound)
+        }
+
+        // Every selection survives the real save/load path with the other
+        // channels untouched, under the same version and settings key.
+        let store = InMemorySettingsStore()
+        let repository = BackgroundPreferencesRepository(store: store)
+        for sound in sounds {
+            var preferences = PiPAudioPreferences()
+            preferences.ambientSound = sound
+            preferences.ambientGain = 0.42
+            preferences.taskSpeechEnabled = true
+            try await repository.savePipAudioPreferences(preferences)
+            let loaded = await repository.loadPipAudioPreferences()
+            #expect(loaded.ambientSound == sound)
+            #expect(loaded.ambientGain == 0.42)
+            #expect(loaded.taskSpeechEnabled == true)
+            #expect(loaded.cuesEnabled == false)
+            #expect(loaded.version == PiPAudioPreferences.currentVersion)
+        }
+        #expect(PiPAudioPreferences.settingsKey == "pip.audio.preferences.v1")
     }
 
     // MARK: - Repository: real load/migrate/save path

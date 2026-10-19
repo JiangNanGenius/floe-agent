@@ -588,7 +588,7 @@ struct PiPAudioServiceTests {
     func previewHonorsRequestedSoundAndGain() {
         let harness = PiPAudioHarness.make(PiPAudioPreferences()) // meditation, gain 0
         harness.service.startPreview(.meditation)
-        #expect(harness.ambient.lastSound == .meditation) // the bundled loop
+        #expect(harness.ambient.lastSound == .meditation) // the default bundled loop
         #expect(harness.ambient.lastGain == 0) // respects gain 0, no floor override
         #expect(harness.ambient.isPlaying) // really running while muted
         #expect(harness.service.state == .muted)
@@ -622,6 +622,74 @@ struct PiPAudioServiceTests {
         try? await Task.sleep(for: .milliseconds(150))
         #expect(!harness.service.isPreviewing) // bounded stop
         #expect(!harness.ambient.isPlaying)
+    }
+
+    @Test("A stored sound choice swaps the live loop only while the owner is active")
+    func soundChangeSwapsLoopWithoutOwningPlayback() {
+        var stored = PiPAudioPreferences()
+        stored.ambientGain = 0.4
+        let harness = PiPAudioHarness.make(stored)
+
+        // Settings changes alone never start audio, even with a new selection.
+        var changed = stored
+        changed.ambientSound = .starfield
+        harness.box.preferences = changed
+        harness.service.applyPreferences(changed)
+        #expect(harness.ambient.playCount == 0)
+        #expect(!harness.ambient.isPlaying)
+        #expect(harness.session.activateCount == 0)
+
+        // The next real owner start plays the newly stored selection.
+        harness.service.handleTaskPiPActiveChanged(true)
+        #expect(harness.ambient.lastSound == .starfield)
+        #expect(harness.ambient.lastGain == 0.4)
+
+        // Changing the choice while the loop runs swaps the content in place
+        // at the same gain: one shared owner, one session activation.
+        var switched = changed
+        switched.ambientSound = .deepBlue
+        harness.box.preferences = switched
+        harness.service.applyPreferences(switched)
+        #expect(harness.ambient.lastSound == .deepBlue)
+        #expect(harness.ambient.lastGain == 0.4)
+        #expect(harness.ambient.playCount == 2)
+        #expect(harness.session.activateCount == 1)
+    }
+
+    @Test("A persisted picker change re-points the open preview; closing keeps the stored choice")
+    func previewFollowsPersistedSelectionAndRestoresStoredChoice() {
+        var stored = PiPAudioPreferences()
+        stored.ambientSound = .meditation
+        stored.ambientGain = 0.25
+        let harness = PiPAudioHarness.make(stored)
+        harness.service.handleTaskPiPActiveChanged(true)
+        #expect(harness.ambient.lastSound == .meditation)
+
+        harness.service.startPreview(.firstLight)
+        #expect(harness.service.previewSound == .firstLight)
+        #expect(harness.ambient.lastSound == .firstLight)
+        #expect(harness.ambient.lastGain == 0.25) // preview honors the slider gain
+
+        // The settings picker persists the new choice first, then re-points
+        // the open preview through the same service owner.
+        var chosen = stored
+        chosen.ambientSound = .starfield
+        harness.box.preferences = chosen
+        harness.service.applyPreferences(chosen)
+        harness.service.startPreview(.starfield)
+        #expect(harness.service.previewSound == .starfield)
+        #expect(harness.ambient.lastSound == .starfield)
+        #expect(harness.ambient.playCount == 3) // owner + two preview starts
+        #expect(harness.session.activateCount == 1) // no session churn
+
+        // Closing the preview keeps the newly stored choice; it never
+        // reverts to the pre-selection track.
+        harness.service.stopPreview()
+        #expect(harness.service.currentPreferences.ambientSound == .starfield)
+        #expect(harness.ambient.lastSound == .starfield) // stored choice, not the old one
+        #expect(harness.ambient.isPlaying) // the owner loop continues
+        #expect(harness.ambient.playCount == 3) // same loop continues, no restart
+        #expect(harness.session.deactivateCount == 0) // owner still holds the session
     }
 
     @Test("Stage events without an owner never start audio — settings and events are not owners")
@@ -834,10 +902,10 @@ struct PiPAudioServiceTests {
 
     // MARK: - Retired ambient choices and the retained attention cue
 
-    @Test("Only the meditation loop is selectable; retired choices decode to it")
+    @Test("All four loops are selectable; retired and unknown choices decode to the default")
     func retiredAmbientChoicesCollapseToMeditation() throws {
-        #expect(PiPAmbientSound.allCases == [.meditation])
-        for retired in ["rain", "brownNoise"] {
+        #expect(PiPAmbientSound.allCases == [.meditation, .firstLight, .deepBlue, .starfield])
+        for retired in ["rain", "brownNoise", "ocean"] {
             let stored = try #require(
                 #"{"ambientSound":"\#(retired)"}"#.data(using: .utf8)
             )

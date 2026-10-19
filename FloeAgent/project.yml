@@ -79,10 +79,17 @@ targets:
       - path: FloeApp/Resources/Capabilities
         type: folder
         buildPhase: resources
-      # Seamlessly looped PiP ambient track (CC0; attribution in
-      # Resources/Licenses/PiPAmbientMeditation-CC0.txt). Declared explicitly
-      # so project generation cannot silently omit the audio asset.
+      # Seamlessly looped PiP ambient tracks (CC0; attribution in
+      # Resources/Licenses/PiPAmbientMeditation-CC0.txt and
+      # Resources/Licenses/PiPAmbientExpansion-CC0.txt). Declared explicitly
+      # so project generation cannot silently omit an audio asset.
       - path: FloeApp/Resources/Audio/PiPAmbientMeditation.wav
+        buildPhase: resources
+      - path: FloeApp/Resources/Audio/PiPAmbientFirstLight.wav
+        buildPhase: resources
+      - path: FloeApp/Resources/Audio/PiPAmbientDeepBlue.wav
+        buildPhase: resources
+      - path: FloeApp/Resources/Audio/PiPAmbientStarfield.wav
         buildPhase: resources
       - path: FloeApp/Resources/Licenses
         type: folder
