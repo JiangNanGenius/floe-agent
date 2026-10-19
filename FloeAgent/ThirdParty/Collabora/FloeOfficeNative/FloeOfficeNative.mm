@@ -395,6 +395,7 @@ static NSString *FloeInkInputGatingScript() {
         const state = window.__floePenState = {
             strokes: 0, coreEvents: 0, armedDispatches: 0, activeStroke: false, toolState: null,
             shapeHandleSuspensions: 0, previewHandoffs: 0, previewClears: 0,
+            zeroMotionClicks: 0, zeroMotionClickFailures: 0,
             lastPreviewClear: null, writerInsetTwips: null, writerPageOriginTwips: null
         };
         let drawing = false;
@@ -1096,39 +1097,171 @@ static NSString *FloeInkInputGatingScript() {
             // exactly the create it had drawn. Previously completed contacts
             // keep their independent handoff evidence untouched.
             dropStrokePreview('fail-closed');
+            let last = null;
             if (contact) {
-                const last = contact.last;
+                last = contact.last;
                 contact = null;
-                state.activeStroke = false;
-                // End any core contact already replayed. This mouseup may be
-                // swallowed by the unmaintainable handle, but the gate is now
-                // off and no completed stroke is claimed.
-                try { mouse('mouseup', source || last, 0, document); } catch (ignored) {}
-            } else {
-                state.activeStroke = false;
             }
-            // Best-effort ordered backend Escape: even a swallowed mouseup must
-            // not leave core freehand/button state armed while the local gate
-            // is off. resetTool posts to the document's engine channel and
-            // never touches DOM selection/handles.
-            try { resetTool(false); } catch (ignored) {}
+            state.activeStroke = false;
+            // The ordered backend Escape must run BEFORE any synthetic
+            // mouseup: it aborts the unfinished core create (BrkAction ->
+            // BrkCreateObj), so EndCreateObj — the only zero-motion dot
+            // branch — is never entered. Mirror of the pointercancel route:
+            // resetTool posts to the document's engine channel and never
+            // touches DOM selection/handles.
+            let aborted = false;
+            try {
+                aborted = resetTool(false);
+            } catch (ignored) {
+                aborted = false;
+            }
+            // End the core contact only after the abort actually posted;
+            // mpCurrentCreate is cleared, so this mouseup can never finalize
+            // a dot and no stroke is claimed. A lost map or a throwing post
+            // fails closed with no synthetic mouseup at all.
+            if (aborted && last) {
+                try { mouse('mouseup', source || last, 0, document); } catch (ignored) {}
+            }
             restoreShapeHandles();
+        };
+        // MouseControl defers the core press until a drag move. Replaying
+        // only DOM down/up cannot trigger its trusted-click handler, so a
+        // stationary Pencil contact needs its existing programmatic click
+        // primitive. Sample mouseDownSent before replayed mouseup clears it;
+        // never add a second pair when the frontend already sent the press.
+        // Unknown stationary routes and failed delivery abort the owned
+        // contact, preserve earlier handoffs and do not count a stroke.
+        // resetTool posts Escape before any further contact-ending event;
+        // native consumption and saved geometry are qualified separately.
+        const zeroMotionMouseSection = () => {
+            const app = window.app;
+            const container = app && app.sectionContainer;
+            if (!container || !app.CSections || !app.CSections.MouseControl) return null;
+            return container.getSectionWithName(app.CSections.MouseControl.name) || null;
+        };
+        const zeroMotionClickPoint = (section, source) => {
+            try {
+                if (typeof section.moveCursorToPoint !== 'function') return null;
+                const app = window.app;
+                const canvas = app && app.sectionContainer && app.sectionContainer.canvas;
+                const rect = canvas && typeof canvas.getBoundingClientRect === 'function'
+                    ? canvas.getBoundingClientRect() : null;
+                if (!rect || !Number.isFinite(app.dpiScale)) return null;
+                const clientX = source.clientX;
+                let clientY = source.clientY;
+                if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+                // The same Writer page-top compensation the replayed stream
+                // applies, so press and release land on one document point.
+                if (writerInsetYCss !== null && Number.isFinite(clientY)) clientY -= writerInsetYCss;
+                if (!Array.isArray(section.myTopLeft)
+                    || !Number.isFinite(section.myTopLeft[0])
+                    || !Number.isFinite(section.myTopLeft[1])) return null;
+                if (!section.currentPosition || typeof section.currentPosition.clone !== 'function') return null;
+                // Canvas-local device pixels minus the section's own
+                // top-left: the exact contract convertPositionToCanvasLocale
+                // + convertPositionToSectionLocale hand to section
+                // callbacks. Assigning through the SimplePoint's own pX/pY
+                // setters converts to model twips identically to
+                // SimplePoint.fromCorePixels — the container's own entry.
+                const localX = Math.round((clientX - rect.left) * app.dpiScale) - section.myTopLeft[0];
+                const localY = Math.round((clientY - rect.top) * app.dpiScale) - section.myTopLeft[1];
+                if (!Number.isFinite(localX) || !Number.isFinite(localY)) return null;
+                const point = section.currentPosition.clone();
+                point.pX = localX;
+                point.pY = localY;
+                return point;
+            } catch (ignored) { return null; }
+        };
+        const zeroMotionAbort = (source, code, replayed) => {
+            drawing = false;
+            state.error = code;
+            state.zeroMotionClickFailures += 1;
+            dropStrokePreview('zero-motion-failed');
+            state.activeStroke = false;
+            let aborted = false;
+            try {
+                aborted = resetTool(false);
+            } catch (ignored) {
+                aborted = false;
+            }
+            // Pre-replay: the DOM mouseup has not been dispatched yet, so
+            // end the contact exactly like failShapeHandles — only after
+            // the abort posted — then restore the suspended handles.
+            // Post-replay: the contact-ending event was already dispatched
+            // (the frontend's own mouse-up consumed/cleared its state), so
+            // only the Escape above is added; the caller's finally restores.
+            if (!replayed) {
+                if (aborted) {
+                    try { mouse('mouseup', source, 0, document); } catch (ignored) {}
+                }
+                restoreShapeHandles();
+            }
+            return false;
         };
         const release = (source) => {
             if (!contact) return true;
             const last = contact.last;
+            const stationary = !contact.moves;
             // Keep the contact until the handle check succeeds: failShapeHandles
             // still needs to end any core contact already replayed.
             if (suspendShapeHandles() === 'failed') {
                 failShapeHandles(source || last);
                 return false;
             }
+            // Sample BEFORE the DOM mouseup replay. Tri-state, never the
+            // same null: true = the frontend already posted the press for
+            // this stream; false = proven unsent (deliverable or lost);
+            // null = unreadable section/flag (unsupported route).
+            let section = null;
+            let pressSent = null;
+            try {
+                section = zeroMotionMouseSection();
+                if (section && typeof section.mouseDownSent === 'boolean')
+                    pressSent = section.mouseDownSent;
+                else
+                    section = null;
+            } catch (ignored) {
+                section = null;
+                pressSent = null;
+            }
+            let point = null;
+            if (pressSent === false) {
+                point = zeroMotionClickPoint(section, source || last);
+                if (point === null) {
+                    contact = null;
+                    return zeroMotionAbort(source || last, 'zero-motion-click-unavailable', false);
+                }
+            } else if (pressSent === null && stationary) {
+                // A stationary contact whose delivery state cannot be proven
+                // is a known-undelivered one: the pinned frontend defers the
+                // press only from drag-moves and synthesizes the click pair
+                // only from a trusted DOM 'click'. Never claim it.
+                contact = null;
+                return zeroMotionAbort(source || last, 'zero-motion-click-unavailable', false);
+            }
+            // pressSent === true (frontend completes it) or a moving stream
+            // with an unreadable flag: the unchanged legacy completion.
             contact = null;
             state.activeStroke = false;
             try {
                 mouse('mouseup', source || last, 0, document);
+                if (point) {
+                    try {
+                        section.moveCursorToPoint(point, 0);
+                        state.zeroMotionClicks += 1;
+                    } catch (error) {
+                        // The primitive threw — possibly after posting the
+                        // press only. The ordered Escape below aborts any
+                        // straggler core create (no ghost dot), and the
+                        // already-dispatched DOM mouseup is never repeated.
+                        return zeroMotionAbort(source || last, 'zero-motion-click-failed', true);
+                    }
+                }
                 state.strokes += 1;
                 endStrokeHandoff();
+            } catch (error) {
+                drawing = false;
+                state.error = String(error);
             } finally {
                 restoreShapeHandles();
             }
@@ -1186,7 +1319,7 @@ static NSString *FloeInkInputGatingScript() {
             // layout changes between contacts are always honoured. Page X
             // is never part of this transform.
             computeWriterInsetCss();
-            contact = { id: event.pointerId, last: event };
+            contact = { id: event.pointerId, last: event, moves: 0 };
             state.activeStroke = true;
             stop(event); // suppress WebKit's duplicate compatibility mouse input
             if (suspendShapeHandles() === 'failed') {
@@ -1207,12 +1340,43 @@ static NSString *FloeInkInputGatingScript() {
                 failShapeHandles(event);
                 return;
             }
+            contact.moves += 1;
             mouse('mousemove', event, 1, document);
         };
         const up = (event) => {
             if (!owns(event)) return;
             stop(event);
             finish(event, drawing);
+        };
+        // System cancellation abandons only the unfinished contact. Drop
+        // its preview, post the ordered Escape before ending the frontend
+        // contact, and preserve all completed strokes and pending handoffs.
+        // If the abort cannot post, disarm without replaying mouseup or
+        // claiming completion. The native cancel/save regression checks the
+        // resulting document, including zero-motion contacts.
+        const cancel = (event) => {
+            if (!owns(event)) return;
+            stop(event);
+            if (!contact) return;
+            contact = null;
+            state.activeStroke = false;
+            dropStrokePreview('pointercancel');
+            let aborted = false;
+            try {
+                aborted = resetTool(drawing);
+                if (!aborted) {
+                    drawing = false;
+                    state.error = 'engine-unavailable';
+                }
+            } catch (error) {
+                drawing = false;
+                state.error = String(error);
+            } finally {
+                if (aborted) {
+                    try { mouse('mouseup', event, 0, document); } catch (ignored) {}
+                }
+                restoreShapeHandles();
+            }
         };
         const blockFinger = (event) => {
             if (drawing && onCanvas(event) && event.pointerType !== 'pen' && event.pointerType !== 'mouse')
@@ -1223,7 +1387,7 @@ static NSString *FloeInkInputGatingScript() {
         window.addEventListener('pointerdown', down, { capture: true, passive: false });
         window.addEventListener('pointermove', move, { capture: true, passive: false });
         window.addEventListener('pointerup', up, { capture: true, passive: false });
-        window.addEventListener('pointercancel', up, { capture: true, passive: false });
+        window.addEventListener('pointercancel', cancel, { capture: true, passive: false });
         // Finger navigation stays on the pinned frontend's own touch
         // pipeline. CanvasSectionContainer records the first finger's
         // touchstart, resolves the gesture's section from that state and
@@ -1276,6 +1440,8 @@ static NSString *FloeInkInputGatingScript() {
             livePreview: !!(previewStroke || previewHandoffs.length),
             previewHandoffs: state.previewHandoffs,
             previewClears: state.previewClears,
+            zeroMotionClicks: state.zeroMotionClicks,
+            zeroMotionClickFailures: state.zeroMotionClickFailures,
             lastPreviewClear: state.lastPreviewClear,
             writerInsetTwips: state.writerInsetTwips,
             writerPageOriginTwips: state.writerPageOriginTwips
@@ -2799,6 +2965,18 @@ static NSString *FloeSetDrawingModeScript(BOOL enabled) {
 }
 
 @implementation FloeOfficeNativeViewController
+/// Main-queue accessor for the exact engine document URL the UIDocument
+/// loaded (`copyFileURL`, the `file_path` handed to the bundled editor).
+/// nil whenever the engine document or its copy URL is unavailable; the URL
+/// can exist while an open is still in progress, so this is identity
+/// metadata, not a readiness signal. Never the session working copy.
+- (NSURL *)engineDocumentFileURL {
+    NSAssert(NSThread.isMainThread, @"Office controllers are main-queue owned");
+    CODocument *engineDocument = self.editor.document;
+    if (!engineDocument) return nil;
+    return engineDocument->copyFileURL;
+}
+
 - (instancetype)initWithWorkingFileURL:(NSURL *)workingFileURL sessionDirectory:(NSURL *)sessionDirectory
                              readOnly:(BOOL)readOnly error:(NSError **)error {
     NSAssert(NSThread.isMainThread, @"Office controllers are main-queue owned");

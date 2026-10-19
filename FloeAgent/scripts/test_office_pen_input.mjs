@@ -83,12 +83,21 @@
  * device acceptance; scripts/office_pen_real_dom_acceptance.js documents the
  * real-DOM -> core acceptance path for the integration owner.
  */
+/* The mock models the pinned MouseControl deferred-press state and its
+ * existing stationary click API. Assertions cover the actual injected host
+ * script; native consumption and saved output remain separate checks. */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const mmPath = join(repoRoot, 'ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.mm');
+// The OPTIONAL argv[2] is a staged host source (.mm path) used to run
+// differential regression comparisons against before/candidate files; with
+// no argument the harness reads the tracked production source below, with
+// the exact same production-relative default path as before.
+const mmPath = process.argv[2]
+  ? process.argv[2]
+  : join(repoRoot, 'ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.mm');
 const mm = readFileSync(mmPath, 'utf8');
 const begin = mm.indexOf('// FLOE_INK_GATING_SCRIPT_BEGIN');
 const end = mm.indexOf('// FLOE_INK_GATING_SCRIPT_END');
@@ -266,11 +275,24 @@ function newWorld(options = {}) {
 
   // The pinned container is inspectable; this world's document has no stale
   // graphic selection by default (individual tests install their own).
+  // Model the pinned frontend API consumed by the production bridge.
+  const mouseClicks = [];
+  const mouseMock = {
+    name: 'mouseControl',
+    mouseDownSent: false,
+    myTopLeft: [0, 0],
+    currentPosition: { pX: 0, pY: 0, clone() { return { pX: this.pX, pY: this.pY }; } },
+    moveCursorToPoint(point, modifier) { mouseClicks.push({ pX: point.pX, pY: point.pY, modifier }); },
+  };
   const sectionContainer = {
     canvas,
     context,
-    getSectionWithName: () => null,
+    getSectionWithName: (name) => (name === 'mouseControl' ? mouseMock : null),
   };
+  document.addEventListener('mousemove', (e) => {
+    if (e.buttons === 1) mouseMock.mouseDownSent = true;
+  });
+  document.addEventListener('mouseup', () => { mouseMock.mouseDownSent = false; });
   const keyboardEvents = [];
   const uno = [];
   const handlers = {};
@@ -301,7 +323,7 @@ function newWorld(options = {}) {
     dpiScale: 2,
     twipsToPixels: 0.2,
     activeDocument: { getZoomPercent: () => 100 },
-    CSections: { ShapeHandlesSection: { name: 'shapeHandlesSection' } },
+    CSections: { ShapeHandlesSection: { name: 'shapeHandlesSection' }, MouseControl: { name: 'mouseControl' } },
     definitions: { graphicSelection: { handlesSection: null } },
   };
   if (options.noMap) delete windowTarget.app.map;
@@ -331,6 +353,7 @@ function newWorld(options = {}) {
   const world = {
     window: windowTarget, document, documentElement, canvas, toolbar, map, uno,
     keyboardEvents, handlers, advanceTimers, pumpFrames, sectionContainer,
+    mouseMock, mouseClicks,
     get cacheReads() { return cacheReads; },
     // Paint a backing-pixel band (radius 24) around each client-space point.
     paintArea: (points, rgb = RED) => {
@@ -399,6 +422,58 @@ const overlayPaths = (world) => {
 const setStyle = (world, color, width, transparency) => {
   world.window.__floeOfficeInkLastDispatch = {
     token: 1, expected: { color, width, transparency },
+  };
+};
+
+// Shared cross-channel order log: records synthetic core mouse replays AND
+// engine key posts in the exact order the gate issues them, so genuine
+// pointercancel and fail-closed abort ordering are asserted on one timeline
+// instead of two.
+const recordOrder = (w, order) => {
+  const seen = [];
+  const wrap = (t) => {
+    const orig = t.dispatch.bind(t);
+    t.dispatch = (event) => {
+      if (['mousedown', 'mousemove', 'mouseup'].includes(event.type)) {
+        seen.push(event);
+        order.push(['mouse', event.type]);
+      }
+      return orig(event);
+    };
+  };
+  wrap(w.canvas);
+  wrap(w.document);
+  const origPost = w.map._docLayer.postKeyboardEvent;
+  w.map._docLayer.postKeyboardEvent = (kind, char, key) => {
+    order.push(['key', kind, key]);
+    return origPost(kind, char, key);
+  };
+  return seen;
+};
+
+// A world whose shape-handle section can be swapped between healthy and
+// hide-throwing states; mirrors the installed-section model of check 24
+// so the fail-closed suspend path is the real production one.
+const makeHandleWorld = () => {
+  const w = newWorld();
+  const definition = w.window.app.CSections.ShapeHandlesSection;
+  const handleState = { section: null };
+  const makeSection = (breakOnHide) => ({
+    name: definition.name, showSection: true,
+    setShowSection(show) {
+      if (show === false && breakOnHide) throw new Error('hide failed');
+      this.showSection = show;
+    },
+    sectionProperties: { subSections: [] },
+  });
+  handleState.section = makeSection(false);
+  w.window.app.sectionContainer.getSectionWithName = (name) =>
+    (name === definition.name ? handleState.section
+      : (name === 'mouseControl' ? w.mouseMock : null));
+  return {
+    w,
+    breakOnHide() { handleState.section = makeSection(true); },
+    heal() { handleState.section = makeSection(false); },
   };
 };
 
@@ -923,7 +998,7 @@ const setStyle = (world, color, width, transparency) => {
     sectionProperties: { subSections: [] },
   };
   w.window.app.sectionContainer.getSectionWithName = (name) =>
-    (name === working.name ? working : null);
+    (name === working.name ? working : (name === 'mouseControl' ? w.mouseMock : null));
   w.pen('pointerdown', 10, 10, w.canvas, { pointerId: 131 });
   check('failclosed/mid-contact-armed',
     w.preview().stroke === true && w.state().activeStroke === true,
@@ -1253,6 +1328,513 @@ check('inset/derived-bounded-text-only',
   && script.includes("_docType !== 'text'"));
 check('inset/x-not-compensated-in-source',
   !script.includes('clientX -=') && !script.includes('writerInsetCss.x'));
+
+// --- genuine pen pointercancel (durable abort regressions) ----------------
+// A genuine pen pointercancel aborts ONLY the active unfinished contact:
+// no stroke count, no pending handoff, its own live preview dropped, the
+// ordered Escape pair posted before at most one trailing synthetic mouseup,
+// and ZERO mouseups when the engine abort itself fails (lost map or a
+// throwing key post). Previously finalized ink and its pending handoffs are
+// untouched; wrong-pointerId / non-pen / no-active cancels are ignored;
+// repeated cancel is a no-op; ordinary pointerup and blur finalization are
+// unchanged. These are frontend JS contracts extracted from the host source
+// at run time — not a device Pencil or real core-side persistence proof.
+
+// ---------------------------------------------------------------------------
+// 37. True pen pointercancel on a ZERO-MOTION contact: abort, never finalize.
+//    On host sources where pointercancel still aliases the up handler these
+//    checks FAIL (defect evidence); on the accepted abort candidate they pass.
+// ---------------------------------------------------------------------------
+{
+  const w = newWorld();
+  const order = [];
+  const seen = recordOrder(w, order);
+  w.arm();
+  const armUno = w.uno.length;
+  w.pen('pointerdown', 60, 80, w.canvas, { pointerId: 401 });
+  const previewBefore = w.preview();
+  const ev = makeEvent('pointercancel', { pointerType: 'pen', pointerId: 401, clientX: 60, clientY: 80 });
+  w.canvas.dispatch(ev);
+
+  check('cancel0/stopped-and-not-defaulted-cancelable',
+    ev.stopped === true && ev.defaultPrevented === true,
+    JSON.stringify({ s: ev.stopped, d: ev.defaultPrevented }));
+  check('cancel0/no-stroke-counted-for-canceled-contact',
+    w.state().strokes === 0, JSON.stringify(w.state()));
+  check('cancel0/no-pending-handoff-for-canceled-contact',
+    w.state().previewHandoffs === 0 && w.preview().pending === 0,
+    JSON.stringify({ h: w.state().previewHandoffs, p: w.preview().pending }));
+  check('cancel0/own-live-preview-dropped',
+    w.preview().stroke === false && w.state().lastPreviewClear === 'pointercancel'
+    && overlayPaths(w).paths.length === 0,
+    JSON.stringify({ s: w.preview().stroke, c: w.state().lastPreviewClear,
+      paths: overlayPaths(w).paths.length }));
+  check('cancel0/preview-existed-before-cancel', previewBefore.stroke === true,
+    JSON.stringify(previewBefore));
+  check('cancel0/contact-released-not-active',
+    w.state().activeStroke === false, JSON.stringify(w.state()));
+  check('cancel0/still-armed-after-clean-abort',
+    w.state().drawing === true && w.state().error === null, JSON.stringify(w.state()));
+  check('cancel0/escape-pair-posted-before-any-mouseup',
+    JSON.stringify(order) === JSON.stringify([
+      ['key', 'input', 1281], ['key', 'up', 1281],
+      ['mouse', 'mousedown'],
+      ['key', 'input', 1281], ['key', 'up', 1281],
+      ['mouse', 'mouseup'],
+    ]),
+    JSON.stringify({ order, keys: w.keyboardEvents }));
+  check('cancel0/at-most-one-mouseup-and-it-follows-the-escape',
+    seen.filter((e) => e.type === 'mouseup').length <= 1
+    && (seen.length === 0 || seen[0].type === 'mousedown'),
+    JSON.stringify(seen.map((e) => [e.type, e.clientX, e.clientY])));
+  check('cancel0/tool-rearmed-once-after-abort',
+    w.uno.length === armUno + 1 && w.uno[w.uno.length - 1] === '.uno:Freeline_Unfilled'
+    && w.state().armedDispatches === 2,
+    JSON.stringify({ uno: w.uno, s: w.state().armedDispatches }));
+  check('cancel0/core-events-down-plus-single-trailing-up',
+    w.state().coreEvents === 2, JSON.stringify(w.state()));
+  console.log(`INFO cancel0/event-order ${JSON.stringify({ order,
+    keys: w.keyboardEvents.map((k) => k.join(':')), uno: w.uno,
+    mouse: seen.map((e) => [e.type, e.clientX, e.clientY, e.buttons]) })}`);
+}
+
+// ---------------------------------------------------------------------------
+// 38. True pen pointercancel on a MOVING contact: same abort semantics.
+// ---------------------------------------------------------------------------
+{
+  const w = newWorld();
+  const order = [];
+  const seen = recordOrder(w, order);
+  w.arm();
+  w.pen('pointerdown', 100, 100, w.canvas, { pointerId: 411 });
+  w.pen('pointermove', 120, 110, w.canvas, { pointerId: 411 });
+  w.pen('pointermove', 140, 120, w.canvas, { pointerId: 411 });
+  w.pumpFrames(1);
+  check('cancel1/live-ink-before-cancel', w.preview().stroke === true,
+    JSON.stringify(w.preview()));
+  w.pen('pointercancel', 140, 120, w.canvas, { pointerId: 411 });
+  check('cancel1/no-stroke-counted', w.state().strokes === 0, JSON.stringify(w.state()));
+  check('cancel1/no-handoff', w.state().previewHandoffs === 0 && w.preview().pending === 0,
+    JSON.stringify({ h: w.state().previewHandoffs, p: w.preview().pending }));
+  check('cancel1/preview-dropped', w.state().lastPreviewClear === 'pointercancel'
+    && overlayPaths(w).paths.length === 0, JSON.stringify(w.state()));
+  check('cancel1/escape-before-trailing-mouseup',
+    JSON.stringify(order) === JSON.stringify([
+      ['key', 'input', 1281], ['key', 'up', 1281],
+      ['mouse', 'mousedown'], ['mouse', 'mousemove'], ['mouse', 'mousemove'],
+      ['key', 'input', 1281], ['key', 'up', 1281],
+      ['mouse', 'mouseup'],
+    ]),
+    JSON.stringify({ order, keys: w.keyboardEvents, seen: seen.map((e) => e.type) }));
+  check('cancel1/still-armed', w.state().drawing === true && w.state().error === null,
+    JSON.stringify(w.state()));
+  check('cancel1/core-events-4', w.state().coreEvents === 4, JSON.stringify(w.state()));
+}
+
+// ---------------------------------------------------------------------------
+// 39. Ignored cancels: wrong pointerId, non-pen, no active contact.
+// ---------------------------------------------------------------------------
+{
+  const w = newWorld();
+  const seen = recordedMouse(w);
+  w.arm();
+  w.pen('pointerdown', 10, 10, w.canvas, { pointerId: 421 });
+  const keysBefore = w.keyboardEvents.length;
+  w.pen('pointercancel', 10, 10, w.canvas, { pointerId: 422 }); // wrong id
+  check('ignore/wrong-id-keeps-contact-active',
+    w.state().activeStroke === true && w.state().strokes === 0
+    && w.keyboardEvents.length === keysBefore,
+    JSON.stringify({ s: w.state(), keys: w.keyboardEvents.length }));
+  w.pen('pointercancel', 10, 10, w.canvas, { pointerId: 421, pointerType: 'touch' }); // non-pen
+  check('ignore/non-pen-keeps-contact-active',
+    w.state().activeStroke === true && w.state().strokes === 0
+    && w.keyboardEvents.length === keysBefore,
+    JSON.stringify(w.state()));
+  w.pen('pointerup', 10, 10, w.canvas, { pointerId: 421 });
+  check('ignore/own-up-then-completes-exactly-once',
+    w.state().strokes === 1 && w.state().armedDispatches === 2,
+    JSON.stringify(w.state()));
+  const ev = makeEvent('pointercancel', { pointerType: 'pen', pointerId: 999 });
+  w.canvas.dispatch(ev);
+  check('ignore/no-active-cancel-is-noop',
+    w.state().strokes === 1 && !ev.stopped && w.state().error === null,
+    JSON.stringify({ s: w.state(), stopped: ev.stopped }));
+  check('ignore/no-stray-core-input', seen.filter((e) => e.type === 'mousedown').length === 1,
+    JSON.stringify(seen.map((e) => e.type)));
+}
+
+// ---------------------------------------------------------------------------
+// 40. Previously finalized ink survives a later cancel untouched.
+// ---------------------------------------------------------------------------
+{
+  const w = newWorld();
+  setStyle(w, 0xFF0000, 150, 0); // paintArea's default red matches this stroke
+  w.arm();
+  w.strokeAt([[100, 100], [150, 120], [200, 140]]); // completed, pending handoff #1
+  check('prior/one-pending-handoff', w.preview().pending === 1 && w.state().strokes === 1,
+    JSON.stringify(w.preview()));
+  w.pen('pointerdown', 300, 300, w.canvas, { pointerId: 431 });
+  w.pen('pointermove', 320, 310, w.canvas, { pointerId: 431 });
+  w.pen('pointercancel', 320, 310, w.canvas, { pointerId: 431 });
+  check('prior/cancel-does-not-clear-other-handoffs',
+    w.preview().pending === 1 && w.state().strokes === 1
+    && w.state().previewHandoffs === 1,
+    JSON.stringify({ p: w.preview(), s: w.state() }));
+  check('prior/canceled-preview-dropped-not-handed-off',
+    w.state().lastPreviewClear === 'pointercancel' && overlayPaths(w).paths.length === 1,
+    JSON.stringify({ c: w.state().lastPreviewClear, paths: overlayPaths(w).paths.length }));
+  w.paintArea([[100, 100], [150, 120], [200, 140]]);
+  w.pumpFrames(2);
+  check('prior/original-handoff-still-settles-on-own-paint',
+    w.preview().pending === 0 && w.state().lastPreviewClear === 'painted',
+    JSON.stringify(w.state()));
+}
+
+// ---------------------------------------------------------------------------
+// 41. Next genuine stroke completes exactly once after a cancel.
+// ---------------------------------------------------------------------------
+{
+  const w = newWorld();
+  const seen = recordedMouse(w);
+  w.arm();
+  w.pen('pointerdown', 60, 80, w.canvas, { pointerId: 441 });
+  w.pen('pointercancel', 60, 80, w.canvas, { pointerId: 441 });
+  check('next/state-clean-after-cancel', w.state().strokes === 0
+    && w.state().activeStroke === false && w.state().drawing === true,
+    JSON.stringify(w.state()));
+  w.pen('pointerdown', 200, 220, w.canvas, { pointerId: 442 });
+  check('next/down-replays-fresh-mousedown', w.state().activeStroke === true
+    && seen.filter((e) => e.type === 'mousedown').length === 2,
+    JSON.stringify(seen.map((e) => e.type)));
+  w.pen('pointermove', 220, 240, w.canvas, { pointerId: 442 });
+  w.pen('pointerup', 240, 260, w.canvas, { pointerId: 442 });
+  check('next/exactly-one-stroke-counted', w.state().strokes === 1,
+    JSON.stringify(w.state()));
+  check('next/one-handoff-for-the-real-stroke', w.state().previewHandoffs === 1
+    && w.preview().pending === 1, JSON.stringify(w.preview()));
+  check('next/rearmed-once-per-contact', w.state().armedDispatches === 3,
+    JSON.stringify(w.state()));
+  check('next/core-events-exact', w.state().coreEvents === 5,
+    JSON.stringify(w.state()));
+  check('next/no-dot-path-from-canceled-contact',
+    overlayPaths(w).paths.length === 1
+    && !overlayPaths(w).paths.some((p) => /M60\.0 80\.0/.test(p.getAttribute('d') || '')),
+    JSON.stringify(overlayPaths(w).paths.map((p) => p.getAttribute('d'))));
+}
+
+// ---------------------------------------------------------------------------
+// 42. Repeated cancel: the second cancel is a complete no-op.
+// ---------------------------------------------------------------------------
+{
+  const w = newWorld();
+  const seen = recordedMouse(w);
+  w.arm();
+  w.pen('pointerdown', 60, 80, w.canvas, { pointerId: 451 });
+  w.pen('pointercancel', 60, 80, w.canvas, { pointerId: 451 });
+  const keysAfterFirst = w.keyboardEvents.length;
+  const upsAfterFirst = seen.filter((e) => e.type === 'mouseup').length;
+  const clearsAfterFirst = w.state().previewClears;
+  const ev = makeEvent('pointercancel', { pointerType: 'pen', pointerId: 451, clientX: 60, clientY: 80 });
+  w.canvas.dispatch(ev);
+  check('repeat/second-cancel-ignored-silently',
+    w.keyboardEvents.length === keysAfterFirst
+    && seen.filter((e) => e.type === 'mouseup').length === upsAfterFirst
+    && w.state().previewClears === clearsAfterFirst
+    && w.state().strokes === 0 && w.state().error === null && !ev.stopped,
+    JSON.stringify({ s: w.state(), keys: w.keyboardEvents.length }));
+}
+
+// ---------------------------------------------------------------------------
+// 43. Fail closed: map lost mid-contact -> no mouseup at all, gate off.
+// ---------------------------------------------------------------------------
+{
+  const w = newWorld();
+  const seen = recordedMouse(w);
+  w.arm();
+  w.pen('pointerdown', 60, 80, w.canvas, { pointerId: 461 });
+  w.window.app.map = null; // engine channel gone before the cancel arrives
+  w.pen('pointercancel', 60, 80, w.canvas, { pointerId: 461 });
+  check('failmap/no-stroke-no-handoff', w.state().strokes === 0
+    && w.state().previewHandoffs === 0, JSON.stringify(w.state()));
+  check('failmap/no-synthetic-mouseup-after-failed-abort',
+    seen.filter((e) => e.type === 'mouseup').length === 0,
+    JSON.stringify(seen.map((e) => e.type)));
+  check('failmap/gate-disarmed-with-existing-error',
+    w.state().drawing === false && w.state().error === 'engine-unavailable',
+    JSON.stringify(w.state()));
+  check('failmap/no-stale-contact', w.state().activeStroke === false,
+    JSON.stringify(w.state()));
+  check('failmap/preview-dropped', w.state().lastPreviewClear === 'pointercancel',
+    JSON.stringify(w.state()));
+}
+
+// ---------------------------------------------------------------------------
+// 44. Fail closed: throwing Escape/reset path -> no mouseup, honest error.
+// ---------------------------------------------------------------------------
+{
+  const w = newWorld();
+  const seen = recordedMouse(w);
+  w.arm();
+  w.pen('pointerdown', 60, 80, w.canvas, { pointerId: 471 });
+  w.map._docLayer.postKeyboardEvent = () => { throw new Error('kb-boom'); };
+  w.pen('pointercancel', 60, 80, w.canvas, { pointerId: 471 });
+  check('failthrow/no-stroke-no-handoff', w.state().strokes === 0
+    && w.state().previewHandoffs === 0, JSON.stringify(w.state()));
+  check('failthrow/no-synthetic-mouseup-after-throw',
+    seen.filter((e) => e.type === 'mouseup').length === 0,
+    JSON.stringify(seen.map((e) => e.type)));
+  check('failthrow/gate-disarmed-error-reports-throw',
+    w.state().drawing === false && String(w.state().error).includes('kb-boom'),
+    JSON.stringify(w.state()));
+  check('failthrow/no-stale-contact', w.state().activeStroke === false,
+    JSON.stringify(w.state()));
+}
+
+// ---------------------------------------------------------------------------
+// 45. Throwing handle RESTORE does not fail a clean abort (no other owner
+//    touched; next stroke still works). The error path is unchanged.
+// ---------------------------------------------------------------------------
+{
+  const w = newWorld();
+  const section = {
+    name: 'shapeHandlesSection', showSection: true, throwOnShow: false,
+    setShowSection(show) {
+      if (show === true && this.throwOnShow) throw new Error('restore-boom');
+      this.showSection = show;
+    },
+    sectionProperties: { subSections: [] },
+  };
+  w.window.app.sectionContainer.getSectionWithName = (n) =>
+    (n === 'shapeHandlesSection' ? section : (n === 'mouseControl' ? w.mouseMock : null));
+  w.window.app.definitions.graphicSelection.handlesSection = section;
+  const order = [];
+  const seen = recordOrder(w, order);
+  w.arm();
+  w.pen('pointerdown', 60, 80, w.canvas, { pointerId: 481 });
+  check('handles/suspended-at-down', w.state().shapeHandleSuspensions === 1
+    && section.showSection === false, JSON.stringify(w.state()));
+  section.throwOnShow = true;
+  w.pen('pointercancel', 60, 80, w.canvas, { pointerId: 481 });
+  check('handles/abort-survives-throwing-restore',
+    w.state().drawing === true && w.state().error === null
+    && w.state().strokes === 0 && w.state().activeStroke === false,
+    JSON.stringify(w.state()));
+  check('handles/one-mouseup-ordered-after-escape',
+    seen.filter((e) => e.type === 'mouseup').length === 1
+    && order[order.length - 1][0] === 'mouse' && order[order.length - 1][1] === 'mouseup'
+    && order.slice(0, -1).filter((e) => e[0] === 'mouse' && e[1] === 'mouseup').length === 0,
+    JSON.stringify({ seen: seen.map((e) => e.type), order }));
+  section.throwOnShow = false;
+  w.pen('pointerdown', 200, 220, w.canvas, { pointerId: 482 });
+  w.pen('pointerup', 200, 220, w.canvas, { pointerId: 482 });
+  check('handles/next-stroke-completes', w.state().strokes === 1
+    && w.state().armedDispatches === 3, JSON.stringify(w.state()));
+}
+
+// ---------------------------------------------------------------------------
+// 46. Regression guard: blur finalization behavior is intentionally
+//     unchanged (finalizes the contact as before). Passes on both sources.
+// ---------------------------------------------------------------------------
+{
+  const w = newWorld();
+  w.arm();
+  w.pen('pointerdown', 60, 80, w.canvas, { pointerId: 491 });
+  w.pen('pointermove', 80, 90, w.canvas, { pointerId: 491 });
+  w.window.dispatch(makeEvent('blur'));
+  check('blur/finalizes-contact-unchanged', w.state().strokes === 1
+    && w.state().activeStroke === false && w.state().drawing === true
+    && w.state().previewHandoffs === 1,
+    JSON.stringify(w.state()));
+}
+
+// ---------------------------------------------------------------------------
+// 47. Source-shape guard: the registration no longer aliases `up`, and the
+//     abort routine carries the fail-closed structure.
+// ---------------------------------------------------------------------------
+check('source/pointercancel-not-aliased-to-up',
+  !script.includes("addEventListener('pointercancel', up"));
+check('source/abort-drops-own-preview-with-cancel-reason',
+  script.includes("dropStrokePreview('pointercancel')"));
+check('source/no-stroke-increment-in-cancel',
+  !/const cancel = \(event\) => \{[\s\S]*?state\.strokes \+= 1/.test(script));
+check('source/reset-tool-runs-inside-cancel',
+  /const cancel = \(event\) => \{[\s\S]*?resetTool\(drawing\)/.test(script));
+
+// --- fail-closed shape-handle abort ordering (durable regressions) --------
+// The failShapeHandles path discards only the unfinished contact. The
+// ordered backend Escape (input/up, UNOKey.ESCAPE=1281) must run BEFORE any
+// synthetic mouseup could finalize the core create (EndCreateObj is the
+// zero-motion dot branch; BrkAction -> BrkCreateObj never enters it). The
+// trailing core-contact-ending mouseup is sent only after the abort
+// actually posted: a lost map or a throwing key post fails closed with zero
+// synthetic mouseups. Prior finalized ink and its pending paint handoffs
+// are preserved; the gate disarms with the existing error and re-enables.
+
+// 48. Handle failure on down, before any core contact: Escape posts, no
+//     synthetic mouseup at all, gate off with the existing error.
+{
+  const { w, breakOnHide } = makeHandleWorld();
+  const order = [];
+  const seen = recordOrder(w, order);
+  w.arm();
+  breakOnHide();
+  w.pen('pointerdown', 60, 80, w.canvas, { pointerId: 601 });
+  check('abort/down-failure-escape-posted-no-mouseup',
+    w.keyboardEvents.length === 4 && seen.length === 0
+    && order.filter((e) => e[0] === 'mouse').length === 0,
+    JSON.stringify({ keys: w.keyboardEvents.length, order }));
+  check('abort/down-failure-gate-off',
+    w.state().drawing === false && w.state().error === 'shape-handle-unavailable'
+    && w.state().strokes === 0 && w.state().coreEvents === 0,
+    JSON.stringify(w.state()));
+}
+
+// 49. Mid-contact handle failure: exact cross-channel order is
+//     arm-Escape, mousedown, move, abort-Escape, then ONE trailing mouseup.
+{
+  const { w, breakOnHide } = makeHandleWorld();
+  const order = [];
+  const seen = recordOrder(w, order);
+  w.arm();
+  w.pen('pointerdown', 100, 100, w.canvas, { pointerId: 611 });
+  w.pen('pointermove', 120, 110, w.canvas, { pointerId: 611 });
+  breakOnHide();
+  w.pen('pointermove', 140, 120, w.canvas, { pointerId: 611 });
+  check('abort/mid-contact-escape-before-trailing-mouseup',
+    JSON.stringify(order) === JSON.stringify([
+      ['key', 'input', 1281], ['key', 'up', 1281],
+      ['mouse', 'mousedown'], ['mouse', 'mousemove'],
+      ['key', 'input', 1281], ['key', 'up', 1281],
+      ['mouse', 'mouseup'],
+    ]),
+    JSON.stringify(order));
+  check('abort/mid-contact-not-counted-not-handed-off',
+    w.state().strokes === 0 && w.state().previewHandoffs === 0
+    && w.preview().pending === 0 && w.state().lastPreviewClear === 'fail-closed',
+    JSON.stringify({ s: w.state(), p: w.preview() }));
+  check('abort/mid-contact-gate-off',
+    w.state().drawing === false && w.state().error === 'shape-handle-unavailable'
+    && w.state().activeStroke === false,
+    JSON.stringify(w.state()));
+}
+
+// 50. Release-time handle failure: same ordering at pointerup.
+{
+  const { w, breakOnHide } = makeHandleWorld();
+  const order = [];
+  recordOrder(w, order);
+  w.arm();
+  w.pen('pointerdown', 200, 200, w.canvas, { pointerId: 621 });
+  w.pen('pointermove', 220, 210, w.canvas, { pointerId: 621 });
+  breakOnHide();
+  w.pen('pointerup', 240, 220, w.canvas, { pointerId: 621 });
+  check('abort/release-failure-escape-before-trailing-mouseup',
+    JSON.stringify(order) === JSON.stringify([
+      ['key', 'input', 1281], ['key', 'up', 1281],
+      ['mouse', 'mousedown'], ['mouse', 'mousemove'],
+      ['key', 'input', 1281], ['key', 'up', 1281],
+      ['mouse', 'mouseup'],
+    ]),
+    JSON.stringify(order));
+  check('abort/release-failure-no-rearm',
+    w.state().strokes === 0 && w.uno.length === 1 && w.state().armedDispatches === 1,
+    JSON.stringify({ uno: w.uno, s: w.state().armedDispatches }));
+}
+
+// 51. Lost map mid-contact: the abort posts nothing; ZERO synthetic
+//     mouseups; the existing error stays observable.
+{
+  const { w, breakOnHide } = makeHandleWorld();
+  const order = [];
+  const seen = recordOrder(w, order);
+  w.arm();
+  w.pen('pointerdown', 60, 80, w.canvas, { pointerId: 631 });
+  w.window.app.map = null;
+  breakOnHide();
+  w.pen('pointermove', 80, 90, w.canvas, { pointerId: 631 });
+  check('abort/lost-map-zero-synthetic-mouseup',
+    seen.filter((e) => e.type === 'mouseup').length === 0
+    && w.keyboardEvents.length === 2,
+    JSON.stringify({ mouse: seen.map((e) => e.type), keys: w.keyboardEvents }));
+  check('abort/lost-map-gate-off',
+    w.state().drawing === false && w.state().error === 'shape-handle-unavailable'
+    && w.state().strokes === 0 && w.state().activeStroke === false,
+    JSON.stringify(w.state()));
+}
+
+// 52. Throwing Escape post mid-contact: ZERO synthetic mouseups.
+{
+  const { w, breakOnHide } = makeHandleWorld();
+  const order = [];
+  const seen = recordOrder(w, order);
+  w.arm();
+  w.pen('pointerdown', 60, 80, w.canvas, { pointerId: 641 });
+  w.map._docLayer.postKeyboardEvent = () => { throw new Error('kb-boom'); };
+  breakOnHide();
+  w.pen('pointermove', 80, 90, w.canvas, { pointerId: 641 });
+  check('abort/throwing-escape-zero-synthetic-mouseup',
+    seen.filter((e) => e.type === 'mouseup').length === 0,
+    JSON.stringify(order));
+  check('abort/throwing-escape-error-stays',
+    w.state().error === 'shape-handle-unavailable' && w.state().drawing === false
+    && w.state().strokes === 0,
+    JSON.stringify(w.state()));
+}
+
+// 53. Prior finalized ink survives a fail-closed contact and settles on its
+//     own paint; the failed contact adds no count and no handoff.
+{
+  const { w, breakOnHide } = makeHandleWorld();
+  setStyle(w, 0xFF0000, 150, 0);
+  w.arm();
+  const pts = w.strokeAt([[100, 100], [150, 120], [200, 140]]);
+  w.pen('pointerdown', 300, 300, w.canvas, { pointerId: 651 });
+  breakOnHide();
+  w.pen('pointermove', 320, 310, w.canvas, { pointerId: 651 });
+  check('abort/prior-handoff-preserved-failed-not-counted',
+    w.state().strokes === 1 && w.state().previewHandoffs === 1
+    && w.preview().pending === 1 && overlayPaths(w).paths.length === 1,
+    JSON.stringify({ s: w.state(), p: w.preview() }));
+  w.paintArea(pts);
+  w.pumpFrames(2);
+  check('abort/prior-handoff-settles-on-own-paint',
+    w.preview().pending === 0 && w.state().lastPreviewClear === 'painted',
+    JSON.stringify(w.state()));
+}
+
+// 54. Re-enable after fail-closed, then the next genuine stroke completes
+//     exactly once.
+{
+  const { w, breakOnHide, heal } = makeHandleWorld();
+  const seen = recordedMouse(w);
+  w.arm();
+  w.pen('pointerdown', 60, 80, w.canvas, { pointerId: 661 });
+  breakOnHide();
+  w.pen('pointermove', 80, 90, w.canvas, { pointerId: 661 });
+  heal();
+  check('abort/rearm-after-fail-closed',
+    w.window.__floeSetOfficeDrawingMode(true) === true && w.state().drawing === true,
+    JSON.stringify(w.state()));
+  w.pen('pointerdown', 200, 220, w.canvas, { pointerId: 662 });
+  w.pen('pointerup', 240, 260, w.canvas, { pointerId: 662 });
+  check('abort/next-stroke-completes-after-reenable',
+    w.state().strokes === 1 && w.state().previewHandoffs === 1
+    && seen.filter((e) => e.type === 'mousedown').length === 2,
+    JSON.stringify({ s: w.state(), mouse: seen.map((e) => e.type) }));
+}
+
+// 55. Source-shape guard: the fail-closed body gates the trailing mouseup
+//     behind the Escape abort.
+{
+  const start = script.indexOf('const failShapeHandles = (source) => {');
+  const stop = script.indexOf('const release = (source) => {', start);
+  const body = start >= 0 && stop > start ? script.slice(start, stop) : '';
+  const resetIdx = body.indexOf('resetTool(false)');
+  const upIdx = body.indexOf("mouse('mouseup'");
+  check('abort/source-escape-before-mouseup-in-failshape-body',
+    resetIdx >= 0 && upIdx > resetIdx,
+    JSON.stringify({ resetIdx, upIdx, len: body.length }));
+}
 
 console.log(`${checks} checks, ${failures} failed`);
 console.log(failures === 0 ? 'ALL PEN INPUT CONTRACT CHECKS PASSED' : `${failures} CHECK(S) FAILED`);

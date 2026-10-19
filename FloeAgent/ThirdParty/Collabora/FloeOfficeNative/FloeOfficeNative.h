@@ -39,6 +39,15 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 @interface FloeOfficeNativeViewController : UIViewController
 @property (nonatomic, readonly, getter=isReadOnly) BOOL readOnly;
 @property (nonatomic, copy, readonly) NSURL *workingFileURL;
+/// The exact private engine document URL this session's editor actually
+/// loaded — the `file_path` handed to the bundled editor, i.e. the
+/// UIDocument's private copy under the session's engine copy directory.
+/// nil whenever the engine document or its copy URL is unavailable; the URL
+/// can already exist while an open is still in progress, so this getter is
+/// identity metadata only, not a readiness signal. It is never the session
+/// working copy the App saves and restores, and it never names the user's
+/// original file.
+@property (nonatomic, readonly, nullable) NSURL *engineDocumentFileURL;
 /// UIDocument opened its private copy; this is not a rendered-document-ready event.
 @property (nonatomic, copy, nullable) void (^onWorkingCopyOpened)(BOOL success);
 /// Engine-reported backing permission of this session. This is not the App's
