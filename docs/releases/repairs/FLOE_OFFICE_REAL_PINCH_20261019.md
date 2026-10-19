@@ -56,3 +56,16 @@
 
 
 设备组件随后从源码 `c7b7dc33ec60adf9057490a9d2fd43cffa82c597` 完成 iphoneos/arm64 实际编译、链接与 Swift 模块导入，源码未变。组件归档 SHA-256 为 `5785f2b43d9c260f5118a4dae8bc3600247164f3937a256511779399f1fad37b`（126,656,298 字节）；独立核对 ZIP CRC、归档内实际前端 `cc1bcc58…`、原生回执及二进制／dSYM UUID 一致。产物与符号已保存。尚未更新正式设备组件 pin、完整设备 App 归档或内测，不能将组件成功视为真机交互通过。/ The device component compiled, linked and passed Swift import from unchanged source. ZIP integrity, actual packaged frontend, native receipt and matching binary/dSYM identity were independently verified; exact artifacts and symbols are retained. The tracked device pin, full device App archive and beta are still pending; this is not physical interaction acceptance.
+
+
+## 完整文字的真实 UIKit 验收 / Complete-text actual UIKit acceptance
+
+源码 `07cbf3cc` 完整 App 与 UI 宿主编译通过。固定 iPad 串行运行的两项真实界面测试均通过、零跳过：普通创建／画笔开关／设置，以及独立的真实 UIKit 双向缩放。后者使用真实导入的合成 DOCX，将测量文字放在手势锚点附近；完整文字只允许空格、大小写归一后精确匹配，保留 `XCTUnwrap`、放大 `>1.08`、随后缩小 `<0.95` 和画笔保持开启的断言。没有改产品倍率、舍入或手势算法，没有用程序缩放替代实际触摸。/ Full App/UI compilation and both actual UI cases passed with no skips. A real imported synthetic DOCX keeps the entire measurement target near the gesture anchor. Exact full-text matching is stricter; the original growth/shrink/drawing checks and public UIKit gestures remain unchanged, with no product scaling change.
+
+原断言的识别框宽度比为放大 **2.0000**、随后缩小 **0.8717**；保存截图坐标中沿文字长轴的比值另为 **2.4545**、**0.7094**。主负责人逐张检查放大、缩小截图，完整目标文字均可见。这里保留原始截图坐标轴，不把识别框宽度误写成横屏逻辑文字宽度。/ The original bounding-box width assertions measured 2.0000 growth and 0.8717 contraction; the text's long axis independently measured 2.4545 and 0.7094 in stored-image coordinates. Full targets remain visible in independently inspected screenshots.
+
+失败记录继续保留：原页首标题放大裁切；首版居中夹具在真实导入编辑视口 **1133×556** 中仍落到下边界之外；普通创建的嵌套菜单按钮曾在布局完成前被点击。后续仅上移独立夹具文字、保留旧夹具，等待实际菜单按钮位置稳定后点击，并增加原始 OCR 附件。夹具接入的缺失模块导入也已补齐，原编译失败未覆盖。/ Original failures are retained. The first centered fixture still clipped in the actual imported-editor viewport; its replacement moves the target upward. The menu test now waits for the actual target frame to settle. Raw OCR and the original compilation failure are retained.
+
+本轮本地 Debug App 仍显示 1.7.37（278），仅供模拟器验证；**已发布的 278 不包含此次新前端缩放修复，新的内测尚未上传**。五项已有笔迹／落点／保存检查与本次真实 UIKit 用例是独立证据，不能合并宣称真实 UIKit 缩放后立即 Pencil 续写已通过。真实压感、手掌和手感仍需设备反馈。/ This local Debug App retains version/build 1.7.37 (278); the already delivered beta 278 does not carry this new frontend repair. No new beta is uploaded. Separate ink/save and UIKit tests do not prove a combined physical Pencil sequence.
+
+真实导入编辑截图还显示“预览暂未更新”横幅，已进入独立所有权／错误状态核查，尚不将其归因于当前文档或其他恢复标签页。真实双指用例通过不能证明 Notes 预览与缩略图链路均健康。固定模拟器已关机，数据与原始证据保留。/ The actual editor also showed a preview-update error banner. Its ownership and reset path are under separate investigation; passing pinch does not qualify the complete Notes preview/thumbnail flow. The shared Simulator is shut down with data preserved.
