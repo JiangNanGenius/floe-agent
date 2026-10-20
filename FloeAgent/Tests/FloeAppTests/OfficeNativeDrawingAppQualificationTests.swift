@@ -120,6 +120,26 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         try await exerciseStaleShapeHandleReplay("pptx")
     }
 
+    /// Drawing-mode OFF→ON file-outcome contract for one format. One
+    /// completed moving pen stroke through the production editor, then the
+    /// real `OfficeFileSession.toggleDrawing` control OFF and ON again in the
+    /// same session, then a second genuine moving contact, save and a fresh
+    /// production reopen. The saved and reopened document must keep exactly
+    /// the two real vector paths at the selected style and all original
+    /// content, with no extra artifact. XLSX/PPTX are the same-selector
+    /// contrast controls; the Writer re-enable outcome is the unmeasured
+    /// case. Source only: the actual verdict belongs to root's full-App
+    /// Simulator run and is neither claimed as a pass nor as a failure here.
+    func testDOCXDrawingModeOffOnNextStrokePersistsAndReopens() async throws {
+        try await exerciseDrawingModeOffOnNextStroke("docx")
+    }
+    func testXLSXDrawingModeOffOnNextStrokePersistsAndReopens() async throws {
+        try await exerciseDrawingModeOffOnNextStroke("xlsx")
+    }
+    func testPPTXDrawingModeOffOnNextStrokePersistsAndReopens() async throws {
+        try await exerciseDrawingModeOffOnNextStroke("pptx")
+    }
+
     /// A rejected native drawing callback must revoke the App's published On
     /// state, the private native mirror and the page gate together. The fault
     /// wrapper invokes the real gate with `false` and then reports failure, so
@@ -2095,6 +2115,283 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         } catch {
             await session.release()
             throw error
+        }
+    }
+
+    /// Drives only the production control path a real user drives:
+    /// `OfficeFileSession.toggleDrawing` (the toolbar action), the per-document
+    /// ink preference API and the existing band stroke receiver. One control
+    /// stroke, one OFF→ON cycle, the post-re-arm stroke, a real disable, save,
+    /// and a fresh production-session reopen that re-reads the same bytes.
+    /// Exactly one cycle: the gate is exactly two persisted paths; another
+    /// cycle without a contact adds no file outcome and a third contact would
+    /// change that strict count.
+    private func exerciseDrawingModeOffOnNextStroke(_ format: String) async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in native drawing-mode OFF→ON next-stroke file-outcome contract; not executed")
+        }
+        executionTimeAllowance = 600
+        continueAfterFailure = true
+        let fm = FileManager.default
+        let documents = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let root = documents.appendingPathComponent("Qualification/OfficeModeToggle-\(format)-\(UUID().uuidString)",
+                                                   isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        print("FLOE_MODE_TOGGLE_ARTIFACT_ROOT=\(root.path)")
+        let source = root.appendingPathComponent("original.\(format)")
+        switch format {
+        case "docx":
+            try OfficeDocumentBuilder.createWord(at: source, title: "中文模式开关笔迹验收",
+                paragraphs: ["MODE-TOGGLE-KEEP 中文正文 12345", "Second paragraph remains editable."])
+        case "xlsx":
+            try OfficeDocumentBuilder.createWorkbook(at: source, sheets: [
+                OfficeWorkbookSheet(name: "模式开关", rows: [["MODE-TOGGLE-KEEP", "数值"], ["原值", "12"], ["公式", "=B2*2"]])
+            ])
+        default:
+            try OfficeDocumentBuilder.createPresentation(at: source, title: "中文模式开关笔迹验收", slides: [
+                OfficePresentationSlide(title: "MODE-TOGGLE-KEEP", bullets: ["中文原文 12345", "Editable original content"],
+                                        notes: "MODE-TOGGLE-NOTES-KEEP")
+            ])
+        }
+        let sourceHash = try hash(source)
+        let baseline = try package(source, format: format)
+        XCTAssertEqual(baseline.customGeometryPaths.count, 0, "Fixture must contain no preinserted strokes")
+        attach(source, name: "mode-toggle-source-\(format)")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = mount(session, in: scene)
+        defer { window.isHidden = true; window.rootViewController = nil; previousKeyWindow?.makeKey() }
+        let penStyle = OfficeInkStroke(colorHex: "#FF0000", widthMillimeters: 0.5,
+                                       transparencyPercent: 0, preset: .pen)
+        let exported: URL
+        let appliedPenEMU: Int
+        let savedFileSHA: String
+        let savedGeometryPaths: [String]
+        let savedPenIdentities: [String]
+        do {
+            await session.open(source)
+            try await wait(120, "mode-toggle native open") {
+                session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            if session.readOnly {
+                let accepted = await session.requestEditing()
+                XCTAssertTrue(accepted, "Actual App edit entry rejected: \(session.error ?? "unknown")")
+            }
+            try await wait(150, "mode-toggle editable native document") {
+                !session.readOnly && session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            session.useInkPreferences(workspaceIdentity: root.path, documentKey: source.lastPathComponent)
+            let preferences = session.inkPreferences
+            let previousStroke = preferences.stroke
+            defer {
+                preferences.setPreset(previousStroke.preset)
+                preferences.setColorHex(previousStroke.colorHex)
+                preferences.setWidthMillimeters(previousStroke.widthMillimeters)
+                preferences.setTransparencyPercent(previousStroke.transparencyPercent)
+            }
+            // Stage 1: arm through the real editor action, no bypass selector.
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode, "the real App drawing toggle must arm")
+            XCTAssertEqual(try nativeDrawingFlag(native), true,
+                           "the native host must mirror the armed state after a real toggle")
+            let armedFacts = try await officePenFacts(web)
+            XCTAssertEqual(armedFacts["drawing"] as? Bool, true)
+            XCTAssertEqual(armedFacts["activeStroke"] as? Bool, false)
+            try await applyInkStyle(penStyle, preferences: preferences, session: session, stage: "mode-toggle pen")
+            let appliedPen = preferences.stroke
+            appliedPenEMU = appliedPen.lineWidthValue * 360
+            // Stage 2: the completed control contact through the existing seam.
+            let controlStimulus = StrokeStimulus(index: 0, kind: .band, gapMilliseconds: 350, style: .pen)
+            let controlReceipt = try await receiveStroke(0, web: web, native: native, window: window,
+                root: root, syntheticSource: source, stimulus: controlStimulus, previousPoints: [])
+            try validateHitDiagnostics(controlReceipt, stimulus: controlStimulus)
+            XCTAssertEqual(controlReceipt["strokeDelta"] as? Int, 1,
+                           "The mode-toggle positive control did not complete through the actual pen bridge")
+            XCTAssertEqual(controlReceipt["downAccepted"] as? Bool, true,
+                           "The real pen down must be accepted before the OFF→ON cycle")
+            // Stage 3: the OFF half of the real toggle.
+            try await session.toggleDrawing()
+            XCTAssertFalse(session.drawingMode, "the real App drawing toggle must publish Off")
+            XCTAssertEqual(try nativeDrawingFlag(native), false,
+                           "the native mirror must disarm with a real disable")
+            let offFacts = try await officePenFacts(web)
+            XCTAssertEqual(offFacts["drawing"] as? Bool, false, "the page gate must be off after a real disable")
+            XCTAssertEqual(offFacts["activeStroke"] as? Bool, false,
+                           "a real disable must not strand an active stroke")
+            // Stage 4: the ON half in the SAME session — the production re-arm.
+            // The production enable reapplies the current ink.
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode, "the real App drawing toggle must re-arm after OFF")
+            XCTAssertEqual(try nativeDrawingFlag(native), true,
+                           "the native mirror must re-arm with the second real toggle")
+            XCTAssertNil(session.inkError, "the re-enable path must republish the selected ink without an App error")
+            XCTAssertEqual(preferences.stroke.preset, penStyle.preset,
+                           "the selected preset must survive the OFF→ON cycle")
+            XCTAssertEqual(preferences.stroke.colorHex, penStyle.colorHex,
+                           "the selected colour must survive the OFF→ON cycle")
+            XCTAssertEqual(preferences.stroke.widthMillimeters, penStyle.widthMillimeters,
+                           "the selected width must survive the OFF→ON cycle")
+            XCTAssertEqual(preferences.stroke.transparencyPercent, penStyle.transparencyPercent,
+                           "the selected transparency must survive the OFF→ON cycle")
+            let rearmedFacts = try await officePenFacts(web)
+            XCTAssertEqual(rearmedFacts["drawing"] as? Bool, true,
+                           "the page gate must be armed again after OFF→ON")
+            XCTAssertEqual(rearmedFacts["activeStroke"] as? Bool, false,
+                           "re-arming must not strand an active stroke")
+            // Stage 5: the post-re-arm contact — the same receiver protocol, no
+            // cancel, no zero-motion, no new seam arguments.
+            let nextStimulus = StrokeStimulus(index: 1, kind: .band, gapMilliseconds: 350, style: .pen)
+            let nextStroke = try await receiveStroke(1, web: web, native: native, window: window,
+                root: root, syntheticSource: source, stimulus: nextStimulus, previousPoints: [])
+            try validateHitDiagnostics(nextStroke, stimulus: nextStimulus)
+            XCTAssertEqual(nextStroke["strokeDelta"] as? Int, 1,
+                           "A moving stroke after the same-session OFF→ON re-arm must complete through the actual pen bridge")
+            XCTAssertEqual(nextStroke["downAccepted"] as? Bool, true,
+                           "The production bridge must accept the post-re-arm pen down")
+            // Stage 6: leave drawing mode with the real control, then save.
+            try await session.toggleDrawing()
+            XCTAssertFalse(session.drawingMode)
+            let savedCopy = root.appendingPathComponent("mode-toggle-saved.\(format)")
+            try fm.copyItem(at: try await session.exportDocument(format: format), to: savedCopy)
+            exported = savedCopy
+            attach(savedCopy, name: "mode-toggle-saved-\(format)")
+            XCTAssertEqual(try hash(source), sourceHash, "Mode-toggle export altered the original fixture")
+            // Authoritative file inspection: exactly the two true strokes at
+            // the selected style, the whole original content kept, no artifact.
+            let saved = try package(savedCopy, format: format)
+            savedFileSHA = try hash(savedCopy)
+            savedGeometryPaths = saved.customGeometryPaths
+            savedPenIdentities = penShapeIdentities(saved, widthEMU: appliedPenEMU)
+            assertModeToggleOriginalContent(saved, format: format, stage: "saved")
+            if format == "xlsx" {
+                XCTAssertGreaterThanOrEqual(saved.validAnchors, 1,
+                                            "The persisted Excel contacts need a nonzero visible sheet anchor")
+            }
+            XCTAssertEqual(saved.customGeometryPaths.count, 2,
+                           "MODE-TOGGLE FILE GATE: the same-session OFF→ON re-arm must persist the control and the "
+                           + "post-re-arm stroke as two true contacts; the saved \(format) carries "
+                           + "\(saved.customGeometryPaths.count) vector path(s): \(saved.customGeometryPaths)")
+            XCTAssertEqual(Set(saved.customGeometryPaths).count, 2,
+                           "The two persisted contacts must own distinct real geometry")
+            XCTAssertTrue(saved.customGeometryPointCounts.allSatisfy { $0 >= 3 }, "Missing actual vector points")
+            XCTAssertEqual(savedPenIdentities.count, 2,
+                           "The control and the post-re-arm stroke must persist at the selected red pen style: \(saved.vectorShapes)")
+            XCTAssertEqual(saved.vectorShapes.filter { !$0.paths.isEmpty }.count, 2,
+                           "No ink shape beyond the two real contacts may persist: \(saved.vectorShapes)")
+            XCTAssertEqual(saved.vectorShapes.filter { Self.nativeDotShape($0) }.count, 0,
+                           "The OFF→ON cycle must not persist a dot artifact: \(saved.vectorShapes)")
+            for shape in saved.vectorShapes where !shape.paths.isEmpty {
+                XCTAssertEqual(shape.colorHex?.uppercased(), "FF0000",
+                               "The selected pen colour must persist: \(shape.description)")
+                XCTAssertEqual(shape.widthEMU.map { abs($0 - appliedPenEMU) <= 635 }, true,
+                               "The selected pen width must persist within one twip: \(shape.description)")
+                XCTAssertTrue(shape.alphaValue == nil || shape.alphaValue == 100_000,
+                              "Opaque pen strokes must not save a transparent line alpha: \(shape.description)")
+            }
+            let manifest: [String: Any] = [
+                "case": "drawing-mode-off-on-next-stroke", "format": format, "sourceSHA256": sourceHash,
+                "savedSHA256": savedFileSHA,
+                "humanContract": "After a completed moving pen stroke, turning drawing mode OFF and back ON with the real editor control in the same session must leave the next genuine moving Pencil contact persisting exactly one new vector at the selected style, with the control stroke and all original content intact in the saved and reopened file.",
+                "coverageGap": "Existing native cases never disable-then-re-enable drawing mode between strokes; whether the first post-re-arm contact persists is unmeasured and is not assumed here.",
+                "toggleCycles": 1,
+                "route": "OfficeFileSession.toggleDrawing (real editor action)/native setDrawingMode:completion:/applyInkPreferences/existing stroke seam/exportDocument/OOXML file inspection/fresh production reopen",
+                "controlReceipt": controlReceipt, "nextStrokeReceipt": nextStroke,
+                "armedFacts": armedFacts, "offFacts": offFacts, "rearmedFacts": rearmedFacts,
+                "penStyle": ["color": "#FF0000", "widthEMU": appliedPenEMU, "preset": appliedPen.preset.rawValue],
+                "savedShapes": saved.vectorShapes.map { ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1, "paths": $0.paths.count, "alpha": $0.alphaValue ?? -1, "prst": $0.prstGeometry ?? "none", "fillColor": $0.fillColorHex ?? "MISSING", "fillAlpha": $0.fillAlphaValue ?? -1, "lineNoFill": $0.lineIsNoFill, "extentEMU": $0.extentEMU ?? [], "placement": $0.placement ?? "none"] as [String: Any] },
+                "hardwarePointerInput": "not-tested",
+                "visualReview": "pending-primary-image-review"
+            ]
+            let receiptURL = root.appendingPathComponent("mode-toggle-verification.json")
+            try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+                .write(to: receiptURL, options: .atomic)
+            attach(receiptURL, name: "mode-toggle-verification-\(format)")
+            await session.release()
+        } catch {
+            // Release the failed session before any reopen attempt.
+            await session.release()
+            throw error
+        }
+        // Fresh production session over the exact saved bytes: the real engine
+        // must load and paint the two-path document, the reopen must not rewrite
+        // the exported file, and the reread bytes must still carry the same two
+        // selected-style vectors and all original content.
+        let reopen = OfficeFileSession()
+        let reopenWindow = mount(reopen, in: scene)
+        defer { reopenWindow.isHidden = true; reopenWindow.rootViewController = nil }
+        do {
+            await reopen.open(exported)
+            try await wait(120, "mode-toggle saved document reopen") {
+                reopen.canAct && reopen.documentActionsReady && reopen.controller != nil
+            }
+            let reopened = try XCTUnwrap(reopen.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(reopened)
+            let reopenedFileSHA = try hash(exported)
+            XCTAssertEqual(reopenedFileSHA, savedFileSHA,
+                           "the fresh production reopen altered the exported \(format) bytes")
+            let reread = try package(exported, format: format)
+            XCTAssertEqual(reread.customGeometryPaths, savedGeometryPaths,
+                           "the reopened \(format) must keep the exact saved vector paths")
+            XCTAssertEqual(penShapeIdentities(reread, widthEMU: appliedPenEMU), savedPenIdentities,
+                           "the reopened \(format) must keep the same selected-style vectors")
+            assertModeToggleOriginalContent(reread, format: format, stage: "reopened")
+            print("FLOE_MODE_TOGGLE_REOPEN_SHA256=\(reopenedFileSHA)")
+            let reopenWeb = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: reopened.view))
+            let config = WKSnapshotConfiguration(); config.afterScreenUpdates = true
+            let image = try await reopenWeb.takeSnapshot(configuration: config)
+            let png = try XCTUnwrap(image.pngData())
+            let screenshot = root.appendingPathComponent("mode-toggle-reopened-native-\(format).png")
+            try png.write(to: screenshot)
+            attach(screenshot, name: "mode-toggle-reopened-native-\(format)")
+            let windowImage = UIGraphicsImageRenderer(bounds: reopenWindow.bounds).image { _ in
+                reopenWindow.drawHierarchy(in: reopenWindow.bounds, afterScreenUpdates: true)
+            }
+            let whole = root.appendingPathComponent("mode-toggle-reopened-window-\(format).png")
+            try XCTUnwrap(windowImage.pngData()).write(to: whole)
+            attach(whole, name: "mode-toggle-reopened-window-\(format)")
+            let receiptURL = root.appendingPathComponent("mode-toggle-verification.json")
+            var receipt = (try JSONSerialization.jsonObject(with: Data(contentsOf: receiptURL))) as? [String: Any] ?? [:]
+            receipt["savedCopyReopened"] = true
+            receipt["reopenedFileSHA256"] = reopenedFileSHA
+            receipt["reopenFileUnchanged"] = reopenedFileSHA == savedFileSHA
+            receipt["reopenedVectorPaths"] = reread.customGeometryPaths.count
+            receipt["reopenedCustomGeometryMatches"] = reread.customGeometryPaths == savedGeometryPaths
+            receipt["reopenedPenIdentities"] = penShapeIdentities(reread, widthEMU: appliedPenEMU)
+            receipt["reopenNativeRenderDiagnostics"] = OfficeFileSession.hostRenderDiagnostics(reopened)
+            try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys])
+                .write(to: receiptURL, options: .atomic)
+            attach(receiptURL, name: "mode-toggle-reopen-verification-\(format)")
+            await reopen.release()
+        } catch { await reopen.release(); throw error }
+    }
+
+    /// Whole-fixture original-content semantics for the mode-toggle case: the
+    /// Word title and both known paragraphs, every Excel label/value/formula,
+    /// and the presentation title, bullets and speaker notes. Exercised on the
+    /// saved file and again on the exact bytes reread after the fresh reopen.
+    private func assertModeToggleOriginalContent(_ pkg: DrawingQualificationXML, format: String, stage: String) {
+        switch format {
+        case "docx":
+            for expected in ["中文模式开关笔迹验收", "MODE-TOGGLE-KEEP 中文正文 12345",
+                             "Second paragraph remains editable."] {
+                XCTAssertTrue(pkg.text.contains(expected), "\(stage): Word original content lost: \(expected)")
+            }
+        case "xlsx":
+            for expected in ["MODE-TOGGLE-KEEP", "数值", "原值", "公式"] {
+                XCTAssertTrue(pkg.text.contains(expected), "\(stage): Excel original content lost: \(expected)")
+            }
+            XCTAssertEqual(pkg.cells["B2"], "12", "\(stage): Excel basic value lost")
+            XCTAssertEqual(pkg.formulas["B3"], "B2*2", "\(stage): Excel formula lost or flattened")
+        default:
+            for expected in ["MODE-TOGGLE-KEEP", "中文原文 12345", "Editable original content",
+                             "MODE-TOGGLE-NOTES-KEEP"] {
+                XCTAssertTrue(pkg.text.contains(expected), "\(stage): Presentation original content lost: \(expected)")
+            }
         }
     }
 
