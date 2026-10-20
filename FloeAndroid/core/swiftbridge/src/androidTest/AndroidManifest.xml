@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  androidTest-ONLY manifest for the G02-P3 transport qualification APK.
+
+  It grants the test APK the ordinary install-time INTERNET permission (needed
+  to reach the instrumentation-owned loopback fixture) and pins cleartext to
+  loopback ONLY through an androidTest-private network security config. No
+  production manifest, App manifest or release AAR is changed: this file and
+  res/xml below are outside the library's main source set and never enter the
+  release artifact. Cleartext here is synthetic local-fixture transport
+  evidence; it is NOT TLS/cloud/default-trust proof and grants no trust
+  bypass. Loopback only: no LAN/multicast scope, so no ACCESS_LOCAL_NETWORK
+  is requested. Main runs the installed tests and owns any device/QA grants.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:networkSecurityConfig="@xml/floe_transport_test_network" />
+</manifest>

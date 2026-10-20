@@ -1,0 +1,126 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "error": "staleRevision",
+        "writes": 0
+      },
+      "given": {
+        "envelopeRevision": "different-digest",
+        "storedRevision": "absent-set"
+      },
+      "id": "stale-cas"
+    },
+    {
+      "expect": {
+        "error": "persistenceUnavailable",
+        "writes": 0
+      },
+      "given": {
+        "changedKeys": 2,
+        "injectedFailure": true
+      },
+      "id": "atomic-multi-key"
+    },
+    {
+      "expect": {
+        "error": "invalidEnvelope",
+        "reason": "unknownDefaultsField"
+      },
+      "given": {
+        "values": {
+          "defaultAgentMode": "human",
+          "extra": 1
+        }
+      },
+      "id": "unknown-field"
+    },
+    {
+      "expect": {
+        "error": "invalidEnvelope",
+        "reason": "invalidDefaultsValue:defaultAgentMode"
+      },
+      "given": {
+        "values": {
+          "defaultAgentMode": "god"
+        }
+      },
+      "id": "invalid-enum"
+    },
+    {
+      "expect": {
+        "error": "persistenceUnavailable",
+        "reason": "corruptSettingsKey"
+      },
+      "given": {
+        "valueJson": "not-json"
+      },
+      "id": "corrupt-row"
+    }
+  ],
+  "declarativeOnly": true,
+  "domain": "floe.settings-defaults.v2",
+  "keys": [
+    "agent.defaultMode",
+    "agent.runningInputMode",
+    "agent.verifyFinalAnswer"
+  ],
+  "schema": "floe.settings-defaults.fixture/1",
+  "vectors": [
+    {
+      "expect": "present=0 and typed NULLs; stable absent digest",
+      "id": "absent-set",
+      "records": [
+        [
+          "agent.defaultMode",
+          0,
+          null,
+          null
+        ],
+        [
+          "agent.runningInputMode",
+          0,
+          null,
+          null
+        ],
+        [
+          "agent.verifyFinalAnswer",
+          0,
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "expect": "four distinct digests",
+      "id": "null-vs-literal",
+      "values": [
+        null,
+        "NULL",
+        "<null>",
+        ""
+      ]
+    },
+    {
+      "expect": "length-prefixed fields; byte-exact UTF-8",
+      "id": "delimiter-and-unicode",
+      "values": [
+        "a\u001fb",
+        "a|b",
+        "a:b",
+        "记忆 🧪"
+      ]
+    },
+    {
+      "expect": "INTEGER/REAL/TEXT are distinct; -0.0 and +0.0 differ",
+      "id": "numeric-types",
+      "values": [
+        1,
+        1.0,
+        "1",
+        -0.0,
+        0.0
+      ]
+    }
+  ]
+}

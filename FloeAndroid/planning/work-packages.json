@@ -207,7 +207,8 @@
         "G13"
       ],
       "owner": "agent-core",
-      "status": "planned"
+      "status": "planned",
+      "scopeNotes": "G02 Settings coverage includes the original shared memory/personalization stores and global run-usage aggregates. Missing Settings wire bindings remain required, not deferred by the initial 30-operation subset. Read planning/SETTINGS_PARITY.md; final additive command/operation mapping requires the reviewed domain contract."
     },
     {
       "id": "P1.3",
@@ -443,7 +444,8 @@
         "G13"
       ],
       "owner": "agent-core",
-      "status": "planned"
+      "status": "planned",
+      "scopeNotes": "G02 includes validated auxiliary model routes, separately persisted typed global agent defaults, memory/personalization settings and historical aggregate usage. Model preferences, active-run policy and global defaults are distinct resources; do not replace one with another or treat a current-run usage event as global statistics."
     },
     {
       "id": "P2.3",
@@ -454,7 +456,8 @@
         "G13"
       ],
       "owner": "agent-core",
-      "status": "planned"
+      "status": "planned",
+      "scopeNotes": "G02 memory candidate review and cloud-backed personalization/organization operations must preserve actual service ownership, cancellation, concurrency and provenance across task lifecycle changes. Candidate acceptance/rejection/expiry is not atomic merely because the original pipeline uses same-ID upsert; no local LLM is added."
     },
     {
       "id": "P2.4",
@@ -498,7 +501,8 @@
         "G13"
       ],
       "owner": "agent-core",
-      "status": "planned"
+      "status": "planned",
+      "scopeNotes": "G02 privacy history/model-configuration clearing must use real existing conversation/provider/grant/credential deletion paths, quiesce owned activity, report partial failures and preserve unrelated Notes data. User confirmation must bind actual intended resources; count-only snapshots do not identify them."
     },
     {
       "id": "P2.8",
@@ -553,7 +557,8 @@
         "G13"
       ],
       "owner": "device-system",
-      "status": "planned"
+      "status": "planned",
+      "scopeNotes": "Since 2026-10-18 the switch and run center cover three capability tiers: ordinary (default, always available), user-enabled ADB-shell (full only, not Root-equivalent, not auto-activated at boot), and Root (full only, opt-in). Each tier is detected, displayed and revoked independently; the ADB capability design remains a research proposal from its owning lane (docs/FLOE_ANDROID_ADB_PRIVILEGE_RESEARCH.zh-CN.md) until Main integrates, and Play physically excludes ADB/Root components."
     },
     {
       "id": "P2.13",
@@ -568,7 +573,8 @@
       "supportingGoals": [
         "G01",
         "G04"
-      ]
+      ],
+      "scopeNotes": "G02 Settings bodies include typed global defaults, auxiliary models, memory/profile/SOUL and pending review/organization, global usage and scoped privacy actions. Match the native split/detail/modal behavior through actual shared-store bindings; placeholder categories or passing root presentation tests do not complete these pages. Appearance/speech/biometrics/export platform wrappers retain their mapped later-stage ownership."
     },
     {
       "id": "P3.1",
@@ -848,7 +854,8 @@
         "G13"
       ],
       "owner": "platform-integration",
-      "status": "planned"
+      "status": "planned",
+      "scopeNotes": "Scheduling platform detail from docs/FLOE_ANDROID_UPDATE_SCHEDULING_RESEARCH.zh-CN.md (2026-10-18): the shared Swift TaskSchedule/TaskScheduleStore/TaskPolicy remains the single authority; Android adds AlarmManager/WorkManager/boot adapters, not a parallel schedule store or runtime. Wall-clock daily/weekly recompute with anchorTimezone and DST at fire time; interval keeps absolute elapsed semantics; afterSuccess enqueues only on the bound upstream run's success and tolerates replayed callbacks. Exactness needs the user-granted exact-alarm access (USE_EXACT_ALARM is Play-restricted to alarm/timer/calendar core apps); otherwise flexible windows with an honest delayed/waiting state, and no OnAlarmListener-only exact alarm for cross-process schedules. WorkManager periodic is >=15 minutes; long-running workers can exhaust the Android 16 job quota; dataSync/mediaProcessing are capped at 6h/24h and cannot be started from BOOT_COMPLETED when targeting 15+; UIDT is only for user-initiated visible data transfers. Occurrence dedup plus atomic claim yields one active logical owner and duplicate-trigger suppression, not a global exactly-once real execution; attempts and external idempotency keys stay separate and unknown remote outcomes are rechecked, never blindly retried. Force-stop, FGS Task Manager stop and process reclamation are distinct semantics; credential storage before first unlock and inactive optional ADB/Root backends yield actionable waiting, never fabricated completion. Implementation G11, execution body G03, device matrix G12/G13."
     },
     {
       "id": "P5.5",
@@ -968,7 +975,8 @@
         "G13"
       ],
       "owner": "platform-integration",
-      "status": "planned"
+      "status": "planned",
+      "scopeNotes": "Two-channel update boundary from the same research document: the full/GitHub build carries the only in-app updater (official GitHub release feed; prerelease/versionCode/ABI/minSdk/applicationId filters; actual APK signature lineage plus signed metadata or equivalent trust, checksums alone are not authenticity; bounded resumable download that restarts staging when ETag/artifact changes; atomic staging; low-storage/metered handling; PackageInstaller session reconciled via getMySessions()/getSessionInfo(int) after process death or reboot; documented USER_ACTION_NOT_REQUIRED conditions (verified 2026-10-18) with PENDING_USER_ACTION fallback; update-ownership and developer-verification results handled explicitly; installation deferred until owned jobs are checkpoint-safe or the user explicitly chooses 'install now' with graceful save/cancel/converge, truthful lifecycle handling if the OS kills the app). Play physically excludes updater code, dependencies, feed constants, REQUEST_INSTALL_PACKAGES and UPDATE_PACKAGES_WITHOUT_USER_ACTION, and updates only through Google Play (the Play in-app update API requires a Play-installed app). No promise of in-place cross-channel conversion. Artifact and feed packaging belong to G15; no worker release action."
     },
     {
       "id": "P6.6",
@@ -1043,7 +1051,8 @@
         "G13"
       ],
       "owner": "device-system",
-      "status": "planned"
+      "status": "planned",
+      "scopeNotes": "Acceptance covers the GitHub full binary with the optional ADB-shell tier included, while ordinary-mode acceptance stays distinct from that tier per plan sections 17.5 and 20.1; Play physically excludes the ADB client, privileged service, UI, assets, native code and Root code. The ADB research remains a proposal until its owning lane completes and Main integrates it."
     },
     {
       "id": "P6.13",

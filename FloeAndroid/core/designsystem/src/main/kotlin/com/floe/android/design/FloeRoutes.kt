@@ -59,10 +59,17 @@ data class InspectorRoute(val content: InspectorContent, val conversationId: Str
 
 /** Settings sheet sections. Order follows iOS `SettingsSection.visibleCases`,
  * pruned to what the Android foundation actually owns; no local-LLM or
- * Apple-platform rows are mirrored onto Android. */
+ * Apple-platform rows are mirrored onto Android. G02 appends the settings
+ * destinations the App host binds (integrations, memory & personalization,
+ * usage, privacy, web search) — additive only, the G01 order is preserved. */
 enum class FloeSettingsSection {
     GENERAL,
     PROVIDERS,   // cloud model configuration state (G02 wires persistence)
+    SKILLS,      // Skills & connectors (G02 integrations destination)
+    MEMORY,      // Memories, personalization, candidates & organize
+    USAGE,       // token/run usage aggregates
+    PRIVACY,     // summary, typed clears with trusted confirmation
+    WEB_SEARCH,  // web-search provider metadata + secure credential editor
     DIAGNOSTICS, // real JNI handshake + debug-only component preview
 }
 

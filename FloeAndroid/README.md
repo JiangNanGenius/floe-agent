@@ -10,7 +10,7 @@ review returned seven material fixes; after one repair batch and two targeted
 review rounds all seven IDs were resolved for the G01 representative foundation
 (`ship`). That acceptance covers those representative pages only. Whole-product
 visual parity, full CJK IME/TalkBack and 16 KB runtime behavior are not claimed.
-G01 final source/handoff/cleanup closure remains with the coordinator. Current
+G01 source, handoff and cleanup closure are complete; G02 is the active goal. Current
 public status and limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Workspaces
 shown as being prepared are not implemented product capabilities. Android has no
@@ -91,6 +91,7 @@ bash <<'SH'
 source FloeAndroid/scripts/env.sh
 python3 FloeAndroid/scripts/check-plan.py
 python3 FloeAndroid/scripts/check-fixtures.py --check
+python3 FloeAndroid/scripts/check-settings-domain.py --check
 python3 FloeAndroid/fixtures/generate.py --check
 # Host policy/protocol tests (use a distinct scratch path from Android builds):
 "$FLOE_SWIFT_BIN/swift" test --build-system native --package-path FloeAndroid/shared \

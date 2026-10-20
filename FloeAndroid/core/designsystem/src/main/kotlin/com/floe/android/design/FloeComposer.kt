@@ -35,7 +35,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
@@ -117,14 +119,22 @@ class FloeDraftStore {
  * (regular), capped at one third of the page height, then scrolls.
  *
  * Finish-review calibration (2026-10-18):
- * - the chrome is centred at a maximum of 720dp, like the iPad capture, so a
- *   1280dp tablet does not stretch the composer across the detail column;
+ * - the SHARED G01 default centres the chrome at a maximum of 720dp, like the
+ *   iPad capture, so a 1280dp tablet does not stretch the composer across the
+ *   detail column. A conversation host that knows its ACTUAL detail pane opts
+ *   in through [layout] and fills the pane instead (the native
+ *   `ThreadComposerView` has no 720pt cap);
  * - the whole composer sits above the bottom system inset (gesture/navigation
- *   bar) and the IME. `safeDrawing` resolves both without double-padding;
+ *   bar) and the IME. `safeDrawing` resolves both without double-padding,
+ *   unless the host already consumed those insets before measuring its pane;
  * - every leading/trailing control owns a 48dp clickable + semantics box and
  *   only the inner 34dp circle is visual. CupertinoTextField's own 280dp
  *   default minimum width is isolated inside a weighted slot so the trailing
  *   controls can never be pushed outside the chrome.
+ *
+ * [onInlineFieldWidthChanged] is an optional measurement uplink: the host uses
+ * the real field slot width for its inline-overflow/expand rule instead of
+ * reconstructing it from the window size. It is not used by G01 Home.
  */
 @Composable
 fun FloeComposer(
@@ -143,11 +153,22 @@ fun FloeComposer(
     isRunning: Boolean = false,
     onStop: () -> Unit = {},
     maxLines: Int = FloeLayout.ComposerMaxLinesRegular,
+    layout: FloeComposerLayout = FloeComposerLayout.Default,
+    onInlineFieldWidthChanged: ((Dp) -> Unit)? = null,
 ) {
     val colors = Floe.colors
     val shape = RoundedCornerShape(FloeLayout.ComposerCorner)
-    val configuration = LocalConfiguration.current
-    val heightCapDp = configuration.screenHeightDp.dp / 3f
+    // G01 default: screen-height third. Conversation opt-in: the ACTUAL
+    // hosting page height (native `composerHeightBudget` proxy), so a split
+    // pane, rotation or keyboard-shrunk pane changes the cap without reading
+    // the global screen height again.
+    val paneWidth = layout.paneWidth
+    // The LocalConfiguration read is only evaluated by the G01 fallback; an
+    // opted-in host never asks the composer to look at the window height.
+    val heightCapDp = layout.pageHeight?.let(FloeComposerGeometry::fieldHeightCapFor)
+        ?: (LocalConfiguration.current.screenHeightDp.dp / 3f)
+    val density = LocalDensity.current
+    val inlineFieldWidthReporter = onInlineFieldWidthChanged
     val canSend = ComposerSendPolicy.canSend(
         draftBlank = value.text.isBlank(),
         compositionActive = ComposerSendPolicy.compositionActive(value),
@@ -156,7 +177,15 @@ fun FloeComposer(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+            .then(
+                if (layout.bottomInsetHandledByHost) {
+                    // The host measured the pane AFTER consuming the bottom
+                    // system/IME inset; adding it again would double-pad.
+                    Modifier
+                } else {
+                    Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+                }
+            )
             .padding(
                 horizontal = FloeLayout.ComposerOuterHPadding,
                 vertical = FloeLayout.ComposerOuterVPadding,
@@ -167,7 +196,17 @@ fun FloeComposer(
             modifier = Modifier
                 .fillMaxWidth()
                 .wrapContentWidth(Alignment.CenterHorizontally)
-                .widthIn(max = FloeLayout.ComposerMaxWidth)
+                .then(
+                    if (paneWidth != null) {
+                        // The native composer fills the full detail pane; no
+                        // 720dp reading cap and no phantom side gutter. The
+                        // explicit pane width is the upper bound even if the
+                        // composer is hosted in a slightly wider slot.
+                        Modifier.widthIn(max = FloeComposerGeometry.chromeWidthFor(paneWidth))
+                    } else {
+                        Modifier.widthIn(max = FloeLayout.ComposerMaxWidth)
+                    }
+                )
                 .clip(shape)
                 .background(colors.chromeSurface)
                 .border(FloeLayout.ComposerStrokeWidth, colors.separator, shape),
@@ -184,7 +223,7 @@ fun FloeComposer(
                         )
                     ),
                 verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(FloeLayout.ComposerRowSpacing),
             ) {
                 ComposerControlSlot(
                     description = attachDescription,
@@ -195,7 +234,18 @@ fun FloeComposer(
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .heightIn(min = FloeLayout.MinimumTarget),
+                        .heightIn(min = FloeLayout.MinimumTarget)
+                        .then(
+                            inlineFieldWidthReporter?.let { reporter ->
+                                // Real measured slot width for the conversation
+                                // overflow/expand decision. onSizeChanged only
+                                // fires when the integer size changes, so a
+                                // stable pane cannot form a measurement loop.
+                                Modifier.onSizeChanged { size ->
+                                    reporter(with(density) { size.width.toDp() })
+                                }
+                            } ?: Modifier
+                        ),
                 ) {
                     CupertinoTextField(
                         value = value,

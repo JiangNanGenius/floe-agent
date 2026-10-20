@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Simplified Chinese mirror of values/strings.xml. Same keys, same claims.
+     Copy follows the current iOS zh-Hans catalog where available; the
+     Android credential wording stays "safely saved" (no Keychain claim). -->
+<resources>
+    <!-- shared chrome -->
+    <string name="action_cancel">取消</string>
+    <string name="action_delete">删除</string>
+    <string name="action_install">安装</string>
+    <string name="loading_cd">加载中</string>
+    <string name="providers_credentials">凭据</string>
+    <string name="integration_waiting_host">正在加载…</string>
+    <string name="integration_network_unavailable">此操作需要共享运行时，当前不可用。</string>
+
+    <!-- skills hub -->
+    <string name="plugins_title">插件</string>
+    <string name="plugins_discover">发现</string>
+    <string name="plugins_installed">已安装</string>
+    <string name="plugins_official">官方插件</string>
+    <string name="plugins_import">导入插件</string>
+    <string name="plugins_enable">启用</string>
+    <string name="plugins_ready">已启用</string>
+    <string name="plugins_search">搜索插件</string>
+    <string name="skills_import_folder">从文件夹导入</string>
+    <string name="skills_creator">技能创建器</string>
+    <string name="skills_finder">技能查找器</string>
+    <string name="skills_finder_source">HTTPS 来源</string>
+    <string name="skills_finder_footer">安装经审查的 HTTPS 技能包。Floe 会验证每个文件，且不会执行安装钩子。</string>
+    <string name="skills_finder_model">改写模型</string>
+    <string name="skills_auto_updates_title">脚本型 Skill 更新</string>
+    <string name="skills_auto_updates_label">权限不变时自动更新 Skill 脚本</string>
+    <string name="skills_auto_updates_footer">开启后，未新增能力或工具的签名 Skill 更新会自动应用；任何权限扩大仍会等待你复核。此开关与“设置 → 内容更新”中的脚本内容更新共用同一策略。</string>
+    <string name="skills_empty">尚未安装技能</string>
+    <string name="skills_empty_hint">安装官方插件、导入文件夹或创建技能。</string>
+    <string name="skills_name">技能名称</string>
+    <string name="skills_description">Floe 应在何时使用它？</string>
+    <string name="skills_instructions">说明</string>
+    <string name="skills_remove_title">移除此技能？</string>
+    <string name="skills_remove_message">该技能将从本机移除；宿主可能保留可恢复副本。</string>
+    <string name="skills_working_cd">处理中</string>
+    <string name="skills_installing_cd">正在安装</string>
+    <string name="skills_row_cd">技能 %1$s</string>
+    <string name="skills_enabled_cd">启用技能</string>
+    <string name="skills_badge_usable">当前可用</string>
+    <string name="skills_offered">已提供给 Agent</string>
+    <string name="skills_not_offered">当前未提供给 Agent</string>
+    <string name="skills_not_offered_override">已被保存的模型能力覆盖排除</string>
+    <string name="skills_stage_staging">正在准备来源…</string>
+    <string name="skills_stage_validating">正在校验包…</string>
+    <string name="skills_stage_compatibility">正在检查兼容性…</string>
+    <string name="skills_stage_committing">正在写入安装…</string>
+    <string name="skills_run_running">运行中</string>
+    <string name="skills_run_stop">停止运行</string>
+    <string name="skills_run_cancelling">正在停止…</string>
+
+    <!-- install review -->
+    <string name="skills_review_title">审查技能安装</string>
+    <string name="skills_review_source">来源</string>
+    <string name="skills_review_permissions">请求的能力</string>
+    <string name="skills_review_none">无附加能力</string>
+    <string name="skills_review_tools">工具</string>
+    <string name="skills_review_scripts">Python 脚本（安装时审计）</string>
+    <string name="skills_review_python_packages">纯 Python 依赖（安装时审计）</string>
+    <string name="skills_review_pypi_note">只接受固定版本的 PyPI none-any wheel；安装后仅相同脚本与依赖可免重复审核。</string>
+    <string name="skills_review_no_grant_note">安装只校验技能包，不会授予工具权限；实际运行时仍由现有策略审批。</string>
+
+    <!-- upgrade -->
+    <string name="skills_update_to">更新至 v%1$s</string>
+    <string name="skills_update_installed">当前版本</string>
+    <string name="skills_update_available">新版本</string>
+    <string name="skills_update_check">检查更新</string>
+    <string name="skills_update_now">立即更新</string>
+    <string name="skills_update_details">详细信息</string>
+    <string name="skills_update_hide_details">收起详细信息</string>
+    <string name="skills_update_latest">已是最新版本</string>
+    <string name="skills_update_permissions_warning">本次更新需要新增访问权限，请在详情中查看。</string>
+    <string name="skills_update_new_capabilities">新增权限</string>
+    <string name="skills_update_new_tools">新增工具</string>
+    <string name="skills_update_commit">提交</string>
+    <string name="skills_update_source_section">来源</string>
+    <string name="skills_update_owner">所有者</string>
+    <string name="skills_update_repository">仓库</string>
+    <string name="skills_update_ref">分支 / 标签 / 提交</string>
+    <string name="skills_update_path">SKILL.md 或包清单 JSON</string>
+    <string name="skills_update_local_source">App / 本地</string>
+    <string name="skills_update_changed_files">变更文件</string>
+    <string name="skills_update_before">之前</string>
+    <string name="skills_update_after">之后</string>
+    <string name="skills_update_absent">（不存在）</string>
+    <string name="skills_update_rollback">恢复上一版本</string>
+    <string name="skills_update_rollback_note">回退会恢复上一版本的内容与权限决定。</string>
+    <string name="skills_update_rollback_confirm_title">恢复上次更新前的内容与授权？</string>
+    <string name="skills_update_rollback_confirm_message">将恢复上一版本及其权限决定。</string>
+
+    <!-- folder import -->
+    <string name="skills_import_title">导入技能文件夹</string>
+    <string name="skills_import_footer">Floe 会复制并校验所选文件夹；原文件夹不会被修改。</string>
+    <string name="skills_import_missing">未选择文件夹</string>
+    <string name="skills_import_size">%1$d 字节</string>
+
+    <!-- connectors -->
+    <string name="connectors_title">连接器</string>
+    <string name="connectors_manage">管理连接器</string>
+    <string name="connectors_summary">GitHub 账户与标准 MCP 工具来源</string>
+    <string name="connectors_footer">连接器按任务需要提供工具。模型、系统权限和 SSH/VNC 主机仍在设置中管理。</string>
+    <string name="connectors_services">外部服务</string>
+    <string name="connectors_tool_sources">工具来源</string>
+    <string name="connectors_mcp_title">标准 MCP</string>
+    <string name="connectors_mcp_enabled_count">已启用 %1$d 个服务器</string>
+
+    <!-- MCP list -->
+    <string name="mcp_empty_title">尚未添加 MCP 服务器</string>
+    <string name="mcp_empty_hint">添加标准远程 MCP，让普通 Agent 使用服务器提供的工具。</string>
+    <string name="mcp_add">添加 MCP</string>
+    <string name="mcp_add_title">添加 MCP</string>
+    <string name="mcp_footer">支持标准 Streamable HTTP。远程工具仍经过 Floe 的本地权限与审批；画布默认不能使用 MCP。</string>
+    <string name="mcp_row_cd">MCP 服务器 %1$s</string>
+    <string name="mcp_enable_cd">启用 MCP 服务器</string>
+    <string name="mcp_state_not_connected">未连接</string>
+    <string name="mcp_state_reading_tools">正在读取工具…</string>
+    <string name="mcp_state_cancelling">正在取消…</string>
+    <string name="mcp_state_tools_available">可用工具 %1$d 个</string>
+    <string name="mcp_state_failed">连接失败：%1$s</string>
+    <string name="mcp_cancel_refresh">取消</string>
+    <string name="mcp_delete_title">删除 MCP 服务器</string>
+    <string name="mcp_delete_message">这将从本机移除该服务器、已保存的凭据和已注册的工具。</string>
+
+    <!-- MCP editor -->
+    <string name="mcp_server_section">服务器</string>
+    <string name="mcp_name_field">名称</string>
+    <string name="mcp_endpoint_field">https://…/mcp</string>
+    <string name="mcp_enabled_field">启用</string>
+    <string name="mcp_allow_canvas">允许画布使用</string>
+    <string name="mcp_server_footer">画布默认关闭 MCP。只有你明确打开此服务器后，画布 Agent 才能看到它的工具。</string>
+    <string name="mcp_auth_section">认证</string>
+    <string name="mcp_auth_method">方式</string>
+    <string name="mcp_auth_none">无</string>
+    <string name="mcp_auth_bearer">Bearer Token</string>
+    <string name="mcp_auth_custom_header">自定义请求头</string>
+    <string name="mcp_header_name">请求头名称</string>
+    <string name="mcp_credential_replace">输入新凭据以替换已保存凭据</string>
+    <string name="mcp_credentials_saved">凭据已安全保存</string>
+    <string name="mcp_reveal_on">显示凭据</string>
+    <string name="mcp_reveal_off">隐藏凭据</string>
+    <string name="mcp_network_security">网络安全</string>
+    <string name="mcp_allow_insecure_http">允许不安全的 HTTP（仅可信局域网）</string>
+    <string name="mcp_tools_section">工具</string>
+    <string name="mcp_tool_enable_cd">启用工具 %1$s</string>
+    <string name="mcp_tool_destructive_hint">服务器将该工具标记为破坏性操作；仍需审批。</string>
+    <string name="mcp_tool_readonly_hint">服务器将该工具标记为只读。</string>
+    <string name="mcp_tools_footer">工具提示来自服务器，不会绕过 Floe 审批。</string>
+    <string name="mcp_transport_section">传输</string>
+    <string name="mcp_save_and_connect">保存并连接</string>
+    <string name="mcp_name_required">请输入服务器名称。</string>
+    <string name="mcp_valid_url_required">请输入有效的 MCP 地址。</string>
+    <string name="mcp_credential_in_url">凭据必须安全保存，不要写入端点地址。</string>
+    <string name="mcp_insecure_blocked_hint">纯 HTTP 已禁用；仅可信本地服务器才应开启。</string>
+    <string name="mcp_header_name_invalid">请求头名称无效。</string>
+
+</resources>

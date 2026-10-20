@@ -1,0 +1,684 @@
+// FloeAndroidWebTools — Android platform mirror of the ORIGINAL
+// FloeAgent/Sources/FloeExecution/WebSearchService.swift. Every statement is
+// byte-equal to the original except the deltas below, documented in
+// shared/PROVENANCE.md (D1, Main decision 2026-10-18). Darwin/macOS keeps
+// the exact original construction and `data(for:)` call.
+//
+// Deltas in this file:
+//   1. Import block: FoundationNetworking visibility guard + `FloeTransport`
+//      (the qualified incremental seam, job-ca18980891c043b5).
+//   2. Both initialisers: on os(Linux)/os(Android) the session is built via
+//      `StreamingTransport.makeSession` with the SAME
+//      `SearchProviderRedirectDelegate` object as the router's policy
+//      delegate (redirect revalidation and credential stripping stay in the
+//      original delegate; the router forwards every redirect AND
+//      authentication/trust callback to it). Apple keeps the original
+//      `URLSession(configuration:delegate:delegateQueue:)` construction.
+//   3. `run`: on os(Linux)/os(Android) the provider request travels through
+//      `WebSearchCollect.execute` (compiled on EVERY platform; host tests
+//      run this exact body). It is a plain bounded-at-saturation collect of
+//      the FULL body — the ORIGINAL `data(for:)` has no application byte
+//      ceiling and none is invented here — returning the same
+//      `(Data, URLResponse)` tuple so status/parse/error handling below is
+//      unchanged. A non-streaming injected session fails closed
+//      (`sessionNotStreamable`), never a silent recreation. Apple keeps the
+//      original `session.data(for:)` line byte-for-byte.
+// Raw response budgets, provider endpoints, signing, DNS/redirect policy,
+// error text and logging are otherwise untouched original code.
+
+import Crypto
+import Foundation
+import FloeCore
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+import FloeTransport
+
+public actor WebSearchService {
+    /// Internal for privacy-audit tests: the transport configuration must
+    /// stay ephemeral (no shared on-disk cache/cookie/credential state).
+    let session: URLSession
+    private let configurations: WebSearchConfigurationResolver
+    private let validateDestination: @Sendable (URL, Bool) throws -> Void
+
+    public init(
+        configuration: URLSessionConfiguration = .ephemeral,
+        configurations: @escaping WebSearchConfigurationResolver = { [] }
+    ) {
+        let validator: @Sendable (URL, Bool) throws -> Void = { url, allowTransient in
+            try PublicNetworkTargetPolicy.validate(
+                url,
+                allowTransientTunnelAddresses: allowTransient
+            )
+        }
+        // Redirects from provider endpoints are revalidated against the strict
+        // public policy and cross-origin credentials are stripped.
+        #if os(Linux) || os(Android)
+        // Delta 2: the delegate must be a streaming-capable session because
+        // a router-installed delegate cannot serve completion-handler data
+        // tasks on corelibs; the ORIGINAL delegate object is kept as the
+        // router's policy authority (see header).
+        self.session = Self.makeStreamingSession(configuration: configuration,
+                                                 validateDestination: validator)
+        #else
+        self.session = URLSession(
+            configuration: configuration,
+            delegate: SearchProviderRedirectDelegate(validateDestination: { url in
+                try validator(url, false)
+            }),
+            delegateQueue: nil
+        )
+        #endif
+        self.configurations = configurations
+        self.validateDestination = validator
+    }
+
+    /// Internal seam for integration tests to supply repeatable DNS answers.
+    /// The public initializer above always uses system DNS and the same policy.
+    init(
+        configuration: URLSessionConfiguration,
+        configurations: @escaping WebSearchConfigurationResolver,
+        validateDestination: @escaping @Sendable (URL, Bool) throws -> Void
+    ) {
+        #if os(Linux) || os(Android)
+        self.session = Self.makeStreamingSession(configuration: configuration,
+                                                 validateDestination: validateDestination)
+        #else
+        self.session = URLSession(
+            configuration: configuration,
+            delegate: SearchProviderRedirectDelegate(validateDestination: { url in
+                try validateDestination(url, false)
+            }),
+            delegateQueue: nil
+        )
+        #endif
+        self.configurations = configurations
+        self.validateDestination = validateDestination
+    }
+
+    /// Compiled on EVERY platform and used verbatim by the Android/Linux
+    /// initialiser branches; host tests run this exact construction so the
+    /// original redirect delegate wired through the qualified
+    /// `FloeTransport` router has real behavioural coverage before the
+    /// device gate (same pattern as `HTTPRequestService.makeStreamingSession`
+    /// and the transport lane's provider/MCP session mirrors).
+    static func makeStreamingSession(
+        configuration: URLSessionConfiguration,
+        validateDestination: @escaping @Sendable (URL, Bool) throws -> Void
+    ) -> URLSession {
+        StreamingTransport.makeSession(
+            configuration: configuration,
+            policyDelegate: SearchProviderRedirectDelegate(validateDestination: { url in
+                try validateDestination(url, false)
+            }))
+    }
+
+    /// Local readiness only: no network probe, no credential value in diagnostics.
+    public nonisolated static func isConfigured(_ configuration: WebSearchProviderConfiguration, credential: WebSearchCredential) -> Bool {
+        guard configuration.enabled else { return false }
+        let cleaned = WebSearchCredential(values: credential.values.mapValues { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        guard let request = try? makeRequest(configuration, credential: cleaned, query: .init(text: "configuration-check")),
+              let url = request.url, ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+              url.host?.isEmpty == false, url.user == nil, url.password == nil else { return false }
+        return true
+    }
+
+    public func search(_ query: WebSearchQuery) async throws -> WebSearchResponse {
+        let traceID = UUID().uuidString
+        let startedAt = Date()
+        let available = await configurations()
+            .filter { Self.isConfigured($0.0, credential: $0.1) }
+            .sorted { $0.0.priority < $1.0.priority }
+        guard !available.isEmpty else {
+            FloeLogger(category: .tools).warning("webSearchUnavailable trace=\(traceID) reason=noProviderConfigured")
+            throw WebRetrievalError.noProviderConfigured
+        }
+
+        let selected: [(WebSearchProviderConfiguration, WebSearchCredential)]
+        if let requested = query.requestedProvider?.lowercased() {
+            selected = available.filter {
+                $0.0.id.uuidString.lowercased() == requested
+                    || $0.0.kind.rawValue.lowercased() == requested
+                    || $0.0.displayName.lowercased() == requested
+            }
+            guard !selected.isEmpty else { throw WebRetrievalError.providerNotFound(requested) }
+        } else {
+            let count = query.mode == .deep ? min(3, available.count) : 1
+            selected = Array(available.prefix(count))
+        }
+        FloeLogger(category: .tools).info(
+            "webSearchStarted trace=\(traceID) mode=\(query.mode.rawValue) configured=\(available.count) selected=\(selected.map { $0.0.kind.rawValue }.joined(separator: ",")) maxResults=\(query.maxResults) recencyDays=\(query.recencyDays ?? 0) domainFilters=\(query.domains.count) excludedDomains=\(query.excludedDomains.count)"
+        )
+
+        var combined: [WebSearchResult] = []
+        var used: [WebSearchProviderKind] = []
+        var failures: [String] = []
+
+        if query.mode == .deep, selected.count > 1 {
+            await withTaskGroup(of: ProviderOutcome.self) { group in
+                for item in selected {
+                    group.addTask { [self] in
+                        await run(item.0, credential: item.1, query: query, traceID: traceID)
+                    }
+                }
+                for await outcome in group {
+                    switch outcome {
+                    case .success(let kind, let results):
+                        used.append(kind)
+                        combined.append(contentsOf: results)
+                    case .failure(let value): failures.append(value)
+                    }
+                }
+            }
+        } else {
+            // Fast/balanced use ordered failover. A valid empty result is
+            // treated as insufficient evidence and advances to the next
+            // configured provider.
+            let failoverCandidates = query.requestedProvider == nil ? available : selected
+            for item in failoverCandidates {
+                let outcome = await run(item.0, credential: item.1, query: query, traceID: traceID)
+                switch outcome {
+                case .success(let kind, let results) where !results.isEmpty:
+                    used.append(kind)
+                    combined = results
+                    break
+                case .success(let kind, _): failures.append("\(kind.rawValue): empty result")
+                case .failure(let value): failures.append(value)
+                }
+                if !combined.isEmpty { break }
+                if query.requestedProvider != nil { break }
+            }
+        }
+
+        let normalized = Self.deduplicate(combined, limit: query.maxResults)
+        guard !normalized.isEmpty else {
+            FloeLogger(category: .tools).warning(
+                "webSearchFailed trace=\(traceID) attempts=\(selected.count) failures=\(failures.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
+            throw WebRetrievalError.allProvidersFailed(failures)
+        }
+        FloeLogger(category: .tools).info(
+            "webSearchFinished trace=\(traceID) providers=\(used.map(\.rawValue).joined(separator: ",")) rawResults=\(combined.count) results=\(normalized.count) failures=\(failures.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+        )
+        return WebSearchResponse(
+            query: query.text,
+            results: normalized,
+            providersUsed: used,
+            failures: failures
+        )
+    }
+
+    private enum ProviderOutcome: Sendable {
+        case success(WebSearchProviderKind, [WebSearchResult])
+        case failure(String)
+    }
+
+    /// Canonical public endpoints of the fixed commercial providers. The
+    /// fake-IP tunnel relaxation is bound to the (provider kind, endpoint)
+    /// pair, not to a host name alone: a `.custom` provider pointing at one
+    /// of these hosts gets no relaxation, and neither does a provider whose
+    /// endpoint was overridden (even to another canonical-looking host).
+    static let canonicalEndpoints: [WebSearchProviderKind: URL] = [
+        .bochaWeb: URL(string: "https://api.bochaai.com/v1/web-search")!,
+        .bochaAI: URL(string: "https://api.bochaai.com/v1/web-search")!,
+        .tencentWSA: URL(string: "https://wsa.tencentcloudapi.com")!,
+        .brave: URL(string: "https://api.search.brave.com/res/v1/web/search")!,
+        .tavily: URL(string: "https://api.tavily.com/search")!,
+        .exa: URL(string: "https://api.exa.ai/search")!,
+        .googleProgrammable: URL(string: "https://customsearch.googleapis.com/customsearch/v1")!
+    ]
+
+    /// Whether the effective request URL produced by `makeRequest` matches the
+    /// canonical contract for its kind on scheme, host, port and path. Query
+    /// and fragment are deliberately ignored: some canonical requests (Brave,
+    /// Google) carry generated query parameters, and fragments are not sent.
+    static func requestURLIsCanonical(_ url: URL?, kind: WebSearchProviderKind) -> Bool {
+        guard let url, let canonical = canonicalEndpoints[kind] else { return false }
+        guard let actual = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let expected = URLComponents(url: canonical, resolvingAgainstBaseURL: false) else {
+            return false
+        }
+        return actual.scheme?.lowercased() == expected.scheme?.lowercased()
+            && actual.host?.lowercased() == expected.host?.lowercased()
+            && (actual.port ?? 443) == (expected.port ?? 443)
+            && actual.path == expected.path
+    }
+
+    /// Decide whether this provider configuration may accept addresses in
+    /// the 198.18.0.0/15 fake-IP tunnel range. Requirements:
+    /// 1. the provider kind is one of the fixed built-in commercial kinds;
+    /// 2. the effective endpoint is the kind's canonical endpoint — an
+    ///    explicit endpoint override forfeits the relaxation;
+    /// 3. the scheme is HTTPS and the port is absent or 443.
+    static func allowsTransientTunnel(for configuration: WebSearchProviderConfiguration) -> Bool {
+        guard let canonical = canonicalEndpoints[configuration.kind] else { return false }
+        // An override always forfeits; makeRequest would use it verbatim.
+        guard configuration.endpoint == nil else { return false }
+        guard let components = URLComponents(url: canonical, resolvingAgainstBaseURL: false) else {
+            return false
+        }
+        guard components.scheme?.lowercased() == "https" else { return false }
+        guard let host = components.host?.lowercased(), !host.isEmpty else { return false }
+        if let port = components.port { return port == 443 }
+        return true
+    }
+
+    private func run(
+        _ configuration: WebSearchProviderConfiguration,
+        credential: WebSearchCredential,
+        query: WebSearchQuery,
+        traceID: String
+    ) async -> ProviderOutcome {
+        let startedAt = Date()
+        do {
+            let request = try Self.makeRequest(configuration, credential: credential, query: query)
+            FloeLogger(category: .tools).debug(
+                "webSearchProviderStarted trace=\(traceID) provider=\(configuration.kind.rawValue) host=\(request.url?.host ?? "none") method=\(request.httpMethod ?? "GET")"
+            )
+            // Only a fixed built-in provider endpoint (provider kind + canonical
+            // HTTPS host/path + default port) tolerates fake-IP tunnel answers
+            // in 198.18.0.0/15; custom endpoints and endpoint overrides stay
+            // strict. The request URL's generated query is ignored in the match
+            // (Brave/Google encode parameters in the query), but scheme, host,
+            // port and path must equal the canonical contract.
+            let allowsTransient = Self.allowsTransientTunnel(for: configuration)
+                && Self.requestURLIsCanonical(request.url, kind: configuration.kind)
+            try validateDestination(request.url!, allowsTransient)
+            #if os(Linux) || os(Android)
+            // Delta 3: same (Data, URLResponse) tuple as the original line
+            // below, through the qualified incremental collect. No new size
+            // ceiling is invented; the original full-body budget is kept.
+            let (data, response) = try await WebSearchCollect.execute(request, via: session)
+            #else
+            let (data, response) = try await session.data(for: request)
+            #endif
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                FloeLogger(category: .tools).warning(
+                    "webSearchProviderFailed trace=\(traceID) provider=\(configuration.kind.rawValue) status=\(status) responseBytes=\(data.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+                )
+                return .failure("\(configuration.kind.rawValue): HTTP \(status)")
+            }
+            let results = try Self.parse(data, provider: configuration.kind, limit: query.maxResults)
+            FloeLogger(category: .tools).info(
+                "webSearchProviderFinished trace=\(traceID) provider=\(configuration.kind.rawValue) status=\(http.statusCode) responseBytes=\(data.count) results=\(results.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
+            return .success(configuration.kind, results)
+        } catch {
+            let nsError = error as NSError
+            FloeLogger(category: .tools).warning(
+                "webSearchProviderError trace=\(traceID) provider=\(configuration.kind.rawValue) domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
+            return .failure("\(configuration.kind.rawValue): \(error.localizedDescription)")
+        }
+    }
+
+    static func makeRequest(
+        _ configuration: WebSearchProviderConfiguration,
+        credential: WebSearchCredential,
+        query: WebSearchQuery,
+        now: Date = Date()
+    ) throws -> URLRequest {
+        let count = max(1, min(query.maxResults, 50))
+        let apiKey = credential["apiKey"] ?? ""
+        var request: URLRequest
+        switch configuration.kind {
+        case .bochaWeb, .bochaAI:
+            guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
+            // Bocha's currently documented public API is Web Search. The old
+            // separate /ai-search preset returned HTTP 406 for valid keys.
+            // Summary enrichment is an option on the same provider/key.
+            request = try post(configuration.endpoint ?? URL(string: "https://api.bochaai.com/v1/web-search")!, json: [
+                "query": query.text,
+                "summary": query.summaryEnabled
+                    ?? (configuration.options["summaryEnabled"] != "false"),
+                "freshness": Self.bochaFreshness(days: query.recencyDays),
+                "count": count
+            ])
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        case .tencentWSA:
+            guard let secretID = credential["secretId"], !secretID.isEmpty else {
+                throw WebRetrievalError.missingCredential("secretId")
+            }
+            guard let secretKey = credential["secretKey"], !secretKey.isEmpty else {
+                throw WebRetrievalError.missingCredential("secretKey")
+            }
+            let endpoint = configuration.endpoint ?? URL(string: "https://wsa.tencentcloudapi.com")!
+            var body: [String: Any] = ["Query": query.text, "Cnt": Self.tencentCount(count)]
+            if let days = query.recencyDays { body["Freshness"] = "d\(max(1, min(days, 30)))" }
+            if let domain = query.domains.first { body["Site"] = domain }
+            request = try post(endpoint, json: body)
+            Self.signTencent(
+                request: &request,
+                body: request.httpBody ?? Data(),
+                secretID: secretID,
+                secretKey: secretKey,
+                now: now
+            )
+
+        case .brave:
+            guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
+            let endpoint = configuration.endpoint ?? URL(string: "https://api.search.brave.com/res/v1/web/search")!
+            var items: [URLQueryItem] = [
+                URLQueryItem(name: "q", value: query.text),
+                URLQueryItem(name: "count", value: String(min(count, 20))),
+                // Documented optional parameters on the SAME endpoint:
+                // additional excerpts plus fetch metadata (page_fetched).
+                URLQueryItem(name: "extra_snippets", value: "true"),
+                URLQueryItem(name: "include_fetch_metadata", value: "true")
+            ]
+            if let freshness = Self.braveFreshness(days: query.recencyDays, now: now) {
+                items.append(URLQueryItem(name: "freshness", value: freshness))
+            }
+            request = try get(endpoint, query: items)
+            request.setValue(apiKey, forHTTPHeaderField: "X-Subscription-Token")
+
+        case .tavily:
+            guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
+            request = try post(configuration.endpoint ?? URL(string: "https://api.tavily.com/search")!, json: [
+                "api_key": apiKey, "query": query.text, "max_results": count,
+                "search_depth": query.mode == .fast ? "basic" : "advanced",
+                "include_domains": query.domains, "exclude_domains": query.excludedDomains
+            ])
+
+        case .exa:
+            guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
+            request = try post(configuration.endpoint ?? URL(string: "https://api.exa.ai/search")!, json: [
+                "query": query.text, "numResults": count, "useAutoprompt": true
+            ])
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+
+        case .googleProgrammable:
+            guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
+            guard let engineID = credential["engineId"], !engineID.isEmpty else {
+                throw WebRetrievalError.missingCredential("engineId")
+            }
+            request = try get(
+                configuration.endpoint ?? URL(string: "https://customsearch.googleapis.com/customsearch/v1")!,
+                query: [URLQueryItem(name: "key", value: apiKey), URLQueryItem(name: "cx", value: engineID),
+                        URLQueryItem(name: "q", value: query.text), URLQueryItem(name: "num", value: String(min(count, 10)))]
+            )
+
+        case .searxng:
+            guard let endpoint = configuration.endpoint else {
+                throw WebRetrievalError.invalidResponse("SearXNG endpoint is required")
+            }
+            request = try get(endpoint, query: [URLQueryItem(name: "q", value: query.text),
+                                                URLQueryItem(name: "format", value: "json")])
+
+        case .volcengine, .custom:
+            guard let endpoint = configuration.endpoint else {
+                throw WebRetrievalError.invalidResponse("A provider endpoint is required")
+            }
+            guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
+            request = try post(endpoint, json: ["query": query.text, "count": count])
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private static func post(_ url: URL, json: [String: Any]) throws -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+        return request
+    }
+
+    private static func get(_ url: URL, query: [URLQueryItem]) throws -> URLRequest {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw WebRetrievalError.invalidResponse("invalid endpoint")
+        }
+        components.queryItems = (components.queryItems ?? []) + query.filter { $0.value != nil }
+        guard let result = components.url else { throw WebRetrievalError.invalidResponse("invalid query") }
+        return URLRequest(url: result)
+    }
+
+    private static func tencentCount(_ count: Int) -> Int {
+        [10, 20, 30, 40, 50].first(where: { $0 >= count }) ?? 50
+    }
+
+    private static func bochaFreshness(days: Int?) -> String {
+        guard let days else { return "noLimit" }
+        switch days {
+        case ...1: return "oneDay"
+        case ...7: return "oneWeek"
+        case ...31: return "oneMonth"
+        default: return "oneYear"
+        }
+    }
+
+    /// Brave's documented freshness values: `pd` (<=24h), `pw` (<=7d), `pm`
+    /// (<=31d), `py` (<=365d) or a custom `YYYY-MM-DDtoYYYY-MM-DD` range.
+    /// The previous `pd<days>d` form is not part of the API and was ignored.
+    /// The custom range is deterministic for a given `now`.
+    static func braveFreshness(days: Int?, now: Date) -> String? {
+        guard let days, days > 0 else { return nil }
+        switch days {
+        case ...1: return "pd"
+        case ...7: return "pw"
+        case ...31: return "pm"
+        case ...365: return "py"
+        default:
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "yyyy-MM-dd"
+            let start = now.addingTimeInterval(-Double(days - 1) * 86_400)
+            return "\(formatter.string(from: start))to\(formatter.string(from: now))"
+        }
+    }
+
+    private static func signTencent(
+        request: inout URLRequest,
+        body: Data,
+        secretID: String,
+        secretKey: String,
+        now: Date
+    ) {
+        let timestamp = Int(now.timeIntervalSince1970)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        let date = formatter.string(from: now)
+        let host = request.url!.host!
+        let contentType = "application/json; charset=utf-8"
+        let canonicalHeaders = "content-type:\(contentType)\nhost:\(host)\n"
+        let signedHeaders = "content-type;host"
+        let payloadHash = sha256Hex(body)
+        let canonicalRequest = "POST\n/\n\n\(canonicalHeaders)\n\(signedHeaders)\n\(payloadHash)"
+        let scope = "\(date)/wsa/tc3_request"
+        let stringToSign = "TC3-HMAC-SHA256\n\(timestamp)\n\(scope)\n\(sha256Hex(Data(canonicalRequest.utf8)))"
+        let secretDate = hmac(key: Data("TC3\(secretKey)".utf8), value: Data(date.utf8))
+        let secretService = hmac(key: secretDate, value: Data("wsa".utf8))
+        let secretSigning = hmac(key: secretService, value: Data("tc3_request".utf8))
+        let signature = hmac(key: secretSigning, value: Data(stringToSign.utf8)).map { String(format: "%02x", $0) }.joined()
+        let authorization = "TC3-HMAC-SHA256 Credential=\(secretID)/\(scope), SignedHeaders=\(signedHeaders), Signature=\(signature)"
+        request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        request.setValue("SearchPro", forHTTPHeaderField: "X-TC-Action")
+        request.setValue("2025-05-08", forHTTPHeaderField: "X-TC-Version")
+        request.setValue(String(timestamp), forHTTPHeaderField: "X-TC-Timestamp")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        FloeDigest.sha256Hex(data)
+    }
+
+    private static func hmac(key: Data, value: Data) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(for: value, using: SymmetricKey(data: key)))
+    }
+
+    static func parse(_ data: Data, provider: WebSearchProviderKind, limit: Int) throws -> [WebSearchResult] {
+        let root = try JSONSerialization.jsonObject(with: data)
+        let dictionaries = resultDictionaries(root, provider: provider)
+        return dictionaries.prefix(max(1, limit)).compactMap { item in
+            let title = string(item, keys: ["title", "name"])
+            let rawURL = string(item, keys: ["url", "link"])
+            guard !title.isEmpty, let url = URL(string: rawURL), url.scheme == "https" || url.scheme == "http" else { return nil }
+            // Excerpt priority preserves existing providers and adds Brave's
+            // documented `description`. `extra_snippets` stays a SEPARATE,
+            // bounded list and is never concatenated into the main excerpt.
+            let snippet = string(item, keys: ["snippet", "summary", "passage", "content", "text", "description"])
+            let seed = "\(provider.rawValue)|\(url.absoluteString)"
+            return WebSearchResult(
+                title: title,
+                url: url,
+                snippet: String(snippet.prefix(4_000)),
+                sourceName: sourceName(item),
+                // Only explicit provider publication fields feed publishedAt.
+                // Brave's `page_age` (published OR modified) and `age`
+                // (relative) are surfaced separately and never relabeled.
+                publishedAt: optionalString(item, keys: ["date", "published_date", "publishedAt"]),
+                score: item["score"] as? Double,
+                provider: provider,
+                citationID: String(sha256Hex(Data(seed.utf8)).prefix(12)),
+                extraSnippets: boundedStrings(item["extra_snippets"], maxCount: 5, maxCharacters: 1_000),
+                pageAge: optionalString(item, keys: ["page_age"]),
+                relativeAge: optionalString(item, keys: ["age"]),
+                pageFetched: optionalString(item, keys: ["page_fetched"]),
+                sourceProfileName: nestedString(item, parent: "profile", keys: ["long_name", "name"]),
+                sourceProfileURL: nestedString(item, parent: "profile", keys: ["url"]),
+                faviconURL: nestedString(item, parent: "meta_url", keys: ["favicon"]),
+                displayPath: nestedString(item, parent: "meta_url", keys: ["path"]),
+                contentState: .searchMetadataOnly
+            )
+        }
+    }
+
+    /// Source display name: existing flat keys keep priority; Brave's
+    /// `profile`/`meta_url` objects are the documented fallback.
+    private static func sourceName(_ item: [String: Any]) -> String? {
+        if let flat = optionalString(item, keys: ["siteName", "site", "source"]) { return flat }
+        return nestedString(item, parent: "profile", keys: ["long_name", "name"])
+            ?? nestedString(item, parent: "meta_url", keys: ["hostname"])
+    }
+
+    private static func nestedString(_ item: [String: Any], parent: String, keys: [String]) -> String? {
+        guard let dictionary = item[parent] as? [String: Any] else { return nil }
+        return optionalString(dictionary, keys: keys)
+    }
+
+    /// Bounded string list: count and per-entry characters are capped and
+    /// empty entries dropped; an empty/invalid value yields nil (absent), not
+    /// a fabricated placeholder.
+    private static func boundedStrings(_ value: Any?, maxCount: Int, maxCharacters: Int) -> [String]? {
+        guard let values = value as? [String] else { return nil }
+        let bounded = values.prefix(maxCount).map { String($0.prefix(maxCharacters)) }.filter { !$0.isEmpty }
+        return bounded.isEmpty ? nil : bounded
+    }
+
+    private static func resultDictionaries(_ root: Any, provider: WebSearchProviderKind) -> [[String: Any]] {
+        guard let object = root as? [String: Any] else { return [] }
+        if provider == .tencentWSA,
+           let response = object["Response"] as? [String: Any],
+           let pages = response["Pages"] as? [String] {
+            return pages.compactMap { value in
+                guard let data = value.data(using: .utf8) else { return nil }
+                return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            }
+        }
+        let paths: [[String]] = [
+            ["data", "webPages", "value"], ["webPages", "value"], ["web", "results"],
+            ["data", "results"], ["results"], ["items"]
+        ]
+        for path in paths {
+            var cursor: Any = object
+            var valid = true
+            for component in path {
+                guard let dictionary = cursor as? [String: Any], let next = dictionary[component] else {
+                    valid = false; break
+                }
+                cursor = next
+            }
+            if valid, let values = cursor as? [[String: Any]] { return values }
+        }
+        return []
+    }
+
+    private static func string(_ dictionary: [String: Any], keys: [String]) -> String {
+        optionalString(dictionary, keys: keys) ?? ""
+    }
+
+    private static func optionalString(_ dictionary: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = dictionary[key] as? String, !value.isEmpty { return value }
+        }
+        return nil
+    }
+
+    private static func deduplicate(_ results: [WebSearchResult], limit: Int) -> [WebSearchResult] {
+        var seen = Set<String>()
+        var output: [WebSearchResult] = []
+        for result in results {
+            var components = URLComponents(url: result.url, resolvingAgainstBaseURL: false)
+            components?.fragment = nil
+            let filteredQueryItems = components?.queryItems?.filter {
+                !$0.name.lowercased().hasPrefix("utm_")
+            }
+            components?.queryItems = filteredQueryItems
+            let key = (components?.url?.absoluteString ?? result.url.absoluteString).lowercased()
+            guard seen.insert(key).inserted else { continue }
+            output.append(result)
+            if output.count >= max(1, limit) { break }
+        }
+        return output
+    }
+}
+
+/// Bounded-at-saturation full-body collect for the Android/Linux provider
+/// request. Compiled on EVERY platform (host tests run this exact body
+/// against the delegate transport, like `MCPIncrementalCollect.execute`);
+/// wired only on FoundationNetworking. The ORIGINAL `data(for:)` had no
+/// application-level byte ceiling — `maxBytes: .max` preserves that budget
+/// exactly; `responseTooLarge` is structurally unreachable at that bound.
+/// A plain injected session fails closed (`sessionNotStreamable`); no
+/// session is ever recreated and no partial body is ever replayed.
+enum WebSearchCollect {
+    static func execute(_ request: URLRequest, via session: URLSession) async throws -> (Data, URLResponse) {
+        try await StreamingTransport.collect(request, via: session, maxBytes: .max)
+    }
+}
+
+/// Provider requests start at fixed pinned hosts. There is no demonstrated
+/// need for a search provider API to redirect anywhere, so every redirect is
+/// revalidated with the strict public policy (fake-IP answers not honored)
+/// and any cross-origin redirect — including same-host-different-port — is
+/// rejected outright instead of being followed with API keys stripped.
+/// Provider credentials (Authorization bearer, X-Subscription-Token,
+/// X-api-key, X-TC-* signing headers) therefore never leave the origin.
+private final class SearchProviderRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let validateDestination: @Sendable (URL) throws -> Void
+
+    init(validateDestination: @escaping @Sendable (URL) throws -> Void) {
+        self.validateDestination = validateDestination
+        super.init()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let url = request.url,
+              (try? validateDestination(url)) != nil,
+              Self.origin(task.currentRequest?.url) == Self.origin(url) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+
+    private static func origin(_ url: URL?) -> String? {
+        guard let url, let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else {
+            return nil
+        }
+        return "\(scheme)://\(host):\(url.port ?? 443)"
+    }
+}

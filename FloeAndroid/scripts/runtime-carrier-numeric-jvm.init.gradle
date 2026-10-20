@@ -1,0 +1,27 @@
+// G02 typed-carrier numeric qualification: inject the private JVM test source
+// (kept under Local/Private, outside the product app source sets) into the
+// app module's unit-test source set. The test calls the REAL pinned Kotlin
+// decoder (RuntimeBootstrapCoordinator.parseEffectPage) against actual
+// Foundation wire frames exported by the Swift host test.
+//
+// Invocation (from FloeAndroid):
+//   FLOE_CARRIER_JVM_TEST_SRC=... FLOE_CARRIER_FIXTURE_DIR=... \
+//     ./gradlew -I scripts/runtime-carrier-numeric-jvm.init.gradle \
+//       :app:testFullDebugUnitTest --tests com.floe.android.RuntimeCarrierNumericWireTest
+allprojects { project ->
+    if (project.path == ':app') {
+        project.plugins.withId('com.android.application') {
+            def testSrc = System.getenv('FLOE_CARRIER_JVM_TEST_SRC')
+            def fixtureDir = System.getenv('FLOE_CARRIER_FIXTURE_DIR')
+            if (testSrc != null && !testSrc.isBlank()) {
+                project.android.sourceSets.getByName('test').java.srcDir(testSrc)
+                try { project.android.sourceSets.getByName('test').kotlin.srcDir(testSrc) } catch (Throwable ignored) { }
+            }
+            project.tasks.withType(Test).configureEach { task ->
+                if (fixtureDir != null && !fixtureDir.isBlank()) {
+                    task.systemProperty('floe.carrier.fixture.dir', fixtureDir)
+                }
+            }
+        }
+    }
+}

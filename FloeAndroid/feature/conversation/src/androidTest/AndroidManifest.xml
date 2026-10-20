@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TEST APK ONLY: self-hosted synthetic conversation component fixture.
+     Not exported, no permissions, no services/receivers, no network state.
+     Never merged into the release AAR or the product App. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:allowBackup="false"
+        android:label="Floe Conversation UI Fixture"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity
+            android:name="com.floe.android.feature.conversation.ConversationUiFixtureActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|density|fontScale"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
+    </application>
+</manifest>

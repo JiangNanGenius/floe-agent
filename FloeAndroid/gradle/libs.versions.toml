@@ -1,13 +1,25 @@
 [versions]
 agp = "9.4.0"
 kotlin = "2.2.10"
+coroutines = "1.9.0"
 compose-bom = "2026.09.00"
 activity = "1.11.0"
 core = "1.17.0"
 cupertino = "3.3.1"
+# UI rendering infrastructure (Main-accepted Option A, verified 2026-10-19):
+# org.commonmark 0.30.1 is the current latest release on Maven Central
+# (maven-metadata.xml lastUpdated 2026-10-10), BSD 2-Clause "Simplified",
+# Copyright (c) 2015 Robin Stocker. License retained under
+# FloeAndroid/licenses/commonmark/ and listed in NOTICE.md. Pure JVM: the
+# core artifact declares no Android/other runtime dependencies.
+commonmark = "0.30.1"
 junit = "4.13.2"
 androidx-test = "1.3.0"
 runner = "1.7.0"
+# Explicit test-infra pin: Compose ui-test-junit4 resolves Espresso 3.5.0
+# transitively, whose reflective InputManager.getInstance() fails on API 37.
+# 3.7.0 uses getSystemService (androidx.test espresso 3.7.0 release note).
+espresso = "3.7.0"
 
 [libraries]
 androidx-core = { module = "androidx.core:core-ktx", version.ref = "core" }
@@ -21,8 +33,13 @@ compose-material = { module = "androidx.compose.material3:material3" }
 # (SF Symbols copyright risk) are deliberately NOT consumable coordinates here.
 cupertino = { module = "io.github.robinpcrd:cupertino", version.ref = "cupertino" }
 junit = { module = "junit:junit", version.ref = "junit" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+commonmark = { module = "org.commonmark:commonmark", version.ref = "commonmark" }
+commonmark-ext-gfm-tables = { module = "org.commonmark:commonmark-ext-gfm-tables", version.ref = "commonmark" }
+commonmark-ext-gfm-strikethrough = { module = "org.commonmark:commonmark-ext-gfm-strikethrough", version.ref = "commonmark" }
 androidx-test-junit = { module = "androidx.test.ext:junit", version.ref = "androidx-test" }
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "runner" }
+androidx-test-espresso-core = { module = "androidx.test.espresso:espresso-core", version.ref = "espresso" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

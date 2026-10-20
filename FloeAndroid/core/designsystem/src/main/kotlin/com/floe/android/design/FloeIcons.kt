@@ -387,4 +387,184 @@ object FloeIcons {
         stroke { moveTo(7.5f, 9f); lineTo(11f, 12f); lineTo(7.5f, 15f) }
         stroke { moveTo(13f, 15f); lineTo(16.5f, 15f) }
     }
+
+    /* ---- provider / model configuration glyphs (G02 presentation flow) ---- */
+
+    /** eye — reveal the session-typed secret (never fetches a stored key). */
+    val Eye = icon("floe.eye") {
+        stroke {
+            moveTo(3.6f, 12f)
+            curveTo(6.2f, 7.6f, 17.8f, 7.6f, 20.4f, 12f)
+            curveTo(17.8f, 16.4f, 6.2f, 16.4f, 3.6f, 12f)
+            close()
+        }
+        stroke { circle(12f, 12f, 2.6f) }
+    }
+
+    /** eye.slash — hide the revealed field again. */
+    val EyeSlash = icon("floe.eye_slash") {
+        stroke {
+            moveTo(3.6f, 12f)
+            curveTo(6.2f, 7.6f, 17.8f, 7.6f, 20.4f, 12f)
+            curveTo(18.9f, 14.4f, 15.8f, 15.7f, 12.4f, 15.9f)
+        }
+        stroke {
+            moveTo(12f, 14.6f)
+            curveTo(8f, 14.6f, 4.7f, 12f, 3.6f, 12f)
+        }
+        stroke { moveTo(5.6f, 4.8f); lineTo(18.4f, 19.2f) }
+    }
+
+    /** chevron.up.chevron.down — chooser affordance on a value field. */
+    val ChevronUpDown = icon("floe.chevron_up_down") {
+        stroke { moveTo(7.5f, 9.5f); lineTo(12f, 5.5f); lineTo(16.5f, 9.5f) }
+        stroke { moveTo(7.5f, 14.5f); lineTo(12f, 18.5f); lineTo(16.5f, 14.5f) }
+    }
+
+    /** key — credential state badge (waiting for configuration). */
+    val Key = icon("floe.key") {
+        stroke { circle(8f, 8.4f, 3.6f) }
+        stroke { moveTo(10.7f, 11.1f); lineTo(19.2f, 19.6f) }
+        stroke { moveTo(15.6f, 16f); lineTo(17.8f, 13.8f) }
+    }
+
+    /** antenna.radiowaves.left.and.right — provider empty-state glyph. */
+    val Antenna = icon("floe.antenna") {
+        stroke { circle(12f, 13.5f, 1.1f) }
+        stroke { moveTo(12f, 15f); lineTo(12f, 20.2f) }
+        stroke {
+            moveTo(8.6f, 10.1f)
+            curveTo(6.9f, 11.8f, 6.9f, 15.2f, 8.6f, 16.9f)
+        }
+        stroke {
+            moveTo(15.4f, 10.1f)
+            curveTo(17.1f, 11.8f, 17.1f, 15.2f, 15.4f, 16.9f)
+        }
+        stroke {
+            moveTo(6f, 7.5f)
+            curveTo(3.2f, 10.3f, 3.2f, 16.7f, 6f, 19.5f)
+        }
+        stroke {
+            moveTo(18f, 7.5f)
+            curveTo(20.8f, 10.3f, 20.8f, 16.7f, 18f, 19.5f)
+        }
+    }
+
+    /** arrow.clockwise — explicit refresh (catalog / model discovery). */
+    val Refresh = icon("floe.refresh") {
+        stroke {
+            moveTo(19f, 12f)
+            curveTo(19f, 15.9f, 15.9f, 19f, 12f, 19f)
+            curveTo(8.1f, 19f, 5f, 15.9f, 5f, 12f)
+            curveTo(5f, 8.1f, 8.1f, 5f, 12f, 5f)
+            curveTo(14.6f, 5f, 16.9f, 6.4f, 18.2f, 8.5f)
+        }
+        stroke { moveTo(19.4f, 4.6f); lineTo(18.6f, 8.9f); lineTo(14.3f, 8.1f) }
+    }
+
+    /** exclamationmark.triangle — pending/validation warning. */
+    val WarningTriangle = icon("floe.warning_triangle") {
+        stroke {
+            moveTo(12f, 4f)
+            lineTo(20.4f, 19f)
+            lineTo(3.6f, 19f)
+            close()
+        }
+        stroke { moveTo(12f, 10f); lineTo(12f, 14f) }
+        stroke { circle(12f, 16.8f, 0.6f) }
+    }
+
+    /** checkmark.circle — verified/connected success (confirmed only). */
+    val CheckCircle = icon("floe.check_circle") {
+        stroke { circle(12f, 12f, 8f) }
+        stroke { moveTo(8.4f, 12.3f); lineTo(11f, 14.9f); lineTo(15.8f, 9.6f) }
+    }
+
+    /** xmark.octagon — failed connection test marker. */
+    val XOctagon = icon("floe.x_octagon") {
+        stroke {
+            moveTo(8.2f, 3.8f); lineTo(15.8f, 3.8f)
+            lineTo(20.2f, 8.2f); lineTo(20.2f, 15.8f)
+            lineTo(15.8f, 20.2f); lineTo(8.2f, 20.2f)
+            lineTo(3.8f, 15.8f); lineTo(3.8f, 8.2f)
+            close()
+        }
+        stroke { moveTo(9.4f, 9.4f); lineTo(14.6f, 14.6f) }
+        stroke { moveTo(14.6f, 9.4f); lineTo(9.4f, 14.6f) }
+    }
+
+    /** magnifyingglass — search affordance label (fields draw their own). */
+    val Magnifier = icon("floe.magnifier") {
+        stroke { circle(10.6f, 10.6f, 5.6f) }
+        stroke { moveTo(14.8f, 14.8f); lineTo(19.6f, 19.6f) }
+    }
+
+    /** plus.circle — stage a candidate model. */
+    val PlusCircle = icon("floe.plus_circle") {
+        stroke { circle(12f, 12f, 8f) }
+        stroke { moveTo(12f, 8.6f); lineTo(12f, 15.4f) }
+        stroke { moveTo(8.6f, 12f); lineTo(15.4f, 12f) }
+    }
+
+    /** trash — delete provider (overflow menu, destructive). */
+    val Trash = icon("floe.trash") {
+        stroke { moveTo(4.6f, 7f); lineTo(19.4f, 7f) }
+        stroke { moveTo(9.6f, 7f); lineTo(9.6f, 4.6f); lineTo(14.4f, 4.6f); lineTo(14.4f, 7f) }
+        stroke { moveTo(6.6f, 7f); lineTo(7.6f, 20f); lineTo(16.4f, 20f); lineTo(17.4f, 7f) }
+        stroke { moveTo(10.4f, 10.4f); lineTo(10.4f, 16.8f) }
+        stroke { moveTo(13.6f, 10.4f); lineTo(13.6f, 16.8f) }
+    }
+
+    /** pencil — edit provider. */
+    val Pencil = icon("floe.pencil") {
+        stroke { moveTo(4.6f, 19.4f); lineTo(6.2f, 15.2f); lineTo(15.6f, 5.8f) }
+        stroke { moveTo(13.8f, 4f); lineTo(20f, 10.2f) }
+        stroke { moveTo(6.2f, 15.2f); lineTo(10.4f, 19.4f); lineTo(4.6f, 19.4f); close() }
+    }
+
+    /** bubble.left.and.text.bubble.right — chat model service role. */
+    val ChatRole = icon("floe.chat_role") {
+        stroke {
+            moveTo(9.4f, 5f)
+            curveTo(5.9f, 5f, 3.2f, 7f, 3.2f, 9.5f)
+            curveTo(3.2f, 11.3f, 4.5f, 12.9f, 6.4f, 13.8f)
+            lineTo(6f, 16.4f)
+            lineTo(8.9f, 14.9f)
+            curveTo(9.1f, 14.9f, 9.2f, 14.9f, 9.4f, 14.9f)
+        }
+        stroke {
+            moveTo(15.2f, 9.1f)
+            curveTo(18.6f, 9.1f, 20.8f, 11f, 20.8f, 13.3f)
+            curveTo(20.8f, 15.6f, 18.6f, 17.5f, 15.2f, 17.5f)
+            curveTo(14.3f, 17.5f, 13.4f, 17.4f, 12.6f, 17.1f)
+            lineTo(9.9f, 18.6f)
+            lineTo(10.5f, 16.1f)
+            curveTo(9.5f, 15.3f, 9f, 14.3f, 9f, 13.3f)
+        }
+    }
+
+    /** photo.on.rectangle.angled — image generation/editing service role. */
+    val ImageRole = icon("floe.image_role") {
+        stroke { rrect(3.4f, 7.4f, 17.4f, 19f, 1.8f) }
+        stroke {
+            moveTo(7.8f, 4.6f); lineTo(19.8f, 6.4f); lineTo(17.4f, 15.6f)
+        }
+        stroke { circle(7.4f, 11f, 1.1f) }
+        stroke { moveTo(10.6f, 16.6f); lineTo(13f, 13.6f); lineTo(15.4f, 16.6f) }
+    }
+
+    /** video.badge.plus — video generation service role. */
+    val VideoPlus = icon("floe.video_plus") {
+        stroke { rrect(3.4f, 5.4f, 20.6f, 18.6f, 2.2f) }
+        stroke { circle(8.4f, 12f, 2.6f) }
+        stroke { moveTo(13.4f, 12f); lineTo(18f, 12f) }
+        stroke { moveTo(15.7f, 9.6f); lineTo(15.7f, 14.4f) }
+    }
+
+    /** photo — per-model verified vision badge. */
+    val Photo = icon("floe.photo") {
+        stroke { rrect(3.4f, 6.2f, 20.6f, 17.8f, 2f) }
+        stroke { circle(8f, 10f, 1.2f) }
+        stroke { moveTo(10.2f, 15.6f); lineTo(13.4f, 11.8f); lineTo(17f, 15.6f) }
+    }
 }

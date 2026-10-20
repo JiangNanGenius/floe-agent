@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-only preview notice (never packaged into release resources). -->
+<resources>
+    <string name="preview_synthetic_notice">合成预览——不含真实技能、服务器或凭据，仅限调试构建。</string>
+</resources>

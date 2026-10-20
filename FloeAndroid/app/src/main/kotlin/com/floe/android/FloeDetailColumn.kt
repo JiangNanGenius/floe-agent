@@ -24,6 +24,9 @@ import com.floe.android.design.InspectorRoute
 import com.floe.android.design.MoreDestination
 import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
+import com.floe.android.feature.conversation.FloeConversationHistoryDestination
+import com.floe.android.feature.conversation.FloeConversationPaneHost
+import com.floe.android.host.RuntimeHost
 
 /**
  * Column 2 of the split: renders the selected workbench/more destination.
@@ -42,12 +45,26 @@ fun FloeDetailColumn(
     onInspectorDismiss: () -> Unit,
     onOpenSettingsSection: (String) -> Unit,
     modifier: Modifier = Modifier,
+    runtimeHost: RuntimeHost? = null,
 ) {
     Box(modifier.fillMaxSize()) {
         when (selection) {
             is SidebarSelection.Workbench -> when (selection.selection) {
-                WorkbenchSelection.NEW_TASK -> HomeLaunchpadPage(compact = compact, showSidebarToggle = showSidebarToggle, onExpandSidebar = onExpandSidebar, onOpenDrawer = onOpenDrawer, onOpenSettingsSection = onOpenSettingsSection)
-                WorkbenchSelection.OVERVIEW -> FloeTaskCenterPage(showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
+                WorkbenchSelection.NEW_TASK -> HomeLaunchpadPage(
+                    compact = compact,
+                    showSidebarToggle = showSidebarToggle,
+                    onExpandSidebar = onExpandSidebar,
+                    onOpenDrawer = onOpenDrawer,
+                    onOpenSettingsSection = onOpenSettingsSection,
+                    runtimeHost = runtimeHost,
+                )
+                WorkbenchSelection.OVERVIEW -> TaskCenterDestination(
+                    showSidebarToggle = showSidebarToggle,
+                    onExpandSidebar = onExpandSidebar,
+                    onOpenDrawer = onOpenDrawer,
+                    compact = compact,
+                    runtimeHost = runtimeHost,
+                )
                 WorkbenchSelection.CONVERSATION -> FloePlaceholderPage(
                     title = stringResource(R.string.new_task),
                     icon = FloeIcons.Bubble,
@@ -61,12 +78,105 @@ fun FloeDetailColumn(
             is SidebarSelection.More -> when (selection.destination) {
                 MoreDestination.NOTES -> FloePlaceholderPage(stringResource(R.string.notes), FloeIcons.BookPages, stringResource(R.string.workspace_later_update), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
                 MoreDestination.CREATIVE -> FloePlaceholderPage(stringResource(R.string.creative), FloeIcons.Creative, stringResource(R.string.workspace_later_update), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
-                MoreDestination.SKILLS -> FloePlaceholderPage(stringResource(R.string.plugins), FloeIcons.Puzzle, stringResource(R.string.workspace_later_update), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
+                // Skills opens the Settings sheet at the Skills section
+                // (handled in the shell's select); a direct route here shows
+                // the same honest pending surface as other later goals.
+                MoreDestination.SKILLS -> FloeTaskCenterPage(showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
                 else -> FloePlaceholderPage(stringResource(R.string.app_name), FloeIcons.InfoCircle, stringResource(R.string.workspace_later_update), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
             }
             is SidebarSelection.Workspace -> FloePlaceholderPage(stringResource(R.string.workspaces), FloeIcons.Folder, stringResource(R.string.projects_runtime_pending), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
-            is SidebarSelection.Conversation -> FloePlaceholderPage(stringResource(R.string.chat), FloeIcons.Bubble, stringResource(R.string.conversation_runtime_pending), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
+            is SidebarSelection.Conversation -> ConversationDestination(
+                conversationId = selection.conversationId,
+                showSidebarToggle = showSidebarToggle,
+                onExpandSidebar = onExpandSidebar,
+                onOpenDrawer = onOpenDrawer,
+                compact = compact,
+                runtimeHost = runtimeHost,
+            )
         }
+    }
+}
+
+/**
+ * The real conversation surface. Resolves the caller-retained holder from
+ * the host registry (never fabricates an id or an empty thread) and hosts
+ * the measured-pane geometry wrapper owned by the app-pane geometry lane;
+ * the host supplies the real holder and session, the wrapper measures the
+ * actual slot and consumes insets exactly once.
+ */
+@Composable
+private fun ConversationDestination(
+    conversationId: String,
+    showSidebarToggle: Boolean,
+    onExpandSidebar: () -> Unit,
+    onOpenDrawer: () -> Unit,
+    compact: Boolean,
+    runtimeHost: RuntimeHost?,
+) {
+    val temporary = runtimeHost?.conversations?.activeTemporarySession()
+        ?.takeIf { it.conversationId == conversationId }
+    val holder = runtimeHost?.conversations?.holderFor(
+        conversationId,
+        isTemporary = temporary != null,
+        incarnationId = temporary?.incarnationId,
+    )
+    if (runtimeHost == null || holder == null) {
+        FloePlaceholderPage(
+            title = stringResource(R.string.chat),
+            icon = FloeIcons.Bubble,
+            message = stringResource(R.string.conversation_runtime_pending),
+            showSidebarToggle = showSidebarToggle,
+            onExpandSidebar = onExpandSidebar,
+            onOpenDrawer = onOpenDrawer,
+            compact = compact,
+        )
+        return
+    }
+    // Load the durable thread once per holder binding; recomposition and
+    // rotation reuse the same holder and never restart the load.
+    androidx.compose.runtime.LaunchedEffect(holder.session) {
+        runtimeHost.conversations.loadThread(holder.session)
+    }
+    FloeConversationPaneHost(
+        holder = holder,
+        modifier = Modifier.fillMaxSize(),
+        onBack = if (compact) onOpenDrawer else null,
+    )
+}
+
+/**
+ * Task Center: the real conversation history surface (list/search/archive/
+ * management) hosted by the history holder; loading and honest empty states
+ * stay component-owned.
+ */
+@Composable
+private fun TaskCenterDestination(
+    showSidebarToggle: Boolean,
+    onExpandSidebar: () -> Unit,
+    onOpenDrawer: () -> Unit,
+    compact: Boolean,
+    runtimeHost: RuntimeHost?,
+) {
+    if (runtimeHost == null) {
+        FloeTaskCenterPage(showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
+        return
+    }
+    Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
+        FloeDetailToolbar(
+            title = stringResource(R.string.task_center),
+            showSidebarToggle = showSidebarToggle,
+            onExpandSidebar = onExpandSidebar,
+            onOpenDrawer = onOpenDrawer,
+            compact = compact,
+        )
+        FloeConversationHistoryDestination(
+            holder = runtimeHost.conversations.historyHolder,
+            mode = com.floe.android.feature.conversation.HistoryDestinationMode.LIST,
+            modifier = Modifier.fillMaxSize(),
+            onBack = null,
+            onOpenArchive = { },
+            onOpenManagement = { },
+        )
     }
 }
 

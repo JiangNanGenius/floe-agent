@@ -1,0 +1,817 @@
+// RB2-REPAIR PRIVATE CANDIDATE MIRROR (job-ffa06be4f2d34ac4, 2026-10-19).
+// Overlay preimage: FloeAndroid/shared/Sources/FloePersistence/
+// ModelConfigurationStore.swift is a SYMLINK to
+// ../../../../FloeAgent/Sources/FloePersistence/ModelConfigurationStore.swift
+// (protected upstream, NOT modified by this package — verified read-only).
+// Upstream pin: SHA-256 7b8fc23a0e225954e5dd4b0f3108115232ae06b5df9a416d9470
+// 2ddde4ab7983 (matches Main's MAIN_SHARED_STORE_SYMLINK_PUBLICATION_RULE_
+// 20261019.json actual target+SHA; re-verified by this lane's static log).
+// Per that rule + MAIN_SOURCE_REVIEW_20261019.json
+// allowedNarrowStoreExtension, this overlay mirror carries ONLY the MC-R1
+// additive expected-state overloads/defaulted parameters (same-writer CAS for
+// saveProviderBundle/deleteProvider) plus the typed conflict error. All
+// existing callers keep EXACT original behavior: `expectedSyncRevision ==
+// nil` reproduces the upstream byte-for-byte decision path; the original
+// codec, FK/stale-model selection, merge rules, schema (46) and preferences/
+// model CAS remain the authority. Future Main serialized publication must
+// atomically replace the overlay SYMLINK with this reviewed copied regular
+// file, keep the upstream bytes unchanged, record the symlink preimage +
+// upstream pin in PROVENANCE/native manifest, and on upstream drift rebase
+// the narrow delta (patches/STORE-CAS.delta.patch) — never overwrite to
+// satisfy a stale hash. NO live write is performed by this package.
+// FloePersistence — durable, secret-free provider and model configuration.
+
+import Foundation
+import GRDB
+import FloeCore
+
+/// Persists provider and model metadata in the local database.
+///
+/// API-key bodies never enter this store. `ProviderProfile.secretRef` contains
+/// only the Keychain account identifier and its iCloud Keychain preference.
+public actor ModelConfigurationStore {
+    private let database: DatabaseManager
+
+    public init(database: DatabaseManager) {
+        self.database = database
+    }
+
+    public func saveProvider(_ provider: ProviderProfile) async throws {
+        try provider.validate()
+        try await database.writer { db in
+            try ConfigurationCodec.write(provider, to: db)
+        }
+    }
+
+    public func provider(id: UUID) async throws -> ProviderProfile? {
+        try await database.reader { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM providers WHERE id = ?",
+                arguments: [id.uuidString]
+            ) else { return nil }
+            return try ConfigurationCodec.provider(from: row)
+        }
+    }
+
+    public func providers() async throws -> [ProviderProfile] {
+        try await database.reader { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT * FROM providers ORDER BY created_at, id"
+            ).map(ConfigurationCodec.provider(from:))
+        }
+    }
+
+    /// Save a model row (last-writer-wins by default).
+    ///
+    /// `expected` turns the write into a compare-and-swap: it must equal the
+    /// CURRENT persisted row (every persisted field) or the save throws and
+    /// nothing is written. Reviewed editors — the capability migration in
+    /// particular — pass the exact snapshot they validated, so a sync apply or
+    /// another editor landing in between is never silently overwritten; the
+    /// caller re-reads and reviews the new state again.
+    public func saveModel(_ model: ModelProfile, expected: ModelProfile? = nil) async throws {
+        try ConfigurationCodec.validate(model)
+        try await database.writer { db in
+            if let expected {
+                guard let current = try Self.storedModel(id: expected.id, in: db),
+                      current == expected else {
+                    throw FloeError.invalidConfiguration(
+                        "The model configuration changed since it was read; reload and review again.")
+                }
+            }
+            _ = try ConfigurationCodec.write(model, to: db)
+        }
+    }
+
+    /// The current persisted row for `id`, or nil when it does not exist.
+    private static func storedModel(id: UUID, in db: Database) throws -> ModelProfile? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT * FROM models WHERE id = ?",
+            arguments: [id.uuidString]
+        ) else { return nil }
+        return try ConfigurationCodec.model(from: row)
+    }
+
+    /// Result of a provider bundle save.
+    public struct ProviderBundleResult: Sendable, Equatable {
+        /// Models that now belong to the saved selected set.
+        public var saved: [ModelProfile]
+        /// Model rows that were actually deleted (unreferenced stale rows).
+        public var deletedModelIDs: [UUID]
+        /// Stale model rows that could not be deleted because durable history
+        /// (media jobs) still references them; they were disabled instead.
+        public var disabledModelIDs: [UUID]
+
+        public init(saved: [ModelProfile], deletedModelIDs: [UUID], disabledModelIDs: [UUID]) {
+            self.saved = saved
+            self.deletedModelIDs = deletedModelIDs
+            self.disabledModelIDs = disabledModelIDs
+        }
+    }
+
+    /// Saves a provider and a user-selected set of models in one SQLite
+    /// transaction. Existing rows are merged by provider + remote model ID,
+    /// preserving their stable local UUIDs and user preferences.
+    ///
+    /// Stale rows outside the selected set are removed, BUT a row still
+    /// referenced by durable history (`media_generation_jobs`, FK RESTRICT)
+    /// is never deleted: it is disabled in place so historical jobs keep
+    /// their model link while the row disappears from every runtime picker.
+    /// RB2-REPAIR (MC-R1) additive expected-state: the EXACT pre-write
+    /// durable condition the gated transaction must observe. Distinct from a
+    /// plain revision number because revision 0 is simultaneously the
+    /// ORIGINAL initial value of existing rows and the "resource absent" CAS
+    /// marker — the create path and the first edit of a rev-0 row must not be
+    /// conflated.
+    public enum ProviderBundleExpectedState: Sendable, Equatable {
+        /// Create CAS: the providers row must STILL be absent. (The frozen
+        /// draft carries syncRevision 0; nothing may have created the row in
+        /// the observed→write window.)
+        case absent
+        /// Edit CAS: the row exists with sync_revision EXACTLY equal to the
+        /// observed base. The caller must have read this value from the
+        /// durable row, never from the wire.
+        case revision(Int64)
+    }
+
+    @discardableResult
+    public func saveProviderBundle(
+        provider: ProviderProfile,
+        models: [ModelProfile],
+        managedCapabilities: ModelCapabilities = .text,
+        expectedState: ProviderBundleExpectedState? = nil
+    ) async throws -> ProviderBundleResult {
+        // Complete preflight BEFORE opening the write transaction so an
+        // invalid provider or model can never leave a partially mutated
+        // configuration behind. The same rules run again inside the
+        // transaction as defense in depth.
+        try ProviderConfigurationValidation.validate(provider)
+        for model in models { try ConfigurationCodec.validate(model) }
+        return try await database.writer { db in
+            // RB2-REPAIR (MC-R1) additive: same-writer compare-and-swap for
+            // provider writes, mirroring the ORIGINAL saveModel(expected:)
+            // pattern (:53-65) inside the ONE serialized DatabaseManager
+            // writer transaction — NOT a separate read followed by an
+            // unconditional write. nil (every existing caller) keeps the
+            // EXACT original write. Non-nil gates on the actually observed
+            // persisted state and ADVANCES the persisted revision by exactly
+            // one (Main settlement rule 2026-10-19: "provider edits MUST
+            // advance a persisted supported revision (overflow typed), stale
+            // requests rejected"): a stale sequential second editor/delete
+            // can no longer pass, and Int64.max is a typed refusal, never a
+            // wraparound.
+            var providerToWrite = provider
+            if let expectedState {
+                let persisted = try Int64.fetchOne(
+                    db,
+                    sql: "SELECT sync_revision FROM providers WHERE id = ?",
+                    arguments: [provider.id.uuidString]
+                )
+                switch expectedState {
+                case .absent:
+                    guard persisted == nil, provider.syncRevision == 0 else {
+                        throw ModelConfigurationRevisionConflict(
+                            domain: "providerBundle",
+                            expected: 0,
+                            observed: persisted)
+                    }
+                    providerToWrite.syncRevision = 1
+                case .revision(let base):
+                    guard provider.syncRevision == base,
+                          persisted == base,
+                          base < Int64.max else {
+                        throw ModelConfigurationRevisionConflict(
+                            domain: "providerBundle",
+                            expected: base,
+                            observed: persisted)
+                    }
+                    providerToWrite.syncRevision = base + 1
+                }
+            }
+            try ConfigurationCodec.write(providerToWrite, to: db)
+            let saved = try models.map { try ConfigurationCodec.write($0, to: db) }
+            // The bundle is the user's complete selected set for one product
+            // role. Remove stale rows from that role while preserving models
+            // managed by the provider's other conversation/media editors.
+            let keptIDs = Set(saved.map { $0.id.uuidString })
+            let existingManagedIDs = try String.fetchAll(
+                db,
+                sql: "SELECT id FROM models WHERE provider_id = ? AND (capabilities & ?) != 0",
+                arguments: [provider.id.uuidString, managedCapabilities.rawValue]
+            )
+            // Build the set of columns whose foreign key RESTRICTs deletion
+            // of a model row, from the live schema. This covers every
+            // referencing table (current and future) without triggering a
+            // constraint failure to discover them.
+            let restrictedModelReferences = try Self.restrictedForeignKeys(
+                referencing: "models", in: db)
+            var deletedIDs: [UUID] = []
+            var disabledIDs: [UUID] = []
+            for staleID in existingManagedIDs where !keptIDs.contains(staleID) {
+                guard let id = UUID(uuidString: staleID) else {
+                    throw FloeError.storageCorrupted("Invalid stale model identifier")
+                }
+                let referenced = try Self.isRow(
+                    staleID, referencedByAnyOf: restrictedModelReferences, in: db)
+                if referenced {
+                    // Preserve the historical link: disable the row in place
+                    // so it is excluded from every runtime picker but durable
+                    // history keeps a valid model link.
+                    try db.execute(
+                        sql: "UPDATE models SET is_enabled = 0 WHERE id = ?",
+                        arguments: [staleID]
+                    )
+                    disabledIDs.append(id)
+                } else {
+                    try db.execute(
+                        sql: "DELETE FROM models WHERE id = ?",
+                        arguments: [staleID]
+                    )
+                    deletedIDs.append(id)
+                }
+            }
+            return ProviderBundleResult(
+                saved: saved,
+                deletedModelIDs: deletedIDs,
+                disabledModelIDs: disabledIDs)
+        }
+    }
+
+    /// One column that blocks deletion of rows in its referenced table
+    /// (ON DELETE RESTRICT, NO ACTION, or the unspecified default).
+    private struct RestrictedReference: Equatable {
+        var table: String
+        var column: String
+    }
+
+    /// Discovers, from the live schema, every table/column whose foreign key
+    /// references `targetTable` with semantics that block deletion (RESTRICT /
+    /// NO ACTION). Introspection replaces trial-and-error deletion so a
+    /// blocked delete never fires (and logs) a constraint failure.
+    private static func restrictedForeignKeys(
+        referencing targetTable: String,
+        in db: Database
+    ) throws -> [RestrictedReference] {
+        let tableNames = try String.fetchAll(
+            db,
+            sql: """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table' AND substr(name, 1, 7) <> 'sqlite_'
+                """
+        )
+        var result: [RestrictedReference] = []
+        for table in tableNames {
+            // PRAGMA foreign_key_list takes no bound parameter; the name is
+            // DB-derived (sqlite_master) and quoted, so interpolation is safe.
+            let quotedName = Self.quotedIdentifier(table)
+            let foreignKeys = try Row.fetchAll(
+                db, sql: "PRAGMA foreign_key_list(\(quotedName))")
+            for foreignKey in foreignKeys {
+                let referencedTable: String? = foreignKey["table"]
+                let onDelete: String? = foreignKey["on_delete"]
+                let fromColumn: String? = foreignKey["from"]
+                guard referencedTable == targetTable,
+                      let column = fromColumn else { continue }
+                // Empty/NO ACTION (the SQLite default) blocks the delete too.
+                let action = (onDelete ?? "").uppercased()
+                guard action.isEmpty || action == "RESTRICT" || action == "NO ACTION" else {
+                    continue
+                }
+                result.append(.init(table: table, column: column))
+            }
+        }
+        return result
+    }
+
+    /// True when `rowID` appears in any column that RESTRICTs its deletion.
+    private static func isRow(
+        _ rowID: String,
+        referencedByAnyOf references: [RestrictedReference],
+        in db: Database
+    ) throws -> Bool {
+        for reference in references {
+            let quotedTable = Self.quotedIdentifier(reference.table)
+            let quotedColumn = Self.quotedIdentifier(reference.column)
+            let exists = try Bool.fetchOne(
+                db,
+                sql: """
+                    SELECT EXISTS(
+                        SELECT 1 FROM \(quotedTable) WHERE \(quotedColumn) = ?
+                    )
+                    """,
+                arguments: [rowID]
+            ) ?? false
+            if exists { return true }
+        }
+        return false
+    }
+
+    private static func quotedIdentifier(_ identifier: String) -> String {
+        "\"" + identifier.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+    }
+
+    /// Reconciles a provider whose catalog is owned by this device. Missing
+    /// models are disabled instead of deleted so historical `runs` foreign
+    /// keys remain valid after a user removes model files.
+    @discardableResult
+    public func reconcileDeviceLocalProvider(
+        provider: ProviderProfile,
+        availableModels: [ModelProfile]
+    ) async throws -> [ModelProfile] {
+        guard provider.kind == .local else {
+            throw FloeError.invalidConfiguration("Device-local reconciliation requires a local provider")
+        }
+        try provider.validate()
+        for model in availableModels { try ConfigurationCodec.validate(model) }
+        return try await database.writer { db in
+            try ConfigurationCodec.write(provider, to: db)
+            let existingPreferences = try Row.fetchAll(
+                db,
+                sql: "SELECT remote_model_id, is_enabled, is_hidden_from_primary_picker FROM models WHERE provider_id = ?",
+                arguments: [provider.id.uuidString]
+            ).reduce(into: [String: (enabled: Bool, hidden: Bool)]()) { values, row in
+                values[row["remote_model_id"]] = (
+                    enabled: row["is_enabled"],
+                    hidden: row["is_hidden_from_primary_picker"]
+                )
+            }
+            let saved = try availableModels.map { discovered in
+                var model = discovered
+                // Catalog refreshes update capabilities and limits, but an
+                // explicit per-model disable is a user preference and must
+                // survive every launch/reconciliation.
+                if let preferences = existingPreferences[model.remoteModelID] {
+                    model.isEnabled = preferences.enabled
+                    model.isHiddenFromPrimaryPicker = preferences.hidden
+                }
+                return try ConfigurationCodec.write(model, to: db)
+            }
+            let activeIDs = Set(saved.map { $0.id.uuidString })
+            let existingIDs = try String.fetchAll(
+                db,
+                sql: "SELECT id FROM models WHERE provider_id = ?",
+                arguments: [provider.id.uuidString]
+            )
+            for id in existingIDs where !activeIDs.contains(id) {
+                try db.execute(
+                    sql: "UPDATE models SET is_enabled = 0 WHERE id = ?",
+                    arguments: [id]
+                )
+            }
+            return saved
+        }
+    }
+
+    public func model(id: UUID) async throws -> ModelProfile? {
+        try await database.reader { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM models WHERE id = ?",
+                arguments: [id.uuidString]
+            ) else { return nil }
+            return try ConfigurationCodec.model(from: row)
+        }
+    }
+
+    public func models(providerID: UUID? = nil) async throws -> [ModelProfile] {
+        try await database.reader { db in
+            let rows: [Row]
+            if let providerID {
+                rows = try Row.fetchAll(
+                    db,
+                    sql: "SELECT * FROM models WHERE provider_id = ? ORDER BY display_name, id",
+                    arguments: [providerID.uuidString]
+                )
+            } else {
+                rows = try Row.fetchAll(db, sql: "SELECT * FROM models ORDER BY display_name, id")
+            }
+            return try rows.map(ConfigurationCodec.model(from:))
+        }
+    }
+
+    public func deleteModel(id: UUID) async throws {
+        try await database.writer { db in
+            try db.execute(sql: "DELETE FROM models WHERE id = ?", arguments: [id.uuidString])
+        }
+    }
+
+    /// Deletes a provider and its models through the schema's foreign-key cascade.
+    ///
+    /// RB2-REPAIR (MC-R1) additive: `expectedSyncRevision` gates the cascade
+    /// inside the ONE writer transaction against the observed state
+    /// (nil keeps the EXACT original unconditional delete for every existing
+    /// caller). A mismatch deletes NOTHING and throws the typed conflict; the
+    /// belt-and-suspenders `AND sync_revision = ?` predicate plus changeCount
+    /// keep observation and destruction in the same atomic write.
+    public func deleteProvider(id: UUID, expectedSyncRevision: Int64? = nil) async throws {
+        try await database.writer { db in
+            if let expectedSyncRevision {
+                let persisted = try Int64.fetchOne(
+                    db,
+                    sql: "SELECT sync_revision FROM providers WHERE id = ?",
+                    arguments: [id.uuidString]
+                )
+                guard persisted == expectedSyncRevision else {
+                    throw ModelConfigurationRevisionConflict(
+                        domain: "providerDelete",
+                        expected: expectedSyncRevision,
+                        observed: persisted)
+                }
+                try db.execute(
+                    sql: "DELETE FROM providers WHERE id = ? AND sync_revision = ?",
+                    arguments: [id.uuidString, expectedSyncRevision]
+                )
+                guard db.changesCount == 1 else {
+                    throw ModelConfigurationRevisionConflict(
+                        domain: "providerDelete",
+                        expected: expectedSyncRevision,
+                        observed: nil)
+                }
+                return
+            }
+            try db.execute(sql: "DELETE FROM providers WHERE id = ?", arguments: [id.uuidString])
+        }
+    }
+
+    public func preferences() async throws -> ModelSelectionPreferences {
+        try await database.reader { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM model_preferences WHERE id = 'default'"
+            ) else { return ModelSelectionPreferences() }
+            return try ConfigurationCodec.preferences(from: row)
+        }
+    }
+
+    public func savePreferences(_ preferences: ModelSelectionPreferences) async throws {
+        try await database.writer { db in
+            try ConfigurationCodec.validate(preferences, in: db)
+            try db.execute(
+                sql: """
+                    INSERT INTO model_preferences (
+                        id, onboarding_status, default_agent_model_id, general_auxiliary_llm_model_id,
+                        canvas_agent_model_id, vision_model_id, canvas_vision_model_id,
+                        approval_model_id, package_review_model_id,
+                        auxiliary_image_mode, shared_image_model_id,
+                        image_generation_model_id, image_editing_model_id,
+                        default_video_model_id, autonomous_image_routing,
+                        updated_at, sync_revision
+                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        onboarding_status = excluded.onboarding_status,
+                        default_agent_model_id = excluded.default_agent_model_id,
+                        general_auxiliary_llm_model_id = excluded.general_auxiliary_llm_model_id,
+                        canvas_agent_model_id = excluded.canvas_agent_model_id,
+                        vision_model_id = excluded.vision_model_id,
+                        canvas_vision_model_id = excluded.canvas_vision_model_id,
+                        approval_model_id = excluded.approval_model_id,
+                        package_review_model_id = excluded.package_review_model_id,
+                        auxiliary_image_mode = excluded.auxiliary_image_mode,
+                        shared_image_model_id = excluded.shared_image_model_id,
+                        image_generation_model_id = excluded.image_generation_model_id,
+                        image_editing_model_id = excluded.image_editing_model_id,
+                        default_video_model_id = excluded.default_video_model_id,
+                        autonomous_image_routing = excluded.autonomous_image_routing,
+                        updated_at = excluded.updated_at,
+                        sync_revision = excluded.sync_revision
+                    """,
+                arguments: [
+                    preferences.onboardingStatus.rawValue,
+                    preferences.defaultAgentModelID?.uuidString,
+                    preferences.generalAuxiliaryLLMModelID?.uuidString,
+                    preferences.canvasAgentModelID?.uuidString,
+                    preferences.visionModelID?.uuidString,
+                    preferences.canvasVisionModelID?.uuidString,
+                    preferences.approvalModelID?.uuidString,
+                    preferences.packageReviewModelID?.uuidString,
+                    preferences.auxiliaryImageMode.rawValue,
+                    preferences.sharedImageModelID?.uuidString,
+                    preferences.imageGenerationModelID?.uuidString,
+                    preferences.imageEditingModelID?.uuidString,
+                    preferences.defaultVideoModelID?.uuidString,
+                    preferences.autonomousImageRouting,
+                    ConfigurationCodec.encode(preferences.updatedAt),
+                    preferences.syncRevision
+                ]
+            )
+        }
+    }
+}
+
+/// RB2-REPAIR (MC-R1) additive typed conflict: the durable writer
+/// transaction refused because the observed provider revision is not the
+/// actual persisted state (or the create-CAS found an existing row, or the
+/// revision space is exhausted). Nothing was mutated. Public so the overlay
+/// consumer can map it onto the closed wire refusal without message parsing.
+public struct ModelConfigurationRevisionConflict: Error, Sendable, Equatable {
+    public let domain: String
+    public let expected: Int64
+    public let observed: Int64?
+
+    public init(domain: String, expected: Int64, observed: Int64?) {
+        self.domain = domain
+        self.expected = expected
+        self.observed = observed
+    }
+}
+
+enum ConfigurationCodec {
+    static func encode<T: Encodable>(_ value: T) throws -> String {
+        let data = try JSONEncoder().encode(value)
+        guard let string = String(data: data, encoding: .utf8) else {
+            throw FloeError.internalError("Could not encode model configuration as UTF-8")
+        }
+        return string
+    }
+
+    static func encode(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    static func decodeDate(_ value: String) throws -> Date {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+
+        let standard = ISO8601DateFormatter()
+        standard.formatOptions = [.withInternetDateTime]
+        guard let date = standard.date(from: value) else {
+            throw FloeError.storageCorrupted("Invalid ISO-8601 date in model configuration")
+        }
+        return date
+    }
+
+    static func provider(from row: Row) throws -> ProviderProfile {
+        guard
+            let id = UUID(uuidString: row["id"]),
+            let kind = ProviderKind(rawValue: row["kind"]),
+            let wireProtocol = ModelProtocol(rawValue: row["wire_protocol"]),
+            let baseURL = URL(string: row["base_url"])
+        else {
+            throw FloeError.storageCorrupted("Invalid provider identity or protocol")
+        }
+
+        let account: String? = row["secret_ref_account"]
+        let synchronizable: Bool? = row["secret_ref_synchronizable"]
+        let secretRef = account.map {
+            SecretReference(keychainAccount: $0, synchronizable: synchronizable ?? false)
+        }
+        let headersData = Data((row["non_secret_headers_json"] as String).utf8)
+        let headers = try JSONDecoder().decode([String: String].self, from: headersData)
+
+        return ProviderProfile(
+            id: id,
+            kind: kind,
+            wireProtocol: wireProtocol,
+            baseURL: baseURL,
+            displayName: row["display_name"],
+            secretRef: secretRef,
+            region: row["region"],
+            nonSecretHeaders: headers,
+            isEnabled: row["is_enabled"],
+            allowsPlainHTTP: row["allows_plain_http"],
+            toolNameCompatibility: row["tool_name_compatibility"],
+            createdAt: try decodeDate(row["created_at"]),
+            updatedAt: try decodeDate(row["updated_at"]),
+            syncRevision: row["sync_revision"]
+        )
+    }
+
+    static func write(_ provider: ProviderProfile, to db: Database) throws {
+        let headersJSON = try encode(provider.nonSecretHeaders)
+        try db.execute(
+            sql: """
+                INSERT INTO providers (
+                    id, kind, wire_protocol, base_url, display_name, secret_ref_account,
+                    secret_ref_synchronizable, region, non_secret_headers_json,
+                    is_enabled, allows_plain_http, tool_name_compatibility,
+                    created_at, updated_at, sync_revision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    kind = excluded.kind,
+                    wire_protocol = excluded.wire_protocol,
+                    base_url = excluded.base_url,
+                    display_name = excluded.display_name,
+                    secret_ref_account = excluded.secret_ref_account,
+                    secret_ref_synchronizable = excluded.secret_ref_synchronizable,
+                    region = excluded.region,
+                    non_secret_headers_json = excluded.non_secret_headers_json,
+                    is_enabled = excluded.is_enabled,
+                    allows_plain_http = excluded.allows_plain_http,
+                    tool_name_compatibility = excluded.tool_name_compatibility,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    sync_revision = excluded.sync_revision
+                """,
+            arguments: [
+                provider.id.uuidString, provider.kind.rawValue,
+                provider.wireProtocol.rawValue, provider.baseURL.absoluteString,
+                provider.displayName,
+                provider.secretRef?.keychainAccount,
+                provider.secretRef.map { $0.synchronizable }, provider.region,
+                headersJSON, provider.isEnabled, provider.allowsPlainHTTP,
+                provider.toolNameCompatibility,
+                encode(provider.createdAt), encode(provider.updatedAt),
+                provider.syncRevision
+            ]
+        )
+    }
+
+    static func validate(_ model: ModelProfile) throws {
+        // Canonical model rules (shared with editor preflight and CloudKit
+        // apply); throws the legacy FloeError wording on violation.
+        try ProviderConfigurationValidation.validate(model)
+    }
+
+    static func write(_ model: ModelProfile, to db: Database) throws -> ModelProfile {
+        let existingID = try String.fetchOne(
+            db,
+            sql: "SELECT id FROM models WHERE provider_id = ? AND remote_model_id = ?",
+            arguments: [model.providerID.uuidString, model.remoteModelID]
+        )
+        var canonical = model
+        if let existingID, let id = UUID(uuidString: existingID), id != model.id {
+            canonical.id = id
+            try db.execute(sql: "DELETE FROM models WHERE id = ?", arguments: [model.id.uuidString])
+        }
+        let pricingJSON = try canonical.pricing.map(encode)
+        try db.execute(
+            sql: """
+                INSERT INTO models (
+                    id, provider_id, remote_model_id, display_name,
+                    context_tokens, max_output_tokens, pricing_json,
+                    capabilities, reasoning_effort, is_enabled,
+                    is_hidden_from_primary_picker, use_surfaces,
+                    explicit_capabilities
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    provider_id = excluded.provider_id,
+                    remote_model_id = excluded.remote_model_id,
+                    display_name = excluded.display_name,
+                    context_tokens = excluded.context_tokens,
+                    max_output_tokens = excluded.max_output_tokens,
+                    pricing_json = excluded.pricing_json,
+                    capabilities = excluded.capabilities,
+                    reasoning_effort = excluded.reasoning_effort,
+                    is_enabled = excluded.is_enabled,
+                    is_hidden_from_primary_picker = excluded.is_hidden_from_primary_picker,
+                    use_surfaces = excluded.use_surfaces,
+                    -- NULL never clears an owned mask: only an explicit
+                    -- non-nil write (including a reviewed empty 0) updates it.
+                    explicit_capabilities = COALESCE(
+                        excluded.explicit_capabilities, models.explicit_capabilities)
+                """,
+            arguments: [
+                canonical.id.uuidString, canonical.providerID.uuidString,
+                canonical.remoteModelID, canonical.displayName,
+                canonical.limits.contextTokens, canonical.limits.maxOutputTokens,
+                pricingJSON, canonical.capabilities.rawValue,
+                canonical.reasoningEffort?.rawValue, canonical.isEnabled,
+                canonical.isHiddenFromPrimaryPicker ?? false,
+                canonical.useSurfaces?.rawValue,
+                // nil → SQL NULL keeps the legacy "no provenance" state
+                // distinct from a reviewed empty mask (0).
+                canonical.explicitCapabilities?.rawValue
+            ]
+        )
+        return canonical
+    }
+
+    static func model(from row: Row) throws -> ModelProfile {
+        guard
+            let id = UUID(uuidString: row["id"]),
+            let providerID = UUID(uuidString: row["provider_id"])
+        else {
+            throw FloeError.storageCorrupted("Invalid model or provider identifier")
+        }
+
+        let pricing: PricingMetadata?
+        if let pricingJSON: String = row["pricing_json"] {
+            pricing = try JSONDecoder().decode(PricingMetadata.self, from: Data(pricingJSON.utf8))
+        } else {
+            pricing = nil
+        }
+
+        return ModelProfile(
+            id: id,
+            providerID: providerID,
+            remoteModelID: row["remote_model_id"],
+            displayName: row["display_name"],
+            limits: ModelLimits(
+                contextTokens: row["context_tokens"],
+                maxOutputTokens: row["max_output_tokens"]
+            ),
+            pricing: pricing,
+            capabilities: ModelCapabilities(rawValue: row["capabilities"]),
+            useSurfaces: (row["use_surfaces"] as Int?).map(ModelUseSurfaces.init(rawValue:)),
+            reasoningEffort: (row["reasoning_effort"] as String?).flatMap(ModelReasoningEffort.init(rawValue:)),
+            isEnabled: row["is_enabled"],
+            isHiddenFromPrimaryPicker: row["is_hidden_from_primary_picker"],
+            // NULL → nil (legacy "no provenance"); 0 → empty reviewed mask.
+            explicitCapabilities: (row["explicit_capabilities"] as Int?)
+                .map(ModelCapabilities.init(rawValue:))
+        )
+    }
+
+    static func preferences(from row: Row) throws -> ModelSelectionPreferences {
+        guard
+            let onboardingStatus = OnboardingStatus(rawValue: row["onboarding_status"]),
+            let imageMode = AuxiliaryImageMode(rawValue: row["auxiliary_image_mode"])
+        else {
+            throw FloeError.storageCorrupted("Invalid model preference state")
+        }
+        func uuid(_ column: String) -> UUID? {
+            let value: String? = row[column]
+            return value.flatMap(UUID.init(uuidString:))
+        }
+        return ModelSelectionPreferences(
+            onboardingStatus: onboardingStatus,
+            defaultAgentModelID: uuid("default_agent_model_id"),
+            generalAuxiliaryLLMModelID: uuid("general_auxiliary_llm_model_id"),
+            canvasAgentModelID: uuid("canvas_agent_model_id"),
+            visionModelID: uuid("vision_model_id"),
+            canvasVisionModelID: uuid("canvas_vision_model_id"),
+            approvalModelID: uuid("approval_model_id"),
+            packageReviewModelID: uuid("package_review_model_id"),
+            autonomousImageRouting: row["autonomous_image_routing"],
+            auxiliaryImageMode: imageMode,
+            sharedImageModelID: uuid("shared_image_model_id"),
+            imageGenerationModelID: uuid("image_generation_model_id"),
+            imageEditingModelID: uuid("image_editing_model_id"),
+            defaultVideoModelID: uuid("default_video_model_id"),
+            updatedAt: try decodeDate(row["updated_at"]),
+            syncRevision: row["sync_revision"]
+        )
+    }
+
+    static func validate(_ preferences: ModelSelectionPreferences, in db: Database) throws {
+        let previous = try Row.fetchOne(db, sql: "SELECT * FROM model_preferences WHERE id = 'default'")
+            .map { try Self.preferences(from: $0) }
+        func model(for key: KeyPath<ModelSelectionPreferences, UUID?>) throws -> ModelProfile? {
+            let id = preferences[keyPath: key]
+            // An unrelated setting must not be held hostage by a stale route.
+            // Actual use still checks capabilities; editing that route validates it.
+            if let previous, previous[keyPath: key] == id { return nil }
+            guard let id else { return nil }
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM models WHERE id = ? AND is_enabled = 1",
+                arguments: [id.uuidString]
+            ) else { throw FloeError.invalidConfiguration("Selected model is unavailable") }
+            return try ConfigurationCodec.model(from: row)
+        }
+        if let selected = try model(for: \.generalAuxiliaryLLMModelID),
+           !selected.supportsGeneralAuxiliaryLLM {
+            throw FloeError.invalidConfiguration("General auxiliary LLM must support text")
+        }
+        if let selected = try model(for: \.defaultAgentModelID),
+           !selected.supportsChatAgentSurface {
+            throw FloeError.invalidConfiguration("Default agent model must support text")
+        }
+        if let selected = try model(for: \.canvasAgentModelID),
+           !(selected.supportsChatAgentSurface && selected.capabilities.contains(.tools)) {
+            throw FloeError.invalidConfiguration("Canvas assistant model must support text and tools")
+        }
+        if let selected = try model(for: \.visionModelID),
+           !selected.supportsAuxiliaryVisionSurface {
+            throw FloeError.invalidConfiguration("Vision model must support image understanding")
+        }
+        if let selected = try model(for: \.canvasVisionModelID),
+           !selected.supportsAuxiliaryVisionSurface {
+            throw FloeError.invalidConfiguration("Canvas visual understanding model must support vision")
+        }
+        if let selected = try model(for: \.approvalModelID),
+           !selected.supportsApprovalSurface {
+            throw FloeError.invalidConfiguration("Approval model must support text")
+        }
+        if let selected = try model(for: \.packageReviewModelID),
+           !selected.supportsApprovalSurface {
+            throw FloeError.invalidConfiguration("Package review model must support text")
+        }
+        if let selected = try model(for: \.sharedImageModelID),
+           !(selected.supportsImageGenerationSurface
+                && selected.capabilities.contains(.imageGeneration)
+                && selected.capabilities.contains(.imageEditing)) {
+            throw FloeError.invalidConfiguration("Shared image model must support generation and editing")
+        }
+        if let selected = try model(for: \.imageGenerationModelID),
+           !(selected.supportsImageGenerationSurface
+                && selected.capabilities.contains(.imageGeneration)) {
+            throw FloeError.invalidConfiguration("Image generation model lacks generation capability")
+        }
+        if let selected = try model(for: \.imageEditingModelID),
+           !(selected.supportsImageGenerationSurface
+                && selected.capabilities.contains(.imageEditing)) {
+            throw FloeError.invalidConfiguration("Image editing model lacks editing capability")
+        }
+        if let selected = try model(for: \.defaultVideoModelID),
+           !selected.supportsVideoGenerationSurface {
+            throw FloeError.invalidConfiguration("Video model lacks generation capability")
+        }
+    }
+}

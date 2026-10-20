@@ -55,7 +55,7 @@ android {
         minSdk = 28
         targetSdk = 37
         versionCode = 1
-        versionName = "0.1.0-g01"
+        versionName = "0.1.0-alpha.1"
         ndk { abiFilters += "arm64-v8a" }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -74,12 +74,30 @@ android {
 }
 dependencies {
     implementation(project(":core:contracts"))
+    implementation(project(":core:credentials"))
     implementation(project(":core:designsystem"))
     implementation(project(":core:swiftbridge"))
+    // G02 App host binding: the real provider/conversation/integrations
+    // components the Application-owned host binds to the shared runtime.
+    implementation(project(":feature:conversation"))
+    implementation(project(":feature:integrations"))
+    implementation(project(":feature:providers"))
     implementation(libs.androidx.core)
     implementation(libs.androidx.activity.compose)
+    // Explicit pin: the dispatcher relies on CoroutineStart.UNDISPATCHED
+    // semantics from the repository-resolved 1.9.0 line.
+    implementation(libs.kotlinx.coroutines.core)
+    // RB1-R6: structured JSON tree parsing for the bootstrap readback/
+    // status/effect channels (no Regex, no handwritten parser). 1.9.0 is
+    // already present in gradle/verification-metadata.xml with jar/module
+    // checksums; the compiler serialization plugin is NOT required for
+    // JsonElement tree parsing. The Gradle qualification stage must
+    // regenerate app/gradle.lockfile with --write-locks for the compile
+    // classpaths (source-only lane cannot run Gradle).
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     "fullImplementation"(project(":feature:phonecontrol"))
     "fullImplementation"(project(":feature:rootsystem"))
+    testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.runner)
 }

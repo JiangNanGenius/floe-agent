@@ -1,0 +1,6 @@
+c7f417f941ef516ea5abfc7cc9db484f7827bc59ee3d3c6a84c03f1fe9e4b685  FloeAndroid/core/swiftbridge/src/androidTest/assets/tls-qualification/server-expired.p12
+8a775cd569a449830f9600bd7f44ccd1278e6394e1dfe817d9a2374d8a5bcf65  FloeAndroid/core/swiftbridge/src/androidTest/assets/tls-qualification/server-good.p12
+6ee7c3f4a30e0fc5f5557d6d581a8e86a104c2c986cd4c777210488f6d804d7c  FloeAndroid/core/swiftbridge/src/androidTest/assets/tls-qualification/server-unknown.p12
+11fc17550d40067882a53e79966da31dbce6560d846c9a8f56276ae308d688d1  FloeAndroid/core/swiftbridge/src/androidTest/assets/tls-qualification/server-wrongsan.p12
+8f3594f4bd56be08e5f136fca511c45d5ca446451f2a3b217dacda100dfe52f6  FloeAndroid/core/swiftbridge/src/androidTest/assets/tls-qualification/test-ca-bundle.pem
+f2baedeeafc9dcf5855b200ee3ffc00d5deb4151f6a4f6c9f80722371bb921ee  FloeAndroid/core/swiftbridge/src/androidTest/assets/tls-qualification/unknown-ca-bundle.pem

@@ -1,0 +1,1 @@
+../../../../FloeAgent/Sources/FloeAgentRuntime/ConversationEnvelope.swift

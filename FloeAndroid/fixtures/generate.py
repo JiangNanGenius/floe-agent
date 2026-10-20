@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Deterministic synthetic fixture generator for Floe Android G01.
+"""Deterministic synthetic fixture generator for Floe Android (G02 revision).
 
 Generates small, valid, fully synthetic test documents under this fixtures/
 directory plus inventory.json. All content is authored here; no customer data,
-no network access and no credentials are used.
+no network access and no credentials are used. The two attachment JSON files
+are declarative scenario contracts for the G02 operations; they do not exercise
+Android SAF code and are not device evidence.
 
 Modes:
   python3 generate.py            Generate/refresh fixtures and inventory.json.
   python3 generate.py --check    Read-only verification: regenerate every
                                  stdlib-deterministic fixture in memory and
-                                 compare bytes + SHA-256 with what is on disk.
-                                 NEVER writes or rewrites any file.
+                                 compare bytes + SHA-256 and inventory metadata
+                                 with what is on disk. NEVER writes or rewrites
+                                 any file.
   python3 generate.py --verify-ffmpeg
                                  In addition to --check, re-run the pinned
                                  ffmpeg recipe into the repository scratch
@@ -19,8 +22,9 @@ Modes:
                                  fixtures/.
 
 Stdlib output is byte-reproducible (ZIP_STORED, fixed timestamps, fixed
-ordering, zlib level 0 for PNG). The MP4 sample depends on the recorded ffmpeg
-version/argv; see README.md for the reproducibility note and coverage gaps.
+ordering, zlib level 0 for PNG, sorted JSON keys). The MP4 sample depends on
+the recorded ffmpeg version/argv; see README.md for the reproducibility note
+and coverage gaps.
 """
 from __future__ import annotations
 
@@ -40,6 +44,21 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent  # repository root (contains FloeAndroid/)
 INVENTORY_NAME = "inventory.json"
+ARTIFACT = "floe-android-g02-synthetic-fixtures"
+FIXTURE_VERSION = "g02.2026-10-19.1"
+BASELINE_VERSION = "g02.2026-10-19.1"
+# The two attachment scenario contracts are prior-reconciliation bytes and
+# keep their original embedded version; only inventory metadata advances.
+ATTACHMENT_FIXTURE_VERSION = "g02.2026-10-18.1"
+PREVIOUS_ARTIFACT = "floe-android-g01-synthetic-fixtures"
+PREVIOUS_FIXTURE_COUNT = 26
+EXPECTED_FIXTURE_COUNT = 33
+MP4_EXPECT = {
+    "boxes": ["ftyp", "moov", "mdat"],
+    "width": 320,
+    "height": 240,
+    "secondsApprox": 1.0,
+}
 
 FFMPEG_RECIPES = {
     "media/video/floe-test.mp4": [
@@ -615,6 +634,195 @@ def csv_body():
 
 
 # --------------------------------------------------------------------------
+# G02 attachment scenario contracts
+#
+# These are declarative planning fixtures, not Android SAF/Keystore code. They
+# pin the validation and ownership facts a later implementation must satisfy.
+# Every payload is an existing synthetic fixture; no real URI, key or user path
+# appears here.
+# --------------------------------------------------------------------------
+
+INGEST_SCHEMA = "floe-android.attachment-ingest-scenarios.v0"
+LIFECYCLE_SCHEMA = "floe-android.attachment-lifecycle-scenarios.v0"
+INGEST_LIMITS = {"maxBytes": 1024, "allowedMime": ["image/png", "text/plain"]}
+TEMPORARY_MODE = {
+    "store": "ram",
+    "allowedTools": ["text", "public-web"],
+    "fsToolEnabled": False,
+    "plaintextTempDisk": False,
+}
+
+
+def payload_descriptor(fx, ref):
+    """Record the exact synthetic payload bytes/digest referenced by a scenario."""
+    data = fx[ref][0]
+    return {"ref": ref, "bytes": len(data), "sha256": sha256(data)}
+
+
+def build_attachment_ingest_json(fx):
+    payloads = {
+        "bounded-text": dict(
+            payload_descriptor(fx, "text/encoding/crlf.txt"),
+            declaredMime="text/plain", uriState="granted"),
+        "oversized-text": dict(
+            payload_descriptor(fx, "text/encoding/long-line.txt"),
+            declaredMime="text/plain", uriState="granted"),
+        "mime-spoof-png": dict(
+            payload_descriptor(fx, "assets/png/gradient-8.png"),
+            declaredMime="text/plain", uriState="granted"),
+        "revoked-note": dict(
+            payload_descriptor(fx, "notes/note-basic.json"),
+            declaredMime="text/plain", uriState="revoked"),
+    }
+    bounded = payloads["bounded-text"]
+    doc = {
+        "schema": INGEST_SCHEMA,
+        "fixtureVersion": ATTACHMENT_FIXTURE_VERSION,
+        "limits": INGEST_LIMITS,
+        "temporaryMode": TEMPORARY_MODE,
+        "payloads": payloads,
+        "scenarios": [
+            {
+                "id": "positive-bounded-commit",
+                "payload": "bounded-text",
+                "owner": {"taskId": "task-synthetic-ingest-a",
+                          "runId": "run-synthetic-ingest-a", "epoch": 4},
+                "expect": {
+                    "decision": "committed", "reason": "within-bounds",
+                    "durableRecords": 1, "stagingRemoved": True,
+                    "autoSent": False, "autoExecuted": False,
+                    "commitBytes": bounded["bytes"],
+                    "commitSha256": bounded["sha256"],
+                },
+            },
+            {
+                "id": "reject-oversized",
+                "payload": "oversized-text",
+                "owner": {"taskId": "task-synthetic-ingest-a",
+                          "runId": "run-synthetic-ingest-a", "epoch": 4},
+                "expect": {
+                    "decision": "rejected", "reason": "size_exceeds_cap",
+                    "durableRecords": 0, "stagingRemoved": True,
+                    "autoSent": False, "autoExecuted": False,
+                },
+            },
+            {
+                "id": "reject-mime-spoof",
+                "payload": "mime-spoof-png",
+                "owner": {"taskId": "task-synthetic-ingest-a",
+                          "runId": "run-synthetic-ingest-a", "epoch": 4},
+                "expect": {
+                    "decision": "rejected", "reason": "mime_mismatch",
+                    "durableRecords": 0, "stagingRemoved": True,
+                    "autoSent": False, "autoExecuted": False,
+                },
+            },
+            {
+                "id": "reject-revoked-uri",
+                "payload": "revoked-note",
+                "owner": {"taskId": "task-synthetic-ingest-b",
+                          "runId": "run-synthetic-ingest-b", "epoch": 2},
+                "expect": {
+                    "decision": "rejected",
+                    "reason": "uri_permission_revoked",
+                    "durableRecords": 0, "stagingRemoved": True,
+                    "autoSent": False, "autoExecuted": False,
+                },
+            },
+        ],
+    }
+    return json.dumps(doc, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def build_attachment_lifecycle_json(fx):
+    payloads = {
+        "in-flight-png": payload_descriptor(fx, "assets/png/gradient-8.png"),
+        "prior-committed-text": payload_descriptor(fx, "text/encoding/crlf.txt"),
+        "retry-text": payload_descriptor(fx, "text/code/sample.py"),
+    }
+    prior = payloads["prior-committed-text"]
+    retry = payloads["retry-text"]
+    doc = {
+        "schema": LIFECYCLE_SCHEMA,
+        "fixtureVersion": ATTACHMENT_FIXTURE_VERSION,
+        "owner": {"taskId": "task-synthetic-life-a",
+                  "runId": "run-synthetic-life-a", "epoch": 9},
+        "otherOwner": {"taskId": "task-synthetic-life-b",
+                       "runId": "run-synthetic-life-b", "epoch": 9},
+        "payloads": payloads,
+        "scenarios": [
+            {
+                "id": "cancel-mid-transfer-no-orphan",
+                "payload": "in-flight-png",
+                "events": [{"received": 0}, {"received": 96},
+                           {"received": 180, "cancelled": True}],
+                "expect": {
+                    "state": "cancelled", "durableRecords": 0,
+                    "partialDurableRecords": 0, "stagingRemoved": True,
+                    "autoSent": False, "autoExecuted": False,
+                },
+            },
+            {
+                "id": "cancel-preserves-prior-commit",
+                "payload": "in-flight-png",
+                "priorCommitted": "prior-committed-text",
+                "events": [{"received": 0},
+                           {"received": 64, "cancelled": True}],
+                "expect": {
+                    "state": "cancelled", "durableRecords": 1,
+                    "partialDurableRecords": 0, "stagingRemoved": True,
+                    "preservedSha256": prior["sha256"],
+                    "autoSent": False, "autoExecuted": False,
+                },
+            },
+            {
+                "id": "retry-idempotent-same-digest",
+                "payload": "retry-text",
+                "attempts": [{"digest": retry["sha256"]},
+                             {"digest": retry["sha256"]}],
+                "expect": {
+                    "state": "committed", "durableRecords": 1,
+                    "partialDurableRecords": 0, "duplicateRecords": 0,
+                    "stagingRemoved": True,
+                    "commitSha256": retry["sha256"],
+                    "autoSent": False, "autoExecuted": False,
+                },
+            },
+            {
+                "id": "stale-callback-other-task-dropped",
+                "payload": "in-flight-png",
+                "callback": {
+                    "taskId": "task-synthetic-life-b",
+                    "runId": "run-synthetic-life-b",
+                    "epoch": 8,
+                    "digest": payloads["in-flight-png"]["sha256"],
+                },
+                "expect": {
+                    "state": "stale-dropped", "durableRecords": 0,
+                    "partialDurableRecords": 0, "crossTaskRecords": 0,
+                    "stagingRemoved": True,
+                    "autoSent": False, "autoExecuted": False,
+                },
+            },
+            {
+                "id": "read-only-stream-progress-monotonic",
+                "payload": "in-flight-png",
+                "events": [{"received": 0}, {"received": 67},
+                           {"received": 134},
+                           {"received": 268, "completed": True}],
+                "expect": {
+                    "state": "committed", "durableRecords": 1,
+                    "partialDurableRecords": 0, "stagingRemoved": True,
+                    "progressMonotonic": True,
+                    "autoSent": False, "autoExecuted": False,
+                },
+            },
+        ],
+    }
+    return json.dumps(doc, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+# --------------------------------------------------------------------------
 # ffmpeg (optional, pinned recipe)
 # --------------------------------------------------------------------------
 
@@ -657,6 +865,406 @@ def run_ffmpeg(recipe_args, dest: Path):
 # --------------------------------------------------------------------------
 # fixture table
 # --------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------
+# Settings-domain P0 declarative fixture groups (accepted rev3 contract)
+# --------------------------------------------------------------------------
+
+SETTINGS_FIXTURE_FORMATS = {
+    "settings/defaults-cas.json": "settings-defaults-cas",
+    "memory/inventory.json": "memory-inventory",
+    "memory/candidates.json": "memory-candidates",
+    "personalization/documents.json": "personalization-documents",
+    "usage/aggregates.json": "usage-aggregates",
+    "privacy/identity-streams.json": "privacy-identity-streams",
+    "memory/organizer-model-output.json": "organizer-model-output",
+}
+
+SETTINGS_FIXTURE_EXPECT = {
+    "settings/defaults-cas.json": {
+        "schema": "floe.settings-defaults.fixture/1",
+        "domain": "floe.settings-defaults.v2",
+        "vectorIds": ["absent-set", "null-vs-literal", "delimiter-and-unicode",
+                      "numeric-types"],
+        "caseIds": ["stale-cas", "atomic-multi-key", "unknown-field",
+                    "invalid-enum", "corrupt-row"],
+    },
+    "memory/inventory.json": {
+        "schema": "floe.memory-entry.fixture/1",
+        "domain": "floe.memory-entry.v3",
+        "vectorIds": ["column-order", "content-boundaries", "unicode-cjk-emoji",
+                      "paging-120", "ownership-detach", "same-second-change"],
+        "caseIds": ["stale-update", "duplicate-add", "oversize-add",
+                    "secret-like", "bulk-stale", "bulk-replay",
+                    "search-fresh-diff", "search-deleted-between"],
+    },
+    "memory/candidates.json": {
+        "schema": "floe.memory-candidate.fixture/1",
+        "domain": "floe.memory-candidate.v1",
+        "vectorIds": ["pending-row", "expired-row", "redacted-evidence",
+                      "same-second-change"],
+        "caseIds": ["duplicate-accept", "expiry-during-await",
+                    "fail-after-memory-write", "no-unbounded-load"],
+    },
+    "personalization/documents.json": {
+        "schema": "floe.personalization-document.fixture/1",
+        "domain": "floe.personalization-cursor.v1",
+        "vectorIds": ["active-and-drafts", "revision-metadata", "content-24000-cjk",
+                      "inline-versus-handle", "cursor-absent-and-present"],
+        "caseIds": ["save-stale", "draft-no-contention", "oversize-save",
+                    "generate-active", "generate-draft-active-slot",
+                    "generate-draft-source-race", "generate-cursor-preserved"],
+    },
+    "usage/aggregates.json": {
+        "schema": "floe.usage-aggregate.fixture/1",
+        "domain": "floe.run-usage.aggregate",
+        "vectorIds": ["null-metrics", "legacy-fallbacks", "thirty-day-window",
+                      "paged-5000-conversations"],
+        "caseIds": ["null-not-zero", "empty-db-totals", "bounded-paging",
+                    "equivalence-golden"],
+    },
+    "privacy/identity-streams.json": {
+        "schema": "floe.privacy-identity.fixture/1",
+        "domain": "floe.privacy-history.v3",
+        "vectorIds": ["conversation-run-grant-streams",
+                      "model-config-secret-references",
+                      "archived-exclusion", "in-memory-bracket"],
+        "caseIds": ["equal-size-replacement", "run-state-change",
+                    "new-during-await", "archived-excluded",
+                    "unstable-grant-snapshot", "gateway-unregistered",
+                    "partial-failure"],
+    },
+    "memory/organizer-model-output.json": {
+        "schema": "floe.organizer-output.fixture/1",
+        "domain": "floe.memory-entry.v3",
+        "vectorIds": ["valid-suggestions", "invented-ids", "exact-duplicate-from-model",
+                      "single-id-possible-duplicate", "oversize-stream"],
+        "caseIds": ["changed-but-existing", "reowned-preferred", "cloud-await-change",
+                    "batch-replay", "review-first-gating"],
+    },
+}
+
+
+def _settings_fixture(document):
+    """Deterministic JSON bytes for one declarative settings fixture."""
+    return (json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n").encode("utf-8")
+
+
+def build_settings_fixtures():
+    """Returns dict path -> (bytes, format, expect) for the seven P0 groups.
+
+    These are declarative contract vectors, not execution evidence. They carry
+    no credentials, real URIs, user paths or claim that a case ran.
+    """
+    fx = {}
+
+    fx["settings/defaults-cas.json"] = _settings_fixture({
+        "schema": "floe.settings-defaults.fixture/1",
+        "declarativeOnly": True,
+        "domain": "floe.settings-defaults.v2",
+        "keys": ["agent.defaultMode", "agent.runningInputMode",
+                 "agent.verifyFinalAnswer"],
+        "vectors": [
+            {"id": "absent-set",
+             "records": [["agent.defaultMode", 0, None, None],
+                         ["agent.runningInputMode", 0, None, None],
+                         ["agent.verifyFinalAnswer", 0, None, None]],
+             "expect": "present=0 and typed NULLs; stable absent digest"},
+            {"id": "null-vs-literal",
+             "values": [None, "NULL", "<null>", ""],
+             "expect": "four distinct digests"},
+            {"id": "delimiter-and-unicode",
+             "values": ["a\u001fb", "a|b", "a:b", "记忆 🧪"],
+             "expect": "length-prefixed fields; byte-exact UTF-8"},
+            {"id": "numeric-types",
+             "values": [1, 1.0, "1", -0.0, 0.0],
+             "expect": "INTEGER/REAL/TEXT are distinct; -0.0 and +0.0 differ"},
+        ],
+        "cases": [
+            {"id": "stale-cas",
+             "given": {"storedRevision": "absent-set",
+                       "envelopeRevision": "different-digest"},
+             "expect": {"error": "staleRevision", "writes": 0}},
+            {"id": "atomic-multi-key",
+             "given": {"changedKeys": 2, "injectedFailure": True},
+             "expect": {"error": "persistenceUnavailable", "writes": 0}},
+            {"id": "unknown-field",
+             "given": {"values": {"defaultAgentMode": "human", "extra": 1}},
+             "expect": {"error": "invalidEnvelope",
+                        "reason": "unknownDefaultsField"}},
+            {"id": "invalid-enum",
+             "given": {"values": {"defaultAgentMode": "god"}},
+             "expect": {"error": "invalidEnvelope",
+                        "reason": "invalidDefaultsValue:defaultAgentMode"}},
+            {"id": "corrupt-row",
+             "given": {"valueJson": "not-json"},
+             "expect": {"error": "persistenceUnavailable",
+                        "reason": "corruptSettingsKey"}},
+        ],
+    })
+
+    fx["memory/inventory.json"] = _settings_fixture({
+        "schema": "floe.memory-entry.fixture/1",
+        "declarativeOnly": True,
+        "domain": "floe.memory-entry.v3",
+        "columnCount": 23,
+        "columns": [
+            "scope", "workspace_id", "status", "content", "normalized_content",
+            "confidence", "importance", "is_pinned", "source_kind", "expires_at",
+            "sync_revision", "created_at", "updated_at", "conversation_id",
+            "origin_workspace_id", "origin_conversation_id",
+            "origin_owner_label", "owner_deleted_at", "last_recalled_at",
+            "retained_until", "recall_count", "subject_key", "attribute_key",
+        ],
+        "vectors": [
+            {"id": "column-order", "expect": "fixed declared order; a permutation changes the row digest"},
+            {"id": "content-boundaries", "lengths": [4095, 4096, 4097],
+             "expect": {"4096": "accepted", "4097": "payloadTooLarge"}},
+            {"id": "unicode-cjk-emoji", "content": "记忆 🧪 中文",
+             "expect": "byte-exact; no normalization"},
+            {"id": "paging-120", "entryCount": 120, "limit": 50,
+             "wireDefaultLimit": 50, "nativeDefaultLimit": 100, "pages": 3,
+             "expect": "stable ordering; nextCursor exhausts exactly once"},
+            {"id": "ownership-detach",
+             "ownership": {"owner_deleted_at": "2026-10-19T00:00:00Z",
+                           "retained_until": "2026-11-01T00:00:00Z",
+                           "recall_count": 2},
+             "expect": "detached ownership is part of the full-row digest"},
+            {"id": "same-second-change",
+             "updatedAt": "2026-10-19T00:00:00Z", "changedField": "content",
+             "expect": "digest differs even when the stored second is unchanged"},
+        ],
+        "cases": [
+            {"id": "stale-update", "expect": {"error": "staleRevision", "writes": 0}},
+            {"id": "duplicate-add",
+             "expect": {"status": "duplicate", "existingID": "real-row"}},
+            {"id": "oversize-add",
+             "expect": {"error": "payloadTooLarge", "reason": "maxChars:4096",
+                        "writes": 0}},
+            {"id": "secret-like",
+             "expect": {"error": "invalidEnvelope",
+                        "reason": "memoryRejected:secretLike", "writes": 0}},
+            {"id": "bulk-stale",
+             "expect": {"error": "staleRevision", "staleIDs": 1, "deletions": 0}},
+            {"id": "bulk-replay",
+             "expect": {"result": "alreadyApplied", "reapplied": 0}},
+            {"id": "search-fresh-diff",
+             "handleStores": "ranking only", "freshPageRead": True,
+             "recallReplay": False,
+             "expect": {"currentDiffers": True, "requiresConfirmation": True,
+                        "reinforcedCount": None}},
+            {"id": "search-deleted-between",
+             "expect": {"current": None, "deleted": True}},
+        ],
+    })
+
+    fx["memory/candidates.json"] = _settings_fixture({
+        "schema": "floe.memory-candidate.fixture/1",
+        "declarativeOnly": True,
+        "domain": "floe.memory-candidate.v1",
+        "columnCount": 18,
+        "columns": [
+            "scope", "workspace_id", "conversation_id", "content", "confidence",
+            "stability", "importance", "sensitivity", "origin", "evidence_json",
+            "conflicts_json", "source_attachment_id", "source_mime_type",
+            "status", "review_reason", "expires_at", "created_at", "updated_at",
+        ],
+        "vectors": [
+            {"id": "pending-row", "status": "pending", "importance": 0.8},
+            {"id": "expired-row", "status": "pending",
+             "expiresAt": "2026-10-18T00:00:00Z",
+             "expect": "in-transaction sweep rejects as review window expired"},
+            {"id": "redacted-evidence",
+             "evidence": [{"messageID": "synthetic-message-1",
+                            "excerpt": "sha256:redacted"}]},
+            {"id": "same-second-change",
+             "updatedAt": "2026-10-19T00:00:00Z", "changedField": "importance",
+             "expect": "full-row digest differs; timestamp CAS would pass"},
+        ],
+        "cases": [
+            {"id": "duplicate-accept",
+             "expect": {"error": "notFound",
+                        "reason": "candidateNotPending:activated"}},
+            {"id": "expiry-during-await",
+             "expect": {"error": "notFound",
+                        "reason": "candidateNotPending:rejected"}},
+            {"id": "fail-after-memory-write",
+             "expect": {"rolledBack": True, "candidateStatus": "pending"}},
+            {"id": "no-unbounded-load",
+             "given": {"candidateCount": 10000},
+             "expect": {"materializedAll": False}},
+        ],
+    })
+
+    fx["personalization/documents.json"] = _settings_fixture({
+        "schema": "floe.personalization-document.fixture/1",
+        "declarativeOnly": True,
+        "domains": {
+            "document": "floe.personalization-document.v13",
+            "cursor": "floe.personalization-cursor.v1",
+            "source": "floe.personalization-source.v1",
+        },
+        "vectors": [
+            {"id": "active-and-drafts",
+             "activeRevision": 3, "draftRevisions": [4, 5],
+             "expect": {"revisionToken": "active-id.3", "latestRevision": 5,
+                        "draftsActive": False}},
+            {"id": "revision-metadata",
+             "revisionCount": 8, "defaultPage": 50,
+             "expect": "metadata without content; revision DESC"},
+            {"id": "content-24000-cjk",
+             "characters": 24000, "script": "CJK",
+             "frameBound": 65536, "inlineRule": "complete encoded response",
+             "extraInlineCap": None,
+             "expect": "48KiB actual encoded budget; inline or handle, never truncated"},
+            {"id": "inline-versus-handle",
+             "expect": "content is inline XOR a contentHandle with exact bytes"},
+            {"id": "cursor-absent-and-present",
+             "expect": "absent is a real state; present token covers all 8 columns"},
+        ],
+        "cases": [
+            {"id": "save-stale",
+             "expect": {"error": "staleRevision", "writes": 0}},
+            {"id": "draft-no-contention",
+             "expect": {"saveProceeds": True, "draftActivated": False}},
+            {"id": "oversize-save",
+             "expect": {"error": "payloadTooLarge", "reason": "maxChars:24000",
+                        "writes": 0}},
+            {"id": "generate-active",
+             "expect": {"outcome": "active", "documentRows": 1,
+                        "modelRequests": 1}},
+            {"id": "generate-draft-active-slot",
+             "expect": {"outcome": "storedAsDraft",
+                        "reason": "activeSlotChanged", "isActive": False}},
+            {"id": "generate-draft-source-race",
+             "expect": {"outcome": "storedAsDraft",
+                        "reason": "sourceChanged", "isActive": False}},
+            {"id": "generate-cursor-preserved",
+             "expect": {"countersPreserved": True, "eraseCounters": False}},
+        ],
+    })
+
+    fx["usage/aggregates.json"] = _settings_fixture({
+        "schema": "floe.usage-aggregate.fixture/1",
+        "declarativeOnly": True,
+        "domain": "floe.run-usage.aggregate",
+        "vectors": [
+            {"id": "null-metrics",
+             "fields": ["cacheReadTokens", "cacheWriteTokens", "reasoningTokens",
+                        "averageTokensPerSecond", "averageTimeToFirstTokenMs",
+                        "averageDurationMs"],
+             "expect": "JSON null means not reported, never 0"},
+            {"id": "legacy-fallbacks",
+             "groupIds": ["legacy-model", "legacy-provider"]},
+            {"id": "thirty-day-window", "days": 31, "byDayLimit": 30},
+            {"id": "paged-5000-conversations", "conversationCount": 5000,
+             "pageLimit": 50},
+        ],
+        "cases": [
+            {"id": "null-not-zero", "expect": {"renderedAs": "not-reported"}},
+            {"id": "empty-db-totals",
+             "expect": {"inputTokens": 0, "outputTokens": 0, "runs": 0,
+                        "byDay": []}},
+            {"id": "bounded-paging",
+             "expect": {"materializedAll": False, "nextCursor": True}},
+            {"id": "equivalence-golden",
+             "expect": {"adapterPagesEqualOriginal": True}},
+        ],
+    })
+
+    fx["privacy/identity-streams.json"] = _settings_fixture({
+        "schema": "floe.privacy-identity.fixture/1",
+        "declarativeOnly": True,
+        "domains": {
+            "history": "floe.privacy-history.v3",
+            "modelConfiguration": "floe.privacy-modelconfig.v3",
+        },
+        "vectors": [
+            {"id": "conversation-run-grant-streams",
+             "sets": ["conversations", "runs", "persistedGrants",
+                      "inMemoryGrants"],
+             "expect": "sorted by set tag then raw id; exact state fields"},
+            {"id": "model-config-secret-references",
+             "secretReference": {
+                 "account": "opaque text|null",
+                 "synchronizable": "Bool|null",
+                 "credentialRecords": "excluded",
+                 "secretBytes": "never",
+             },
+             "sets": ["providers", "models", "preferences"],
+             "expect": "opaque secret reference/flag only; credential_records excluded"},
+            {"id": "archived-exclusion",
+             "predicate": "purpose=ordinary AND archived_at IS NULL"},
+            {"id": "in-memory-bracket",
+             "expect": "g1 and g2 canonical equality; bounded retries"},
+        ],
+        "cases": [
+            {"id": "equal-size-replacement",
+             "expect": {"error": "staleRevision", "deletions": 0}},
+            {"id": "run-state-change",
+             "expect": {"error": "staleRevision", "deletions": 0}},
+            {"id": "new-during-await",
+             "expect": {"deletedAfterSnapshot": False,
+                        "surfacedInRemaining": True}},
+            {"id": "archived-excluded",
+             "expect": {"deleted": False, "countedAsCleared": False}},
+            {"id": "unstable-grant-snapshot",
+             "expect": {"error": "persistenceUnavailable",
+                        "reason": "unstableGrantSnapshot", "deletions": 0}},
+            {"id": "gateway-unregistered",
+             "expect": {"error": "needsConfiguration",
+                        "reason": "gatewayUnregistered", "mutations": 0}},
+            {"id": "partial-failure",
+             "expect": {"partial": True, "remainingRecounted": True}},
+        ],
+    })
+
+    fx["memory/organizer-model-output.json"] = _settings_fixture({
+        "schema": "floe.organizer-output.fixture/1",
+        "declarativeOnly": True,
+        "domain": "floe.memory-entry.v3",
+        "closedSuggestionKinds": ["exactDuplicate", "sameFactReplacement",
+                                  "possibleDuplicate", "expired",
+                                  "missingOwnership"],
+        "vectors": [
+            {"id": "valid-suggestions",
+             "suggestions": [{"kind": "possibleDuplicate",
+                               "memoryIDs": ["synthetic-a", "synthetic-b"]}]},
+            {"id": "invented-ids",
+             "suggestions": [{"kind": "possibleDuplicate",
+                               "memoryIDs": ["invented-1", "invented-2"]}],
+             "expect": "filtered by knownIDs"},
+            {"id": "exact-duplicate-from-model",
+             "expect": "exactDuplicate is never accepted from the model"},
+            {"id": "single-id-possible-duplicate",
+             "expect": "possibleDuplicate requires at least two ids"},
+            {"id": "oversize-stream",
+             "bytes": 65537, "expect": "payloadTooLarge; no proposal mutation"},
+        ],
+        "cases": [
+            {"id": "changed-but-existing",
+             "expect": {"error": "staleRevision", "deletions": 0,
+                        "ledgerRows": 0}},
+            {"id": "reowned-preferred",
+             "expect": {"error": "staleRevision", "deletions": 0}},
+            {"id": "cloud-await-change",
+             "expect": {"autoDelete": "staleRejected", "deletions": 0}},
+            {"id": "batch-replay",
+             "expect": {"result": "alreadyApplied", "reapplied": 0}},
+            {"id": "review-first-gating",
+             "expect": {"automaticDeletes": 0, "reviewSuggestions": True}},
+        ],
+    })
+
+    for path, fmt in SETTINGS_FIXTURE_FORMATS.items():
+        assert path in fx, path
+        data = fx[path]
+        assert isinstance(data, bytes), path
+        fx[path] = (data, fmt, SETTINGS_FIXTURE_EXPECT[path])
+    return fx
+
 
 def build_stdlib_fixtures():
     """Returns dict path -> (bytes, format, expect)."""
@@ -739,6 +1347,28 @@ def build_stdlib_fixtures():
     fx["assets/svg/marker.svg"] = (SVG_BODY.encode("utf-8"), "svg",
                                    {"root": "svg", "pathCount": 1,
                                     "circleCount": 1})
+    fx["attachments/ingest-scenarios.json"] = (
+        build_attachment_ingest_json(fx).encode("utf-8"),
+        "attachment-ingest-scenarios",
+        {"schema": INGEST_SCHEMA,
+         "scenarioIds": ["positive-bounded-commit", "reject-oversized",
+                         "reject-mime-spoof", "reject-revoked-uri"],
+         "committedScenario": "positive-bounded-commit",
+         "maxBytes": INGEST_LIMITS["maxBytes"]})
+    fx["attachments/lifecycle-scenarios.json"] = (
+        build_attachment_lifecycle_json(fx).encode("utf-8"),
+        "attachment-lifecycle-scenarios",
+        {"schema": LIFECYCLE_SCHEMA,
+         "scenarioIds": ["cancel-mid-transfer-no-orphan",
+                         "cancel-preserves-prior-commit",
+                         "retry-idempotent-same-digest",
+                         "stale-callback-other-task-dropped",
+                         "read-only-stream-progress-monotonic"],
+         "requiredScenarios": ["cancel-mid-transfer-no-orphan",
+                               "cancel-preserves-prior-commit",
+                               "retry-idempotent-same-digest",
+                               "stale-callback-other-task-dropped"]})
+    fx.update(build_settings_fixtures())
     return fx
 
 
@@ -793,6 +1423,16 @@ FIXTURE_OPERATIONS = {
         "CNV-ASSET-OWNERSHIP", "GEN-DOWNLOAD-ARCHIVE", "WSF-EXPORT",
         "BRW-LOCAL-PREVIEW"],
     "assets/svg/marker.svg": ["CNV-ASSET-OWNERSHIP", "BRW-LOCAL-PREVIEW"],
+    "attachments/ingest-scenarios.json": ["CHA-ATTACH-INGEST-AND"],
+    "attachments/lifecycle-scenarios.json": ["CHA-ATTACH-LIFECYCLE-AND"],
+    "settings/defaults-cas.json": ["SET-DEFAULTS-TYPED"],
+    "memory/inventory.json": ["SET-MEMORY-INVENTORY", "SET-MEMORY-SEARCH"],
+    "memory/candidates.json": ["SET-MEMORY-CANDIDATE-REVIEW"],
+    "personalization/documents.json": ["SET-PERSONALIZATION-DOCUMENTS",
+                                       "SET-PERSONALIZATION-GENERATE"],
+    "usage/aggregates.json": ["SET-USAGE-AGGREGATE"],
+    "privacy/identity-streams.json": ["SET-HISTORY-CLEAR", "SET-MODELCFG-CLEAR"],
+    "memory/organizer-model-output.json": ["SET-MEMORY-ORGANIZE"],
 }
 
 
@@ -822,9 +1462,7 @@ def write_mode(verify_ffmpeg=False):
             if data is None:
                 problems.append("%s: ffmpeg failed: %s" % (path, err))
                 continue
-            fmt, expect = "mp4", {
-                "boxes": ["ftyp", "moov", "mdat"],
-                "width": 320, "height": 240, "secondsApprox": 1.0}
+            fmt, expect = "mp4", dict(MP4_EXPECT)
             determinism = "ffmpeg-version-pinned"
             recipe = {"argv": [binary] + FFMPEG_RECIPES[path] + ["<output>"],
                       "version": ffmpeg_version(binary)}
@@ -846,8 +1484,12 @@ def write_mode(verify_ffmpeg=False):
 
     inventory = {
         "schemaVersion": 1,
-        "artifact": "floe-android-g01-synthetic-fixtures",
+        "artifact": ARTIFACT,
         "baselineRef": "FloeAndroid/planning/feature-baseline.json",
+        "baselineVersion": BASELINE_VERSION,
+        "fixtureVersion": FIXTURE_VERSION,
+        "previousArtifact": PREVIOUS_ARTIFACT,
+        "previousFixtureCount": PREVIOUS_FIXTURE_COUNT,
         "determinismNote": ("stdlib entries are byte-reproducible; mp4 entries "
                             "require the pinned ffmpeg version — see README.md"),
         "entries": entries,
@@ -864,11 +1506,31 @@ def check_mode(verify_ffmpeg=False):
     if not HERE.joinpath(INVENTORY_NAME).exists():
         return -1, ["inventory.json missing"]
     current = json.loads((HERE / INVENTORY_NAME).read_text(encoding="utf-8"))
+
+    expected_meta = {
+        "artifact": ARTIFACT,
+        "baselineVersion": BASELINE_VERSION,
+        "fixtureVersion": FIXTURE_VERSION,
+        "previousArtifact": PREVIOUS_ARTIFACT,
+        "previousFixtureCount": PREVIOUS_FIXTURE_COUNT,
+    }
+    for key, value in expected_meta.items():
+        if current.get(key) != value:
+            problems.append("inventory metadata %s is %r, expected %r"
+                            % (key, current.get(key), value))
+    if len(current.get("entries", [])) != EXPECTED_FIXTURE_COUNT:
+        problems.append("inventory has %d entries, expected %d"
+                        % (len(current.get("entries", [])),
+                           EXPECTED_FIXTURE_COUNT))
+
     fx = build_stdlib_fixtures()
     checked = 0
     seen = set()
     for entry in current["entries"]:
         path = entry["path"]
+        if path in seen:
+            problems.append("duplicate inventory path: %s" % path)
+            continue
         seen.add(path)
         on_disk = HERE / path
         if not on_disk.exists():
@@ -882,10 +1544,32 @@ def check_mode(verify_ffmpeg=False):
             problems.append("byte count mismatch vs inventory: %s" % path)
             continue
         if path in fx:
-            if sha256(fx[path][0]) != entry["sha256"]:
+            expected_bytes, expected_format, expected_expect = fx[path]
+            if sha256(expected_bytes) != entry["sha256"]:
                 problems.append("regenerated stdlib bytes differ: %s" % path)
                 continue
+            if entry["format"] != expected_format:
+                problems.append("inventory format %r != %r: %s"
+                                % (entry["format"], expected_format, path))
+            if entry["expect"] != expected_expect:
+                problems.append("inventory expect metadata differs: %s" % path)
+            if entry["operations"] != FIXTURE_OPERATIONS.get(path, []):
+                problems.append("inventory operations mapping differs: %s"
+                                % path)
+            if entry.get("determinism") != "stdlib":
+                problems.append("inventory determinism is not stdlib: %s" % path)
         elif path in FFMPEG_RECIPES:
+            if entry["format"] != "mp4":
+                problems.append("inventory format for ffmpeg fixture is not mp4: %s"
+                                % path)
+            if entry["expect"] != MP4_EXPECT:
+                problems.append("inventory expect metadata differs: %s" % path)
+            if entry["operations"] != FIXTURE_OPERATIONS.get(path, []):
+                problems.append("inventory operations mapping differs: %s"
+                                % path)
+            if entry.get("determinism") != "ffmpeg-version-pinned":
+                problems.append("inventory determinism is not ffmpeg-pinned: %s"
+                                % path)
             if verify_ffmpeg:
                 data, err = run_ffmpeg(FFMPEG_RECIPES[path], Path(path))
                 if data is None:

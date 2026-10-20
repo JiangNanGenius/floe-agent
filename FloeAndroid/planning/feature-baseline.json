@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "artifact": "floe-android-feature-baseline",
-  "version": "g01.2026-10-18.2",
+  "version": "g02.2026-10-19.1",
   "kind": "operation-level-planning-baseline",
-  "status": "Operation planning baseline; 3 FND foundation operations component-verified for G01; 167 operations remain planned; G01 final handoff pending",
+  "status": "Operation planning baseline; 3 FND foundation operations component-verified for G01; 179 operations remain planned (including 10 additive Settings-domain G02 operations); G02 operation and fixture coverage reconciled; no G02 feature implemented or device-qualified.",
   "createdAt": "2026-10-18",
   "sourcePlan": "docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md",
   "planSectionsCovered": [
@@ -37,11 +37,13 @@
     "pending-gap": "No verifiable implementation path yet; does not satisfy alignment"
   },
   "globalLimitations": [
-    "Only FND-SHARED-CORE, FND-FLAVOR-EXCLUDE and FND-VISUAL-TOKENS are component-verified for the G01 foundation scope; the other 167 operations remain 'planned' and no future-goal domain feature is implemented or qualified.",
+    "Only FND-SHARED-CORE, FND-FLAVOR-EXCLUDE and FND-VISUAL-TOKENS are component-verified for the G01 foundation scope; the other 169 operations remain 'planned' and no future-goal domain feature is implemented or qualified.",
+    "The two CHA-ATTACH-* operations are planned contract assets reconciled from plan P2.2/17.5; they do not claim an Android SAF/content-URI ingest, lifecycle adapter, device run or G02 completion.",
     "Cross-device real-time sync (SYNC family) is a separate user decision gate and is not silently promised.",
     "No local LLM on Android: FloeLocalModels/FloeLocalModelCatalog paths are deliberately excluded from this baseline's evidence set.",
-    "Fixtures are synthetic and cover coherent operations, not every combination; see FloeAndroid/fixtures/README.md for the explicit gap list (encrypted PDF, DWG, speech audio).",
-    "iOS evidence was re-read from current source on 2026-10-18; historical doc results are dated records, not proof."
+    "Fixtures are synthetic and cover coherent operations, not every combination; see FloeAndroid/fixtures/README.md for the explicit gap list (encrypted PDF, DWG, speech audio, declarative attachment scenario contracts).",
+    "iOS evidence was re-read from current source on 2026-10-18; historical doc results are dated records, not proof.",
+    "The 2026-10-19 native Settings audit identified memory/personalization, global usage, typed global defaults and privacy operations not explicitly represented by the initial 30 G02 operation IDs. The Main-accepted rev3 additive mapping now records 10 SET-family operations and 7 declarative fixture groups at status planned. Candidate counts are 182 operations/40 G02/33 fixtures/36 families/85 packages; the live tree remains 172/30/26/36/85 until Main publishes the candidate. The frozen G01 170-operation/24-fixture receipt and the prior 172-operation attachment reconciliation remain historical records and are not rewritten. No G02 implementation, test pass or device qualification is claimed by this baseline."
   ],
   "families": [
     {
@@ -216,7 +218,9 @@
           "output": "saved, verified model entry",
           "assertions": [
             "validation reflects a real request",
-            "secrets only in Keystore-class storage, never logs"
+            "secrets only in Keystore-class storage, never logs",
+            "display rename never changes the durable wire model id",
+            "request builder emits ModelProfile.remoteModelID, never displayName or a preset alias"
           ],
           "status": "planned",
           "alignment": "built-in-equivalent"
@@ -589,6 +593,100 @@
           ],
           "status": "planned",
           "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "CHA-ATTACH-INGEST-AND",
+          "op": "Import a user-selected attachment from a SAF/content URI with bounded MIME/size/path validation, app-private staging, digest and retry-safe commit; arrival never auto-sends or executes",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeModels/AgentThread.swift",
+              "symbol": "AttachmentRef"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/ConversationStore.swift",
+              "symbol": "saveAttachment"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Remote/ConversationCenter.swift",
+              "symbol": "importRunAttachments"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "user-selected file/stream + owning task/run/launch epoch",
+          "output": "committed AttachmentRef with digest or bounded failure with cleanup",
+          "assertions": [
+            "size, MIME sniff and content-URI/path authorization are validated before any durable commit",
+            "app-private staging computes a content digest; commit is retry-safe and idempotent for the same digest",
+            "task, run and launch epoch ownership are explicit on every ingest record",
+            "failed or cancelled ingest leaves no orphan or partial durable record; previously committed data survives",
+            "arrival never auto-sends to a model or executes; temporary mode keeps its RAM-only text/public-web ceiling and never enables an FS tool or plaintext temp disk"
+          ],
+          "fixtures": [
+            "attachments/ingest-scenarios.json"
+          ],
+          "workPackages": [
+            "P2.2",
+            "P2.7"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "notes": "Explicit G02 attachment operation from plan P2.2 and section 17.5; planning contract only, no Android implementation is claimed."
+        },
+        {
+          "id": "CHA-ATTACH-LIFECYCLE-AND",
+          "op": "Progress, cancel, retry and failure lifecycle for attachment ingest; late callbacks cannot commit into another task",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Remote/ConversationCenter.swift",
+              "symbol": "importRunAttachments"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeCore/LaunchEpochFence.swift",
+              "symbol": "LaunchEpochFence"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Chat/ComposerDraftStore.swift",
+              "symbol": "ComposerDraftStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "in-flight attachment ingest with owning task/run/launch epoch",
+          "output": "stopped state, committed AttachmentRef, or recoverable failure",
+          "assertions": [
+            "cancel stops consumption and preserves previously committed attachments",
+            "late callbacks with a mismatched task, run or launch epoch are dropped and cannot land another task",
+            "failed or retried ingest never leaves a partial durable record; committed data survive cancelled retries",
+            "progress is monotonic and a retry with the same digest does not duplicate the attachment"
+          ],
+          "fixtures": [
+            "attachments/lifecycle-scenarios.json"
+          ],
+          "workPackages": [
+            "P2.2",
+            "P2.3",
+            "P2.7"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "notes": "Explicit G02 attachment lifecycle operation from plan P2.2/P2.3/P2.7; planning contract only, no Android implementation is claimed."
         }
       ]
     },
@@ -4159,7 +4257,12 @@
           "input": "schedule definition",
           "output": "persisted snapshot",
           "assertions": [
-            "WorkManager scheduling keeps snapshot semantics"
+            "WorkManager scheduling keeps snapshot semantics",
+            "Android adapters map the shared schedule record to AlarmManager/WorkManager/boot receivers; no second Kotlin schedule store or parallel runtime",
+            "wall-clock daily/weekly recompute with anchorTimezone/DST at fire time; interval keeps absolute elapsed semantics",
+            "execution revalidates model, workspace, environment, grant and budget snapshots; a schedule grants no future permissions",
+            "exact alarms only while the user-granted exact-alarm access is actually verified; otherwise a flexible window with an honest delayed/waiting state",
+            "credential storage before first unlock and inactive optional ADB/Root backends yield actionable waiting, never fabricated completion"
           ],
           "status": "planned",
           "alignment": "system-equivalent"
@@ -4185,7 +4288,13 @@
           ],
           "input": "overlapping triggers",
           "output": "single coherent firing",
-          "assertions": [],
+          "assertions": [
+            "duplicate triggers are suppressed by persistent occurrence identity and atomic claim; one active logical owner, not a global exactly-once real execution",
+            "execution attempts are recorded separately and remote idempotency keys are reused where the remote supports them",
+            "unknown external outcomes are reconciled before any retry; no blind resend after process death or dispatcher restart",
+            "afterSuccess fires only for the bound upstream run's successful completion; replayed completion callbacks cannot duplicate the occurrence",
+            "calendar cadence is one-shot rescheduled, never a repeating alarm claiming exact timing"
+          ],
           "status": "planned",
           "alignment": "built-in-equivalent"
         },
@@ -4211,7 +4320,11 @@
           "input": "device-off period",
           "output": "missed-cycle state",
           "assertions": [
-            "no fabricated on-time status"
+            "no fabricated on-time status",
+            "missed/merged/skipped/catch-up policy is explicit per user setting and reflected in history",
+            "reboot, app update, timezone change and backup restore reconcile pending work without duplicating past occurrences",
+            "force-stop and FGS Task Manager stop stay distinct: the former cancels pending intents and needs user action; the latter leaves already scheduled jobs/alarms firing",
+            "optional ADB/Root backends are rechecked per capability at each trigger; only a truly missing required backend waits for re-activation"
           ],
           "status": "planned",
           "alignment": "system-equivalent"
@@ -4238,7 +4351,11 @@
           "input": "schedule list",
           "output": "true next/last states",
           "assertions": [
-            "shared-core policy reused for consistency"
+            "shared-core policy reused for consistency",
+            "next run, last run, history, stop/resume and results come from the shared store, with no notification-side second truth",
+            "denied notification permission degrades reminders but neither fabricates nor blocks execution",
+            "real execution occurs with the UI closed and after process death under platform conditions; notifications alone are not completion",
+            "user-visible state distinguishes delayed, waiting for unlock, waiting for permission/backends and genuinely failed"
           ],
           "status": "planned",
           "alignment": "built-in-equivalent"
@@ -5500,7 +5617,10 @@
           "input": "old-version data",
           "output": "migrated data",
           "assertions": [
-            "process death during migration is recoverable"
+            "process death during migration is recoverable",
+            "self-update install sessions and app upgrades preserve tasks, projects, notes, environments and schedules",
+            "unsaved documents are never silently discarded by an update; install defers until owned jobs are checkpoint-safe or the user explicitly chooses now with graceful convergence",
+            "a process kill during install is reconciled before any retry, never duplicated"
           ],
           "status": "planned",
           "alignment": "built-in-equivalent"
@@ -5615,7 +5735,12 @@
       "androidOwnerGoal": "G11",
       "workPackages": [
         "P5.5",
-        "P6.4"
+        "P6.4",
+        "P1.2",
+        "P2.2",
+        "P2.3",
+        "P2.7",
+        "P2.13"
       ],
       "operations": [
         {
@@ -5742,8 +5867,755 @@
           ],
           "status": "planned",
           "alignment": "built-in-equivalent"
+        },
+        {
+          "id": "SET-DEFAULTS-TYPED",
+          "op": "Typed global agent defaults: read and atomically save the three whitelisted app settings with canonical revision CAS; absent keys return typed defaults and corrupt rows fail closed",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Settings/SettingsCenter.swift",
+              "symbol": "SettingsCenter"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeCore/AppSettings.swift",
+              "symbol": "AppSettings"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/SettingsStore.swift",
+              "symbol": "SQLiteSettingsStore"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Settings/GeneralSettingsView.swift",
+              "symbol": "GeneralSettingsView"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Settings/AgentPermissionsView.swift",
+              "symbol": "AgentPermissionsView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "config.defaults.get/save with closed AgentDefaultsDTO and canonical floe.settings-defaults.v2 revision",
+          "commands": [
+            "config.defaults.get",
+            "config.defaults.save"
+          ],
+          "output": "effective values, per-key explicitness and a new canonical revision",
+          "assertions": [
+            "config.defaults.get returns typed .human/.queue/false defaults with explicit=false for absent keys and never substitutes a corrupt row",
+            "config.defaults.save writes all changed whitelist keys in ONE transaction after digest CAS; retry with the same old digest is staleRevision",
+            "unknown fields and invalid enum/bool/null values are rejected before any effect; fullControl remains host/G11-gated in UI",
+            "global defaults never mutate the active run policy or config.preferences approvalModelID"
+          ],
+          "fixtures": [
+            "settings/defaults-cas.json"
+          ],
+          "workPackages": [
+            "P2.2",
+            "P2.13"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "notes": "Additive Settings-domain P0 planning operation from the Main-accepted rev3 contract (2026-10-19). Source vocabulary only; no Android handler, runtime behavior, test pass or G02 completion is claimed."
+        },
+        {
+          "id": "SET-MEMORY-INVENTORY",
+          "op": "Memory inventory over the original store: bounded list/get and revision-CAS add/update/delete plus an atomic bulk-delete ledger",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/IntelligenceStore.swift",
+              "symbol": "SQLiteIntelligenceStore"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Memory/MemoryView.swift",
+              "symbol": "MemoryView"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/MemoryMaintenance.swift",
+              "symbol": "MemoryMaintenanceBatch"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "memory.list/get/add/update/delete/delete.bulk with closed scope/status/fact fields",
+          "commands": [
+            "memory.list",
+            "memory.get",
+            "memory.add",
+            "memory.update",
+            "memory.delete",
+            "memory.delete.bulk"
+          ],
+          "output": "MemoryEntryDTO with full-row floe.memory-entry.v3 digest, real minted ids and typed duplicate/notFound/stale outcomes",
+          "assertions": [
+            "memory.list pages the original listMemories SQL within 48KiB; each digest is computed in the same reader transaction over all 23 non-id columns",
+            "memory.add validates the real owner scope, rejects empty/secret-like/4097-char content and converges racing UNIQUE inserts to the real existing id",
+            "memory.update/delete compare the full-row digest in the same writer transaction; detach, reinforce and tool upserts cannot escape CAS",
+            "memory.delete.bulk is all-or-nothing and same-batchID replay returns alreadyApplied from the durable ledger",
+            "no handler, store or capability is registered by the vocabulary candidate"
+          ],
+          "fixtures": [
+            "memory/inventory.json"
+          ],
+          "workPackages": [
+            "P1.2",
+            "P2.13"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "notes": "Additive Settings-domain P0 planning operation from the Main-accepted rev3 contract (2026-10-19). Source vocabulary only; no Android handler, runtime behavior, test pass or G02 completion is claimed."
+        },
+        {
+          "id": "SET-MEMORY-SEARCH",
+          "op": "Bounded lexical memory search over the original hybridRecall path with fresh current-row projections and explicit mutating-read side effects",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/IntelligenceStore.swift",
+              "symbol": "SQLiteIntelligenceStore"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/MemoryEmbeddings.swift",
+              "symbol": "MemoryEmbedding"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Memory/MemoryView.swift",
+              "symbol": "MemoryView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "memory.search query/workspace/conversation/limit and a process-lifetime search handle",
+          "commands": [
+            "memory.search"
+          ],
+          "output": "ranked items with current MemoryEntryDTO|null and revision; semantic=false; reinforcedCount=null",
+          "assertions": [
+            "the original hybridRecall lifecycle/reinforcement path is delegated unmodified; semantic search is not fabricated on Android G02",
+            "one batched reader returns the current full row/digest for every recalled id without re-ranking the recall projection",
+            "handle+cursor pages never re-run recall or reinforce; handle expiry is a typed notFound",
+            "items are budget-stopped atomically at 48KiB and edit/delete always uses the current revision"
+          ],
+          "fixtures": [
+            "memory/inventory.json"
+          ],
+          "workPackages": [
+            "P1.2"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "notes": "Additive Settings-domain P0 planning operation from the Main-accepted rev3 contract (2026-10-19). Source vocabulary only; no Android handler, runtime behavior, test pass or G02 completion is claimed."
+        },
+        {
+          "id": "SET-MEMORY-CANDIDATE-REVIEW",
+          "op": "Pending memory-candidate review with bounded paging, disclosed expiry sweep and single-transaction accept/reject CAS",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/Personalization.swift",
+              "symbol": "SQLitePersonalizationStore"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Memory/MemoryView.swift",
+              "symbol": "MemoryView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "memory.candidates.list and memory.candidate.resolve with floe.memory-candidate.v1 revision",
+          "commands": [
+            "memory.candidates.list",
+            "memory.candidate.resolve"
+          ],
+          "output": "bounded candidate pages and activated-or-rejected outcome with truthful candidateNotPending status",
+          "assertions": [
+            "list runs the original expiry sweep and a bounded paged SELECT in one writer transaction; expiredSweepApplied is disclosed honestly",
+            "resolve checks status before the full-row digest and commits entry+status in exactly one transaction",
+            "duplicate accept and expiry-during-await report candidateNotPending{actualStatus}; no mixed state is observable",
+            "no automatic candidate producer is invented by this operation"
+          ],
+          "fixtures": [
+            "memory/candidates.json"
+          ],
+          "workPackages": [
+            "P2.3"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "notes": "Additive Settings-domain P0 planning operation from the Main-accepted rev3 contract (2026-10-19). Source vocabulary only; no Android handler, runtime behavior, test pass or G02 completion is claimed."
+        },
+        {
+          "id": "SET-MEMORY-ORGANIZE",
+          "op": "Memory organization proposal and apply over the original deterministic/organizer policy, with same-snapshot full-row digest freshness and batch idempotency",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/IntelligenceStore.swift",
+              "symbol": "SQLiteIntelligenceStore"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Memory/MemoryView.swift",
+              "symbol": "MemoryView"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/MemoryMaintenance.swift",
+              "symbol": "MemoryMaintenanceBatch"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "memory.organize.start/proposal.read/apply/cancel under the memory label",
+          "commands": [
+            "memory.organize.start",
+            "memory.organize.proposal.read",
+            "memory.organize.apply",
+            "memory.organize.cancel"
+          ],
+          "output": "bounded proposal handle, automatic-delete outcome, staleIDs and applied/alreadyApplied batch result",
+          "assertions": [
+            "expectedDigests for every deterministic-referenced and inventory row come from the same pre-await snapshot",
+            "apply/auto-delete compare delete targets AND preferred/retained rows in the same writer transaction; existence is never freshness",
+            "changed-but-existing, re-owned, reinforced or missing rows yield staleRevision zero deletions and no ledger row",
+            "reviewFirst versus modelManaged gating and the closed five-kind suggestion enum are preserved; model output is data only",
+            "proposal handles are process-lifetime and never durable"
+          ],
+          "fixtures": [
+            "memory/organizer-model-output.json"
+          ],
+          "workPackages": [
+            "P2.3",
+            "P2.13"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "notes": "Additive Settings-domain P0 planning operation from the Main-accepted rev3 contract (2026-10-19). Source vocabulary only; no Android handler, runtime behavior, test pass or G02 completion is claimed."
+        },
+        {
+          "id": "SET-PERSONALIZATION-DOCUMENTS",
+          "op": "Personalization document/profile/SOUL read, bounded revision history, active-slot save/rollback, automatic-update cursor CAS and owned content chunks",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/Personalization.swift",
+              "symbol": "PersonalizationDocument"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/Personalization.swift",
+              "symbol": "SQLitePersonalizationStore"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Memory/MemoryView.swift",
+              "symbol": "MemoryView"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/Migrations/V13PersonalizationMemory.swift",
+              "symbol": "V13PersonalizationMemory"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "personalization.get/revision.read/save/rollback/automatic.set and content.read chunk ranges",
+          "commands": [
+            "personalization.get",
+            "personalization.revision.read",
+            "personalization.save",
+            "personalization.rollback",
+            "personalization.automatic.set",
+            "content.read"
+          ],
+          "output": "active document or explicit contentHandle, revisionToken, bounded revisionsMeta and full-row cursor revision",
+          "assertions": [
+            "active-slot token is activeID.activeRevision or absent; MAX(revision) drafts are display-only and never the CAS token",
+            "save/rollback append above drafts with MAX+1; inactive automatic drafts never contend with or become the active document",
+            "user-edited content over 24000 chars is payloadTooLarge before mutation; whitespace-only is documentEmpty",
+            "content is inline only when the complete encoded response fits 48KiB; otherwise a process-lifetime handle chunks on scalar boundaries with byte-exact reassembly",
+            "automatic.set CAS uses all 8 cursor columns and preserves lastGeneratedAt/counters; runtime event cadence remains a later G02 package"
+          ],
+          "fixtures": [
+            "personalization/documents.json"
+          ],
+          "workPackages": [
+            "P1.2",
+            "P2.13"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "notes": "Additive Settings-domain P0 planning operation from the Main-accepted rev3 contract (2026-10-19). Source vocabulary only; no Android handler, runtime behavior, test pass or G02 completion is claimed."
+        },
+        {
+          "id": "SET-PERSONALIZATION-GENERATE",
+          "op": "Cloud personalization generation with pre-await snapshot, one CAS/draft commit, explicit active-versus-draft outcome and honest route/transport failures",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Memory/MemoryView.swift",
+              "symbol": "MemoryView"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Remote/ConversationCenter.swift",
+              "symbol": "ConversationCenter"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/Personalization.swift",
+              "symbol": "PersonalizationService"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "personalization.generate/generate.cancel and the per-kind single-flight latch",
+          "commands": [
+            "personalization.generate",
+            "personalization.generate.cancel"
+          ],
+          "output": "outcome active|storedAsDraft{reason}, real document identity, evidenceDigest, sourceSnapshot and cursor result",
+          "assertions": [
+            "the commit is one writer transaction, never generateNow/saveDocument; exactly one document row and one model request per operation",
+            "active slot and source digest unchanged -> active insert; any change -> exactly one inactive oneClick draft and storedAsDraft names the reason",
+            "concurrent recordActivity preserves both cursor counters with countersPreserved=true",
+            "missing route, credential, unqualified transport and oversize output are typed failures with nothing stored; local deterministic generation is not exposed as this command",
+            "cancel after commit reports completed and the latch releases only at the real terminal effect"
+          ],
+          "fixtures": [
+            "personalization/documents.json"
+          ],
+          "workPackages": [
+            "P2.2",
+            "P2.3"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "notes": "Additive Settings-domain P0 planning operation from the Main-accepted rev3 contract (2026-10-19). Source vocabulary only; no Android handler, runtime behavior, test pass or G02 completion is claimed."
+        },
+        {
+          "id": "SET-USAGE-AGGREGATE",
+          "op": "Bounded usage statistics over the original run store with totals, 30-day series and paged conversation/model/provider breakdowns",
+          "ios": [
+            {
+              "path": "FloeAgent/Sources/FloePersistence/RunStore.swift",
+              "symbol": "SQLiteRunStore"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/RunStore.swift",
+              "symbol": "UsageStatistics"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Settings/UsageStatisticsView.swift",
+              "symbol": "UsageStatisticsView"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "usage.statistics.get dimension/cursor/limit",
+          "commands": [
+            "usage.statistics.get"
+          ],
+          "output": "UsageMetrics totals, byDay<=30, paged rows and nextCursor; null means not reported",
+          "assertions": [
+            "totals and byDay mirror the original SQL; breakdown pages add only LIMIT/OFFSET plus the n+1 hasMore probe",
+            "the unbounded original usageStatistics struct is never materialized for a wire page",
+            "NULL metric fields stay null and are never rendered or inferred as zero",
+            "adapter page concatenation is equivalence-pinned to the original struct on bounded fixture DBs"
+          ],
+          "fixtures": [
+            "usage/aggregates.json"
+          ],
+          "workPackages": [
+            "P1.2",
+            "P2.2"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "notes": "Additive Settings-domain P0 planning operation from the Main-accepted rev3 contract (2026-10-19). Source vocabulary only; no Android handler, runtime behavior, test pass or G02 completion is claimed."
+        },
+        {
+          "id": "SET-HISTORY-CLEAR",
+          "op": "Privacy history summary and confirmed clear over exact identity/state streams with fence-before-snapshot, grant bracket and truthful remaining counts",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Settings/SettingsActions.swift",
+              "symbol": "SettingsActions"
+            },
+            {
+              "path": "FloeAgent/FloeApp/Remote/ConversationCenter.swift",
+              "symbol": "ConversationCenter"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeCore/AppSettings.swift",
+              "symbol": "AppSettings"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "privacy.summary.get and privacy.history.clear with floe.privacy-history.v3 revision and host confirm token",
+          "commands": [
+            "privacy.summary.get",
+            "privacy.history.clear"
+          ],
+          "output": "display counts plus exact digest, enumerated/deleted/failures/partial/remaining report",
+          "assertions": [
+            "the digest is an exact sorted conversation/run/persisted-grant/in-memory-grant identity+state stream, never COUNT/MAX",
+            "one reader transaction computes the digest, counts and enumeration; g1==g2 bracket retries are bounded then typed persistenceUnavailable",
+            "fence/quiesce happens before the snapshot, and any equal-size replacement or state change yields staleRevision with zero deletion",
+            "archived conversations, notes and workspaces are never collateral; new rows after the snapshot surface in remaining",
+            "credential availability stays NEEDS_CONFIGURATION until the product gateway is qualified"
+          ],
+          "fixtures": [
+            "privacy/identity-streams.json"
+          ],
+          "workPackages": [
+            "P2.7"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "notes": "Additive Settings-domain P0 planning operation from the Main-accepted rev3 contract (2026-10-19). Source vocabulary only; no Android handler, runtime behavior, test pass or G02 completion is claimed."
+        },
+        {
+          "id": "SET-MODELCFG-CLEAR",
+          "op": "Confirmed model-configuration clear with exact provider/model/secret-reference digest, gateway-ordered deletion and monotonic preferences reset",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Settings/SettingsActions.swift",
+              "symbol": "SettingsActions"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/ModelConfigurationStore.swift",
+              "symbol": "ModelConfigurationStore"
+            },
+            {
+              "path": "FloeAgent/Sources/FloePersistence/CredentialStore.swift",
+              "symbol": "CredentialStore"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "privacy.modelConfiguration.clear with floe.privacy-modelconfig.v3 revision and host confirm token",
+          "commands": [
+            "privacy.modelConfiguration.clear"
+          ],
+          "output": "deleted provider/model/secret counts, deletion failures, preferencesReset and real remaining state",
+          "assertions": [
+            "the digest stream includes provider/model rows and opaque secret references only; unrelated credential_records vault rows are excluded",
+            "a missing registered product gateway is needsConfiguration{gatewayUnregistered} before any mutation; no test-UID substitution",
+            "per-provider deletion re-reads the secret reference and skips a concurrently changed provider instead of orphaning the new secret",
+            "preferences syncRevision is previous+1, not a reset-to-zero masquerade; partial failures are reported and retryable"
+          ],
+          "fixtures": [
+            "privacy/identity-streams.json"
+          ],
+          "workPackages": [
+            "P2.7"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "notes": "Additive Settings-domain P0 planning operation from the Main-accepted rev3 contract (2026-10-19). Source vocabulary only; no Android handler, runtime behavior, test pass or G02 completion is claimed."
         }
       ]
     }
-  ]
+  ],
+  "baselineHistory": {
+    "previousVersion": "g01.2026-10-18.2",
+    "reconciledAt": "2026-10-18",
+    "reason": "G02 operation-ledger gap closure: append explicit attachment operations already required by plan P2.2 and section 17.5; no functional implementation is claimed.",
+    "previousDeclaredCounts": {
+      "families": 36,
+      "operations": 170,
+      "g02Operations": 28,
+      "workPackages": 85,
+      "fixtures": 24
+    },
+    "currentDeclaredCounts": {
+      "families": 36,
+      "operations": 172,
+      "g02Operations": 30,
+      "workPackages": 85,
+      "fixtures": 26
+    },
+    "additiveOperationIds": [
+      "CHA-ATTACH-INGEST-AND",
+      "CHA-ATTACH-LIFECYCLE-AND"
+    ],
+    "additiveOperations": [
+      {
+        "id": "CHA-ATTACH-INGEST-AND",
+        "family": "CHA",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P2.2",
+          "P2.7"
+        ],
+        "fixture": "attachments/ingest-scenarios.json"
+      },
+      {
+        "id": "CHA-ATTACH-LIFECYCLE-AND",
+        "family": "CHA",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P2.2",
+          "P2.3",
+          "P2.7"
+        ],
+        "fixture": "attachments/lifecycle-scenarios.json"
+      }
+    ],
+    "previousOperationIdDigest": "bfd576ea8210c1876ac159bef278e776f7e54e6d143d471724a337aaafa233a1",
+    "previousOperationStatusDigest": "06ba9111efa9eee52605537b73526ab9e8b5efdebb801027d03ee0deb0c2c788",
+    "previousFamilyIdDigest": "1c21802b6eca9999064102d94ecae18b810e458fee11ead6585bc328738611c4",
+    "previousWorkPackageIdDigest": "fcb81cb237d3ab67c96c0d902884117a29f94990716243805ff8d428aaebf8f0",
+    "previousWorkPackageStatusDigest": "df403a256f2318b67239ee78d74ce4c05700f0b36f385af28fe4187dfd1612f7",
+    "digestAlgorithm": "sha256 of sorted lines joined by LF plus a trailing LF (IDs for ID digests, id:status for status digests)",
+    "g01Receipt": "Local/Private/android-g01-20261018/final-g01-receipt.json",
+    "g01ReceiptPolicy": "Preserved unchanged; its 170-operation/24-fixture counts are a frozen G01 declaration, not rewritten."
+  },
+  "settingsDomainAdditive": {
+    "version": "g02.2026-10-19.1",
+    "reconciledAt": "2026-10-19",
+    "status": "CANDIDATE ONLY — not live, not compiled, not executed, not device-qualified",
+    "authority": "Settings-domain contract rev3 acceptance (2026-10-19), contract.json SHA256 f3ddecdca061ae17fbe4280b7bfb549d8a1673fd8d9ae6e1ba363332ef5db46c",
+    "contractSHA256": "f3ddecdca061ae17fbe4280b7bfb549d8a1673fd8d9ae6e1ba363332ef5db46c",
+    "reason": "Main accepted the Settings-domain rev3 additive mapping: 10 explicit SET-family operations (goal G02) and 7 declarative fixture groups; preserve every prior operation/family/package identity, goal and status.",
+    "previousVersion": "g02.2026-10-18.1",
+    "previousDeclaredCounts": {
+      "families": 36,
+      "operations": 172,
+      "g02Operations": 30,
+      "workPackages": 85,
+      "fixtures": 26
+    },
+    "currentDeclaredCounts": {
+      "families": 36,
+      "operations": 182,
+      "g02Operations": 40,
+      "workPackages": 85,
+      "fixtures": 33
+    },
+    "additiveOperationIds": [
+      "SET-DEFAULTS-TYPED",
+      "SET-MEMORY-INVENTORY",
+      "SET-MEMORY-SEARCH",
+      "SET-MEMORY-CANDIDATE-REVIEW",
+      "SET-MEMORY-ORGANIZE",
+      "SET-PERSONALIZATION-DOCUMENTS",
+      "SET-PERSONALIZATION-GENERATE",
+      "SET-USAGE-AGGREGATE",
+      "SET-HISTORY-CLEAR",
+      "SET-MODELCFG-CLEAR"
+    ],
+    "additiveOperations": [
+      {
+        "id": "SET-DEFAULTS-TYPED",
+        "family": "SET",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P2.2",
+          "P2.13"
+        ],
+        "fixture": "settings/defaults-cas.json"
+      },
+      {
+        "id": "SET-MEMORY-INVENTORY",
+        "family": "SET",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P1.2",
+          "P2.13"
+        ],
+        "fixture": "memory/inventory.json"
+      },
+      {
+        "id": "SET-MEMORY-SEARCH",
+        "family": "SET",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P1.2"
+        ],
+        "fixture": "memory/inventory.json"
+      },
+      {
+        "id": "SET-MEMORY-CANDIDATE-REVIEW",
+        "family": "SET",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P2.3"
+        ],
+        "fixture": "memory/candidates.json"
+      },
+      {
+        "id": "SET-MEMORY-ORGANIZE",
+        "family": "SET",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P2.3",
+          "P2.13"
+        ],
+        "fixture": "memory/organizer-model-output.json"
+      },
+      {
+        "id": "SET-PERSONALIZATION-DOCUMENTS",
+        "family": "SET",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P1.2",
+          "P2.13"
+        ],
+        "fixture": "personalization/documents.json"
+      },
+      {
+        "id": "SET-PERSONALIZATION-GENERATE",
+        "family": "SET",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P2.2",
+          "P2.3"
+        ],
+        "fixture": "personalization/documents.json"
+      },
+      {
+        "id": "SET-USAGE-AGGREGATE",
+        "family": "SET",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P1.2",
+          "P2.2"
+        ],
+        "fixture": "usage/aggregates.json"
+      },
+      {
+        "id": "SET-HISTORY-CLEAR",
+        "family": "SET",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P2.7"
+        ],
+        "fixture": "privacy/identity-streams.json"
+      },
+      {
+        "id": "SET-MODELCFG-CLEAR",
+        "family": "SET",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P2.7"
+        ],
+        "fixture": "privacy/identity-streams.json"
+      }
+    ],
+    "additiveFixtureIds": [
+      "FIX-SET-DEFAULTS-CAS",
+      "FIX-MEM-INVENTORY",
+      "FIX-MEM-CANDIDATES",
+      "FIX-PER-DOCUMENTS",
+      "FIX-USE-AGGREGATES",
+      "FIX-PRVC-IDENTITY",
+      "FIX-ORG-MODEL-OUTPUT"
+    ],
+    "additiveFixturePaths": [
+      "memory/candidates.json",
+      "memory/inventory.json",
+      "memory/organizer-model-output.json",
+      "personalization/documents.json",
+      "privacy/identity-streams.json",
+      "settings/defaults-cas.json",
+      "usage/aggregates.json"
+    ],
+    "previousOperationIdDigest": "9c176375513bec3a3fd98ce35796d4c251ce61a24cc334d66027084cd9fd5252",
+    "previousOperationGoalDigest": "ef3b34295131c51fee3b546a00f62e4288f448dccd33a89f326230a1c3281dec",
+    "previousOperationStatusDigest": "0b92a1ffb309669eb56187c0200f7c26b81fb28dccbf290d92ed3340dc4f9dab",
+    "previousFamilyIdDigest": "1c21802b6eca9999064102d94ecae18b810e458fee11ead6585bc328738611c4",
+    "previousFamilyGoalDigest": "d0bf7c06112499ddac48e3cb3a1cdbecad46b62347c6d26957c396fd572f8dca",
+    "previousWorkPackageIdDigest": "fcb81cb237d3ab67c96c0d902884117a29f94990716243805ff8d428aaebf8f0",
+    "previousWorkPackageGoalDigest": "84ae0f94db4ada2aeb5e5a5bd365f075b7abb745f5925786c2e4b865a91c0d46",
+    "previousWorkPackageStatusDigest": "df403a256f2318b67239ee78d74ce4c05700f0b36f385af28fe4187dfd1612f7",
+    "additiveOperationIdDigest": "eb0b8379d8f37241073e60e91ce1e364cb6bde5df1f1ab77e750bbb0a6049cac",
+    "additiveOperationStatusDigest": "5acd2aac81aecf7272521ab770233c5408d40f4d2165c5d7d93ca00ecad68e36",
+    "digestAlgorithm": "sha256 of sorted lines joined by LF plus a trailing LF (IDs for ID digests, id:field for goal/status digests)",
+    "frozenHistory": "baselineHistory (g01.2026-10-18.2 -> g02.2026-10-18.1) preserved unchanged; it records the G01 170-operation/24-fixture declaration and the prior 172-operation attachment reconciliation.",
+    "g01Receipt": "Local/Private/android-g01-20261018/final-g01-receipt.json",
+    "g01ReceiptPolicy": "Frozen G01 declaration preserved; its 170-operation/24-fixture counts are not rewritten."
+  }
 }

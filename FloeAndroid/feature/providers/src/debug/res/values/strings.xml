@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DEBUG ONLY: label for the synthetic preview/fixture. Never packaged in
+     the release AAR; no preview or fixture class is in the release source set. -->
+<resources>
+    <string name="preview_synthetic_notice">Synthetic preview — labelled sample data, not saved providers</string>
+</resources>
