@@ -1436,6 +1436,17 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     const map = app && app.map;
     if (!map || typeof map.sendUnoCommand !== 'function')
         throw new Error('production UNO dispatcher unavailable');
+    const undoContext = () => {
+        const bounded = value => value == null || typeof value === 'boolean' || typeof value === 'number'
+            ? value : typeof value === 'string' ? value.slice(0, 512) : String(value).slice(0, 128);
+        const state = command => { try { return bounded(map.stateChangeHandler && map.stateChangeHandler.getItemValue(command)); } catch { return null; } };
+        const layer = map._docLayer;
+        return {undo: state('.uno:Undo'), redo: state('.uno:Redo'),
+            isEditMode: typeof map.isEditMode === 'function' ? map.isEditMode() : null,
+            docType: layer ? bounded(layer._docType) : null,
+            selectedPart: layer ? bounded(layer._selectedPart) : null};
+    };
+    const undoContextBefore = undoContext();
     const before = typeof window.__floeOfficePenState === 'function' ? window.__floeOfficePenState() : null;
     let dispatchError = null;
     try { map.sendUnoCommand(command); }
@@ -1444,7 +1455,7 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     const selection = app.definitions && app.definitions.graphicSelection
         && typeof app.definitions.graphicSelection.hasActiveSelection === 'function'
         ? app.definitions.graphicSelection.hasActiveSelection() === true : null;
-    const out = {command, selectionActiveAfter: selection, before,
+    const out = {command, selectionActiveAfter: selection, before, undoContextBefore, undoContextAfter: undoContext(),
         after: typeof window.__floeOfficePenState === 'function' ? window.__floeOfficePenState() : null};
     if (dispatchError) out.dispatchError = dispatchError;
     return JSON.stringify(out);
@@ -1465,7 +1476,12 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     private func dotPlacements(_ pkg: DrawingQualificationXML) -> [String] {
         pkg.vectorShapes.filter { Self.nativeDotShape($0) }
             .sorted { $0.description < $1.description }
-            .map { $0.placement ?? $0.anchor ?? $0.description }
+            .map { shape in
+                if let anchor = shape.anchor, anchor.hasPrefix("word-anchor:") {
+                    return anchor + "|" + (shape.placement ?? "local-frame-missing")
+                }
+                return shape.placement ?? shape.anchor ?? shape.description
+            }
     }
 
     private func unclassifiedShapes(_ pkg: DrawingQualificationXML, penWidthEMU: Int) -> [DrawingQualificationXML.VectorShape] {
@@ -5015,6 +5031,13 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
     private var anchorKind: String?, anchorFields: [String: Int] = [:]
     private var elements: [String] = [], elementNamespaces: [String?] = [], anchorDepth = 0
     private var anchorNamespace: String?
+    private var wordAnchorDepth: Int?
+    private var wordAnchorFields: [String: String] = [:]
+    private let wordDrawingNamespaces: Set<String> = [
+        "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+        "http://purl.oclc.org/ooxml/drawingml/wordprocessingDrawing"
+    ]
+
     private let spreadsheetDrawingNamespaces: Set<String> = [
         "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing",
         "http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing"
@@ -5023,6 +5046,14 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
     func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
         let local = String(name.split(separator: ":").last ?? "")
         elements.append(local); elementNamespaces.append(namespaceURI)
+        if local == "anchor", wordDrawingNamespaces.contains(namespaceURI ?? "") {
+            wordAnchorDepth = elements.count; wordAnchorFields = [:]
+        }
+        if let depth = wordAnchorDepth, elements.count == depth + 1,
+           ["positionH", "positionV"].contains(local), wordDrawingNamespaces.contains(namespaceURI ?? "") {
+            wordAnchorFields[local + ".relativeFrom"] = attributes["relativeFrom"]
+        }
+
         if (local == "sp" || local == "wsp"), shapeNamespaces.contains(namespaceURI ?? "") {
             activeShapes.append(VectorShape(depth: elements.count, spPrDepth: nil))
         }
@@ -5171,6 +5202,13 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
             if anchorIsValid() { validAnchors += 1 }
             anchorKind = nil; anchorDepth = 0; anchorNamespace = nil
         }
+
+        if let depth = wordAnchorDepth, elements.count == depth + 2, local == "posOffset",
+           wordDrawingNamespaces.contains(namespaceURI ?? ""),
+           let axis = elements.dropLast().last, ["positionH", "positionV"].contains(axis),
+           let offset = Int(buffer.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            wordAnchorFields[axis + ".offset"] = String(offset)
+        }
         if let last = activeShapes.last, last.depth == elements.count {
             var finished = last
             if let offset = finished.xfrmOffset, let extent = finished.xfrmExtent {
@@ -5180,10 +5218,21 @@ private final class DrawingQualificationXML: NSObject, XMLParserDelegate {
                 finished.anchor = kind + ":" + anchorFields.keys.sorted()
                     .map { "\($0)=\(anchorFields[$0]!)" }.joined(separator: ",")
             }
+
+            if wordAnchorDepth != nil,
+               wordAnchorFields["positionH.offset"] != nil, wordAnchorFields["positionV.offset"] != nil {
+                finished.anchor = "word-anchor:" + wordAnchorFields.keys.sorted()
+                    .map { "\($0)=\(wordAnchorFields[$0]!)" }.joined(separator: ",")
+            }
             let carriesCustomPath = !finished.paths.isEmpty
             let isFilledPresetShape = finished.prstGeometry != nil && finished.fillColorHex != nil
             if carriesCustomPath || isFilledPresetShape { vectorShapes.append(finished) }
             activeShapes.removeLast()
+        }
+
+        if local == "anchor", wordAnchorDepth == elements.count,
+           wordDrawingNamespaces.contains(namespaceURI ?? "") {
+            wordAnchorDepth = nil; wordAnchorFields = [:]
         }
         elements.removeLast(); elementNamespaces.removeLast()
         field = ""; buffer = ""
