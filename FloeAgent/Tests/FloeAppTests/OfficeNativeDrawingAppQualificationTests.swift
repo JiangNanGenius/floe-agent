@@ -1483,10 +1483,15 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     const own = Object.prototype.hasOwnProperty.call(layer, '_onDocumentRepair');
     const original = layer._onDocumentRepair;
     let reply = null;
-    const actions = part => ({count: part.actions.length,
-        actions: part.actions.slice(0, 20).map(action => ({
-            index: action.index, viewId: action.viewId,
-            comment: String(action.comment || '').slice(0, 256)}))});
+    const actions = part => {
+        if (!part || !Array.isArray(part.actions)) return {available:false,
+            nativeKind: part === null ? 'null' : Array.isArray(part) ? 'array' : typeof part,
+            nativeKeys: part && typeof part === 'object' ? Object.keys(part).slice(0, 12) : [],
+            nativeActionsKind: part && part.actions === null ? 'null' : typeof (part && part.actions)};
+        return {available:true, count:part.actions.length,
+            actions:part.actions.slice(0, 20).map(action => ({index:action.index, viewId:action.viewId,
+                comment:String(action.comment || '').slice(0, 256)}))};
+    };
     layer._onDocumentRepair = function(payload) {
         if (payload && payload.commandName === '.uno:DocumentRepair') {
             reply = payload; return;
@@ -1502,12 +1507,10 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             window.__floeActualStackProbeDisabled = true;
             return JSON.stringify({available:false, reason:'native-response-timeout', waitedMS:performance.now()-start});
         }
-        if (!reply.Undo || !Array.isArray(reply.Undo.actions)
-            || !reply.Redo || !Array.isArray(reply.Redo.actions))
-            return JSON.stringify({available:false, reason:'native-stack-fields-unavailable', keys:Object.keys(reply).slice(0, 12)});
-        return JSON.stringify({available:true, nativeCommand:reply.commandName,
+        const undo = actions(reply.Undo), redo = actions(reply.Redo);
+        return JSON.stringify({available:undo.available || redo.available, nativeCommand:reply.commandName,
             viewId:layer._viewId, selectedPart:layer._selectedPart,
-            Undo:actions(reply.Undo), Redo:actions(reply.Redo), waitedMS:performance.now()-start});
+            Undo:undo, Redo:redo, waitedMS:performance.now()-start});
     } catch(error) {
         return JSON.stringify({available:false, reason:'native-read-error', error:String(error.message||error).slice(0, 256)});
     } finally {
