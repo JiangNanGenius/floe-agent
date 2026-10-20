@@ -1725,3 +1725,60 @@ diff --git a/engine/oox/source/export/shapes.cxx b/engine/oox/source/export/shap
      { u"com.sun.star.drawing.PolyPolygonShape", &ShapeExport::WriteClosedPolyPolygonShape },
      { u"com.sun.star.drawing.PolyLineShape", &ShapeExport::WriteOpenPolyPolygonShape },
      { u"com.sun.star.drawing.RectangleShape", &ShapeExport::WriteRectangleShape },
+diff --git a/engine/sd/source/filter/eppt/pptx-epptooxml.cxx b/engine/sd/source/filter/eppt/pptx-epptooxml.cxx
+--- a/engine/sd/source/filter/eppt/pptx-epptooxml.cxx
++++ b/engine/sd/source/filter/eppt/pptx-epptooxml.cxx
+@@ -43,6 +43,7 @@
+ #include <map>
+ #include <o3tl/safeint.hxx>
+ #include <comphelper/sequenceashashmap.hxx>
++#include <comphelper/scopeguard.hxx>
+ #include <comphelper/storagehelper.hxx>
+ #include <comphelper/string.hxx>
+ #include <comphelper/xmltools.hxx>
+@@ -2707,8 +2708,23 @@
+ {
+     SAL_INFO("sd.eppt", "write layout: " << nOffset);
+ 
++    if (mLayoutInfo[nOffset].mnFileIdArray.size() < mnMasterPages)
++        mLayoutInfo[nOffset].mnFileIdArray.resize(mnMasterPages);
++    if (mLayoutInfo[nOffset].mnFileIdArray[nMasterNum] != 0)
++        return;
++
+     Reference< drawing::XDrawPages > xDrawPages = mXModel->getDrawPages();
++    // This slide exists only to serialize a layout. Its creation, layout
++    // changes and removal must never alter the user's undo or redo history.
++    SdDrawDocument& rDocument = *mXModel->GetDoc();
++    const bool bUndoEnabled = rDocument.IsUndoEnabled();
++    rDocument.EnableUndo(false);
++    comphelper::ScopeGuard aRestoreUndo([&] { rDocument.EnableUndo(bUndoEnabled); });
+     Reference< drawing::XDrawPage > xSlide = xDrawPages->insertNewByIndex(xDrawPages->getCount());
++    comphelper::ScopeGuard aRemoveTemporarySlide([&] {
++        try { xDrawPages->remove(xSlide); }
++        catch (const uno::Exception&) { SAL_WARN("sd.eppt", "Could not remove temporary layout slide"); }
++    });
+ 
+ #if OSL_DEBUG_LEVEL >= 2
+     if (xSlide.is())
+@@ -2723,13 +2739,6 @@
+     mXPagePropSet.set(xSlide, UNO_QUERY);
+     mXShapes = xSlide;
+ 
+-    if (mLayoutInfo[ nOffset ].mnFileIdArray.size() < mnMasterPages)
+-    {
+-        mLayoutInfo[ nOffset ].mnFileIdArray.resize(mnMasterPages);
+-    }
+-
+-    if (mLayoutInfo[ nOffset ].mnFileIdArray[ nMasterNum ] != 0)
+-        return;
+ 
+     FSHelperPtr pFS
+         = openFragmentStreamWithSerializer("ppt/slideLayouts/slideLayout" +
+@@ -2771,6 +2780,7 @@
+     mnLayoutFileIdMax ++;
+ 
+     xDrawPages->remove(xSlide);
++    aRemoveTemporarySlide.dismiss();
+ 
+     pFS->endDocument();
+ }

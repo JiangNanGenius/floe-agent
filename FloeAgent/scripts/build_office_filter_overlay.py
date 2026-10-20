@@ -19,6 +19,8 @@ FILTER_LOCK = DEFAULT_LOCK.parent / 'filter-overlay.lock.json'
 SPARSE_PATHS = [
     '/engine/sd/inc/', '/engine/sd/source/ui/inc/', '/engine/sd/source/ui/slidesorter/inc/',
     '/engine/sd/source/ui/view/drviewse.cxx',
+    '/engine/sd/source/filter/eppt/', '/engine/sd/source/filter/inc/',
+    '/engine/sd/source/filter/ppt/pptanimations.hxx',
     '/engine/sc/inc/', '/engine/sc/source/filter/inc/',
     '/engine/sc/source/filter/xcl97/xcl97rec.cxx', '/engine/oox/inc/',
     '/engine/sc/source/filter/excel/xlroot.cxx', '/engine/sc/source/ui/inc/',
@@ -417,6 +419,7 @@ def build(bundle, source, output, header_cache=None, sdk='iphoneos'):
         module_includes = []
         if source_file.startswith('engine/sd/'):
             module_includes = ['-I', str(source / 'engine/sd/inc'),
+                               '-I', str(source / 'engine/sd/source/filter/inc'),
                                '-I', str(source / 'engine/sd/source/ui/inc'),
                                '-I', str(source / 'engine/sd/source/ui/slidesorter/inc'),
                                '-DSD_DLLIMPLEMENTATION']

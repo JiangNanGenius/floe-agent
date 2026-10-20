@@ -593,6 +593,106 @@ static NSString *FloeInkInputGatingScript() {
                 window.requestAnimationFrame(fn);
             else setTimeout(fn, 16);
         };
+        // The exact viewport/document mapping a client preview was drawn
+        // against. A resize event only invalidates a preview when this
+        // signature actually changed: the pinned frontend's own UI refresh
+        // path (JSDialog.RefreshScrollables) dispatches synthetic window
+        // resize events for status/notebookbar updates while the canvas and
+        // the document view stay exactly where the ink was drawn. Each
+        // preview records the signature at creation, and the resize listener
+        // below compares it before dropping.
+        //
+        // The window/canvas rectangle alone is not enough: zoom and pan move
+        // the document inside an unchanged canvas. The pinned layouts expose
+        // the real content transform through activeLayout.viewedRectangle
+        // (canvas device px), documentAnchor (canvas device px), viewSize and
+        // scrollProperties, with app.twipsToPixels/app.dpiScale and the zoom
+        // percent fixing the document-to-canvas scale. Any required member
+        // that is absent, non-finite or out of range makes the signature null,
+        // and null never matches anything (fail closed). A preview is never
+        // created with a null signature.
+        const previewGeometry = () => {
+            const finite = (value) => typeof value === 'number' && Number.isFinite(value);
+            const round = (value, scale) => Math.round(value * scale) / scale;
+            const geometryNumber = (value) => finite(value) ? round(value, 100) : null;
+            const ratio = (value) => finite(value) && value > 0 ? round(value, 1000000) : null;
+            try {
+                const app = window.app;
+                if (!app) return null;
+                const canvas = canvasOf();
+                if (!canvas || typeof canvas.getBoundingClientRect !== 'function') return null;
+                const rect = canvas.getBoundingClientRect();
+                if (!rect || !finite(rect.left) || !finite(rect.top)
+                    || !finite(rect.width) || !finite(rect.height)
+                    || rect.width <= 0 || rect.height <= 0) return null;
+                if (!finite(canvas.width) || !finite(canvas.height)
+                    || canvas.width <= 0 || canvas.height <= 0) return null;
+                if (!finite(window.innerWidth) || !finite(window.innerHeight)
+                    || window.innerWidth <= 0 || window.innerHeight <= 0) return null;
+                if (ratio(window.devicePixelRatio) === null) return null;
+                if (!finite(window.scrollX) || !finite(window.scrollY)) return null;
+                if (ratio(app.twipsToPixels) === null || ratio(app.dpiScale) === null) return null;
+                const doc = app.activeDocument;
+                const layout = doc && doc.activeLayout;
+                if (!layout) return null;
+                const viewed = layout.viewedRectangle;
+                if (!viewed || !finite(viewed.pX1) || !finite(viewed.pY1)
+                    || !finite(viewed.pWidth) || !finite(viewed.pHeight)) return null;
+                const size = layout.viewSize;
+                if (!size || !finite(size.pX) || !finite(size.pY)) return null;
+                const scroll = layout.scrollProperties;
+                if (!scroll || !finite(scroll.viewX) || !finite(scroll.viewY)) return null;
+                const container = app.sectionContainer;
+                if (!container || typeof container.getDocumentAnchor !== 'function') return null;
+                const anchor = container.getDocumentAnchor();
+                if (!Array.isArray(anchor) || anchor.length < 2
+                    || !finite(anchor[0]) || !finite(anchor[1])) return null;
+                const zoomPercent = typeof doc.getZoomPercent === 'function'
+                    ? doc.getZoomPercent() : null;
+                if (ratio(zoomPercent) === null) return null;
+                const map = app.map;
+                if (!map || typeof map.getZoom !== 'function') return null;
+                const mapZoom = map.getZoom();
+                if (!finite(mapZoom)) return null;
+                const viewport = window.visualViewport || null;
+                let viewportScale = 'novv';
+                let viewportLeft = 'novv';
+                let viewportTop = 'novv';
+                if (viewport) {
+                    viewportScale = ratio(viewport.scale);
+                    viewportLeft = geometryNumber(viewport.offsetLeft);
+                    viewportTop = geometryNumber(viewport.offsetTop);
+                    if (viewportScale === null || viewportLeft === null || viewportTop === null)
+                        return null;
+                }
+                const layer = map._docLayer;
+                const selectedPart = layer && finite(layer._selectedPart) ? layer._selectedPart : -1;
+                const partCount = layer && finite(layer._parts) ? layer._parts : -1;
+                const partWidth = layer && finite(layer._partWidthTwips) ? layer._partWidthTwips : -1;
+                const partHeight = layer && finite(layer._partHeightTwips) ? layer._partHeightTwips : -1;
+                const layoutType = typeof layout.type === 'string' ? layout.type : 'unknown';
+                return [
+                    geometryNumber(window.innerWidth), geometryNumber(window.innerHeight),
+                    ratio(window.devicePixelRatio),
+                    geometryNumber(canvas.width), geometryNumber(canvas.height),
+                    geometryNumber(rect.left), geometryNumber(rect.top),
+                    geometryNumber(rect.width), geometryNumber(rect.height),
+                    geometryNumber(window.scrollX), geometryNumber(window.scrollY),
+                    viewportScale, viewportLeft, viewportTop,
+                    ratio(app.twipsToPixels), ratio(app.dpiScale), ratio(zoomPercent),
+                    geometryNumber(mapZoom), layoutType,
+                    geometryNumber(viewed.pX1), geometryNumber(viewed.pY1),
+                    geometryNumber(viewed.pWidth), geometryNumber(viewed.pHeight),
+                    geometryNumber(size.pX), geometryNumber(size.pY),
+                    geometryNumber(scroll.viewX), geometryNumber(scroll.viewY),
+                    geometryNumber(anchor[0]), geometryNumber(anchor[1]),
+                    geometryNumber(selectedPart), geometryNumber(partCount),
+                    geometryNumber(partWidth), geometryNumber(partHeight)
+                ].join(',');
+            } catch (ignored) {
+                return null;
+            }
+        };
         const resolveInkStyle = () => {
             // Reuse the bridge's last verified dispatch, never a re-send and
             // never an invented second style. The documented pen default
@@ -750,6 +850,11 @@ static NSString *FloeInkInputGatingScript() {
                 dropStrokePreview('abandoned');
                 if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY))
                     return;
+                // A preview whose mapping cannot be read would have no honest
+                // invalidation identity. Never create one: the canonical
+                // contact below still draws the engine ink.
+                const geometry = previewGeometry();
+                if (geometry === null) return;
                 if (!ensurePreviewSurface()) return;
                 const style = resolveInkStyle();
                 const path = document.createElementNS(PREVIEW_SVG_NS, 'path');
@@ -760,7 +865,7 @@ static NSString *FloeInkInputGatingScript() {
                 path.setAttribute('stroke-linecap', 'round');
                 path.setAttribute('stroke-linejoin', 'round');
                 previewSurface.appendChild(path);
-                previewStroke = { path, style, points: [], d: '' };
+                previewStroke = { path, style, points: [], d: '', geometry };
                 appendStrokePoints([event]);
                 applyStrokePath();
             } catch (ignored) {
@@ -930,7 +1035,7 @@ static NSString *FloeInkInputGatingScript() {
             try {
                 const handoff = {
                     path: stroke.path, style: stroke.style,
-                    probes: buildStrokeProbes(stroke), frames: 0,
+                    probes: buildStrokeProbes(stroke), geometry: stroke.geometry, frames: 0,
                     probe: 'paint', deadline: undefined
                 };
                 if (!handoff.probes.length) handoff.probe = 'unavailable';
@@ -1523,9 +1628,31 @@ static NSString *FloeInkInputGatingScript() {
         });
         document.addEventListener('visibilitychange', () => { if (document.hidden) interrupt(); });
         // A viewport resize re-lays the canvas out: viewport-relative
-        // preview geometry is stale the moment that happens, while the
-        // canonical stream keeps its own live client-coordinate conversion.
-        window.addEventListener('resize', () => dropAllPreviews('viewport-resized'));
+        // preview geometry is stale only when the geometry that maps it onto
+        // the canvas actually changed, while the canonical stream keeps its
+        // own live client-coordinate conversion. The pinned frontend also
+        // dispatches synthetic window resize events from its UI refresh path
+        // (status/notebookbar updates) with no geometry change; those must
+        // not discard previews that are still exactly aligned. An unreadable
+        // signature, or a preview created without one, fails closed to the
+        // previous drop-all behaviour.
+        const invalidateStalePreviews = () => {
+            let current = null;
+            try { current = previewGeometry(); } catch (ignored) { current = null; }
+            if (current === null) {
+                dropAllPreviews('viewport-resized');
+                return;
+            }
+            if (previewStroke
+                && (previewStroke.geometry === null || previewStroke.geometry === undefined
+                    || previewStroke.geometry !== current))
+                dropStrokePreview('viewport-resized');
+            for (const handoff of previewHandoffs.slice())
+                if (handoff.geometry === null || handoff.geometry === undefined
+                    || handoff.geometry !== current)
+                    dropHandoff(handoff, 'viewport-resized');
+        };
+        window.addEventListener('resize', invalidateStalePreviews);
         window.__floeOfficePenState = () => ({
             drawing, strokes: state.strokes, coreEvents: state.coreEvents,
             armedDispatches: state.armedDispatches, activeStroke: state.activeStroke,

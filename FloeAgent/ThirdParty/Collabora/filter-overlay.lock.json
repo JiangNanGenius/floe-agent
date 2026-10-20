@@ -1,7 +1,7 @@
 {
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "patch": "patches/xlsx-embedded-objects.patch",
-  "patchSHA256": "7abbae7c4018ba810db3bc423b6433513698dda88fb9c9620b60e92758561ef0",
+  "patchSHA256": "f8764ae56b0d1011dffb53f0aa018bbaa56953ac6bcb45300a1ee5958d6e0c2e",
   "files": {
     "engine/sc/source/filter/inc/xcl97rec.hxx": {
       "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
@@ -62,6 +62,10 @@
     "engine/oox/source/export/shapes.cxx": {
       "originalSHA256": "025fd73bd88ea82ae0f81e092e62f1dc36d9ab37f9c5ed38482b9e197c3bcb03",
       "patchedSHA256": "f9ec6ef8b837c7f1a2f704f051f998be207463eb395badd9a090236084d99c12"
+    },
+    "engine/sd/source/filter/eppt/pptx-epptooxml.cxx": {
+      "originalSHA256": "5c8c2ef83f32669a87625b83cd17f8ddfd9182ab6210ecba06c9acc7d318a509",
+      "patchedSHA256": "ba2ac86d857c9298718145cae8f40690478bdf779e595ea15b24ded38641c025"
     }
   },
   "archive": "source/engine/instdir/program/libscfiltlo.a",
@@ -92,7 +96,8 @@
       "members": {
         "drviewse.o": "engine/sd/source/ui/view/drviewse.cxx",
         "unomodel.o": "engine/sd/source/ui/unoidl/unomodel.cxx",
-        "fuconbez.o": "engine/sd/source/ui/func/fuconbez.cxx"
+        "fuconbez.o": "engine/sd/source/ui/func/fuconbez.cxx",
+        "pptx-epptooxml.o": "engine/sd/source/filter/eppt/pptx-epptooxml.cxx"
       }
     }
   },
@@ -149,7 +154,8 @@
         "members": {
           "drviewse.o": "engine/sd/source/ui/view/drviewse.cxx",
           "unomodel.o": "engine/sd/source/ui/unoidl/unomodel.cxx",
-          "fuconbez.o": "engine/sd/source/ui/func/fuconbez.cxx"
+          "fuconbez.o": "engine/sd/source/ui/func/fuconbez.cxx",
+          "pptx-epptooxml.o": "engine/sd/source/filter/eppt/pptx-epptooxml.cxx"
         }
       }
     },
