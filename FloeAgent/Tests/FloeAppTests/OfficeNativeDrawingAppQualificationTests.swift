@@ -1675,6 +1675,33 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             try await session.toggleDrawing()
             XCTAssertFalse(session.drawingMode, "the drawing toggle must disarm before the saves")
             if format == "pptx" { try await captureActualUndoStack(web, root: root, label: "actual-stack-after-mode-off-before-save") }
+            if format == "pptx", ProcessInfo.processInfo.environment["FLOE_NATIVE_SAVE_SPLIT_OBSERVATION"] == "1" {
+                // Diagnostic only: distinguish the working-copy flush from
+                // storeToURL before admitting a native-component change.
+                _ = try await web.evaluateJavaScript("window.__floeObservedOriginalSave = window.app.map.save; window.app.map.save = function(a,b,c) { return window.__floeObservedOriginalSave.call(this,true,b,c); }; true")
+                do {
+                    try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                        native.saveWorkingCopy { error in
+                            if let error { c.resume(throwing: error) } else { c.resume() }
+                        }
+                    }
+                    try await captureActualUndoStack(web, root: root, label: "actual-stack-after-direct-nonterminating-save")
+                    let output: URL = try await withCheckedThrowingContinuation { c in
+                        let callback: @convention(block) (NSURL?, NSError?) -> Void = { url, error in
+                            if let error { c.resume(throwing: error) }
+                            else if let url { c.resume(returning: url as URL) }
+                            else { c.resume(throwing: CocoaError(.fileWriteUnknown)) }
+                        }
+                        _ = native.perform(NSSelectorFromString("exportDocumentWithFormat:completion:"), with: format as NSString, with: callback as AnyObject)
+                    }
+                    attach(output, name: "diagnostic-direct-export")
+                    try await captureActualUndoStack(web, root: root, label: "actual-stack-after-direct-storeToURL")
+                } catch {
+                    _ = try? await web.evaluateJavaScript("window.app.map.save = window.__floeObservedOriginalSave; delete window.__floeObservedOriginalSave; true")
+                    throw error
+                }
+                _ = try await web.evaluateJavaScript("window.app.map.save = window.__floeObservedOriginalSave; delete window.__floeObservedOriginalSave; true")
+            }
             let allCopy = root.appendingPathComponent("lifecycle-all.\(format)")
             try fm.copyItem(at: try await session.exportDocument(format: format), to: allCopy)
             attach(allCopy, name: "dot-lifecycle-saved-all-\(format)")
