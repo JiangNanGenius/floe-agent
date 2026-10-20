@@ -2,7 +2,7 @@
   <img src="docs/images/floe-agent-icon.png" width="88" alt="Floe Agent 应用图标">
   <h1>Floe Agent</h1>
   <p><strong>你的模型，你的文件，你的电脑。</strong></p>
-  <p>为 iPad 而生，也适用于 iPhone，Android 测试版现已推出。把 AI 任务、手记、文档、创作与开发放进自己的工作空间。</p>
+  <p>Floe Agent 是面向 iPad 和 iPhone（iOS / iPadOS）的开源 AI 智能体工作空间，以 iPad 体验为先。把 AI 任务、手记、Office 文档、创作与开发放进同一处，云端 AI 使用自备 API Key（BYOK）。Android Alpha 测试版现已推出，目前支持基础云端对话。</p>
   <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/">官网</a> · <a href="docs/USER_GUIDE.zh-CN.md">使用手册</a> · <a href="docs/README.md">文档中心</a></p>
 </div>
 
