@@ -355,7 +355,8 @@ private final class AutosaveFixture {
     var baselineRevision: Int
     let initialResourceID: UUID
     let initialRevision: Int
-    let coordinator: OfficeAutosaveCoordinator
+    private let initialGeneration: Int
+    private(set) lazy var coordinator = makeCoordinator(generation: initialGeneration)
     private let digestSwitch: ImportedDigestFailureSwitch
     private var lastSavedDigest: String
     private var rows: [[String]]
@@ -383,6 +384,7 @@ private final class AutosaveFixture {
     /// Fresh document: real builder package, real import, real create, real
     /// draft copy. Everything downstream operates on these real bytes.
     init() async throws {
+        initialGeneration = 1
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("office-autosave-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -412,7 +414,6 @@ private final class AutosaveFixture {
         try FileManager.default.copyItem(at: source, to: workingURL)
         lastSavedDigest = try FloeDigest.sha256Hex(ofFileAt: draftURL)
         digestSwitch = ImportedDigestFailureSwitch(storeRootPrefix: root.appendingPathComponent("store").path)
-        coordinator = makeCoordinator(generation: 1)
         coordinator.installOwner(makeOwner())
     }
 
@@ -422,6 +423,7 @@ private final class AutosaveFixture {
     init(adoptingDocumentID: UUID, store: NotesStore, session: NotesSession,
          draftURL: URL, baselineResourceID: UUID, baselineRevision: Int,
          rows: [[String]]) throws {
+        initialGeneration = 2
         self.root = draftURL.deletingLastPathComponent()
         self.store = store
         self.session = session
@@ -436,7 +438,6 @@ private final class AutosaveFixture {
         try FileManager.default.copyItem(at: draftURL, to: workingURL)
         lastSavedDigest = try FloeDigest.sha256Hex(ofFileAt: draftURL)
         digestSwitch = ImportedDigestFailureSwitch(storeRootPrefix: "/autosave-adopted-store")
-        coordinator = makeCoordinator(generation: 2)
         coordinator.installOwner(makeOwner())
     }
 
