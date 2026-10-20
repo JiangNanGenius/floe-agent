@@ -443,6 +443,25 @@ final class AppEnvironment: ObservableObject {
     let isEphemeral: Bool
     private let shouldSeedBundledSkills: Bool
 
+    // S3 external-automation readiness. ONE in-flight bootstrap/launch-recovery
+    // attempt per process: view rebuilds and concurrent App Intents join it
+    // instead of re-running interrupted recovery over runs that were just
+    // started. A finished attempt retires before its completion is visible, so
+    // a later call retries a failed launch instead of rejoining finished work.
+    // Successful repeats are no-ops. The App keeps the single environment.
+    private let bootstrapGate = FloeSingleFlightGate()
+    private let externalAutomationGate = FloeSingleFlightGate()
+    private var bootstrapDidCompleteSuccessfully = false
+    private var externalAutomationReady = false
+    #if DEBUG
+    /// Hosted-qualification observability only: how many times the launch
+    /// body and the shared external-automation body actually executed. Product
+    /// code never reads these; they let tests prove join/skip/retry instead of
+    /// inferring it from timing.
+    private(set) var bootstrapExecutionCount = 0
+    private(set) var externalAutomationExecutionCount = 0
+    #endif
+
     private init(
         database: DatabaseManager,
         conversationStore: any ConversationStore,
@@ -846,7 +865,10 @@ final class AppEnvironment: ObservableObject {
             linuxPreparation: linuxPreparation,
             linuxLifecycle: linuxGuestLifecycle
         )
-        FloeShortcutsRuntime.shared.install(environment: self)
+        // App Intents join the single live environment from FloeAgentApp.init
+        // (AppDependencyManager registration + FloeShortcutsRuntime install).
+        // Installing the runtime from every environment constructor let a
+        // preview/test environment replace the live shortcut runtime globally.
         // Build 233 R2: every Office surface (workspace preview, IDE tab,
         // Notes, fullscreen editor) can reach the idle-model shed even when its
         // own view does not resolve this environment. The safety contract stays
@@ -1743,7 +1765,36 @@ final class AppEnvironment: ObservableObject {
     /// Applies pending migrations. Called once during app launch. On failure
     /// the environment records the error so the UI can offer recovery rather
     /// than presenting a broken workbench.
+    ///
+    /// Shared single-flight: concurrent callers (root view task, scene
+    /// reconstruction, App Intents) join the SAME in-flight attempt. A
+    /// completed successful bootstrap is skipped so interrupted recovery and
+    /// launch fixtures never re-run over work created after launch. The
+    /// attempt retires itself before completion, so a call made after a failed
+    /// attempt starts a real retry instead of rejoining the finished failure.
     func bootstrap() async {
+        if bootstrapDidCompleteSuccessfully { return }
+        await bootstrapGate.run { [weak self] in
+            guard let self else { return }
+            await self.performBootstrap()
+        }
+    }
+
+    /// The original launch migration/recovery sequence.
+    private func performBootstrap() async {
+        #if DEBUG
+        bootstrapExecutionCount += 1
+        // Hosted actual-entry acceptance: inject ONE cold-start failure at the
+        // very start, before migrations or any shared launch maintenance. The
+        // fault is armed only by the explicit test launch environment, so a
+        // normal Debug/Release launch and any ordinary test are unaffected.
+        if FloeEntryQualification.consumeBootstrapFailureOnce() {
+            persistenceReady = false
+            bootstrapError = FloeEntryQualification.injectedBootstrapFailure
+            bootstrapDidCompleteSuccessfully = false
+            return
+        }
+        #endif
         do {
             try await database.migrate()
             try await NotesRepository.shared.reconcileAssistantOwnership(database: database)
@@ -2129,6 +2180,71 @@ final class AppEnvironment: ObservableObject {
         } catch {
             persistenceReady = false
             bootstrapError = error.localizedDescription
+        }
+        // Success means the WHOLE launch sequence above finished with durable
+        // storage. An ephemeral recovery environment stays retryable so a
+        // transient database failure is not remembered as permanent.
+        bootstrapDidCompleteSuccessfully = !isEphemeral && persistenceReady
+        if bootstrapDidCompleteSuccessfully {
+            bootstrapError = nil
+        }
+    }
+
+    /// Shared readiness for App Intents/Shortcuts automation. Joins the
+    /// single-flight bootstrap and then the FIRST shared run recovery + model
+    /// configuration publication for this process, so external starts and
+    /// queries never observe a half-recovered graph:
+    ///
+    /// - `persistenceReady` can flip true inside bootstrap while later steps
+    ///   still run; the whole task is joined instead of the boolean alone.
+    /// - `reconcileInterruptedRunsOnLaunch()` is process-latched and protected
+    ///   by its current-process owner rules; this seam never re-runs it per
+    ///   call and never starts a second environment, pool or runtime.
+    /// - Launch settings (approval/background choices) were loaded by
+    ///   bootstrap; provider/model preferences are loaded by `reload()` here,
+    ///   then read back from the durable store before automation may start.
+    ///
+    /// Failed durable initialization blocks external writes/queries. A
+    /// configuration read failure is retryable on the next call. Caller
+    /// cancellation is checked before and after the shared waits: a cancelled
+    /// caller never proceeds to start work, and it never cancels the shared
+    /// attempt other callers are joining.
+    func ensureReadyForExternalAutomation() async throws {
+        if externalAutomationReady { return }
+        try Task.checkCancellation()
+        await bootstrap()
+        try Task.checkCancellation()
+        try verifyDurableLaunchReady()
+        // Another caller may have published readiness while this one awaited
+        // the shared launch: join that result instead of a duplicate pass.
+        if externalAutomationReady { return }
+
+        await externalAutomationGate.run { [weak self] in
+            guard let self else { return }
+            #if DEBUG
+            self.externalAutomationExecutionCount += 1
+            #endif
+            await self.conversationCenter.reconcileInterruptedRunsOnLaunch()
+            await self.conversationCenter.reload()
+            do {
+                _ = try await self.configurationStore.preferences()
+                _ = try await self.configurationStore.providers()
+                _ = try await self.configurationStore.models()
+                self.externalAutomationReady = true
+            } catch {
+                self.externalAutomationReady = false
+            }
+        }
+        try Task.checkCancellation()
+        try verifyDurableLaunchReady()
+        guard externalAutomationReady else {
+            throw FloeShortcutRunError.modelConfigurationUnavailable
+        }
+    }
+
+    private func verifyDurableLaunchReady() throws {
+        guard !isEphemeral, persistenceReady, bootstrapError == nil else {
+            throw FloeShortcutRunError.durableStorageUnavailable
         }
     }
 

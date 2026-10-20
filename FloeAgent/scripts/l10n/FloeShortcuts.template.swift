@@ -4,10 +4,40 @@
 // summarization, create a new task, query task status. App Intents run in
 // the app process (no UI required for background execution).
 
+/// Machine-readable readiness rejections surfaced to the App Intent layer.
+/// The display strings keep the legacy Shortcuts copy; no internal identifier
+/// reaches the user. Shared with `AppEnvironment.ensureReadyForExternalAutomation`.
+enum FloeShortcutRunError: Error, Equatable, Sendable, LocalizedError {
+    case shortcutsCapabilityDisabled
+    case applicationStillStarting
+    case durableStorageUnavailable
+    case modelConfigurationUnavailable
+    case emptyTaskPrompt
+    case noDefaultModelConfigured
+
+    var errorDescription: String? {
+        switch self {
+        case .shortcutsCapabilityDisabled:
+            "Shortcuts is disabled in Floe Settings"
+        case .applicationStillStarting:
+            "Floe is still starting; retry the shortcut"
+        case .durableStorageUnavailable:
+            "Durable storage is unavailable. Retry after Floe finishes launching"
+        case .modelConfigurationUnavailable:
+            "Floe could not read the saved model configuration. Check Floe Settings"
+        case .emptyTaskPrompt:
+            "Task must not be empty"
+        case .noDefaultModelConfigured:
+            "No default Floe model is configured"
+        }
+    }
+}
+
 #if canImport(AppIntents)
 import AppIntents
 import Foundation
 import FloeCore
+import FloeExecution
 import FloeModels
 import FloePersistence
 
@@ -49,6 +79,13 @@ final class FloeShortcutsRuntime {
         guard let environment else {
             throw FloeError.invalidConfiguration("Floe is still starting; retry the shortcut")
         }
+        // Headless App-Intent launches have no RootView: join the ONE shared
+        // launch/readiness task instead of assuming the UI already ran
+        // bootstrap. Concurrent triggers join the same work; durable failures
+        // stay honest, configuration failures are retried on the next call,
+        // and a cancelled caller stops before creating any run.
+        try await environment.ensureReadyForExternalAutomation()
+        try Task.checkCancellation()
         let center = environment.conversationCenter
         guard let (provider, model) = center.providerAndModel(
             modelID: center.modelPreferences.defaultAgentModelID
@@ -83,17 +120,34 @@ final class FloeShortcutsRuntime {
         guard let environment else {
             throw FloeError.invalidConfiguration("Floe is still starting; retry the shortcut")
         }
+        // Same shared readiness as `run`: scheduling freezes the CURRENT
+        // default model/permission binding, so it must observe the fully
+        // loaded configuration even when launched headlessly.
+        try await environment.ensureReadyForExternalAutomation()
+        try Task.checkCancellation()
         let cleanPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanPrompt.isEmpty else {
             throw FloeError.validationFailed("Task must not be empty")
         }
         let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The SAME trusted creation-time factory as the model-facing
+        // `task.schedule`/`apple.automation.update` tools: the schedule freezes
+        // the current default model and approval policy instead of leaving nil
+        // bindings that a later settings change could silently redefine.
+        guard let binding = environment.appDefaultTaskScheduleBinding() else {
+            throw FloeError.invalidConfiguration("No default Floe model is configured")
+        }
         let record = TaskScheduleRecord(
             title: cleanTitle?.isEmpty == false ? cleanTitle! : String(cleanPrompt.prefix(40)),
             prompt: cleanPrompt,
+            workspaceID: binding.workspaceID,
             cadence: cadence.taskCadence,
             scheduledAt: date,
-            weekday: cadence == .weekly ? Calendar.current.component(.weekday, from: date) : nil
+            weekday: cadence == .weekly ? Calendar.current.component(.weekday, from: date) : nil,
+            anchorTimezone: binding.anchorTimezone,
+            modelID: binding.modelID,
+            environmentID: binding.environmentID,
+            permissionJSON: binding.permissionJSON
         )
         try await SQLiteTaskScheduleStore(database: environment.database).save(record)
         BackgroundPolicyRegistry.shared.scheduleRefresh(earliest: date)
