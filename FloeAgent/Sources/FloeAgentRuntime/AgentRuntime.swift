@@ -58,6 +58,24 @@ public protocol AgentEventSink: Sendable {
     /// is inserted. Persistence uses it to seal the assistant message without
     /// falsely emitting a terminal event.
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async
+    /// Fired after the final-answer verification pass sealed its draft step
+    /// (only `beginFinalAnswerVerification` does; repair continuations never
+    /// do). Persistence records the sealed draft row's identity so a later
+    /// CONFIRM can bind the final reply to that exact message instead of
+    /// inferring it from "latest row" ordering.
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didSealDraftForFinalAnswerVerification draftText: String
+    ) async
+    /// Fired immediately before the `.completed` event when the verification
+    /// turn answered with nothing or a bare CONFIRM: the sealed draft stands
+    /// as the final reply. A deferred-action/action-claim repair that ends
+    /// with an empty result never fires this, so an expired draft or step id
+    /// can never be proven as the answer.
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didConfirmVerifiedFinalAnswer draftText: String
+    ) async
     /// Called after the steer is durably part of the runtime's message list,
     /// immediately before the next provider request is constructed.
     func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async
@@ -128,6 +146,14 @@ public extension AgentEventSink {
     func agentRuntime(_ runtime: FloeAgentRuntime, didChangeLiveness snapshot: AgentLivenessSnapshot) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didChangeProviderAttempt snapshot: ProviderAttemptSnapshot) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async {}
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didSealDraftForFinalAnswerVerification draftText: String
+    ) async {}
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didConfirmVerifiedFinalAnswer draftText: String
+    ) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompact record: ContextCompactionRecord) async {}
     func agentRuntime(
@@ -654,6 +680,12 @@ public actor FloeAgentRuntime {
     private let logger = FloeLogger(category: .runtime)
     /// Guards the single self-critique pass so verification runs once.
     private var didVerifyFinalAnswer = false
+    /// The exact draft text sealed by `beginFinalAnswerVerification`. The
+    /// confirm signal passes it to persistence so the final-reply proof binds
+    /// to the sealed draft row — never to a later repair step or whatever row
+    /// happens to be newest. Reset only when the draft text itself is
+    /// superseded by a correction that was emitted to the user.
+    private var verifiedFinalAnswerDraft = ""
     /// A provider can occasionally end a turn with prose such as “I will now
     /// call the tool” without emitting a structured call. Repair that broken
     /// action boundary once; a hard cap keeps weak models from turning the
@@ -2788,6 +2820,21 @@ public actor FloeAgentRuntime {
                     await emit(.textDelta(.init(text: streamText)))
                 }
             }
+            // The final-reply proof boundary: a verification turn that
+            // answered with nothing or a bare CONFIRM leaves the sealed draft
+            // standing, so persistence must learn that draft's identity NOW —
+            // before `.completed` writes the terminal event. A repair-driven
+            // empty completion never satisfies `didVerifyFinalAnswer`, so no
+            // stale draft/step id can be proven as the answer.
+            if didVerifyFinalAnswer,
+               isFinalizingWithoutTools,
+               !verifiedFinalAnswerDraft.isEmpty,
+               Self.isBareVerificationResponse(streamText) {
+                await sink?.agentRuntime(
+                    self,
+                    didConfirmVerifiedFinalAnswer: verifiedFinalAnswerDraft
+                )
+            }
             // Forced budget/no-progress finalization also owes a visible
             // result. Keep tools disabled and preserve the checkpoint instead
             // of reporting an empty turn as successful completion.
@@ -2935,8 +2982,15 @@ public actor FloeAgentRuntime {
         didVerifyFinalAnswer = true
         forcedStopReason = stopReason
         isFinalizingWithoutTools = true
+        let sealedDraft = streamText
         messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
-        await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
+        await sink?.agentRuntime(self, didCompleteAssistantStep: sealedDraft)
+        // Record the sealed draft BEFORE the verification turn replaces
+        // `streamText`. The confirm signal re-sends this exact text so
+        // persistence binds a bare/CONFIRM review outcome to the draft row
+        // it just sealed — never to a step from an earlier repair.
+        verifiedFinalAnswerDraft = sealedDraft
+        await sink?.agentRuntime(self, didSealDraftForFinalAnswerVerification: sealedDraft)
         await transition(to: .verifying)
         messages.append(ConversationMessage(
             role: "system",
@@ -4989,6 +5043,15 @@ public actor FloeAgentRuntime {
         return "\(String(format: "%.1f", seconds))s"
     }
 
+    /// A verification review that leaves the sealed draft standing as the
+    /// final answer: an empty review or a bare "CONFIRM" (surrounding
+    /// whitespace included). Any other non-empty text is a correction that
+    /// was already emitted to the user atomically, so it never confirms.
+    private static func isBareVerificationResponse(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed.uppercased() == "CONFIRM"
+    }
+
     private func completeRun(stopReason: AgentEvent.StopReason) async {
         // A verification pass that answers with a bare confirmation should
         // not append "CONFIRM" onto the already-sealed draft answer.
@@ -5038,6 +5101,21 @@ public actor FloeAgentRuntime {
         _ labels: [RunDependencyLabel],
         stopReason: AgentEvent.StopReason
     ) async {
+        // Same final-reply proof boundary as the ordinary terminal path:
+        // when a verification turn left the sealed draft standing (nothing
+        // or a bare CONFIRM), persistence must learn the draft identity
+        // before this completion flushes the answer through the terminal
+        // channel. Repairs never set `didVerifyFinalAnswer`, so an expired
+        // draft/step id can never be proven here either.
+        if didVerifyFinalAnswer,
+           isFinalizingWithoutTools,
+           !verifiedFinalAnswerDraft.isEmpty,
+           Self.isBareVerificationResponse(streamText) {
+            await sink?.agentRuntime(
+                self,
+                didConfirmVerifiedFinalAnswer: verifiedFinalAnswerDraft
+            )
+        }
         // Flush the answer through the same completion channel the ordinary
         // terminal path uses, so the durable transcript keeps the model's
         // final text even though the run stays nonterminal.

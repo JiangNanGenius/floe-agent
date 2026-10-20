@@ -2242,6 +2242,101 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    /// Read-only exact-run readiness. An already persisted run can be
+    /// inspected, waited on or cancelled without a currently usable provider
+    /// or model configuration, so this joins only the durable launch:
+    /// single-flight bootstrap + launch recovery for runs left by a previous
+    /// process. It never reloads model configuration, never starts a task and
+    /// never invents a replacement environment.
+    ///
+    /// The capability (Shortcuts enabled) guard stays in the service, so a
+    /// disabled capability still refuses before any read.
+    func ensureDurableAutomationReady() async throws {
+        try Task.checkCancellation()
+        await bootstrap()
+        try Task.checkCancellation()
+        try verifyDurableLaunchReady()
+        // Process-latched: marks stale non-terminal runs from a dead process
+        // as interrupted so a query cannot report `running` forever. It reads
+        // runs only and does not require provider/model configuration.
+        await conversationCenter.reconcileInterruptedRunsOnLaunch()
+        try Task.checkCancellation()
+        try verifyDurableLaunchReady()
+    }
+
+    /// Exact-run service used by App Intents and Shortcuts. It projects the
+    /// SAME live environment, stores and conversation center: no second
+    /// `.live()`, database pool, runtime, or permission grant. The service
+    /// holds sendable store reads, the durable exact-run reply reader, the
+    /// system clock and weak app/center actions; a released environment never
+    /// fabricates a replacement.
+    func floeShortcutRunService() -> FloeShortcutRunService {
+        let store = runStore
+        let conversations = conversationStore
+        let replyReader = SQLiteRunReplyReader(database: database)
+        return FloeShortcutRunService(deps: FloeShortcutRunDeps(
+            ensureReady: { [weak self] access in
+                guard let self else { throw FloeShortcutRunError.applicationStillStarting }
+                switch access {
+                case .read:
+                    try await self.ensureDurableAutomationReady()
+                case .start:
+                    try await self.ensureReadyForExternalAutomation()
+                }
+            },
+            capabilityEnabled: {
+                AppleCapabilityPreferences.isEnabled(.shortcuts)
+            },
+            defaultModel: { [weak self] in
+                guard let self else { return nil }
+                let center = self.conversationCenter
+                return center.providerAndModel(modelID: center.modelPreferences.defaultAgentModelID)
+            },
+            startTask: { [weak self] request in
+                guard let self else { throw FloeShortcutRunError.applicationStillStarting }
+                let center = self.conversationCenter
+                let started = try await center.startTask(
+                    goal: request.goal,
+                    title: request.title,
+                    provider: request.provider,
+                    model: request.model,
+                    startOrigin: .externalAutomation
+                )
+                return FloeRunStartReceipt(
+                    runID: started.run.runID,
+                    conversationID: started.conversationID
+                )
+            },
+            cancelRun: { [weak self] runID in
+                guard let self else { return }
+                await self.conversationCenter.cancel(runID: runID)
+            },
+            hasLiveOwner: { [weak self] runID in
+                guard let self else { return false }
+                return self.conversationCenter.hasLiveOwner(runID: runID)
+            },
+            loadRun: { runID in
+                try await store.run(id: runID)
+            },
+            loadConversation: { conversationID in
+                try await conversations.conversation(id: conversationID)
+            },
+            recentRunEvents: { runID, limit in
+                try await store.recentEvents(runID: runID, limit: limit)
+            },
+            earlierRunEvents: { runID, sequence, limit in
+                try await store.earlierEvents(
+                    runID: runID, beforeSequence: sequence, limit: limit
+                )
+            },
+            provenFinalReplyText: { runID, conversationID, messageID in
+                try await replyReader.provenFinalReplyText(
+                    runID: runID, conversationID: conversationID, messageID: messageID
+                )
+            }
+        ))
+    }
+
     private func verifyDurableLaunchReady() throws {
         guard !isEphemeral, persistenceReady, bootstrapError == nil else {
             throw FloeShortcutRunError.durableStorageUnavailable
@@ -2279,6 +2374,20 @@ final class AppEnvironment: ObservableObject {
             )
         ]
     }
+
+    #if DEBUG
+    /// Hosted-test seam: publishes an ISOLATED in-memory environment as
+    /// durably launched so the production Shortcuts factory and readiness
+    /// layers can be exercised without running launch maintenance (Notes
+    /// reconciliation, credential queues, CloudKit, fonts) against shared
+    /// service roots. It writes no defaults, model configuration or
+    /// notification state. Release builds do not contain this method.
+    func markIsolatedLaunchReadyForTesting() {
+        bootstrapDidCompleteSuccessfully = true
+        persistenceReady = true
+        bootstrapError = nil
+    }
+    #endif
 
     /// In-memory environment for tests and SwiftUI previews.
     static func preview() -> AppEnvironment {

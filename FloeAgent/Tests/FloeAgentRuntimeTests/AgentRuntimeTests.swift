@@ -201,17 +201,52 @@ final class RecordingApprovalBackend: ModelApprovalPolicy.DecisionBackend, @unch
 }
 
 final class MockSink: AgentEventSink, @unchecked Sendable {
-    private let storage = AsyncLock<(transitions: [String], events: [AgentEvent], approvalReceipts: [String])>(([], [], []))
+    private struct State {
+        var transitions: [String] = []
+        var events: [AgentEvent] = []
+        var approvalReceipts: [String] = []
+        var verifiedDraftSeals: [String] = []
+        var verifiedDraftConfirmations: [String] = []
+        /// Relative order of the proof signals against the completion event.
+        var proofLog: [String] = []
+    }
+    private let storage = AsyncLock(State())
     var transitions: [String] { storage.withLock { $0.transitions } }
     var events: [AgentEvent] { storage.withLock { $0.events } }
     var approvalReceipts: [String] { storage.withLock { $0.approvalReceipts } }
+    var verifiedDraftSeals: [String] { storage.withLock { $0.verifiedDraftSeals } }
+    var verifiedDraftConfirmations: [String] { storage.withLock { $0.verifiedDraftConfirmations } }
+    var proofLog: [String] { storage.withLock { $0.proofLog } }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
         storage.withLock { $0.transitions.append(state.name) }
     }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didEmit event: AgentEvent) async {
-        storage.withLock { $0.events.append(event) }
+        storage.withLock {
+            $0.events.append(event)
+            if case .completed = event { $0.proofLog.append("completed") }
+        }
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didSealDraftForFinalAnswerVerification draftText: String
+    ) async {
+        storage.withLock {
+            $0.verifiedDraftSeals.append(draftText)
+            $0.proofLog.append("seal")
+        }
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didConfirmVerifiedFinalAnswer draftText: String
+    ) async {
+        storage.withLock {
+            $0.verifiedDraftConfirmations.append(draftText)
+            $0.proofLog.append("confirm")
+        }
     }
 
     func agentRuntime(
@@ -396,6 +431,85 @@ struct AgentRuntimeTests {
             return delta.text
         }
         #expect(visibleText == ["Draft answer", "Corrected answer"])
+    }
+
+    @Test("A bare CONFIRM seals once and confirms once, strictly before the completion event")
+    func bareConfirmEmitsProofSignalsInOrder() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [
+            [
+                .textDelta(.init(text: "Complete answer")),
+                .completed(.init(stopReason: .endTurn))
+            ],
+            [
+                .textDelta(.init(text: " CONFIRM ")),
+                .completed(.init(stopReason: .endTurn))
+            ]
+        ]
+        let sink = MockSink()
+        let runtime = makeRuntime(adapter: adapter, sink: sink, verifyFinalAnswer: true)
+        try await runtime.start(goal: "answer carefully")
+
+        // The seal carries the exact draft text and the confirm re-sends it
+        // immediately BEFORE the single `.completed` event, so persistence
+        // can bind the terminal marker to the sealed draft row.
+        #expect(sink.verifiedDraftSeals == ["Complete answer"])
+        #expect(sink.verifiedDraftConfirmations == ["Complete answer"])
+        #expect(sink.proofLog == ["seal", "confirm", "completed"])
+    }
+
+    @Test("A verification correction never confirms the old draft")
+    func correctionEmitsNoConfirmSignal() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [
+            [
+                .textDelta(.init(text: "Draft answer")),
+                .completed(.init(stopReason: .endTurn))
+            ],
+            [
+                .textDelta(.init(text: "Corrected answer")),
+                .completed(.init(stopReason: .endTurn))
+            ]
+        ]
+        let sink = MockSink()
+        let runtime = makeRuntime(adapter: adapter, sink: sink, verifyFinalAnswer: true)
+        try await runtime.start(goal: "answer carefully")
+
+        // The draft was sealed for review, but a non-CONFIRM review outcome
+        // must never prove the old draft; the correction text itself becomes
+        // the answer on the ordinary persistence path.
+        #expect(sink.verifiedDraftSeals == ["Draft answer"])
+        #expect(sink.verifiedDraftConfirmations.isEmpty)
+        #expect(sink.proofLog == ["seal", "completed"])
+    }
+
+    @Test("A deferred-action repair seals nothing and confirms nothing")
+    func deferredActionRepairEmitsNoProofSignals() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [
+            [
+                .textDelta(.init(text: "I will now check the logs")),
+                .completed(.init(stopReason: .endTurn))
+            ],
+            [
+                .textDelta(.init(text: "Checked. Final answer.")),
+                .completed(.init(stopReason: .endTurn))
+            ]
+        ]
+        let sink = MockSink()
+        let executor = MockExecutor()
+        executor.descriptors["test.echo"] = ToolCatalog.Descriptor(
+            name: "test.echo", riskLabels: [], isSideEffecting: false
+        )
+        let runtime = makeRuntime(adapter: adapter, executor: executor, sink: sink)
+        try await runtime.start(goal: "check the logs")
+
+        // Repairs are step boundaries, not verifications: neither proof
+        // signal may fire, so no repair step can ever be adopted as the
+        // final reply.
+        #expect(sink.transitions.contains("verifying"))
+        #expect(sink.verifiedDraftSeals.isEmpty)
+        #expect(sink.verifiedDraftConfirmations.isEmpty)
     }
 
     @Test("A local model turn with no visible answer earns one bounded continuation, then completes")

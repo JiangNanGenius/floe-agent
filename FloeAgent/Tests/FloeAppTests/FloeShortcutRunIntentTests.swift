@@ -1,0 +1,410 @@
+// S3-C focused tests for the ACTUAL App Intent `perform()` entry points.
+//
+// The intents are constructed and executed exactly as Shortcuts would, but the
+// service is injected through the DEBUG task-local seam: no launched App,
+// preview bootstrap, real settings, user defaults, tasks or drafts are read or
+// written, and no model is called. The seam is compiled out of Release.
+
+#if canImport(AppIntents) && DEBUG
+import AppIntents
+import XCTest
+@testable import FloeApp
+import FloeCore
+import FloeModels
+import FloePersistence
+
+final class FloeShortcutRunIntentTests: XCTestCase {
+
+    private let conversationID = UUID(uuidString: "5C5C5C5C-0000-4000-8000-000000000001")!
+    private let otherConversationID = UUID(uuidString: "6D6D6D6D-0000-4000-8000-000000000002")!
+    private let runID = UUID(uuidString: "7E7E7E7E-0000-4000-8000-000000000003")!
+
+    private struct StoredRow {
+        var runID: UUID
+        var conversationID: UUID
+        var role: String
+        var text: String
+    }
+
+    private final class World: @unchecked Sendable {
+        var runs: [UUID: RunRecord] = [:]
+        var conversations: [UUID: ConversationRecord] = [:]
+        var events: [UUID: [RunEventRecord]] = [:]
+        var rows: [UUID: StoredRow] = [:]
+        var liveOwners: Set<UUID> = []
+        var cancelCalls: [UUID] = []
+        var startReceipt: FloeRunStartReceipt?
+        var virtualTime: TimeInterval = 0
+    }
+
+    private func makeService(_ world: World) -> FloeShortcutRunService {
+        let provider = ProviderProfile(
+            id: UUID(), kind: .openAI, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://example.invalid/v1")!, displayName: "Test")
+        let model = ModelProfile(
+            id: UUID(), providerID: provider.id, remoteModelID: "test-model",
+            displayName: "Test", limits: ModelLimits(contextTokens: 8_000, maxOutputTokens: 1_000))
+        return FloeShortcutRunService(deps: FloeShortcutRunDeps(
+            ensureReady: { _ in },
+            capabilityEnabled: { true },
+            defaultModel: { (provider: provider, model: model) },
+            startTask: { _ in
+                world.startReceipt ?? FloeRunStartReceipt(
+                    runID: UUID(), conversationID: UUID())
+            },
+            cancelRun: { world.cancelCalls.append($0) },
+            hasLiveOwner: { world.liveOwners.contains($0) },
+            loadRun: { world.runs[$0] },
+            loadConversation: { world.conversations[$0] },
+            recentRunEvents: { runID, limit in
+                Array((world.events[runID] ?? []).suffix(limit))
+            },
+            earlierRunEvents: { runID, sequence, limit in
+                Array((world.events[runID] ?? []).filter { $0.sequence < sequence }.suffix(limit))
+            },
+            provenFinalReplyText: { runID, conversationID, messageID in
+                guard let row = world.rows[messageID],
+                      row.runID == runID,
+                      row.conversationID == conversationID,
+                      row.role == "assistant" else { return nil }
+                return row.text
+            },
+            monotonicNow: { world.virtualTime },
+            pause: { seconds in
+                world.virtualTime += seconds
+                await Task.yield()
+            }
+        ))
+    }
+
+    private func seedCompleted(
+        _ world: World,
+        answer: String?,
+        state: String = "completed",
+        stopReason: String = "endTurn",
+        prefixEvents: [RunEventRecord] = []
+    ) {
+        world.runs[runID] = RunRecord(
+            id: runID, conversationID: conversationID, state: state,
+            goal: "Synthetic intent goal",
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            endedAt: Date(timeIntervalSince1970: 1_700_000_100))
+        world.conversations[conversationID] = ConversationRecord(
+            id: conversationID, title: "Synthetic intent task",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_100))
+        var events = prefixEvents
+        var finalMessageID: UUID?
+        if let answer {
+            let messageID = UUID()
+            finalMessageID = messageID
+            world.rows[messageID] = StoredRow(
+                runID: runID, conversationID: conversationID, role: "assistant",
+                text: answer)
+            events.append(RunEventRecord(
+                runID: runID, sequence: 999, kind: .assistantText,
+                payloadJSON: "{\"text\":\"\(answer)\"}"))
+        }
+        // The production terminal marker carries the proven message id only
+        // when that row really persisted (or a real CONFIRM bound it).
+        let marker = finalMessageID.map {
+            ",\"finalMessageID\":\"\($0.uuidString)\""
+        } ?? ""
+        world.events[runID] = events + [
+            RunEventRecord(runID: runID, sequence: 1_000, kind: .terminal,
+                           payloadJSON: "{\"stopReason\":\"\(stopReason)\"}\(marker)")
+        ]
+    }
+
+    private func entity(
+        conversationID: UUID? = nil,
+        title: String = "Synthetic intent task"
+    ) -> FloeShortcutRunEntity {
+        FloeShortcutRunEntity(
+            runID: runID, conversationID: conversationID ?? self.conversationID,
+            title: title, state: .running, isFinished: false, isSuccessful: false,
+            requiresUserAction: false)
+    }
+
+    // MARK: Status
+
+    @MainActor
+    func testStatusIntentReturnsTheExactRun() async throws {
+        let world = World()
+        seedCompleted(world, answer: "Final answer")
+        let service = makeService(world)
+        var intent = GetFloeRunStatusIntent()
+        intent.run = entity()
+
+        let result = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+            try await intent.perform()
+        }
+        XCTAssertEqual(result.value.runID, runID.uuidString)
+        XCTAssertEqual(result.value.conversationID, conversationID.uuidString)
+        XCTAssertEqual(result.value.state, .completed)
+        XCTAssertTrue(result.value.isFinished)
+        XCTAssertTrue(result.value.isSuccessful)
+    }
+
+    @MainActor
+    func testStatusIntentRejectsCrossTaskReference() async throws {
+        let world = World()
+        seedCompleted(world, answer: "Final answer")
+        let service = makeService(world)
+        var intent = GetFloeRunStatusIntent()
+        intent.run = entity(conversationID: otherConversationID)
+
+        do {
+            _ = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+                try await intent.perform()
+            }
+            XCTFail("a reference to another task must be rejected")
+        } catch let error as FloeShortcutActionError {
+            XCTAssertEqual(error.message, FloeL10n.l("shortcuts.run.error.ownership"))
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+    }
+
+    @MainActor
+    func testStatusIntentRejectsMalformedTaskIdentifier() async throws {
+        let world = World()
+        seedCompleted(world, answer: "Final answer")
+        let service = makeService(world)
+        var entity = entity()
+        entity.conversationID = "not-a-uuid"
+        var intent = GetFloeRunStatusIntent()
+        intent.run = entity
+
+        do {
+            _ = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+                try await intent.perform()
+            }
+            XCTFail("a non-empty malformed task identity must be rejected")
+        } catch let error as FloeShortcutActionError {
+            XCTAssertEqual(error.message, FloeL10n.l("shortcuts.run.error.invalid_id"))
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+    }
+
+    @MainActor
+    func testStatusIntentRejectsEmptyTaskIdentifier() async throws {
+        let world = World()
+        seedCompleted(world, answer: "Final answer")
+        let service = makeService(world)
+        var entity = entity()
+        entity.conversationID = ""
+        var intent = GetFloeRunStatusIntent()
+        intent.run = entity
+
+        do {
+            _ = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+                try await intent.perform()
+            }
+            XCTFail("an action reference without its owning task must be rejected")
+        } catch let error as FloeShortcutActionError {
+            XCTAssertEqual(error.message, FloeL10n.l("shortcuts.run.error.invalid_id"))
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+    }
+
+    @MainActor
+    func testCancelIntentRejectsMalformedTaskIdentifierBeforeStopping() async throws {
+        let world = World()
+        world.runs[runID] = RunRecord(
+            id: runID, conversationID: conversationID, state: "streamingModel",
+            goal: "Synthetic running goal",
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000), endedAt: nil)
+        world.conversations[conversationID] = ConversationRecord(
+            id: conversationID, title: "Synthetic running task",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        world.liveOwners.insert(runID)
+        let service = makeService(world)
+        var entity = entity()
+        entity.conversationID = "not-a-uuid"
+        var intent = CancelFloeRunIntent()
+        intent.run = entity
+
+        do {
+            _ = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+                try await intent.perform()
+            }
+            XCTFail("a non-empty malformed task identity must not cancel")
+        } catch let error as FloeShortcutActionError {
+            XCTAssertEqual(error.message, FloeL10n.l("shortcuts.run.error.invalid_id"))
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+        XCTAssertTrue(world.cancelCalls.isEmpty)
+    }
+
+    /// Rehydration silently skips identifiers that are not UUIDs and never
+    /// falls back to a conversation's latest run.
+    @MainActor
+    func testEntityQuerySkipsMalformedRunIdentifiers() async throws {
+        let query = FloeShortcutRunEntityQuery()
+        let values = try await query.entities(for: ["not-a-uuid", ""])
+        XCTAssertTrue(values.isEmpty)
+    }
+
+    // MARK: Text
+
+    @MainActor
+    func testTextIntentReturnsOnlyTheExactRunsFinalText() async throws {
+        let world = World()
+        seedCompleted(world, answer: "Final answer for this run")
+        let service = makeService(world)
+        var intent = GetFloeRunTextIntent()
+        intent.run = entity()
+        intent.includePartial = false
+
+        let result = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+            try await intent.perform()
+        }
+        XCTAssertEqual(result.value, "Final answer for this run")
+    }
+
+    @MainActor
+    func testTextIntentRefusesStepOnlyRun() async throws {
+        let world = World()
+        seedCompleted(
+            world, answer: "I will check",
+            prefixEvents: [RunEventRecord(
+                runID: runID, sequence: 900, kind: .error,
+                payloadJSON: "{\"message\":\"noFinalText\"}")])
+        let service = makeService(world)
+        var intent = GetFloeRunTextIntent()
+        intent.run = entity()
+        intent.includePartial = true
+
+        do {
+            _ = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+                try await intent.perform()
+            }
+            XCTFail("an intermediate step must never be returned as the result")
+        } catch let error as FloeShortcutActionError {
+            XCTAssertEqual(error.message, FloeL10n.l("shortcuts.run.error.no_reply"))
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+    }
+
+    // MARK: Wait
+
+    @MainActor
+    func testWaitIntentReportsTimedOutWithoutStoppingTheRun() async throws {
+        let world = World()
+        world.runs[runID] = RunRecord(
+            id: runID, conversationID: conversationID, state: "streamingModel",
+            goal: "Synthetic running goal",
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000), endedAt: nil)
+        world.conversations[conversationID] = ConversationRecord(
+            id: conversationID, title: "Synthetic running task",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let service = makeService(world)
+        var intent = WaitForFloeRunIntent()
+        intent.run = entity()
+        intent.timeoutSeconds = 1
+
+        let result = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+            try await intent.perform()
+        }
+        XCTAssertTrue(result.value.waitTimedOut)
+        XCTAssertEqual(result.value.state, .running)
+        XCTAssertTrue(world.cancelCalls.isEmpty,
+            "a timed-out wait must not cancel the target run")
+    }
+
+    // MARK: Cancel
+
+    @MainActor
+    func testCancelIntentRejectsCrossTaskReferenceBeforeStopping() async throws {
+        let world = World()
+        world.runs[runID] = RunRecord(
+            id: runID, conversationID: conversationID, state: "streamingModel",
+            goal: "Synthetic running goal",
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000), endedAt: nil)
+        world.conversations[conversationID] = ConversationRecord(
+            id: conversationID, title: "Synthetic running task",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        world.liveOwners.insert(runID)
+        let service = makeService(world)
+        var intent = CancelFloeRunIntent()
+        intent.run = entity(conversationID: otherConversationID)
+
+        do {
+            _ = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+                try await intent.perform()
+            }
+            XCTFail("a reference to another task must not cancel")
+        } catch let error as FloeShortcutActionError {
+            XCTAssertEqual(error.message, FloeL10n.l("shortcuts.run.error.ownership"))
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+        XCTAssertTrue(world.cancelCalls.isEmpty)
+        XCTAssertEqual(world.runs[runID]?.state, "streamingModel")
+    }
+
+    @MainActor
+    func testCancelIntentOnFinishedRunReportsFinishedWithoutRequesting() async throws {
+        let world = World()
+        seedCompleted(world, answer: "Final answer")
+        let service = makeService(world)
+        var intent = CancelFloeRunIntent()
+        intent.run = entity()
+
+        let result = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+            try await intent.perform()
+        }
+        XCTAssertTrue(world.cancelCalls.isEmpty)
+        XCTAssertTrue(result.value.isFinished)
+        XCTAssertFalse(result.value.cancellationRequested)
+    }
+
+    // MARK: Start
+
+    @MainActor
+    func testStartIntentReturnsTheReceiptsExactRun() async throws {
+        let world = World()
+        let receipt = FloeRunStartReceipt(runID: runID, conversationID: conversationID)
+        world.startReceipt = receipt
+        world.runs[runID] = RunRecord(
+            id: runID, conversationID: conversationID, state: "preparing",
+            goal: "Synthetic start goal",
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000), endedAt: nil)
+        world.conversations[conversationID] = ConversationRecord(
+            id: conversationID, title: "Synthetic start task",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let service = makeService(world)
+        var intent = StartFloeRunIntent()
+        intent.prompt = "Do the thing"
+        intent.taskTitle = nil
+
+        let result = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+            try await intent.perform()
+        }
+        XCTAssertEqual(result.value.runID, runID.uuidString)
+        XCTAssertEqual(result.value.conversationID, conversationID.uuidString)
+    }
+
+    // MARK: Legacy compatibility
+
+    /// Compile-time contract: the historical RunFloeTaskIntent continues to
+    /// return its original String identifier. The closure is never called, so
+    /// no real task/model/settings are touched.
+    @MainActor
+    func testLegacyRunIntentStillReturnsStringIdentifier() {
+        let perform: @MainActor (RunFloeTaskIntent) async throws -> String = { intent in
+            try await intent.perform().value
+        }
+        _ = perform
+    }
+}
+#endif

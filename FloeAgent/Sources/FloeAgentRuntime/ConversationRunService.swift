@@ -117,6 +117,20 @@ public actor ConversationRunService {
     /// from a provider completion that never produced an answer.
     private var verificationDraftPersisted = false
     private var lastCompletedAssistantStepText = ""
+    /// The most recent step-row persistence ATTEMPT (any text, whether or not
+    /// the write ultimately succeeded). A verification seal may only adopt the
+    /// attempt that just ran and actually persisted; a failed attempt leaves a
+    /// non-persisted marker, so an older row with identical text can never be
+    /// re-proven as the new draft.
+    private var lastStepAttempt: (messageID: UUID, text: String, persisted: Bool)?
+    /// Draft sealed by the final-answer verification pass (text + persisted
+    /// row id). Only a matching confirmation adopts it as the proven final
+    /// reply; repairs never create this candidate.
+    private var verifiedFinalDraftSeal: (messageID: UUID, draftText: String)?
+    /// Set only when the harness confirmed the sealed draft stands (the review
+    /// answered nothing or a bare CONFIRM). The terminal marker then carries
+    /// exactly this message id.
+    private var confirmedFinalDraftMessageID: UUID?
     private var unpublishedAnswerText = ""
     private var answerPushTask: Task<Void, Never>?
     private var reasoningText = ""
@@ -359,6 +373,12 @@ public actor ConversationRunService {
         }
         forwarder.onAssistantStep = { [weak self] text in
             await self?.handleAssistantStep(text)
+        }
+        forwarder.onVerifiedDraftSeal = { [weak self] draftText in
+            await self?.handleVerifiedDraftSeal(draftText)
+        }
+        forwarder.onVerifiedDraftConfirmation = { [weak self] draftText in
+            await self?.handleVerifiedDraftConfirmation(draftText)
         }
         forwarder.onSteerConsumed = { [weak self] input in
             await self?.handleConsumedSteer(input)
@@ -659,6 +679,14 @@ public actor ConversationRunService {
         await flushReasoning()
         await flushAssistantSegment()
         let messageID = UUID()
+        // Freshness BEFORE the write: any new step attempt invalidates the
+        // previous verification seal/confirmation and replaces the attempt
+        // marker with a non-persisted one. If this write fails, no candidate
+        // survives — not even when the repeated text is byte-identical to an
+        // older persisted step row.
+        verifiedFinalDraftSeal = nil
+        confirmedFinalDraftMessageID = nil
+        lastStepAttempt = (messageID, text, persisted: false)
         let persisted = await appendMessageReliably(PersistedMessage(
             id: messageID,
             conversationID: conversationID,
@@ -670,10 +698,41 @@ public actor ConversationRunService {
             runID: runID
         ), boundary: "assistantStep")
         guard persisted else { return }
+        if lastStepAttempt?.messageID == messageID {
+            lastStepAttempt?.persisted = true
+        }
         lastCompletedAssistantStepText = text
         streamedText = ""
         reasoningText = ""
         eventChannel.yield(.stateChanged(Self.harnessState(latestState)))
+    }
+
+    /// The verification pass sealed exactly this draft step. Adopt the row
+    /// identity only when the JUST-ATTEMPTED write persisted successfully;
+    /// text equality against an older successful step is never enough, so a
+    /// failed save of repeated text cannot re-adopt a stale row.
+    private func handleVerifiedDraftSeal(_ draftText: String) {
+        guard !draftText.isEmpty,
+              let attempt = lastStepAttempt,
+              attempt.persisted,
+              attempt.text == draftText else { return }
+        verifiedFinalDraftSeal = (attempt.messageID, draftText)
+        confirmedFinalDraftMessageID = nil
+    }
+
+    /// The harness confirmed that the sealed draft stands as the final
+    /// answer. Adopt only the matching seal candidate while the same
+    /// persisted attempt is still current; a repair-driven completion never
+    /// sends this signal, so no step id is proven by default.
+    private func handleVerifiedDraftConfirmation(_ draftText: String) {
+        guard let seal = verifiedFinalDraftSeal,
+              seal.draftText == draftText,
+              let attempt = lastStepAttempt,
+              attempt.messageID == seal.messageID,
+              attempt.persisted,
+              attempt.text == draftText else { return }
+        confirmedFinalDraftMessageID = seal.messageID
+        verifiedFinalDraftSeal = nil
     }
 
     /// The execution mode only the trusted-UI design-assistant confirmation
@@ -1285,6 +1344,12 @@ public actor ConversationRunService {
             // message for model context; the terminal event must always be
             // the last event of a successful run so "Completed" can never
             // render above the final answer.
+            // The final-reply proof: exactly one persisted assistant row is
+            // designated as this run's answer, and its id travels inside the
+            // terminal marker's payload. Readers must resolve that id against
+            // run + conversation + assistant role; nothing here infers the
+            // answer from "latest row" ordering.
+            var provenFinalReplyID: UUID?
             if !streamedText.isEmpty {
                 let messageID = UUID()
                 let finalMessagePersisted = await appendMessageReliably(PersistedMessage(
@@ -1299,11 +1364,23 @@ public actor ConversationRunService {
                 ), boundary: "finalAssistant", completionCritical: true)
                 if finalMessagePersisted {
                     logger.info("finalMessagePersisted run=\(runID.uuidString) messageID=\(messageID.uuidString)")
+                    provenFinalReplyID = messageID
                 }
-            } else if !verificationDraftPersisted {
+            } else if let confirmedID = confirmedFinalDraftMessageID {
+                // A real final-answer verification CONFIRM: the sealed draft
+                // row stands as the answer. Prove exactly that persisted id;
+                // no new row is written and no step is inferred.
+                provenFinalReplyID = confirmedID
+                logger.info("finalAnswerVerified run=\(runID.uuidString) result=confirmed messageID=\(confirmedID.uuidString)")
+            } else if verifiedFinalDraftSeal == nil {
                 // The provider reported a stop reason without any final
-                // text. That is an honest failure surface, not a silent
-                // success: the timeline renders it as "no final reply".
+                // text and no verification draft stands behind it. That is
+                // an honest failure surface, not a silent success: the
+                // timeline renders it as "no final reply". This also covers
+                // a deferred-action/action-claim repair that ended with an
+                // empty result: its sealed step row must not acquire
+                // final-reply proof, and silently omitting the marker would
+                // let consumers mistake the step for the answer.
                 logger.warning("finalMessageMissing run=\(runID.uuidString) stopReason=\(completion.stopReason.rawValue)")
                 _ = await appendEventReliably(
                     runID: runID,
@@ -1313,7 +1390,12 @@ public actor ConversationRunService {
                     completionCritical: true
                 )
             } else {
-                logger.info("finalAnswerVerified run=\(runID.uuidString) result=confirmed")
+                // A verification pass sealed a draft but its outcome did not
+                // reach this completion as a bare CONFIRM (a correction was
+                // lost, or the seal/confirm pairing failed). Keep the
+                // historical silence: no final message and no false proof —
+                // consumers must treat the missing marker as an absence.
+                logger.warning("finalAnswerVerificationUnconfirmed run=\(runID.uuidString)")
             }
             // The byte safety cap rejected real provider output. Persist one
             // non-fatal notice ahead of the terminal marker so the shortened
@@ -1338,9 +1420,15 @@ public actor ConversationRunService {
                 )
             }
             if durabilityFailure == nil {
+                var terminalPayload: [String: String] = [
+                    "stopReason": completion.stopReason.rawValue
+                ]
+                if let provenFinalReplyID {
+                    terminalPayload["finalMessageID"] = provenFinalReplyID.uuidString
+                }
                 let terminalPersisted = await appendEventReliably(
                     runID: runID, kind: .terminal,
-                    payloadJSON: Self.jsonPayload(["stopReason": completion.stopReason.rawValue]),
+                    payloadJSON: Self.jsonPayload(terminalPayload),
                     boundary: "terminal",
                     completionCritical: true
                 )
@@ -2222,6 +2310,8 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onLiveness: (@Sendable (AgentLivenessSnapshot) async -> Void)?
     var onProviderAttempt: (@Sendable (ProviderAttemptSnapshot) async -> Void)?
     var onAssistantStep: (@Sendable (String) async -> Void)?
+    var onVerifiedDraftSeal: (@Sendable (String) async -> Void)?
+    var onVerifiedDraftConfirmation: (@Sendable (String) async -> Void)?
     var onSteerConsumed: (@Sendable (RuntimeSteerInput) async -> Void)?
     var onCompaction: (@Sendable (ContextCompactionRecord) async -> Void)?
     var onApprovalReview: (@Sendable (ApprovalReviewSnapshot) async -> Void)?
@@ -2264,6 +2354,20 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async {
         await onAssistantStep?(text)
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didSealDraftForFinalAnswerVerification draftText: String
+    ) async {
+        await onVerifiedDraftSeal?(draftText)
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didConfirmVerifiedFinalAnswer draftText: String
+    ) async {
+        await onVerifiedDraftConfirmation?(draftText)
     }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async {
