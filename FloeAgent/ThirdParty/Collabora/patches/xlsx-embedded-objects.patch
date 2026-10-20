@@ -1755,7 +1755,7 @@ diff --git a/engine/sd/source/filter/eppt/pptx-epptooxml.cxx b/engine/sd/source/
      Reference< drawing::XDrawPage > xSlide = xDrawPages->insertNewByIndex(xDrawPages->getCount());
 +    comphelper::ScopeGuard aRemoveTemporarySlide([&] {
 +        try { xDrawPages->remove(xSlide); }
-+        catch (const uno::Exception&) { SAL_WARN("sd.eppt", "Could not remove temporary layout slide"); }
++        catch (...) { SAL_WARN("sd.eppt", "Could not remove temporary layout slide"); }
 +    });
  
  #if OSL_DEBUG_LEVEL >= 2
