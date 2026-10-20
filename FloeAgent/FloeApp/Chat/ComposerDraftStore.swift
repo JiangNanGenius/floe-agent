@@ -241,8 +241,18 @@ final class ComposerDraftStore: ObservableObject {
 
     init(fileURL: URL, writeQueue: DispatchQueue? = nil) {
         self.fileURL = fileURL
+        // Deliberately no explicit QoS class: an item submitted from the main
+        // actor runs at that thread's class. `flushAndWait` PARKS the main
+        // thread while it waits for this queue, so a queue pinned to a lower
+        // class inverts the dependency and the write attempt can miss the
+        // deadline even though nothing is wrong on disk (canonical-iPad native
+        // run: a blocked durable path plus a 1 s bounded flush left
+        // `lastWriteState` `.pending` because the utility work item had not
+        // run yet). Serialization still never runs on the main thread, so
+        // keystrokes are not delayed; only the awaited durability work
+        // inherits the class of the thread waiting for it.
         self.writeQueue = writeQueue ?? DispatchQueue(
-            label: "app.floe.composer-drafts.write", qos: .utility
+            label: "app.floe.composer-drafts.write"
         )
         var loaded: [UUID: Entry] = [:]
         var loadedHandoffs: [UUID: ShortcutHandoffReceipt] = [:]
@@ -648,6 +658,12 @@ final class ComposerDraftStore: ObservableObject {
         pendingWrite = nil
         let version = snapshotVersion
         submitSnapshot()
+        // The signal is enqueued behind the submitted snapshot on the serial
+        // queue, so a completed wait means exactly this attempt finished (and
+        // a failed attempt already published its failure). The writer runs at
+        // this parked thread's class (see init): if the deadline expires
+        // before the attempt was scheduled, nothing has failed yet and
+        // `syncWriteState` honestly stays `.pending`.
         let semaphore = DispatchSemaphore(value: 0)
         writeQueue.async { semaphore.signal() }
         let finished = semaphore.wait(timeout: .now() + timeout) == .success

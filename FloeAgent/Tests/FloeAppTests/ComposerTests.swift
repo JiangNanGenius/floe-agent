@@ -341,6 +341,40 @@ struct ComposerDraftStoreTests {
         try? FileManager.default.removeItem(at: parent)
     }
 
+    @Test("A starved flush reports pending until the attempt's real failure is published")
+    func starvedFlushPublishesOnlyRealFailure() throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("composer-starved-\(UUID().uuidString)")
+        // Same blocked durable path as above: the creation and the atomic
+        // write both fail deterministically once an attempt runs.
+        try Data("blocked".utf8).write(to: parent)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let url = parent.appendingPathComponent("drafts.json")
+        // A suspended serial writer occupies the queue, so no attempt can run
+        // before the first bounded deadline expires. This is the shape the
+        // canonical-iPad run hit for real: `flushAndWait` parked the main
+        // thread at user-interactive QoS while the writer queue was pinned to
+        // `.utility`, the attempt missed its 1 s deadline, and the failure
+        // notice was still nil when the caller read it.
+        let queue = DispatchQueue(label: "floe-test-composer-writer-starved")
+        queue.suspend()
+        let store = ComposerDraftStore(fileURL: url, writeQueue: queue)
+        let id = UUID()
+        store.save(text: "无法落盘的内容", conversationID: id)
+        #expect(!store.flushAndWait(timeout: 0.3))
+        // No attempt has run, so asserting a failure here would be a lie. A
+        // bounded flush that timed out can only prove "pending"; the failure
+        // message must appear once the real attempt has failed.
+        #expect(store.lastWriteState == .pending)
+        #expect(store.lastWriteState.failureMessage == nil)
+        queue.resume()
+        // The queued attempt now runs and fails; the next bounded flush
+        // observes that real failure synchronously, before it returns.
+        #expect(!store.flushAndWait(timeout: 2))
+        #expect(store.lastWriteState.failureMessage != nil)
+        #expect(store.text(for: id) == "无法落盘的内容")
+    }
+
     @Test("An unreadable draft file is preserved and the failure is reported")
     func corruptFilePreserved() throws {
         let directory = FileManager.default.temporaryDirectory
