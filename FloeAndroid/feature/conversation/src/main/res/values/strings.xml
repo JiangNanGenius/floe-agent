@@ -1,0 +1,322 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Conversation flow (Floe Android G02). ⇄ FloeApp chat/history localization
+     keys; Apple-only speech/sync wording is replaced by honest Android copy;
+     internal diagnostic vocabulary never appears in ordinary text. -->
+<resources>
+    <!-- shared actions -->
+    <string name="action_approve">Approve</string>
+    <string name="action_deny">Deny</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_stop">Stop</string>
+    <string name="action_continue">Continue</string>
+    <string name="action_copy">Copy</string>
+    <string name="action_copied">Copied</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_save">Save</string>
+    <string name="action_done">Done</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_edit">Edit</string>
+    <string name="action_expand">Expand</string>
+    <string name="action_hide">Hide</string>
+    <string name="action_view">View</string>
+    <string name="action_back">Back</string>
+    <string name="action_read_aloud">Read aloud</string>
+    <string name="dismiss_error">Dismiss</string>
+    <string name="loading_cd">Loading</string>
+    <string name="show_more_output">Show more</string>
+    <string name="setup_open">Open setup</string>
+    <string name="add_provider_hint">Add a model provider to start a conversation.</string>
+
+    <!-- thread chrome -->
+    <string name="thread_title_default">Chat</string>
+    <string name="thread_send">Send</string>
+    <string name="thread_inspector_menu">Thread options</string>
+    <string name="thread_empty_title">No messages yet</string>
+    <string name="thread_empty_hint">Send a message to start this conversation.</string>
+    <string name="thread_no_final_reply">This run ended without a final reply.</string>
+    <string name="jump_to_latest">Jump to latest</string>
+    <string name="chat_select_or_new">This conversation is no longer available. Start a new task.</string>
+    <string name="role_user">You</string>
+    <string name="role_assistant">Assistant</string>
+    <string name="continuation_default">This task can continue from its last safe checkpoint.</string>
+    <string name="state_waiting_background_work">Waiting for background work</string>
+    <string name="state_contacting_provider">Contacting provider…</string>
+    <string name="state_thinking">Thinking…</string>
+
+    <!-- run-state vocabulary (only these titles are user-visible) -->
+    <string name="state_preparing">Preparing</string>
+    <string name="state_streaming">Generating</string>
+    <string name="state_reconnecting">Reconnecting</string>
+    <string name="state_committing_results">Saving results</string>
+    <string name="state_reviewing_approval">Reviewing approval</string>
+    <string name="state_verifying">Verifying</string>
+    <string name="state_executing_tool">Running a tool</string>
+    <string name="state_waiting_approval">Waiting for your approval</string>
+    <string name="state_compacting">Compacting context</string>
+    <string name="state_paused">Paused</string>
+    <string name="state_blocked">Blocked — action needed</string>
+    <string name="state_budget_limited">Budget reached</string>
+    <string name="state_truncated">Output unfinished — you can continue</string>
+    <string name="state_waiting_user">Waiting for your input</string>
+    <string name="state_stopped">Stopped</string>
+    <string name="state_cancelling">Stopping</string>
+    <string name="state_round_ended">Round ended</string>
+    <string name="state_recovery_failed">Recovery failed</string>
+    <string name="state_failed">Failed</string>
+    <string name="state_task_unfinished">Task unfinished — you can continue</string>
+    <string name="state_unknown">Unknown state</string>
+
+    <!-- tool cards -->
+    <string name="tool_status_succeeded">Succeeded</string>
+    <string name="tool_status_failed">Failed</string>
+    <string name="tool_status_running">Running</string>
+    <string name="tool_status_pending">Pending</string>
+    <string name="tool_status_needs_user">Needs you</string>
+    <string name="tool_status_denied">Denied</string>
+    <string name="tool_status_expired">Expired</string>
+    <string name="tool_status_cancelled">Cancelled</string>
+    <string name="tool_status_unknown">Unknown</string>
+    <string name="tool_input">Input</string>
+    <string name="tool_result">Recorded output</string>
+    <string name="tool_approval">Approval</string>
+    <string name="tool_decision">Decision</string>
+    <string name="artifact_unverified">Unverified bytes</string>
+    <string name="artifact_open_preview">Open preview</string>
+    <string name="show_earlier_tool_activity">Show earlier tool activity</string>
+
+    <!-- step groups -->
+    <string name="group_tool_calls">%1$d tool calls</string>
+    <string name="group_one_tool_call">1 tool call</string>
+    <string name="group_thinking_segments">%1$d thinking segments</string>
+    <string name="group_one_thinking_segment">1 thinking segment</string>
+    <string name="group_waiting_confirmation">Waiting for confirmation</string>
+    <string name="group_items_need_review">%1$d items need review</string>
+    <string name="group_one_needs_review">1 item needs review</string>
+    <string name="group_items_running">%1$d running</string>
+    <string name="group_one_running">1 running</string>
+    <string name="group_run_records">Run activity</string>
+    <string name="group_view_run_records">View run activity</string>
+
+    <!-- reasoning -->
+    <string name="reasoning_title">Thinking</string>
+    <string name="reasoning_thinking">Thinking…</string>
+    <string name="reasoning_view_record">View thinking record</string>
+    <string name="reasoning_still_updating">Still updating</string>
+    <string name="reasoning_full">Full reasoning</string>
+
+    <!-- messages, credentials and attachments -->
+    <string name="secure_credentials">Secure credentials</string>
+    <string name="secure_credentials_hint">Saved securely; this task can reference them.</string>
+    <string name="secure_credentials_card">Secure credentials card</string>
+    <string name="attachment_open_named">Open attachment %1$s</string>
+    <string name="attachment_remove">Remove attachment %1$s</string>
+    <string name="attachment_importing">Importing…</string>
+    <string name="attachment_progress">Importing %1$d%%</string>
+    <string name="error_card_title">Error</string>
+
+    <!-- approvals -->
+    <string name="approval_required">Approval required</string>
+    <string name="approval_action">Action</string>
+    <string name="approval_scope_label">Scope</string>
+    <string name="approval_evidence">Evidence</string>
+    <string name="approval_risks">Risks</string>
+    <string name="approval_scope_choose">Allow this action for</string>
+    <string name="approval_scope_once">Just once</string>
+    <string name="approval_scope_task">This task</string>
+    <string name="approval_scope_project">This project</string>
+    <string name="approval_scope_host">This host</string>
+    <string name="approval_skill_create_note">This creates a reusable skill saved for all tasks.</string>
+    <string name="approval_gate_stopped_note">This action is gated: allowing it still requires device confirmation before it can run.</string>
+    <string name="risk_reads_files">Reads files</string>
+    <string name="risk_writes_files">Writes files</string>
+    <string name="risk_deletes_files">Deletes files</string>
+    <string name="risk_executes_local_code">Runs code on this device</string>
+    <string name="risk_executes_remote_command">Runs a remote command</string>
+    <string name="risk_modifies_remote_system">Modifies a remote system</string>
+    <string name="risk_network_access">Network access</string>
+    <string name="risk_sends_data_to_provider">Sends data to the provider</string>
+    <string name="risk_controls_gui">Controls the screen</string>
+    <string name="risk_accesses_credentials">Uses credentials</string>
+
+    <!-- composer -->
+    <string name="composer_placeholder">Message Floe…</string>
+    <string name="composer_attach">Attach</string>
+    <string name="voice_start">Voice input</string>
+    <string name="composer_model">Model</string>
+    <string name="composer_no_model">No model configured</string>
+    <string name="composer_mode">Mode</string>
+    <string name="composer_mode_agent">Agent</string>
+    <string name="composer_mode_chat">Chat</string>
+    <string name="composer_mode_plan">Plan</string>
+    <string name="composer_mode_goal">Goal</string>
+    <string name="composer_project">Workspace</string>
+    <string name="composer_project_none">No workspace</string>
+    <string name="composer_target">Runs on</string>
+    <string name="composer_target_local">This device</string>
+    <string name="composer_permissions">Permissions</string>
+    <string name="permissions_ask">Ask first</string>
+    <string name="permissions_auto_approve">Auto-approve</string>
+    <string name="permissions_full_access">Full access</string>
+    <string name="send_queue">Queue</string>
+    <string name="send_steer">Steer</string>
+    <string name="send_queue_hint">Add to the message queue</string>
+    <string name="send_steer_hint">Steer the current run</string>
+    <string name="send_method_while_running">How to send while running</string>
+    <string name="model_persist_failed">Model “%1$s” is selected, but the default could not be saved.</string>
+
+    <!-- pending input queue -->
+    <string name="queue_title">Message queue</string>
+    <string name="queue_action_cd">Queue message actions</string>
+    <string name="queue_move_up">Move up</string>
+    <string name="queue_move_down">Move down</string>
+    <string name="queue_convert_to_steer">Convert to steer</string>
+    <string name="queue_edit_title">Edit queue message</string>
+    <string name="queue_message_field">Queue message</string>
+    <string name="queue_browser_handoff_note">Saved to the original task; continue from the browser</string>
+    <string name="queue_status_waits_for_run">Waits for the current run to finish</string>
+    <string name="queue_status_converting">Converting to steer…</string>
+    <string name="queue_status_waiting_insert">Waiting for a safe insertion point</string>
+    <string name="queue_status_sent">Sent</string>
+    <string name="queue_status_cancelled">Cancelled</string>
+
+    <!-- checklist / plan / goal -->
+    <string name="checklist_current_step">Current: %1$s</string>
+    <string name="plan_title">Plan</string>
+    <string name="plan_suggest_goal">This plan suits goal execution</string>
+    <string name="plan_suggest_normal">This plan suits normal execution</string>
+    <string name="plan_execute_normal">Execute on the normal plan</string>
+    <string name="plan_convert_goal">Convert to goal</string>
+    <string name="goal_title">Goal</string>
+    <string name="goal_confirm_complete">Confirm complete</string>
+    <string name="goal_set_title">Set a goal</string>
+    <string name="goal_objective_field">Final goal</string>
+    <string name="goal_criteria_field">Acceptance criteria (one per line)</string>
+    <string name="goal_blockers_field">Blocking conditions (one per line)</string>
+    <string name="goal_stops_field">Stop conditions (one per line)</string>
+    <string name="goal_create_start">Create and start</string>
+
+    <!-- key files -->
+    <string name="key_files_title">Key files</string>
+    <string name="key_files_all">All files</string>
+
+    <!-- subagents -->
+    <string name="subagents_title">Subagents</string>
+
+    <!-- usage -->
+    <string name="usage_total">Total %1$s</string>
+    <string name="usage_live_estimate">live estimate</string>
+    <string name="usage_context_reuse">Context reuse %1$s</string>
+    <string name="usage_reasoning">Reasoning %1$s</string>
+    <string name="usage_cache_rate">Cache hit %1$s</string>
+    <string name="usage_speed">Speed %1$s</string>
+    <string name="usage_first_response">First response %1$s</string>
+    <string name="usage_view_context">View context usage</string>
+    <string name="usage_context_window">Context window</string>
+    <string name="usage_this_turn">This turn: %1$s in / %2$s out</string>
+    <string name="usage_pending">Waiting for the first usage report.</string>
+
+    <!-- thread menu -->
+    <string name="menu_refresh_media">Refresh media task status</string>
+    <string name="menu_refreshing_media">Refreshing media tasks…</string>
+    <string name="menu_set_goal">Set goal directly</string>
+    <string name="menu_export_structured">Export full task (including tool results)</string>
+    <string name="menu_exporting">Exporting…</string>
+    <string name="menu_export_text">Share conversation text</string>
+    <string name="menu_export_markdown">Share conversation Markdown</string>
+    <string name="inspector_changes">Changes</string>
+    <string name="inspector_files">Files</string>
+    <string name="inspector_browser">Browser</string>
+    <string name="inspector_terminal">Terminal</string>
+    <string name="inspector_progress">Progress</string>
+    <string name="inspector_subagents">Subagents</string>
+
+    <!-- temporary chat -->
+    <string name="temporary_badge">Temporary</string>
+    <string name="temporary_about">About temporary chat</string>
+    <string name="temporary_end">End temporary chat</string>
+    <string name="temporary_keep">Keep as saved chat</string>
+    <string name="temporary_keep_saving">Saving…</string>
+    <string name="temporary_keep_partial_retry">Finish saving</string>
+    <string name="temporary_keep_failed_retry">Retry saving</string>
+    <string name="temporary_keep_partial_detail">The conversation was saved, but the last part of the reply is still syncing. Keep again to finish.</string>
+    <string name="temporary_keep_failed_detail">The chat could not be saved: %1$s</string>
+    <string name="temporary_header_line">Temporary chat is kept in memory only.</string>
+    <string name="temporary_about_title">Temporary chat</string>
+    <string name="temporary_about_lifecycle">This chat lives only in memory. Locking, rotating or leaving the app keeps it; opening another conversation or starting a new task discards it immediately, even while a reply is streaming. Nothing is restored after the app closes.</string>
+    <string name="temporary_about_tools">Tools are limited to reading and public web access. Your provider processes what you send under its own policy.</string>
+    <string name="temporary_about_voice">Voice input is not available in temporary chat.</string>
+
+    <!-- code + markdown -->
+    <string name="codeblock_language">Language</string>
+
+    <!-- debug-only preview -->
+    <string name="preview_synthetic_notice">Synthetic preview — no real data</string>
+
+    <!-- history -->
+    <string name="history_title">Chat</string>
+    <string name="history_manage_title">Tasks</string>
+    <string name="history_archive_title">Archive</string>
+    <string name="history_search_hint">Search chats</string>
+    <string name="history_searching">Searching…</string>
+    <string name="history_search_no_results">No matching chats</string>
+    <string name="history_empty_title">No chats yet</string>
+    <string name="history_empty_hint">Start a chat to see it here.</string>
+    <string name="history_archive_empty_title">The archive is empty</string>
+    <string name="history_archive_empty_hint">Archived chats appear here.</string>
+    <string name="history_needs_provider_title">Chat</string>
+    <string name="history_untitled">Untitled</string>
+    <string name="history_new">New chat</string>
+    <string name="history_row_actions">Chat actions</string>
+    <string name="history_select_multiple">Select multiple</string>
+    <string name="history_select_all">Select all</string>
+    <string name="history_deselect_all">Deselect all</string>
+    <string name="history_select_hint">Select chats to manage them.</string>
+    <string name="history_selected_count">%1$d selected</string>
+    <string name="history_filter_tasks">Tasks</string>
+    <string name="history_filter_archive">Archived</string>
+    <string name="history_archive_action">Archive</string>
+    <string name="history_restore_action">Restore</string>
+    <string name="history_delete_forever">Delete permanently</string>
+    <string name="history_delete_confirm_title">Delete task</string>
+    <string name="history_delete_confirm_message">This deletes the task, its private workspace and any temporary chat content from this device.</string>
+    <string name="history_archive_confirm_title">Archive %1$d tasks?</string>
+    <string name="history_archive_confirm_message">This stops any running work in the selected tasks and moves them to the archive.</string>
+    <string name="history_running_impact">%1$d selected tasks are currently running.</string>
+    <string name="history_working">Working… %1$d/%2$d</string>
+    <string name="history_stop_batch">Stop</string>
+    <string name="bulk_result_archived">%1$d archived</string>
+    <string name="bulk_result_restored">%1$d restored</string>
+    <string name="bulk_result_deleted">%1$d deleted</string>
+    <string name="bulk_result_skipped">%1$d skipped</string>
+    <string name="bulk_result_failed">%1$d failed</string>
+    <string name="bulk_result_unverified">%1$d unverified</string>
+    <string name="bulk_result_not_attempted">%1$d not attempted</string>
+    <string name="bulk_cancelled_note">Stopped early; unprocessed chats remain selected for a retry.</string>
+    <string name="bulk_keep_failed_note">Failed chats stay selected so you can retry them.</string>
+
+    <!-- full-screen composer editor (⇄ ComposerFullEditorSheet; copy aligned
+         with the iOS composer.editor.* / composer.expand_editor keys) -->
+    <string name="composer_expand">Expand</string>
+    <string name="composer_editor_title">Edit Message</string>
+    <string name="composer_editor_undo">Undo</string>
+    <string name="composer_editor_redo">Redo</string>
+    <string name="composer_editor_select_all">Select All</string>
+    <string name="composer_editor_send">Send</string>
+    <string name="composer_editor_characters">%1$d characters</string>
+    <string name="composer_editor_tokens">≈ %1$d tokens (estimated)</string>
+
+    <!-- local find/replace in the full-screen composer editor (literal, no regex) -->
+    <string name="composer_editor_find">Find</string>
+    <string name="composer_editor_find_hint">Find in message</string>
+    <string name="composer_editor_replace_hint">Replace with</string>
+    <string name="composer_editor_find_previous">Previous match</string>
+    <string name="composer_editor_find_next">Next match</string>
+    <string name="composer_editor_find_close">Close find</string>
+    <string name="composer_editor_find_position">%1$d of %2$d</string>
+    <string name="composer_editor_find_no_results">No matches</string>
+    <string name="composer_editor_replace">Replace</string>
+    <string name="composer_editor_replace_all">Replace All</string>
+    <string name="composer_editor_replace_too_large">This replacement is too large to apply at once.</string>
+    <string name="composer_editor_match_case">Match Case</string>
+    <string name="composer_editor_whole_word">Whole Word</string>
+</resources>

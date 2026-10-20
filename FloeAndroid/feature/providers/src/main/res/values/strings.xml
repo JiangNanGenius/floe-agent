@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Provider/model configuration flow (⇄ FloeApp Localization keys,
+     Floe 1.7.34 (275) receipt base). Apple-only sync/Keychain wording is
+     replaced by honest Android credential-store wording; everything else
+     keeps the iPad copy so both platforms say the same thing. -->
+<resources>
+    <!-- list -->
+    <string name="provider_settings_title">Model &amp; Provider</string>
+    <string name="provider_empty_hint">Add a model provider to begin.</string>
+    <string name="provider_add">Add Provider</string>
+    <string name="role_chooser_message">Choose a use first, then configure the endpoint, credentials and model capabilities.</string>
+    <string name="role_conversation_provider">Chat model provider</string>
+    <string name="role_image_provider">Image generation/editing provider</string>
+    <string name="role_video_provider">Video generation provider</string>
+    <string name="section_image_provider">Image model provider</string>
+    <string name="section_video_provider">Video model provider</string>
+    <string name="section_image_footer">Used for image generation and editing; the default routing is set under “Auxiliary models”.</string>
+    <string name="section_video_footer">Video is an optional enhancement in Creative mode and does not affect private canvases or image creation.</string>
+    <string name="row_models_count">%1$d models</string>
+    <string name="row_waiting_key">API key not configured</string>
+    <string name="row_disabled">Disabled</string>
+    <string name="row_enable_cd">Enable provider</string>
+    <string name="menu_delete">Delete</string>
+    <string name="delete_confirm_title">Delete provider</string>
+    <string name="delete_confirm_message">This removes the saved provider and its model configuration from this device. Conversations are not deleted.</string>
+    <string name="loading_cd">Loading</string>
+
+    <!-- editor chrome -->
+    <string name="editor_add_title">Add Provider</string>
+    <string name="editor_edit_title">Edit Provider</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_save">Save</string>
+    <string name="action_done">Done</string>
+
+    <!-- editor sections (iOS form order) -->
+    <string name="purpose_section">Service purpose</string>
+    <string name="purpose_conversation">Chat model</string>
+    <string name="purpose_image">Image generation and editing</string>
+    <string name="purpose_video">Video generation (Extra)</string>
+    <string name="purpose_video_note">Video models are an optional enhancement in Creative mode; only an image generation model is required.</string>
+    <string name="providers_enabled">Enable provider</string>
+    <string name="providers_display_name">Name</string>
+    <string name="providers_supplier_field">Provider</string>
+    <string name="providers_protocol">Protocol</string>
+    <string name="providers_endpoint">Endpoint</string>
+    <string name="providers_base_url">Base URL</string>
+    <string name="providers_headers_placeholder">Header: value (one per line)</string>
+    <string name="providers_headers_hint">Non-secret headers only. Secrets never go here.</string>
+    <string name="providers_allow_plain_http">Allow plain HTTP (local/private only)</string>
+    <string name="providers_credentials">Credentials</string>
+    <string name="providers_api_key">API key</string>
+    <string name="providers_api_key_hint">Your API key is stored securely on this device.</string>
+    <string name="providers_show_api_key">Show API key</string>
+    <string name="providers_hide_api_key">Hide API key</string>
+    <string name="providers_waiting_key_hint">This provider was saved without an API key. Enter one to use it now.</string>
+    <string name="providers_tool_name_compatibility">Tool name compatibility mode</string>
+    <string name="providers_tool_name_compatibility_hint">Adapt tool names for services that do not accept dots.</string>
+    <string name="providers_test_connection">Test Connection</string>
+    <string name="providers_test_ok">Connected</string>
+    <string name="providers_test_failed">Connection failed</string>
+    <string name="providers_cancel_test">Stop test</string>
+    <string name="providers_models_section">Models</string>
+    <string name="providers_no_models">No models yet. Test the connection to discover models, or add one manually.</string>
+    <string name="providers_manage_models">Manage Models</string>
+    <string name="providers_refresh_models">Refresh Model List</string>
+    <string name="providers_manual_fallback_hint">This endpoint does not support model discovery. Add models manually.</string>
+    <string name="providers_manual_entry_hint">You can also add a model manually.</string>
+    <string name="providers_save_failed_cd">Save failed</string>
+    <string name="providers_save_failed_ok">OK</string>
+    <string name="editor_waiting_host">Loading configuration…</string>
+    <string name="model_default">Default</string>
+    <string name="model_hidden_cd">Hidden from Home model picker</string>
+    <string name="model_vision_verified_cd">Vision input (verified by the official catalog)</string>
+    <string name="model_enabled_cd">Enabled</string>
+    <string name="network_actions_unavailable_cd">Actions unavailable</string>
+
+    <!-- service offers -->
+    <string name="offers_section">Also configure for this provider</string>
+    <string name="offers_footer">This provider can be configured for several uses at once; they share one endpoint and API key. Uses you skip are not offered again.</string>
+    <string name="offers_model_count">Includes %1$d models</string>
+    <string name="offers_requires_discovery">Runs a real model discovery request before enabling.</string>
+    <string name="offers_configure_separately">Configure separately</string>
+    <string name="offers_prompt_title">Additional uses</string>
+    <string name="offers_prompt_current_role">Current use: %1$s</string>
+    <string name="offers_prompt_not_now">Not now</string>
+    <string name="offers_prompt_configure">Configure</string>
+
+    <!-- unified supplier chooser -->
+    <string name="catalog_title">Choose a provider</string>
+    <string name="catalog_search_hint">Search providers, aliases or models</string>
+    <string name="catalog_filter_cd">Filter</string>
+    <string name="catalog_filter_all">All</string>
+    <string name="catalog_filter_configured">Configured</string>
+    <string name="catalog_filter_available">Available</string>
+    <string name="catalog_filter_local">Local</string>
+    <string name="catalog_builtin">Built-in</string>
+    <string name="catalog_official">Official catalog</string>
+    <string name="catalog_badge_configured">Configured</string>
+    <string name="catalog_badge_unsupported">Unsupported</string>
+    <string name="catalog_alias">Alias: %1$s</string>
+    <string name="catalog_also_serves">Also serves: %1$s</string>
+    <string name="catalog_provider_count">Catalog providers: %1$d</string>
+    <string name="catalog_document_hash">Document SHA-256: %1$s</string>
+    <string name="catalog_fetched_at">Fetched: %1$s</string>
+    <string name="catalog_source_footer">Source: %1$s · %2$d providers</string>
+    <string name="catalog_no_matching">No catalog result matches. Choose a built-in or manual option above.</string>
+    <string name="catalog_empty_title">No matching providers</string>
+    <string name="catalog_empty_hint">Try another search, or add a custom compatible endpoint from the provider list.</string>
+    <string name="catalog_refresh">Refresh catalog</string>
+    <string name="role_token_text">text</string>
+    <string name="role_token_images">images</string>
+    <string name="role_token_video">video</string>
+
+    <!-- model manager -->
+    <string name="manager_official_models">Official models</string>
+    <string name="manager_discovered">Discovered</string>
+    <string name="manager_manual_entry">Manual entry</string>
+    <string name="manager_model_id">Model ID (e.g. gpt-5)</string>
+    <string name="manager_model_name">Display name (optional)</string>
+    <string name="manager_add_model">Add Model</string>
+    <string name="manager_search_models_cd">Search models</string>
+
+    <!-- model editor -->
+    <string name="model_editor_title">Model Settings</string>
+    <string name="model_section_identity">Model</string>
+    <string name="model_display_name">Display name</string>
+    <string name="model_remote_id">Model ID</string>
+    <string name="model_section_capabilities">Capabilities</string>
+    <string name="model_capability_text">Text</string>
+    <string name="model_capability_vision">Vision input</string>
+    <string name="model_capability_tools">Tool calling</string>
+    <string name="model_capability_image_generation">Image Generation</string>
+    <string name="model_capability_image_editing">Image Editing</string>
+    <string name="model_capability_reference_images">Supports reference images</string>
+    <string name="model_section_reasoning">Reasoning</string>
+    <string name="model_reasoning_effort">Thinking depth</string>
+    <string name="model_reasoning_automatic">Automatic</string>
+    <string name="model_reasoning_low">Fast</string>
+    <string name="model_reasoning_medium">Balanced</string>
+    <string name="model_reasoning_high">Deep</string>
+    <string name="model_reasoning_maximum">Maximum</string>
+    <string name="model_reasoning_hint">Floe maps this setting to each provider\'s native reasoning controls. Automatic preserves the provider default; unsupported fields are omitted.</string>
+    <string name="model_section_limits">Token limits</string>
+    <string name="model_context_tokens">Context window</string>
+    <string name="model_max_output_tokens">Maximum output</string>
+    <string name="model_limits_hint">Context is required. Maximum output may be left blank to use the provider default, and cannot exceed context when set.</string>
+    <string name="model_limit_not_set">Not set</string>
+    <string name="model_limit_use_provider_default">Use provider default</string>
+    <string name="model_hide_from_picker">Hide from Home model picker</string>
+    <string name="model_show_in_picker">Show in Home model picker</string>
+    <string name="model_set_default">Set as Default</string>
+    <string name="model_image_capabilities">Image capabilities</string>
+    <string name="model_video_capabilities">Video capabilities</string>
+    <string name="model_media_custom_note">This is an advanced custom media model. Size, ratio, duration and quality are filled from the endpoint\'s actual capabilities at generation time.</string>
+    <string name="model_media_footer">Media models are configured by official API capabilities and do not use conversation context or output token settings.</string>
+
+</resources>

@@ -1,0 +1,96 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "deletions": 0,
+        "error": "staleRevision"
+      },
+      "id": "equal-size-replacement"
+    },
+    {
+      "expect": {
+        "deletions": 0,
+        "error": "staleRevision"
+      },
+      "id": "run-state-change"
+    },
+    {
+      "expect": {
+        "deletedAfterSnapshot": false,
+        "surfacedInRemaining": true
+      },
+      "id": "new-during-await"
+    },
+    {
+      "expect": {
+        "countedAsCleared": false,
+        "deleted": false
+      },
+      "id": "archived-excluded"
+    },
+    {
+      "expect": {
+        "deletions": 0,
+        "error": "persistenceUnavailable",
+        "reason": "unstableGrantSnapshot"
+      },
+      "id": "unstable-grant-snapshot"
+    },
+    {
+      "expect": {
+        "error": "needsConfiguration",
+        "mutations": 0,
+        "reason": "gatewayUnregistered"
+      },
+      "id": "gateway-unregistered"
+    },
+    {
+      "expect": {
+        "partial": true,
+        "remainingRecounted": true
+      },
+      "id": "partial-failure"
+    }
+  ],
+  "declarativeOnly": true,
+  "domains": {
+    "history": "floe.privacy-history.v3",
+    "modelConfiguration": "floe.privacy-modelconfig.v3"
+  },
+  "schema": "floe.privacy-identity.fixture/1",
+  "vectors": [
+    {
+      "expect": "sorted by set tag then raw id; exact state fields",
+      "id": "conversation-run-grant-streams",
+      "sets": [
+        "conversations",
+        "runs",
+        "persistedGrants",
+        "inMemoryGrants"
+      ]
+    },
+    {
+      "expect": "opaque secret reference/flag only; credential_records excluded",
+      "id": "model-config-secret-references",
+      "secretReference": {
+        "account": "opaque text|null",
+        "credentialRecords": "excluded",
+        "secretBytes": "never",
+        "synchronizable": "Bool|null"
+      },
+      "sets": [
+        "providers",
+        "models",
+        "preferences"
+      ]
+    },
+    {
+      "id": "archived-exclusion",
+      "predicate": "purpose=ordinary AND archived_at IS NULL"
+    },
+    {
+      "expect": "g1 and g2 canonical equality; bounded retries",
+      "id": "in-memory-bracket"
+    }
+  ]
+}

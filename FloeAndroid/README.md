@@ -10,11 +10,21 @@ review returned seven material fixes; after one repair batch and two targeted
 review rounds all seven IDs were resolved for the G01 representative foundation
 (`ship`). That acceptance covers those representative pages only. Whole-product
 visual parity, full CJK IME/TalkBack and 16 KB runtime behavior are not claimed.
-G01 final source/handoff/cleanup closure remains with the coordinator. Current
+G01 source, handoff and cleanup closure are complete; G02 is the active goal. Current
 public status and limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Workspaces
 shown as being prepared are not implemented product capabilities. Android has no
 local LLM backend.
+
+## Android Alpha
+
+[Download 0.1.0-alpha.1](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.1)
+contains one signed ARM64 APK and SHA256SUMS. Install updates manually for now.
+Cloud configuration, real replies and cold-start persistence were checked on an
+API 37 / 16 KiB tablet emulator and a Samsung SM-G9810 running Android 13 / API 33
+with 4 KiB pages. Long-stream stop/resume on Samsung and advanced G02 flows still
+need their own acceptance checks.
+G02 is still active; see the implementation record above for remaining work.
 
 ## Layout and ownership
 
@@ -91,6 +101,7 @@ bash <<'SH'
 source FloeAndroid/scripts/env.sh
 python3 FloeAndroid/scripts/check-plan.py
 python3 FloeAndroid/scripts/check-fixtures.py --check
+python3 FloeAndroid/scripts/check-settings-domain.py --check
 python3 FloeAndroid/fixtures/generate.py --check
 # Host policy/protocol tests (use a distinct scratch path from Android builds):
 "$FLOE_SWIFT_BIN/swift" test --build-system native --package-path FloeAndroid/shared \

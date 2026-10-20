@@ -26,20 +26,30 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
@@ -52,24 +62,39 @@ import com.floe.android.design.FloeSelectionStyle
 import com.floe.android.design.FloeSegmented
 import com.floe.android.design.FloeSettingsSectionCard
 import com.floe.android.design.FloeSettingsSection
+import com.floe.android.design.FloeSettingsHostGeometry
 import com.floe.android.design.FloeSidebarRow
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeThemeMode
 import com.floe.android.design.FloeValueRow
 import com.floe.android.design.FloeVerticalDivider
+import com.floe.android.design.FloeWindowInsetsPx
 import com.floe.android.design.IconGlyph
+import com.floe.android.feature.integrations.FloeSkillsSettingsDestination
+import com.floe.android.feature.providers.FloeProviderSettingsDestination
+import com.floe.android.host.RuntimeHost
+import com.floe.android.host.SettingsHostPages
+import com.floe.android.host.WebSearchSettingsPage
 import io.github.robinpcrd.cupertino.section.SectionItem
 
 /**
  * Settings opens as a page sheet (iOS presents `SettingsRootView` from the
  * sidebar footer gear), never a top-level sidebar row.
  *
- * Wide finish-review geometry (reference 03-settings, 2026-10-18): the sheet
- * starts 76dp below the screen top so the masked home toolbar stays visible;
- * the section column is 320dp wide and owns its own title, Done and column
- * toggle; the detail pane has an independent 34sp large title and its own
- * scrolling grouped cards. Compact keeps the internal push stack with a
- * single sheet toolbar. No local-LLM or Apple-only rows are mirrored.
+ * Wide finish-review geometry (reference 03-settings, 2026-10-18 calibration):
+ * the sheet starts 76dp below the screen top so the masked home toolbar stays
+ * visible; the section column is 320dp wide and owns its own title, Done and
+ * column toggle; the detail pane has an independent 34sp large title and its
+ * own scrolling grouped cards. Like iOS `SettingsRootView`, whose `@State
+ * columnVisibility = .all` is recreated by every fresh sheet presentation,
+ * each genuine hidden->visible presentation opens with BOTH panes on wide
+ * (2026-10-19 two-column repair) while the selection is preserved; rotation or
+ * window recreation of an already-visible sheet keeps its current columns and
+ * compact pushed page instead of being treated as a reopen, and an explicit
+ * deep-linked section opens selected (compact: its detail directly). Compact
+ * keeps the internal push stack with a single sheet toolbar, and its drilldown
+ * state is independent of the wide column collapse. No local-LLM or
+ * Apple-only rows are mirrored.
  */
 @Composable
 fun SettingsSheet(
@@ -79,13 +104,51 @@ fun SettingsSheet(
     onThemeModeChange: (FloeThemeMode) -> Unit,
     onDismiss: () -> Unit,
     onOpenPreview: () -> Unit,
+    /** G02 App host; null keeps the honest G01 placeholders. */
+    runtimeHost: RuntimeHost? = null,
+    /**
+     * Provider detail content slot (the measured host geometry is supplied
+     * through it, mirroring the settings host presentation contract). Null
+     * keeps the G01 provider summary placeholder.
+     */
+    providerContent: (@Composable (FloeSettingsHostGeometry, Modifier) -> Unit)? = null,
 ) {
     var section by rememberSaveable { mutableStateOf(initialSection.ifEmpty { FloeSettingsSection.GENERAL.name }) }
-    // wide mode: listCollapsed = list hidden (detail only).
-    // compact mode: listCollapsed = a section was pushed (detail showing).
-    var listCollapsed by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(visible, initialSection) {
-        if (visible && initialSection.isNotEmpty()) section = initialSection
+    // Wide mode only: the sheet's own column toggle hid the category list
+    // (mirrors SettingsRootView collapsing NavigationSplitView column
+    // visibility to .detailOnly). Never shared with compact semantics.
+    var wideListCollapsed by rememberSaveable { mutableStateOf(false) }
+    // Compact mode only: a section was pushed onto the sheet's own stack
+    // (mirrors SettingsRootView's iPhone NavigationStack path), fully
+    // independent of the wide column collapse.
+    var compactDetailOpen by rememberSaveable { mutableStateOf(false) }
+    // Presentation-transition capture. SettingsSheet itself stays composed
+    // while hidden and its saveable state survives rotation/recreation, so a
+    // keyed effect could not tell "new presentation" from "recreation of an
+    // already-visible sheet". Only a real hidden->visible flip carries the
+    // fresh iOS sheet identity (SettingsRootView @State columnVisibility
+    // starts at .all every presentation); rotation of a visible sheet keeps
+    // the compact pushed page, the wide collapse and the current selection.
+    var lastPresented by rememberSaveable { mutableStateOf(false) }
+    if (visible != lastPresented) {
+        lastPresented = visible
+        if (visible) {
+            val entrySection = FloeSettingsSection.entries
+                .firstOrNull { it.name == initialSection }
+            if (entrySection != null) {
+                // Explicit deep link: select the target; compact opens its
+                // detail directly, wide shows both panes with it selected.
+                section = entrySection.name
+                wideListCollapsed = false
+                compactDetailOpen = true
+            } else {
+                // A newly presented native SettingsRootView selects General.
+                // Preserve selection only across recreation while visible.
+                section = FloeSettingsSection.GENERAL.name
+                wideListCollapsed = false
+                compactDetailOpen = false
+            }
+        }
     }
     FloePageSheet(
         visible = visible,
@@ -93,8 +156,43 @@ fun SettingsSheet(
         topInset = FloeLayout.SettingsSheetTopInset,
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
+            // Measured inside the actual page-sheet window so boundsInWindow()
+            // and the provider Popup share one window-pixel coordinate space.
+            val density = LocalDensity.current
+            val layoutDirection = LocalLayoutDirection.current
+            val windowInfo = LocalWindowInfo.current
+            var categoryPaneBounds by remember { mutableStateOf<Rect?>(null) }
+            var detailPaneBounds by remember { mutableStateOf<Rect?>(null) }
+            var selectedCategoryRowBounds by remember { mutableStateOf<Rect?>(null) }
+            val safeDrawing = WindowInsets.safeDrawing
+            val safeBottom = safeDrawing.getBottom(density)
+            val imeBottom = WindowInsets.ime.getBottom(density)
+            val hostInsets = FloeWindowInsetsPx(
+                leftPx = safeDrawing.getLeft(density, layoutDirection),
+                topPx = safeDrawing.getTop(density),
+                rightPx = safeDrawing.getRight(density, layoutDirection),
+                bottomPx = safeBottom,
+            )
+            val hostImeBottom = (imeBottom - safeBottom).coerceAtLeast(0)
+            val windowWidth = windowInfo.containerSize.width.coerceAtLeast(1)
+            val windowHeight = windowInfo.containerSize.height.coerceAtLeast(1)
+
             val wide = maxWidth >= FloeLayout.PersistentTwoColumnMinWidth
             val active = runCatching { FloeSettingsSection.valueOf(section) }.getOrDefault(FloeSettingsSection.GENERAL)
+            val categoryVisible = wide && !wideListCollapsed
+            val hostGeometry = FloeSettingsHostGeometry(
+                windowBoundsPx = Rect(0f, 0f, windowWidth.toFloat(), windowHeight.toFloat()),
+                categoryPaneBoundsPx = if (categoryVisible) categoryPaneBounds else null,
+                detailPaneBoundsPx = detailPaneBounds,
+                selectedCategoryRowBoundsPx = if (categoryVisible) selectedCategoryRowBounds else null,
+                triggerBoundsPx = null,
+                safeInsetsPx = hostInsets,
+                imeBottomInsetPx = hostImeBottom,
+                wideLayout = wide,
+                categoryPaneVisible = categoryVisible,
+                density = density.density,
+                fontScale = density.fontScale,
+            )
             Column(
                 Modifier
                     .fillMaxSize()
@@ -103,16 +201,20 @@ fun SettingsSheet(
             ) {
                 if (wide) {
                     Row(Modifier.fillMaxSize()) {
-                        if (!listCollapsed) {
+                        if (!wideListCollapsed) {
                             Column(
                                 Modifier
                                     .widthIn(FloeLayout.SettingsSidebarMinWidth, FloeLayout.SettingsSidebarMaxWidth)
                                     .width(FloeLayout.SettingsSidebarWidth)
                                     .fillMaxHeight()
-                                    .background(Floe.colors.sidebarSurface),
+                                    .background(Floe.colors.sidebarSurface)
+                                    .onGloballyPositioned { coordinates ->
+                                        val bounds = coordinates.boundsInWindow()
+                                        if (categoryPaneBounds != bounds) categoryPaneBounds = bounds
+                                    },
                             ) {
                                 SettingsSidebarHeader(
-                                    onToggleColumns = { listCollapsed = true },
+                                    onToggleColumns = { wideListCollapsed = true },
                                     onDone = onDismiss,
                                 )
                                 FloeDivider()
@@ -129,7 +231,20 @@ fun SettingsSheet(
                                             selected = entry == active,
                                             onClick = { section = entry.name },
                                             selectionStyle = FloeSelectionStyle.GRAY,
-                                            modifier = Modifier.padding(horizontal = 12.dp),
+                                            modifier = Modifier
+                                                .padding(horizontal = 12.dp)
+                                                .then(
+                                                    if (entry == active) {
+                                                        Modifier.onGloballyPositioned { coordinates ->
+                                                            val bounds = coordinates.boundsInWindow()
+                                                            if (selectedCategoryRowBounds != bounds) {
+                                                                selectedCategoryRowBounds = bounds
+                                                            }
+                                                        }
+                                                    } else {
+                                                        Modifier
+                                                    },
+                                                ),
                                         )
                                     }
                                 }
@@ -140,43 +255,102 @@ fun SettingsSheet(
                             Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
-                                .background(Floe.colors.groupedSurface),
+                                .background(Floe.colors.groupedSurface)
+                                .onGloballyPositioned { coordinates ->
+                                    val bounds = coordinates.boundsInWindow()
+                                    if (detailPaneBounds != bounds) detailPaneBounds = bounds
+                                },
                         ) {
                             SettingsDetailHeader(
                                 title = settingsTitle(active),
                                 topPadding = 68.dp,
-                                showColumnToggle = listCollapsed,
-                                onToggleColumns = { listCollapsed = false },
+                                showColumnToggle = wideListCollapsed,
+                                onToggleColumns = { wideListCollapsed = false },
                             )
-                            Column(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f)
-                                    .verticalScroll(rememberScrollState()),
-                            ) {
-                                SettingsSectionContent(active, themeMode, onThemeModeChange, onOpenPreview)
+                            val slot = providerContent
+                            if (active == FloeSettingsSection.PROVIDERS && slot != null) {
+                                // The provider destination owns its list
+                                // scroll; the host supplies a finite slot with
+                                // no outer scrolling parent.
+                                Box(Modifier.fillMaxWidth().weight(1f)) {
+                                    slot(hostGeometry, Modifier.fillMaxSize())
+                                }
+                            } else if (active == FloeSettingsSection.SKILLS) {
+                                // The integrations destination owns its own
+                                // bounded scrolling list; a pane-level scroll
+                                // here would nest inside it (infinite height).
+                                Box(Modifier.fillMaxWidth().weight(1f)) {
+                                    SkillsSettingsPage(runtimeHost)
+                                }
+                            } else {
+                                // ONE bounded scroll owner for this pane; the
+                                // host pages below are plain content.
+                                Column(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f)
+                                        .verticalScroll(rememberScrollState()),
+                                ) {
+                                    SettingsSectionContent(
+                                        active, themeMode, onThemeModeChange, onOpenPreview,
+                                        runtimeHost = runtimeHost,
+                                    )
+                                }
                             }
                         }
                     }
                 } else {
                     Column(Modifier.fillMaxSize()) {
                         SheetToolbar(
-                            compactDetail = listCollapsed,
-                            onToggleColumns = { listCollapsed = !listCollapsed },
+                            compactDetail = compactDetailOpen,
                             onDone = onDismiss,
-                            onBack = { listCollapsed = false },
+                            onBack = { compactDetailOpen = false },
                         )
-                        if (listCollapsed) {
-                            Column(
-                                Modifier
-                                    .fillMaxSize()
-                                    .background(Floe.colors.groupedSurface)
-                                    .verticalScroll(rememberScrollState()),
-                            ) {
-                                SettingsDetailHeader(title = settingsTitle(active))
-                                SettingsSectionContent(active, themeMode, onThemeModeChange, onOpenPreview)
+                        if (compactDetailOpen) {
+                            val slot = providerContent
+                            if (active == FloeSettingsSection.PROVIDERS && slot != null) {
+                                Column(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .background(Floe.colors.groupedSurface),
+                                ) {
+                                    SettingsDetailHeader(title = settingsTitle(active))
+                                    Box(Modifier.fillMaxWidth().weight(1f)) {
+                                        slot(hostGeometry, Modifier.fillMaxSize())
+                                    }
+                                }
+                            } else if (active == FloeSettingsSection.SKILLS) {
+                                Column(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .background(Floe.colors.groupedSurface),
+                                ) {
+                                    SettingsDetailHeader(title = settingsTitle(active))
+                                    Box(Modifier.fillMaxWidth().weight(1f)) {
+                                        SkillsSettingsPage(runtimeHost)
+                                    }
+                                }
+                            } else {
+                                Column(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .background(Floe.colors.groupedSurface),
+                                ) {
+                                    SettingsDetailHeader(title = settingsTitle(active))
+                                    Column(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .weight(1f)
+                                            .verticalScroll(rememberScrollState()),
+                                    ) {
+                                        SettingsSectionContent(
+                                            active, themeMode, onThemeModeChange, onOpenPreview,
+                                            runtimeHost = runtimeHost,
+                                        )
+                                    }
+                                }
                             }
-                            BackHandler { listCollapsed = false }
+                            BackHandler { compactDetailOpen = false }
                         } else {
                             Column(
                                 Modifier
@@ -189,7 +363,7 @@ fun SettingsSheet(
                                         icon = settingsIcon(entry),
                                         label = settingsTitle(entry),
                                         selected = false,
-                                        onClick = { section = entry.name; listCollapsed = true },
+                                        onClick = { section = entry.name; compactDetailOpen = true },
                                         selectionStyle = FloeSelectionStyle.NONE,
                                         modifier = Modifier.padding(horizontal = 12.dp),
                                         trailing = { IconGlyph(FloeIcons.ChevronForward, Floe.colors.tertiaryLabel, 14.dp) },
@@ -268,7 +442,6 @@ private fun SettingsDetailHeader(
 @Composable
 private fun SheetToolbar(
     compactDetail: Boolean,
-    onToggleColumns: () -> Unit,
     onDone: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -299,14 +472,6 @@ private fun SheetToolbar(
             modifier = Modifier.weight(1f).padding(start = if (compactDetail) 0.dp else 8.dp),
         )
         FloeDoneButton(onDone)
-        FloeCircleButton(
-            icon = FloeIcons.SidebarToggle,
-            contentDescription = stringResource(R.string.toggle_sheet_columns),
-            onClick = onToggleColumns,
-            visualSize = 38.dp,
-            iconSize = 20.dp,
-            modifier = Modifier.padding(start = 8.dp),
-        )
     }
     FloeDivider()
 }
@@ -337,11 +502,88 @@ private fun SettingsSectionContent(
     themeMode: FloeThemeMode,
     onThemeModeChange: (FloeThemeMode) -> Unit,
     onOpenPreview: () -> Unit,
+    runtimeHost: RuntimeHost? = null,
 ) {
     when (section) {
-        FloeSettingsSection.GENERAL -> GeneralSettingsPage(themeMode, onThemeModeChange)
+        FloeSettingsSection.GENERAL -> {
+            GeneralSettingsPage(themeMode, onThemeModeChange)
+            if (runtimeHost != null) {
+                SettingsHostPages.DefaultsPage(runtimeHost.settings)
+            }
+        }
         FloeSettingsSection.PROVIDERS -> ProvidersSettingsPage()
+        FloeSettingsSection.SKILLS -> SkillsSettingsPage(runtimeHost)
+        FloeSettingsSection.MEMORY -> {
+            if (runtimeHost != null) {
+                SettingsHostPages.MemoryPage(runtimeHost.settings)
+                SettingsHostPages.PersonalizationPage(runtimeHost.settings)
+            } else {
+                HostPendingPage(R.string.settings_skills_pending)
+            }
+        }
+        FloeSettingsSection.USAGE -> {
+            if (runtimeHost != null) {
+                SettingsHostPages.UsagePage(runtimeHost.settings)
+            } else {
+                HostPendingPage(R.string.settings_skills_pending)
+            }
+        }
+        FloeSettingsSection.PRIVACY -> {
+            if (runtimeHost != null) {
+                SettingsHostPages.PrivacyPage(runtimeHost.settings)
+            } else {
+                HostPendingPage(R.string.settings_skills_pending)
+            }
+        }
+        FloeSettingsSection.WEB_SEARCH -> {
+            if (runtimeHost != null) {
+                WebSearchSettingsPage(runtimeHost.webSearch)
+            } else {
+                HostPendingPage(R.string.settings_skills_pending)
+            }
+        }
         FloeSettingsSection.DIAGNOSTICS -> DiagnosticsSettingsPage(onOpenPreview)
+    }
+}
+
+/** Honest placeholder for G02 surfaces before the runtime host is ready. */
+@Composable
+private fun HostPendingPage(messageRes: Int) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        FloeSettingsSectionCard(title = stringResource(R.string.settings)) {
+            SectionItem(
+                title = {
+                    FloeText(
+                        stringResource(messageRes),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                        modifier = Modifier.padding(vertical = 10.dp),
+                    )
+                },
+            )
+        }
+    }
+}
+
+/**
+ * Skills & connectors detail body: mounts the real integrations destination
+ * with its immutable destination state and the caller-retained flow holder.
+ * The destination owns its nested page/sheet stack and its own scrolling;
+ * this body stays a finite non-scrolling host.
+ */
+@Composable
+private fun SkillsSettingsPage(runtimeHost: RuntimeHost?) {
+    if (runtimeHost == null) {
+        HostPendingPage(R.string.settings_skills_pending)
+        return
+    }
+    val state by runtimeHost.integrations.destination.collectAsState()
+    Box(Modifier.fillMaxSize()) {
+        FloeSkillsSettingsDestination(
+            state = state,
+            holder = runtimeHost.integrations.flowHolder,
+            modifier = Modifier.fillMaxSize(),
+        )
     }
 }
 
@@ -487,7 +729,12 @@ private fun ProvidersSettingsPage() {
 
 private fun settingsIcon(section: FloeSettingsSection) = when (section) {
     FloeSettingsSection.GENERAL -> FloeIcons.Gearshape
-    FloeSettingsSection.PROVIDERS -> FloeIcons.Chip
+    FloeSettingsSection.PROVIDERS -> FloeIcons.Antenna
+    FloeSettingsSection.SKILLS -> FloeIcons.Puzzle
+    FloeSettingsSection.MEMORY -> FloeIcons.BookPages
+    FloeSettingsSection.USAGE -> FloeIcons.Gauge
+    FloeSettingsSection.PRIVACY -> FloeIcons.ShieldCheck
+    FloeSettingsSection.WEB_SEARCH -> FloeIcons.Magnifier
     FloeSettingsSection.DIAGNOSTICS -> FloeIcons.Stethoscope
 }
 
@@ -495,5 +742,10 @@ private fun settingsIcon(section: FloeSettingsSection) = when (section) {
 private fun settingsTitle(section: FloeSettingsSection): String = when (section) {
     FloeSettingsSection.GENERAL -> stringResource(R.string.settings_general)
     FloeSettingsSection.PROVIDERS -> stringResource(R.string.settings_providers)
+    FloeSettingsSection.SKILLS -> stringResource(R.string.settings_skills)
+    FloeSettingsSection.MEMORY -> stringResource(R.string.settings_memory)
+    FloeSettingsSection.USAGE -> stringResource(R.string.settings_usage)
+    FloeSettingsSection.PRIVACY -> stringResource(R.string.settings_privacy)
+    FloeSettingsSection.WEB_SEARCH -> stringResource(R.string.settings_web_search)
     FloeSettingsSection.DIAGNOSTICS -> stringResource(R.string.settings_diagnostics)
 }

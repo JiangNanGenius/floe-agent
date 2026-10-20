@@ -9,7 +9,7 @@ import androidx.compose.ui.graphics.Color
  * Floe semantic colors ported from `FloeAgent/FloeApp/Design/FloeTheme.swift`.
  *
  * The interactive accent is the SYSTEM BLUE observed in the captured iPad
- * references (captured iPad reference (private evidence retained outside the repository):
+ * references (Local/Private/android-g01-20261018/ios-reference/01-home.png:
  * selected capsule #0081F6, chrome circles, hairlines). It is deliberately
  * distinct from the private brand gradient stop `BrandBlue` (#3D7AF5): the
  * brand cyan-blue-violet ramp belongs to the logo/hero identity, while all

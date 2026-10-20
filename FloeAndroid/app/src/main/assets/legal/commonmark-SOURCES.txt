@@ -1,0 +1,21 @@
+commonmark-java license provenance (G02 conversation Markdown adapter)
+
+Pinned artifacts (Maven Central, verified 2026-10-19; exact sha256 values are
+recorded in FloeAndroid/gradle/verification-metadata.xml and the module
+Gradle locks):
+  org.commonmark:commonmark:0.30.1
+  org.commonmark:commonmark-ext-gfm-tables:0.30.1
+  org.commonmark:commonmark-ext-gfm-strikethrough:0.30.1
+
+Project: https://github.com/atlassian/commonmark-java
+Latest release check: https://repo1.maven.org/maven2/org/commonmark/commonmark/maven-metadata.xml
+  (latest/release = 0.30.1, lastUpdated 2026-10-10)
+
+License: BSD 2-Clause "Simplified" License.
+LICENSE.txt here was extracted byte-for-byte from
+commonmark-0.30.1.jar!/META-INF/LICENSE.txt (the license shipped with the
+pinned artifact). Copyright (c) 2015, Atlassian Pty Ltd. The same license
+covers the tables and strikethrough extension artifacts of the same version.
+
+Maven POM license element (all three artifacts): BSD-2-Clause,
+https://opensource.org/licenses/BSD-2-Clause

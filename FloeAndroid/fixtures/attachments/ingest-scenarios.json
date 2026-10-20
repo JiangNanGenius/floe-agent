@@ -1,0 +1,122 @@
+{
+  "fixtureVersion": "g02.2026-10-18.1",
+  "limits": {
+    "allowedMime": [
+      "image/png",
+      "text/plain"
+    ],
+    "maxBytes": 1024
+  },
+  "payloads": {
+    "bounded-text": {
+      "bytes": 40,
+      "declaredMime": "text/plain",
+      "ref": "text/encoding/crlf.txt",
+      "sha256": "ec6ae42e2038d991c9ab9fad11889cd950b36658f91d1f01991dcbf4364e9a16",
+      "uriState": "granted"
+    },
+    "mime-spoof-png": {
+      "bytes": 268,
+      "declaredMime": "text/plain",
+      "ref": "assets/png/gradient-8.png",
+      "sha256": "6a8546b0a4a0b47a65c1dacc76954735c61856a7e1f2d6cfac186ae2afb36167",
+      "uriState": "granted"
+    },
+    "oversized-text": {
+      "bytes": 4097,
+      "declaredMime": "text/plain",
+      "ref": "text/encoding/long-line.txt",
+      "sha256": "5d05023e33a88151e829770ac45c53a2acd6f5bd111cbb101b8d649d7f9c2906",
+      "uriState": "granted"
+    },
+    "revoked-note": {
+      "bytes": 598,
+      "declaredMime": "text/plain",
+      "ref": "notes/note-basic.json",
+      "sha256": "ebe9530258252aad52ac16fd6aa2dc795c2b2b68ab1b9550dc60a335d3eb3234",
+      "uriState": "revoked"
+    }
+  },
+  "scenarios": [
+    {
+      "expect": {
+        "autoExecuted": false,
+        "autoSent": false,
+        "commitBytes": 40,
+        "commitSha256": "ec6ae42e2038d991c9ab9fad11889cd950b36658f91d1f01991dcbf4364e9a16",
+        "decision": "committed",
+        "durableRecords": 1,
+        "reason": "within-bounds",
+        "stagingRemoved": true
+      },
+      "id": "positive-bounded-commit",
+      "owner": {
+        "epoch": 4,
+        "runId": "run-synthetic-ingest-a",
+        "taskId": "task-synthetic-ingest-a"
+      },
+      "payload": "bounded-text"
+    },
+    {
+      "expect": {
+        "autoExecuted": false,
+        "autoSent": false,
+        "decision": "rejected",
+        "durableRecords": 0,
+        "reason": "size_exceeds_cap",
+        "stagingRemoved": true
+      },
+      "id": "reject-oversized",
+      "owner": {
+        "epoch": 4,
+        "runId": "run-synthetic-ingest-a",
+        "taskId": "task-synthetic-ingest-a"
+      },
+      "payload": "oversized-text"
+    },
+    {
+      "expect": {
+        "autoExecuted": false,
+        "autoSent": false,
+        "decision": "rejected",
+        "durableRecords": 0,
+        "reason": "mime_mismatch",
+        "stagingRemoved": true
+      },
+      "id": "reject-mime-spoof",
+      "owner": {
+        "epoch": 4,
+        "runId": "run-synthetic-ingest-a",
+        "taskId": "task-synthetic-ingest-a"
+      },
+      "payload": "mime-spoof-png"
+    },
+    {
+      "expect": {
+        "autoExecuted": false,
+        "autoSent": false,
+        "decision": "rejected",
+        "durableRecords": 0,
+        "reason": "uri_permission_revoked",
+        "stagingRemoved": true
+      },
+      "id": "reject-revoked-uri",
+      "owner": {
+        "epoch": 2,
+        "runId": "run-synthetic-ingest-b",
+        "taskId": "task-synthetic-ingest-b"
+      },
+      "payload": "revoked-note"
+    }
+  ],
+  "schema": "floe-android.attachment-ingest-scenarios.v0",
+  "temporaryMode": {
+    "allowedTools": [
+      "text",
+      "public-web"
+    ],
+    "fsToolEnabled": false,
+    "plaintextTempDisk": false,
+    "store": "ram"
+  }
+}

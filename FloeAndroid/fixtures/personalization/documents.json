@@ -1,0 +1,102 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "error": "staleRevision",
+        "writes": 0
+      },
+      "id": "save-stale"
+    },
+    {
+      "expect": {
+        "draftActivated": false,
+        "saveProceeds": true
+      },
+      "id": "draft-no-contention"
+    },
+    {
+      "expect": {
+        "error": "payloadTooLarge",
+        "reason": "maxChars:24000",
+        "writes": 0
+      },
+      "id": "oversize-save"
+    },
+    {
+      "expect": {
+        "documentRows": 1,
+        "modelRequests": 1,
+        "outcome": "active"
+      },
+      "id": "generate-active"
+    },
+    {
+      "expect": {
+        "isActive": false,
+        "outcome": "storedAsDraft",
+        "reason": "activeSlotChanged"
+      },
+      "id": "generate-draft-active-slot"
+    },
+    {
+      "expect": {
+        "isActive": false,
+        "outcome": "storedAsDraft",
+        "reason": "sourceChanged"
+      },
+      "id": "generate-draft-source-race"
+    },
+    {
+      "expect": {
+        "countersPreserved": true,
+        "eraseCounters": false
+      },
+      "id": "generate-cursor-preserved"
+    }
+  ],
+  "declarativeOnly": true,
+  "domains": {
+    "cursor": "floe.personalization-cursor.v1",
+    "document": "floe.personalization-document.v13",
+    "source": "floe.personalization-source.v1"
+  },
+  "schema": "floe.personalization-document.fixture/1",
+  "vectors": [
+    {
+      "activeRevision": 3,
+      "draftRevisions": [
+        4,
+        5
+      ],
+      "expect": {
+        "draftsActive": false,
+        "latestRevision": 5,
+        "revisionToken": "active-id.3"
+      },
+      "id": "active-and-drafts"
+    },
+    {
+      "defaultPage": 50,
+      "expect": "metadata without content; revision DESC",
+      "id": "revision-metadata",
+      "revisionCount": 8
+    },
+    {
+      "characters": 24000,
+      "expect": "48KiB actual encoded budget; inline or handle, never truncated",
+      "extraInlineCap": null,
+      "frameBound": 65536,
+      "id": "content-24000-cjk",
+      "inlineRule": "complete encoded response",
+      "script": "CJK"
+    },
+    {
+      "expect": "content is inline XOR a contentHandle with exact bytes",
+      "id": "inline-versus-handle"
+    },
+    {
+      "expect": "absent is a real state; present token covers all 8 columns",
+      "id": "cursor-absent-and-present"
+    }
+  ]
+}

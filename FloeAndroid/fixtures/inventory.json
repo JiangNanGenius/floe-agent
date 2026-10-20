@@ -1,6 +1,7 @@
 {
-  "artifact": "floe-android-g01-synthetic-fixtures",
+  "artifact": "floe-android-g02-synthetic-fixtures",
   "baselineRef": "FloeAndroid/planning/feature-baseline.json",
+  "baselineVersion": "g02.2026-10-19.1",
   "determinismNote": "stdlib entries are byte-reproducible; mp4 entries require the pinned ffmpeg version — see README.md",
   "entries": [
     {
@@ -37,6 +38,53 @@
       ],
       "path": "assets/svg/marker.svg",
       "sha256": "829f04c49a3ea0f0e9a7a0c40d370a77777d7e149892ca7283847b15aeadbd87"
+    },
+    {
+      "bytes": 3205,
+      "determinism": "stdlib",
+      "expect": {
+        "committedScenario": "positive-bounded-commit",
+        "maxBytes": 1024,
+        "scenarioIds": [
+          "positive-bounded-commit",
+          "reject-oversized",
+          "reject-mime-spoof",
+          "reject-revoked-uri"
+        ],
+        "schema": "floe-android.attachment-ingest-scenarios.v0"
+      },
+      "format": "attachment-ingest-scenarios",
+      "operations": [
+        "CHA-ATTACH-INGEST-AND"
+      ],
+      "path": "attachments/ingest-scenarios.json",
+      "sha256": "8f31c9241a3398d818dcd4a43a3fc7cc8981e195f93163e870adac83988a1eab"
+    },
+    {
+      "bytes": 3781,
+      "determinism": "stdlib",
+      "expect": {
+        "requiredScenarios": [
+          "cancel-mid-transfer-no-orphan",
+          "cancel-preserves-prior-commit",
+          "retry-idempotent-same-digest",
+          "stale-callback-other-task-dropped"
+        ],
+        "scenarioIds": [
+          "cancel-mid-transfer-no-orphan",
+          "cancel-preserves-prior-commit",
+          "retry-idempotent-same-digest",
+          "stale-callback-other-task-dropped",
+          "read-only-stream-progress-monotonic"
+        ],
+        "schema": "floe-android.attachment-lifecycle-scenarios.v0"
+      },
+      "format": "attachment-lifecycle-scenarios",
+      "operations": [
+        "CHA-ATTACH-LIFECYCLE-AND"
+      ],
+      "path": "attachments/lifecycle-scenarios.json",
+      "sha256": "5ac5fe4325b94c441b1d077e1a594a87cc3f42c21ee9fe402bffbb0244099f98"
     },
     {
       "bytes": 421,
@@ -160,6 +208,93 @@
       ],
       "path": "media/subtitles/captions.vtt",
       "sha256": "19843d7f22fd4daca1944036a09e9941886b4a0941cd62d00f73ec619c7d3dbb"
+    },
+    {
+      "bytes": 1788,
+      "determinism": "stdlib",
+      "expect": {
+        "caseIds": [
+          "duplicate-accept",
+          "expiry-during-await",
+          "fail-after-memory-write",
+          "no-unbounded-load"
+        ],
+        "domain": "floe.memory-candidate.v1",
+        "schema": "floe.memory-candidate.fixture/1",
+        "vectorIds": [
+          "pending-row",
+          "expired-row",
+          "redacted-evidence",
+          "same-second-change"
+        ]
+      },
+      "format": "memory-candidates",
+      "operations": [
+        "SET-MEMORY-CANDIDATE-REVIEW"
+      ],
+      "path": "memory/candidates.json",
+      "sha256": "bde6974ef8c3eff6309877c12725c9a4fcb2fa7e5f806bc9557850e0776f92fb"
+    },
+    {
+      "bytes": 3056,
+      "determinism": "stdlib",
+      "expect": {
+        "caseIds": [
+          "stale-update",
+          "duplicate-add",
+          "oversize-add",
+          "secret-like",
+          "bulk-stale",
+          "bulk-replay",
+          "search-fresh-diff",
+          "search-deleted-between"
+        ],
+        "domain": "floe.memory-entry.v3",
+        "schema": "floe.memory-entry.fixture/1",
+        "vectorIds": [
+          "column-order",
+          "content-boundaries",
+          "unicode-cjk-emoji",
+          "paging-120",
+          "ownership-detach",
+          "same-second-change"
+        ]
+      },
+      "format": "memory-inventory",
+      "operations": [
+        "SET-MEMORY-INVENTORY",
+        "SET-MEMORY-SEARCH"
+      ],
+      "path": "memory/inventory.json",
+      "sha256": "b3b62e2c3c3121884dc42879af82de3a94a9fee89137aa6b67f077ed58f3cf34"
+    },
+    {
+      "bytes": 1828,
+      "determinism": "stdlib",
+      "expect": {
+        "caseIds": [
+          "changed-but-existing",
+          "reowned-preferred",
+          "cloud-await-change",
+          "batch-replay",
+          "review-first-gating"
+        ],
+        "domain": "floe.memory-entry.v3",
+        "schema": "floe.organizer-output.fixture/1",
+        "vectorIds": [
+          "valid-suggestions",
+          "invented-ids",
+          "exact-duplicate-from-model",
+          "single-id-possible-duplicate",
+          "oversize-stream"
+        ]
+      },
+      "format": "organizer-model-output",
+      "operations": [
+        "SET-MEMORY-ORGANIZE"
+      ],
+      "path": "memory/organizer-model-output.json",
+      "sha256": "61d9f907949a00c145295f0945a3f45ac523e517b21e7a7ec98a1ba142288421"
     },
     {
       "bytes": 598,
@@ -354,6 +489,94 @@
       "sha256": "7563af5cd427641ce797aeedeb43df9cccc93acaa3ba6c542d12235821d0f333"
     },
     {
+      "bytes": 2308,
+      "determinism": "stdlib",
+      "expect": {
+        "caseIds": [
+          "save-stale",
+          "draft-no-contention",
+          "oversize-save",
+          "generate-active",
+          "generate-draft-active-slot",
+          "generate-draft-source-race",
+          "generate-cursor-preserved"
+        ],
+        "domain": "floe.personalization-cursor.v1",
+        "schema": "floe.personalization-document.fixture/1",
+        "vectorIds": [
+          "active-and-drafts",
+          "revision-metadata",
+          "content-24000-cjk",
+          "inline-versus-handle",
+          "cursor-absent-and-present"
+        ]
+      },
+      "format": "personalization-documents",
+      "operations": [
+        "SET-PERSONALIZATION-DOCUMENTS",
+        "SET-PERSONALIZATION-GENERATE"
+      ],
+      "path": "personalization/documents.json",
+      "sha256": "7d8c60c78ec87aab46a0a601042f08c1cb58076dae0768cdf8a2c5fcd166c3aa"
+    },
+    {
+      "bytes": 2142,
+      "determinism": "stdlib",
+      "expect": {
+        "caseIds": [
+          "equal-size-replacement",
+          "run-state-change",
+          "new-during-await",
+          "archived-excluded",
+          "unstable-grant-snapshot",
+          "gateway-unregistered",
+          "partial-failure"
+        ],
+        "domain": "floe.privacy-history.v3",
+        "schema": "floe.privacy-identity.fixture/1",
+        "vectorIds": [
+          "conversation-run-grant-streams",
+          "model-config-secret-references",
+          "archived-exclusion",
+          "in-memory-bracket"
+        ]
+      },
+      "format": "privacy-identity-streams",
+      "operations": [
+        "SET-HISTORY-CLEAR",
+        "SET-MODELCFG-CLEAR"
+      ],
+      "path": "privacy/identity-streams.json",
+      "sha256": "b878552d132455ed04fdb0644b739bd03690e59ca88820a636826691a7746976"
+    },
+    {
+      "bytes": 2438,
+      "determinism": "stdlib",
+      "expect": {
+        "caseIds": [
+          "stale-cas",
+          "atomic-multi-key",
+          "unknown-field",
+          "invalid-enum",
+          "corrupt-row"
+        ],
+        "domain": "floe.settings-defaults.v2",
+        "schema": "floe.settings-defaults.fixture/1",
+        "vectorIds": [
+          "absent-set",
+          "null-vs-literal",
+          "delimiter-and-unicode",
+          "numeric-types"
+        ]
+      },
+      "format": "settings-defaults-cas",
+      "operations": [
+        "SET-DEFAULTS-TYPED"
+      ],
+      "path": "settings/defaults-cas.json",
+      "sha256": "6b7cec9762bb807ec28f3c78fe486e107cf88ecfd713e4cb241cf5661806684a"
+    },
+    {
       "bytes": 177,
       "determinism": "stdlib",
       "expect": {
@@ -468,6 +691,32 @@
       "sha256": "8c161c74111f272049ec566500099fec0bdc3bbdfde5e392b7e076f2e3113847"
     },
     {
+      "bytes": 1287,
+      "determinism": "stdlib",
+      "expect": {
+        "caseIds": [
+          "null-not-zero",
+          "empty-db-totals",
+          "bounded-paging",
+          "equivalence-golden"
+        ],
+        "domain": "floe.run-usage.aggregate",
+        "schema": "floe.usage-aggregate.fixture/1",
+        "vectorIds": [
+          "null-metrics",
+          "legacy-fallbacks",
+          "thirty-day-window",
+          "paged-5000-conversations"
+        ]
+      },
+      "format": "usage-aggregates",
+      "operations": [
+        "SET-USAGE-AGGREGATE"
+      ],
+      "path": "usage/aggregates.json",
+      "sha256": "5cdeada90d378a120bda5dc52de11a1cdab133bcb89cbebde05da7144b86007d"
+    },
+    {
       "bytes": 25125,
       "determinism": "ffmpeg-version-pinned",
       "expect": {
@@ -527,5 +776,8 @@
       "sha256": "ac1d2de41e7f652a663fbec04d7c216cee083e347850326ea5199cc1ed0f2f90"
     }
   ],
+  "fixtureVersion": "g02.2026-10-19.1",
+  "previousArtifact": "floe-android-g01-synthetic-fixtures",
+  "previousFixtureCount": 26,
   "schemaVersion": 1
 }

@@ -1,0 +1,320 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 对话流程（Floe Android G02）。与英文资源逐条对齐；仅保留诚实的 Android
+     平台说明，不出现内部诊断词汇。 -->
+<resources>
+    <!-- 通用操作 -->
+    <string name="action_approve">允许</string>
+    <string name="action_deny">拒绝</string>
+    <string name="action_retry">重试</string>
+    <string name="action_stop">停止</string>
+    <string name="action_continue">继续</string>
+    <string name="action_copy">复制</string>
+    <string name="action_copied">已复制</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_save">保存</string>
+    <string name="action_done">完成</string>
+    <string name="action_delete">删除</string>
+    <string name="action_edit">编辑</string>
+    <string name="action_expand">展开</string>
+    <string name="action_hide">收起</string>
+    <string name="action_view">查看</string>
+    <string name="action_back">返回</string>
+    <string name="action_read_aloud">朗读</string>
+    <string name="dismiss_error">关闭</string>
+    <string name="loading_cd">加载中</string>
+    <string name="show_more_output">显示更多</string>
+    <string name="setup_open">打开设置</string>
+    <string name="add_provider_hint">添加模型提供商后即可开始对话。</string>
+
+    <!-- 会话顶部 -->
+    <string name="thread_title_default">对话</string>
+    <string name="thread_send">发送</string>
+    <string name="thread_inspector_menu">对话选项</string>
+    <string name="thread_empty_title">还没有消息</string>
+    <string name="thread_empty_hint">发送一条消息开始对话。</string>
+    <string name="thread_no_final_reply">本次运行已结束，但没有最终回复。</string>
+    <string name="jump_to_latest">跳到最新</string>
+    <string name="chat_select_or_new">该对话已不可用，请新建任务。</string>
+    <string name="role_user">你</string>
+    <string name="role_assistant">助手</string>
+    <string name="continuation_default">该任务可以从上一个安全检查点继续。</string>
+    <string name="state_waiting_background_work">等待后台作业</string>
+    <string name="state_contacting_provider">正在连接服务商…</string>
+    <string name="state_thinking">思考中…</string>
+
+    <!-- 运行状态 -->
+    <string name="state_preparing">准备中</string>
+    <string name="state_streaming">生成中</string>
+    <string name="state_reconnecting">重新连接</string>
+    <string name="state_committing_results">正在保存结果</string>
+    <string name="state_reviewing_approval">正在审查授权</string>
+    <string name="state_verifying">验证中</string>
+    <string name="state_executing_tool">正在运行工具</string>
+    <string name="state_waiting_approval">等待你授权</string>
+    <string name="state_compacting">正在压缩上下文</string>
+    <string name="state_paused">已暂停</string>
+    <string name="state_blocked">受阻，需要操作</string>
+    <string name="state_budget_limited">已达预算</string>
+    <string name="state_truncated">输出未完成，可以继续</string>
+    <string name="state_waiting_user">等待你的输入</string>
+    <string name="state_stopped">已停止</string>
+    <string name="state_cancelling">正在停止</string>
+    <string name="state_round_ended">本轮结束</string>
+    <string name="state_recovery_failed">恢复失败</string>
+    <string name="state_failed">失败</string>
+    <string name="state_task_unfinished">任务未完成，可以继续</string>
+    <string name="state_unknown">未知状态</string>
+
+    <!-- 工具卡片 -->
+    <string name="tool_status_succeeded">成功</string>
+    <string name="tool_status_failed">失败</string>
+    <string name="tool_status_running">运行中</string>
+    <string name="tool_status_pending">等待中</string>
+    <string name="tool_status_needs_user">需要你处理</string>
+    <string name="tool_status_denied">已拒绝</string>
+    <string name="tool_status_expired">已过期</string>
+    <string name="tool_status_cancelled">已取消</string>
+    <string name="tool_status_unknown">未知</string>
+    <string name="tool_input">输入</string>
+    <string name="tool_result">实际输出</string>
+    <string name="tool_approval">授权</string>
+    <string name="tool_decision">决定</string>
+    <string name="artifact_unverified">字节未验证</string>
+    <string name="artifact_open_preview">打开预览</string>
+    <string name="show_earlier_tool_activity">显示更早的工具活动</string>
+
+    <!-- 步骤分组 -->
+    <string name="group_tool_calls">%1$d 次工具调用</string>
+    <string name="group_one_tool_call">1 次工具调用</string>
+    <string name="group_thinking_segments">%1$d 段思考</string>
+    <string name="group_one_thinking_segment">1 段思考</string>
+    <string name="group_waiting_confirmation">等待确认</string>
+    <string name="group_items_need_review">%1$d 项需要查看</string>
+    <string name="group_one_needs_review">1 项需要查看</string>
+    <string name="group_items_running">%1$d 项运行中</string>
+    <string name="group_one_running">1 项运行中</string>
+    <string name="group_run_records">运行活动</string>
+    <string name="group_view_run_records">查看运行活动</string>
+
+    <!-- 思考过程 -->
+    <string name="reasoning_title">思考过程</string>
+    <string name="reasoning_thinking">思考中…</string>
+    <string name="reasoning_view_record">查看思考记录</string>
+    <string name="reasoning_still_updating">仍在更新</string>
+    <string name="reasoning_full">完整思考</string>
+
+    <!-- 消息、凭据与附件 -->
+    <string name="secure_credentials">安全凭据</string>
+    <string name="secure_credentials_hint">已安全保存；本任务可以引用。</string>
+    <string name="secure_credentials_card">安全凭据卡片</string>
+    <string name="attachment_open_named">打开附件 %1$s</string>
+    <string name="attachment_remove">移除附件 %1$s</string>
+    <string name="attachment_importing">正在导入…</string>
+    <string name="attachment_progress">正在导入 %1$d%%</string>
+    <string name="error_card_title">错误</string>
+
+    <!-- 授权 -->
+    <string name="approval_required">需要授权</string>
+    <string name="approval_action">操作</string>
+    <string name="approval_scope_label">范围</string>
+    <string name="approval_evidence">依据</string>
+    <string name="approval_risks">风险</string>
+    <string name="approval_scope_choose">允许此操作的范围</string>
+    <string name="approval_scope_once">仅一次</string>
+    <string name="approval_scope_task">本任务</string>
+    <string name="approval_scope_project">本项目</string>
+    <string name="approval_scope_host">此主机</string>
+    <string name="approval_skill_create_note">这会创建一个可供所有任务使用的技能。</string>
+    <string name="approval_gate_stopped_note">此操作受严格限制：即使允许，也仍需设备确认后才能执行。</string>
+    <string name="risk_reads_files">读取文件</string>
+    <string name="risk_writes_files">写入文件</string>
+    <string name="risk_deletes_files">删除文件</string>
+    <string name="risk_executes_local_code">在本机运行代码</string>
+    <string name="risk_executes_remote_command">运行远程命令</string>
+    <string name="risk_modifies_remote_system">修改远程系统</string>
+    <string name="risk_network_access">网络访问</string>
+    <string name="risk_sends_data_to_provider">向服务商发送数据</string>
+    <string name="risk_controls_gui">控制屏幕</string>
+    <string name="risk_accesses_credentials">使用凭据</string>
+
+    <!-- 输入区 -->
+    <string name="composer_placeholder">给 Floe 发送消息…</string>
+    <string name="composer_attach">添加附件</string>
+    <string name="voice_start">语音输入</string>
+    <string name="composer_model">模型</string>
+    <string name="composer_no_model">未配置模型</string>
+    <string name="composer_mode">模式</string>
+    <string name="composer_mode_agent">智能体</string>
+    <string name="composer_mode_chat">对话</string>
+    <string name="composer_mode_plan">计划</string>
+    <string name="composer_mode_goal">目标</string>
+    <string name="composer_project">工作区</string>
+    <string name="composer_project_none">无工作区</string>
+    <string name="composer_target">运行位置</string>
+    <string name="composer_target_local">本机</string>
+    <string name="composer_permissions">权限</string>
+    <string name="permissions_ask">每次询问</string>
+    <string name="permissions_auto_approve">自动允许</string>
+    <string name="permissions_full_access">完全访问</string>
+    <string name="send_queue">排队</string>
+    <string name="send_steer">引导</string>
+    <string name="send_queue_hint">加入消息队列</string>
+    <string name="send_steer_hint">引导当前运行</string>
+    <string name="send_method_while_running">运行中的发送方式</string>
+    <string name="model_persist_failed">已选择模型“%1$s”，但默认设置未能保存。</string>
+
+    <!-- 消息队列 -->
+    <string name="queue_title">消息队列</string>
+    <string name="queue_action_cd">队列消息操作</string>
+    <string name="queue_move_up">上移</string>
+    <string name="queue_move_down">下移</string>
+    <string name="queue_convert_to_steer">转为引导</string>
+    <string name="queue_edit_title">编辑队列消息</string>
+    <string name="queue_message_field">队列消息</string>
+    <string name="queue_browser_handoff_note">已保存到原任务，可在浏览器中继续</string>
+    <string name="queue_status_waits_for_run">等待当前运行结束</string>
+    <string name="queue_status_converting">正在转为引导…</string>
+    <string name="queue_status_waiting_insert">等待安全的插入位置</string>
+    <string name="queue_status_sent">已发送</string>
+    <string name="queue_status_cancelled">已取消</string>
+
+    <!-- 清单 / 计划 / 目标 -->
+    <string name="checklist_current_step">当前：%1$s</string>
+    <string name="plan_title">计划</string>
+    <string name="plan_suggest_goal">此计划适合目标执行</string>
+    <string name="plan_suggest_normal">此计划适合常规执行</string>
+    <string name="plan_execute_normal">按常规计划执行</string>
+    <string name="plan_convert_goal">转为目标</string>
+    <string name="goal_title">目标</string>
+    <string name="goal_confirm_complete">确认完成</string>
+    <string name="goal_set_title">设置目标</string>
+    <string name="goal_objective_field">最终目标</string>
+    <string name="goal_criteria_field">验收标准（每行一条）</string>
+    <string name="goal_blockers_field">阻塞条件（每行一条）</string>
+    <string name="goal_stops_field">停止条件（每行一条）</string>
+    <string name="goal_create_start">创建并开始</string>
+
+    <!-- 关键文件 -->
+    <string name="key_files_title">关键文件</string>
+    <string name="key_files_all">全部文件</string>
+
+    <!-- 子代理 -->
+    <string name="subagents_title">子代理</string>
+
+    <!-- 用量 -->
+    <string name="usage_total">合计 %1$s</string>
+    <string name="usage_live_estimate">实时估算</string>
+    <string name="usage_context_reuse">上下文复用 %1$s</string>
+    <string name="usage_reasoning">推理 %1$s</string>
+    <string name="usage_cache_rate">缓存命中 %1$s</string>
+    <string name="usage_speed">速度 %1$s</string>
+    <string name="usage_first_response">首字响应 %1$s</string>
+    <string name="usage_view_context">查看上下文用量</string>
+    <string name="usage_context_window">上下文窗口</string>
+    <string name="usage_this_turn">本轮：输入 %1$s / 输出 %2$s</string>
+    <string name="usage_pending">等待首次用量报告。</string>
+
+    <!-- 对话菜单 -->
+    <string name="menu_refresh_media">刷新媒体任务状态</string>
+    <string name="menu_refreshing_media">正在刷新媒体任务…</string>
+    <string name="menu_set_goal">直接设置目标</string>
+    <string name="menu_export_structured">导出完整任务（含工具结果）</string>
+    <string name="menu_exporting">正在导出…</string>
+    <string name="menu_export_text">分享对话文本</string>
+    <string name="menu_export_markdown">分享对话 Markdown</string>
+    <string name="inspector_changes">变更</string>
+    <string name="inspector_files">文件</string>
+    <string name="inspector_browser">浏览器</string>
+    <string name="inspector_terminal">终端</string>
+    <string name="inspector_progress">进度</string>
+    <string name="inspector_subagents">子代理</string>
+
+    <!-- 临时对话 -->
+    <string name="temporary_badge">临时</string>
+    <string name="temporary_about">关于临时对话</string>
+    <string name="temporary_end">结束临时对话</string>
+    <string name="temporary_keep">保留为已保存对话</string>
+    <string name="temporary_keep_saving">正在保存…</string>
+    <string name="temporary_keep_partial_retry">完成保存</string>
+    <string name="temporary_keep_failed_retry">重试保存</string>
+    <string name="temporary_keep_partial_detail">对话已保存，但回复的最后部分仍在同步。再次保留即可完成。</string>
+    <string name="temporary_keep_failed_detail">无法保存该对话：%1$s</string>
+    <string name="temporary_header_line">临时对话仅保存在内存中。</string>
+    <string name="temporary_about_title">临时对话</string>
+    <string name="temporary_about_lifecycle">此对话只保存在内存中。锁屏、旋转屏幕或离开应用不会丢失；打开其他会话或新建任务会立即丢弃它，即使回复仍在生成。应用关闭后不会恢复。</string>
+    <string name="temporary_about_tools">工具仅限读取与公开网页访问。你的服务商按自身策略处理发送的内容。</string>
+    <string name="temporary_about_voice">临时对话不支持语音输入。</string>
+
+    <!-- 代码与 Markdown -->
+    <string name="codeblock_language">语言</string>
+
+    <!-- 仅调试预览 -->
+    <string name="preview_synthetic_notice">合成预览：非真实数据</string>
+
+    <!-- 历史 -->
+    <string name="history_title">对话</string>
+    <string name="history_manage_title">任务</string>
+    <string name="history_archive_title">归档</string>
+    <string name="history_search_hint">搜索对话</string>
+    <string name="history_searching">正在搜索…</string>
+    <string name="history_search_no_results">没有匹配的对话</string>
+    <string name="history_empty_title">还没有对话</string>
+    <string name="history_empty_hint">开始一个对话后会显示在这里。</string>
+    <string name="history_archive_empty_title">归档为空</string>
+    <string name="history_archive_empty_hint">已归档的对话会显示在这里。</string>
+    <string name="history_needs_provider_title">对话</string>
+    <string name="history_untitled">未命名</string>
+    <string name="history_new">新对话</string>
+    <string name="history_row_actions">对话操作</string>
+    <string name="history_select_multiple">多选</string>
+    <string name="history_select_all">全选</string>
+    <string name="history_deselect_all">取消全选</string>
+    <string name="history_select_hint">选择要管理的对话。</string>
+    <string name="history_selected_count">已选择 %1$d 项</string>
+    <string name="history_filter_tasks">任务</string>
+    <string name="history_filter_archive">已归档</string>
+    <string name="history_archive_action">归档</string>
+    <string name="history_restore_action">恢复</string>
+    <string name="history_delete_forever">永久删除</string>
+    <string name="history_delete_confirm_title">删除任务</string>
+    <string name="history_delete_confirm_message">这将从本机删除该任务、其私有工作区以及任何临时对话内容。</string>
+    <string name="history_archive_confirm_title">归档 %1$d 个任务？</string>
+    <string name="history_archive_confirm_message">这将停止所选任务中正在运行的工作，并将它们移到归档。</string>
+    <string name="history_running_impact">所选任务中有 %1$d 个正在运行。</string>
+    <string name="history_working">处理中… %1$d/%2$d</string>
+    <string name="history_stop_batch">停止</string>
+    <string name="bulk_result_archived">已归档 %1$d</string>
+    <string name="bulk_result_restored">已恢复 %1$d</string>
+    <string name="bulk_result_deleted">已删除 %1$d</string>
+    <string name="bulk_result_skipped">已跳过 %1$d</string>
+    <string name="bulk_result_failed">失败 %1$d</string>
+    <string name="bulk_result_unverified">未确认 %1$d</string>
+    <string name="bulk_result_not_attempted">未处理 %1$d</string>
+    <string name="bulk_cancelled_note">已提前停止；未处理的对话仍保持选中，可重试。</string>
+    <string name="bulk_keep_failed_note">失败的对话仍保持选中，方便重试。</string>
+
+    <!-- full-screen composer editor (⇄ ComposerFullEditorSheet) -->
+    <string name="composer_expand">展开编辑</string>
+    <string name="composer_editor_title">编辑消息</string>
+    <string name="composer_editor_undo">撤销</string>
+    <string name="composer_editor_redo">重做</string>
+    <string name="composer_editor_select_all">全选</string>
+    <string name="composer_editor_send">发送</string>
+    <string name="composer_editor_characters">%1$d 字符</string>
+    <string name="composer_editor_tokens">约 %1$d token（估算）</string>
+
+    <!-- 全屏编辑器的本地查找/替换（按字面匹配，无正则） -->
+    <string name="composer_editor_find">查找</string>
+    <string name="composer_editor_find_hint">在消息中查找</string>
+    <string name="composer_editor_replace_hint">替换为</string>
+    <string name="composer_editor_find_previous">上一个匹配</string>
+    <string name="composer_editor_find_next">下一个匹配</string>
+    <string name="composer_editor_find_close">关闭查找</string>
+    <string name="composer_editor_find_position">第 %1$d 个，共 %2$d 个</string>
+    <string name="composer_editor_find_no_results">没有匹配</string>
+    <string name="composer_editor_replace">替换</string>
+    <string name="composer_editor_replace_all">全部替换</string>
+    <string name="composer_editor_replace_too_large">替换内容过大，无法一次应用。</string>
+    <string name="composer_editor_match_case">区分大小写</string>
+    <string name="composer_editor_whole_word">全字匹配</string>
+</resources>

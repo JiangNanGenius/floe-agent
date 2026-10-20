@@ -1,0 +1,1408 @@
+// SPDX-License-Identifier: MPL-2.0
+package com.floe.android.host
+
+import com.floe.android.feature.conversation.AgentExecutionModeUi
+import com.floe.android.feature.conversation.ApprovalCardUi
+import com.floe.android.feature.conversation.ApprovalModeUi
+import com.floe.android.feature.conversation.ApprovalTargetUi
+import com.floe.android.feature.conversation.AttachmentChipUi
+import com.floe.android.feature.conversation.AttachmentKindUi
+import com.floe.android.feature.conversation.CapabilityChipUi
+import com.floe.android.feature.conversation.ChecklistStepStatusUi
+import com.floe.android.feature.conversation.ChecklistStepUi
+import com.floe.android.feature.conversation.ChecklistUi
+import com.floe.android.feature.conversation.ChildRunDetailUi
+import com.floe.android.feature.conversation.ChildRunUi
+import com.floe.android.feature.conversation.ConversationListItemUi
+import com.floe.android.feature.conversation.ConversationSessionToken
+import com.floe.android.contracts.EventCursor
+import com.floe.android.feature.conversation.GoalUi
+import com.floe.android.feature.conversation.ImportantFileUi
+import com.floe.android.feature.conversation.MessagePageCursorUi
+import com.floe.android.feature.conversation.MessageRoleUi
+import com.floe.android.feature.conversation.MessageUi
+import com.floe.android.feature.conversation.ModelOptionUi
+import com.floe.android.feature.conversation.PendingInputStatusUi
+import com.floe.android.feature.conversation.PendingInputUi
+import com.floe.android.feature.conversation.PlanRecommendationUi
+import com.floe.android.feature.conversation.PlanUi
+import com.floe.android.contracts.Revision
+import com.floe.android.feature.conversation.RunEventKindUi
+import com.floe.android.feature.conversation.RunEventUi
+import com.floe.android.feature.conversation.RunLaunchRequest
+import com.floe.android.feature.conversation.RunRowUi
+import com.floe.android.feature.conversation.RunningInputModeUi
+import com.floe.android.feature.conversation.RunningInputRequest
+import com.floe.android.feature.conversation.StagedAttachmentUi
+import com.floe.android.feature.conversation.ThreadUiState
+import com.floe.android.feature.conversation.TimelineRowUi
+import com.floe.android.feature.conversation.UsageUi
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.longOrNull
+
+/**
+ * Incremental, host-owned [ThreadUiState] projection builder. One builder
+ * exists per conversation surface; it accumulates the durable session reply,
+ * message pages, run events, attachments and child details, and emits
+ * complete immutable snapshots through [ConversationFlowHolder.applyHostSnapshot].
+ * The builder never invents identities: everything traces to a decoded wire
+ * page or typed effect.
+ */
+class ThreadProjectionBuilder internal constructor(
+    private val conversationId: String,
+) {
+    var session: ConversationSessionToken = ConversationSessionToken(conversationId, 0L)
+    var taskTitle: String = ""
+    var isTemporary: Boolean = false
+    var temporaryIncarnationId: String? = null
+    var conversationRevision: Revision? = null
+    var earlierCursor: MessagePageCursorUi? = null
+    var hasEarlierMessages: Boolean = false
+    var selectedRunId: String? = null
+    val childDetails = mutableMapOf<String, ChildRunDetailUi>()
+
+    private var missing: Boolean = false
+    private var hasLoaded: Boolean = false
+    private val userMessages = LinkedHashMap<String, MessageUi>()
+    private val assistantMessages = LinkedHashMap<String, MessageUi>()
+    private val runEvents = LinkedHashMap<String, MutableList<RunEventUi>>()
+    private val runRows = LinkedHashMap<String, RunRowUi>()
+    private val staged = LinkedHashMap<String, StagedAttachmentUi>()
+    private val pendingApprovalsByRun = LinkedHashMap<String, MutableList<ApprovalCardUi>>()
+    private val pendingInputs = LinkedHashMap<String, PendingInputUi>()
+    private var liveAssistant: String = ""
+    private var liveReasoning: String = ""
+    /**
+     * Authoritative CURRENT streamed text from the last applied
+     * `run.snapshot` (`answerText`/`reasoningText`). The native snapshot
+     * carries the run service's own in-progress accumulation for the current
+     * assistant step; durable `assistantText`/`reasoning` rows flush only at
+     * segment boundaries. The overlay REPLACES (never appends to) the already
+     * durable prefix of that same step — see [composeLiveTail] — so live
+     * content becomes visible without double counting durable segments.
+     * `null` means "no authoritative live text known" (cold/no live owner,
+     * dropped-by-budget or a failed refresh): the durable tail stays as-is.
+     */
+    private var snapshotAnswerOverlay: String? = null
+    private var snapshotReasoningOverlay: String? = null
+    /**
+     * Durable flush segments of the CURRENT live tail, in arrival order. They
+     * are exact prefixes of the native in-progress text while a step streams,
+     * so the authoritative overlay can replace exactly the already-durable
+     * prefix of the step. Bounded: oldest segments are dropped first and the
+     * overlay then only replaces what the retained window proves.
+     */
+    private val liveAssistantSegments = ArrayDeque<String>()
+    private val liveReasoningSegments = ArrayDeque<String>()
+    private var liveSegmentChars: Int = 0
+    /** Run that owns the live tail buffers currently displayed. */
+    private var liveTailRunId: String? = null
+    /** Run whose live tail reached its durable close boundary (never revived). */
+    private var liveTailClosedFor: String? = null
+    private var actionError: String? = null
+    private var policyApprovalMode: ApprovalModeUi = ApprovalModeUi.ASK
+    private var snapshotCounter = 0L
+
+    /**
+     * Host-projected composer model options. The host owns the REAL
+     * provider/model join (enabled provider + configured secret + enabled
+     * model row); the builder never infers usability from row presence.
+     */
+    var models: List<ModelOptionUi> = emptyList()
+        private set
+
+    /**
+     * Honest "configure a provider/model" state. True only when the host
+     * projection has no usable model; never a hard-coded false.
+     */
+    var needsProvider: Boolean = false
+        private set
+
+    /** Per-run CAS revision (`run.<UPPER uuid>` / native durable state). */
+    private val runRevisions = LinkedHashMap<String, Revision>()
+
+    /** Per-approval CAS revision version (`requestedAt` wire date). */
+    private val approvalVersions = LinkedHashMap<String, String>()
+
+    /** Pending-input row CAS versions (`pendingInput.<uuid>` / updatedAt). */
+    private val inputVersions = LinkedHashMap<String, String>()
+
+    /** Durable queue order revision (`pendingQueue.<uuid>` / queue digest). */
+    var queueRevision: Revision? = null
+        private set
+
+    /** Durable child graph rows (real `child.list` page). */
+    private var childRuns: List<ChildRunUi> = emptyList()
+
+    fun runIds(): Set<String> = runRows.keys.toSet()
+
+    /** Apply the host's real model projection (see [models] above). */
+    internal fun applyModels(options: List<ModelOptionUi>, needsProvider: Boolean) {
+        models = options
+        this.needsProvider = needsProvider
+    }
+
+    /** The tracked durable state name of a run (native vocabulary). */
+    internal fun runStateName(runID: String): String? = runRows[runID]?.stateName
+
+    /** The tracked CAS revision of a run, when a real producer supplied it. */
+    internal fun runRevision(runID: String): Revision? = runRevisions[runID]
+
+    /** The tracked `requestedAt` approval version for one live call. */
+    internal fun approvalVersion(callID: String): String? = approvalVersions[callID]
+
+    /** The tracked `inputVersion` of one durable pending-input row. */
+    internal fun inputVersion(inputID: String): String? = inputVersions[inputID]
+
+    internal fun applySession(reply: ConversationWire.SessionReply) {
+        hasLoaded = true
+        taskTitle = reply.title
+        conversationRevision = reply.revision
+        // The native snapshot orders runs NEWEST-FIRST (`started_at DESC, id`,
+        // RuntimeFacadeConversations), so the FIRST row is the most recent
+        // run. A fresh builder must select that newest run — the live or
+        // retryable tail the user actually continues — never the oldest row
+        // (the previous `lastOrNull()` pinned the OLDEST run, so a cold reopen
+        // after a checkpoint rendered the stale round with no Continue). A
+        // refresh keeps the current selection while that run still exists in
+        // the page: no jump on reload, no clobber of an explicit selection,
+        // and a run selected by applyPrepared survives while present.
+        if (selectedRunId == null || reply.runs.none { it.runID == selectedRunId }) {
+            selectedRunId = reply.runs.firstOrNull()?.runID ?: selectedRunId
+        }
+        for (run in reply.runs) {
+            runRows[run.runID] = RunRowUi(
+                id = run.runID,
+                stateName = run.state,
+                modelId = run.modelName,
+                startedAtLabel = run.startedAt,
+            )
+            if (run.state.isNotBlank() && run.state != "unknown") {
+                runRevisions[run.runID] =
+                    Revision(ConversationWire.runResourceID(run.runID), run.state)
+            }
+        }
+        for (input in reply.pendingInputs) {
+            pendingInputs[input.id] = input
+        }
+        reply.approvalMode?.let { policyApprovalMode = it }
+    }
+
+    /**
+     * Applies the ACTUAL typed `run.snapshot` page (F7 typed carrier). This
+     * is the authoritative CAS source: the durable run state/revision, the
+     * live pending approval (`callID` + `requestedAt` version), the durable
+     * pending-input rows with their `inputVersion`, and the queue-order
+     * revision. Nothing here is synthesized: a missing member stays absent.
+     */
+    internal fun applySnapshot(page: ConversationWire.SnapshotPage) {
+        runRows[page.runID] = (runRows[page.runID]
+            ?: RunRowUi(page.runID, page.durableState, null, ""))
+            .copy(stateName = page.durableState)
+        runRevisions[page.runID] = page.revision
+        page.pendingApproval?.let { approval ->
+            page.approvalRevision?.let { revision ->
+                approvalVersions[approval.callID] = revision.version
+            }
+            val existing = pendingApprovalsByRun[page.runID]
+                ?.firstOrNull { it.approvalId == approval.callID }
+            if (existing == null) {
+                pendingApprovalsByRun.getOrPut(page.runID) { mutableListOf() }
+                    .add(
+                        ApprovalCardUi(
+                            approvalId = approval.callID,
+                            runId = page.runID,
+                            conversationId = conversationId,
+                            workspaceId = null,
+                            toolName = approval.tool,
+                            target = ApprovalTargetUi.Local,
+                            scopeDescription = "",
+                            reason = approval.reason,
+                            riskLabels = emptySet(),
+                            isSideEffecting = false,
+                            requestedAtLabel = approval.requestedAt,
+                            evidenceLines = emptyList(),
+                        ),
+                    )
+            }
+        }
+        for (input in page.pendingInputs) {
+            inputVersions[input.id] = input.inputVersion
+            val known = pendingInputs[input.id]
+            pendingInputs[input.id] = (known ?: PendingInputUi(
+                id = input.id,
+                content = "",
+                status = input.status,
+                mode = input.mode,
+                executionModeRaw = "agent",
+                position = input.position,
+            )).copy(status = input.status, position = input.position)
+        }
+        page.queueRevision?.let { queueRevision = it }
+    }
+
+    internal fun applyMessagePage(page: ConversationWire.MessagePage, earlier: Boolean) {
+        for (message in page.rows) {
+            when (message.role) {
+                MessageRoleUi.USER -> userMessages[message.id] = message
+                MessageRoleUi.ASSISTANT -> assistantMessages[message.id] = message
+                else -> Unit
+            }
+        }
+    }
+
+    internal fun applyPrepared(prepared: ConversationWire.Prepared) {
+        // A new run owns a fresh live tail: the previous run's buffers must
+        // never leak into it.
+        resetLiveTail(prepared.runID)
+        runRows[prepared.runID] = RunRowUi(
+            id = prepared.runID,
+            stateName = "prepared",
+            modelId = null,
+            startedAtLabel = "",
+        )
+        selectedRunId = prepared.runID
+    }
+
+    /** Drop every live-tail buffer/overlay and bind the tail to [runID]. */
+    private fun resetLiveTail(runID: String?) {
+        liveAssistant = ""
+        liveReasoning = ""
+        snapshotAnswerOverlay = null
+        snapshotReasoningOverlay = null
+        liveAssistantSegments.clear()
+        liveReasoningSegments.clear()
+        liveSegmentChars = 0
+        liveTailRunId = runID
+        liveTailClosedFor = null
+    }
+
+    /**
+     * Projects ONE durable `RunEventRecord` from the ORIGINAL engine
+     * vocabulary (FloeModels/AgentThread.swift Kind):
+     * `assistantText`/`reasoning{text}`/`toolRequest`/`toolResult`/
+     * `terminal{stopReason}`/`file`/`approval{tool,callID,scope,reason}` or
+     * `approval{tool,callID,outcome}`/`error`/`usage`/`checkpoint`/
+     * `status{state,reason}`/`autoApproved`/`notice`.
+     *
+     * `status` carries the run-state transitions (including the terminal
+     * status appended for failed/checkpointed runs); `terminal` is only the
+     * successful provider-completion close. Both update the durable run state
+     * and its CAS revision version — never an invented `stateChanged`.
+     */
+    fun applyRunEvent(frame: HostRunEventFrame) {
+        val kind = frame.kind
+        val payload = frame.payload
+        when (kind) {
+            "assistantText" -> {
+                val text = payload?.string("text")
+                if (text != null) {
+                    if (!liveTailAccepts(frame.runID)) return
+                    liveAssistant += text
+                    recordLiveSegment(text, reasoning = false)
+                }
+            }
+            "reasoning" -> {
+                // Native reasoning payload is {"text"}.
+                val text = payload?.string("text") ?: payload?.string("excerpt")
+                if (text != null) {
+                    if (!liveTailAccepts(frame.runID)) return
+                    liveReasoning += text
+                    recordLiveSegment(text, reasoning = true)
+                }
+            }
+            "terminal" -> {
+                val runID = frame.runID
+                val current = runRows[runID]
+                // The provider-completion close; the durable state transition
+                // (completed) arrives through `status`/the snapshot. Keep a
+                // real non-terminal state if the status has not landed yet.
+                val next = current?.takeIf { it.stateName in ACTIVE_STATES }
+                    ?: (current ?: RunRowUi(runID, "completed", null, ""))
+                runRows[runID] = next
+                if (current == null) {
+                    runRevisions[runID] =
+                        Revision(ConversationWire.runResourceID(runID), "completed")
+                }
+            }
+            "status" -> {
+                val state = payload?.string("state")
+                if (state != null) {
+                    runRows[frame.runID] = (runRows[frame.runID]
+                        ?: RunRowUi(frame.runID, state, null, ""))
+                        .copy(stateName = state)
+                    runRevisions[frame.runID] =
+                        Revision(ConversationWire.runResourceID(frame.runID), state)
+                }
+            }
+            "approval" -> {
+                // Engine approval rows: a REQUEST carries
+                // {tool,callID,scope,reason}; an OUTCOME carries
+                // {tool,callID,outcome}. Presence of `outcome` is the exact
+                // discriminator (never an invented approvalResolved).
+                val callID = payload?.string("callID")
+                if (callID != null) {
+                    if (payload.string("outcome") != null) {
+                        pendingApprovalsByRun[frame.runID]?.removeAll {
+                            it.approvalId == callID
+                        }
+                        approvalVersions.remove(callID)
+                    } else {
+                        val card = ConversationWire.decodeApprovalCard(
+                            conversationId, frame.runID, payload)
+                        if (card != null) {
+                            pendingApprovalsByRun.getOrPut(frame.runID) {
+                                mutableListOf()
+                            }.removeAll { it.approvalId == card.approvalId }
+                            pendingApprovalsByRun.getOrPut(frame.runID) {
+                                mutableListOf()
+                            }.add(card)
+                        }
+                    }
+                }
+            }
+            "userInputConsumed" -> {
+                // Historical/forward-compatible vocabulary: the durable queue
+                // row status is authoritative (snapshot `pendingInputs`).
+                val inputID = payload?.string("inputID")
+                if (inputID != null) {
+                    pendingInputs[inputID] = pendingInputs[inputID]?.copy(
+                        status = PendingInputStatusUi.CONSUMED) ?: return
+                }
+            }
+            "stateChanged" -> {
+                val state = payload?.string("state")
+                if (state != null) {
+                    runRows[frame.runID] = (runRows[frame.runID]
+                        ?: RunRowUi(frame.runID, state, null, ""))
+                        .copy(stateName = state)
+                    runRevisions[frame.runID] =
+                        Revision(ConversationWire.runResourceID(frame.runID), state)
+                }
+            }
+            else -> Unit
+        }
+        // Durable event record (bounded, typed).
+        val list = runEvents.getOrPut(frame.runID) { mutableListOf() }
+        if (list.size < 512) {
+            list.add(
+                RunEventUi(
+                    id = "${frame.runID}:${frame.sequence}",
+                    runId = frame.runID,
+                    sequence = frame.sequence.toInt(),
+                    kind = when (kind) {
+                        "assistantText" -> RunEventKindUi.ASSISTANT_TEXT
+                        "reasoning" -> RunEventKindUi.REASONING
+                        "terminal" -> RunEventKindUi.TERMINAL
+                        "approval" -> RunEventKindUi.APPROVAL
+                        "approvalRequested", "approvalResolved" -> RunEventKindUi.APPROVAL
+                        "status", "stateChanged" -> RunEventKindUi.STATUS
+                        "toolRequest" -> RunEventKindUi.TOOL_REQUEST
+                        "toolResult" -> RunEventKindUi.TOOL_RESULT
+                        "usage" -> RunEventKindUi.USAGE
+                        "file" -> RunEventKindUi.FILE
+                        "checkpoint" -> RunEventKindUi.CHECKPOINT
+                        "childRunChanged" -> RunEventKindUi.STATUS
+                        "userInputConsumed" -> RunEventKindUi.STATUS
+                        "autoApproved" -> RunEventKindUi.AUTO_APPROVED
+                        "notice" -> RunEventKindUi.NOTICE
+                        "error" -> RunEventKindUi.ERROR
+                        else -> RunEventKindUi.NOTICE
+                    },
+                    timeLabel = "",
+                    stateName = payload?.string("state"),
+                    statusReason = payload?.string("reason"),
+                    message = payload?.string("message"),
+                    assistantText = payload?.string("text"),
+                    reasoningExcerpt = payload?.string("text") ?: payload?.string("excerpt"),
+                ),
+            )
+        }
+    }
+
+    fun stageAttachment(stagedAttachment: StagedAttachmentUi) {
+        staged[stagedAttachment.id] = stagedAttachment
+    }
+
+    fun unstageAttachment(attachmentId: String) {
+        staged.remove(attachmentId)
+    }
+
+    fun markMissing(reason: String) {
+        missing = true
+        actionError = reason
+    }
+
+    fun actionError(reason: String) {
+        actionError = reason
+    }
+
+    /** A later real acceptance supersedes a stale error banner. */
+    fun clearActionError() {
+        actionError = null
+    }
+
+    /**
+     * Clears the live display buffers once the durable close boundary has
+     * been reached; the committed message rows are the authority from then on.
+     * The closed run is remembered so a LATE authoritative snapshot (a read
+     * that raced the terminal) can never resurrect the retired tail.
+     */
+    internal fun clearLiveBuffers() {
+        liveAssistant = ""
+        liveReasoning = ""
+        snapshotAnswerOverlay = null
+        snapshotReasoningOverlay = null
+        liveAssistantSegments.clear()
+        liveReasoningSegments.clear()
+        liveSegmentChars = 0
+        liveTailClosedFor = liveTailRunId
+    }
+
+    /**
+     * Closes the live tail of [runID] at its durable close boundary. A
+     * terminal callback for ANOTHER run (a late old-run terminal while a newer
+     * run is selected) must never clear or close the selected run's tail, so
+     * this is a no-op unless [runID] is the current selection.
+     */
+    internal fun closeLiveTail(runID: String): Boolean {
+        if (selectedRunId != runID) return false
+        clearLiveBuffers()
+        liveTailClosedFor = runID
+        return true
+    }
+
+    /**
+     * Re-arms a NEW stream incarnation of the SAME durable run after a REAL
+     * accepted `run.retry`. This is the only path that may lift the terminal
+     * close boundary: retrying the same run id keeps its durable messages,
+     * CAS revision and checkpoint, and only the presentation tail is rebound.
+     * Stale/failed retries, cold reads, live hints and late snapshots must
+     * never call this.
+     */
+    internal fun rearmLiveTailForRetry(runID: String): Boolean {
+        if (selectedRunId != runID) return false
+        val closedHere = liveTailClosedFor == runID
+        val retryableState = runRows[runID]?.stateName in RETRYABLE_STATES
+        if (!closedHere && !retryableState) return false
+        resetLiveTail(runID)
+        return true
+    }
+
+    /**
+     * Applies the authoritative current answer/reasoning text of one typed
+     * `run.snapshot` page by REPLACEMENT of the already-durable prefix of the
+     * same streaming step (see [composeLiveTail]).
+     *
+     * Honesty rules (never relaxed):
+     * * Only the SELECTED run's tail is touched; a snapshot for another run is
+     *   canonical for its revisions only.
+     * * A terminal page or a run whose durable close boundary was observed is
+     *   refused — committed durable messages are the terminal authority and a
+     *   late snapshot must not revive the old tail.
+     * * `liveOwner = false` (cold history / no live service) or a missing
+     *   text member leaves the durable tail untouched: absence is unknown,
+     *   never an empty answer.
+     * * `answerContinuationHandle != null` means the inline text is a bounded
+     *   PREFIX: it is displayed, never treated as complete, and never clears
+     *   the durable tail. The final message page remains the full truth.
+     */
+    internal fun applySnapshotLiveText(page: ConversationWire.SnapshotPage) {
+        if (page.runID != selectedRunId) return
+        if (page.isTerminal) return
+        if (liveTailClosedFor == page.runID) return
+        if (!page.liveOwner) return
+        val durableState = runRows[page.runID]?.stateName ?: page.durableState
+        if (durableState in TERMINAL_STATES) return
+        val answer = page.answerText
+        val reasoning = page.reasoningText
+        if (answer == null && reasoning == null) return
+        liveTailRunId = page.runID
+        answer?.let { snapshotAnswerOverlay = it }
+        // Reasoning absence is honest absence: keep the last authoritative
+        // reasoning text rather than wiping it on a dropped member.
+        reasoning?.let { snapshotReasoningOverlay = it }
+    }
+
+    /** A durable frame may extend the tail only for the run that owns it. */
+    private fun liveTailAccepts(runID: String): Boolean {
+        if (liveTailClosedFor == runID) return false
+        val owner = liveTailRunId
+        if (owner != null && owner != runID) {
+            // A different run's durable text must never append onto another
+            // run's answer. The SELECTED run rebinds a fresh tail instead.
+            if (runID != selectedRunId) return false
+            resetLiveTail(runID)
+            return true
+        }
+        liveTailRunId = runID
+        return true
+    }
+
+    private fun recordLiveSegment(text: String, reasoning: Boolean) {
+        if (text.isEmpty()) return
+        val segments = if (reasoning) liveReasoningSegments else liveAssistantSegments
+        segments.addLast(text)
+        liveSegmentChars += text.length
+        while (segments.size > LIVE_SEGMENT_LIMIT ||
+            liveSegmentChars > LIVE_SEGMENT_CHAR_LIMIT
+        ) {
+            val dropped = segments.removeFirstOrNull() ?: break
+            liveSegmentChars -= dropped.length
+        }
+    }
+
+    /** Display tails: durable segmented truth plus the authoritative overlay. */
+    private fun assistantTailText(): String =
+        composeLiveTail(liveAssistant, liveAssistantSegments, snapshotAnswerOverlay)
+
+    private fun reasoningTailText(): String =
+        composeLiveTail(liveReasoning, liveReasoningSegments, snapshotReasoningOverlay)
+
+    /**
+     * The authoritative overlay already contains the current step's durable
+     * prefix (native `streamedText` accumulates the same deltas that flush to
+     * `assistantText`/`reasoning` rows), so the displayed tail replaces that
+     * prefix instead of appending on top of it:
+     *
+     * * `overlay == null` → durable tail (no authoritative live text known).
+     * * `overlay` empty → durable tail (nothing streaming right now).
+     * * durable tail empty → overlay.
+     * * the overlay already landed durably (same suffix) → durable tail.
+     * * otherwise remove the longest trailing run of durable segments that is
+     *   an exact prefix of the overlay, then append the overlay.
+     *
+     * Every branch is bounded by the retained segment window and the buffer
+     * sizes; nothing loops per token.
+     */
+    private fun composeLiveTail(
+        durable: String,
+        segments: ArrayDeque<String>,
+        overlay: String?,
+    ): String {
+        if (overlay == null) return durable
+        if (overlay.isEmpty()) return durable
+        if (durable.isEmpty()) return overlay
+        if (overlay.length <= durable.length && durable.endsWith(overlay)) {
+            return durable
+        }
+        var overlap = 0
+        val candidate = StringBuilder()
+        var index = segments.size - 1
+        while (index >= 0) {
+            candidate.insert(0, segments[index])
+            if (candidate.length >= overlay.length) {
+                // The durable tail already carries at least the overlay's
+                // characters: it is FRESHER than this (possibly stale) read,
+                // so never append the older prefix again.
+                if (candidate.startsWith(overlay)) return durable
+                break
+            }
+            if (overlay.startsWith(candidate)) overlap = candidate.length
+            index -= 1
+        }
+        return if (overlap > 0) durable.dropLast(overlap) + overlay else durable + overlay
+    }
+
+    /** Replace the durable child graph rows (child.list page). */
+    internal fun applyChildRuns(rows: List<ChildRunUi>) {
+        childRuns = rows
+    }
+
+    /**
+     * A typed pump failure for [runID]: surfaced in the projection so the UI
+     * can show an actionable line; the durable snapshot remains authoritative.
+     */
+    fun eventStreamFailure(runID: String, code: String) {
+        actionError = code
+    }
+
+    /** Build the complete immutable snapshot. */
+    fun build(): ThreadUiState {
+        snapshotCounter += 1
+        val rows = ArrayList<TimelineRowUi>()
+        val messages = (userMessages.values + assistantMessages.values)
+            .sortedBy { it.timeLabel }
+        for (message in messages) {
+            when (message.role) {
+                MessageRoleUi.USER -> rows.add(TimelineRowUi.UserMessage(message))
+                MessageRoleUi.ASSISTANT, MessageRoleUi.GOAL_CONTINUATION -> {
+                    rows.add(
+                        TimelineRowUi.AssistantMessage(
+                            rowId = "a:${message.id}",
+                            text = message.text,
+                            attachedMessageId = message.id,
+                            attachmentChips = message.attachmentChips,
+                        ),
+                    )
+                }
+                else -> Unit
+            }
+        }
+        val assistantTail = assistantTailText()
+        val reasoningTail = reasoningTailText()
+        if (assistantTail.isNotEmpty()) {
+            rows.add(TimelineRowUi.LiveAssistantTail)
+        }
+        if (reasoningTail.isNotEmpty()) {
+            rows.add(TimelineRowUi.LiveReasoning)
+        }
+        val selected = selectedRunId
+        val approvals = selected?.let { pendingApprovalsByRun[it].orEmpty() }.orEmpty()
+        val selectedState = selected?.let { runRows[it]?.stateName }
+        // ⇄ the ORIGINAL AgentState vocabulary (FloeAgentRuntime/AgentState.swift):
+        // only these states are live work; `interrupted` is a PARKED
+        // dead-generation row (no live window), and completed/failed/
+        // checkpointed/idle are durable-terminal.
+        val running = selectedState != null && selectedState in ACTIVE_STATES
+        val retryable = selectedState != null && selectedState in RETRYABLE_STATES
+        return ThreadUiState(
+            session = session,
+            taskTitle = taskTitle,
+            isTemporary = isTemporary,
+            temporaryIncarnationId = temporaryIncarnationId,
+            promotedConversationId = null,
+            isConversationMissing = missing,
+            hasLoaded = hasLoaded,
+            hasProviderActivity = assistantTail.isNotEmpty(),
+            needsProvider = needsProvider,
+            runs = runRows.values.toList(),
+            selectedRunId = selected,
+            liveStateName = selectedState,
+            isRunning = running,
+            isDraining = false,
+            selectedRunWaitingForJobs = false,
+            rows = rows,
+            pendingApprovals = approvals,
+            pendingInputs = pendingInputs.values.toList(),
+            models = models,
+            projects = emptyList(),
+            boundWorkspaceId = null,
+            approvalMode = policyApprovalMode,
+            usage = null,
+            contextUsage = null,
+            compactionStatus = null,
+            canContinue = retryable,
+            continuationTitle = if (retryable) "Continue" else null,
+            continuationDetail = actionError,
+            hasEarlierMessages = hasEarlierMessages,
+            loadingEarlierMessages = false,
+            loadingEventRunIds = emptySet(),
+            earlierMessageCursor = earlierCursor,
+            importantFiles = emptyList(),
+            checklist = null,
+            plan = null,
+            goal = null,
+            childRuns = childRuns,
+            decisions = emptyList(),
+            childDetails = childDetails.toMap(),
+            liveAssistantText = assistantTail,
+            liveReasoningText = reasoningTail,
+            networkActionsAvailable = true,
+            usesLocalModel = false,
+            voiceAvailable = false,
+            capabilityChips = emptyList(),
+        )
+    }
+
+    companion object {
+        /** Native ACTIVE (live) run states — FloeAndroidCore
+         * `FacadeRunDomain.activeRunStates` minus `interrupted`, which is a
+         * parked dead-generation marker with no live window. */
+        internal val ACTIVE_STATES = setOf(
+            "preparing", "streamingModel", "waitingApproval", "executingTool",
+            "compacting", "paused", "verifying", "cancelling",
+        )
+
+        /** Native durable-terminal states (`terminalRunStates`). */
+        internal val TERMINAL_STATES = setOf(
+            "completed", "failed", "checkpointed", "idle",
+        )
+
+        /** States that honestly offer Continue/retry (native resume sources). */
+        internal val RETRYABLE_STATES = setOf(
+            "failed", "checkpointed", "interrupted",
+        )
+
+        /** Bounded live-tail segment window (answer + reasoning share it). */
+        private const val LIVE_SEGMENT_LIMIT = 256
+        private const val LIVE_SEGMENT_CHAR_LIMIT = 1 shl 20
+    }
+}
+
+/** Strict-tolerant decoders for the conversation/run owner wire pages. */
+internal object ConversationWire {
+    private val wireTime = SimpleDateFormat("HH:mm", Locale.US)
+
+    class SessionReply(
+        val title: String,
+        val revision: Revision?,
+        val runs: List<RunSummary>,
+        val pendingInputs: List<PendingInputUi>,
+        val approvalMode: ApprovalModeUi?,
+    )
+
+    class RunSummary(
+        val runID: String,
+        val state: String,
+        val modelName: String?,
+        val startedAt: String,
+    )
+
+    class MessagePage(
+        val rows: List<MessageUi>,
+        val earlierCursor: MessagePageCursorUi?,
+        val hasEarlier: Boolean,
+    )
+
+    class Prepared(
+        val conversationID: String,
+        val runID: String,
+        val resourceID: String,
+        val version: String,
+    )
+
+    /** One typed `run.snapshot` document (F7 carrier) — the CAS source. */
+    class SnapshotPage(
+        val runID: String,
+        val durableState: String,
+        val revision: Revision,
+        val isTerminal: Boolean,
+        val pendingApproval: PendingApprovalWire?,
+        val approvalRevision: Revision?,
+        val pendingInputs: List<PendingInputWire>,
+        val queueRevision: Revision?,
+        /**
+         * Last durable event sequence the native run store already holds.
+         * A resumed stream (same run id after retry) must start AFTER this
+         * watermark so prior-incarnation durable events (including an old
+         * terminal) are never replayed.
+         */
+        val durableWatermark: Long = 0L,
+        /**
+         * Native `liveOwner`: a live run service currently owns this run.
+         * False means the transient live text is unknowable (cold history).
+         */
+        val liveOwner: Boolean = false,
+        /** Authoritative current-step answer text (null = honest absence). */
+        val answerText: String? = null,
+        /** Native completion claim; a handle-prefixed text is never complete. */
+        val answerComplete: Boolean = false,
+        /** Non-null when [answerText] is a bounded prefix of the full text. */
+        val answerContinuationHandle: String? = null,
+        val reasoningText: String? = null,
+        val reasoningComplete: Boolean = false,
+        val reasoningContinuationHandle: String? = null,
+    )
+
+    class PendingApprovalWire(
+        val callID: String,
+        val tool: String,
+        val reason: String,
+        val requestedAt: String,
+    )
+
+    class PendingInputWire(
+        val id: String,
+        val position: Long,
+        val status: PendingInputStatusUi,
+        val mode: RunningInputModeUi,
+        val inputVersion: String,
+    )
+
+    fun decodeSessionReply(value: JsonElement): SessionReply? {
+        val root = value as? JsonObject ?: return null
+        val id = root.string("conversationID") ?: return null
+        val revision = decodeRevision(root)
+        val runs = (root["runs"] as? JsonArray)?.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            RunSummary(
+                runID = obj.string("runID") ?: return@mapNotNull null,
+                state = obj.string("state") ?: "unknown",
+                modelName = obj.string("modelName"),
+                startedAt = obj.string("startedAt") ?: "",
+            )
+        } ?: emptyList()
+        val pendingInputs = (root["pendingInputs"] as? JsonArray)?.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val inputID = obj.string("id") ?: return@mapNotNull null
+            PendingInputUi(
+                id = inputID,
+                content = "",
+                status = when (obj.string("status")) {
+                    "queued" -> PendingInputStatusUi.QUEUED
+                    "promoting" -> PendingInputStatusUi.PROMOTING
+                    "steerPending" -> PendingInputStatusUi.STEER_PENDING
+                    "consumed" -> PendingInputStatusUi.CONSUMED
+                    "cancelled" -> PendingInputStatusUi.CANCELLED
+                    else -> PendingInputStatusUi.QUEUED
+                },
+                mode = if (obj.string("mode") == "steer") {
+                    RunningInputModeUi.STEER
+                } else {
+                    RunningInputModeUi.QUEUE
+                },
+                executionModeRaw = obj.string("executionMode") ?: "agent",
+                position = obj.long("position") ?: 0L,
+            )
+        } ?: emptyList()
+        val policy = root["taskPolicy"] as? JsonObject
+        val approvalMode = policy?.string("resolvedApprovalMode")?.let { raw ->
+            ApprovalModeUi.entries.firstOrNull { it.name.lowercase() == raw.lowercase() }
+        }
+        return SessionReply(
+            title = root.string("title") ?: id,
+            revision = revision,
+            runs = runs,
+            pendingInputs = pendingInputs,
+            approvalMode = approvalMode,
+        )
+    }
+
+    /**
+     * Reads a CAS revision from the ACTUAL conversation replies. The frozen
+     * native `ConversationSessionReply` / `ConversationCreateReply` carry
+     * `resourceID` and the digest as a STRING sibling
+     * (`"revision":"<floe.conversation-row.v1 digest>"`); the authored
+     * effect-detail shape uses a `{resourceID,version}` object. Both denote
+     * the same canonical revision and neither is synthesized here.
+     */
+    fun decodeRevision(root: JsonObject): Revision? {
+        (root["revision"] as? JsonObject)?.let {
+            val resourceID = it.string("resourceID")
+            val version = it.string("version")
+            if (resourceID != null && version != null) return Revision(resourceID, version)
+        }
+        val version = root.string("revision")
+        val resourceID = root.string("resourceID")
+        if (version != null && resourceID != null) return Revision(resourceID, version)
+        return null
+    }
+
+    fun decodeMessagePage(value: JsonElement, conversationId: String = ""): MessagePage? {
+        val root = value as? JsonObject ?: return null
+        val rows = (root["rows"] as? JsonArray)?.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val id = obj.string("id") ?: return@mapNotNull null
+            val roleRaw = obj.string("role") ?: "user"
+            val text = obj.string("content") ?: ""
+            val createdAt = obj.string("createdAt") ?: ""
+            MessageUi(
+                id = id,
+                conversationId = conversationId,
+                runId = obj.string("runID"),
+                role = when (roleRaw.lowercase()) {
+                    "assistant" -> MessageRoleUi.ASSISTANT
+                    "user" -> MessageRoleUi.USER
+                    "goalContinuation" -> MessageRoleUi.GOAL_CONTINUATION
+                    "system" -> MessageRoleUi.SYSTEM
+                    else -> MessageRoleUi.OTHER
+                },
+                text = text,
+                attachmentChips = (obj["attachments"] as? JsonArray)
+                    ?.mapNotNull { chip -> decodeAttachmentChip(chip as? JsonObject) }
+                    ?: emptyList(),
+                timeLabel = formatTime(createdAt),
+            )
+        } ?: emptyList()
+        val earlierCursor = when (val element = root["earlierCursor"]) {
+            is JsonObject -> {
+                val createdAt = element.string("createdAt")
+                val id = element.string("id")
+                if (createdAt != null && id != null) {
+                    MessagePageCursorUi(createdAtLabel = createdAt, messageId = id)
+                } else null
+            }
+            // ACTUAL native wire: the opaque `k1.` keyset cursor string
+            // (base64url of {"createdAt","id"}). Decode it ONLY to recover the
+            // real (createdAt,id) for the continuation request; the exact
+            // string is re-encoded canonically when the next page is asked.
+            is JsonPrimitive -> element.contentOrNull?.let(::decodeOpaqueMessageCursor)
+            else -> null
+        }
+        val hasEarlier = root.bool("hasEarlier") ?: (earlierCursor != null)
+        return MessagePage(rows, earlierCursor, hasEarlier)
+    }
+
+    /**
+     * Decodes the native `ConversationCursorCodec` message cursor:
+     * `k1.` + base64url(JSON `{"createdAt":"<wire date>","id":"<uuid>"}`).
+     * A non-`k1.`/malformed cursor is absence, never a guessed position.
+     */
+    internal fun decodeOpaqueMessageCursor(raw: String): MessagePageCursorUi? {
+        if (!raw.startsWith("k1.")) return null
+        val encoded = raw.removePrefix("k1.")
+            .replace('-', '+')
+            .replace('_', '/')
+            .let { it + "=".repeat((4 - it.length % 4) % 4) }
+        val text = try {
+            String(java.util.Base64.getDecoder().decode(encoded), Charsets.UTF_8)
+        } catch (t: Throwable) {
+            return null
+        }
+        val root = try {
+            kotlinx.serialization.json.Json.parseToJsonElement(text) as? JsonObject
+        } catch (t: Throwable) {
+            null
+        } ?: return null
+        val createdAt = root.string("createdAt")?.takeIf { it.isNotBlank() } ?: return null
+        val id = root.string("id")?.takeIf { it.isNotBlank() } ?: return null
+        runCatching { java.util.UUID.fromString(id) }.getOrNull() ?: return null
+        return MessagePageCursorUi(createdAtLabel = createdAt, messageId = id)
+    }
+
+    /**
+     * Re-encodes the native opaque message cursor from the real identity the
+     * previous page carried. Key order is irrelevant to the native JSON
+     * decoder; the date/id are never rewritten or truncated.
+     */
+    internal fun encodeOpaqueMessageCursor(cursor: MessagePageCursorUi): String? {
+        if (cursor.createdAtLabel.isBlank() || cursor.messageId.isBlank()) return null
+        runCatching { java.util.UUID.fromString(cursor.messageId) }.getOrNull() ?: return null
+        val document = JsonObject(linkedMapOf(
+            "createdAt" to JsonPrimitive(cursor.createdAtLabel),
+            "id" to JsonPrimitive(cursor.messageId),
+        ))
+        val encoded = java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(document.toString().toByteArray(Charsets.UTF_8))
+        return "k1.$encoded"
+    }
+
+    private fun decodeAttachmentChip(obj: JsonObject?): AttachmentChipUi? {
+        obj ?: return null
+        val id = obj.string("id") ?: return null
+        return AttachmentChipUi(
+            id = id,
+            name = obj.string("displayName") ?: id,
+            isImage = obj.string("kind") == "image",
+            attachmentId = obj.string("attachmentId"),
+        )
+    }
+
+    fun decodeApprovalCard(conversationId: String, runId: String, payload: JsonObject): ApprovalCardUi? {
+        val callID = payload.string("callID") ?: return null
+        val tool = payload.string("tool") ?: return null
+        return ApprovalCardUi(
+            approvalId = callID,
+            runId = runId,
+            conversationId = conversationId,
+            workspaceId = payload.string("workspaceID"),
+            toolName = tool,
+            target = ApprovalTargetUi.Local,
+            // The engine approval payload's scope description key is `scope`.
+            scopeDescription = payload.string("scope")
+                ?: payload.string("scopeDescription") ?: "",
+            reason = payload.string("reason") ?: "",
+            riskLabels = (payload["riskLabels"] as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }?.toSet() ?: emptySet(),
+            isSideEffecting = payload.bool("isSideEffecting") ?: false,
+            requestedAtLabel = formatTime(payload.string("requestedAt") ?: ""),
+            evidenceLines = emptyList(),
+        )
+    }
+
+    /**
+     * Decodes the ACTUAL typed `run.snapshot` page returned through the F7
+     * `RuntimeCommandResult.page` carrier. Required members: `runID`,
+     * `durableState`, `revision{resourceID,version}`. The remaining members
+     * are projected only when the native page carries them (honest absence).
+     */
+    fun decodeSnapshotPage(value: JsonElement?): SnapshotPage? {
+        val root = value as? JsonObject ?: return null
+        val runID = root.string("runID") ?: return null
+        val durableState = root.string("durableState") ?: return null
+        val revision = (root["revision"] as? JsonObject)?.let {
+            val resourceID = it.string("resourceID")
+            val version = it.string("version")
+            if (resourceID != null && version != null) Revision(resourceID, version) else null
+        } ?: return null
+        val approval = (root["pendingApproval"] as? JsonObject)?.let { obj ->
+            val callID = obj.string("callID") ?: return@let null
+            PendingApprovalWire(
+                callID = callID,
+                tool = obj.string("tool") ?: "",
+                reason = obj.string("reason") ?: "",
+                requestedAt = obj.string("requestedAt") ?: "",
+            )
+        }
+        val approvalRevision = (root["approvalRevision"] as? JsonObject)?.let {
+            val resourceID = it.string("resourceID")
+            val version = it.string("version")
+            if (resourceID != null && version != null) Revision(resourceID, version) else null
+        }
+        val inputs = (root["pendingInputs"] as? JsonArray).orEmpty().mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val id = obj.string("inputID") ?: return@mapNotNull null
+            val version = obj.string("inputVersion") ?: return@mapNotNull null
+            PendingInputWire(
+                id = id,
+                position = obj.long("position") ?: 0L,
+                status = when (obj.string("status")) {
+                    "queued" -> PendingInputStatusUi.QUEUED
+                    "promoting" -> PendingInputStatusUi.PROMOTING
+                    "steerPending" -> PendingInputStatusUi.STEER_PENDING
+                    "consumed" -> PendingInputStatusUi.CONSUMED
+                    "cancelled" -> PendingInputStatusUi.CANCELLED
+                    else -> PendingInputStatusUi.QUEUED
+                },
+                mode = if (obj.string("mode") == "steer") {
+                    RunningInputModeUi.STEER
+                } else {
+                    RunningInputModeUi.QUEUE
+                },
+                inputVersion = version,
+            )
+        }
+        val queueRevision = (root["queueRevision"] as? JsonObject)?.let {
+            val resourceID = it.string("resourceID")
+            val version = it.string("version")
+            if (resourceID != null && version != null) Revision(resourceID, version) else null
+        }
+        return SnapshotPage(
+            runID = runID,
+            durableState = durableState,
+            revision = revision,
+            isTerminal = root.bool("isTerminal") ?: (durableState in ThreadProjectionBuilder.TERMINAL_STATES),
+            pendingApproval = approval,
+            approvalRevision = approvalRevision,
+            pendingInputs = inputs,
+            queueRevision = queueRevision,
+            durableWatermark = root.long("durableWatermark") ?: 0L,
+            // Live text members are honest nullables: a missing member is
+            // unknown, never an empty answer. The native page emits them for
+            // every owned run and drops them only under its strict frame
+            // budget; the decoder mirrors that exactly.
+            liveOwner = root.bool("liveOwner") ?: false,
+            answerText = root.string("answerText"),
+            answerComplete = root.bool("answerComplete") ?: false,
+            answerContinuationHandle = root.string("answerContinuationHandle"),
+            reasoningText = root.string("reasoningText"),
+            reasoningComplete = root.bool("reasoningComplete") ?: false,
+            reasoningContinuationHandle = root.string("reasoningContinuationHandle"),
+        )
+    }
+
+    fun decodePrepared(value: JsonElement): Prepared? {
+        val root = value as? JsonObject ?: return null
+        val runID = root.string("runID") ?: return null
+        val conversationID = root.string("conversationID") ?: return null
+        val revision = decodeRevision(root)
+        return Prepared(
+            conversationID = conversationID,
+            runID = runID,
+            resourceID = revision?.resourceID ?: "run.$runID",
+            version = revision?.version ?: "",
+        )
+    }
+
+    /**
+     * Reads the REAL run identities from the non-terminal `prepared` effect
+     * emitted by the run domain AFTER its atomic launch commit. The frozen
+     * producer carries them in the bounded `detail` map:
+     * `conversationID`, `runID`, `resourceID` (`run.<uuid>`), `version`
+     * (`floe.run-row.v1` state token). The terminal `accepted` deliberately
+     * carries no value, so this frame is the only correct source of the
+     * minted identities.
+     */
+    fun preparedFromEffect(detail: Map<String, String>): Prepared? {
+        val runID = detail["runID"]?.takeIf { it.isNotBlank() } ?: return null
+        val conversationID = detail["conversationID"]?.takeIf { it.isNotBlank() } ?: return null
+        val resourceID = detail["resourceID"]?.takeIf { it.isNotBlank() } ?: "run.$runID"
+        val version = detail["version"] ?: ""
+        return Prepared(conversationID, runID, resourceID, version)
+    }
+
+    /**
+     * The EXACT frozen `run.start` payload (`RunStartQuery.allowedKeys`):
+     * `{goal,mode,providerID,modelID,stagedAttachments,…}` — closed keys.
+     *
+     * * `mode` is the ORIGINAL `RunLaunchMode` vocabulary `chat|plan|goal`;
+     *   the composer's AGENT and CHAT both mean the ordinary chat-capable
+     *   turn, while PLAN/GOAL keep their own spellings.
+     * * `providerID` + `modelID` are REQUIRED native UUIDs; the App sends the
+     *   real selected model's provider/model identities (never a default or a
+     *   fabricated id).
+     * * No `workspaceID`/`temporaryIncarnation` key exists in this grammar —
+     *   the previous App invented both and native rejected the whole
+     *   payload. Temporary launches travel the dedicated `temp.*` surface.
+     */
+    fun runStartPayload(request: RunLaunchRequest): JsonObject {
+        val members = mutableMapOf<String, JsonElement>(
+            "goal" to JsonPrimitive(request.goalText),
+            "mode" to JsonPrimitive(runLaunchMode(request.executionMode)),
+            "stagedAttachments" to JsonArray(
+                request.attachments.filter { it.isReady }.map {
+                    JsonPrimitive(it.id)
+                },
+            ),
+        )
+        request.providerId?.let { members["providerID"] = JsonPrimitive(it) }
+        request.modelId?.let { members["modelID"] = JsonPrimitive(it) }
+        return JsonObject(members)
+    }
+
+    /** ⇄ RunLaunchMode raw (chat|plan|goal). */
+    internal fun runLaunchMode(mode: AgentExecutionModeUi): String = when (mode) {
+        AgentExecutionModeUi.AGENT, AgentExecutionModeUi.CHAT -> "chat"
+        AgentExecutionModeUi.PLAN -> "plan"
+        AgentExecutionModeUi.GOAL -> "goal"
+    }
+
+    /**
+     * `run.queue` payload (allowedKeys `content,mode,selectedModelID,
+     * stagedAttachments`). `run.queue` enqueues a NEW durable pending row;
+     * an `inputID` key is not part of this grammar (the previous App sent the
+     * RUN id under it, which native rejected).
+     */
+    fun runningInputPayload(request: RunningInputRequest): JsonObject {
+        val members = mutableMapOf<String, JsonElement>(
+            "content" to JsonPrimitive(request.content),
+            "mode" to JsonPrimitive(RunningInputModeUi.QUEUE.swiftRaw),
+        )
+        request.modelId?.let { members["selectedModelID"] = JsonPrimitive(it) }
+        val handles = request.attachments.filter { it.isReady }.map { JsonPrimitive(it.id) }
+        if (handles.isNotEmpty()) members["stagedAttachments"] = JsonArray(handles)
+        return JsonObject(members)
+    }
+
+    /**
+     * `run.steer` payload (allowedKeys `inputID,expectedState`). `inputID` is
+     * the DURABLE PENDING-ROW uuid (never the run id); steer always promotes
+     * an already-queued row.
+     */
+    fun steerPayload(inputID: String, expectedState: String): JsonObject = JsonObject(
+        mapOf(
+            "inputID" to JsonPrimitive(inputID),
+            "expectedState" to JsonPrimitive(expectedState),
+        ),
+    )
+
+    fun decodeConversationList(value: JsonElement): HistoryPage? {
+        val root = value as? JsonObject ?: return null
+        val rows = (root["rows"] as? JsonArray)?.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val id = obj.string("conversationID") ?: return@mapNotNull null
+            ConversationListItemUi(
+                id = id,
+                title = obj.string("title") ?: id,
+                updatedAtLabel = formatTime(obj.string("updatedAt") ?: ""),
+                projectedStateName = obj.string("projectedStateName"),
+                isArchived = obj.bool("archived") ?: false,
+                archivedAtLabel = obj.string("archivedAt")?.let { formatTime(it) },
+            )
+        } ?: emptyList()
+        return HistoryPage(
+            active = rows.filter { !it.isArchived },
+            archived = rows.filter { it.isArchived },
+        )
+    }
+
+    fun decodeSearch(value: JsonElement): List<ConversationListItemUi> =
+        ((value as? JsonObject)?.get("rows") as? JsonArray)?.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val id = obj.string("conversationID") ?: return@mapNotNull null
+            ConversationListItemUi(
+                id = id,
+                title = obj.string("conversationTitle") ?: id,
+                updatedAtLabel = formatTime(obj.string("createdAt") ?: ""),
+                projectedStateName = null,
+                isArchived = false,
+                archivedAtLabel = null,
+            )
+        } ?: emptyList()
+
+    /**
+     * Decodes the ACTUAL `child.entries` typed page:
+     * `{childRunID, entries:[{sequence,kind,payload(JSON string),createdAt}],
+     *   hasMore, nextSequence}`. Rows are projected from the entry facts; the
+     * previous version always returned an empty row list.
+     */
+    fun decodeChildDetail(childRunId: String, value: JsonElement?): ChildRunDetailUi {
+        val root = value as? JsonObject
+        val entries = (root?.get("entries") as? JsonArray).orEmpty()
+        val rows = entries.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val sequence = obj.long("sequence") ?: return@mapNotNull null
+            val kind = obj.string("kind") ?: return@mapNotNull null
+            val payloadRaw = obj.string("payload")
+            val payload = payloadRaw?.let {
+                try {
+                    kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject
+                } catch (t: Throwable) {
+                    null
+                }
+            }
+            TimelineRowUi.Event(
+                RunEventUi(
+                    id = "$childRunId:$sequence",
+                    runId = childRunId,
+                    sequence = sequence.toInt(),
+                    kind = when (kind) {
+                        "assistantText" -> RunEventKindUi.ASSISTANT_TEXT
+                        "reasoning" -> RunEventKindUi.REASONING
+                        "terminal" -> RunEventKindUi.TERMINAL
+                        "approval" -> RunEventKindUi.APPROVAL
+                        "status" -> RunEventKindUi.STATUS
+                        "toolRequest" -> RunEventKindUi.TOOL_REQUEST
+                        "toolResult" -> RunEventKindUi.TOOL_RESULT
+                        "usage" -> RunEventKindUi.USAGE
+                        "file" -> RunEventKindUi.FILE
+                        "checkpoint" -> RunEventKindUi.CHECKPOINT
+                        "autoApproved" -> RunEventKindUi.AUTO_APPROVED
+                        "notice" -> RunEventKindUi.NOTICE
+                        "error" -> RunEventKindUi.ERROR
+                        else -> RunEventKindUi.NOTICE
+                    },
+                    timeLabel = formatTime(obj.string("createdAt") ?: ""),
+                    stateName = payload?.string("state"),
+                    statusReason = payload?.string("reason"),
+                    message = payload?.string("message"),
+                    assistantText = payload?.string("text"),
+                    reasoningExcerpt = payload?.string("text"),
+                ),
+            )
+        }
+        return ChildRunDetailUi(
+            childRunId = childRunId,
+            title = root?.string("title") ?: childRunId,
+            stateName = root?.string("stateName") ?: "unknown",
+            rows = rows,
+        )
+    }
+
+    /**
+     * Decodes the ACTUAL `child.list` typed page
+     * (`{parentRunID, children:[childJSON], childrenTruncated}`) into the
+     * durable child graph rows. No UI-emulated children.
+     */
+    fun decodeChildList(value: JsonElement?, titleFor: (String) -> String): List<ChildRunUi> {
+        val root = value as? JsonObject
+        val children = (root?.get("children") as? JsonArray).orEmpty()
+        return children.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val childID = obj.string("childRunID") ?: return@mapNotNull null
+            val state = obj.string("state") ?: "unknown"
+            ChildRunUi(
+                id = childID,
+                parentRunId = obj.string("parentRunID") ?: "",
+                delegateCallId = "",
+                stateName = state,
+                stateTitle = titleFor(state),
+                isTerminal = obj.bool("terminal") ?: false,
+                title = obj.string("taskSummary") ?: titleFor(state),
+                summary = obj.string("resultSummary"),
+                startedAtLabel = formatTime(obj.string("startedAt") ?: ""),
+            )
+        }
+    }
+
+    /**
+     * The ORIGINAL durable AgentState vocabulary. `terminal`/`cancelled`/
+     * `succeeded` are NOT native states and must never close a pump.
+     */
+    fun isTerminalState(state: String): Boolean =
+        state in ThreadProjectionBuilder.TERMINAL_STATES
+
+    /** A run may only be pumped while the native engine owns a live window. */
+    fun isActiveState(state: String): Boolean =
+        state in ThreadProjectionBuilder.ACTIVE_STATES
+
+    /**
+     * The durable close boundary: the provider-completion `terminal` event OR
+     * a `status` transition to a native terminal state. Failed/checkpointed
+     * runs settle through the terminal `status` row (there is no durable
+     * `terminal` event on that path).
+     */
+    fun isTerminalFrame(frame: HostRunEventFrame): Boolean =
+        frame.kind == "terminal" ||
+            (frame.kind == "status" && frame.payload?.string("state")?.let {
+                isTerminalState(it)
+            } == true)
+
+    fun isTerminalKind(kind: String): Boolean = kind == "terminal"
+
+    /* -------- closed CAS revision resource identities (native spelling) ----- */
+
+    /** `run.<UPPER uuid>` — Swift `UUID.uuidString` is uppercase. */
+    fun runResourceID(runID: String): String = "run.${upperUUID(runID)}"
+
+    /** `conversation.<UPPER uuid>`. */
+    fun conversationResourceID(conversationID: String): String =
+        "conversation.${upperUUID(conversationID)}"
+
+    /** `pendingInput.<UPPER uuid>`. */
+    fun pendingInputResourceID(inputID: String): String = "pendingInput.${upperUUID(inputID)}"
+
+    /** `pendingQueue.<UPPER uuid>`. */
+    fun pendingQueueResourceID(conversationID: String): String =
+        "pendingQueue.${upperUUID(conversationID)}"
+
+    /** `approval.<callID>` verbatim (call ids are opaque provider ids). */
+    fun approvalResourceID(callID: String): String = "approval.$callID"
+
+    private fun upperUUID(raw: String): String = try {
+        java.util.UUID.fromString(raw).toString().uppercase()
+    } catch (t: Throwable) {
+        raw
+    }
+
+    fun exportMarkdown(builder: ThreadProjectionBuilder): String {
+        val snapshot = builder.build()
+        val out = StringBuilder()
+        out.append("# ").append(snapshot.taskTitle).append("\n\n")
+        for (row in snapshot.rows) {
+            when (row) {
+                is TimelineRowUi.UserMessage -> {
+                    out.append("**User** ").append(row.message.text).append("\n\n")
+                }
+                is TimelineRowUi.AssistantMessage -> {
+                    out.append(row.text).append("\n\n")
+                }
+                else -> Unit
+            }
+        }
+        return out.toString()
+    }
+
+    fun exportPlainText(builder: ThreadProjectionBuilder): String {
+        val snapshot = builder.build()
+        val out = StringBuilder()
+        for (row in snapshot.rows) {
+            when (row) {
+                is TimelineRowUi.UserMessage -> out.append(row.message.text).append("\n\n")
+                is TimelineRowUi.AssistantMessage -> out.append(row.text).append("\n\n")
+                else -> Unit
+            }
+        }
+        return out.toString()
+    }
+
+    private fun formatTime(raw: String): String = try {
+        if (raw.isEmpty()) ""
+        else wireTime.format(Date.from(java.time.Instant.parse(raw)))
+    } catch (t: Throwable) {
+        raw.take(16)
+    }
+
+    private fun JsonObject.string(key: String): String? =
+        (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+
+    private fun JsonObject.bool(key: String): Boolean? =
+        (this[key] as? JsonPrimitive)?.booleanOrNull
+
+    private fun JsonObject.long(key: String): Long? =
+        (this[key] as? JsonPrimitive)?.longOrNull
+}
+
+class HistoryPage(
+    val active: List<com.floe.android.feature.conversation.ConversationListItemUi>,
+    val archived: List<com.floe.android.feature.conversation.ConversationListItemUi>,
+)

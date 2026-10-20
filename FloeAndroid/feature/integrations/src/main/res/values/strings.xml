@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Skills/MCP administration flow. Copy is taken from the current iPad app
+     catalog (FloeAgent/FloeApp/Resources/Localizable.xcstrings, keys quoted in
+     each line's comment) wherever the original has a string, except:
+       - Apple-only credential wording (Keychain) is replaced by honest
+         Android wording ("saved securely"), as the provider flow does;
+       - strings the original renders as untranslated English literals
+         (Owner/Repository/Branch/Commit/Before/After) get aligned zh-rCN
+         translations because both Floe languages must stay in sync;
+       - a small number of Android-specific presentation strings (badges,
+         stage labels, dialog body copy) are new, concise and native in tone.
+     No capability, availability or progress string claims more than the host
+     projection states. -->
+<resources>
+    <!-- shared chrome -->
+    <string name="action_cancel">Cancel</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_install">Install</string>
+    <string name="loading_cd">Loading</string>
+    <string name="providers_credentials">Credentials</string>
+    <string name="integration_waiting_host">Loading…</string>
+    <string name="integration_network_unavailable">This action needs the shared runtime; it is unavailable right now.</string>
+
+    <!-- skills hub (⇄ plugins.* / skills.*) -->
+    <string name="plugins_title">Plugins</string>
+    <string name="plugins_discover">Discover</string>
+    <string name="plugins_installed">Installed</string>
+    <string name="plugins_official">Official plugins</string>
+    <string name="plugins_import">Import a plugin</string>
+    <string name="plugins_enable">Enable</string>
+    <string name="plugins_ready">Ready to use</string>
+    <string name="plugins_search">Search plugins</string>
+    <string name="skills_import_folder">Import folder</string>
+    <string name="skills_creator">Skill Creator</string>
+    <string name="skills_finder">Skill Finder</string>
+    <string name="skills_finder_source">HTTPS source</string>
+    <string name="skills_finder_footer">Install a reviewed HTTPS skill envelope. Floe validates every file and never executes install hooks.</string>
+    <string name="skills_finder_model">Rewrite model</string>
+    <string name="skills_auto_updates_title">Scripted skill updates</string>
+    <string name="skills_auto_updates_label">Auto-update skill scripts when permissions do not expand</string>
+    <string name="skills_auto_updates_footer">When enabled, signed skill updates that add no new capabilities or tools are applied automatically; any permission expansion still waits for your review. This shared switch also controls scripted content updates in Settings → Content updates.</string>
+    <string name="skills_empty">No skills installed</string>
+    <string name="skills_empty_hint">Install an official plugin, import a folder, or create a skill.</string>
+    <string name="skills_name">Skill name</string>
+    <string name="skills_description">When should Floe use it?</string>
+    <string name="skills_instructions">Instructions</string>
+    <string name="skills_remove_title">Remove this skill?</string>
+    <string name="skills_remove_message">The installed copy is removed from this device; the host may keep a recoverable copy.</string>
+    <string name="skills_working_cd">Working</string>
+    <string name="skills_installing_cd">Installing</string>
+    <string name="skills_row_cd">Skill %1$s</string>
+    <string name="skills_enabled_cd">Enable skill</string>
+    <string name="skills_badge_usable">Usable now</string>
+    <string name="skills_offered">Offered to the agent</string>
+    <string name="skills_not_offered">Not currently offered to the agent</string>
+    <string name="skills_not_offered_override">Excluded by a saved model capability override</string>
+    <string name="skills_stage_staging">Staging source…</string>
+    <string name="skills_stage_validating">Validating package…</string>
+    <string name="skills_stage_compatibility">Checking compatibility…</string>
+    <string name="skills_stage_committing">Committing install…</string>
+    <string name="skills_run_running">Running</string>
+    <string name="skills_run_stop">Stop run</string>
+    <string name="skills_run_cancelling">Stopping…</string>
+
+    <!-- install review (⇄ skills.review.*) -->
+    <string name="skills_review_title">Review skill installation</string>
+    <string name="skills_review_source">Source</string>
+    <string name="skills_review_permissions">Requested capabilities</string>
+    <string name="skills_review_none">No additional capabilities</string>
+    <string name="skills_review_tools">Tools</string>
+    <string name="skills_review_scripts">Python scripts (audited at install)</string>
+    <string name="skills_review_python_packages">Pure-Python dependencies (audited at install)</string>
+    <string name="skills_review_pypi_note">Only pinned-version PyPI none-any wheels are accepted; after installation, identical scripts and dependencies skip repeated review.</string>
+    <string name="skills_review_no_grant_note">Installing validates the package but does not grant tool permissions; approvals come from the existing policy when a tool actually runs.</string>
+
+    <!-- upgrade (⇄ skills.update.* / skills.skills_view.*) -->
+    <string name="skills_update_to">Update to v%1$s</string>
+    <string name="skills_update_installed">Installed version</string>
+    <string name="skills_update_available">New version</string>
+    <string name="skills_update_check">Check for updates</string>
+    <string name="skills_update_now">Update now</string>
+    <string name="skills_update_details">Details</string>
+    <string name="skills_update_hide_details">Hide details</string>
+    <string name="skills_update_latest">Already the latest version</string>
+    <string name="skills_update_permissions_warning">This update requires new access permissions; see the details.</string>
+    <string name="skills_update_new_capabilities">New capabilities</string>
+    <string name="skills_update_new_tools">New tools</string>
+    <string name="skills_update_commit">Commit</string>
+    <string name="skills_update_source_section">Source</string>
+    <string name="skills_update_owner">Owner</string>
+    <string name="skills_update_repository">Repository</string>
+    <string name="skills_update_ref">Branch / tag / commit</string>
+    <string name="skills_update_path">SKILL.md or package inventory JSON</string>
+    <string name="skills_update_local_source">App / local</string>
+    <string name="skills_update_changed_files">Changed files</string>
+    <string name="skills_update_before">Before</string>
+    <string name="skills_update_after">After</string>
+    <string name="skills_update_absent">(absent)</string>
+    <string name="skills_update_rollback">Restore previous version</string>
+    <string name="skills_update_rollback_note">Rolling back restores the previous content and permission decisions.</string>
+    <string name="skills_update_rollback_confirm_title">Restore previous content and grants?</string>
+    <string name="skills_update_rollback_confirm_message">This restores the previous version and its permission decisions.</string>
+
+    <!-- folder import (Android surface for the fileImporter step) -->
+    <string name="skills_import_title">Import skill folder</string>
+    <string name="skills_import_footer">Floe copies and validates the selected folder; the original folder is never modified.</string>
+    <string name="skills_import_missing">No staged folder</string>
+    <string name="skills_import_size">%1$d bytes</string>
+
+    <!-- connectors (⇄ connectors.*) -->
+    <string name="connectors_title">Connectors</string>
+    <string name="connectors_manage">Manage connectors</string>
+    <string name="connectors_summary">GitHub accounts and standard MCP tool sources</string>
+    <string name="connectors_footer">Connectors provide tools as needed for a task. Models, system permissions and SSH/VNC hosts remain in Settings.</string>
+    <string name="connectors_services">External services</string>
+    <string name="connectors_tool_sources">Tool sources</string>
+    <string name="connectors_mcp_title">Standard MCP</string>
+    <string name="connectors_mcp_enabled_count">%1$d servers enabled</string>
+
+    <!-- MCP list (⇄ MCPServersView) -->
+    <string name="mcp_empty_title">No MCP server added yet</string>
+    <string name="mcp_empty_hint">Add a standard remote MCP so the regular agent can use the tools it provides.</string>
+    <string name="mcp_add">Add MCP</string>
+    <string name="mcp_add_title">Add MCP</string>
+    <string name="mcp_footer">Supports standard Streamable HTTP. Remote tools still go through Floe local permissions and approval; canvases cannot use MCP by default.</string>
+    <string name="mcp_row_cd">MCP server %1$s</string>
+    <string name="mcp_enable_cd">Enable MCP server</string>
+    <string name="mcp_state_not_connected">Not connected</string>
+    <string name="mcp_state_reading_tools">Reading tools…</string>
+    <string name="mcp_state_cancelling">Cancelling…</string>
+    <string name="mcp_state_tools_available">%1$d tools available</string>
+    <string name="mcp_state_failed">Connection failed: %1$s</string>
+    <string name="mcp_cancel_refresh">Cancel</string>
+    <string name="mcp_delete_title">Delete MCP server</string>
+    <string name="mcp_delete_message">This removes the server, its saved credential and its registered tools from this device.</string>
+
+    <!-- MCP editor (⇄ MCPServerEditor) -->
+    <string name="mcp_server_section">Server</string>
+    <string name="mcp_name_field">Name</string>
+    <string name="mcp_endpoint_field">https://…/mcp</string>
+    <string name="mcp_enabled_field">Enabled</string>
+    <string name="mcp_allow_canvas">Allow canvas to use</string>
+    <string name="mcp_server_footer">MCP is off by default for canvases. Only after you explicitly turn on this server can the canvas agent see its tools.</string>
+    <string name="mcp_auth_section">Authentication</string>
+    <string name="mcp_auth_method">Method</string>
+    <string name="mcp_auth_none">None</string>
+    <string name="mcp_auth_bearer">Bearer Token</string>
+    <string name="mcp_auth_custom_header">Custom request headers</string>
+    <string name="mcp_header_name">Request header name</string>
+    <string name="mcp_credential_replace">Enter new credentials to replace the saved ones</string>
+    <string name="mcp_credentials_saved">Credentials saved securely</string>
+    <string name="mcp_reveal_on">Show credential</string>
+    <string name="mcp_reveal_off">Hide credential</string>
+    <string name="mcp_network_security">Network security</string>
+    <string name="mcp_allow_insecure_http">Allow insecure HTTP (trusted LAN only)</string>
+    <string name="mcp_tools_section">Tools</string>
+    <string name="mcp_tool_enable_cd">Enable tool %1$s</string>
+    <string name="mcp_tool_destructive_hint">The server marks this tool as destructive; approvals still apply.</string>
+    <string name="mcp_tool_readonly_hint">The server marks this tool as read-only.</string>
+    <string name="mcp_tools_footer">Tool hints come from the server and do not bypass Floe approvals.</string>
+    <string name="mcp_transport_section">Transport</string>
+    <string name="mcp_save_and_connect">Save and connect</string>
+    <string name="mcp_name_required">Enter a server name.</string>
+    <string name="mcp_valid_url_required">Enter a valid MCP URL.</string>
+    <string name="mcp_credential_in_url">Credentials must be stored securely, not embedded in the endpoint URL.</string>
+    <string name="mcp_insecure_blocked_hint">Plain HTTP is disabled. Enable it only for a trusted local server.</string>
+    <string name="mcp_header_name_invalid">Invalid request header name.</string>
+
+</resources>
