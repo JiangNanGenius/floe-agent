@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "请重点测试 Office 连续书写、助手侧栏开启时的实时双指缩放，以及明确保存后重开的内容与笔迹。测试快捷指令按同一次运行查询、等待、取消及取回最终文本。已知问题：部分 Office 助手写入会被参数校验拒绝，编辑后可能仍需手动保存；自动保存和助手按文档区域查看将在后续版本修复。",
+  "en-US": "Test continuous Office ink, live two-finger zoom with the assistant sidebar open, and content and ink after explicit save and reopen. Test Shortcuts status, bounded wait, cancel and final text for the same run. Known issues: some Office assistant edits fail validation, and edits may still require manual saving. Automatic saving and assistant-requested document-region viewing are being addressed in the next build."
+}
