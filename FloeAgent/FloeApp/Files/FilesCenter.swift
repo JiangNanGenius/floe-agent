@@ -162,12 +162,14 @@ final class FilesCenter: ObservableObject {
         return attachment
     }
 
-    /// Stages a photo-library image without manufacturing a temporary
-    /// security-scoped URL. PhotosPicker hands the app bytes it is authorized
-    /// to read; normalize them to JPEG exactly like document-picked images.
+    /// Stages image bytes without manufacturing a security-scoped URL;
+    /// normalize them to JPEG exactly like document-picked images. Context
+    /// snapshots can omit the recent-files list while retaining normal
+    /// attachment storage and message ownership.
     func registerPhotoData(
         _ data: Data,
-        displayName: String = "Photo.jpg"
+        displayName: String = "Photo.jpg",
+        recordRecent: Bool = true
     ) throws -> AttachmentRef {
         guard let image = UIImage(data: data),
               let compressed = Self.compressImage(image, maxBytes: 1_024 * 1_024) else {
@@ -188,7 +190,7 @@ final class FilesCenter: ObservableObject {
             storage: .applicationSupport,
             relativePath: stagedName
         )
-        recentFiles.insert(attachment, at: 0)
+        if recordRecent { recentFiles.insert(attachment, at: 0) }
         return attachment
     }
 
