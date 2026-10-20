@@ -22,6 +22,109 @@ import Foundation
 import FloeCore
 import FloeTools
 
+/// S3-D run-output publication support for the Workbench/CAD verified export
+/// boundaries. Snapshots live only in the core `RunOutputSnapshotStore`; this
+/// applies the fixed failure policy: a bound-run publication failure throws an
+/// observable tool error (exported originals are never touched), genuine
+/// legacy direct and temporary contexts keep byte-identical legacy results,
+/// and partially bound contexts fail rather than silently skipping. Export
+/// receipts carry URL + size but no digest, so publication adds a post-write
+/// streamed digest — the genuinely missing identity.
+enum RunOutputWorkbenchPublication {
+    enum State {
+        case required
+        case legacyDirect
+        case temporaryExempt
+        case partiallyBound
+    }
+
+    static func state(_ context: ToolContext) -> State {
+        let hasCall = context.toolCallID?.isEmpty == false
+        let hasTask = context.conversationID != nil
+        if !hasCall && !hasTask { return .legacyDirect }
+        if hasCall != hasTask { return .partiallyBound }
+        if context.temporaryReadOnly { return .temporaryExempt }
+        return .required
+    }
+
+    static var partialBindingFailure: FloeError {
+        FloeError.validationFailed(
+            "run output publication requires both the tool-call and task binding")
+    }
+
+    static func sourceUnavailable(_ detail: String = "source unavailable") -> FloeError {
+        FloeError.validationFailed("run output publication failed (\(detail))")
+    }
+
+    static func publicationFailure(_ error: RunOutputSnapshotError) -> FloeError {
+        switch error {
+        case .bindingMissing: return FloeError.validationFailed("run output publication failed (unbound)")
+        case .policyRefused: return FloeError.validationFailed("run output publication refused by policy")
+        case .identityInvalid: return FloeError.validationFailed("run output publication failed (invalid identity)")
+        case .sourceUnavailable: return FloeError.validationFailed("run output publication failed (source unavailable)")
+        case .commitIdentityStale: return FloeError.validationFailed("run output publication failed (stale commit identity)")
+        case .conflict(let name): return FloeError.validationFailed("run output publication failed (conflict: \(name))")
+        case .overCap: return FloeError.validationFailed("run output publication failed (over cap)")
+        case .snapshotAliased: return FloeError.validationFailed("run output publication failed (aliased snapshot)")
+        case .ioFailure: return FloeError.storageCorrupted("run output publication failed (storage)")
+        }
+    }
+
+    /// Publishes with a caller-supplied trusted commit digest, or measures a
+    /// post-write streamed digest when `sha256` is nil (the Workbench export
+    /// receipts do not carry one today).
+    static func publish(
+        summary: String,
+        url: URL,
+        sha256: String?,
+        byteCount: Int?,
+        producerTool: String,
+        slot: String,
+        mimeType: String,
+        uti: String? = nil,
+        exitStatus: Int32? = nil,
+        using context: ToolContext
+    ) throws -> ToolExecutionOutput {
+        let digest: String
+        let size: Int
+        if let sha256, let byteCount {
+            digest = sha256
+            size = byteCount
+        } else {
+            digest = try FloeDigest.sha256Hex(ofFileAt: url,
+                                              isCancelled: { context.cancellation.isCancelled })
+            let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            guard values.isRegularFile == true, let measured = values.fileSize, measured >= 0 else {
+                throw sourceUnavailable("output is not a regular file")
+            }
+            size = measured
+        }
+        do {
+            let published = try RunOutputSnapshotStore.publish(
+                RunOutputSnapshotRequest(
+                    producerTool: producerTool,
+                    slot: slot,
+                    commit: RunOutputCommit(
+                        sourceURL: url,
+                        sha256: digest,
+                        byteCount: size,
+                        displayName: url.lastPathComponent,
+                        mimeType: mimeType,
+                        uti: uti
+                    )
+                ),
+                using: context
+            )
+            return ToolExecutionOutput(digesting: summary, exitStatus: exitStatus, outputFiles: [published])
+        } catch let error as RunOutputSnapshotError {
+            throw publicationFailure(error)
+        } catch {
+            if (error as? FloeError) == .cancelled || error is CancellationError { throw error }
+            throw sourceUnavailable("output could not be measured")
+        }
+    }
+}
+
 /// Explicit ownership context a tool call must present for project access.
 /// The host refuses a project whose recorded environment/task workspace does
 /// not match the caller's, so `media.project` can never reach a project that
@@ -359,7 +462,27 @@ public struct MediaProjectTool: AgentTool {
                 let receipt = try await host.exportVideo(project: project, options: options,
                                                          relativeOutput: output,
                                                          cancellation: context.cancellation)
-                return ToolExecutionOutput(digesting: MediaProjectSummaries.receipt(receipt))
+                // S3-D: the verified Workbench video export is a genuine user
+                // file. Publication adds the post-write streamed digest the
+                // host receipt does not carry; failures follow the fixed
+                // observable policy and never touch the exported original.
+                let summary = MediaProjectSummaries.receipt(receipt)
+                switch RunOutputWorkbenchPublication.state(context) {
+                case .legacyDirect, .temporaryExempt:
+                    return ToolExecutionOutput(digesting: summary)
+                case .partiallyBound:
+                    throw RunOutputWorkbenchPublication.partialBindingFailure
+                case .required:
+                    return try RunOutputWorkbenchPublication.publish(
+                        summary: summary,
+                        url: receipt.url,
+                        sha256: nil,
+                        byteCount: nil,
+                        producerTool: Self.name,
+                        slot: "video",
+                        mimeType: "video/mp4",
+                        using: context)
+                }
             } else {
                 let options = try spec.imageOptions(project: project)
                 // ONE derivation shared with the typed mutable-target
@@ -373,7 +496,34 @@ public struct MediaProjectTool: AgentTool {
                 }
                 let receipt = try await host.exportImage(project: project, options: options,
                                                          relativeOutput: output)
-                return ToolExecutionOutput(digesting: MediaProjectSummaries.receipt(receipt))
+                // S3-D: verified image export publishes with a post-write
+                // streamed digest under the fixed failure policy.
+                let summary = MediaProjectSummaries.receipt(receipt)
+                let imageMIME: String
+                let imageUTI: String?
+                switch options.format.rawValue.lowercased() {
+                case "png": imageMIME = "image/png"; imageUTI = "public.png"
+                case "jpeg": imageMIME = "image/jpeg"; imageUTI = "public.jpeg"
+                case "heic": imageMIME = "image/heic"; imageUTI = "public.heic"
+                default: imageMIME = "application/octet-stream"; imageUTI = nil
+                }
+                switch RunOutputWorkbenchPublication.state(context) {
+                case .legacyDirect, .temporaryExempt:
+                    return ToolExecutionOutput(digesting: summary)
+                case .partiallyBound:
+                    throw RunOutputWorkbenchPublication.partialBindingFailure
+                case .required:
+                    return try RunOutputWorkbenchPublication.publish(
+                        summary: summary,
+                        url: receipt.url,
+                        sha256: nil,
+                        byteCount: nil,
+                        producerTool: Self.name,
+                        slot: "image",
+                        mimeType: imageMIME,
+                        uti: imageUTI,
+                        using: context)
+                }
             }
         }
     }

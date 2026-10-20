@@ -5,6 +5,103 @@ import FloeTools
 import AVFoundation
 #endif
 
+/// S3-D helper: run-output publication at verified media write boundaries.
+/// Snapshots live only in the core `RunOutputSnapshotStore`; this adds the
+/// post-write stat + streamed digest the media engines do not already emit
+/// and applies the fixed failure policy: bound-run publication failures
+/// throw an observable tool error (the written media original is preserved),
+/// genuine legacy direct and temporary contexts keep byte-identical legacy
+/// results, partially bound contexts fail.
+enum RunOutputMediaPublication {
+    enum State {
+        case required
+        case legacyDirect
+        case temporaryExempt
+        case partiallyBound
+    }
+
+    static func state(_ context: ToolContext) -> State {
+        let hasCall = context.toolCallID?.isEmpty == false
+        let hasTask = context.conversationID != nil
+        if !hasCall && !hasTask { return .legacyDirect }
+        if hasCall != hasTask { return .partiallyBound }
+        if context.temporaryReadOnly { return .temporaryExempt }
+        return .required
+    }
+
+    static var partialBindingFailure: FloeError {
+        FloeError.validationFailed(
+            "run output publication requires both the tool-call and task binding")
+    }
+
+    static func publicationFailure(_ error: RunOutputSnapshotError) -> FloeError {
+        switch error {
+        case .bindingMissing: return FloeError.validationFailed("run output publication failed (unbound)")
+        case .policyRefused: return FloeError.validationFailed("run output publication refused by policy")
+        case .identityInvalid: return FloeError.validationFailed("run output publication failed (invalid identity)")
+        case .sourceUnavailable: return FloeError.validationFailed("run output publication failed (source unavailable)")
+        case .commitIdentityStale: return FloeError.validationFailed("run output publication failed (stale commit identity)")
+        case .conflict(let name): return FloeError.validationFailed("run output publication failed (conflict: \(name))")
+        case .overCap: return FloeError.validationFailed("run output publication failed (over cap)")
+        case .snapshotAliased: return FloeError.validationFailed("run output publication failed (aliased snapshot)")
+        case .ioFailure: return FloeError.storageCorrupted("run output publication failed (storage)")
+        }
+    }
+
+    static func mimeType(container: String, fallback: String) -> String {
+        switch container.lowercased() {
+        case "mp4": return "video/mp4"
+        case "mov": return "video/quicktime"
+        case "m4v": return "video/x-m4v"
+        case "caf": return "audio/x-caf"
+        case "wav": return "audio/wav"
+        case "aiff", "aif": return "audio/aiff"
+        case "m4a": return "audio/x-m4a"
+        case "png": return "image/png"
+        default: return fallback
+        }
+    }
+
+    /// Publishes the successfully written media file with a post-write
+    /// streamed digest (the media engines hand over no commit digest today).
+    /// Cancellation propagates; any other identity/IO problem is reported as
+    /// an observable failure without touching the written original.
+    static func publish(
+        summary: String,
+        url: URL,
+        producerTool: String,
+        slot: String,
+        mimeType: String,
+        using context: ToolContext
+    ) throws -> ToolExecutionOutput {
+        let digest = try FloeDigest.sha256Hex(ofFileAt: url,
+                                              isCancelled: { context.cancellation.isCancelled })
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard values.isRegularFile == true, let size = values.fileSize, size >= 0 else {
+            throw FloeError.validationFailed("media output is not a regular file")
+        }
+        do {
+            let published = try RunOutputSnapshotStore.publish(
+                RunOutputSnapshotRequest(
+                    producerTool: producerTool,
+                    slot: slot,
+                    commit: RunOutputCommit(
+                        sourceURL: url,
+                        sha256: digest,
+                        byteCount: size,
+                        displayName: url.lastPathComponent,
+                        mimeType: mimeType
+                    )
+                ),
+                using: context
+            )
+            return ToolExecutionOutput(digesting: summary, exitStatus: 0, outputFiles: [published])
+        } catch let error as RunOutputSnapshotError {
+            throw publicationFailure(error)
+        }
+    }
+}
+
 #if canImport(AVFoundation)
 /// Export-oriented media tools with verified outputs. Unspecified video dimensions
 /// and frame rate follow the source; encoding defaults to H.264 and AAC.
@@ -134,7 +231,22 @@ public struct VideoTranscodeTool: AgentTool {
             audioBitrate: args.audioBitrate,
             passthrough: args.remuxOnly ?? false
         ), cancellation: context.cancellation)
-        return ToolExecutionOutput(digesting: result, exitStatus: 0)
+        switch RunOutputMediaPublication.state(context) {
+        case .legacyDirect, .temporaryExempt:
+            return ToolExecutionOutput(digesting: result, exitStatus: 0)
+        case .partiallyBound:
+            throw RunOutputMediaPublication.partialBindingFailure
+        case .required:
+            let outputURL = try await engine.resolveOutput(args.output)
+            return try RunOutputMediaPublication.publish(
+                summary: result,
+                url: outputURL,
+                producerTool: Self.name,
+                slot: "video",
+                mimeType: RunOutputMediaPublication.mimeType(
+                    container: args.container, fallback: "application/octet-stream"),
+                using: context)
+        }
         #else
         throw FloeError.invalidConfiguration("video processing is unavailable on this platform")
         #endif
@@ -173,7 +285,21 @@ public struct VideoThumbnailTool: AgentTool {
             output: args.output,
             maximumDimension: args.maximumDimension, cancellation: context.cancellation
         )
-        return ToolExecutionOutput(digesting: result, exitStatus: 0)
+        switch RunOutputMediaPublication.state(context) {
+        case .legacyDirect, .temporaryExempt:
+            return ToolExecutionOutput(digesting: result, exitStatus: 0)
+        case .partiallyBound:
+            throw RunOutputMediaPublication.partialBindingFailure
+        case .required:
+            let outputURL = try await engine.resolveOutput(args.output)
+            return try RunOutputMediaPublication.publish(
+                summary: result,
+                url: outputURL,
+                producerTool: Self.name,
+                slot: "image",
+                mimeType: "image/png",
+                using: context)
+        }
         #else
         throw FloeError.invalidConfiguration("video processing is unavailable on this platform")
         #endif
@@ -211,7 +337,22 @@ public struct AudioConvertTool: AgentTool {
         let engine = MediaExportEngine(rootProvider: { context.workspaceRootURL })
         let result = try await engine.convertAudio(input: args.input, output: args.output, container: args.container,
             sampleRate: args.sampleRate, channels: args.channels, bitRate: args.bitRate, cancellation: context.cancellation)
-        return ToolExecutionOutput(digesting: result, exitStatus: 0)
+        switch RunOutputMediaPublication.state(context) {
+        case .legacyDirect, .temporaryExempt:
+            return ToolExecutionOutput(digesting: result, exitStatus: 0)
+        case .partiallyBound:
+            throw RunOutputMediaPublication.partialBindingFailure
+        case .required:
+            let outputURL = try await engine.resolveOutput(args.output)
+            return try RunOutputMediaPublication.publish(
+                summary: result,
+                url: outputURL,
+                producerTool: Self.name,
+                slot: "audio",
+                mimeType: RunOutputMediaPublication.mimeType(
+                    container: args.container, fallback: "application/octet-stream"),
+                using: context)
+        }
         #else
         throw FloeError.invalidConfiguration("audio processing is unavailable on this platform")
         #endif

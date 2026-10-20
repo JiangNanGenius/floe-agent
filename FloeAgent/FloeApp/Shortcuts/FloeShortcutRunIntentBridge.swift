@@ -1,6 +1,7 @@
 #if canImport(AppIntents)
 import AppIntents
 import Foundation
+import UniformTypeIdentifiers
 import FloeCore
 
 /// System actions and entity rehydration project the same exact-run service.
@@ -108,6 +109,56 @@ enum FloeShortcutRunIntentBridge {
             state: displayState, isFinished: status.finishedPerDurableRecord,
             isSuccessful: status.isFullSuccess, requiresUserAction: status.requiresUserAction,
             waitTimedOut: waitTimedOut, cancellationRequested: cancellationRequested)
+    }
+
+    // MARK: Run files (S3-D)
+
+    /// Concise user-facing copy for each honest file outcome. Internal
+    /// details (sequence ids, digests, reasons) never reach this text; they
+    /// stay in the typed error for diagnostics. Names use the display
+    /// basename only — never an absolute path.
+    static func fileActionError(_ error: FloeRunFilesError) -> FloeShortcutActionError {
+        switch error {
+        case .serviceUnavailable:
+            return FloeShortcutActionError(FloeL10n.l("shortcuts.run.error.files.service"))
+        case .durableReadFailed:
+            return FloeShortcutActionError(FloeL10n.l("shortcuts.run.error.storage"))
+        case .runUnavailable:
+            return FloeShortcutActionError(FloeL10n.l("shortcuts.run.error.files.unavailable"))
+        case .ownership:
+            return FloeShortcutActionError(FloeL10n.l("shortcuts.run.error.ownership"))
+        case .notReady:
+            return FloeShortcutActionError(FloeL10n.l("shortcuts.run.error.files.not_ready"))
+        case .manifestDamaged:
+            return FloeShortcutActionError(FloeL10n.l("shortcuts.run.error.files.damaged"))
+        case .overLimit:
+            return FloeShortcutActionError(FloeL10n.l("shortcuts.run.error.files.limit"))
+        case .fileMissing(let displayName):
+            return FloeShortcutActionError(
+                FloeL10n.l("shortcuts.run.error.files.missing", displayName))
+        case .fileChanged(let displayName):
+            return FloeShortcutActionError(
+                FloeL10n.l("shortcuts.run.error.files.changed", displayName))
+        case .fileOversized(let displayName), .fileRejected(let displayName, _):
+            return FloeShortcutActionError(
+                FloeL10n.l("shortcuts.run.error.files.unverified", displayName))
+        case .verificationCancelled:
+            return FloeShortcutActionError(FloeL10n.l("shortcuts.run.error.files.cancelled"))
+        }
+    }
+
+    /// Types one verified snapshot for the system. Receipt metadata is the
+    /// authority; an unknown or custom identifier degrades to the MIME
+    /// type, and anything unusable falls back to plain `public.data` —
+    /// never a fabricated content claim.
+    static func intentFileType(for descriptor: FloeRunFileDescriptor) -> UTType {
+        if let uti = descriptor.uti, !uti.isEmpty, let type = UTType(uti) {
+            return type
+        }
+        if let type = UTType(mimeType: descriptor.mimeType) {
+            return type
+        }
+        return .data
     }
 }
 

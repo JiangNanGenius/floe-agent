@@ -20,6 +20,7 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeSecurity
+import FloeTools
 
 // MARK: - Access mode
 
@@ -253,6 +254,90 @@ struct FloeRunCancelResult: Sendable {
     var status: FloeRunStatus
 }
 
+// MARK: - Exact run output files (S3-D)
+
+/// One durable user-output receipt whose canonical `RunOutputs` snapshot was
+/// re-verified byte-for-byte at retrieval. The URL is the frozen snapshot,
+/// never a live workspace pointer; the sealed metadata travels with it so
+/// the Intent layer can type the file without re-reading anything.
+struct FloeRunFileDescriptor: Sendable, Equatable {
+    var url: URL
+    var displayName: String
+    var mimeType: String
+    var uti: String?
+    var byteCount: Int
+    var sha256: String
+    var outputID: String
+    var slot: String
+    var producerTool: String
+    var producerCallID: String
+    /// Runtime-sealed environment identity, preserved verbatim. Never
+    /// inferred from the currently UI-selected environment.
+    var environmentID: String?
+    /// Durable `.toolResult` sequence this receipt was read from.
+    var manifestSequence: Int
+}
+
+/// How completely the returned files represent the exact run. `partialRun`
+/// only ever exists behind the caller's explicit partial opt-in and never
+/// reclassifies the run's own status.
+enum FloeRunFilesCompleteness: String, Sendable, Equatable {
+    /// Proven complete success and every claimed file verified.
+    case complete
+    /// Proven complete success and the run genuinely produced no files.
+    /// An honest empty outcome — never another run's result.
+    case noFiles
+    /// Verified already-produced files from an otherwise active, failed or
+    /// cancelled run, returned only under an explicit partial opt-in.
+    case partialRun
+}
+
+/// Exact-run file outcome with the run's truthful status attached.
+struct FloeRunFilesResult: Sendable {
+    var status: FloeRunStatus
+    var completeness: FloeRunFilesCompleteness
+    var files: [FloeRunFileDescriptor]
+}
+
+/// Why an exact-run file projection cannot be answered. Each case keeps the
+/// precise cause (display name / internal detail) so the intent layer can
+/// surface a concise accurate message instead of a fabricated empty list.
+enum FloeRunFilesError: Error, Equatable, Sendable {
+    /// The durable output projection or snapshot verifier is not wired.
+    /// Honest unavailability — never an empty success.
+    case serviceUnavailable
+    /// The run rows / events themselves could not be read from storage.
+    case durableReadFailed
+    /// The exact run does not exist, its conversation is gone, it is a
+    /// notes/temporary workspace, or its durable record is corrupt.
+    case runUnavailable
+    /// The reference cannot prove it owns the durable run. Checked before
+    /// any manifest read or filesystem access.
+    case ownership
+    /// Default policy: files are only returned for a proven complete
+    /// success. The run is still active or did not fully succeed.
+    case notReady
+    /// A manifest-bearing row is structurally damaged or forged (outer or
+    /// nested JSON invalid, non-canonical receipt, foreign identity,
+    /// enclosing mismatch, duplicate conflict, or a manifest attached to a
+    /// call that never produced). Detail stays internal.
+    case manifestDamaged(detail: String)
+    /// More files or bytes than the authorized run caps. Explicit error —
+    /// never a silently truncated list.
+    case overLimit(detail: String)
+    /// A claimed snapshot is absent at its canonical path.
+    case fileMissing(displayName: String)
+    /// A claimed snapshot changed after publication (tamper or repair gap).
+    case fileChanged(displayName: String)
+    /// A claimed snapshot exceeds the per-file cap; never hashed further.
+    case fileOversized(displayName: String)
+    /// A snapshot path is unsafe (aliased, escaped, not a plain file).
+    case fileRejected(displayName: String, reason: String)
+    /// The bounded verification pass was cancelled mid-flight. Nothing is
+    /// half-returned.
+    case verificationCancelled
+}
+
 /// The task handoff passed to the App's center in the live wiring.
 struct FloeShortcutStartRequest: Sendable {
     /// Original prompt (only outer whitespace trimmed). The center runs its
@@ -332,6 +417,17 @@ struct FloeShortcutRunDeps: Sendable {
     /// `SQLiteRunReplyReader.provenFinalReplyText` in production). Never a
     /// conversation-wide, latest-row or reasoning-bearing read.
     var provenFinalReplyText: @Sendable (UUID, UUID, UUID) async throws -> String?
+    /// Exact-run durable output projection (production root:
+    /// `SQLiteRunOutputReader.manifestRows` bound to run + expected
+    /// conversation in one SQL predicate). Appended with a nil default so
+    /// every existing caller and C fixture stays source-compatible; when it
+    /// is missing the file APIs answer with an honest unavailability
+    /// instead of a fabricated empty success.
+    var runOutputManifest: (@Sendable (UUID, UUID) async throws -> [RunOutputManifestRow])?
+    /// Re-validation of one sealed receipt's canonical snapshot (production
+    /// root: `RunOutputSnapshotStore.verify`). Also nil-defaulted: a missing
+    /// verifier never downgrades into "the run produced no files".
+    var verifyRunOutputSnapshot: (@Sendable (RunOutputFile) async -> RunOutputSnapshotVerification)?
     var monotonicNow: @Sendable () -> TimeInterval
     var pause: @Sendable (TimeInterval) async -> Void
 
@@ -347,6 +443,8 @@ struct FloeShortcutRunDeps: Sendable {
         recentRunEvents: @escaping @Sendable (UUID, Int) async throws -> [RunEventRecord],
         earlierRunEvents: @escaping @Sendable (UUID, Int, Int) async throws -> [RunEventRecord],
         provenFinalReplyText: @escaping @Sendable (UUID, UUID, UUID) async throws -> String?,
+        runOutputManifest: (@Sendable (UUID, UUID) async throws -> [RunOutputManifestRow])? = nil,
+        verifyRunOutputSnapshot: (@Sendable (RunOutputFile) async -> RunOutputSnapshotVerification)? = nil,
         monotonicNow: @escaping @Sendable () -> TimeInterval = {
             FloeShortcutServiceSystemClock.monotonicNow()
         },
@@ -365,6 +463,8 @@ struct FloeShortcutRunDeps: Sendable {
         self.recentRunEvents = recentRunEvents
         self.earlierRunEvents = earlierRunEvents
         self.provenFinalReplyText = provenFinalReplyText
+        self.runOutputManifest = runOutputManifest
+        self.verifyRunOutputSnapshot = verifyRunOutputSnapshot
         self.monotonicNow = monotonicNow
         self.pause = pause
     }
@@ -610,6 +710,212 @@ actor FloeShortcutRunService {
             noLiveOwner: false,
             confirmedTerminalState: latest.finishedPerDurableRecord ? latest.state : nil,
             status: latest
+        )
+    }
+
+    // MARK: Exact run output files
+
+    /// The verified file list for one exact run. Thin wrapper over
+    /// `fileResult` for callers that only need the descriptors.
+    func files(
+        runID: UUID,
+        expectedConversationID: UUID,
+        includePartial: Bool = false
+    ) async throws -> [FloeRunFileDescriptor] {
+        let result = try await fileResult(
+            runID: runID,
+            expectedConversationID: expectedConversationID,
+            includePartial: includePartial
+        )
+        return result.files
+    }
+
+    /// Stateless exact-run file projection over the durable receipts.
+    ///
+    /// Contract this method enforces:
+    ///   * the caller's `expectedConversationID` is compared against the
+    ///     durable run's actual owner, and both IDs are bound inside the SQL
+    ///     projection, BEFORE any filesystem verification starts;
+    ///   * the whole ascending thread is scanned, so a file produced early in
+    ///     a long run is found even when it sits far below the terminal tail
+    ///     the C status scan reads;
+    ///   * default policy returns files only for a proven complete success
+    ///     (the same final-success proof as `textResult`); an explicit
+    ///     partial opt-in additionally exposes verified already-produced
+    ///     files of otherwise active/failed/cancelled runs without ever
+    ///     reclassifying the run;
+    ///   * every claimed receipt is canonical, runtime-consistent and its
+    ///     snapshot re-verifies size + SHA-256. One missing, changed,
+    ///     aliased, over-cap or damaged-record file is an honest error —
+    ///     partial is a run-state opt-in, never permission to silently skip;
+    ///   * caps are enforced over the consumable set (count, total bytes,
+    ///     per-file size at verification); overflow is explicit, never a
+    ///     truncated success;
+    ///   * a proven-successful run that produced no files yields a clear
+    ///     `.noFiles` outcome — never another run's result.
+    func fileResult(
+        runID: UUID,
+        expectedConversationID: UUID,
+        includePartial: Bool = false
+    ) async throws -> FloeRunFilesResult {
+        try await prepareCall(.read)
+        // A missing projection or verifier is an honest failure, never a
+        // fabricated "the run produced nothing".
+        guard let manifestReader = deps.runOutputManifest,
+              let snapshotVerifier = deps.verifyRunOutputSnapshot else {
+            throw FloeRunFilesError.serviceUnavailable
+        }
+        let inspection = await inspect(runID: runID, scanTextSignals: true)
+        let status = inspection.status
+        // Ownership first: no manifest scan and no filesystem call may start
+        // for a reference that cannot prove the durable owner.
+        guard let actualConversationID = status.conversationID else {
+            switch status.unavailableReason {
+            case .durableReadFailed:
+                throw FloeRunFilesError.durableReadFailed
+            default:
+                throw FloeRunFilesError.runUnavailable
+            }
+        }
+        guard actualConversationID == expectedConversationID else {
+            throw FloeRunFilesError.ownership
+        }
+        guard status.state != .unavailable else {
+            throw FloeRunFilesError.runUnavailable
+        }
+        let fullSuccess = status.isFullSuccess
+        guard fullSuccess || includePartial else {
+            throw FloeRunFilesError.notReady
+        }
+
+        let rows: [RunOutputManifestRow]
+        do {
+            rows = try await manifestReader(runID, expectedConversationID)
+        } catch let failure as RunOutputManifestFailure {
+            throw Self.filingError(from: failure)
+        } catch {
+            throw FloeRunFilesError.durableReadFailed
+        }
+
+        // Merge per-row occurrences. Equal duplicates stay idempotent; a
+        // receipt is consumable when ANY of its rows carries a status the
+        // current policy accepts. A manifest attached to a call that never
+        // produced (denied/expired/needsUser) is a damaged record — that
+        // anomaly fails even when the policy would not consume it.
+        struct Candidate: Sendable {
+            var receipt: RunOutputFile
+            var statuses: Set<String>
+            var sequence: Int
+        }
+        let consumableStatuses: Set<String> = includePartial
+            ? ["ok", "failed", "cancelled"]
+            : ["ok"]
+        let allowedRowStatuses: Set<String> = ["ok", "failed", "cancelled", "denied", "expired", "needsUser"]
+        var candidates: [String: Candidate] = [:]
+        var order: [String] = []
+        for row in rows {
+            guard let rowStatus = row.status, allowedRowStatuses.contains(rowStatus) else {
+                throw FloeRunFilesError.manifestDamaged(
+                    detail: "manifest row \(row.sequence) has a missing or unknown enclosing tool status"
+                )
+            }
+            if ["denied", "expired", "needsUser"].contains(rowStatus) {
+                throw FloeRunFilesError.manifestDamaged(
+                    detail: "manifest row \(row.sequence) is attached to a '\(rowStatus)' call that cannot produce outputs"
+                )
+            }
+            for receipt in row.receipts {
+                if let existing = candidates[receipt.outputID] {
+                    guard existing.receipt == receipt else {
+                        // Defensive: the reader already rejects conflicting
+                        // duplicates. Never merge inconsistent metadata.
+                        throw FloeRunFilesError.manifestDamaged(
+                            detail: "output \(receipt.outputID) appeared twice with different metadata"
+                        )
+                    }
+                    candidates[receipt.outputID]?.statuses.insert(rowStatus)
+                } else {
+                    candidates[receipt.outputID] = Candidate(
+                        receipt: receipt, statuses: [rowStatus], sequence: row.sequence
+                    )
+                    order.append(receipt.outputID)
+                }
+            }
+        }
+        let consumable = order.compactMap { outputID -> Candidate? in
+            guard let candidate = candidates[outputID],
+                  !candidate.statuses.isDisjoint(with: consumableStatuses) else { return nil }
+            return candidate
+        }
+
+        // Caps over the consumable set: explicit errors, never truncation.
+        let caps = RunOutputCaps.standard
+        guard consumable.count <= caps.perRunFiles else {
+            throw FloeRunFilesError.overLimit(
+                detail: "run claims \(consumable.count) output files (cap \(caps.perRunFiles))"
+            )
+        }
+        var totalBytes = 0
+        for candidate in consumable {
+            guard candidate.receipt.byteCount <= caps.perFileBytes else {
+                throw FloeRunFilesError.overLimit(
+                    detail: "\u{201C}\(candidate.receipt.displayName)\u{201D} exceeds the per-file limit"
+                )
+            }
+            totalBytes += candidate.receipt.byteCount
+            guard totalBytes <= caps.perRunBytes else {
+                throw FloeRunFilesError.overLimit(
+                    detail: "run output bytes exceed the total limit"
+                )
+            }
+        }
+
+        // Bounded verification pass. The snapshots are the only filesystem
+        // read performed; cancellation is checked between files and nothing
+        // is half-returned.
+        var descriptors: [FloeRunFileDescriptor] = []
+        descriptors.reserveCapacity(consumable.count)
+        for candidate in consumable {
+            if Task.isCancelled { throw FloeRunFilesError.verificationCancelled }
+            let receipt = candidate.receipt
+            switch await snapshotVerifier(receipt) {
+            case .verified(let url):
+                descriptors.append(FloeRunFileDescriptor(
+                    url: url,
+                    displayName: receipt.displayName,
+                    mimeType: receipt.mimeType,
+                    uti: receipt.uti,
+                    byteCount: receipt.byteCount,
+                    sha256: receipt.sha256,
+                    outputID: receipt.outputID,
+                    slot: receipt.slot,
+                    producerTool: receipt.producerTool,
+                    producerCallID: receipt.producerCallID,
+                    environmentID: receipt.environmentID,
+                    manifestSequence: candidate.sequence
+                ))
+            case .missing(let displayName):
+                throw FloeRunFilesError.fileMissing(displayName: displayName)
+            case .changed(let displayName):
+                throw FloeRunFilesError.fileChanged(displayName: displayName)
+            case .oversized(let displayName):
+                throw FloeRunFilesError.fileOversized(displayName: displayName)
+            case .rejected(let reason):
+                throw FloeRunFilesError.fileRejected(
+                    displayName: receipt.displayName, reason: reason
+                )
+            }
+        }
+        let completeness: FloeRunFilesCompleteness
+        if fullSuccess {
+            completeness = descriptors.isEmpty ? .noFiles : .complete
+        } else {
+            completeness = .partialRun
+        }
+        return FloeRunFilesResult(
+            status: status,
+            completeness: completeness,
+            files: descriptors
         )
     }
 
@@ -899,6 +1205,42 @@ actor FloeShortcutRunService {
               candidate.uuidString.uppercased() == raw.uppercased()
         else { return nil }
         return candidate
+    }
+
+    /// Precise internal cause for every durable projection failure. The
+    /// detail never reaches user copy directly; the intent layer picks the
+    /// concise localized message for the case.
+    private nonisolated static func filingError(
+        from failure: RunOutputManifestFailure
+    ) -> FloeRunFilesError {
+        switch failure {
+        case .manifestRowOverflow(let bound):
+            return .overLimit(
+                detail: "manifest-bearing rows exceed the \(bound)-row projection bound"
+            )
+        case .payloadOverLimit(let detail):
+            return .overLimit(detail: detail)
+        case .corruptOuterPayload(let sequence):
+            return .manifestDamaged(
+                detail: "manifest-bearing row \(sequence) outer payload is not the durable string map"
+            )
+        case .corruptManifestJSON(let sequence):
+            return .manifestDamaged(
+                detail: "manifest row \(sequence) does not decode as a receipt list"
+            )
+        case .invalidReceipt(let sequence, let outputID, let detail):
+            return .manifestDamaged(detail: "receipt \(outputID) in row \(sequence): \(detail)")
+        case .foreignBinding(let sequence, let outputID, let detail):
+            return .manifestDamaged(detail: "receipt \(outputID) in row \(sequence): \(detail)")
+        case .enclosingMismatch(let sequence, let outputID, let detail):
+            return .manifestDamaged(detail: "receipt \(outputID) in row \(sequence): \(detail)")
+        case .duplicateConflict(let outputID, let sequences):
+            return .manifestDamaged(detail: String(
+                format: "output %@ conflicts across rows %@",
+                outputID,
+                sequences.map(String.init).joined(separator: ", ")
+            ))
+        }
     }
 }
 
