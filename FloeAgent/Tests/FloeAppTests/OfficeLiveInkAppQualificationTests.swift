@@ -41,6 +41,8 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
             throw XCTSkip("Opt-in actual App/native live ink qualification")
         }
+        XCTAssertTrue(UIView.areAnimationsEnabled,
+                      "Live preview acceptance requires production UIKit animation timing")
         executionTimeAllowance = 300
         continueAfterFailure = false
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("live-ink-\(UUID())")
@@ -107,20 +109,46 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
                 XCTAssertEqual(facts["strokes"] as? Int, 0, "Fingers must not become pen contacts")
             }
             try await Task.sleep(for: .milliseconds(150))
-            var contacts: [(down: Bool?, lifted: Bool?, redDelta: Int)] = []
+            var contacts: [(down: Bool?, lifted: Bool?, redDelta: Int, minimumLinePixels: Int)] = []
             for index in 0..<contactCount {
                 let before = try await snapshot(web, label: "\(format)-\(index)-before-contact")
                 _ = try await web.callAsyncJavaScript(Self.beginAndMove,
                     arguments: ["contactIndex": index], in: nil, contentWorld: .page)
                 // No pointerup has been sent. Demand actual displayed pixels,
                 // not a replay counter or an eventual saved-shape count.
-                let during = try await snapshot(web, label: "\(format)-\(index)-while-pen-is-down")
+                var duringFrames: [UIImage] = []
+                for frame in 0..<3 {
+                    duringFrames.append(try await snapshot(web,
+                        label: "\(format)-\(index)-while-pen-is-down-\(frame)"))
+                    let frameStillDown = try await web.evaluateJavaScript(
+                        "window.__floeOfficePenState().activeStroke") as? Bool
+                    XCTAssertEqual(frameStillDown, true,
+                                   "Every preview frame must be captured before pointerup")
+                }
+                var minimumLinePixels = 80
+                if requireLivePresentation {
+                    let rawWidth = try await web.evaluateJavaScript(
+                        "window.__floeOfficePenPreview().style.cssPx")
+                    let cssWidth = try XCTUnwrap(rawWidth as? Double)
+                    let pixelsWide = try XCTUnwrap(duringFrames.first?.cgImage?.width)
+                    let pixelScale = Double(pixelsWide) / Double(web.bounds.width)
+                    guard cssWidth.isFinite, cssWidth > 0,
+                          pixelScale.isFinite, pixelScale > 0 else {
+                        throw CocoaError(.coderInvalidValue)
+                    }
+                    // A round starting cap alone must not qualify as a line.
+                    // Allow antialiasing and overlapping local/core caps.
+                    let capRadius = cssWidth * pixelScale / 2 + 1
+                    minimumLinePixels = max(80,
+                        Int(ceil(2.5 * Double.pi * capRadius * capRadius)))
+                }
                 try await attachLiveDiagnostics(web, label: "\(format)-\(index)-live-geometry")
                 let stillDown = try await web.evaluateJavaScript("window.__floeOfficePenState().activeStroke")
                 _ = try await web.evaluateJavaScript(Self.liftPen)
                 let afterLift = try await web.evaluateJavaScript("window.__floeOfficePenState().activeStroke")
                 contacts.append((stillDown as? Bool, afterLift as? Bool,
-                                 redPixels(during) - redPixels(before)))
+                                 duringFrames.map { redPixels($0) - redPixels(before) }.min() ?? 0,
+                                 minimumLinePixels))
                 // The next contact starts without an artificial core-paint
                 // sleep. Actual snapshot and frame costs are still present;
                 // this does not claim a physical stylus sampling rate.
@@ -190,8 +218,8 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
                 XCTAssertEqual(contact.down, true, "Contact \(index): visual assertion must precede pointerup")
                 XCTAssertEqual(contact.lifted, false)
                 if requireLivePresentation {
-                    XCTAssertGreaterThan(contact.redDelta, 80,
-                        "Contact \(index): ink must appear during movement; earlier contacts must stay visible")
+                    XCTAssertGreaterThan(contact.redDelta, contact.minimumLinePixels,
+                        "Contact \(index): every pre-lift frame must contain a line beyond its starting cap")
                 }
             }
             XCTAssertGreaterThan(redPixels(generated), 40, "The saved engine preview must include the Office vector ink")

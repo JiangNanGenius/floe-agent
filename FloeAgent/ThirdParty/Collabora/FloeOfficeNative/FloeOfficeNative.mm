@@ -932,21 +932,14 @@ static NSString *FloeInkInputGatingScript() {
             // would make the local line diverge from the engine vector.
             try {
                 appendStrokePoints([event]);
-                if (previewFrameQueued) {
-                    // The previously queued animation frame has not run yet.
-                    // Real-device touch tracking can delay frame callbacks
-                    // (hypothesis pending the animated-app trace; the
-                    // source-verifiable branch is that EVERY intermediate
-                    // path update lives inside nextFrame, so a starved frame
-                    // callback freezes the visible stroke at its first point
-                    // while the point list keeps growing - the reported
-                    // single flash). Paint synchronously instead; the queued
-                    // callback stays valid because applyStrokePath is
-                    // idempotent.
+                if (previewStroke.points.length <= 4 || previewFrameQueued) {
+                    // Paint the first segment immediately; a short contact
+                    // may end without another move or an animation callback.
+                    // Later moves also paint when their queued frame has not
+                    // run. The eventual callback is safe and idempotent.
                     applyStrokePath();
-                } else {
-                    queueStrokePaint();
                 }
+                if (!previewFrameQueued) queueStrokePaint();
             } catch (ignored) {}
         };
         const previewReadPatch = (rect) => { // rect = [x, y, w, h] backing px

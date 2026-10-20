@@ -425,6 +425,26 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             casePrefix: "office-pinch-calc")
     }
 
+    func testOfficeRealPinchWithCalcAssistantOpen() throws {
+        try runOfficeCenteredPinchAcceptance(
+            drawingOn: false,
+            fixtureTitle: "捏合验收-居中-表格-2",
+            fixtureLaunchArgument: "--ui-test-office-pinch-center-calc-fixture",
+            measuredText: "Pen UI 7C3MV1K9",
+            casePrefix: "office-pinch-calc-assistant",
+            assistantOpen: true)
+    }
+
+    func testOfficePencilRealPinchWithCalcAssistantOpen() throws {
+        try runOfficeCenteredPinchAcceptance(
+            drawingOn: true,
+            fixtureTitle: "捏合验收-居中-表格-2",
+            fixtureLaunchArgument: "--ui-test-office-pinch-center-calc-fixture",
+            measuredText: "Pen UI 7C3MV1K9",
+            casePrefix: "office-pinch-calc-assistant-ink",
+            assistantOpen: true)
+    }
+
     /// Impress companion: the owned PPTX fixture whose measurement text object
     /// is centred on its single 16:9 slide.
     func testOfficePencilRealPinchOnCenteredPresentationFixture() throws {
@@ -455,7 +475,8 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         fixtureLaunchArgument: String = "--ui-test-office-pinch-center-fixture",
         measuredText: String = "Pen UI 5X8KQ2M7",
         casePrefix: String = "office-pencil-center",
-        requireVisibleKeyboardBeforeHide: Bool = false
+        requireVisibleKeyboardBeforeHide: Bool = false,
+        assistantOpen: Bool = false
     ) throws {
         guard ProcessInfo.processInfo.environment["FLOE_OFFICE_PENCIL_UI_QUALIFICATION"] == "1" else {
             throw XCTSkip("Opt-in Office pen toolbar UI qualification; set FLOE_OFFICE_PENCIL_UI_QUALIFICATION=1 in the test runner environment.")
@@ -478,7 +499,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // enabled; nothing is silently turned off.
         let probePassiveOnly = ProcessInfo.processInfo.environment["FLOE_OFFICE_TOUCH_PROBE_PASSIVE_ONLY"] == "1"
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing",
-                               "--ui-test-skip-onboarding", fixtureLaunchArgument,
+                               "--ui-test-preserve-animations", "--ui-test-skip-onboarding", fixtureLaunchArgument,
                                "--office-touch-qualification"]
         if probePassiveOnly {
             app.launchArguments.append("--office-touch-qualification-passive-only")
@@ -539,6 +560,14 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 15),
                           "enabling drawing must dismiss the Office text keyboard")
         }
+        if assistantOpen {
+            let assistant = app.buttons["notes.assistant"]
+            XCTAssertTrue(assistant.waitForExistence(timeout: 15))
+            XCTAssertTrue(assistant.isHittable)
+            assistant.tap()
+            XCTAssertTrue(app.buttons["notes.assistant.close"].waitForExistence(timeout: 15),
+                          "The document assistant must be open throughout the real pinch")
+        }
         let mode = drawingOn ? "drawing-on" : "drawing-off"
         let prefix = drawingOn ? casePrefix : casePrefix + "-drawing-off"
         capture("\(prefix)-document-opened")
@@ -579,6 +608,14 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                       "the DEBUG touch probe must publish ok=1 before the real pinch; last value: \(baselineRead.raw.prefix(200))")
         let baseline = try XCTUnwrap(baselineRead.dict, "the probe baseline must be valid JSON")
         try assertOfficeTouchProbeBaseline(baseline, drawingOn: drawingOn, label: mode)
+        let nativeStateElement = app.descendants(matching: .any)
+            .matching(identifier: "office.touch-qualification.input-state").firstMatch
+        XCTAssertTrue(nativeStateElement.waitForExistence(timeout: 15))
+        let nativeRaw = try XCTUnwrap(nativeStateElement.value as? String)
+        attachText(nativeRaw, name: "office-live-pinch-\(mode)-animation-state")
+        let nativeState = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(nativeRaw.utf8)) as? [String: Any])
+        XCTAssertEqual(pinchNumber(nativeState["uiAnimationsEnabled"]), 1,
+                       "Real gesture acceptance requires UIKit animations enabled")
         // Control integrity, asserted ONLY in the operator-requested
         // passive-only run: the page must report the mode and the call-site
         // counters must be honestly zero because nothing was wrapped. The
