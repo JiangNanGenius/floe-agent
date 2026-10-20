@@ -1739,7 +1739,29 @@ public struct CadDocumentTool: AgentTool {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let json = String(data: try encoder.encode(receipt), encoding: .utf8) ?? "{}"
-            return ToolExecutionOutput(digesting: bounded("cad.document export: \(json)", 16_000))
+            let summary = bounded("cad.document export: \(json)", 16_000)
+            // S3-D: the host's CadExportReceipt already carries the verified
+            // commit digest + size, so publication reuses it (no rehash). The
+            // native threeDAction drawing-export branch below has no typed
+            // commit identity and stays deliberately unpublished — a string
+            // reply never becomes a fabricated receipt.
+            switch RunOutputWorkbenchPublication.state(context) {
+            case .legacyDirect, .temporaryExempt:
+                return ToolExecutionOutput(digesting: summary)
+            case .partiallyBound:
+                throw RunOutputWorkbenchPublication.partialBindingFailure
+            case .required:
+                let fileURL = try Self.runOutputSourceURL(relativePath: receipt.relativePath, context: context)
+                return try RunOutputWorkbenchPublication.publish(
+                    summary: summary,
+                    url: fileURL,
+                    sha256: receipt.sha256,
+                    byteCount: receipt.byteCount,
+                    producerTool: Self.name,
+                    slot: "export",
+                    mimeType: Self.cadExportMIMEType(forPath: fileURL.path),
+                    using: context)
+            }
 
         case .threeDSnapshot, .threeDMeasure, .threeDPropose, .threeDApply,
              .threeDAssembly, .threeDDrawing:
@@ -1858,6 +1880,37 @@ public struct CadDocumentTool: AgentTool {
         let directory = (path as NSString).deletingLastPathComponent
         let file = "\(base.isEmpty ? "drawing" : base).export.dxf"
         return directory.isEmpty ? file : "\(directory)/\(file)"
+    }
+
+    /// S3-D: resolves a host-committed export receipt path to the real file
+    /// under the task workspace. The snapshot store independently rejects
+    /// non-regular or aliased sources; this only guarantees containment.
+    static func runOutputSourceURL(relativePath: String, context: ToolContext) throws -> URL {
+        guard !relativePath.isEmpty, !relativePath.contains("\0"),
+              !relativePath.split(separator: "/").contains("..") else {
+            throw RunOutputWorkbenchPublication.sourceUnavailable("export path is not workspace-contained")
+        }
+        guard let root = context.workspaceRootURL else {
+            throw RunOutputWorkbenchPublication.sourceUnavailable("no task workspace")
+        }
+        let canonicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let candidate = root.appendingPathComponent(relativePath)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let prefix = canonicalRoot.path.hasSuffix("/") ? canonicalRoot.path : canonicalRoot.path + "/"
+        guard candidate.path.hasPrefix(prefix) else {
+            throw RunOutputWorkbenchPublication.sourceUnavailable("export path escapes the task workspace")
+        }
+        return candidate
+    }
+
+    static func cadExportMIMEType(forPath path: String) -> String {
+        switch (path as NSString).pathExtension.lowercased() {
+        case "dxf": return "image/vnd.dxf"
+        case "dwg": return "image/vnd.dwg"
+        case "pdf": return "application/pdf"
+        case "svg": return "image/svg+xml"
+        default: return "application/octet-stream"
+        }
     }
 
     /// Native export defaults to an exact STEP copy beside the package; the

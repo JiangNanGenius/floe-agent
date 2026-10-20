@@ -30,6 +30,7 @@ actor FakeCadHost: CadDocumentHost {
     var preview = CadDiffPreview(added: [], changed: [], deleted: [], counts: ["added": 0, "changed": 0, "deleted": 0], truncated: false, note: "preview")
     var snapshotCalls = 0
     var appliedOperationsJSON: String?
+    var exportRealPayload: Data?
 
     func setEditable(_ editable: Bool) { self.editable = editable }
     func setAuthorized(_ value: Bool) { authorized = value }
@@ -208,10 +209,27 @@ actor FakeCadHost: CadDocumentHost {
 
     func export(documentID: String, relativeOutput: String,
                 access: CadDocumentAccess) async throws -> CadExportReceipt {
-        CadExportReceipt(documentID: documentID, relativePath: relativeOutput,
-                         sha256: String(repeating: "d", count: 64), byteCount: 128,
-                         note: "presentation copy; source unchanged")
+        var sha = String(repeating: "d", count: 64)
+        var byteCount = 128
+        // S3-D focused tests opt this into committing real bytes at the export
+        // path so the production run-output publication exercises the full
+        // commit → snapshot → verify chain against an actual file. `nil`
+        // (default) preserves the original synthetic-receipt behavior.
+        if let payload = exportRealPayload, let path = access.workspacePath,
+           !path.isEmpty, FileManager.default.fileExists(atPath: path) {
+            let url = URL(fileURLWithPath: path).appendingPathComponent(relativeOutput)
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
+            try payload.write(to: url, options: .atomic)
+            sha = try FloeDigest.sha256Hex(payload)
+            byteCount = payload.count
+        }
+        return CadExportReceipt(documentID: documentID, relativePath: relativeOutput,
+                                sha256: sha, byteCount: byteCount,
+                                note: "presentation copy; source unchanged")
     }
+
+    func setExportPayload(_ data: Data?) { exportRealPayload = data }
 }
 
 @Suite("cad.document tool contract")
@@ -693,7 +711,16 @@ struct CadDocumentToolTests {
 
         let save = try await execute(tool, #"{"action":"save","path":"plate.dwg"}"#)
         #expect(save.summary.contains("\"saved\":true"))
-        let export = try await execute(tool, #"{"action":"export","path":"plans/plate.dwg"}"#)
+        // S3-D compatibility: the synthetic host export is asserted through
+        // the supported legacy direct binding (no tool-call and no task),
+        // keeping the pre-publication summary identical. Bound-run publication
+        // with a real committed file is covered by RunOutputPublication
+        // ProducerTests in this suite.
+        let export = try await execute(tool, #"{"action":"export","path":"plans/plate.dwg"}"#,
+                                       context: ToolContext(runID: UUID(), scope: .local,
+                                                            workspaceRootURL: URL(fileURLWithPath: "/tmp/workspace"),
+                                                            cancellation: CancellationToken(),
+                                                            environmentID: "env-1"))
         #expect(export.summary.contains("plans/plate.export.dxf"))
         #expect(CadDocumentTool.defaultExportPath(for: "plate.dwg") == "plate.export.dxf")
     }
@@ -1029,9 +1056,10 @@ struct CadDocumentToolTests {
 /// sides fails here.
 @Suite("cad.document runtime-approved automatic apply")
 struct CadAutomaticApplyTests {
-    func makeContext(conversation: UUID? = UUID(), toolCallID: String = "call-apply-1",
+    func makeContext(conversation: UUID? = UUID(), runID: UUID = UUID(),
+                     toolCallID: String = "call-apply-1",
                      workspace: URL = URL(fileURLWithPath: "/tmp/workspace")) -> ToolContext {
-        ToolContext(runID: UUID(), toolCallID: toolCallID, scope: .local,
+        ToolContext(runID: runID, toolCallID: toolCallID, scope: .local,
                     workspaceRootURL: workspace,
                     cancellation: CancellationToken(), environmentID: "env-1",
                     conversationID: conversation)
@@ -1173,18 +1201,40 @@ struct CadAutomaticApplyTests {
         #expect(authorization.runID == context.runID)
         #expect(authorization.taskID == context.conversationID)
 
-        // The single-use token is burned: a replay of the identical approved
-        // call refuses and never reaches the host again.
+        // A completed identical request returns the saved receipt without
+        // consuming authority or applying the drawing again.
+        let replay = try await tool.execute(args, context: carrying(context, token))
+        func receipt(_ output: ToolExecutionOutput) throws -> CadDocumentReceipt {
+            let prefix = "cad.document apply: "
+            #expect(output.summary.hasPrefix(prefix))
+            return try JSONDecoder().decode(CadDocumentReceipt.self,
+                from: Data(output.summary.dropFirst(prefix.count).utf8))
+        }
+        var expectedReplay = try receipt(output)
+        #expect(!expectedReplay.replay)
+        expectedReplay.replay = true
+        #expect(try receipt(replay) == expectedReplay)
+        #expect(await host.automaticApplies == 1)
+
+        // Receipt replay never makes the consumed authority reusable.
         do {
-            _ = try await tool.execute(args, context: carrying(context, token))
+            _ = try await CadDocumentTool.consumeAutomaticAuthorization(
+                args: args, context: carrying(context, token))
             Issue.record("a consumed authority must not authorize a second apply")
         } catch let error as FloeError {
             if case .validationFailed(let message) = error {
                 #expect(message.contains("already consumed"))
             } else {
-                Issue.record("unexpected replay refusal: \(error)")
+                Issue.record("unexpected consumed-authority refusal: \(error)")
             }
         }
+
+        let newRequest = try decode("""
+        {"action":"apply","path":"plate.dwg","proposal_id":"\(proposal.id.uuidString)","request_id":"another-request"}
+        """)
+        await expectAutomaticRefusal(tool: tool, args: newRequest,
+                                     context: carrying(context, token), host: host,
+                                     contains: "different request")
         #expect(await host.automaticApplies == 1)
     }
 
@@ -1220,7 +1270,7 @@ struct CadAutomaticApplyTests {
         let otherArgs = try decode("""
         {"action":"apply","path":"other/frame.dwg","proposal_id":"\(proposal.id.uuidString)"}
         """)
-        let otherContext = makeContext()
+        let otherContext = makeContext(conversation: context.conversationID, runID: context.runID)
         let otherToken = try await issueAuthority(for: otherArgs, context: otherContext)
         await expectAutomaticRefusal(tool: tool, args: args,
                                      context: carrying(context, otherToken),
@@ -1238,7 +1288,7 @@ struct CadAutomaticApplyTests {
                                      host: host, contains: "approved payload")
 
         // A token minted for another task is the same refusal.
-        let foreignContext = makeContext(conversation: UUID())
+        let foreignContext = makeContext(conversation: UUID(), runID: context.runID)
         let foreignToken = try await issueAuthority(for: args, context: foreignContext)
         await expectAutomaticRefusal(tool: tool, args: args,
                                      context: carrying(context, foreignToken),
