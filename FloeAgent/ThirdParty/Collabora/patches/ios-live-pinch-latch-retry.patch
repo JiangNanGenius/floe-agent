@@ -1,0 +1,28 @@
+--- a/browser/src/canvas/sections/ZoomControl.ts
++++ b/browser/src/canvas/sections/ZoomControl.ts
+@@ -239,6 +239,25 @@
+ 			ratio,
+ 			this.pinchStartZoom,
+ 		);
++		if (!this.pinchLive) {
++			// A layout animation can block the first move's live-frame latch.
++			// Retry after that owner releases the layout. If its animation
++			// committed a different zoom, rebase this gesture before painting;
++			// otherwise its old distance would be applied to the new zoom.
++			// Re-anchor at the current centre after any intervening scroll.
++			if (app.map.getZoom() !== this.pinchStartZoom) {
++				this.pinchStartZoom = app.map.getZoom();
++				this.pinchStartDistance = distance;
++				this.pinchAnchor = null;
++				this.pinchTargetZoom = null;
++				return; // this move only rebases; the next move may latch
++			}
++			if (!app.sectionContainer.getAnimatingSectionName()) {
++				this.pinchAnchor = this.layout.canvasToDocumentPoint(point);
++				this.layout.beginZoom(this.pinchAnchor);
++				this.pinchLive = true;
++			}
++		}
+ 		if (this.pinchLive) {
+ 			// Paint this move at the finger-driven scale (1 = gesture start).
+ 			// The frame scale follows the clamped target so the live image

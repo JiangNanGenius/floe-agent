@@ -401,6 +401,7 @@ static NSString *FloeInkInputGatingScript() {
         window.__floeInkGatingInstalled = true;
         const state = window.__floePenState = {
             strokes: 0, coreEvents: 0, armedDispatches: 0, activeStroke: false, toolState: null,
+            previewDeferredEstablishments: 0,
             shapeHandleSuspensions: 0, previewHandoffs: 0, previewClears: 0,
             zeroMotionClicks: 0, zeroMotionClickFailures: 0,
             lastPreviewClear: null, writerInsetTwips: null, writerPageOriginTwips: null
@@ -585,6 +586,7 @@ static NSString *FloeInkInputGatingScript() {
         let previewSurface = null;
         let previewUnavailable = false;
         let previewStroke = null;
+        let previewDeferred = false;
         const previewHandoffs = [];
         let previewFrameQueued = false;
         let previewLoopQueued = false;
@@ -671,7 +673,7 @@ static NSString *FloeInkInputGatingScript() {
                 const partWidth = layer && finite(layer._partWidthTwips) ? layer._partWidthTwips : -1;
                 const partHeight = layer && finite(layer._partHeightTwips) ? layer._partHeightTwips : -1;
                 const layoutType = typeof layout.type === 'string' ? layout.type : 'unknown';
-                return [
+                const parts = [
                     geometryNumber(window.innerWidth), geometryNumber(window.innerHeight),
                     ratio(window.devicePixelRatio),
                     geometryNumber(canvas.width), geometryNumber(canvas.height),
@@ -688,7 +690,13 @@ static NSString *FloeInkInputGatingScript() {
                     geometryNumber(anchor[0]), geometryNumber(anchor[1]),
                     geometryNumber(selectedPart), geometryNumber(partCount),
                     geometryNumber(partWidth), geometryNumber(partHeight)
-                ].join(',');
+                ];
+                // Indices 5/6 (canvas rect left/top) are SCREEN position;
+                // every other component is the document/canvas mapping. The
+                // resize invalidation below keeps a preview across a pure
+                // position change (translating it) and drops on any mapping
+                // change, exactly like before.
+                return { key: parts.join(','), parts: parts };
             } catch (ignored) {
                 return null;
             }
@@ -850,11 +858,19 @@ static NSString *FloeInkInputGatingScript() {
                 dropStrokePreview('abandoned');
                 if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY))
                     return;
+                previewDeferred = false;
                 // A preview whose mapping cannot be read would have no honest
-                // invalidation identity. Never create one: the canonical
-                // contact below still draws the engine ink.
+                // invalidation identity. Never create one with a null
+                // signature - but a TRANSIENT unreadable mapping at down
+                // (layout recomputation, transition states) must not lose the
+                // whole stroke either: defer establishment to the first later
+                // move of THIS SAME trusted contact that can read a real
+                // signature. The canonical replay below is untouched.
                 const geometry = previewGeometry();
-                if (geometry === null) return;
+                if (geometry === null) {
+                    previewDeferred = true;
+                    return;
+                }
                 if (!ensurePreviewSurface()) return;
                 const style = resolveInkStyle();
                 const path = document.createElementNS(PREVIEW_SVG_NS, 'path');
@@ -872,15 +888,65 @@ static NSString *FloeInkInputGatingScript() {
                 previewStroke = null;
             }
         };
+        // Safe late establishment for exactly one trusted contact: same
+        // invariants as beginStroke (finite sample, readable real signature,
+        // working surface) and the point list STARTS at the establishing
+        // move - samples captured while the mapping was unreadable are never
+        // backfilled into the new mapping. The deferral is two flags (no
+        // growing buffer); cancel/release/pagehide clear it with the contact.
+        const establishDeferredPreview = (event) => {
+            try {
+                if (!contact || !Number.isFinite(event.clientX)
+                    || !Number.isFinite(event.clientY)) return false;
+                const geometry = previewGeometry();
+                if (geometry === null) return false;
+                if (!ensurePreviewSurface()) return false;
+                const style = resolveInkStyle();
+                const path = document.createElementNS(PREVIEW_SVG_NS, 'path');
+                path.setAttribute('fill', 'none');
+                path.setAttribute('stroke', style.css);
+                path.setAttribute('stroke-width', String(style.cssPx));
+                path.setAttribute('stroke-opacity', String(style.opacity));
+                path.setAttribute('stroke-linecap', 'round');
+                path.setAttribute('stroke-linejoin', 'round');
+                previewSurface.appendChild(path);
+                previewStroke = { path, style, points: [], d: '', geometry };
+                appendStrokePoints([event]);
+                applyStrokePath();
+                state.previewDeferredEstablishments += 1;
+                return true;
+            } catch (ignored) {
+                return false;
+            }
+        };
         const sampleStroke = (event) => {
-            if (!previewStroke) return;
+            if (!previewStroke) {
+                if (previewDeferred && contact
+                    && establishDeferredPreview(event))
+                    previewDeferred = false;
+                return;
+            }
             // Exactly the trusted event the canonical replay forwards.
             // getCoalescedEvents()/getPredictedEvents() are deliberately not
             // read: drawing intermediate samples the core never received
             // would make the local line diverge from the engine vector.
             try {
                 appendStrokePoints([event]);
-                queueStrokePaint();
+                if (previewFrameQueued) {
+                    // The previously queued animation frame has not run yet.
+                    // Real-device touch tracking can delay frame callbacks
+                    // (hypothesis pending the animated-app trace; the
+                    // source-verifiable branch is that EVERY intermediate
+                    // path update lives inside nextFrame, so a starved frame
+                    // callback freezes the visible stroke at its first point
+                    // while the point list keeps growing - the reported
+                    // single flash). Paint synchronously instead; the queued
+                    // callback stays valid because applyStrokePath is
+                    // idempotent.
+                    applyStrokePath();
+                } else {
+                    queueStrokePaint();
+                }
             } catch (ignored) {}
         };
         const previewReadPatch = (rect) => { // rect = [x, y, w, h] backing px
@@ -1058,6 +1124,8 @@ static NSString *FloeInkInputGatingScript() {
             available: !previewUnavailable && !!previewSurface,
             surface: !!previewSurface,
             stroke: !!previewStroke,
+            deferred: previewDeferred,
+            deferredEstablishments: state.previewDeferredEstablishments,
             points: previewStroke ? previewStroke.points.length / 2 : 0,
             d: previewStroke ? previewStroke.d : null,
             style: previewStroke ? {
@@ -1234,6 +1302,7 @@ static NSString *FloeInkInputGatingScript() {
                 contact = null;
             }
             state.activeStroke = false;
+            previewDeferred = false;
             // The ordered backend Escape must run BEFORE any synthetic
             // mouseup: it aborts the unfinished core create (BrkAction ->
             // BrkCreateObj), so EndCreateObj — the only zero-motion dot
@@ -1309,6 +1378,7 @@ static NSString *FloeInkInputGatingScript() {
             state.zeroMotionClickFailures += 1;
             dropStrokePreview('zero-motion-failed');
             state.activeStroke = false;
+            previewDeferred = false;
             let aborted = false;
             try {
                 aborted = resetTool(false);
@@ -1374,6 +1444,7 @@ static NSString *FloeInkInputGatingScript() {
             // with an unreadable flag: the unchanged legacy completion.
             contact = null;
             state.activeStroke = false;
+            previewDeferred = false;
             try {
                 mouse('mouseup', source || last, 0, document);
                 if (point) {
@@ -1534,6 +1605,7 @@ static NSString *FloeInkInputGatingScript() {
             if (!contact) return;
             contact = null;
             state.activeStroke = false;
+            previewDeferred = false;
             dropStrokePreview('pointercancel');
             const rearm = drawing;
             let aborted = false;
@@ -1624,6 +1696,7 @@ static NSString *FloeInkInputGatingScript() {
         window.addEventListener('blur', interrupt);
         window.addEventListener('pagehide', () => {
             window.__floeSetOfficeDrawingMode(false);
+            previewDeferred = false;
             dropAllPreviews('pagehide');
         });
         document.addEventListener('visibilitychange', () => { if (document.hidden) interrupt(); });
@@ -1636,6 +1709,38 @@ static NSString *FloeInkInputGatingScript() {
         // not discard previews that are still exactly aligned. An unreadable
         // signature, or a preview created without one, fails closed to the
         // previous drop-all behaviour.
+        // A pure on-screen translation of an UNCHANGED mapping: only the
+        // canvas rect left/top (indices 5/6) differ. Chrome layout with
+        // UIKit animations enabled CAN deliver window resize events while a
+        // stroke is in progress (per-frame frequency on the real device is a
+        // hypothesis pending the animated-app trace; the reproducible source
+        // fact is that the strict signature equality below dropped a
+        // still-valid in-progress preview on ANY position-only difference,
+        // erasing live ink as a flash). Translate instead of dropping in
+        // exactly that case; every other component change keeps the previous
+        // fail-closed drop.
+        const positionOnlyDelta = (stored, current) => {
+            const a = stored && stored.parts;
+            const b = current && current.parts;
+            if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length)
+                return null;
+            let dx = 0;
+            let dy = 0;
+            for (let k = 0; k < a.length; k += 1) {
+                if (a[k] === b[k]) continue;
+                if (k === 5 && Number.isFinite(a[k]) && Number.isFinite(b[k])) {
+                    dx = b[k] - a[k];
+                    continue;
+                }
+                if (k === 6 && Number.isFinite(a[k]) && Number.isFinite(b[k])) {
+                    dy = b[k] - a[k];
+                    continue;
+                }
+                return null;
+            }
+            if (dx === 0 && dy === 0) return null;
+            return [dx, dy];
+        };
         const invalidateStalePreviews = () => {
             let current = null;
             try { current = previewGeometry(); } catch (ignored) { current = null; }
@@ -1643,14 +1748,60 @@ static NSString *FloeInkInputGatingScript() {
                 dropAllPreviews('viewport-resized');
                 return;
             }
-            if (previewStroke
-                && (previewStroke.geometry === null || previewStroke.geometry === undefined
-                    || previewStroke.geometry !== current))
-                dropStrokePreview('viewport-resized');
-            for (const handoff of previewHandoffs.slice())
-                if (handoff.geometry === null || handoff.geometry === undefined
-                    || handoff.geometry !== current)
+            if (previewStroke && (!previewStroke.geometry
+                || previewStroke.geometry.key !== current.key)) {
+                const strokeDelta = positionOnlyDelta(previewStroke.geometry,
+                    current);
+                if (strokeDelta) {
+                    // The active stroke owns its points: translate them into
+                    // the new screen position and re-adopt the current
+                    // signature, so an A->B->A sequence restores the exact
+                    // original coordinates.
+                    const points = previewStroke.points;
+                    for (let k = 0; k < points.length; k += 2) {
+                        points[k] += strokeDelta[0];
+                        points[k + 1] += strokeDelta[1];
+                    }
+                    previewStroke.geometry = current;
+                    applyStrokePath();
+                } else {
+                    dropStrokePreview('viewport-resized');
+                }
+            }
+            for (const handoff of previewHandoffs.slice()) {
+                if (handoff.geometry && handoff.geometry.key === current.key) {
+                    // Back at the creation signature: any transform from an
+                    // earlier translation MUST be cleared (A->B->A), or the
+                    // painted evidence path would stay offset from the ink it
+                    // proves.
+                    if (handoff.translated) {
+                        try {
+                            handoff.path.removeAttribute('transform');
+                            handoff.translated = false;
+                        } catch (ignored) {
+                            dropHandoff(handoff, 'viewport-resized');
+                        }
+                    }
+                    continue;
+                }
+                // A handoff keeps its CREATION geometry: the SVG transform is
+                // always measured from the painted position (cumulative, never
+                // chained), and the canvas-local paint probes stay valid
+                // because the backing store itself did not move.
+                const delta = positionOnlyDelta(handoff.geometry, current);
+                if (delta) {
+                    try {
+                        handoff.path.setAttribute('transform',
+                            'translate(' + delta[0].toFixed(1) + ' '
+                            + delta[1].toFixed(1) + ')');
+                        handoff.translated = true;
+                    } catch (ignored) {
+                        dropHandoff(handoff, 'viewport-resized');
+                    }
+                } else {
                     dropHandoff(handoff, 'viewport-resized');
+                }
+            }
         };
         window.addEventListener('resize', invalidateStalePreviews);
         window.__floeOfficePenState = () => ({

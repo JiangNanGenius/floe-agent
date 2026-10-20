@@ -94,6 +94,21 @@
         ".preventDefault()"
       ],
       "note": "Floe local frontend patch, not an upstream commit. Chained after ios-live-pinch-zoom.patch on the same file. A pinch that latched onto the document (first in-document move fixed the start distance/anchor) is consumed entirely by this owner, so its final touchend now calls e.preventDefault(): WebKit then does not synthesize the compatibility mousedown/click that the App20 trace recorded as a trusted canvas click ~27-129ms after rawend - an event that blurs the real text input mid-session and re-arms the input intent through Map click handling after a completed pinch. One-finger taps (never latched here), two-finger taps without an in-document move, gestures starting outside the document area, non-cancelable events and touchcancel keep their existing default behavior; the live-frame commit (nearest integer level) and cancel/restore paths are byte-identical. This complements, and does not replace, the passive focus preservation in ios-zoomend-focus-preservation.patch."
+    },
+    {
+      "patch": "patches/ios-live-pinch-latch-retry.patch",
+      "patchSHA256": "2eafa0401a5d15f3c671f44664011e15fa560e7f90067d722cfb23b12cd495bb",
+      "sourceRepository": "https://github.com/CollaboraOnline/online.mirror.git",
+      "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+      "sourceFile": "browser/src/canvas/sections/ZoomControl.ts",
+      "originalSourceSHA256": "1ae123f98edd11740f7a9f1fe7b6141c7e49a08ada5d20bf38a5a0232c2609a8",
+      "patchedSourceSHA256": "85940f9166c66b6d14ca97f1d2855ad97dad044ab2fc2c132bfc3fd0a55da867",
+      "bundleMarker": "app.map.getZoom()!==this.pinchStartZoom",
+      "bundleTokens": [
+        "this.pinchStartZoom=app.map.getZoom()",
+        "this.layout.canvasToDocumentPoint("
+      ],
+      "note": "Floe local frontend patch, chained after ios-pinch-owned-end-cancel.patch. Retry a blocked live pinch latch after the existing layout animation releases ownership; rebase if that animation committed a different map zoom and re-anchor at the current centre before opening the live frame. Preserve the existing blocked fallback and cancel behavior. Logic fixtures cover these branches; actual device causality and in-gesture pixels require App qualification."
     }
   ]
 }
