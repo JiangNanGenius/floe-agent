@@ -594,8 +594,14 @@ struct NotesStoreTests {
         let resourceA = try await importInk(store, root: root, bytes: inkA, name: "a.drawing")
         try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
             title: "Write", edits: [.drawing(pageID: page, resourceID: resourceA)]))
+        let sourceID = UUID()
+        var textElement = NoteElement(text: "kept")
+        textElement.textFormat = "markdown"
+        textElement.textSourceID = sourceID
+        textElement.textSlice = .init(start: 0, count: 1, total: 1)
         try await store.apply(.init(documentID: base.id, expectedRevision: base.revision + 1,
-            title: "Agent", edits: [.textSource(id: UUID(), text: "kept")]))
+            title: "Agent", edits: [.textSource(id: sourceID, text: "kept"),
+                                    .upsertElement(pageID: page, element: textElement)]))
         // Replay of A (already installed) drops out; the rename still applies
         // through the normal rebase path and the agent text survives.
         let merged = try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
@@ -603,6 +609,7 @@ struct NotesStoreTests {
         #expect(merged.title == "Mixed, retitled")
         #expect(merged.pages[0].drawingResourceID == resourceA)
         #expect(merged.textSources?.values.contains("kept") == true)
+        #expect(merged.pages[0].elements.contains(textElement))
         #expect(merged.revision == base.revision + 3)
     }
 
@@ -639,9 +646,15 @@ struct NotesStoreTests {
         let resourceB = try await importInk(store, root: root, bytes: Data([3, 4]), name: "b.drawing")
         try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
             title: "Write", edits: [.drawing(pageID: firstPage, resourceID: resourceA)]))
+        let sourceID = UUID()
+        var textElement = NoteElement(text: "external note")
+        textElement.textFormat = "markdown"
+        textElement.textSourceID = sourceID
+        textElement.textSlice = .init(start: 0, count: 1, total: 1)
         // External text on page 1 and external ink on page 2 progress independently.
         try await store.apply(.init(documentID: base.id, expectedRevision: base.revision + 1,
-            title: "External", edits: [.textSource(id: UUID(), text: "external note"),
+            title: "External", edits: [.textSource(id: sourceID, text: "external note"),
+                                       .upsertElement(pageID: firstPage, element: textElement),
                                        .drawing(pageID: secondPage, resourceID: resourceB)]))
         // Our stale-base ink edit on page 1 rebases cleanly and keeps both.
         let merged = try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
@@ -649,6 +662,7 @@ struct NotesStoreTests {
         #expect(merged.pages[0].drawingResourceID == resourceA)
         #expect(merged.pages[1].drawingResourceID == resourceB)
         #expect(merged.textSources?.values.contains("external note") == true)
+        #expect(merged.pages[0].elements.contains(textElement))
     }
 
     @Test func resizedPageBlocksDrawingReplayAsConflict() async throws {

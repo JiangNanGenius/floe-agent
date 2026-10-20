@@ -1998,8 +1998,14 @@ extension CrashAndFeedbackRegressionTests {
         let documentCount = try await store.documents(includeTrash: true).count
         // An unrelated edit moves the document on; the same failing bytes
         // must refresh the same review instead of minting a second copy.
+        let sourceID = UUID()
+        var textElement = NoteElement(text: "unrelated")
+        textElement.textFormat = "markdown"
+        textElement.textSourceID = sourceID
+        textElement.textSlice = .init(start: 0, count: 1, total: 1)
         try await store.apply(.init(documentID: base.id, expectedRevision: externalSaved.revision,
-            title: "External text", edits: [.textSource(id: UUID(), text: "unrelated")]))
+            title: "External text", edits: [.textSource(id: sourceID, text: "unrelated"),
+                                           .upsertElement(pageID: base.pages[0].id, element: textElement)]))
         session.saveDrawing(human, pageID: base.pages[0].id, base: base,
                             provenance: .init(lineage: lineage, generation: 1, sequence: 2))
         try await drainInk(session)
@@ -2010,6 +2016,7 @@ extension CrashAndFeedbackRegressionTests {
         #expect(refreshed.copy.id == firstReview.copy.id)
         #expect(refreshed.current.revision == externalSaved.revision + 1)
         #expect(refreshed.current.textSources?.values.contains("unrelated") == true)
+        #expect(refreshed.current.pages[0].elements.contains(textElement))
         #expect(try await store.documents(includeTrash: true).count == documentCount)
         let copy = try await store.document(refreshed.copy.id)
         #expect(try await pageInk(store, copy) == human)
