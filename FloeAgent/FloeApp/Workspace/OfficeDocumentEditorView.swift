@@ -3173,7 +3173,6 @@ struct OfficeDocumentEditorView: View {
     @State private var exportSucceeded = false
     @State private var choosingAttachment = false
     @State private var choosingWorkspaceAttachment = false
-    @State private var showingCommandPanel = false
     @State private var showingAttachments = false
     @State private var showingInkControls = false
     @State private var attachmentError: String?
@@ -3290,12 +3289,6 @@ struct OfficeDocumentEditorView: View {
             .sheet(isPresented: $choosingWorkspaceAttachment) {
                 OfficeWorkspaceAttachmentPicker(environment: environment) { url in
                     try await session.insertAttachment(url)
-                }
-            }
-            .sheet(isPresented: $showingCommandPanel) {
-                if let format = OfficeDocumentFormat(fileExtension: (relativePath as NSString).pathExtension) {
-                    OfficeCommandPanel(documentID: relativePath, format: format, session: session)
-                        .environmentObject(environment)
                 }
             }
             .sheet(isPresented: $showingAttachments) { OfficeAttachmentListView(session: session) }
@@ -3436,16 +3429,6 @@ struct OfficeDocumentEditorView: View {
             } label: { Label("settings.data_management_view.attachments", systemImage: "paperclip").frame(minWidth: 44, minHeight: 44) }
                 .disabled(!session.canAct)
                 .accessibilityIdentifier("office.editor.insertAttachment")
-        }
-        if OfficeDocumentFormat(fileExtension: (relativePath as NSString).pathExtension) != nil {
-            Button {
-                showingCommandPanel = true
-            } label: {
-                Label(OfficeInkText.t("文档命令", "Commands"), systemImage: "wand.and.stars")
-                    .frame(minWidth: 44, minHeight: 44)
-            }
-            .disabled(!session.canAct)
-            .accessibilityIdentifier("office.commands.open")
         }
         if session.supportsPresentation {
             Button {
