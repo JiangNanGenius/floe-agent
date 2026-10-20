@@ -7,6 +7,8 @@
 
 2026-10-20 新真机反馈已插入本轮优先修复：Office 助手缺少当前页面的笔迹输入、移除魔术棒文档命令、缩放仍延至松手及笔迹偶发闪现。历史 S1 的模拟器证据保留，但不证明这些新反馈已解决；当前尚无包含本次修复的新安装包。New physical-device feedback is now in the current round: missing Office ink context for the assistant, removal of Commands, delayed pinch updates, and intermittent live ink. Earlier simulator qualification does not close these reports.
 
+2026-10-20 构建准备检查：`0ec92f17` 已推送主线，实际 Xcode 27 严格依赖解析通过，主锁保持不变；依赖图、解析恢复、许可记录和 MLX 检查共 199 项通过。当前 Office 反馈与 C 最终结果归属仍在实施，尚未进行本轮完整 App／交互验收，不能据此标记功能完成。Build preparation passed strict Xcode resolution and 199 focused checks; this is not App or interaction qualification.
+
 ## S3-B 草稿队列源码已完成 / Durable shortcut drafts qualified
 
 验收源码 `88dc1b71487a5906cbae96903d38504bfe536a4b`：连续草稿不覆盖、顺序领取、旧数据迁移、落盘回执及失败／重启恢复完成；真实存储探针 34 项通过，完整 App／测试宿主编译通过，原生 **62 通过、0 失败、0 跳过**。源码推送 main，S3-C 运行查询与文本结果已启动；安装包随后续集成，现有 281 不变。[验收记录](releases/repairs/FLOE_SHORTCUTS_S3B_20261020.md)。The source stage is qualified; hosted production Intent/Home paths are distinct from system Shortcuts/Siri dispatch and physical-device acceptance.
