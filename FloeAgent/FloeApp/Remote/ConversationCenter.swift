@@ -6223,7 +6223,7 @@ final class ConversationCenter: ObservableObject {
     ///
     /// Must be called only after every writer for these runs has been
     /// cancelled and joined.
-    nonisolated static func runOutputAwareDeletion(
+    static func runOutputAwareDeletion(
         conversationID: UUID,
         durableRunIDs: [UUID],
         storeRoot: URL? = nil,
