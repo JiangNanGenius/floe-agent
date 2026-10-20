@@ -754,6 +754,8 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         var dotAlphaExpected = 100_000
         var controlShapeCount = 0
         var dotShapeCount = 0
+        var dotPreSaveImage: UIImage?
+        var dotOriginalClientPoint: CGPoint?
         // A persisted zero-motion dot is either the native filled circle the
         // engine finalizes for a tap (prstGeom ellipse, selected colour, no
         // outline) or, if another representation ever persisted, the previous
@@ -900,6 +902,7 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                    let y0 = (rawPoints[0][1] as? NSNumber)?.doubleValue,
                    let x1 = (rawPoints[1][0] as? NSNumber)?.doubleValue,
                    let y1 = (rawPoints[1][1] as? NSNumber)?.doubleValue {
+                    dotOriginalClientPoint = CGPoint(x: x0, y: y0)
                     XCTAssertEqual(x0, x1, "The zero-motion down and up must use one identical X")
                     XCTAssertEqual(y0, y1, "The zero-motion down and up must use one identical Y")
                 } else {
@@ -948,6 +951,7 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             let dotSurface = root.appendingPathComponent("dot-before-save-\(format).png")
             let configuration = WKSnapshotConfiguration(); configuration.afterScreenUpdates = true
             if let image = try? await web.takeSnapshot(configuration: configuration), let png = image.pngData() {
+                dotPreSaveImage = image
                 try png.write(to: dotSurface); attach(dotSurface, name: "dot-before-save-\(format)")
             }
             if session.drawingMode { try await session.toggleDrawing() }
@@ -1193,11 +1197,36 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                 }
                 let dotPoint = CGPoint(x: x1 + dotFraction[0] * (x2 - x1),
                                        y: y1 + dotFraction[1] * (y2 - y1))
+                var registrationDiagnostics: [String: Any]?
+                if format == "xlsx" {
+                // A reopened page can restore the document at a different scroll
+                // offset than the live session, so the viewport-fraction point is
+                // kept for diagnostics only. The gate expectation is anchored in
+                // document content: the original input point
+                // plus the rigid shift of the shared positive-control stroke
+                // measured between the pre-save and the reopened control-only
+                // pages. Thresholds stay exactly as before; a residual bound is
+                // added, so a displaced dot fails.
+                let registered = registeredDotCenter(preSave: dotPreSaveImage,
+                                                     originalClientPoint: dotOriginalClientPoint,
+                                                     controlReopened: controlImage,
+                                                     finalReopened: finalImage,
+                                                     viewport: CGSize(width: viewportWidth,
+                                                                      height: viewportHeight))
                 visibility = dotRenderFacts(control: controlImage, final: finalImage,
-                                            point: dotPoint, viewport: CGSize(width: viewportWidth,
+                                            point: registered.point, viewport: CGSize(width: viewportWidth,
                                                                               height: viewportHeight))
+                registrationDiagnostics = registered.diagnostics
+                visibility["fractionDiagnosticPoint"] = [dotPoint.x, dotPoint.y]
+                visibility["registeredDiagnostics"] = registered.diagnostics
+                XCTAssertEqual(registered.diagnostics["available"] as? Bool, true,
+                               "The document-content registration was unavailable: \(registered.diagnostics)")
                 XCTAssertEqual(visibility["available"] as? Bool, true,
                                "The reopened-page pixel comparison was unavailable: \(visibility)")
+                } else {
+                    visibility = dotRenderFacts(control: controlImage, final: finalImage,
+                                                point: dotPoint, viewport: CGSize(width: viewportWidth, height: viewportHeight))
+                }
                 let blue = visibility["bluePixelsInCrop"] as? Int ?? 0
                 let changed = visibility["changedPixelsInCrop"] as? Int ?? 0
                 XCTAssertGreaterThanOrEqual(blue, 12,
@@ -1206,6 +1235,11 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(changed, 12,
                     "VISIBILITY DEFECT: control-only vs control+dot reopened-page pixel diff has only \(changed) changed "
                     + "pixel(s) in the expected dot region; XML alone is not accepted. \(visibility)")
+                if let registrationDiagnostics, let residual = registrationDiagnostics["residualImagePx"] as? Double {
+                    XCTAssertLessThanOrEqual(residual, 4.0,
+                        "POSITION DEFECT: the reopened dot centroid is \(residual) image pixels from the "
+                        + "document-content registered expectation; a shifted dot is not the same dot. \(registrationDiagnostics)")
+                }
             } else if dotShapeCount == 0 {
                 visibility = ["available": false, "reason": "no saved dot shape to render; baseline contract already failed"]
             } else {
@@ -2983,6 +3017,91 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             "changedPixelsInCrop": changedCrop, "changedPixelsWhole": changedWhole,
             "changedBBox": changedCrop > 0 ? [minX, minY, maxX, maxY] : []
         ]
+    }
+
+    /// Anchor the reopened dot expectation in document content. The dot
+    /// original contact point is checked against the pre-save render, then
+    /// translated by the rigid centroid shift of the shared positive-control
+    /// red stroke between the pre-save and reopened control-only pages, then
+    /// cross-checked against the reopened final image. Returns a viewport-space
+    /// point plus diagnostics; availability is false when the inputs cannot
+    /// support a registration, which the caller must treat as a failure.
+    private func registeredDotCenter(preSave: UIImage?, originalClientPoint: CGPoint?,
+                                     controlReopened: UIImage?,
+                                     finalReopened: UIImage?,
+                                     viewport: CGSize) -> (point: CGPoint, diagnostics: [String: Any]) {
+        let off = (point: CGPoint.zero, diagnostics: ["available": false, "reason": "images-unavailable"] as [String: Any])
+        guard let preSave, let originalClientPoint, let controlReopened, let finalReopened,
+              let preCG = preSave.cgImage, let ctrlCG = controlReopened.cgImage,
+              let finCG = finalReopened.cgImage,
+              preCG.width == ctrlCG.width, preCG.height == ctrlCG.height,
+              finCG.width == preCG.width, finCG.height == preCG.height,
+              viewport.width > 1, viewport.height > 1,
+              let preBytes = rgbaBytes(preCG), let ctrlBytes = rgbaBytes(ctrlCG),
+              let finBytes = rgbaBytes(finCG) else { return off }
+        let width = preCG.width, height = preCG.height
+        func centroid(_ bytes: [UInt8], _ test: (Int, Int, Int) -> Bool) -> (CGPoint, Int) {
+            var seen = [Bool](repeating: false, count: width * height)
+            var best: [Int] = []
+            for y in 0..<height { for x in 0..<width {
+                let idx = y * width + x
+                if seen[idx] { continue }
+                let o = idx * 4
+                guard test(Int(bytes[o]), Int(bytes[o+1]), Int(bytes[o+2])) else { seen[idx] = true; continue }
+                var stack = [idx]; seen[idx] = true; var pts: [Int] = []
+                while let c = stack.popLast() {
+                    pts.append(c)
+                    let cx = c % width, cy = c / width
+                    for (nx, ny) in [(cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)] {
+                        if nx >= 0, nx < width, ny >= 0, ny < height {
+                            let j = ny * width + nx
+                            if !seen[j] {
+                                let jo = j * 4
+                                if test(Int(bytes[jo]), Int(bytes[jo+1]), Int(bytes[jo+2])) { seen[j] = true; stack.append(j) }
+                                else { seen[j] = true }
+                            }
+                        }
+                    }
+                }
+                if pts.count > best.count { best = pts }
+            } }
+            guard !best.isEmpty else { return (CGPoint.zero, 0) }
+            let fx = Double(best.reduce(0) { $0 + $1 % width }) / Double(best.count)
+            let fy = Double(best.reduce(0) { $0 + $1 / width }) / Double(best.count)
+            return (CGPoint(x: fx, y: fy), best.count)
+        }
+        let isBlue: (Int, Int, Int) -> Bool = { r, g, b in b > 110 && b > r + 35 && b > g + 35 }
+        let isRed: (Int, Int, Int) -> Bool = { r, g, b in r > 110 && r > g + 35 && r > b + 35 }
+        let (dotPre, dotPreN) = centroid(preBytes, isBlue)
+        let (strokePre, strokePreN) = centroid(preBytes, isRed)
+        let (strokeCtrl, strokeCtrlN) = centroid(ctrlBytes, isRed)
+        let (dotFin, dotFinN) = centroid(finBytes, isBlue)
+        var diag: [String: Any] = ["available": true,
+            "dotPre": [dotPre.x, dotPre.y], "dotPrePixels": dotPreN,
+            "strokePre": [strokePre.x, strokePre.y], "strokePrePixels": strokePreN,
+            "strokeCtrl": [strokeCtrl.x, strokeCtrl.y], "strokeCtrlPixels": strokeCtrlN,
+            "dotFin": [dotFin.x, dotFin.y], "dotFinPixels": dotFinN]
+        guard dotPreN >= 12, strokePreN >= 200, strokeCtrlN >= 200, dotFinN >= 12 else {
+            diag["available"] = false; diag["reason"] = "registration-blobs-insufficient"
+            return (CGPoint.zero, diag)
+        }
+        let scaleX = CGFloat(width) / viewport.width, scaleY = CGFloat(height) / viewport.height
+        let original = CGPoint(x: originalClientPoint.x * scaleX, y: originalClientPoint.y * scaleY)
+        let preResidual = hypot(dotPre.x - original.x, dotPre.y - original.y)
+        diag["originalInputImageCenter"] = [original.x, original.y]
+        diag["preSaveInputResidualImagePx"] = preResidual
+        guard preResidual <= 4.0 else {
+            diag["available"] = false; diag["reason"] = "pre-save-dot-does-not-match-original-input"
+            return (CGPoint.zero, diag)
+        }
+        let shift = CGPoint(x: strokeCtrl.x - strokePre.x, y: strokeCtrl.y - strokePre.y)
+        let expected = CGPoint(x: original.x + shift.x, y: original.y + shift.y)
+        let residual = ((dotFin.x - expected.x) * (dotFin.x - expected.x)
+                        + (dotFin.y - expected.y) * (dotFin.y - expected.y)).squareRoot()
+        diag["contentShift"] = [shift.x, shift.y]
+        diag["expectedImageCenter"] = [expected.x, expected.y]
+        diag["residualImagePx"] = residual
+        return (CGPoint(x: expected.x / scaleX, y: expected.y / scaleY), diag)
     }
 
     private func rgbaBytes(_ image: CGImage) -> [UInt8]? {

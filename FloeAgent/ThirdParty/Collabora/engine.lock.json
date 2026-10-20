@@ -764,13 +764,13 @@
           "libsvxcorelo.a": {
             "sourceFile": "engine/svx/source/svdraw/svdcrtv.cxx",
             "originalSHA256": "f95838f7e7cf1b49e0c8ca1f853bf2f20997d927b7a8accbc02a42e0a30f529e",
-            "patchedSHA256": "f6f0d1faa4829667194b3cf01a460673490a48425aba1357d3d028c4dbb14cf3",
+            "patchedSHA256": "228b223051206b4f277e2e78764b58fba8c5c1de474d8716e68e26c5c93e977b",
             "archive": "source/engine/instdir/program/libsvxcorelo.a",
             "members": {
               "svdcrtv.o": "engine/svx/source/svdraw/svdcrtv.cxx"
             },
             "patch": "patches/ios-svdcrtv-zero-motion-dot.patch",
-            "patchSHA256": "6501eba9ad993d21c67c6fb53e31c6e95e98761448b935012aa19c9e34fef59b",
+            "patchSHA256": "a9c8bc2ead408ff7f14e4149331bb7ee36c6f0e8bd1dae7ad120f7c79f20c9ac",
             "compileOverrides": {
               "flags": [
                 "-DSVXCORE_DLLIMPLEMENTATION"
@@ -884,13 +884,13 @@
           "libsvxcorelo.a": {
             "sourceFile": "engine/svx/source/svdraw/svdcrtv.cxx",
             "originalSHA256": "f95838f7e7cf1b49e0c8ca1f853bf2f20997d927b7a8accbc02a42e0a30f529e",
-            "patchedSHA256": "f6f0d1faa4829667194b3cf01a460673490a48425aba1357d3d028c4dbb14cf3",
+            "patchedSHA256": "228b223051206b4f277e2e78764b58fba8c5c1de474d8716e68e26c5c93e977b",
             "archive": "source/engine/instdir/program/libsvxcorelo.a",
             "members": {
               "svdcrtv.o": "engine/svx/source/svdraw/svdcrtv.cxx"
             },
             "patch": "patches/ios-svdcrtv-zero-motion-dot.patch",
-            "patchSHA256": "6501eba9ad993d21c67c6fb53e31c6e95e98761448b935012aa19c9e34fef59b",
+            "patchSHA256": "a9c8bc2ead408ff7f14e4149331bb7ee36c6f0e8bd1dae7ad120f7c79f20c9ac",
             "compileOverrides": {
               "flags": [
                 "-DSVXCORE_DLLIMPLEMENTATION"
