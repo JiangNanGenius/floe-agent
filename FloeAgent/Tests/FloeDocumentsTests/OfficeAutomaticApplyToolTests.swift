@@ -215,8 +215,9 @@ struct OfficeAutomaticApplyToolTests {
         #expect(published.taskID == conversationID)
         #expect(published.displayName == "book.edited.xlsx")
         #expect(published.relativePath.hasPrefix("RunOutputs/\(runID.uuidString)/"))
-        #expect(published.sha256 == try FloeDigest.sha256Hex(
-            ofFileAt: root.appendingPathComponent("book.edited.xlsx")))
+        let editedSHA = try FloeDigest.sha256Hex(
+            ofFileAt: root.appendingPathComponent("book.edited.xlsx"))
+        #expect(published.sha256 == editedSHA)
         if case .verified = RunOutputSnapshotStore.verify(published) { }
         else { Issue.record("published snapshot failed verification") }
         // The consumed token is single-use.

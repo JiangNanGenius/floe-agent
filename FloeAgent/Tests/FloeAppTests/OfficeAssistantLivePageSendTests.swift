@@ -58,6 +58,7 @@ import WebKit
 import ZIPFoundation
 import FloeCore
 import FloeModels
+import FloeTools
 import FloePersistence
 import FloeProviders
 import FloeNotes

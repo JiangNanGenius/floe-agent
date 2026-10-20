@@ -145,19 +145,19 @@ import FloeNotes
                                              mimeType: "image/png",
                                              byteCount: png.count,
                                              sha256: FloeDigest.sha256Hex(png))
-        let part = AgentRuntime.providerImageEvidence(artifact)
+        let part = FloeAgentRuntime.providerImageEvidence(artifact)
         #expect(part != nil, "The region artifact must pass the production provider evidence gate")
 
         // A digest mismatch (stale/tampered artifact) must fail the same gate.
         let tampered = ToolArtifactReference(id: artifact.id, relativePath: artifact.relativePath,
                                              mimeType: "image/png", byteCount: png.count,
                                              sha256: String(repeating: "0", count: 64))
-        #expect(AgentRuntime.providerImageEvidence(tampered) == nil)
+        #expect(FloeAgentRuntime.providerImageEvidence(tampered) == nil)
         // And a non-allowlisted namespace never reaches the provider at all.
         let outsider = ToolArtifactReference(id: artifact.id, relativePath: "Other/\(name)",
                                              mimeType: "image/png", byteCount: png.count,
                                              sha256: artifact.sha256)
-        #expect(AgentRuntime.providerImageEvidence(outsider) == nil)
+        #expect(FloeAgentRuntime.providerImageEvidence(outsider) == nil)
     }
 
     // MARK: - The build-283 post-render current-quiescence fence (fixtures)
@@ -577,7 +577,7 @@ private let regionDrawingXML = #"<?xml version="1.0" encoding="UTF-8" standalone
             #expect(artifact.byteCount > 512 && artifact.byteCount <= 8 * 1_024 * 1_024)
             #expect(artifact.sha256 == json["pngSHA256"] as? String)
             // The production provider vision evidence gate accepts the artifact.
-            #expect(AgentRuntime.providerImageEvidence(artifact) != nil,
+            #expect(FloeAgentRuntime.providerImageEvidence(artifact) != nil,
                     "The real region PNG must reach the provider evidence chain")
             // The REAL bytes contain the fixture's vector ink, not a blank or
             // stand-in image, and stay bounded inside the requested region.
@@ -655,7 +655,7 @@ private let regionDrawingXML = #"<?xml version="1.0" encoding="UTF-8" standalone
             #expect(lastJSON["renderedPageCount"] as? Int == pageCount)
             let lastArtifact = try #require(lastOutput.artifacts.first)
             defer { OfficeRegionArtifactStore.remove(lastArtifact) }
-            #expect(AgentRuntime.providerImageEvidence(lastArtifact) != nil)
+            #expect(FloeAgentRuntime.providerImageEvidence(lastArtifact) != nil)
             OfficeRegionArtifactStore.remove(lastArtifact)
 
             // A pointsRect crop of page zero reports the actual intersection.
@@ -670,7 +670,7 @@ private let regionDrawingXML = #"<?xml version="1.0" encoding="UTF-8" standalone
             #expect(cropJSON["renderedPageIndex"] as? Int == 0)
             let cropArtifact = try #require(cropOutput.artifacts.first)
             defer { OfficeRegionArtifactStore.remove(cropArtifact) }
-            #expect(AgentRuntime.providerImageEvidence(cropArtifact) != nil)
+            #expect(FloeAgentRuntime.providerImageEvidence(cropArtifact) != nil)
             OfficeRegionArtifactStore.remove(cropArtifact)
 
             // Out-of-range pages refuse with the real valid window.
