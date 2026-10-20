@@ -1461,6 +1461,60 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     return JSON.stringify(out);
     """#
 
+    /// Read the existing native DocumentRepair command-values response without
+    /// opening its UI. Diagnostic only: neither commands nor assertions change.
+    private func captureActualUndoStack(_ web: WKWebView, root: URL, label: String) async throws {
+        let value = try await web.callAsyncJavaScript(Self.actualUndoStackScript,
+            arguments: [:], in: nil, contentWorld: .page)
+        guard let json = value as? String, json.utf8.count <= 32_768 else {
+            throw NSError(domain: "OfficeUndoObservation", code: 1)
+        }
+        let url = root.appendingPathComponent(label + ".json")
+        try Data(json.utf8).write(to: url); attach(url, name: label)
+    }
+
+    private static let actualUndoStackScript = #"""
+    const map = window.app && window.app.map;
+    const layer = map && map._docLayer;
+    const socket = window.app && window.app.socket;
+    if (!layer || typeof layer._onDocumentRepair !== 'function' || !socket
+        || typeof socket.sendMessage !== 'function' || window.__floeActualStackProbeDisabled)
+        return JSON.stringify({available:false, reason:'existing-read-path-unavailable'});
+    const own = Object.prototype.hasOwnProperty.call(layer, '_onDocumentRepair');
+    const original = layer._onDocumentRepair;
+    let reply = null;
+    const actions = part => ({count: part.actions.length,
+        actions: part.actions.slice(0, 20).map(action => ({
+            index: action.index, viewId: action.viewId,
+            comment: String(action.comment || '').slice(0, 256)}))});
+    layer._onDocumentRepair = function(payload) {
+        if (payload && payload.commandName === '.uno:DocumentRepair') {
+            reply = payload; return;
+        }
+        return original.apply(this, arguments);
+    };
+    const start = performance.now();
+    try {
+        socket.sendMessage('commandvalues command=.uno:DocumentRepair');
+        while (!reply && performance.now() - start < 2500)
+            await new Promise(resolve => setTimeout(resolve, 20));
+        if (!reply) {
+            window.__floeActualStackProbeDisabled = true;
+            return JSON.stringify({available:false, reason:'native-response-timeout', waitedMS:performance.now()-start});
+        }
+        if (!reply.Undo || !Array.isArray(reply.Undo.actions)
+            || !reply.Redo || !Array.isArray(reply.Redo.actions))
+            return JSON.stringify({available:false, reason:'native-stack-fields-unavailable', keys:Object.keys(reply).slice(0, 12)});
+        return JSON.stringify({available:true, nativeCommand:reply.commandName,
+            viewId:layer._viewId, selectedPart:layer._selectedPart,
+            Undo:actions(reply.Undo), Redo:actions(reply.Redo), waitedMS:performance.now()-start});
+    } catch(error) {
+        return JSON.stringify({available:false, reason:'native-read-error', error:String(error.message||error).slice(0, 256)});
+    } finally {
+        if (own) layer._onDocumentRepair = original; else delete layer._onDocumentRepair;
+    }
+    """#
+
     /// Moving-ink identity: placement + paths + line alpha, order-stable.
     private func penShapeIdentities(_ pkg: DrawingQualificationXML, widthEMU: Int) -> [String] {
         pkg.vectorShapes.filter { shape in
@@ -1613,11 +1667,14 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                                                        root: root, syntheticSource: source,
                                                        label: "tap3", candidateOffset: 2)
             tapReceipts.append(contentsOf: [tap2.receipt, tap3.receipt])
+            if format == "pptx" { try await captureActualUndoStack(web, root: root, label: "actual-stack-after-taps-before-mode-off") }
             try await session.toggleDrawing()
             XCTAssertFalse(session.drawingMode, "the drawing toggle must disarm before the saves")
+            if format == "pptx" { try await captureActualUndoStack(web, root: root, label: "actual-stack-after-mode-off-before-save") }
             let allCopy = root.appendingPathComponent("lifecycle-all.\(format)")
             try fm.copyItem(at: try await session.exportDocument(format: format), to: allCopy)
             attach(allCopy, name: "dot-lifecycle-saved-all-\(format)")
+            if format == "pptx" { try await captureActualUndoStack(web, root: root, label: "actual-stack-after-all-save-before-undo") }
             XCTAssertEqual(try hash(source), sourceHash, "Lifecycle export altered the original fixture")
             let savedAll = try package(allCopy, format: format)
             XCTAssertTrue(savedAll.text.contains("LIFECYCLE-DOT-KEEP"), "Lifecycle save lost original content")
@@ -1654,9 +1711,11 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             let allPenIdentities = penShapeIdentities(savedAll, widthEMU: appliedPenEMU)
             // One real engine undo action must remove only the newest dot.
             undoReceipt = try await dispatchDotCommand(".uno:Undo", web: web, root: root, label: "dot-undo-receipt")
+            if format == "pptx" { try await captureActualUndoStack(web, root: root, label: "actual-stack-after-undo-before-save") }
             let undoCopy = root.appendingPathComponent("lifecycle-undo.\(format)")
             try fm.copyItem(at: try await session.exportDocument(format: format), to: undoCopy)
             attach(undoCopy, name: "dot-lifecycle-saved-undo-\(format)")
+            if format == "pptx" { try await captureActualUndoStack(web, root: root, label: "actual-stack-after-undo-save") }
             let savedUndo = try package(undoCopy, format: format)
             XCTAssertTrue(savedUndo.text.contains("LIFECYCLE-DOT-KEEP"), "Undo save lost original content")
             XCTAssertEqual(penShapeIdentities(savedUndo, widthEMU: appliedPenEMU), allPenIdentities,
@@ -1671,6 +1730,7 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                           "Undo must not move or restyle any surviving dot: \(undoDotIds)")
             // Redo restores the removed dot with the prior document unchanged.
             redoReceipt = try await dispatchDotCommand(".uno:Redo", web: web, root: root, label: "dot-redo-receipt")
+            if format == "pptx" { try await captureActualUndoStack(web, root: root, label: "actual-stack-after-redo-before-save") }
             let redoCopy = root.appendingPathComponent("lifecycle-redo.\(format)")
             try fm.copyItem(at: try await session.exportDocument(format: format), to: redoCopy)
             attach(redoCopy, name: "dot-lifecycle-saved-redo-\(format)")
