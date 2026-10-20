@@ -1,7 +1,14 @@
-<!-- docs-updated: 2026-10-16 -->
+<!-- docs-updated: 2026-10-20 -->
 # 当前版本与验证状态 / Current release and verification status
 
-文档更新时间 / Document updated: 2026-10-16. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
+文档更新时间 / Document updated: 2026-10-20. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
+
+## 1.7.40（281）无签名包已发布，TestFlight 处理中 / Unsigned available; TestFlight processing
+
+- 不可变 `v1.7.40` 固定源码 `57ed0b78b9fa58c4dce140f45c6a359295b26dd1`，已合并 `main`。本地 Xcode 27 Release 归档、原始设备包、匹配符号和哈希已保留；同源包由云端仅做打包证明或签名上传，没有云端 App 重建。Immutable source is merged into main; the local Xcode 27 archive, original device package and matching symbols are retained. Cloud steps reuse that package without rebuilding the App.
+- [稳定最新版 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.40) 与 Feather 已交付无签名 IPA／校验文件；[同一次发布流程](https://github.com/JiangNanGenius/floe-agent/actions/runs/39380604459)成功。独立核对标签、源码、实际 arm64 设备包、远端摘要、来源证明、latest 指针及实时订阅全部通过，IPA SHA-256 为 `713e4bd59e3e829536888cb46af156998ac38520b44f5b2d89a5a98a450d72c5`。Stable latest Release and Feather carry the verified unsigned IPA and checksum; independent source, device-binary, digest, attestation and feed checks passed. Installation requires your own signing.
+- TestFlight：[仅签名上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/39381021373)已被 Apple 接收，处理结果与现有 Floe QA 内测可用状态待确认。The upload is accepted; Apple processing and existing Floe QA availability are pending verification.
+- 本轮 Office 笔点及直接受影响边界共 12 项 App／真实引擎用例通过，0 失败、0 跳过；保留此前实时缩放、手记预览与音乐验收。本次公开 IPA 中原生组件、浏览器和四首音乐与验收产物一致。真实 Pencil 压感、防误触和设备手感继续由用户真机反馈确认。Twelve affected App/native-engine cases passed; prior zoom, Notes-preview and music evidence is retained. Physical Pencil acceptance remains with the user. [修复与验收](releases/repairs/FLOE_OFFICE_PENCIL_S1_20261020.md) · [发布说明](releases/notes/RELEASE_NOTES_1.7.40_BUILD_281.md)。
 
 ## 1.7.34（275）内部可用；未提交外部审核 / Internal available; no external submission
 
