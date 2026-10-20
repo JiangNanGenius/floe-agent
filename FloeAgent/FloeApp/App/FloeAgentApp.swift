@@ -70,12 +70,12 @@ struct FloeAgentApp: App {
             let value = FloeL10n.localized(key: key)
             return value == key ? nil : value
         }
-        // UI acceptance runs: a spinner somewhere in a deeply nested
-        // presentation otherwise prevents XCUITest's "app idle" from ever
-        // settling (60s stalls per interaction). Animations are presentation
-        // only — never behavior — so disabling them under the explicit
-        // -ui-testing launch argument changes no product path.
-        if ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+        // Most UI runs disable animations to avoid continuous spinners
+        // delaying XCUITest's idle checks. Gesture/rendering qualification
+        // must explicitly preserve the normal UIKit animation behavior.
+        let uiTestArguments = ProcessInfo.processInfo.arguments
+        if uiTestArguments.contains("-ui-testing"),
+           !uiTestArguments.contains("--ui-test-preserve-animations") {
             UIView.setAnimationsEnabled(false)
         }
         let environment = Self.liveEnvironment

@@ -754,7 +754,8 @@ final class OfficeTouchQualificationProbe {
         let window = web?.window ?? controller?.viewIfLoaded?.window
         var parts: [String] = ["\"v\":1", "\"ok\":1",
                                "\"po\":\(isPassiveOnly ? 1 : 0)",
-                               "\"wt\":\(Int(Date().timeIntervalSince1970 * 1000))"]
+                               "\"wt\":\(Int(Date().timeIntervalSince1970 * 1000))",
+                               "\"uiAnimationsEnabled\":\(UIView.areAnimationsEnabled ? 1 : 0)"]
         if let window {
             parts.append("\"kw\":\(window.isKeyWindow ? 1 : 0)")
             if let scene = window.windowScene {
