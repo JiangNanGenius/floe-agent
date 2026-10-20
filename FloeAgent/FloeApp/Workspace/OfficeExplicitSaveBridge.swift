@@ -7,9 +7,16 @@ import WebKit
 @MainActor
 final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
     private static let handler = "floeCommitDocument"
+    private static let dirtyHandler = "floeOfficeDocumentModified"
     private weak var webView: WKWebView?
     private var save: (@MainActor () async -> Bool)?
     private var pending = false
+    /// The engine's own accepted content-change EDGE (`.uno:ModifiedStatus`
+    /// transitioning clean -> modified). This is the runtime dirty signal the
+    /// session's autosave coordinator debounces on; it is a schedule/recheck
+    /// trigger only, never save proof. Installed by the mounted session for
+    /// editable generations; previews have nothing to signal.
+    var onDocumentModified: (@MainActor () -> Void)?
 
     init(controller: UIViewController, save: @escaping @MainActor () async -> Bool) throws {
         super.init()
@@ -23,23 +30,33 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
         self.save = save
         let content = webView.configuration.userContentController
         content.add(self, name: Self.handler)
+        content.add(self, name: Self.dirtyHandler)
         content.addUserScript(WKUserScript(source: Self.script,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true))
     }
 
     func invalidate() {
-        webView?.configuration.userContentController.removeScriptMessageHandler(forName: Self.handler)
+        let content = webView?.configuration.userContentController
+        content?.removeScriptMessageHandler(forName: Self.handler)
+        content?.removeScriptMessageHandler(forName: Self.dirtyHandler)
         save = nil
+        onDocumentModified = nil
         webView = nil
     }
 
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage) {
-        guard !pending, message.name == Self.handler, message.frameInfo.isMainFrame,
+        guard message.frameInfo.isMainFrame,
               let webView, message.webView === webView,
               let url = message.frameInfo.request.url, url.isFileURL,
               url.lastPathComponent == "cool.html",
-              let body = message.body as? String, body == "save", let save else { return }
+              let body = message.body as? String else { return }
+        if message.name == Self.dirtyHandler {
+            guard body == "modified" else { return }
+            onDocumentModified?()
+            return
+        }
+        guard !pending, message.name == Self.handler, body == "save", let save else { return }
         pending = true
         Task { @MainActor [weak self, weak webView] in
             let success = await save()
@@ -507,6 +524,49 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
     static let script = #"""
     (() => {
         const install = () => {
+            // Autosave dirty edge: after the embedded tracker has flipped the
+            // sticky commit latch from clean to modified, post ONE native
+            // message per edge. The coordinator debounces a recheck on it;
+            // this never saves anything by itself. If the tracker is absent
+            // (older host chrome) nothing is emitted and the raw persistence
+            // hint still schedules the truthful recheck.
+            //
+            // Ordering: the embedded sticky
+            // tracker installs from the atDocumentStart script on
+            // DOMContentLoaded. This document-end script runs while
+            // readyState is already 'interactive' but BEFORE DOMContentLoaded
+            // has fired, so checking the installation flag synchronously here
+            // could miss and leave this new autosave signal unwired. This
+            // repairs the new wrapper's installation; it does not establish
+            // the cause of build 282's reported false-clean state. Defer to
+            // the same event:
+            // its listener was registered earlier and therefore runs first;
+            // when the flag is already present (late injection) install
+            // immediately, and once the document is 'complete' the flag is
+            // final so a missing tracker means nothing to wrap.
+            const installDirtySignal = () => {
+                const tracked = window.L && window.L.Control && window.L.Control.NotebookbarBuilder
+                    && window.L.Control.NotebookbarBuilder.prototype;
+                if (window.floeModificationTrackingInstalled === true && tracked
+                    && typeof tracked.onCommandStateChanged === 'function' && !tracked.floeDirtySignalInstalled) {
+                    tracked.floeDirtySignalInstalled = true;
+                    const trackedStateChanged = tracked.onCommandStateChanged;
+                    tracked.onCommandStateChanged = function (event) {
+                        const wasModified = window.floeModifiedSinceCommit === true;
+                        const result = trackedStateChanged.apply(this, arguments);
+                        if (!wasModified && window.floeModifiedSinceCommit === true
+                            && event && event.commandName === '.uno:ModifiedStatus') {
+                            try {
+                                window.webkit.messageHandlers.floeOfficeDocumentModified.postMessage('modified');
+                            } catch (_) {}
+                        }
+                        return result;
+                    };
+                }
+            };
+            if (window.floeModificationTrackingInstalled === true) installDirtySignal();
+            else if (document.readyState !== 'complete')
+                document.addEventListener('DOMContentLoaded', installDirtySignal, { once: true });
             const proto = window.L && window.L.Map && window.L.Map.prototype;
             if (!proto || typeof proto.fire !== 'function' || proto.floeExplicitSaveInstalled) return;
             proto.floeExplicitSaveInstalled = true;

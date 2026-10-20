@@ -10,6 +10,7 @@ import Foundation
 import Testing
 import ZIPFoundation
 import FloeCore
+import FloeModels
 import FloeTools
 @testable import FloeDocuments
 
@@ -189,6 +190,7 @@ struct OfficeAutomaticApplyToolTests {
         var args = argsFor(source: "book.xlsx", output: "book.edited.xlsx")
         args.proposalID = proposal.id
         let runID = UUID(), grantID = UUID()
+        defer { removeSnapshotNamespace(for: runID) }
         let token = try await mintAuthority(args: args, runID: runID, taskID: conversationID,
                                             toolCallID: "call-1", idempotencyKey: "key-1",
                                             grantID: grantID, root: root)
@@ -203,6 +205,20 @@ struct OfficeAutomaticApplyToolTests {
         #expect(await host.applyAutomaticCalls == 1)
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("book.edited.xlsx").path))
         #expect(try FloeDigest.sha256Hex(ofFileAt: source) == sourceSHA)
+        // S3-D: this bound apply now publishes a stable run snapshot from the
+        // verified copy. The receipt must be canonical, carry the copy's real
+        // identity and re-verify against the snapshot bytes.
+        let published = try #require(output.outputFiles.first)
+        #expect(output.outputFiles.count == 1)
+        #expect(published.slot == "copy")
+        #expect(published.runID == runID)
+        #expect(published.taskID == conversationID)
+        #expect(published.displayName == "book.edited.xlsx")
+        #expect(published.relativePath.hasPrefix("RunOutputs/\(runID.uuidString)/"))
+        #expect(published.sha256 == try FloeDigest.sha256Hex(
+            ofFileAt: root.appendingPathComponent("book.edited.xlsx")))
+        if case .verified = RunOutputSnapshotStore.verify(published) { }
+        else { Issue.record("published snapshot failed verification") }
         // The consumed token is single-use.
         let replay = try await tool.execute(args, context: context)
         #expect(replay.exitStatus == 2)
@@ -439,6 +455,7 @@ struct OfficeAutomaticApplyToolTests {
         args.path = "book.xlsx"
         args.proposalID = proposal.id
         let runID = UUID(), grantID = UUID()
+        defer { removeSnapshotNamespace(for: runID) }
         let token = try await mintAuthority(args: args, runID: runID, taskID: conversationID,
                                             toolCallID: "call-match", idempotencyKey: "key-match",
                                             grantID: grantID, root: root)
@@ -455,6 +472,24 @@ struct OfficeAutomaticApplyToolTests {
         #expect(FileManager.default.fileExists(
             atPath: root.appendingPathComponent("book.edited.xlsx").path))
         #expect(try FloeDigest.sha256Hex(ofFileAt: source) == sourceSHA)
+        // S3-D: even with the declared-path form, the bound apply publishes
+        // exactly one canonical verified snapshot receipt for the copy.
+        let published = try #require(output.outputFiles.first)
+        #expect(output.outputFiles.count == 1)
+        #expect(published.slot == "copy")
+        #expect(published.displayName == "book.edited.xlsx")
+        #expect(published.relativePath.hasPrefix("RunOutputs/\(runID.uuidString)/"))
+        if case .verified = RunOutputSnapshotStore.verify(published) { }
+        else { Issue.record("published snapshot failed verification") }
+    }
+
+    /// S3-D: remove this test run's snapshot namespace from the real default
+    /// artifact store after exercising the production publication path.
+    private func removeSnapshotNamespace(for runID: UUID) {
+        guard let base = try? FloeArtifactStore.root() else { return }
+        try? FileManager.default.removeItem(at: base
+            .appendingPathComponent(ArtifactNamespace.runOutputs.rawValue, isDirectory: true)
+            .appendingPathComponent(runID.uuidString, isDirectory: true))
     }
 
 }

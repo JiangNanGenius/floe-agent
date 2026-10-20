@@ -350,6 +350,40 @@ final class OfficeFileSession: ObservableObject {
     /// Memory warnings observed for this session (diagnostics only).
     private var memoryWarningShedCount = 0
     private var explicitSaveBridge: OfficeExplicitSaveBridge?
+    /// The one autosave owner coordinator for the CURRENT editable mounted
+    /// generation. It is session-owned (never a transient SwiftUI task):
+    /// created when an editable controller mounts and invalidated when that
+    /// generation's controller closes or the session releases. Without an
+    /// installed owner (IDE/workspace hosts, previews) it stays inert and the
+    /// host's save behavior is bit-for-bit unchanged.
+    private var autosaveCoordinator: OfficeAutosaveCoordinator?
+    /// The document-bound owner transaction installed by the Notes surface;
+    /// it survives a same-session remount so the new generation inherits it.
+    private var autosaveOwner: OfficeAutosaveOwner?
+    /// True when this mounted editable session has a Notes autosave owner:
+    /// explicit saves then run the serialized flush -> draft -> Notes CAS
+    /// promotion transaction instead of only flushing the engine copy.
+    var autosaveActive: Bool { !readOnly && autosaveCoordinator?.hasOwner == true }
+
+    func installAutosaveOwner(_ owner: OfficeAutosaveOwner?) {
+        autosaveOwner = owner
+        autosaveCoordinator?.installOwner(owner)
+    }
+
+    /// Serialized owner transaction entry for explicit triggers. A missing
+    /// coordinator (preview or host-less generation) is a truthful refusal,
+    /// never an implicit direct-save substitution by the caller's caller.
+    func requestAutosaveTransaction(reason: String) async -> OfficeSavedProof {
+        if let autosaveCoordinator {
+            return await autosaveCoordinator.requestTransaction(reason: reason)
+        }
+        return OfficeSavedProof(outcome: .refused, reason: "autosave.coordinatorUnavailable",
+                                documentID: autosaveOwner?.documentID, sessionGeneration: nil,
+                                sessionCorrelationID: stageSessionID, revision: nil, resourceID: nil,
+                                packageSHA256: nil, nativeFlushOccurred: false, changesPromoted: false,
+                                dirtyAfterTransaction: nil, retryScheduled: false, error: nil)
+    }
+
     private var exportSnapshot: DocumentExportSnapshot?
     private var exportWorkspace: SecurityScopedDocumentWorkspace?
     /// Serializes/coalesces ink dispatches so an older completion can never
@@ -2910,10 +2944,69 @@ final class OfficeFileSession: ObservableObject {
         // function and every command dispatch fails as an invalid response.
         try OfficeCommandBridge.install(controller: native)
         if !readOnly {
+            // One autosave coordinator per mounted editable generation.
+            // Signals (the engine's own accepted-content modified edge, raw
+            // persistence hints, lifecycle exits) only schedule a debounced
+            // RECHECK; the transaction is the single serialized
+            // verified-flush -> draft commit -> async Notes owner CAS
+            // promotion owned by the installed document owner.
+            let controllerID = ObjectIdentifier(native)
+            let boundWorkingCopy = session.workingURL.path
+            let coordinator = OfficeAutosaveCoordinator(
+                binding: OfficeAutosaveCoordinator.Binding(
+                    generation: generation,
+                    controllerID: controllerID,
+                    workingCopyPath: boundWorkingCopy,
+                    sessionCorrelationID: stageSessionID),
+                signals: OfficeAutosaveSignals(
+                    sessionState: { [weak self] in
+                        guard let self, !self.released else { return .closed }
+                        guard self.openGeneration.isCurrent(generation), self.controller === native else { return .closed }
+                        if self.runtimeFailed || self.phase == .failed { return .notReady }
+                        if self.operating || self.phase != .ready { return .busy }
+                        if self.readOnly || !(self.renderGate?.permitsSave ?? true)
+                            || self.engineBatchRestoreFailed { return .notReady }
+                        return .ready
+                    },
+                    fenceCurrent: { [weak self] in
+                        guard let self, !self.released, !self.releaseRequested else { return false }
+                        return self.openGeneration.isCurrent(generation)
+                            && self.controller.map { ObjectIdentifier($0) } == controllerID
+                            && self.session?.workingURL.path == boundWorkingCopy
+                    },
+                    recordStage: { [weak self] stage, facts in
+                        self?.recordOwnerStage(stage, facts)
+                    },
+                    lastFlushError: { [weak self] in
+                        self?.error
+                    }))
+            autosaveCoordinator?.invalidate()
+            autosaveCoordinator = coordinator
+            coordinator.installOwner(autosaveOwner)
+            // Raw engine/autosave persistence event: explicitly NOT proof.
+            // It only schedules the debounced recheck against the real dirty
+            // truth (working-copy difference + ModifiedStatus latch).
+            native.onWorkingCopySaved = { [weak coordinator] success in
+                coordinator?.recheck(reason: success ? "workingCopySaved" : "workingCopySaveHint")
+            }
             explicitSaveBridge = try OfficeExplicitSaveBridge(controller: native) { [weak self, weak native] in
                 guard let self, let native, self.controller === native else { return false }
+                if let coordinator = self.autosaveCoordinator, coordinator.hasOwner {
+                    // The engine's own Save entries (toolbar, file menu,
+                    // keyboard dispatcher) serialize with the debounce and
+                    // assistant transactions: one owner transaction flushes
+                    // the working copy/draft AND promotes the Notes revision.
+                    let proof = await coordinator.requestTransaction(reason: "engineSave")
+                    return proof.isCommittedState
+                }
                 return await self.saveInPlace()
             }
+            explicitSaveBridge?.onDocumentModified = { [weak coordinator] in
+                coordinator?.recheck(reason: "modified")
+            }
+        } else {
+            autosaveCoordinator?.invalidate()
+            autosaveCoordinator = nil
         }
         controller = native
         #else
@@ -2951,6 +3044,11 @@ final class OfficeFileSession: ObservableObject {
     #endif
     private func closeController() async throws {
         guard let controller else { return }
+        // Generation teardown: cancel the autosave debounce/pass. An explicit
+        // caller awaiting the in-flight transaction receives a truthful
+        // `cancelled` proof; no callback can touch a reopened or other document.
+        autosaveCoordinator?.invalidate()
+        autosaveCoordinator = nil
         #if DEBUG
         OfficeTouchQualificationProbe.shared.removeTouchTelemetry(for: controller)
         #endif
@@ -3493,9 +3591,18 @@ struct OfficeDocumentEditorView: View {
                 // Command-S saves in place against the original workspace
                 // file (same verified commit as the engine's own toolbar
                 // save) without dismissing the editor. Hidden from the UI;
-                // only the keyboard shortcut is exposed.
+                // only the keyboard shortcut is exposed. For a Notes-owned
+                // session the same explicit intent runs the one serialized
+                // owner transaction (flush -> draft -> Notes CAS promotion),
+                // so it can never double-promote with the idle debounce.
                 Button {
-                    Task { _ = await session.saveInPlace() }
+                    Task {
+                        if session.autosaveActive {
+                            _ = await session.requestAutosaveTransaction(reason: "commandS")
+                        } else {
+                            _ = await session.saveInPlace()
+                        }
+                    }
                 } label: { EmptyView() }
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(session.readOnly || !session.canAct)

@@ -1113,6 +1113,75 @@ final class OfficeServiceNativeSession: OfficeServiceEngineSession {
         }
     }
 
+    /// Bounded PDF export of THIS session's own working copy through the
+    /// already-pinned native export API. The engine writes a new private
+    /// file under this session's directory; the completion is bounded, the
+    /// returned file is validated as a real, size-bounded PDF before it is
+    /// handed back, and cancellation is honored at the awaitable boundaries.
+    /// The working copy is never saved or modified by this call.
+    @MainActor func exportPDF(cancellation: CancellationToken? = nil,
+                              timeout: TimeInterval = 90) async throws -> URL {
+        switch closeState {
+        case .open:
+            break
+        case .closed:
+            throw OfficeServiceSessionFailure(reason: "the engine session is already closed")
+        case .closing:
+            throw OfficeServiceSessionFailure(reason: "the engine session is closing")
+        case .quarantined:
+            throw OfficeServiceSessionFailure(reason: "the engine session is quarantined")
+        }
+        if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
+        let receipt = OfficePDFExportReceipt()
+        let timeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(max(1, timeout) * 1_000_000_000))
+            receipt.resolve(.failure(OfficeServiceSessionFailure(
+                reason: "the engine did not finish the PDF export in time")))
+        }
+        native.exportDocument(withFormat: "pdf") { fileURL, error in
+            if let error {
+                receipt.resolve(.failure(OfficeServiceSessionFailure(
+                    reason: "the engine could not export the PDF: \(error.localizedDescription)")))
+                return
+            }
+            guard let fileURL else {
+                receipt.resolve(.failure(OfficeServiceSessionFailure(
+                    reason: "the engine reported a completed PDF export without a file")))
+                return
+            }
+            do {
+                let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                guard values.isRegularFile == true, let size = values.fileSize,
+                      size > 256, size <= 64 * 1024 * 1024 else {
+                    throw OfficeServiceSessionFailure(
+                        reason: "the exported PDF is missing, empty or oversized")
+                }
+                let handle = try FileHandle(forReadingFrom: fileURL)
+                defer { try? handle.close() }
+                let header = handle.readData(ofLength: 5)
+                guard header.count == 5, String(decoding: header, as: UTF8.self) == "%PDF-" else {
+                    throw OfficeServiceSessionFailure(
+                        reason: "the exported file is not a PDF")
+                }
+                receipt.resolve(.success(fileURL))
+            } catch {
+                receipt.resolve(.failure((error as? OfficeServiceSessionFailure)
+                    ?? OfficeServiceSessionFailure(
+                        reason: "the exported PDF failed validation: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)")))
+            }
+        }
+        do {
+            let url = try await receipt.wait()
+            timeoutTask.cancel()
+            try Task.checkCancellation()
+            if cancellation?.isCancelled == true { throw FloeError.cancelled }
+            return url
+        } catch {
+            timeoutTask.cancel()
+            throw error
+        }
+    }
+
     @MainActor func close() async throws {
         switch closeState {
         case .closed:
@@ -1181,6 +1250,168 @@ final class OfficeServiceNativeSession: OfficeServiceEngineSession {
             timeoutTask.cancel()
         } catch {
             timeoutTask.cancel()
+            throw error
+        }
+    }
+}
+
+/// One-shot bounded receipt for a value-carrying native completion (the PDF
+/// export). Mirrors `OfficeSaveReceipt`'s settle-first-or-wait-first replay
+/// discipline so a callback that lands before the await (or after a timeout)
+/// can never wedge or double-resume the session.
+final class OfficePDFExportReceipt: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var settled: Result<URL, Error>?
+
+    func wait() async throws -> URL {
+        lock.lock()
+        if let settled {
+            lock.unlock()
+            return try settled.get()
+        }
+        if continuation != nil {
+            lock.unlock()
+            throw CocoaError(.coderInvalidValue)
+        }
+        lock.unlock()
+        return try await withCheckedThrowingContinuation { continuation in
+            lock.lock()
+            if let settled {
+                lock.unlock()
+                continuation.resume(with: settled)
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    func resolve(_ result: Result<URL, Error>) {
+        lock.lock()
+        if settled == nil { settled = result }
+        let waiting = continuation
+        continuation = nil
+        lock.unlock()
+        waiting?.resume(with: result)
+    }
+}
+
+/// One real, bounded PDF export of a SAVED Office package through a
+/// service-owned hidden-window engine session, with the same shared-runtime
+/// serialization, bounded cancellation and unacknowledged-close quarantine
+/// semantics as authorized automatic execution. The package bytes are only
+/// ever READ: the engine opens a task-owned copy, never the Notes resource,
+/// never the live editor's controller, viewport or zoom. On every safe path
+/// the private working copy (and the engine's own `exports/` directory) is
+/// removed before returning; the produced PDF is placed at
+/// `<ownedDirectory>/region.pdf` inside the caller's task-owned directory.
+/// An unacknowledged close retains the directory (the engine may still hold
+/// it) and quarantines shared automatic engine work, exactly like the
+/// executor path.
+enum OfficeIsolatedPDFExport {
+    private static let maximumSourceBytes = 128 * 1024 * 1024
+
+    static func run(sourceURL: URL, format: OfficeDocumentFormat,
+                    ownedDirectory: URL, cancellation: CancellationToken?) async throws -> URL {
+        if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
+        let values = try sourceURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true, let size = values.fileSize,
+              size > 0, size <= maximumSourceBytes else {
+            throw OfficeServiceSessionFailure(reason: "the saved Office package is missing or oversized")
+        }
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: sourceURL)
+        let engineDirectory = ownedDirectory.appendingPathComponent("engine", isDirectory: true)
+        let workingURL = engineDirectory.appendingPathComponent("office.\(format.rawValue)")
+        let outputURL = ownedDirectory.appendingPathComponent("region.pdf")
+        try FileManager.default.createDirectory(at: engineDirectory, withIntermediateDirectories: true)
+        // Verified private copy: the engine never receives the source path.
+        let bytes = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
+        try bytes.write(to: workingURL, options: .atomic)
+        guard try FloeDigest.sha256Hex(ofFileAt: workingURL) == sourceSHA else {
+            try? FileManager.default.removeItem(at: engineDirectory)
+            throw OfficeServiceSessionFailure(reason: "the engine working copy failed digest verification")
+        }
+
+        switch await OfficeAutomaticExecutionGate.shared.acquire(cancellation: cancellation, timeout: 90) {
+        case .acquired:
+            break
+        case .cancelledBeforeStart:
+            try? FileManager.default.removeItem(at: engineDirectory)
+            throw FloeError.cancelled
+        case .timedOut:
+            try? FileManager.default.removeItem(at: engineDirectory)
+            throw OfficeServiceSessionFailure(
+                reason: "another automatic Office session is still running; try again shortly")
+        case .hostQuarantined(let reason):
+            try? FileManager.default.removeItem(at: engineDirectory)
+            throw OfficeServiceSessionFailure(
+                reason: "shared automatic engine work is suspended after an unacknowledged session close: \(reason)")
+        }
+
+        // Staging may only be removed once no engine session can still hold
+        // the working copy (mirrors the automatic executor discipline).
+        var stagingSafeToClean = true
+        do {
+            if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
+            let session: OfficeServiceNativeSession
+            do {
+                session = try await OfficeServiceNativeSession.open(workingCopyURL: workingURL,
+                                                                    format: format,
+                                                                    readOnly: true)
+            } catch let openError as OfficeAutomaticExecutionError where openError.isUnsafeResourceState {
+                // Native resources may still be live: retain the working copy.
+                stagingSafeToClean = false
+                await OfficeAutomaticExecutionGate.shared.release(
+                    closeAcknowledged: false,
+                    failureReason: openError.errorDescription ?? openError.localizedDescription)
+                throw openError
+            } catch {
+                // The session never started: the engine holds nothing from
+                // this call, so the lease releases cleanly.
+                await OfficeAutomaticExecutionGate.shared.release(closeAcknowledged: true)
+                throw error
+            }
+            do {
+                let exported = try await session.exportPDF(cancellation: cancellation)
+                try Task.checkCancellation()
+                if cancellation?.isCancelled == true { throw FloeError.cancelled }
+                try FileManager.default.copyItem(at: exported, to: outputURL)
+                let copiedDigest = try FloeDigest.sha256Hex(ofFileAt: outputURL)
+                let exportedDigest = try FloeDigest.sha256Hex(ofFileAt: exported)
+                guard copiedDigest == exportedDigest,
+                      try FloeDigest.sha256Hex(ofFileAt: sourceURL) == sourceSHA else {
+                    throw OfficeServiceSessionFailure(
+                        reason: "the exported PDF or the source package changed during the read; nothing was returned")
+                }
+                try await session.close()
+                await OfficeAutomaticExecutionGate.shared.release(closeAcknowledged: true)
+                return outputURL
+            } catch {
+                // Settle the session first: an unacknowledged close retains
+                // staging and quarantines the gate; the original failure is
+                // always the one reported to the caller.
+                var closeFailure: Error?
+                do {
+                    try await session.close()
+                } catch let closing {
+                    closeFailure = closing
+                }
+                if let closeFailure {
+                    stagingSafeToClean = false
+                    let reason = (closeFailure as? LocalizedError)?.errorDescription
+                        ?? closeFailure.localizedDescription
+                    await OfficeAutomaticExecutionGate.shared.release(
+                        closeAcknowledged: false, failureReason: reason)
+                } else {
+                    await OfficeAutomaticExecutionGate.shared.release(closeAcknowledged: true)
+                }
+                throw error
+            }
+        } catch {
+            if stagingSafeToClean {
+                try? FileManager.default.removeItem(at: engineDirectory)
+            }
             throw error
         }
     }

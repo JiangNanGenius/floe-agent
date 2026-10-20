@@ -1,22 +1,31 @@
 // SPDX-License-Identifier: MPL-2.0
-// FloeAppTests — Office live-page ASSISTANT SENDER proof (job-29206d4ffa9644d3).
+// FloeAppTests — Office ASSISTANT SENDER contract for build 283 (job-29206d4ffa9644d3
+// superseded by the Office283 region follow-up).
 //
-// ONE end-to-end App-host integration qualification test: a REAL mounted
+// ONE end-to-end App-host integration qualification test over a REAL mounted
 // OfficeDocumentSurface showing a real XLSX with a VISIBLE BUT UNSAVED stroke
 // (drawn through the existing tested gate path from
-// OfficeLiveInkAppQualificationTests.swift) travels through
-// ThreadDetailViewModel.send -> NotesAssistantLivePageCapture.captureForSend
-// -> canonical ConversationCenter.startRun -> the ACTUAL ProviderStreamRequest
-// image input intercepted by a recording ProviderAdapter installed via the
-// existing providerAdapterTestOverride seam.
+// OfficeLiveInkAppQualificationTests.swift):
 //
-// Proven by REAL pixels, not metadata: the provider image is decoded and its
-// red-marker ink is counted against the same web view's pre-stroke baseline,
-// while the on-disk saved package is independently verified unchanged
-// (identical SHA-256, zero custGeom ink vectors) — the request therefore
-// carries the CURRENT view, which the saved package cannot. The original
-// goal text must arrive byte-identical, the canonical run/conversation
-// ownership must match, and no credential may exist on the request.
+//   1. DEFAULT SEND CARRIES NO MANDATORY OFFICE VIEWPORT SNAPSHOT. The
+//      canonical ThreadDetailViewModel.send -> ConversationCenter.startRun
+//      request carries the exact user goal text, the task context and the
+//      user's own staged attachment — and ZERO auto-captured Office page
+//      images. The saved package is still untouched at send time.
+//   2. The assistant inspects specific regions DELIBERATELY through
+//      notes.read section=officeRegion (job-cf21c7009ba746c7): its real PNG
+//      artifacts are bounded tool evidence that the provider vision resolver
+//      attaches to the NEXT provider request. In this mounted harness the
+//      editable session has no autosave owner installed, so the staging
+//      transaction refuses honestly and NOTHING is rendered — the truthful
+//      refusal contract — while the production owner route is qualified in
+//      the primary hosted region suite.
+//
+// Proven by REAL pixels, not metadata: while the pen is down the live preview
+// paints visible red ink, and the on-disk saved package is independently
+// verified unchanged (identical SHA-256, zero custGeom ink vectors) — so the
+// provider request provably carries NO current-view image, while the user's
+// own staged attachment arrives byte-identical.
 //
 // Boundaries (by design):
 // - No network, no Keychain, no provider secrets: the adapter is the scripted
@@ -24,15 +33,13 @@
 //   AppEnvironment.preview() graph (in-memory database; the fake
 //   ProviderProfile carries no secretRef so resolveCredentials never reads).
 // - The provider is vision-capable so canonical visualEvidence routes the
-//   real image inline; this test never hand-authors a provider request.
-// - The parent lane owns the Notes/Office edit+save route; the live-commit
-//   closure installed on NotesOfficeLiveBinding.bind deliberately reports
-//   "no commit performed" — the capture path never invokes it, and a
-//   misrouted call can never fabricate a committed revision here.
+//   user attachment inline; this test never hand-authors a provider request.
+// - This sender-proof mount owns no Notes commit route; the bind closure
+//   deliberately reports "no commit performed" and the region staging
+//   transaction's honest refusal is the asserted behavior here.
 // - Isolated Notes store via the existing NotesRepository.setStoreOverride
 //   seam; the user's real Notes library is never opened. Own window is
-//   mounted on the real foreground UIWindowScene and restored; staged
-//   live-page attachment files created by this run are removed.
+//   mounted on the real foreground UIWindowScene and restored.
 //
 // Opt-in native/Simulator qualification; source-parsed here, execution and
 // final acceptance are owned by the primary:
@@ -60,10 +67,12 @@ import FloeOfficeNative
 
 @MainActor
 final class OfficeAssistantLivePageSendTests: XCTestCase {
-    /// The single acceptance test: real unsaved current-view ink reaches the
-    /// provider through the canonical send, with the saved package provably
-    /// still ink-free.
-    func testUnsavedOfficeStrokeReachesProviderThroughCanonicalSend() async throws {
+    /// The single acceptance test: a default send carries the user goal and
+    /// the user's own staged attachment to the provider with NO mandatory
+    /// Office viewport snapshot, while the unsaved live stroke exists only
+    /// in the editor; a deliberate officeRegion read on this owner-less
+    /// mount refuses honestly and renders nothing.
+    func testDefaultSendOmitsOfficeSnapshotAndUserAttachmentSurvives() async throws {
         guard ProcessInfo.processInfo.environment["FLOE_OFFICE_SENDER_PROOF"] == "1" else {
             throw XCTSkip("Opt-in App-host Office live-page sender proof (native engine + real WebKit pixels required)")
         }
@@ -205,7 +214,6 @@ final class OfficeAssistantLivePageSendTests: XCTestCase {
 
             // Baseline of the SAME live view before any ink exists.
             let baseline = try await snapshot(web, label: "sender-proof-baseline-before-ink")
-            let baselineRed = redPixels(baseline)
 
             session.useInkPreferences(workspaceIdentity: root.path, documentKey: source.lastPathComponent)
             let preferences = session.inkPreferences
@@ -266,25 +274,37 @@ final class OfficeAssistantLivePageSendTests: XCTestCase {
                                  "The live readout itself must contain the current red ink")
 
             // MARK: - Canonical send through ThreadDetailViewModel
+            // Build 283 sender contract: a default send carries the exact user
+            // goal plus the user's OWN staged attachment — and no mandatory
+            // Office viewport snapshot. The tiny white PNG proves the live
+            // red stroke never travels: its red count is exactly zero.
+            let userName = "user-note-\(UUID().uuidString).png"
+            let userPNG = try Self.plainWhitePNG()
+            try FileManager.default.createDirectory(at: attachmentsDirectory, withIntermediateDirectories: true)
+            try userPNG.write(to: attachmentsDirectory.appendingPathComponent(userName), options: .atomic)
+            defer { try? FileManager.default.removeItem(at: attachmentsDirectory.appendingPathComponent(userName)) }
+            let userAttachment = AttachmentRef(
+                kind: .image, displayName: userName, uti: "public.png",
+                byteCount: userPNG.count, sha256: FloeDigest.sha256Hex(userPNG),
+                storage: .applicationSupport, relativePath: userName)
             let goal = "Use the handwritten totals visible on the current sheet and write them into cells A1 and B1 of this workbook"
             let viewModel = ThreadDetailViewModel(conversationID: conversationID, center: center)
             viewModel.draft = goal
+            viewModel.attachments = [userAttachment]
             await viewModel.send()
             XCTAssertNil(viewModel.actionError,
                          "Canonical send failed: \(viewModel.actionError ?? "")")
             XCTAssertTrue(viewModel.draft.isEmpty)
-            // The autogenerated live page must never fold back into the
-            // composer as a user-staged attachment.
-            XCTAssertTrue(viewModel.attachments.isEmpty,
-                          "The live-page attachment must stay send-scoped")
+            // The user's own staged file stays in the composer (never replaced
+            // by an auto-captured Office page); nothing else appears.
+            XCTAssertEqual(viewModel.attachments.count, 1)
+            XCTAssertEqual(viewModel.attachments.first?.id, userAttachment.id,
+                           "Only the user's own staged attachment may remain after the send")
 
+            // Build 283: a default send stages NO Office snapshot file at all.
             resolveStagedAdditions()
-            XCTAssertEqual(stagedExtra.count, 1,
-                           "Exactly one live-page JPEG must be staged for this conversation's send")
-            let stagedData = try Data(contentsOf: attachmentsDirectory.appendingPathComponent(stagedExtra[0]))
-            let stagedAttachment = XCTAttachment(data: stagedData, uniformTypeIdentifier: "public.jpeg")
-            stagedAttachment.name = "sender-proof-staged-live-page"
-            stagedAttachment.lifetime = .keepAlways; add(stagedAttachment)
+            XCTAssertEqual(stagedExtra.count, 0,
+                           "A default send must not stage any live Office page file")
 
             // MARK: - Canonical run/message ownership
             let runs = try await environment.runStore.runs(conversationID: conversationID)
@@ -326,8 +346,8 @@ final class OfficeAssistantLivePageSendTests: XCTestCase {
             // Legacy text channel carries the exact goal.
             XCTAssertTrue(request.messages.contains { $0.role == "user" && $0.content == goal },
                           "The provider request must carry the original goal text unmodified")
-            // Multimodal channel: the user turn must carry exactly one real
-            // image part whose decoded pixels contain the current ink.
+            // Multimodal channel: the user turn carries EXACTLY the user's own
+            // attachment image and NO auto-captured Office page image.
             let userTurn = try XCTUnwrap(request.effectiveMessages.first { message in
                 message.role == "user" && message.content.contains { if case .text(goal) = $0 { true } else { false } }
             })
@@ -338,26 +358,50 @@ final class OfficeAssistantLivePageSendTests: XCTestCase {
                 }
             }
             XCTAssertEqual(imageParts.count, 1,
-                           "The send must deliver exactly the live-page image to the provider")
-            XCTAssertEqual(imageParts[0].mimeType, "image/jpeg")
+                           "The send must deliver exactly the user-staged image and no Office snapshot")
+            XCTAssertEqual(imageParts[0].mimeType, "image/png")
             let imageBytes = try XCTUnwrap(Data(base64Encoded: imageParts[0].base64))
             XCTAssertGreaterThan(imageBytes.count, 512)
+            XCTAssertEqual(imageBytes, userPNG,
+                           "The user's own attachment must reach the provider byte-identical")
             let providerImage = try XCTUnwrap(UIImage(data: imageBytes),
                                               "The intercepted provider payload must decode as a real image")
             let providerAttachment = XCTAttachment(image: providerImage)
-            providerAttachment.name = "sender-proof-provider-decoded-image"
+            providerAttachment.name = "sender-proof-provider-user-attachment"
             providerAttachment.lifetime = .keepAlways; add(providerAttachment)
-            let providerRed = redPixels(providerImage)
-            XCTAssertGreaterThan(providerRed, 80,
-                                 "The provider image must actually contain the current red marker ink")
-            XCTAssertGreaterThan(providerRed - baselineRed, 60,
-                                 "The provider image must differ from the pre-stroke live view by the ink")
+            XCTAssertEqual(redPixels(providerImage), 0,
+                           "The user image is ink-free: the live red stroke must NOT have traveled with the send")
 
             // MARK: - The saved package still cannot produce this image
             XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), originalHash,
                            "No send may save the working copy")
             XCTAssertEqual(try vectorCount(in: source), 0,
                            "The saved workbook package must contain zero ink vectors")
+
+            // MARK: - Deliberate region read (officeRegion) refuses honestly here
+            // The assistant's real region tool runs its staging save
+            // transaction first. This sender-proof mount owns no autosave
+            // owner, so the transaction refuses and NOTHING is rendered —
+            // the truthful unsaved-current state, never a stale snapshot.
+            let regionArguments = try JSONDecoder().decode(
+                NotesReadTool.Arguments.self,
+                from: Data(#"{"documentID":"\#(document.id.uuidString)","section":"officeRegion","sheetIndex":0,"cellRange":"A1:B2"}"#.utf8))
+            let toolContext = ToolContext(runID: UUID(), toolCallID: "sender-region-1",
+                                          scope: .local, workspaceRootURL: root,
+                                          cancellation: CancellationToken(),
+                                          conversationID: conversationID)
+            var regionFailure: Error?
+            do {
+                _ = try await NotesReadTool().execute(regionArguments, context: toolContext)
+            } catch { regionFailure = error }
+            let refusal = try XCTUnwrap(regionFailure, "An owner-less live mount must refuse the region read honestly")
+            let refusalText = (refusal as? LocalizedError)?.errorDescription ?? refusal.localizedDescription
+            XCTAssertTrue(refusalText.contains("could not prove a saved, quiescent state"),
+                          "The refusal must name the unproven saved state: \(refusalText)")
+            // The refusal must not have saved anything either.
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), originalHash,
+                           "A refused region read must leave the working copy untouched")
+            XCTAssertEqual(try vectorCount(in: source), 0)
 
             await session.release()
             await NotesRepository.shared.setStoreOverride(nil)
@@ -380,8 +424,20 @@ final class OfficeAssistantLivePageSendTests: XCTestCase {
         if !predicate() { throw CocoaError(.coderInvalidValue) }
     }
 
-    private func snapshot(_ web: WKWebView, label: String) async throws -> UIImage {
-        let configuration = WKSnapshotConfiguration()
+    /// A tiny opaque white PNG used as the user's own staged attachment: any
+    /// red ink reaching the provider through it would be measurable.
+    static func plainWhitePNG() throws -> Data {
+        let size = CGSize(width: 64, height: 64)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+        }
+        return try XCTUnwrap(image.pngData(), "The fixture attachment must encode as PNG")
+    }
+
+    private func snapshot(_ web: WKWebView, label: String) async throws -> UIImage {        let configuration = WKSnapshotConfiguration()
         configuration.afterScreenUpdates = true
         let image = try await web.takeSnapshot(configuration: configuration)
         let attachment = XCTAttachment(image: image)
