@@ -2,7 +2,7 @@
   <img src="docs/images/floe-agent-icon.png" width="88" alt="Floe Agent app icon">
   <h1>Floe Agent</h1>
   <p><strong>Your models. Your files. Your machines.</strong></p>
-  <p>An iPad-first workspace for AI tasks, Notes, documents, creative work and development. Native on iPhone, with an Android alpha now available.</p>
+  <p>Floe Agent is an open-source AI agent workspace, designed for iPad and native on iPhone (iOS / iPadOS). Bring AI tasks, Notes, Office documents, creative tools and development together, using your own API keys (BYOK) for cloud AI. An Android alpha is available for basic cloud chat.</p>
   <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://www.floe-agent.com/">Website</a> · <a href="docs/USER_GUIDE.md">User manual</a> · <a href="docs/README.md">Documentation</a></p>
 </div>
 
