@@ -1,0 +1,90 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "deletions": 0,
+        "error": "staleRevision",
+        "ledgerRows": 0
+      },
+      "id": "changed-but-existing"
+    },
+    {
+      "expect": {
+        "deletions": 0,
+        "error": "staleRevision"
+      },
+      "id": "reowned-preferred"
+    },
+    {
+      "expect": {
+        "autoDelete": "staleRejected",
+        "deletions": 0
+      },
+      "id": "cloud-await-change"
+    },
+    {
+      "expect": {
+        "reapplied": 0,
+        "result": "alreadyApplied"
+      },
+      "id": "batch-replay"
+    },
+    {
+      "expect": {
+        "automaticDeletes": 0,
+        "reviewSuggestions": true
+      },
+      "id": "review-first-gating"
+    }
+  ],
+  "closedSuggestionKinds": [
+    "exactDuplicate",
+    "sameFactReplacement",
+    "possibleDuplicate",
+    "expired",
+    "missingOwnership"
+  ],
+  "declarativeOnly": true,
+  "domain": "floe.memory-entry.v3",
+  "schema": "floe.organizer-output.fixture/1",
+  "vectors": [
+    {
+      "id": "valid-suggestions",
+      "suggestions": [
+        {
+          "kind": "possibleDuplicate",
+          "memoryIDs": [
+            "synthetic-a",
+            "synthetic-b"
+          ]
+        }
+      ]
+    },
+    {
+      "expect": "filtered by knownIDs",
+      "id": "invented-ids",
+      "suggestions": [
+        {
+          "kind": "possibleDuplicate",
+          "memoryIDs": [
+            "invented-1",
+            "invented-2"
+          ]
+        }
+      ]
+    },
+    {
+      "expect": "exactDuplicate is never accepted from the model",
+      "id": "exact-duplicate-from-model"
+    },
+    {
+      "expect": "possibleDuplicate requires at least two ids",
+      "id": "single-id-possible-duplicate"
+    },
+    {
+      "bytes": 65537,
+      "expect": "payloadTooLarge; no proposal mutation",
+      "id": "oversize-stream"
+    }
+  ]
+}

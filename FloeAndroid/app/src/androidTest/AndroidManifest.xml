@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  androidTest-ONLY manifest for the G02 product-UID TLS default-trust probe
+  (job-b1709c36b200442c).
+
+  The product App declares INTERNET in its own main manifest. This test
+  declaration applies only to the instrumentation package and cannot grant
+  network access to the target App UID. The fixed, unauthenticated public
+  HTTPS probe verifies the product UID separately with DEFAULT system trust,
+  no user payload and no test-CA override. Test APK scope only; never part of
+  the product App or release artifacts.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- RB-7 attachment staging instrumentation: SYNTHETIC read-only
+         document provider (deterministic bytes only; not exported; no
+         permission; never part of the product APK).
+
+         The authority is derived from THIS component's actual merged test
+         application ID (${applicationId} resolves to the variant androidTest
+         package, e.g. com.floe.agent.full.dev.test vs
+         com.floe.agent.dev.test), so the full and play test APKs no longer
+         collide on one fixed provider authority and can be installed
+         side-by-side. The runtime fixture URIs use the identical derivation
+         (SyntheticDocumentProvider.AUTHORITY) and the staging test asserts
+         this value against the merged manifest component identity. -->
+    <application>
+        <provider
+            android:name="com.floe.android.attachments.SyntheticDocumentProvider"
+            android:authorities="${applicationId}.staging"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

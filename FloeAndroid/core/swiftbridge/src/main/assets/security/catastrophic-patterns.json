@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "description": "High-confidence, directly destructive command patterns. The gate intentionally excludes risky-but-not-inherently-destructive actions such as rebooting, changing settings, or piping a download to a shell.",
+  "patterns": [
+    { "id": "rm-rf-root", "regex": "\\brm\\s+(-[a-z]*[rf][a-z]*\\s+)+(--no-preserve-root\\s+)?/(\\s|$)", "reason": "Recursive deletion of filesystem root" },
+    { "id": "rm-rf-root-star", "regex": "\\brm\\s+(-[a-z]*[rf][a-z]*\\s+)+/\\*", "reason": "Recursive deletion of all root entries" },
+    { "id": "rm-rf-home", "regex": "\\brm\\s+(-[a-z]*[rf][a-z]*\\s+)+(~|\\$home|\\$\\{home\\})(/|\\s|$)", "reason": "Recursive deletion of home directory" },
+    { "id": "rm-rf-system-dirs", "regex": "\\brm\\s+(-[a-z]*[rf][a-z]*\\s+)+/(etc|bin|sbin|usr|boot|var|lib|lib64|system|private|cores)(/|\\s|$)", "reason": "Recursive deletion of system directory" },
+    { "id": "dd-block-device", "regex": "\\bdd\\s+[^|;&]*\\bof=/dev/(rdisk|disk|sd[a-z]|nvme|hd[a-z]|mmcblk|vd[a-z]|xvd)", "reason": "Raw write to block device" },
+    { "id": "mkfs-block-device", "regex": "\\b(mkfs(\\.[a-z0-9]+)?|mke2fs|newfs|newfs_apfs)\\s+[^|;&]*/dev/", "reason": "Filesystem format on device" },
+    { "id": "diskutil-erase", "regex": "\\bdiskutil\\s+(eraseDisk|eraseVolume|apfs\\s+deleteContainer|partitionDisk)", "reason": "Disk erase or repartition" },
+    { "id": "redirect-block-device", "regex": ">\\s*/dev/(sd[a-z]|nvme|disk|hd[a-z]|mmcblk)", "reason": "Redirect overwrite of block device" },
+    { "id": "shred-root", "regex": "\\b(shred|wipe|srm)\\s+[^|;&]*(/dev/(sd|nvme|disk|hd|mmcblk)|/\\s|/$|~)", "reason": "Secure-erase of root, home, or block device" },
+    { "id": "chmod-root-000", "regex": "\\bchmod\\s+(-[a-z]*r[a-z]*\\s+)+0{3,4}\\s+/(\\s|$)", "reason": "Remove all permissions from root" },
+    { "id": "chown-root-recursive", "regex": "\\bchown\\s+(-[a-z]*r[a-z]*\\s+)+[^|;&]*\\s+/(\\s|$)", "reason": "Recursive ownership change on root" },
+    { "id": "mv-to-null", "regex": "\\bmv\\s+(~|/|/\\*)\\s+/dev/null", "reason": "Move of root or home to /dev/null" },
+    { "id": "find-delete-root", "regex": "\\bfind\\s+/\\s+[^|;&]*-delete", "reason": "find -delete from filesystem root" },
+    { "id": "git-clean-home", "regex": "\\bgit\\s+clean\\s+-[a-z]*f[a-z]*d[a-z]*x[a-z]*", "reason": "git clean -fdx (destructive in home or repo root)" },
+    { "id": "sql-drop-database", "regex": "\\bdrop\\s+database\\b", "reason": "DROP DATABASE statement" },
+    { "id": "sql-drop-table-no-where", "regex": "\\bdrop\\s+table\\b", "reason": "DROP TABLE statement" },
+    { "id": "sql-truncate", "regex": "\\btruncate\\s+(table\\s+)?[a-z_]", "reason": "TRUNCATE table" },
+    { "id": "partition-tool", "regex": "\\b(fdisk|parted|sgdisk|gdisk)\\s+[^|;&]*/dev/", "reason": "Partition table modification" },
+    { "id": "zfs-destroy", "regex": "\\bzfs\\s+destroy\\s+(-[a-z]*r[a-z]*\\s+)?", "reason": "ZFS dataset destroy" },
+    { "id": "btrfs-subvolume-delete-root", "regex": "\\bbtrfs\\s+subvolume\\s+delete\\s+/($|\\s)", "reason": "btrfs root subvolume deletion" }
+  ]
+}

@@ -16,8 +16,11 @@ import androidx.compose.ui.unit.dp
  * Android raises every interactive target to 48dp (iOS uses 44pt).
  *
  * 2026-10-18 finish-review calibration:
- * - the composer keeps the iPad's 720pt centred reading width on wide
- *   windows instead of stretching across the detail column;
+ * - SHARED G01 default only: the composer keeps the iPad's 720pt centred
+ *   reading width on wide windows instead of stretching across the detail
+ *   column. A conversation host that measures its actual detail pane opts in
+ *   through `FloeComposerLayout` and fills that pane (current native
+ *   `ThreadComposerView` has no 720pt cap);
  * - settings owns a 320dp navigation column (reference 03-settings) and its
  *   sheet top leaves 76pt of the masked home context visible;
  * - sidebar selection is a capsule, not a 10dp rounded rectangle.
@@ -66,7 +69,8 @@ object FloeLayout {
     val ComposerOuterHPadding = 12.dp
     val ComposerOuterVPadding = 8.dp
     val ComposerControlSize = 34.dp // visual circle
-    val ComposerMaxWidth = 720.dp // centred reading width from the iPad capture
+    val ComposerRowSpacing = 8.dp // gap between the field and its control targets
+    val ComposerMaxWidth = 720.dp // G01 centred reading width from the iPad capture
     val ComposerChipHeight = 48.dp // actual Android target
     val ComposerChipVisualHeight = 32.dp // compact pill inside the target
     val ComposerMinLines = 1

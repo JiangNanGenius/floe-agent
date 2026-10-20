@@ -1,0 +1,149 @@
+{
+  "fixtureVersion": "g02.2026-10-18.1",
+  "otherOwner": {
+    "epoch": 9,
+    "runId": "run-synthetic-life-b",
+    "taskId": "task-synthetic-life-b"
+  },
+  "owner": {
+    "epoch": 9,
+    "runId": "run-synthetic-life-a",
+    "taskId": "task-synthetic-life-a"
+  },
+  "payloads": {
+    "in-flight-png": {
+      "bytes": 268,
+      "ref": "assets/png/gradient-8.png",
+      "sha256": "6a8546b0a4a0b47a65c1dacc76954735c61856a7e1f2d6cfac186ae2afb36167"
+    },
+    "prior-committed-text": {
+      "bytes": 40,
+      "ref": "text/encoding/crlf.txt",
+      "sha256": "ec6ae42e2038d991c9ab9fad11889cd950b36658f91d1f01991dcbf4364e9a16"
+    },
+    "retry-text": {
+      "bytes": 251,
+      "ref": "text/code/sample.py",
+      "sha256": "0cc0644f36c56e0c7605f9f788a60b68fe53d33d9aae1cf01fff8059620d1de4"
+    }
+  },
+  "scenarios": [
+    {
+      "events": [
+        {
+          "received": 0
+        },
+        {
+          "received": 96
+        },
+        {
+          "cancelled": true,
+          "received": 180
+        }
+      ],
+      "expect": {
+        "autoExecuted": false,
+        "autoSent": false,
+        "durableRecords": 0,
+        "partialDurableRecords": 0,
+        "stagingRemoved": true,
+        "state": "cancelled"
+      },
+      "id": "cancel-mid-transfer-no-orphan",
+      "payload": "in-flight-png"
+    },
+    {
+      "events": [
+        {
+          "received": 0
+        },
+        {
+          "cancelled": true,
+          "received": 64
+        }
+      ],
+      "expect": {
+        "autoExecuted": false,
+        "autoSent": false,
+        "durableRecords": 1,
+        "partialDurableRecords": 0,
+        "preservedSha256": "ec6ae42e2038d991c9ab9fad11889cd950b36658f91d1f01991dcbf4364e9a16",
+        "stagingRemoved": true,
+        "state": "cancelled"
+      },
+      "id": "cancel-preserves-prior-commit",
+      "payload": "in-flight-png",
+      "priorCommitted": "prior-committed-text"
+    },
+    {
+      "attempts": [
+        {
+          "digest": "0cc0644f36c56e0c7605f9f788a60b68fe53d33d9aae1cf01fff8059620d1de4"
+        },
+        {
+          "digest": "0cc0644f36c56e0c7605f9f788a60b68fe53d33d9aae1cf01fff8059620d1de4"
+        }
+      ],
+      "expect": {
+        "autoExecuted": false,
+        "autoSent": false,
+        "commitSha256": "0cc0644f36c56e0c7605f9f788a60b68fe53d33d9aae1cf01fff8059620d1de4",
+        "duplicateRecords": 0,
+        "durableRecords": 1,
+        "partialDurableRecords": 0,
+        "stagingRemoved": true,
+        "state": "committed"
+      },
+      "id": "retry-idempotent-same-digest",
+      "payload": "retry-text"
+    },
+    {
+      "callback": {
+        "digest": "6a8546b0a4a0b47a65c1dacc76954735c61856a7e1f2d6cfac186ae2afb36167",
+        "epoch": 8,
+        "runId": "run-synthetic-life-b",
+        "taskId": "task-synthetic-life-b"
+      },
+      "expect": {
+        "autoExecuted": false,
+        "autoSent": false,
+        "crossTaskRecords": 0,
+        "durableRecords": 0,
+        "partialDurableRecords": 0,
+        "stagingRemoved": true,
+        "state": "stale-dropped"
+      },
+      "id": "stale-callback-other-task-dropped",
+      "payload": "in-flight-png"
+    },
+    {
+      "events": [
+        {
+          "received": 0
+        },
+        {
+          "received": 67
+        },
+        {
+          "received": 134
+        },
+        {
+          "completed": true,
+          "received": 268
+        }
+      ],
+      "expect": {
+        "autoExecuted": false,
+        "autoSent": false,
+        "durableRecords": 1,
+        "partialDurableRecords": 0,
+        "progressMonotonic": true,
+        "stagingRemoved": true,
+        "state": "committed"
+      },
+      "id": "read-only-stream-progress-monotonic",
+      "payload": "in-flight-png"
+    }
+  ],
+  "schema": "floe-android.attachment-lifecycle-scenarios.v0"
+}

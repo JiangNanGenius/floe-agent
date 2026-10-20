@@ -1,0 +1,4 @@
+module GRDBSQLite {
+    header "shim.h"
+    export *
+}

@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- list -->
+    <string name="provider_settings_title">模型与供应商</string>
+    <string name="provider_empty_hint">添加模型提供商后即可开始。</string>
+    <string name="provider_add">添加提供商</string>
+    <string name="role_chooser_message">先选择用途，再配置端点、凭据和模型能力。</string>
+    <string name="role_conversation_provider">对话模型服务商</string>
+    <string name="role_image_provider">图片生成/编辑服务商</string>
+    <string name="role_video_provider">视频生成服务商</string>
+    <string name="section_image_provider">图像模型服务商</string>
+    <string name="section_video_provider">视频模型服务商</string>
+    <string name="section_image_footer">用于图片生成与编辑；默认路由在“辅助模型”中设置。</string>
+    <string name="section_video_footer">视频是创意模式的可选增强，不影响私人画布和图片创作。</string>
+    <string name="row_models_count">%1$d 个模型</string>
+    <string name="row_waiting_key">未配置 API key</string>
+    <string name="row_disabled">已停用</string>
+    <string name="row_enable_cd">启用供应商</string>
+    <string name="menu_delete">删除</string>
+    <string name="delete_confirm_title">删除服务商</string>
+    <string name="delete_confirm_message">这将从本机移除该服务商及其模型配置。对话不会被删除。</string>
+    <string name="loading_cd">加载中</string>
+
+    <!-- editor chrome -->
+    <string name="editor_add_title">添加提供商</string>
+    <string name="editor_edit_title">编辑提供商</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_save">保存</string>
+    <string name="action_done">完成</string>
+
+    <!-- editor sections -->
+    <string name="purpose_section">服务用途</string>
+    <string name="purpose_conversation">对话模型</string>
+    <string name="purpose_image">图片生成与编辑</string>
+    <string name="purpose_video">视频生成（Extra）</string>
+    <string name="purpose_video_note">视频模型是创意模式的可选增强；创意模式只强制要求图片生成模型。</string>
+    <string name="providers_enabled">启用供应商</string>
+    <string name="providers_display_name">名称</string>
+    <string name="providers_supplier_field">服务商</string>
+    <string name="providers_protocol">接口协议</string>
+    <string name="providers_endpoint">端点</string>
+    <string name="providers_base_url">基础 URL</string>
+    <string name="providers_headers_placeholder">请求头: 值（每行一个）</string>
+    <string name="providers_headers_hint">仅填写非机密请求头，密钥请勿填在这里。</string>
+    <string name="providers_allow_plain_http">允许明文 HTTP（仅限本地/内网）</string>
+    <string name="providers_credentials">凭据</string>
+    <string name="providers_api_key">API 密钥</string>
+    <string name="providers_api_key_hint">密钥安全保存在此设备上。</string>
+    <string name="providers_show_api_key">显示 API key</string>
+    <string name="providers_hide_api_key">隐藏 API key</string>
+    <string name="providers_waiting_key_hint">该服务商已保存但没有 API 密钥。现在输入密钥即可使用。</string>
+    <string name="providers_tool_name_compatibility">工具名兼容模式</string>
+    <string name="providers_tool_name_compatibility_hint">为不接受点号的服务自动调整工具名。</string>
+    <string name="providers_test_connection">测试连接</string>
+    <string name="providers_test_ok">连接成功</string>
+    <string name="providers_test_failed">连接失败</string>
+    <string name="providers_cancel_test">停止测试</string>
+    <string name="providers_models_section">模型</string>
+    <string name="providers_no_models">暂无模型。测试连接以发现模型，或手动添加。</string>
+    <string name="providers_manage_models">管理模型</string>
+    <string name="providers_refresh_models">刷新模型列表</string>
+    <string name="providers_manual_fallback_hint">此端点不支持模型发现，请手动添加模型。</string>
+    <string name="providers_manual_entry_hint">也可以手动添加模型。</string>
+    <string name="providers_save_failed_cd">保存失败</string>
+    <string name="providers_save_failed_ok">知道了</string>
+    <string name="editor_waiting_host">正在加载配置…</string>
+    <string name="model_default">默认模型</string>
+    <string name="model_hidden_cd">已从首页模型列表隐藏</string>
+    <string name="model_vision_verified_cd">视觉输入（由官方目录验证）</string>
+    <string name="model_enabled_cd">启用模型</string>
+    <string name="network_actions_unavailable_cd">当前无法执行该操作</string>
+
+    <!-- service offers -->
+    <string name="offers_section">同时配置此服务商</string>
+    <string name="offers_footer">该供应商可同时配置多种用途；它们共用同一个接口地址和 API 密钥。暂不配置的用途以后不会再提示。</string>
+    <string name="offers_model_count">包含 %1$d 个模型</string>
+    <string name="offers_requires_discovery">启用前会执行一次真实的模型发现请求。</string>
+    <string name="offers_configure_separately">单独配置</string>
+    <string name="offers_prompt_title">额外用途</string>
+    <string name="offers_prompt_current_role">当前用途：%1$s</string>
+    <string name="offers_prompt_not_now">暂不配置</string>
+    <string name="offers_prompt_configure">配置</string>
+
+    <!-- unified supplier chooser -->
+    <string name="catalog_title">选择服务商</string>
+    <string name="catalog_search_hint">搜索提供方、别名或模型</string>
+    <string name="catalog_filter_cd">筛选</string>
+    <string name="catalog_filter_all">全部</string>
+    <string name="catalog_filter_configured">已配置</string>
+    <string name="catalog_filter_available">可用</string>
+    <string name="catalog_filter_local">本地</string>
+    <string name="catalog_builtin">内置</string>
+    <string name="catalog_official">官方目录</string>
+    <string name="catalog_badge_configured">已配置</string>
+    <string name="catalog_badge_unsupported">暂不支持</string>
+    <string name="catalog_alias">别名：%1$s</string>
+    <string name="catalog_also_serves">还支持：%1$s</string>
+    <string name="catalog_provider_count">目录提供方：%1$d</string>
+    <string name="catalog_document_hash">文档 SHA-256：%1$s</string>
+    <string name="catalog_fetched_at">抓取时间：%1$s</string>
+    <string name="catalog_source_footer">来源：%1$s · %2$d 个提供方</string>
+    <string name="catalog_no_matching">目录中没有匹配结果，请选择上方的内置或手动选项。</string>
+    <string name="catalog_empty_title">没有匹配的提供方</string>
+    <string name="catalog_empty_hint">请尝试其他关键词，或在提供方列表中手动添加自定义兼容端点。</string>
+    <string name="catalog_refresh">刷新目录</string>
+    <string name="role_token_text">文本</string>
+    <string name="role_token_images">图像</string>
+    <string name="role_token_video">视频</string>
+
+    <!-- model manager -->
+    <string name="manager_official_models">官方模型</string>
+    <string name="manager_discovered">已发现</string>
+    <string name="manager_manual_entry">手动添加</string>
+    <string name="manager_model_id">模型 ID（如 gpt-5）</string>
+    <string name="manager_model_name">显示名称（可选）</string>
+    <string name="manager_add_model">添加模型</string>
+    <string name="manager_search_models_cd">搜索模型</string>
+
+    <!-- model editor -->
+    <string name="model_editor_title">模型设置</string>
+    <string name="model_section_identity">模型信息</string>
+    <string name="model_display_name">显示名称</string>
+    <string name="model_remote_id">模型 ID</string>
+    <string name="model_section_capabilities">模型能力</string>
+    <string name="model_capability_text">文本对话</string>
+    <string name="model_capability_vision">视觉输入</string>
+    <string name="model_capability_tools">工具调用</string>
+    <string name="model_capability_image_generation">图片生成</string>
+    <string name="model_capability_image_editing">图片编辑</string>
+    <string name="model_capability_reference_images">支持参考图片</string>
+    <string name="model_section_reasoning">推理设置</string>
+    <string name="model_reasoning_effort">思考深度</string>
+    <string name="model_reasoning_automatic">自动</string>
+    <string name="model_reasoning_low">快速</string>
+    <string name="model_reasoning_medium">标准</string>
+    <string name="model_reasoning_high">深入</string>
+    <string name="model_reasoning_maximum">最大</string>
+    <string name="model_reasoning_hint">Floe 会按供应商协议转换该设置。自动会保留供应商默认行为；不支持的参数不会发送。</string>
+    <string name="model_section_limits">Token 限制</string>
+    <string name="model_context_tokens">上下文长度</string>
+    <string name="model_max_output_tokens">最大输出长度</string>
+    <string name="model_limits_hint">上下文长度必须填写；最大输出可留空并使用供应商默认值，填写时不能超过上下文长度。</string>
+    <string name="model_limit_not_set">未设置</string>
+    <string name="model_limit_use_provider_default">使用供应商默认值</string>
+    <string name="model_hide_from_picker">从首页模型列表隐藏</string>
+    <string name="model_show_in_picker">在首页模型列表显示</string>
+    <string name="model_set_default">设为默认模型</string>
+    <string name="model_image_capabilities">图片能力</string>
+    <string name="model_video_capabilities">视频能力</string>
+    <string name="model_media_custom_note">这是高级自定义媒体模型。尺寸、比例、时长和质量会在生成时按端点实际能力填写。</string>
+    <string name="model_media_footer">媒体模型按官方接口能力配置，不使用对话上下文或输出 Token 设置。</string>
+
+    <!-- debug-only synthetic preview (never live data) -->
+</resources>

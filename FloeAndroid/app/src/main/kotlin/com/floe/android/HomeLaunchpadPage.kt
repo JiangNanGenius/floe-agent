@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,8 +43,11 @@ import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeToolbar
 import com.floe.android.design.ComposerAvailability
+import com.floe.android.host.RuntimeHost
 
-private enum class HomeDialog { NONE, TEMP_CHAT, VOICE, ATTACH, REASONING, PROJECT, TARGET, PERMISSIONS }
+private enum class HomeDialog {
+    NONE, TEMP_CHAT, VOICE, ATTACH, REASONING, PROJECT, TARGET, PERMISSIONS, SEND_FAILED,
+}
 
 /**
  * New-task launchpad: opaque reading surface, centered brand mark + welcome
@@ -60,6 +64,7 @@ fun HomeLaunchpadPage(
     onExpandSidebar: () -> Unit,
     onOpenDrawer: () -> Unit,
     onOpenSettingsSection: (String) -> Unit,
+    runtimeHost: RuntimeHost? = null,
 ) {
     val colors = Floe.colors
     var field by remember { mutableStateOf(TextFieldValue(FloeFoundation.draftStore.draft(FloeDraftStore.HOME_DRAFT))) }
@@ -70,13 +75,51 @@ fun HomeLaunchpadPage(
     var agentModeKey by remember { mutableStateOf("agent") }
     var modeMenuOpen by remember { mutableStateOf(false) }
 
-    // G01 honesty: no provider/backend on this surface yet. The send gate is
-    // the same pure policy the runtime will reuse; only the flag differs.
-    val availability = ComposerAvailability(
-        providerConfigured = false,
-        voiceAvailable = false,
-        temporaryChatAvailable = false,
-    )
+    // G02: real availability from the host projections. When the host is
+    // absent the surface stays honestly gated exactly like G01.
+    if (runtimeHost != null) {
+        androidx.compose.runtime.LaunchedEffect(runtimeHost) {
+            runtimeHost.home.refresh()
+        }
+    }
+    val availability = if (runtimeHost == null) {
+        ComposerAvailability(
+            providerConfigured = false,
+            voiceAvailable = false,
+            temporaryChatAvailable = false,
+        )
+    } else {
+        val availabilityState by runtimeHost.home.availability.collectAsState()
+        availabilityState
+    }
+    val modelChipLabel = if (runtimeHost == null) {
+        stringResource(R.string.model_unconfigured_chip)
+    } else {
+        val label by runtimeHost.home.modelLabel.collectAsState()
+        label ?: stringResource(R.string.model_unconfigured_chip)
+    }
+    val sending = if (runtimeHost == null) {
+        false
+    } else {
+        val sendingState by runtimeHost.home.sending.collectAsState()
+        sendingState
+    }
+    // Real composer model options from the SAME F1 projection the thread
+    // composer uses; the picker offers exactly the usable rows (never a
+    // parallel cache or a fabricated "configured" flag).
+    val usableModelOptions = if (runtimeHost == null) {
+        emptyList()
+    } else {
+        val options by runtimeHost.home.modelOptions.collectAsState()
+        options.filter { it.isUsable }
+    }
+    val selectedModelId = if (runtimeHost == null) {
+        null
+    } else {
+        val selected by runtimeHost.home.selectedModelId.collectAsState()
+        selected
+    }
+    var modelMenuOpen by remember { mutableStateOf(false) }
     val modeLabel = when (agentModeKey) {
         "chat" -> stringResource(R.string.mode_chat)
         "plan" -> stringResource(R.string.mode_plan)
@@ -98,12 +141,24 @@ fun HomeLaunchpadPage(
                 }
             } else null,
             actions = {
-                // Temporary chat: the control is real but its lifecycle is
-                // absent — the dialog states that truthfully.
+                // Temporary chat: with the runtime host a real temporary
+                // session starts and the shell navigates to it; otherwise the
+                // dialog states the lifecycle is absent, truthfully.
                 FloeCircleButton(
                     icon = FloeIcons.Bubble,
                     contentDescription = stringResource(R.string.temporary_chat),
-                    onClick = { dialog = HomeDialog.TEMP_CHAT },
+                    onClick = {
+                        if (runtimeHost != null && availability.temporaryChatAvailable) {
+                            val text = field.text
+                            runtimeHost.home.send(
+                                text = text,
+                                mode = agentModeKey,
+                                temporary = true,
+                            ) { dialog = HomeDialog.TEMP_CHAT }
+                        } else {
+                            dialog = HomeDialog.TEMP_CHAT
+                        }
+                    },
                     tint = colors.secondaryLabel,
                 )
             },
@@ -144,22 +199,67 @@ fun HomeLaunchpadPage(
                 FloeFoundation.draftStore.update(FloeDraftStore.HOME_DRAFT, next.text)
             },
             maxLines = if (compact) FloeLayout.ComposerMaxLinesCompact else FloeLayout.ComposerMaxLinesRegular,
-            availability = availability,
+            availability = availability.copy(attachmentsProcessing = sending),
             placeholder = stringResource(R.string.composer_placeholder),
             attachDescription = stringResource(R.string.composer_attach),
             voiceDescription = stringResource(R.string.voice_input),
             sendDescription = stringResource(R.string.send),
             onAttach = { dialog = HomeDialog.ATTACH },
             onVoice = { dialog = HomeDialog.VOICE },
-            onSend = { /* gated off in G01: no provider backend yet */ },
+            onSend = {
+                if (runtimeHost != null && !sending) {
+                    val text = field.text
+                    FloeFoundation.draftStore.update(FloeDraftStore.HOME_DRAFT, "")
+                    field = TextFieldValue("")
+                    runtimeHost.home.send(
+                        text = text,
+                        mode = agentModeKey,
+                        temporary = false,
+                    ) { reason ->
+                        // Restore the draft on an honest failure; the error is
+                        // surfaced on the launchpad instead of losing text.
+                        field = TextFieldValue(text)
+                        FloeFoundation.draftStore.update(FloeDraftStore.HOME_DRAFT, text)
+                        dialog = HomeDialog.SEND_FAILED
+                    }
+                }
+            },
             chips = {
+                // Model chip: with usable models it opens the REAL picker
+                // (the same canonical rows the send will use); with none it
+                // routes to provider setup — never a dead chip.
                 FloeComposerChip(
                     icon = FloeIcons.Chip,
-                    text = stringResource(R.string.model_unconfigured_chip),
-                    onClick = { onOpenSettingsSection("PROVIDERS") },
-                    tone = FloeChipTone.ACCENT,
-                    description = stringResource(R.string.model_unconfigured_chip),
+                    text = modelChipLabel,
+                    onClick = {
+                        if (runtimeHost != null && usableModelOptions.isNotEmpty()) {
+                            modelMenuOpen = true
+                        } else {
+                            onOpenSettingsSection("PROVIDERS")
+                        }
+                    },
+                    tone = if (availability.providerConfigured) {
+                        FloeChipTone.SECONDARY
+                    } else {
+                        FloeChipTone.ACCENT
+                    },
+                    description = modelChipLabel,
                 )
+                FloeChipMenu(
+                    expanded = modelMenuOpen,
+                    onDismiss = { modelMenuOpen = false },
+                ) {
+                    for (option in usableModelOptions) {
+                        CupertinoMenuEntry(
+                            title = option.displayName,
+                            selected = option.modelId == selectedModelId,
+                            onClick = {
+                                runtimeHost?.home?.selectModel(option.modelId)
+                                modelMenuOpen = false
+                            },
+                        )
+                    }
+                }
                 FloeComposerChip(
                     icon = FloeIcons.Gauge,
                     text = stringResource(R.string.reasoning_auto),
@@ -243,6 +343,12 @@ fun HomeLaunchpadPage(
         HomeDialog.PERMISSIONS -> FloeInfoDialog(
             title = stringResource(R.string.task_permissions),
             message = stringResource(R.string.permissions_runtime_pending),
+            confirmLabel = stringResource(R.string.done),
+            onDismiss = { dialog = HomeDialog.NONE },
+        )
+        HomeDialog.SEND_FAILED -> FloeInfoDialog(
+            title = stringResource(R.string.send_failed_title),
+            message = stringResource(R.string.send_failed_message),
             confirmLabel = stringResource(R.string.done),
             onDismiss = { dialog = HomeDialog.NONE },
         )

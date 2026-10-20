@@ -1,0 +1,143 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "error": "staleRevision",
+        "writes": 0
+      },
+      "id": "stale-update"
+    },
+    {
+      "expect": {
+        "existingID": "real-row",
+        "status": "duplicate"
+      },
+      "id": "duplicate-add"
+    },
+    {
+      "expect": {
+        "error": "payloadTooLarge",
+        "reason": "maxChars:4096",
+        "writes": 0
+      },
+      "id": "oversize-add"
+    },
+    {
+      "expect": {
+        "error": "invalidEnvelope",
+        "reason": "memoryRejected:secretLike",
+        "writes": 0
+      },
+      "id": "secret-like"
+    },
+    {
+      "expect": {
+        "deletions": 0,
+        "error": "staleRevision",
+        "staleIDs": 1
+      },
+      "id": "bulk-stale"
+    },
+    {
+      "expect": {
+        "reapplied": 0,
+        "result": "alreadyApplied"
+      },
+      "id": "bulk-replay"
+    },
+    {
+      "expect": {
+        "currentDiffers": true,
+        "reinforcedCount": null,
+        "requiresConfirmation": true
+      },
+      "freshPageRead": true,
+      "handleStores": "ranking only",
+      "id": "search-fresh-diff",
+      "recallReplay": false
+    },
+    {
+      "expect": {
+        "current": null,
+        "deleted": true
+      },
+      "id": "search-deleted-between"
+    }
+  ],
+  "columnCount": 23,
+  "columns": [
+    "scope",
+    "workspace_id",
+    "status",
+    "content",
+    "normalized_content",
+    "confidence",
+    "importance",
+    "is_pinned",
+    "source_kind",
+    "expires_at",
+    "sync_revision",
+    "created_at",
+    "updated_at",
+    "conversation_id",
+    "origin_workspace_id",
+    "origin_conversation_id",
+    "origin_owner_label",
+    "owner_deleted_at",
+    "last_recalled_at",
+    "retained_until",
+    "recall_count",
+    "subject_key",
+    "attribute_key"
+  ],
+  "declarativeOnly": true,
+  "domain": "floe.memory-entry.v3",
+  "schema": "floe.memory-entry.fixture/1",
+  "vectors": [
+    {
+      "expect": "fixed declared order; a permutation changes the row digest",
+      "id": "column-order"
+    },
+    {
+      "expect": {
+        "4096": "accepted",
+        "4097": "payloadTooLarge"
+      },
+      "id": "content-boundaries",
+      "lengths": [
+        4095,
+        4096,
+        4097
+      ]
+    },
+    {
+      "content": "记忆 🧪 中文",
+      "expect": "byte-exact; no normalization",
+      "id": "unicode-cjk-emoji"
+    },
+    {
+      "entryCount": 120,
+      "expect": "stable ordering; nextCursor exhausts exactly once",
+      "id": "paging-120",
+      "limit": 50,
+      "nativeDefaultLimit": 100,
+      "pages": 3,
+      "wireDefaultLimit": 50
+    },
+    {
+      "expect": "detached ownership is part of the full-row digest",
+      "id": "ownership-detach",
+      "ownership": {
+        "owner_deleted_at": "2026-10-19T00:00:00Z",
+        "recall_count": 2,
+        "retained_until": "2026-11-01T00:00:00Z"
+      }
+    },
+    {
+      "changedField": "content",
+      "expect": "digest differs even when the stored second is unchanged",
+      "id": "same-second-change",
+      "updatedAt": "2026-10-19T00:00:00Z"
+    }
+  ]
+}

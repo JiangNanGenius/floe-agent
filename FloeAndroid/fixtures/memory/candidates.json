@@ -1,0 +1,86 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "error": "notFound",
+        "reason": "candidateNotPending:activated"
+      },
+      "id": "duplicate-accept"
+    },
+    {
+      "expect": {
+        "error": "notFound",
+        "reason": "candidateNotPending:rejected"
+      },
+      "id": "expiry-during-await"
+    },
+    {
+      "expect": {
+        "candidateStatus": "pending",
+        "rolledBack": true
+      },
+      "id": "fail-after-memory-write"
+    },
+    {
+      "expect": {
+        "materializedAll": false
+      },
+      "given": {
+        "candidateCount": 10000
+      },
+      "id": "no-unbounded-load"
+    }
+  ],
+  "columnCount": 18,
+  "columns": [
+    "scope",
+    "workspace_id",
+    "conversation_id",
+    "content",
+    "confidence",
+    "stability",
+    "importance",
+    "sensitivity",
+    "origin",
+    "evidence_json",
+    "conflicts_json",
+    "source_attachment_id",
+    "source_mime_type",
+    "status",
+    "review_reason",
+    "expires_at",
+    "created_at",
+    "updated_at"
+  ],
+  "declarativeOnly": true,
+  "domain": "floe.memory-candidate.v1",
+  "schema": "floe.memory-candidate.fixture/1",
+  "vectors": [
+    {
+      "id": "pending-row",
+      "importance": 0.8,
+      "status": "pending"
+    },
+    {
+      "expect": "in-transaction sweep rejects as review window expired",
+      "expiresAt": "2026-10-18T00:00:00Z",
+      "id": "expired-row",
+      "status": "pending"
+    },
+    {
+      "evidence": [
+        {
+          "excerpt": "sha256:redacted",
+          "messageID": "synthetic-message-1"
+        }
+      ],
+      "id": "redacted-evidence"
+    },
+    {
+      "changedField": "importance",
+      "expect": "full-row digest differs; timestamp CAS would pass",
+      "id": "same-second-change",
+      "updatedAt": "2026-10-19T00:00:00Z"
+    }
+  ]
+}

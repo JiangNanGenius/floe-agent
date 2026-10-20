@@ -1,0 +1,66 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "renderedAs": "not-reported"
+      },
+      "id": "null-not-zero"
+    },
+    {
+      "expect": {
+        "byDay": [],
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "runs": 0
+      },
+      "id": "empty-db-totals"
+    },
+    {
+      "expect": {
+        "materializedAll": false,
+        "nextCursor": true
+      },
+      "id": "bounded-paging"
+    },
+    {
+      "expect": {
+        "adapterPagesEqualOriginal": true
+      },
+      "id": "equivalence-golden"
+    }
+  ],
+  "declarativeOnly": true,
+  "domain": "floe.run-usage.aggregate",
+  "schema": "floe.usage-aggregate.fixture/1",
+  "vectors": [
+    {
+      "expect": "JSON null means not reported, never 0",
+      "fields": [
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "reasoningTokens",
+        "averageTokensPerSecond",
+        "averageTimeToFirstTokenMs",
+        "averageDurationMs"
+      ],
+      "id": "null-metrics"
+    },
+    {
+      "groupIds": [
+        "legacy-model",
+        "legacy-provider"
+      ],
+      "id": "legacy-fallbacks"
+    },
+    {
+      "byDayLimit": 30,
+      "days": 31,
+      "id": "thirty-day-window"
+    },
+    {
+      "conversationCount": 5000,
+      "id": "paged-5000-conversations",
+      "pageLimit": 50
+    }
+  ]
+}

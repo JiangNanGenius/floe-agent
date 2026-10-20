@@ -11,7 +11,7 @@ Goal-state closure and later product acceptance remain with the coordinator.
 
 The Android shell reproduces the **current installed Floe iPad UI** —
 structure, proportions, density and copy measured from
-`captured iPad reference screenshots (private evidence retained outside the repository)` (Floe 1.7.34
+`Local/Private/android-g01-20261018/ios-reference/01..03*.png` (Floe 1.7.34
 (275), canonical iPad mini, source-freshness verified) and re-read live from
 `FloeAgent/FloeApp` at the receipt base. Substrate decision is frozen by the
 verified prerequisites (no reopening): **compose-cupertino (RobinPcrd fork)
@@ -83,6 +83,17 @@ there is no claimed native blur or exact spring/material equivalence.
 
 ## Responsive contract (coordinator guidance, 2026-10-18)
 
+- Settings presentation correction (2026-10-19): wide category collapse and
+  compact detail navigation use independent state. A real reopen restores both
+  columns with General selected on wide windows and the category list on compact windows; recreation
+  and resizing preserve the current selection and navigation. A valid explicit
+  section opens its detail directly on compact. The ordinary gear entry clears
+  a previous explicit entry. Compact toolbars expose Back/Done without a column
+  toggle, matching the native compact stack. The General-on-reopen correction and
+  antenna glyph now have both debug App builds and a focused API37 App run with
+  18 passing checks/30 screenshots (wide, compact, real rotation and Chinese).
+  The earlier 23-check receipt retains its own source identity. Provider/other
+  feature binding and nested presentations remain separate acceptance gates.
 - Persistent two columns from **600dp actual usable width** (iPad mini
   portrait 744pt keeps its sidebar — no 840dp phone-drawer cutoff).
 - User collapse: toolbar toggle collapses the persistent sidebar into the
@@ -183,7 +194,7 @@ Back, keeping system Back only for the drawer/sheet dismissal steps.
 
 ## Verification (observed evidence, 2026-10-18)
 
-- **Exact build record:** `the G01 final build handoff record (private evidence retained outside the repository)` records base commit
+- **Exact build record:** `ui-return-fix/handoff.json` records base commit
   `4ec0405a532ac84d964d8fb6fbebaea666d02d74`, exact working-tree source
   snapshot `aaacd262db417f9c550da79918d36363de89412b7934d1fd2596370cea55f67b`
   (not a release tag), JDK 21.0.12.1, Gradle 9.6.0, and the explicit offline
@@ -193,23 +204,23 @@ Back, keeping system Back only for the drawer/sheet dismissal steps.
   Final full APK SHA-256:
   `a3dff8f5ea58a53ac22a80c98ee273f02e8e9efd5c8679fd8140d2ce3c5ebf1f`;
   play APK: `b7dad6d3d05a0cad8790a04b0c9bf656bdab38ebaf2acf3c38e489846f4a31c8`.
-  Exports: `the retained G01 final build artifacts (private evidence retained outside the repository)`.
-- **Reused checks, not rerun claims:** the prior UI batch passed 9/9
-  design-system unit tests. `the retained G01 device test records (private evidence retained outside the repository)`
+  Exports: `Local/Artifacts/android-g01-20261018/ui-return-fix/`.
+- **Reused checks, not rerun claims:** the prior `ui-fix` batch passed 9/9
+  design-system unit tests. `device-tests-ui-fix/{samsung,tablet}-result.json`
   records 3 JNI + 1 full + 1 play instrumented tests passing on each target
   (Samsung API33 and tablet API37). The final batch changes only shell drawer
   flags at runtime: app DEX differs, native libraries/resources are unchanged,
   and all three test APKs are byte-identical. The tests were not rerun for the
   flag-only correction.
-- **Current Samsung behavior:** `the retained G01 Samsung smoke record (private evidence retained outside the repository)`
+- **Current Samsung behavior:** `ui-return-confirmation/samsung-smoke/result.json`
   passes all four non-home route openers, one-tap preview, preview Back to Home,
   sheet Back, real Swift JNI handshake and relaunch. Its installed `base.apk`
   SHA matches the final full APK above. Installation used **`install -r` with
   retained app data**, then force-stopped the owned package; no clean-install
   acceptance is claimed.
-- **Tablet and rendered coverage:** prior `the retained G01 tablet smoke record (private evidence retained outside the repository)`
+- **Tablet and rendered coverage:** prior `ui-confirmation/tablet-smoke/result.json`
   passed all routes, one-tap preview, Back/Home, sheet dismissal and real JNI on
-  the prior UI batch APK (`80e3e6acc00fd971b053b87d591ef958e84bcaf0ed7a7f2d19bbadd927deb7cb`).
+  the `ui-fix` APK (`80e3e6acc00fd971b053b87d591ef958e84bcaf0ed7a7f2d19bbadd927deb7cb`).
   Tablet was not rerun on the final flag-only APK. The retained 33 screenshots
   cover phone, tablet landscape/portrait, dark appearance, larger text,
   selection/expansion, inspector, draft/IME and visible bottom insets; six
@@ -217,8 +228,8 @@ Back, keeping system Back only for the drawer/sheet dismissal steps.
   Samsung 360dp wide, tablet 1280×800dp / 800×1280dp, iPad 744×1133pt /
   1133×744pt. Screenshots are native evidence, not generated mockups.
 - **Independent review:**
-  `the round-1 independent review verdict (private evidence retained outside the repository)`
-  preserves the F04/F05 partials; `the round-2 independent review verdict (private evidence retained outside the repository)` records
+  `Local/Private/android-g01-20261018/ui-finish-review-verdict-round1.json`
+  preserves the F04/F05 partials; `ui-finish-review-verdict-round2.json` records
   all F01–F07 resolved and disposition `ship`. The round-2 packet points to
   source, installed SHA, QA, actual edge touches and the six captures.
 - **Limits:** these records do not establish full product parity, complete
@@ -227,13 +238,22 @@ Back, keeping system Back only for the drawer/sheet dismissal steps.
   rotation assertions establish only their recorded cases. No model execution,
   durable conversation storage, or later-goal functionality is inferred.
 
-Evidence references above denote private project records retained outside the repository
+Evidence paths above are relative to `Local/Private/android-g01-20261018/`
 unless an explicit repository path is given. The archived build snapshot
 contains the earlier contract wording; this post-review documentation refresh
 changes no runtime source or artifact identity. Its source/hash checks are
-recorded separately in `the private documentation-closure report`.
+recorded separately in `ui-documentation/REPORT.md`.
 
 ## Handoff to G02+
+
+User follow-up (2026-10-18): similar foundation visuals still require polish.
+iPhone translucency/background blur/layered materials and icon parity remain
+OPEN, explicitly tracked in plan22.7/G14. Opaque chrome and approximate glyphs
+are foundation adaptations, not final visual acceptance. Follow current
+iPhone/iPad captures; align icon outline/stroke/fill/optical size/baseline/state
+in the shared icon layer, reuse distributable Floe-owned assets and retain
+licenses. Do not distribute Apple-restricted font/SF Symbols packages. Keep
+material/low-capability fallbacks explicit and preserve readable interaction.
 
 Thread/preview components and `ComposerSendPolicy`/`FloeDraftStore` are the
 binding points: live state replaces fixtures without layout replacement.

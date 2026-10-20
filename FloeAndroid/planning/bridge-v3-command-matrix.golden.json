@@ -1,0 +1,716 @@
+{
+  "schema": "floe.bridge-v3-command-matrix.golden/1",
+  "wireVersion": 3,
+  "authority": "Settings-domain contract rev3 (contract.json), accepted 2026-10-19; SHA256 f3ddecdca061ae17fbe4280b7bfb549d8a1673fd8d9ae6e1ba363332ef5db46c",
+  "note": "Accepted rev3 Settings-domain P0 additive matrix. 57 legacy entries first, then the 27 accepted tuples. Entries are data, not a handler or capability claim.",
+  "expected": {
+    "entries": 84,
+    "legacyEntries": 57,
+    "additiveEntries": 27,
+    "distinctCommands": 82,
+    "configurationEntries": 55,
+    "configurationLabels": 19,
+    "newLabels": 5,
+    "reservedLabelsWithoutCommands": 3
+  },
+  "configurationLabels": [
+    "providers",
+    "models",
+    "preferences",
+    "catalog",
+    "credentials",
+    "skills",
+    "mcp",
+    "settings.approval",
+    "settings.websearch",
+    "conversations",
+    "capabilities",
+    "system",
+    "operations",
+    "attachmentStaging",
+    "settings.defaults",
+    "memory",
+    "personalization",
+    "usage",
+    "privacy"
+  ],
+  "reservedLabels": [
+    "credentials",
+    "settings.approval",
+    "operations"
+  ],
+  "entries": [
+    {
+      "command": "config.providers.list",
+      "scope": "applicationConfiguration",
+      "configurationScope": "providers",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "config.provider.save",
+      "scope": "applicationConfiguration",
+      "configurationScope": "providers",
+      "revisionRequired": true,
+      "allowsCreateIntent": true,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "config.provider.delete",
+      "scope": "applicationConfiguration",
+      "configurationScope": "providers",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "config.provider.probe",
+      "scope": "applicationConfiguration",
+      "configurationScope": "providers",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "config.models.list",
+      "scope": "applicationConfiguration",
+      "configurationScope": "models",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "config.model.save",
+      "scope": "applicationConfiguration",
+      "configurationScope": "models",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "config.catalog.search",
+      "scope": "applicationConfiguration",
+      "configurationScope": "catalog",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "config.preferences.get",
+      "scope": "applicationConfiguration",
+      "configurationScope": "preferences",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "config.preferences.save",
+      "scope": "applicationConfiguration",
+      "configurationScope": "preferences",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "config.websearch.get",
+      "scope": "applicationConfiguration",
+      "configurationScope": "settings.websearch",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "config.websearch.save",
+      "scope": "applicationConfiguration",
+      "configurationScope": "settings.websearch",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "conversation.list",
+      "scope": "applicationConfiguration",
+      "configurationScope": "conversations",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "conversation.search",
+      "scope": "applicationConfiguration",
+      "configurationScope": "conversations",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "capability.tools.list",
+      "scope": "applicationConfiguration",
+      "configurationScope": "capabilities",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "skills.list",
+      "scope": "applicationConfiguration",
+      "configurationScope": "skills",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "skills.install",
+      "scope": "applicationConfiguration",
+      "configurationScope": "skills",
+      "revisionRequired": true,
+      "allowsCreateIntent": true,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "skills.uninstall",
+      "scope": "applicationConfiguration",
+      "configurationScope": "skills",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "mcp.servers.list",
+      "scope": "applicationConfiguration",
+      "configurationScope": "mcp",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "mcp.connect",
+      "scope": "applicationConfiguration",
+      "configurationScope": "mcp",
+      "revisionRequired": true,
+      "allowsCreateIntent": true,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "mcp.disconnect",
+      "scope": "applicationConfiguration",
+      "configurationScope": "mcp",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "system.bootstrap",
+      "scope": "applicationConfiguration",
+      "configurationScope": "system",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "system.shutdown",
+      "scope": "applicationConfiguration",
+      "configurationScope": "system",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "system.lifecycle",
+      "scope": "applicationConfiguration",
+      "configurationScope": "system",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "attachment.stage",
+      "scope": "applicationConfiguration",
+      "configurationScope": "attachmentStaging",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "attachment.staging.read",
+      "scope": "applicationConfiguration",
+      "configurationScope": "attachmentStaging",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "attachment.staging.cancel",
+      "scope": "applicationConfiguration",
+      "configurationScope": "attachmentStaging",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "attachment.staging.discard",
+      "scope": "applicationConfiguration",
+      "configurationScope": "attachmentStaging",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "conversation.get",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "conversation.rename",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "conversation.archive",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "conversation.delete",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "conversation.messagePage",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "temp.end",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "temp.keep",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "attachment.commit",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "attachment.read",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "attachment.cancel",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "content.read",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "content.read",
+      "scope": "applicationConfiguration",
+      "configurationScope": "conversations",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.start",
+      "scope": "launch",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.startTask",
+      "scope": "launch",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": true,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "conversation.create",
+      "scope": "launch",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": true,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "temp.start",
+      "scope": "launch",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": true,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.cancel",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.retry",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.steer",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.queue",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.input.edit",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.input.remove",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.input.reorder",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.approval.resolve",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.policy.update",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.skillcancel",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "run.snapshot",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "child.list",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "child.entries",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "event.poll",
+      "scope": "taskExecution",
+      "configurationScope": null,
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": true
+    },
+    {
+      "command": "config.defaults.get",
+      "scope": "applicationConfiguration",
+      "configurationScope": "settings.defaults",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "config.defaults.save",
+      "scope": "applicationConfiguration",
+      "configurationScope": "settings.defaults",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.list",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.get",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.add",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": true,
+      "allowsCreateIntent": true,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.update",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.delete",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.delete.bulk",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": true,
+      "allowsCreateIntent": true,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.search",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.candidates.list",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.candidate.resolve",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.organize.start",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": true,
+      "allowsCreateIntent": true,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.organize.proposal.read",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.organize.apply",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": true,
+      "allowsCreateIntent": true,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "memory.organize.cancel",
+      "scope": "applicationConfiguration",
+      "configurationScope": "memory",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "personalization.get",
+      "scope": "applicationConfiguration",
+      "configurationScope": "personalization",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "personalization.revision.read",
+      "scope": "applicationConfiguration",
+      "configurationScope": "personalization",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "personalization.save",
+      "scope": "applicationConfiguration",
+      "configurationScope": "personalization",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "personalization.rollback",
+      "scope": "applicationConfiguration",
+      "configurationScope": "personalization",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "personalization.automatic.set",
+      "scope": "applicationConfiguration",
+      "configurationScope": "personalization",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "personalization.generate",
+      "scope": "applicationConfiguration",
+      "configurationScope": "personalization",
+      "revisionRequired": true,
+      "allowsCreateIntent": true,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "personalization.generate.cancel",
+      "scope": "applicationConfiguration",
+      "configurationScope": "personalization",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "content.read",
+      "scope": "applicationConfiguration",
+      "configurationScope": "personalization",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "usage.statistics.get",
+      "scope": "applicationConfiguration",
+      "configurationScope": "usage",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "privacy.summary.get",
+      "scope": "applicationConfiguration",
+      "configurationScope": "privacy",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "privacy.history.clear",
+      "scope": "applicationConfiguration",
+      "configurationScope": "privacy",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "privacy.modelConfiguration.clear",
+      "scope": "applicationConfiguration",
+      "configurationScope": "privacy",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    }
+  ]
+}

@@ -43,6 +43,16 @@ android {
         externalNativeBuild { cmake { cppFlags += "-std=c++17" } }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+    // The qualification JNI wrapper (floe_qualification_jni) is debug-variant
+    // ONLY: this flag gates the CMake add_library, so release AAR native
+    // entries never build or package it. Production floe_jni and every frozen
+    // boundary (hashes, 16 KiB, 64 KiB, v1 shape) are unchanged for all
+    // variants. Evidence: native-jni-qualification release-boundary report.
+    buildTypes {
+        getByName("debug") {
+            externalNativeBuild { cmake { arguments += "-DFLOE_BUILD_QUALIFICATION_JNI=ON" } }
+        }
+    }
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
@@ -50,4 +60,8 @@ dependencies {
     implementation(project(":core:contracts"))
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.runner)
+    // Self-target RB1 lifecycle test decodes the v3 wire with the SAME
+    // pinned structured JSON library as the product coordinator (1.9.0);
+    // test-only, never part of the library's release AAR.
+    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
 }

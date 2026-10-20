@@ -31,9 +31,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -59,6 +62,12 @@ import com.floe.android.design.InspectorRoute
 import com.floe.android.design.MoreDestination
 import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
+import com.floe.android.feature.providers.FloeProviderSettingsDestination
+import com.floe.android.host.AttachmentPickerEffect
+import com.floe.android.host.RuntimeHost
+import com.floe.android.host.RuntimeHostProvider
+import com.floe.android.host.rememberRuntimeHost
+import kotlinx.coroutines.launch
 
 /**
  * Process-lifetime foundation state. Nothing here survives process death and
@@ -74,6 +83,32 @@ fun FloeShell(
     themeMode: FloeThemeMode,
     onThemeModeChange: (FloeThemeMode) -> Unit,
 ) {
+    val runtimeHost = rememberRuntimeHost()
+    // The shell renders with or without the runtime host; without it every
+    // G02 surface keeps its honest G01 unavailable state.
+    if (runtimeHost != null) {
+        RuntimeHostProvider(runtimeHost) {
+            FloeShellContent(
+                themeMode = themeMode,
+                onThemeModeChange = onThemeModeChange,
+                runtimeHost = runtimeHost,
+            )
+        }
+    } else {
+        FloeShellContent(
+            themeMode = themeMode,
+            onThemeModeChange = onThemeModeChange,
+            runtimeHost = null,
+        )
+    }
+}
+
+@Composable
+private fun FloeShellContent(
+    themeMode: FloeThemeMode,
+    onThemeModeChange: (FloeThemeMode) -> Unit,
+    runtimeHost: RuntimeHost?,
+) {
     var selectionKey by rememberSaveable { mutableStateOf(SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK).key) }
     var selection: SidebarSelection by mutableStateOf(selectionFromKey(selectionKey))
     var settingsVisible by rememberSaveable { mutableStateOf(false) }
@@ -82,6 +117,43 @@ fun FloeShell(
     var inspectorRoute by rememberSaveable { mutableStateOf<String?>(null) }
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
     var drawerOpen by rememberSaveable { mutableStateOf(false) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    // G02 host presentation effects: navigation / inspector / permissions /
+    // attachment picker. Observed here so composables stay observe-only.
+    if (runtimeHost != null) {
+        AttachmentPickerEffect(runtimeHost)
+        val requestedNavigation by runtimeHost.conversations.navigationRequest.collectAsState()
+        LaunchedEffect(requestedNavigation) {
+            requestedNavigation?.let { target ->
+                runtimeHost.conversations.navigationRequest.value = null
+                applyHostNavigation(target, selection, runtimeHost) { next ->
+                    selection = next
+                    selectionKey = next.key
+                    drawerOpen = false
+                    inspectorRoute = null
+                }
+            }
+        }
+        val requestedInspector by runtimeHost.conversations.inspectorRequest.collectAsState()
+        LaunchedEffect(requestedInspector) {
+            requestedInspector?.let { (content, conversationId) ->
+                runtimeHost.conversations.inspectorRequest.value = null
+                inspectorRoute = encodeInspectorRoute(
+                    InspectorRoute(content = mapInspectorContent(content), conversationId = conversationId),
+                )
+            }
+        }
+        val permissionsConversation by runtimeHost.conversations.permissionsRequest.collectAsState()
+        LaunchedEffect(permissionsConversation) {
+            permissionsConversation?.let { conversationId ->
+                runtimeHost.conversations.permissionsRequest.value = null
+                inspectorRoute = encodeInspectorRoute(
+                    InspectorRoute(content = InspectorContent.PERMISSIONS, conversationId = conversationId),
+                )
+            }
+        }
+    }
 
     val route: InspectorRoute? = inspectorRoute?.let { decodeInspectorRoute(it) }
 
@@ -115,13 +187,47 @@ fun FloeShell(
         BackHandler(enabled = drawerOpen) { drawerOpen = false }
 
         val select: (SidebarSelection) -> Unit = { target ->
-            selection = target
-            selectionKey = target.key
-            drawerOpen = false
-            // Leaving the visible conversation surface ends temporary chat on
-            // iOS; G01 has no temporary session yet, so navigation just moves
-            // the ordinary route state.
-            inspectorRoute = null
+            val opensSkillsSheet = target is SidebarSelection.More &&
+                target.destination == MoreDestination.SKILLS
+            val currentTemporary = runtimeHost?.conversations?.activeTemporarySession()
+            val leavingConversation = selection is SidebarSelection.Conversation &&
+                target.key != selection.key
+            when {
+                // The Skills sidebar row opens the Settings sheet at the
+                // Skills section (the integrations destination lives in the
+                // settings detail pane per its host contract).
+                opensSkillsSheet -> {
+                    drawerOpen = false
+                    settingsSectionKey =
+                        com.floe.android.design.FloeSettingsSection.SKILLS.name
+                    settingsVisible = true
+                }
+                // Genuine route transition while a temporary session owns the
+                // surface: fence admission BEFORE the transition (TMP-NAV-2);
+                // the async drain continues afterwards.
+                runtimeHost != null && currentTemporary != null && leavingConversation -> {
+                    val ref = currentTemporary
+                    scope.launch {
+                        runtimeHost.conversations.tempFence.beginEnd(ref)
+                        val admitted = runtimeHost.conversations.tempFence.awaitAdmission(ref)
+                        if (admitted) {
+                            selection = target
+                            selectionKey = target.key
+                            drawerOpen = false
+                            inspectorRoute = null
+                        }
+                    }
+                }
+                else -> {
+                    selection = target
+                    selectionKey = target.key
+                    drawerOpen = false
+                    // Ordinary navigation (iOS semantics): leaving the visible
+                    // conversation surface ends temporary chat; rotation,
+                    // recreation, background and lock never reach this path.
+                    inspectorRoute = null
+                }
+            }
         }
 
         val sidebarBody: @Composable (Boolean) -> Unit = { inDrawer ->
@@ -131,8 +237,12 @@ fun FloeShell(
                 // Settings is a Dialog over the shell; close the compact drawer
                 // first so dismissing it later cannot reveal a stale drawer
                 // (finish review F04). Persistent sidebar is unaffected.
+                // The footer gear is an ORDINARY settings presentation: drop a
+                // stale deep-link section so the sheet opens with both panes /
+                // the compact list root instead of the last requested section.
                 onOpenSettings = {
                     drawerOpen = false
+                    settingsSectionKey = ""
                     settingsVisible = true
                 },
                 onCollapseRequested = if (twoColumn && !inDrawer) {
@@ -156,6 +266,7 @@ fun FloeShell(
                         settingsSectionKey = sectionKey
                         settingsVisible = true
                     },
+                    runtimeHost = runtimeHost,
                 )
             }
         }
@@ -261,6 +372,20 @@ fun FloeShell(
                 settingsVisible = false
                 previewVisible = true
             },
+            runtimeHost = runtimeHost,
+            providerContent = if (runtimeHost == null) {
+                null
+            } else {
+                { geometry, contentModifier ->
+                    val providerState by runtimeHost.providers.destination.collectAsState()
+                    FloeProviderSettingsDestination(
+                        state = providerState,
+                        holder = runtimeHost.providers.flowHolder,
+                        modifier = contentModifier,
+                        hostGeometry = geometry,
+                    )
+                }
+            },
         )
 
         if (previewVisible) {
@@ -298,4 +423,39 @@ internal fun decodeInspectorRoute(raw: String): InspectorRoute {
         content = runCatching { InspectorContent.valueOf(parts[0]) }.getOrDefault(InspectorContent.PROGRESS),
         conversationId = parts.getOrNull(1)?.takeIf { it.isNotEmpty() },
     )
+}
+
+/** Maps the component's inspector vocabulary onto the shell routes. */
+private fun mapInspectorContent(content: com.floe.android.feature.conversation.InspectorRouteUi): InspectorContent =
+    when (content) {
+        com.floe.android.feature.conversation.InspectorRouteUi.PROGRESS -> InspectorContent.PROGRESS
+        com.floe.android.feature.conversation.InspectorRouteUi.WORKSPACE_FILES -> InspectorContent.WORKSPACE_FILES
+        com.floe.android.feature.conversation.InspectorRouteUi.CHANGES -> InspectorContent.CHANGES
+        com.floe.android.feature.conversation.InspectorRouteUi.BROWSER -> InspectorContent.BROWSER
+        com.floe.android.feature.conversation.InspectorRouteUi.TERMINAL -> InspectorContent.TERMINAL
+        com.floe.android.feature.conversation.InspectorRouteUi.CHILD_AGENTS -> InspectorContent.CHILD_AGENTS
+        com.floe.android.feature.conversation.InspectorRouteUi.PERMISSIONS -> InspectorContent.PERMISSIONS
+    }
+
+/**
+ * Applies a host-requested navigation. Leaving a temporary conversation
+ * surfaces fences through [com.floe.android.host.TemporaryNavigationFence]
+ * before the route actually moves; the caller's [commit] performs the move.
+ */
+private suspend fun applyHostNavigation(
+    target: SidebarSelection,
+    current: SidebarSelection,
+    runtimeHost: RuntimeHost,
+    commit: (SidebarSelection) -> Unit,
+) {
+    val currentTemporary = runtimeHost.conversations.activeTemporarySession()
+    val leavingConversation = current is SidebarSelection.Conversation &&
+        target.key != current.key
+    if (currentTemporary != null && leavingConversation) {
+        runtimeHost.conversations.tempFence.beginEnd(currentTemporary)
+        if (!runtimeHost.conversations.tempFence.awaitAdmission(currentTemporary)) {
+            return
+        }
+    }
+    commit(target)
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
-import FloeSharedModels
+import FloeModels
 
 public enum AndroidBridge {
     public static let version = 1
@@ -8,9 +8,9 @@ public enum AndroidBridge {
 
     public static func exchange(_ data: Data) -> Data {
         var requestID: String?
-        func response(_ object: [String: Any]) -> Data {
+        func response(_ object: [String: Any], stampVersion: Int = version) -> Data {
             var value = object
-            value["version"] = version
+            value["version"] = stampVersion
             value["requestID"] = requestID
             return (try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]))
                 ?? Data("{\"version\":1,\"ok\":false,\"error\":\"encoding\"}".utf8)
@@ -20,7 +20,25 @@ public enum AndroidBridge {
             return response(["ok": false, "error": "invalidJSON"])
         }
         requestID = request["requestID"] as? String
-        guard request["version"] as? Int == version else { return response(["ok": false, "error": "unsupportedVersion"]) }
+        // Append-only dispatch: version 1 keeps the exact frozen G01 path
+        // below; version 2 adds the typed command/event envelope seam
+        // (BridgeEnvelope.swift); version 3 adds the explicit integer wire
+        // branch with launch/lifecycle/config/run scopes and the async
+        // operation-effect cursor (BridgeEnvelopeV3.swift). Any other
+        // version fails closed. v1 and v2 behavior is unchanged.
+        let requestVersion = request["version"] as? Int
+        guard requestVersion == version || requestVersion == BridgeV2.version
+                || requestVersion == BridgeV3.version else {
+            return response(["ok": false, "error": "unsupportedVersion"])
+        }
+        if requestVersion == BridgeV2.version {
+            return response(BridgeV2.handle(request: request, requestID: requestID),
+                            stampVersion: BridgeV2.version)
+        }
+        if requestVersion == BridgeV3.version {
+            return response(BridgeV3.handle(request: request, requestID: requestID),
+                            stampVersion: BridgeV3.version)
+        }
         switch request["operation"] as? String {
         case "handshake":
             return response(["ok": true, "core": "FloeAndroidCore", "sharedModels": ["TaskPolicy"],
