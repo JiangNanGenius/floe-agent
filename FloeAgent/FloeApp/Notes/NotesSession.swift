@@ -106,8 +106,59 @@ final class NotesSession {
     private(set) var unsavedDocumentIDs: Set<UUID> = []
     private(set) var recoverableInkDocumentIDs: Set<UUID> = []
     private struct InkKey: Hashable { let documentID: UUID; let pageID: UUID }
-    @ObservationIgnored private var pendingInk: [InkKey: NoteInkDraft] = [:]
-    @ObservationIgnored private var scheduledInk: Set<InkKey> = []
+    /// Origin of an ink report, captured by the Pencil coordinator when the
+    /// report originates: which canvas lineage, which generation that canvas
+    /// had actually adopted, and the per-canvas report sequence. Recovery
+    /// replays and legacy callers pass nil and can never adopt an ack.
+    struct InkProvenance: Hashable, Sendable {
+        let lineage: UUID
+        let generation: UInt64
+        let sequence: UInt64
+    }
+    /// Producer-isolated pending slot: each (page, canvas lineage, canvas
+    /// generation) owns its queue entry, so one producer can never overwrite
+    /// another producer's queued strokes or advance its baseline.
+    private struct PendingKey: Hashable {
+        let documentID: UUID
+        let pageID: UUID
+        let lineage: UUID?
+        let generation: UInt64
+        init(documentID: UUID, pageID: UUID, provenance: InkProvenance?) {
+            self.documentID = documentID; self.pageID = pageID
+            self.lineage = provenance?.lineage
+            self.generation = provenance?.generation ?? 0
+        }
+        var pageKey: InkKey { InkKey(documentID: documentID, pageID: pageID) }
+    }
+    /// One acknowledgement per (document, page): the snapshot our own last
+    /// successful ink commit returned for that page, the content-addressed
+    /// drawing resource it installed, and the canvas lineage AND generation
+    /// that submitted it. The generation retires with every canvas reload, so
+    /// a token that survives an undo/reload can never cross the
+    /// synchronization fence on identity alone. It is consulted only through
+    /// `inkBaseline`, which re-verifies lineage, generation, and the live
+    /// store page before adoption.
+    private struct AcknowledgedInk {
+        let base: NoteDocument
+        let resourceID: UUID
+        let producerLineage: UUID
+        let producerGeneration: UInt64
+        /// Report sequence that produced this acknowledgement; coalescing
+        /// and success advancement must stay strictly monotonic within the
+        /// producer's generation.
+        let producerSequence: UInt64
+    }
+    @ObservationIgnored private var pendingInk: [PendingKey: NoteInkDraft] = [:]
+    @ObservationIgnored private var scheduledInk: Set<PendingKey> = []
+    // Retain the report high-water mark after a queue slot drains, so an old
+    // callback cannot re-enter later and consume a newer commit receipt.
+    @ObservationIgnored private var latestInkSequence: [PendingKey: UInt64] = [:]
+    @ObservationIgnored private var acknowledgedInkBase: [InkKey: AcknowledgedInk] = [:]
+    /// The ink resource each mounted canvas was verified to display, keyed by
+    /// (document, page), with the canvas lineage and the generation that
+    /// adoption established. Registration happens only when the Pencil
+    /// coordinator confirms the actual byte adoption.
+    @ObservationIgnored private var canvasInkResource: [InkKey: (lineage: UUID, generation: UInt64, resourceID: UUID?)] = [:]
     @ObservationIgnored private var tail: Task<Void, Never>?
     @ObservationIgnored private var observation: Task<Void, Never>?
     @ObservationIgnored private var indexing: Task<Void, Never>?
@@ -163,7 +214,7 @@ final class NotesSession {
     }
 
     func hasPendingInk(documentID: UUID, pageID: UUID) -> Bool {
-        pendingInk[InkKey(documentID: documentID, pageID: pageID)] != nil
+        pendingInk.keys.contains { $0.documentID == documentID && $0.pageID == pageID }
     }
 
     func reload() async throws {
@@ -373,8 +424,38 @@ final class NotesSession {
         }
     }
 
+    /// True when `document` still holds exactly the content-addressed drawing
+    /// bytes this preservation tried to keep, for every drawing edit in the
+    /// batch. Non-drawing batches never match here.
+    private func preservationStillMatches(_ batch: NoteEditBatch, document: NoteDocument) -> Bool {
+        var sawDrawing = false
+        for edit in batch.edits {
+            guard case .drawing(let pageID, let resourceID) = edit, let resourceID else { continue }
+            sawDrawing = true
+            guard document.pages.first(where: { $0.id == pageID })?.drawingResourceID == resourceID else { return false }
+        }
+        return sawDrawing
+    }
+
     private func preserveEditConflict(_ batch: NoteEditBatch, base: NoteDocument) async throws {
         guard let store else { throw NoteError.resourceUnavailable }
+        // Identical failed preservation reuses its existing unresolved review
+        // instead of minting another copy: same original document, same edit
+        // contents, and a copy that is still present, untrashed, unedited, and
+        // still holds the same preserved bytes. Only the review's current
+        // snapshot refreshes; its id, copy, edits and title are retained, and
+        // no review or document is ever deleted or replaced here.
+        let reviews = try await store.conflictReviews()
+        for review in reviews where review.current.id == batch.documentID && review.edits == batch.edits {
+            guard let copy = try? await store.document(review.copy.id),
+                  copy.deletedAt == nil, copy.revision == review.copy.revision,
+                  preservationStillMatches(batch, document: copy) else { continue }
+            let latest = try await store.document(base.id)
+            try await store.saveConflictReview(NoteEditConflict(id: review.id, current: latest,
+                copy: review.copy, edits: review.edits, title: review.title))
+            try await reload()
+            return
+        }
         // The copy owns durable resources independently of the original and chat.
         var draft = base
         for edit in batch.edits { try edit.apply(to: &draft) }
@@ -410,13 +491,106 @@ final class NotesSession {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func saveDrawing(_ data: Data, pageID: UUID, base: NoteDocument) {
-        let key = InkKey(documentID: base.id, pageID: pageID)
-        // Coalesced strokes still derive from the first uncommitted canvas.
-        let baseline = pendingInk[key]?.base ?? base
-        pendingInk[key] = NoteInkDraft(base: baseline, pageID: pageID, drawing: data)
+    /// Records that the canvas identified by `canvasLineage` has advanced to
+    /// `canvasGeneration` and the Pencil coordinator confirmed it actually
+    /// displays the ink stored at `drawingResourceID` for this page. The
+    /// editor calls this only from the confirmed byte adoption, after the
+    /// loading task re-verified the live page still holds that resource.
+    /// Registration is in-memory only; it retires every previous generation
+    /// of that canvas, so a stale callback holding an older generation can
+    /// neither coalesce onto pending ink nor consume an acknowledgement.
+    func noteInkCanvasSynced(documentID: UUID, pageID: UUID, canvasLineage: UUID, canvasGeneration: UInt64, drawingResourceID: UUID?) {
+        canvasInkResource[InkKey(documentID: documentID, pageID: pageID)] =
+            (lineage: canvasLineage, generation: canvasGeneration, resourceID: drawingResourceID)
+    }
+
+    func saveDrawing(_ data: Data, pageID: UUID, base: NoteDocument, provenance: InkProvenance? = nil) {
+        let key = PendingKey(documentID: base.id, pageID: pageID, provenance: provenance)
+        if let sequence = provenance?.sequence {
+            if let latest = latestInkSequence[key], sequence <= latest { return }
+            latestInkSequence[key] = sequence
+        }
+        if let pending = pendingInk[key] {
+            // Same producer, same generation: only this producer's FINAL,
+            // monotonically NEWER report may replace the queued item, so an
+            // obsolete callback (seq 1 after seq 2) can never overwrite the
+            // newer canvas bytes. The first uncommitted baseline is retained
+            // and ack adoption is resolved inside the serialized tail.
+            if let sequence = provenance?.sequence, let queued = pending.canvasSequence, queued >= sequence {
+                return
+            }
+            pendingInk[key] = NoteInkDraft(base: pending.base, pageID: pageID, drawing: data,
+                                           canvasLineage: provenance?.lineage, canvasGeneration: provenance?.generation,
+                                           canvasSequence: provenance?.sequence)
+            unsavedDocumentIDs.insert(base.id)
+            scheduleInk(key)
+            return
+        }
+        // Synchronous by contract: this only enqueues the raw caller base and
+        // its provenance in report order. Validation against the live store
+        // happens in `acknowledgedBaseIfValid` within the serialized tail,
+        // before the recovery envelope is fixed.
+        pendingInk[key] = NoteInkDraft(base: base, pageID: pageID, drawing: data,
+                                       canvasLineage: provenance?.lineage, canvasGeneration: provenance?.generation,
+                                       canvasSequence: provenance?.sequence)
         unsavedDocumentIDs.insert(base.id)
         scheduleInk(key)
+    }
+
+    /// Effective baseline for one queued draft, resolved inside the
+    /// serialized tail BEFORE its recovery envelope is written. Our last
+    /// acknowledged commit for this exact page may serve as the base only
+    /// under all of these guards:
+    /// - the draft carries provenance and names the acknowledged producer at
+    ///   the SAME generation, or a canvas that registered this exact resource
+    ///   at the SAME (latest) generation — never an arbitrary old snapshot, a
+    ///   retired editor, a generation retired by reload/undo, or a
+    ///   document-wide maximum revision;
+    /// - same document and the page still exists in both snapshots;
+    /// - the awaited live store page still holds the acknowledged bytes, so
+    ///   an external same-page edit, an undo rewind, or a reload from another
+    ///   lineage fences adoption closed instead of trusting the ack.
+    /// Recovery replays carry no provenance and never adopt one.
+    private func acknowledgedBaseIfValid(for pageKey: InkKey, draft: NoteInkDraft) async -> NoteDocument {
+        guard let provenance = draft.canvasLineage.map({ lineage in
+            (lineage: lineage, generation: draft.canvasGeneration ?? 0)
+        }),
+              let ack = acknowledgedInkBase[pageKey],
+              ack.base.id == draft.base.id,
+              let acknowledgedPage = ack.base.pages.first(where: { $0.id == pageKey.pageID }),
+              acknowledgedPage.drawingResourceID == ack.resourceID,
+              draft.base.pages.contains(where: { $0.id == pageKey.pageID }),
+              let store
+        else { return draft.base }
+        // Check the mounted-generation fence after the actor read: a reload
+        // can register a different generation while that read is suspended.
+        guard let current = try? await store.document(draft.base.id),
+              current.deletedAt == nil,
+              current.revision >= ack.base.revision,
+              current.pages.first(where: { $0.id == pageKey.pageID })?.drawingResourceID == ack.resourceID
+        else { return draft.base }
+        let lineageMatches: Bool
+        if ack.producerLineage == provenance.lineage, ack.producerGeneration == provenance.generation {
+            guard let sequence = draft.canvasSequence, sequence > ack.producerSequence else { return draft.base }
+            // The producing canvas must still be the mounted one at THIS
+            // generation: any later registered generation (reload, undo
+            // rewind, remount) retires the ack's producer authority, and the
+            // same-producer shortcut may not bypass that fence. A canvas that
+            // never adopted a load (no registration) keeps producer authority.
+            if let registered = canvasInkResource[pageKey] {
+                lineageMatches = registered.lineage == provenance.lineage
+                    && registered.generation == provenance.generation
+            } else {
+                lineageMatches = true
+            }
+        } else if let synced = canvasInkResource[pageKey],
+                  synced.lineage == provenance.lineage, synced.generation == provenance.generation {
+            lineageMatches = synced.resourceID == ack.resourceID
+        } else {
+            lineageMatches = false
+        }
+        guard lineageMatches else { return draft.base }
+        return ack.base.revision > draft.base.revision ? ack.base : draft.base
     }
 
     private func inkRecoveryRoot() throws -> URL {
@@ -434,7 +608,24 @@ final class NotesSession {
                 guard draft.base.id == documentID, draft.base.pages.contains(where: { $0.id == draft.pageID }) else { throw NoteError.conflict }
                 _ = try PKDrawing(data: draft.drawing)
                 guard !hasPendingInk(documentID: documentID, pageID: draft.pageID) else { continue }
-                saveDrawing(draft.drawing, pageID: draft.pageID, base: draft.base)
+                // Replay each envelope independently from its original disk
+                // base. No live-canvas receipt is adopted and no producer's
+                // envelope is replaced by another replay's temporary slot.
+                let staging = folder.appendingPathComponent("\(UUID().uuidString).ink-staging")
+                defer { try? FileManager.default.removeItem(at: staging) }
+                try draft.drawing.write(to: staging, options: .atomic)
+                let resource = try await store.importResource(from: staging, mediaType: "application/vnd.apple.pencilkit")
+                let batch = NoteEditBatch(documentID: documentID, expectedRevision: draft.base.revision,
+                    title: FloeL10n.l("notes.notes_session.writing"), edits: [.drawing(pageID: draft.pageID, resourceID: resource)])
+                do {
+                    _ = try await store.applyRebased(batch, base: draft.base)
+                } catch NoteError.conflict {
+                    try await preserveEditConflict(batch, base: draft.base)
+                    errorMessage = String(localized: "edit.conflict.notesPreserved")
+                }
+                // A failed commit or failed preservation throws before here,
+                // retaining exactly this envelope for a later recovery.
+                try FileManager.default.removeItem(at: url)
             }
             // Older recovery files have no baseline. Preserve as a separate
             // reviewable document; never assign today's revision to old ink.
@@ -461,30 +652,67 @@ final class NotesSession {
         for key in pendingInk.keys { scheduleInk(key) }
     }
 
-    private func scheduleInk(_ key: InkKey) {
+    private func scheduleInk(_ key: PendingKey) {
         guard scheduledInk.insert(key).inserted else { return }
         enqueue { [self] in
             defer { scheduledInk.remove(key) }
             guard let store else { throw NoteError.resourceUnavailable }
             while let draft = pendingInk[key] {
+                // Resolve the effective baseline inside the serialized tail,
+                // before the recovery envelope is fixed: adopt our own
+                // acknowledged commit only under the full guard set and
+                // against the live store state at commit time. The envelope
+                // therefore always carries the baseline the commit used.
+                let effectiveBase = await acknowledgedBaseIfValid(for: key.pageKey, draft: draft)
+                let committedDraft = NoteInkDraft(base: effectiveBase, pageID: draft.pageID, drawing: draft.drawing,
+                                                  canvasLineage: draft.canvasLineage, canvasGeneration: draft.canvasGeneration,
+                                                  canvasSequence: draft.canvasSequence)
                 let folder = try inkRecoveryRoot().appendingPathComponent(key.documentID.uuidString, isDirectory: true)
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                let recovery = folder.appendingPathComponent("\(key.pageID.uuidString).inkdraft")
+                let recoveryName: String
+                if let lineage = key.lineage {
+                    recoveryName = "\(key.pageID.uuidString).\(lineage.uuidString).\(key.generation).inkdraft"
+                } else {
+                    recoveryName = "\(key.pageID.uuidString).inkdraft"
+                }
+                let recovery = folder.appendingPathComponent(recoveryName)
                 // One atomic envelope retains both bytes and their true baseline.
-                try JSONEncoder().encode(draft).write(to: recovery, options: .atomic)
+                try JSONEncoder().encode(committedDraft).write(to: recovery, options: .atomic)
                 let staging = folder.appendingPathComponent("\(UUID().uuidString).ink-staging")
-                try draft.drawing.write(to: staging, options: .atomic)
+                try committedDraft.drawing.write(to: staging, options: .atomic)
                 defer { try? FileManager.default.removeItem(at: staging) }
                 let resource = try await store.importResource(from: staging, mediaType: "application/vnd.apple.pencilkit")
-                let batch = NoteEditBatch(documentID: key.documentID, expectedRevision: draft.base.revision,
+                let batch = NoteEditBatch(documentID: key.documentID, expectedRevision: effectiveBase.revision,
                     title: FloeL10n.l("notes.notes_session.writing"), edits: [.drawing(pageID: key.pageID, resourceID: resource)])
                 do {
-                    let saved = try await store.applyRebased(batch, base: draft.base)
-                    // Newer queued strokes include this accepted local drawing.
-                    // Only advance to our own acknowledged commit, never a new disk read.
-                    if pendingInk[key]?.drawing != draft.drawing { pendingInk[key]?.base = saved }
+                    let saved = try await store.applyRebased(batch, base: effectiveBase)
+                    // This page's own acknowledged baseline advances to our
+                    // commit only, bound to the producer lineage and
+                    // generation that submitted it. A recovery replay (no
+                    // provenance) never records one, and a satisfied replay
+                    // that returned the current document only counts when the
+                    // page still holds the resource this batch installed.
+                    if let producerLineage = draft.canvasLineage, let producerGeneration = draft.canvasGeneration,
+                       let page = saved.pages.first(where: { $0.id == key.pageID }),
+                       page.drawingResourceID == resource {
+                        acknowledgedInkBase[key.pageKey] = AcknowledgedInk(base: saved, resourceID: resource,
+                            producerLineage: producerLineage, producerGeneration: producerGeneration,
+                            producerSequence: draft.canvasSequence ?? 0)
+                    }
+                    // Newer queued strokes include this accepted local
+                    // drawing. This slot belongs to exactly one producer and
+                    // generation; its replacement carried a strictly newer
+                    // report sequence, and only that newer-sequence final
+                    // item may advance to our own commit — never a disk read.
+                    if let queued = pendingInk[key], queued.drawing != draft.drawing,
+                       draft.canvasSequence == nil
+                        || (queued.canvasSequence ?? 0) > (draft.canvasSequence ?? 0) {
+                        pendingInk[key]?.base = saved
+                    }
                 } catch NoteError.conflict {
-                    try await preserveEditConflict(batch, base: draft.base)
+                    // Preserve exactly what this batch attempted: the copy
+                    // builds on the effective (possibly adopted) base.
+                    try await preserveEditConflict(batch, base: effectiveBase)
                     errorMessage = String(localized: "edit.conflict.notesPreserved")
                 }
                 if pendingInk[key]?.drawing == draft.drawing { pendingInk.removeValue(forKey: key) }

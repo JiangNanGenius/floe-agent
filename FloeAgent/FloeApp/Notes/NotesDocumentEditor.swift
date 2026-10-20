@@ -59,6 +59,26 @@ struct NotesDocumentEditor: View {
     @State private var focusNotice: String?
     @State private var pendingProposals: [NoteProposal] = []
     @State private var acceptingProposalID: UUID?
+    /// Identity of this editor instance's handwriting canvas. The session
+    /// binds an acknowledged ink baseline to the lineage that produced it (or
+    /// to a canvas that demonstrably reloaded those exact bytes); a stale
+    /// snapshot without this lineage can never adopt the acknowledgement.
+    @State private var canvasLineage = UUID()
+    /// Generation the canvas has actually adopted. It advances only when the
+    /// Pencil coordinator confirms the real byte adoption of a verified page
+    /// load, retiring every prior generation: a stroke reported from an
+    /// older generation (captured when its gesture began, before an undo or
+    /// a reload) can no longer coalesce or consume an acknowledgement.
+    @State private var canvasGeneration: UInt64 = 0
+    /// The verified page load awaiting actual canvas adoption: the exact
+    /// bytes, the generation they propose, and the resource they carry.
+    /// `NotePencilView` fires `onDrawingAdopted` only when the canvas really
+    /// applies these bytes; only then does the generation register.
+    @State private var pendingAdoption: (ink: Data?, generation: UInt64, resourceID: UUID?)?
+    /// Local canvas mutation counter mirrored from the Pencil coordinator:
+    /// a gesture begin or report during an asynchronous page load retires
+    /// that load's staging rights.
+    @State private var canvasMutation: UInt64 = 0
     /// Reading mode for text notes: this document's own text, opened
     /// read-only. The editor, undo stack and drafts are untouched.
     @State private var isReadingModePresented = false
@@ -189,16 +209,48 @@ struct NotesDocumentEditor: View {
                 writingTools
                 Divider()
                 if loadedPageID == page.id {
-                    NotePencilView(page: page, drawing: drawing, background: background, textSources: document.textSources ?? [:],
+                    NotePencilView(page: page, drawing: drawing, drawingGeneration: canvasGeneration,
+                                   onDrawingAdopted: { adopted, generation in
+                        // Provenance originates at real adoption: register
+                        // only when the applied bytes are exactly the ones
+                        // the verified load proposed.
+                        guard let pending = pendingAdoption, pending.ink == adopted, pending.generation == generation else { return }
+                        // Synchronous provenance only: no @State writes from
+                        // updateUIView. The next report retires this staging.
+                        session.noteInkCanvasSynced(documentID: document.id, pageID: page.id,
+                                                    canvasLineage: canvasLineage, canvasGeneration: generation,
+                                                    drawingResourceID: pending.resourceID)
+                    },
+                                   canvasMutation: canvasMutation,
+                                   onCanvasMutated: { canvasMutation = $0 },
+                                   background: background, textSources: document.textSources ?? [:],
                                    fingerDrawing: fingerDrawing, tool: pencilTool,
                                    onDrawing: { data in
                         drawing = data
                         // A missing loaded baseline must never become an unchecked save.
                         if let drawingBaseline { session.saveDrawing(data, pageID: page.id, base: drawingBaseline) }
+                    },
+                                   onDrawingProvenance: { data, generation, sequence in
+                        drawing = data
+                        canvasGeneration = generation
+                        pendingAdoption = nil
+                        // A missing loaded baseline must never become an unchecked save.
+                        if let drawingBaseline {
+                            session.saveDrawing(data, pageID: page.id, base: drawingBaseline,
+                                                provenance: .init(lineage: canvasLineage, generation: generation, sequence: sequence))
+                        }
                     }, drawingBaseline: drawingBaseline, onVersionedDrawing: { data, base in
                         drawingBaseline = base
                         drawing = data
                         session.saveDrawing(data, pageID: page.id, base: base)
+                    },
+                                   onVersionedDrawingProvenance: { data, base, generation, sequence in
+                        drawingBaseline = base
+                        drawing = data
+                        canvasGeneration = generation
+                        pendingAdoption = nil
+                        session.saveDrawing(data, pageID: page.id, base: base,
+                                            provenance: .init(lineage: canvasLineage, generation: generation, sequence: sequence))
                     }, deleteSelectionRequest: deleteSelectionRequest,
                                    onSelectionCount: { selectedStrokeCount = $0 },
                                    captureSelectionRequest: captureSelectionRequest, regionSelection: tool == .region,
@@ -291,6 +343,12 @@ struct NotesDocumentEditor: View {
         .task(id: pageLoadID) {
             guard document.kind == .notebook, let page, let store = session.store, session.pendingWrites == 0 else { return }
             do {
+                // Stamps captured at load start: the resource we are about to
+                // load, and the local canvas mutation version. Across the
+                // awaits below a stroke can commit, become pending, or begin;
+                // any of those retires this load's staging rights.
+                let expectedResourceID = page.drawingResourceID
+                let startMutation = canvasMutation
                 let ink: Data?
                 if let id = page.drawingResourceID {
                     let url = try await store.resourceURL(id)
@@ -301,12 +359,26 @@ struct NotesDocumentEditor: View {
                 let image = try await NoteFileImporter.background(page: page, store: store)
                 let images = try await NoteFileImporter.elementImages(page: page, store: store)
                 try Task.checkCancellation()
-                // A newer stroke may have arrived while rendering the background. Never
-                // apply the old resource over an unsaved or failed-to-save local drawing.
-                if !session.hasPendingInk(documentID: document.id, pageID: page.id) {
-                    drawing = ink
-                    drawingBaseline = document
-                }
+                // Re-read the live page before touching the canvas: an ink
+                // commit that landed while we were reading must never rewind
+                // PKCanvasView to older bytes, an unsaved or failed-to-save
+                // local drawing must never be replaced, and a gesture that
+                // began during the load must not have its canvas staged over.
+                let fresh = try await store.document(document.id)
+                guard fresh.deletedAt == nil,
+                      canvasMutation == startMutation,
+                      !session.hasPendingInk(documentID: document.id, pageID: page.id),
+                      let freshPage = fresh.pages.first(where: { $0.id == page.id }),
+                      freshPage.drawingResourceID == expectedResourceID else { return }
+                drawing = ink
+                drawingBaseline = fresh
+                // Offer these bytes for adoption. The Pencil coordinator
+                // confirms the actual application (which `isUsingTool` may
+                // defer); only that confirmation advances the generation and
+                // registers the resource with the session.
+                let proposed = canvasGeneration &+ 1
+                pendingAdoption = (ink: ink, generation: proposed, resourceID: freshPage.drawingResourceID)
+                canvasGeneration = proposed
                 background = image; elementImages = images; loadedPageID = page.id
             } catch is CancellationError {} catch { session.errorMessage = error.localizedDescription }
         }

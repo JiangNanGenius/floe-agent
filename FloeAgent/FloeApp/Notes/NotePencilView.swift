@@ -8,13 +8,33 @@ import FloeCore
 struct NotePencilView: UIViewRepresentable {
     let page: NotePage
     let drawing: Data?
+    /// Generation tag of the current `drawing` bytes. The editor stamps it
+    /// when it assigns the bytes: a verified page load proposes a fresh
+    /// generation, a stroke report stamps the generation the canvas actually
+    /// held when the gesture began. The coordinator never invents it.
+    var drawingGeneration: UInt64 = 0
+    /// Fired with the exact bytes the moment the canvas actually adopts a
+    /// new `drawing` value, so provenance originates at real adoption rather
+    /// than at the SwiftUI assignment (which `isUsingTool` may defer).
+    var onDrawingAdopted: ((Data?, UInt64) -> Void)? = nil
+    /// Bumped by the coordinator whenever a gesture begins or a report is
+    /// emitted, so the editor can reject a page-load staging that raced with
+    /// local canvas activity.
+    var canvasMutation: UInt64 = 0
+    var onCanvasMutated: ((UInt64) -> Void)? = nil
     let background: Data?
     var textSources: [String: String] = [:]
     let fingerDrawing: Bool
     let tool: PKTool
     let onDrawing: (Data) -> Void
+    /// Optional provenance twin of `onDrawing`: data, the canvas generation
+    /// the bytes derive from, and the per-canvas report sequence captured at
+    /// origin. Existing call sites keep the original signature untouched.
+    var onDrawingProvenance: ((Data, UInt64, UInt64) -> Void)? = nil
     var drawingBaseline: NoteDocument? = nil
     var onVersionedDrawing: ((Data, NoteDocument) -> Void)? = nil
+    /// Optional provenance twin of `onVersionedDrawing`.
+    var onVersionedDrawingProvenance: ((Data, NoteDocument, UInt64, UInt64) -> Void)? = nil
     var deleteSelectionRequest: UUID? = nil
     var onSelectionCount: (Int) -> Void = { _ in }
     var captureSelectionRequest: UUID? = nil
@@ -127,17 +147,8 @@ struct NotePencilView: UIViewRepresentable {
             }
         }
         #endif
-        if coordinator.loadedDrawing != drawing, !coordinator.isUsingTool {
-            coordinator.isApplying = true
-            coordinator.loadedDrawing = drawing
-            canvas.drawing = drawing.flatMap { try? PKDrawing(data: $0) } ?? PKDrawing()
-            coordinator.isApplying = false
-            coordinator.noteInkRevision()
-            coordinator.scheduleInkDisplayRefresh(canvas)
-        }
-        if !coordinator.isUsingTool, coordinator.loadedDrawing == drawing {
-            coordinator.loadedBaseline = drawingBaseline
-        }
+        coordinator.applyDrawingSnapshot(drawing, generation: drawingGeneration,
+            baseline: drawingBaseline, mutation: canvasMutation, to: canvas)
         if coordinator.loadedBackground != background || coordinator.elements != page.elements || coordinator.paper != page.paper || coordinator.loadedImages != elementImages || coordinator.loadedTextSources != textSources {
             coordinator.loadedTextSources = textSources
             coordinator.loadedImages = elementImages
@@ -182,10 +193,30 @@ struct NotePencilView: UIViewRepresentable {
             parent.onPencilAction(action, point)
         }
         var parent: NotePencilView
+        /// Frozen at gesture begin: the reporter closures AND the page
+        /// identity they route to, so a page switch mid-gesture can never
+        /// deliver old-page ink through a new page's callback.
+        private var gestureReporter: NotePencilView?
         weak var backdrop: UIImageView?
         var loadedDrawing: Data?
         var loadedBaseline: NoteDocument?
         var gestureBaseline: NoteDocument?
+        /// Generation the canvas bytes actually displayed at gesture begin,
+        /// captured here — never read from mutable view state at report time.
+        var gestureGeneration: UInt64 = 0
+        /// Generation the canvas has actually adopted (see updateUIView).
+        var adoptedGeneration: UInt64 = 0
+        /// Per-canvas report counter; each delegate report captures the next
+        /// value at origin.
+        var reportSequence: UInt64 = 0
+        /// Bumped on every local mutation (gesture begin, report) so the
+        /// editor can fence asynchronous page loads against local activity.
+        var mutationCounter: UInt64 = 0
+
+        private func bumpMutation() {
+            mutationCounter &+= 1
+            parent.onCanvasMutated?(mutationCounter)
+        }
         var loadedBackground: Data?
         var loadedTextSources: [String: String] = [:]
         var loadedImages: [UUID: Data] = [:]
@@ -271,6 +302,30 @@ struct NotePencilView: UIViewRepresentable {
             }
         }
 
+        /// Reconcile a verified view snapshot only while it is at least as
+        /// recent as the actual canvas. A queued SwiftUI update must not
+        /// rewind a stroke that finished after that update was prepared.
+        func applyDrawingSnapshot(_ data: Data?, generation: UInt64, baseline: NoteDocument?,
+                                  mutation: UInt64, to canvas: PKCanvasView) {
+            guard !isUsingTool, mutation >= mutationCounter else { return }
+            if loadedDrawing != data {
+                isApplying = true
+                loadedDrawing = data
+                canvas.drawing = data.flatMap { try? PKDrawing(data: $0) } ?? PKDrawing()
+                isApplying = false
+                noteInkRevision()
+                scheduleInkDisplayRefresh(canvas)
+            }
+            loadedBaseline = baseline
+            // Register adoption before any next gesture can report this
+            // generation, even for equal bytes or an initially empty page.
+            // This callback only updates the session's ObservationIgnored
+            // provenance map; it must not mutate SwiftUI view state.
+            guard adoptedGeneration != generation else { return }
+            adoptedGeneration = generation
+            parent.onDrawingAdopted?(data, generation)
+        }
+
         func noteInkRevision() { inkRevision &+= 1 }
 
         /// One request per completed, not-yet-rendered stroke batch. This
@@ -298,15 +353,43 @@ struct NotePencilView: UIViewRepresentable {
 
         func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
             gestureBaseline = loadedBaseline
+            gestureGeneration = adoptedGeneration
+            // Freeze the reporter and its page identity now; the end-of-gesture
+            // report must not read whatever `parent` happens to be later.
+            gestureReporter = parent
+            bumpMutation()
             isUsingTool = true
         }
-        private func reportDrawing(_ data: Data, baseline: NoteDocument?) {
-            if let baseline, let callback = parent.onVersionedDrawing { callback(data, baseline) }
-            else { parent.onDrawing(data) }
+        /// Single dispatch: when a provenance twin is installed it REPLACES
+        /// the legacy callback (never both — a stroke must never produce two
+        /// saves). Call sites without the twin keep the original behavior.
+        private func reportDrawing(_ data: Data, baseline: NoteDocument?, generation: UInt64, reporter: NotePencilView) {
+            reportSequence &+= 1
+            let sequence = reportSequence
+            bumpMutation()
+            if let baseline {
+                if let callback = reporter.onVersionedDrawingProvenance {
+                    callback(data, baseline, generation, sequence)
+                } else if let callback = reporter.onVersionedDrawing {
+                    callback(data, baseline)
+                } else if let callback = reporter.onDrawingProvenance {
+                    callback(data, generation, sequence)
+                } else {
+                    reporter.onDrawing(data)
+                }
+            } else {
+                if let callback = reporter.onDrawingProvenance {
+                    callback(data, generation, sequence)
+                } else {
+                    reporter.onDrawing(data)
+                }
+            }
         }
         func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
             isUsingTool = false
-            if let data = pendingDrawing { pendingDrawing = nil; reportDrawing(data, baseline: gestureBaseline) }
+            let reporter = gestureReporter ?? parent
+            gestureReporter = nil
+            if let data = pendingDrawing { pendingDrawing = nil; reportDrawing(data, baseline: gestureBaseline, generation: gestureGeneration, reporter: reporter) }
             gestureBaseline = nil
             scheduleInkDisplayRefresh(canvasView)
         }
@@ -318,7 +401,7 @@ struct NotePencilView: UIViewRepresentable {
             }
             #endif
         }
-        init(parent: NotePencilView) { self.parent = parent }
+        init(parent: NotePencilView) { self.parent = parent; mutationCounter = parent.canvasMutation }
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             guard !isApplying else { return }
             let data = canvasView.drawing.dataRepresentation()
@@ -327,7 +410,7 @@ struct NotePencilView: UIViewRepresentable {
             noteInkRevision()
             if isUsingTool { pendingDrawing = data }
             else {
-                reportDrawing(data, baseline: loadedBaseline)
+                reportDrawing(data, baseline: loadedBaseline, generation: adoptedGeneration, reporter: parent)
                 scheduleInkDisplayRefresh(canvasView)
             }
         }
