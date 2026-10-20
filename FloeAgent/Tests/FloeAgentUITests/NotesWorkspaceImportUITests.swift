@@ -561,10 +561,14 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                           "enabling drawing must dismiss the Office text keyboard")
         }
         if assistantOpen {
-            let assistant = app.buttons["notes.assistant"]
+            let assistant = app.buttons["notes.office.assistant"]
             XCTAssertTrue(assistant.waitForExistence(timeout: 15))
             XCTAssertTrue(assistant.isHittable)
             assistant.tap()
+            let openAssistant = app.buttons["Floe 助手"]
+            XCTAssertTrue(openAssistant.waitForExistence(timeout: 10))
+            XCTAssertTrue(openAssistant.isHittable)
+            openAssistant.tap()
             XCTAssertTrue(app.buttons["notes.assistant.close"].waitForExistence(timeout: 15),
                           "The document assistant must be open throughout the real pinch")
         }
