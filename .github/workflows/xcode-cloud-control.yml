@@ -46,6 +46,11 @@ on:
         description: Release tag to discover; omitted uses the version in FloeAgent/project.yml
         required: false
         type: string
+      release_build:
+        description: Build number to discover; omitted uses CURRENT_PROJECT_VERSION in FloeAgent/project.yml
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -85,6 +90,7 @@ jobs:
         env:
           ASC_TOKEN: ${{ steps.auth.outputs.token }}
           RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+          RELEASE_BUILD_INPUT: ${{ inputs.release_build }}
         run: |
           set -euo pipefail
           RELEASE_TAG="$RELEASE_TAG_INPUT"
@@ -95,6 +101,10 @@ jobs:
           fi
           if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]]; then
             echo "Invalid release tag: $RELEASE_TAG" >&2
+            exit 2
+          fi
+          if [[ -n "$RELEASE_BUILD_INPUT" && ! "$RELEASE_BUILD_INPUT" =~ ^[0-9]+$ ]]; then
+            echo "Invalid release build: expected digits only" >&2
             exit 2
           fi
           echo "release-tag=$RELEASE_TAG"
@@ -159,7 +169,10 @@ jobs:
           done < <(jq -r '.data[].id' "$RUNNER_TEMP/products.json")
 
           bundle_id="$(awk '$1 == "PRODUCT_BUNDLE_IDENTIFIER:" { print $2; exit }' FloeAgent/project.yml | tr -d '"')"
-          build_number="$(awk '$1 == "CURRENT_PROJECT_VERSION:" { print $2; exit }' FloeAgent/project.yml | tr -d '"')"
+          build_number="$RELEASE_BUILD_INPUT"
+          if test -z "$build_number"; then
+            build_number="$(awk '$1 == "CURRENT_PROJECT_VERSION:" { print $2; exit }' FloeAgent/project.yml | tr -d '"')"
+          fi
           test -n "$bundle_id"
           test -n "$build_number"
           api_get /v1/apps \
