@@ -167,8 +167,11 @@ final class OfficeAssistantLivePageSendTests: XCTestCase {
             XCTAssertNotNil(document.officeResourceID)
             XCTAssertEqual(document.officeFileName, "\(baseToken).xlsx")
 
-            let conversation = try await center.createConversation(title: "\(baseToken) assistant")
+            let conversation = try await center.createConversation(title: "\(baseToken) assistant", purpose: .notes)
             let conversationID = conversation.id
+            try await store.bindAssistant(conversationID: conversationID, documentID: document.id, canEdit: true)
+            XCTAssertNotNil(environment.workspaceCenter.workspaceID(for: conversationID),
+                            "The production Notes creation path must establish canonical workspace ownership")
             defer { ComposerDraftStore.shared.clear(conversationID: conversationID) }
 
             // Bind exactly through the production seams the assistant panel

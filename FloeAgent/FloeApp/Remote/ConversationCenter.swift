@@ -1615,6 +1615,10 @@ final class ConversationCenter: ObservableObject {
             purpose: purpose
         )
         try await environment.conversationStore.saveConversation(record)
+        if purpose == .notes {
+            _ = try await environment.workspaceCenter.ensureReviewConversationWorkspace(
+                conversationID: record.id, workspaceID: nil, title: record.title)
+        }
         // Creating/restarting a document assistant is a storage operation.
         // Do not block it on a full model discovery and provider refresh.
         // This also keeps dedicated assistant records out of ordinary history.

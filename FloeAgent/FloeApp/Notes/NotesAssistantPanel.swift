@@ -70,6 +70,8 @@ struct NotesAssistantPanel: View {
                    try await environment.conversationStore.conversation(id: existing) != nil {
                     try await NotesRepository.markAssistantOwnership([existing], database: environment.database)
                     try await Self.removeLegacyBootstrap(documentID: document.id, conversationID: existing, database: environment.database)
+                    _ = try await environment.workspaceCenter.ensureReviewConversationWorkspace(
+                        conversationID: existing, workspaceID: nil, title: document.title)
                     conversationID = existing
                     return
                 }
