@@ -713,7 +713,7 @@ class ApplicationPinTests(unittest.TestCase):
     def test_host_may_omit_exact_xcode_only_dependency(self):
         resolved = historical_lock()
         app = qmc.application_pins(self.project)
-        self.assertEqual({p["identity"] for p in app}, {"whisperkit"})
+        self.assertEqual({p["identity"] for p in app}, {"whisperkit", "zipfoundation"})
         resolved["pins"] = [p for p in resolved["pins"] if p["identity"] != "whisperkit"]
         self.assertFalse(qmc.verify_lock("historical-baseline", current_lock(), resolved)["ok"])
         result = qmc.verify_lock("historical-baseline", current_lock(), resolved, app)
@@ -721,6 +721,19 @@ class ApplicationPinTests(unittest.TestCase):
         self.assertEqual(result["omitted_application_pins"], ["whisperkit"])
         resolved["pins"] = [p for p in resolved["pins"] if p["identity"] != "swift-crypto"]
         self.assertFalse(qmc.verify_lock("historical-baseline", current_lock(), resolved, app)["ok"])
+
+    def test_application_declaration_cannot_change_source_or_add_state(self):
+        for mutation in (
+            {"location": "https://example.invalid/ZIPFoundation.git"},
+            {"state": {"revision": "0" * 40}},
+            {"state": {"revision": "22787ffb59de99e5dc1fbfe80b19c97a904ad48d", "branch": "main"}},
+            {"state": {"revision": "22787ffb59de99e5dc1fbfe80b19c97a904ad48d", "version": "9.9.9"}},
+        ):
+            app = qmc.application_pins(self.project)
+            index = next(i for i, pin in enumerate(app) if pin["identity"] == "zipfoundation")
+            app[index] = {**app[index], **mutation}
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                qmc.verify_lock("historical-baseline", current_lock(), historical_lock(), app)
 
     def test_application_pin_override_cannot_hide_drift(self):
         app = qmc.application_pins(self.project)

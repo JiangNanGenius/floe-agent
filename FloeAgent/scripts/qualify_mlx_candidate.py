@@ -64,7 +64,7 @@ import os
 import re
 import sys
 
-from resolved_pins import application_pins, resolved_pins
+from resolved_pins import app_pin_matches, application_pins, resolved_pins
 
 MLX_SWIFT_URL = "https://github.com/ml-explore/mlx-swift"
 MLX_SWIFT_LM_URL = "https://github.com/ml-explore/mlx-swift-lm.git"
@@ -423,12 +423,14 @@ def verify_lock(profile, baseline_document, resolved_document, app_only=()):
                 "location": location,
                 "state": dict(HISTORICAL_BASELINE_RESOLVED_PINS[identity]),
             }
-    # App-only packages (currently WhisperKit) occur in the shared committed
+    # Immutable Xcode declarations occur in the shared committed
     # lock, but SwiftPM may omit them from this host graph. Authorize only the
     # exact immutable declarations in project.yml, never arbitrary removals.
     app = {pin["identity"]: pin for pin in app_only}
     for identity, pin in app.items():
-        if baseline.get(identity) != pin or identity in TARGET_IDENTITIES:
+        if (set(pin.get("state", {})) != {"revision"}
+                or not app_pin_matches(baseline.get(identity), pin)
+                or identity in TARGET_IDENTITIES):
             raise ValueError("application-only pin differs from baseline: %s" % identity)
     added = sorted(set(resolved) - set(expected))
     omitted_app = sorted((set(expected) - set(resolved)) & set(app))

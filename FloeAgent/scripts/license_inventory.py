@@ -90,7 +90,12 @@ ROOT = HERE.parent  # FloeAgent/
 REPO = ROOT.parent  # repository root
 
 sys.path.insert(0, str(HERE))
-from resolved_pins import resolved_pins, application_pins, verify_resolution  # noqa: E402
+from resolved_pins import (  # noqa: E402
+    application_local_pins,
+    application_pins,
+    resolved_pins,
+    verify_resolution,
+)
 
 MARKDOWN = ROOT / "LICENSES-THIRD-PARTY.md"
 MANIFEST = ROOT / "FloeApp/Resources/Licenses/third-party-inventory.json"
@@ -1397,17 +1402,29 @@ def load_pins() -> list[dict]:
         )
     )
     committed_pins = resolved_pins(committed)
+    project = PROJECT_YML.read_text()
     verified_pins = verify_resolution(
         resolved_pins(current),
         committed_pins,
-        application_pins(PROJECT_YML.read_text()),
+        application_pins(project),
+        application_local_pins(project, PROJECT_YML.parent),
     )
     # SwiftPM may rewrite a GitHub URL with or without its optional .git
     # suffix on another host. verify_resolution has already established that
     # this is the same immutable pin. Emit the committed spelling so a cloud
     # checkout cannot spuriously change the recorded license source.
+    #
+    # The local package closure (FloeCADKit's six pins) is validated against
+    # its committed locks above, but it is declared by resolve_cad_packages()
+    # with the reviewed linked-package rows and build-only exclusions. Keep
+    # this host inventory limited to pins carried by the committed host lock so
+    # those reviewed CAD rows are neither duplicated nor broadened here.
     committed_by_identity = {pin["identity"]: pin for pin in committed_pins}
-    pins = [committed_by_identity.get(pin["identity"], pin) for pin in verified_pins]
+    pins = [
+        committed_by_identity[pin["identity"]]
+        for pin in verified_pins
+        if pin["identity"] in committed_by_identity
+    ]
     rows = []
     for pin in pins:
         state = pin["state"]

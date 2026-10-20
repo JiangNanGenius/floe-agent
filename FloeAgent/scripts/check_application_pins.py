@@ -5,8 +5,11 @@
 committed host lock that supplies the full pin state. Every remote Xcode package
 must be an immutable revision and must agree with the committed lock before an
 archive starts, so a mutable or drifted declaration fails in seconds instead of
-after the build. The full license inventory needs resolved package checkouts and
-normally runs later, after packaging.
+after the build. The committed `Package.resolved` of each explicitly declared
+local package (for example FloeCADKit) supplies the App-local dependency closure;
+the host lock may omit those pins, but the Xcode graph must contain them. The
+full license inventory needs resolved package checkouts and normally runs later,
+after packaging.
 
 Read-only: no package checkouts, no lock or project writes. Standard library
 only.
@@ -20,7 +23,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from resolved_pins import application_pins, resolved_pins, verify_resolution
+from resolved_pins import (
+    application_local_pins,
+    application_pins,
+    resolved_pins,
+    verify_resolution,
+)
 
 ROOT = Path(__file__).resolve().parents[1]  # FloeAgent/
 REPO = ROOT.parent  # repository root
@@ -46,13 +54,18 @@ def check(
     Raises ValueError for a mutable or drifted declaration and OSError /
     json.JSONDecodeError for unreadable inputs.
     """
-    project = (project_yml or (ROOT / "project.yml")).read_text(encoding="utf-8")
+    project_path = project_yml or (ROOT / "project.yml")
+    project = project_path.read_text(encoding="utf-8")
     current = resolved_pins(
         json.loads((lock or (ROOT / "Package.resolved")).read_text(encoding="utf-8"))
     )
     app = application_pins(project)
+    local = application_local_pins(project, project_path.parent)
     combined = verify_resolution(
-        current, committed if committed is not None else load_committed_lock(), app
+        current,
+        committed if committed is not None else load_committed_lock(),
+        app,
+        local,
     )
     return app, combined
 
@@ -74,7 +87,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     print(
         f"application pins OK: {len(app)} immutable Xcode package revision(s) match "
-        f"HEAD:FloeAgent/Package.resolved ({len(combined)} distribution pins)"
+        f"HEAD:FloeAgent/Package.resolved and declared local package locks "
+        f"({len(combined)} distribution pins)"
     )
     return 0
 

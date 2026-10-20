@@ -16,7 +16,9 @@ fi
 python3 - <<'PY'
 import json, subprocess, sys
 sys.path.insert(0, "scripts")
-from resolved_pins import resolved_pins, application_pins, verify_resolution
+from resolved_pins import (
+    application_local_pins, application_pins, resolved_pins, verify_resolution,
+)
 
 with open("Package.resolved") as f:
     resolved = json.load(f)
@@ -25,8 +27,10 @@ pins = resolved_pins(resolved)
 committed = json.loads(subprocess.check_output(
     ["git", "show", "HEAD:FloeAgent/Package.resolved"], text=True))
 with open("project.yml") as f:
-    app_pins = application_pins(f.read())
-pins = verify_resolution(pins, resolved_pins(committed), app_pins)
+    project = f.read()
+app_pins = application_pins(project)
+local_pins = application_local_pins(project, ".")
+pins = verify_resolution(pins, resolved_pins(committed), app_pins, local_pins)
 errors = []
 for pin in pins:
     state = pin.get("state", {})

@@ -17,11 +17,15 @@ the intended contract of `scripts/resolve_xcode_dependencies.sh`:
   with the original restored and the changed bytes kept as evidence;
 * the actual Xcode workspace lock is seeded from the committed HEAD lock on
   first use, verified with the shared `resolved_pins` schema handling
-  (including app-only WhisperKit) and never overwritten when it already
-  disagrees. Because Xcode may legitimately rewrite originHash metadata, the
-  v1/v3 schema or formatting, a byte change is re-checked by normalized pins:
-  equivalent rewrites pass and keep before/after copies, while a real
-  revision/version/location drift is rejected with the drift bytes kept;
+  (including app-only WhisperKit and the committed locks of explicitly
+  declared local packages) and never overwritten when it already disagrees.
+  The canonical host lock is a valid incomplete seed: only the App-local
+  closure may be missing before resolution, while the complete host + App-only
+  + App-local graph is required afterwards. Because Xcode may legitimately
+  rewrite originHash metadata, the v1/v3 schema or formatting, a byte change
+  is re-checked by normalized pins: equivalent rewrites pass and keep
+  before/after copies, while a real revision/version/location drift is
+  rejected with the drift bytes kept;
 * the resolve command mirrors the real build's project, scheme, configuration,
   destination, `-packageCachePath` and `-derivedDataPath`, and the two release
   SDK jobs wire the same helper, canonical lock and Xcode lock in.
@@ -91,6 +95,24 @@ if xcode_lock and "__REWRITE_XCODE_DRIFT__" in body:
     document = json.load(open(xcode_lock))
     document["pins"][0]["state"]["revision"] = "f" * 40
     _rewrite(xcode_lock, json.dumps(document))
+if xcode_lock and "__REWRITE_XCODE_WITH_LOCAL__" in body:
+    document = json.load(open(xcode_lock))
+    local = json.load(open(os.environ["FAKE_LOCAL_LOCK"]))["pins"]
+    present = {p["identity"] for p in document["pins"]}
+    document["pins"] += [p for p in local if p["identity"] not in present]
+    _rewrite(xcode_lock, json.dumps(document))
+if xcode_lock and "__REWRITE_XCODE_LOCAL_DRIFT__" in body:
+    document = json.load(open(xcode_lock))
+    local = json.load(open(os.environ["FAKE_LOCAL_LOCK"]))["pins"]
+    present = {p["identity"]: p for p in document["pins"]}
+    for p in local:
+        if p["identity"] in present:
+            present[p["identity"]]["state"]["revision"] = "f" * 40
+        else:
+            drifted = dict(p)
+            drifted["state"] = {**p["state"], "revision": "f" * 40}
+            document["pins"].append(drifted)
+    _rewrite(xcode_lock, json.dumps(document))
 if xcode_lock and "__DELETE_XCODE_LOCK__" in body:
     os.remove(xcode_lock)
 sys.exit(int(code))
@@ -152,6 +174,26 @@ PROJECT_YML = (
     "    type: application\n"
 ) % WHISPER_REVISION
 
+LOCAL_REVISION = "c" * 40
+LOCAL = pin("cad", "https://example.org/cad.git",
+            version="2.0.0", revision=LOCAL_REVISION)
+LOCAL_ALPHA = pin("alpha", "https://example.org/alpha.git",
+                  version="1.0.0", revision="d" * 40)
+PROJECT_YML_LOCAL = (
+    "name: FloeAgent\n"
+    "packages:\n"
+    "  WhisperKit:\n"
+    "    url: https://github.com/argmaxinc/WhisperKit.git\n"
+    "    revision: %s\n"
+    "  FloeAgentPackages:\n"
+    "    path: .\n"
+    "  FloeCADKit:\n"
+    "    path: ThirdParty/FloeCADKit\n"
+    "targets:\n"
+    "  FloeAgent:\n"
+    "    type: application\n"
+) % WHISPER_REVISION
+
 
 class ResolveHelperFixture(unittest.TestCase):
     def setUp(self):
@@ -185,7 +227,7 @@ class ResolveHelperFixture(unittest.TestCase):
                    resolved_content="ORIGINAL-LOCK\n",
                    xcode_lock=None, canonical=None, project_yml=None,
                    xcode_lock_content=None, create_xcode_lock=False,
-                   shim=None):
+                   local_lock_content=None, shim=None):
         self._run_index += 1
         sequence = self.root / ("sequence-%d.txt" % self._run_index)
         sequence.write_text("\n".join(attempts) + "\n", encoding="utf-8")
@@ -230,6 +272,10 @@ class ResolveHelperFixture(unittest.TestCase):
                    FAKE_COUNTER=str(counter),
                    FAKE_RESOLVED=str(self.resolved),
                    FAKE_XCODE_LOCK="" if lock_path is None else str(lock_path))
+        if local_lock_content is not None:
+            local_lock = self.root / "local-Package.resolved"
+            local_lock.write_text(local_lock_content, encoding="utf-8")
+            env["FAKE_LOCAL_LOCK"] = str(local_lock)
         if shim:
             shim_dir = self.root / ("shim-%s" % shim)
             shim_dir.mkdir(exist_ok=True)
@@ -248,6 +294,10 @@ class ResolveHelperFixture(unittest.TestCase):
 
     def logs(self, log_dir):
         return sorted(p.name for p in Path(log_dir).glob("resolve-attempt-*.log"))
+
+    def canonical_path(self):
+        self.canonical.write_text(CANONICAL, encoding="utf-8")
+        return self.canonical
 
 
 class NetworkRetryTests(ResolveHelperFixture):
@@ -570,6 +620,92 @@ class XcodeLockTests(ResolveHelperFixture):
     def canonical_path(self):
         self.canonical.write_text(CANONICAL, encoding="utf-8")
         return self.canonical
+
+
+class LocalClosureTests(ResolveHelperFixture):
+    """The canonical host lock is a valid incomplete seed for App-local pins."""
+
+    def write_local_lock(self, pins):
+        self.project_yml.write_text(PROJECT_YML_LOCAL, encoding="utf-8")
+        directory = self.root / "ThirdParty" / "FloeCADKit"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "Package.resolved"
+        path.write_text(lock_json(pins), encoding="utf-8")
+        return path
+
+    def test_incomplete_seed_is_completed_by_the_local_lock(self):
+        self.write_local_lock([LOCAL])
+        lock = self.xcode_lock_path()
+        result, _, _, log_dir = self.run_helper(
+            ["0|__REWRITE_XCODE_WITH_LOCAL__ resolved"],
+            xcode_lock=lock, canonical=self.canonical_path(),
+            project_yml=self.project_yml,
+            resolved_content=CANONICAL, create_xcode_lock=True,
+            xcode_lock_content=CANONICAL,
+            local_lock_content=lock_json([LOCAL]))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        written = json.loads(lock.read_text())
+        self.assertEqual(
+            {p["identity"] for p in written["pins"]},
+            {"alpha", "whisperkit", "cad"})
+        self.assertIn("existing xcode lock: 2 pins verified", result.stdout)
+        summary = (Path(log_dir) / "resolve-summary.txt").read_text()
+        self.assertIn("xcode_lock_status=format-normalized", summary)
+        self.assertIn("classification=success", summary)
+        self.assertTrue((Path(log_dir) / "Package.resolved.xcode.before").is_file())
+        self.assertTrue((Path(log_dir) / "Package.resolved.xcode.after").is_file())
+
+    def test_success_without_completing_the_local_graph_is_rejected(self):
+        self.write_local_lock([LOCAL])
+        lock = self.xcode_lock_path()
+        result, _, _, log_dir = self.run_helper(
+            ["0|resolved"], xcode_lock=lock, canonical=self.canonical_path(),
+            project_yml=self.project_yml,
+            resolved_content=CANONICAL, create_xcode_lock=True,
+            xcode_lock_content=CANONICAL,
+            local_lock_content=lock_json([LOCAL]))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing pinned dependencies", result.stderr)
+        self.assertEqual(lock.read_text(), CANONICAL)
+        self.assertIn("classification=xcode-lock-invalid",
+                      (Path(log_dir) / "resolve-summary.txt").read_text())
+
+    def test_local_conflict_with_host_fails_before_resolution(self):
+        self.write_local_lock([LOCAL_ALPHA])
+        lock = self.xcode_lock_path()
+        result, argv_log, _, log_dir = self.run_helper(
+            ["0|would have run"], xcode_lock=lock,
+            canonical=self.canonical_path(), project_yml=self.project_yml,
+            resolved_content=CANONICAL, create_xcode_lock=True,
+            xcode_lock_content=CANONICAL,
+            local_lock_content=lock_json([LOCAL_ALPHA]))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.attempts(argv_log), [],
+                         "a conflicting local pin must fail in pre-flight")
+        self.assertIn("conflicts with committed lock", result.stderr)
+        self.assertEqual(lock.read_text(), CANONICAL)
+        self.assertIn("classification=xcode-lock-mismatch",
+                      (Path(log_dir) / "resolve-summary.txt").read_text())
+
+    def test_local_drift_after_resolution_is_rejected_with_evidence(self):
+        self.write_local_lock([LOCAL])
+        lock = self.xcode_lock_path()
+        result, _, _, log_dir = self.run_helper(
+            ["0|__REWRITE_XCODE_LOCAL_DRIFT__ resolved"],
+            xcode_lock=lock, canonical=self.canonical_path(),
+            project_yml=self.project_yml,
+            resolved_content=CANONICAL, create_xcode_lock=True,
+            xcode_lock_content=CANONICAL,
+            local_lock_content=lock_json([LOCAL]))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(lock.read_text(), CANONICAL,
+                         "the trusted seed must be restored after local drift")
+        self.assertIn("classification=xcode-lock-mutated",
+                      (Path(log_dir) / "resolve-summary.txt").read_text())
+        drifted = json.loads(
+            (Path(log_dir) / "Package.resolved.xcode.mutated").read_text())
+        cad = next(p for p in drifted["pins"] if p["identity"] == "cad")
+        self.assertEqual(cad["state"]["revision"], "f" * 40)
 
 
 class CommandParameterTests(ResolveHelperFixture):

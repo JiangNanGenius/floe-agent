@@ -200,7 +200,7 @@
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-jpeg/LICENSE",
       "sha256": "f8ab497929c6f0ccbd6d2c368c17866ec055b1588a32f268473730d59b2fcfa4",
-      "revision": "c7aa48486cd8920120dd69cda5de62aeb93e1708",
+      "revision": "07c12729a5650a56e1f54b9841cb7eb68449440a",
       "source": "https://github.com/tayloraswift/swift-jpeg"
     },
     {

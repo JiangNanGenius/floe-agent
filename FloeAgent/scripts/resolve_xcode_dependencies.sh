@@ -26,15 +26,21 @@
 #   * the *actual* Xcode lock (`project.xcworkspace/xcshareddata/swiftpm/
 #     Package.resolved`) is what xcodebuild really reads and writes. When
 #     `--xcode-lock` is given it is seeded from the committed HEAD lock on
-#     first use and verified read-only against that lock (plus app-only pins
-#     from `--project-yml`) with scripts/resolved_pins.py. An existing lock
-#     that disagrees with the committed pins is never overwritten. Xcode may
-#     legitimately rewrite its own lock while resolving - originHash metadata,
-#     a v1/v3 schema transcription or pure formatting - so a byte change is
-#     re-checked by *normalized pins*: it passes when every identity's
-#     version/revision/location is unchanged (before/after copies are kept),
-#     and fails only on real dependency drift, a missing pin or deletion (drift
-#     bytes kept as evidence, the committed lock restored);
+#     first use and verified read-only against that lock, app-only pins and the
+#     committed locks of local packages declared in `--project-yml` with
+#     scripts/resolved_pins.py. The canonical host lock is a valid incomplete
+#     seed: it may omit the App-local closure, but an existing lock that
+#     disagrees with a committed/direct pin or carries an unknown pin is never
+#     overwritten. After resolution the actual Xcode lock must contain the
+#     complete host + App-only + App-local graph. Xcode may legitimately
+#     rewrite its own lock while resolving - originHash metadata, a v1/v3
+#     schema transcription or pure formatting - so a byte change is re-checked
+#     by *normalized pins*: it passes when every identity's
+#     version/revision/location is unchanged apart from the one allowed
+#     revision-only display omission for a directly declared immutable pin
+#     (before/after copies are kept), and fails only on real dependency drift,
+#     a missing pin or deletion (drift bytes kept as evidence, the committed
+#     lock restored);
 #   * compile, manifest, checksum and artifact-mapping failures are not
 #     retried on their own - they fail immediately.
 #
@@ -230,12 +236,15 @@ write_summary() {
 }
 
 # verify_lock LABEL LOCK MODE
-#   MODE=canonical  the resolved pins must be a subset of the committed lock
-#                   (a host lock may legitimately omit app-only pins)
-#   MODE=xcode      additionally every committed and app-only pin must be
-#                   present in the actual Xcode lock
+#   MODE=seed       an existing/initialized Xcode lock may still be the
+#                   incomplete canonical host representation: every host and
+#                   direct App-only pin must be present, but the App-local
+#                   closure may be absent for xcodebuild to resolve.
+#   MODE=xcode      the actual post-resolution Xcode lock must contain every
+#                   committed, App-only and App-local pin
 # Uses the shared schema normalization / verify_resolution so v1 and v2/v3
-# locks compare identically and app-only WhisperKit is not dropped.
+# locks compare identically, app-only WhisperKit is not dropped and the local
+# package locks complete the App graph without replacing host pins.
 verify_lock() {
   FLOE_SCRIPTS_DIR="$script_dir" \
   FLOE_VERIFY_LABEL="$1" \
@@ -249,7 +258,7 @@ import os
 import sys
 
 sys.path.insert(0, os.environ["FLOE_SCRIPTS_DIR"])
-from resolved_pins import application_pins, resolved_pins, verify_resolution
+from resolved_pins import application_local_pins, application_pins, resolved_pins, verify_resolution
 
 label = os.environ["FLOE_VERIFY_LABEL"]
 mode = os.environ["FLOE_VERIFY_MODE"]
@@ -257,24 +266,40 @@ try:
     with open(os.environ["FLOE_VERIFY_CANONICAL"], encoding="utf-8") as handle:
         canonical = resolved_pins(json.load(handle))
     app = []
+    local = []
     project_yml = os.environ.get("FLOE_VERIFY_PROJECT_YML", "")
     if project_yml:
         with open(project_yml, encoding="utf-8") as handle:
-            app = application_pins(handle.read())
+            project = handle.read()
+        app = application_pins(project)
+        local = application_local_pins(project, os.path.dirname(os.path.abspath(project_yml)))
     with open(os.environ["FLOE_VERIFY_LOCK"], encoding="utf-8") as handle:
         current = resolved_pins(json.load(handle))
-    combined = verify_resolution(current, canonical, app)
-    if mode == "xcode":
-        present = {pin["identity"] for pin in current}
+    combined = verify_resolution(current, canonical, app, local)
+    present = {pin["identity"] for pin in current}
+    if mode == "seed":
+        # A host-representation seed may omit App-local pins only. App-only
+        # declarations stay required once the lock exists, so dropping
+        # WhisperKit from an existing Xcode lock is still corruption.
+        local_identities = {pin["identity"] for pin in local}
+        missing = [
+            pin["identity"] for pin in combined
+            if pin["identity"] not in present and pin["identity"] not in local_identities
+        ]
+    elif mode == "xcode":
         missing = [pin["identity"] for pin in combined if pin["identity"] not in present]
-        if missing:
-            raise ValueError(
-                "actual Xcode lock is missing pinned dependencies: " + ", ".join(missing))
+    else:
+        raise ValueError(f"unsupported verification mode: {mode!r}")
+    if missing:
+        raise ValueError(
+            "actual Xcode lock is missing pinned dependencies: " + ", ".join(missing))
 except (ValueError, OSError, json.JSONDecodeError) as exc:
     print(f"error: {label}: {exc}", file=sys.stderr)
     sys.exit(1)
-appendix = f" (+{len(app)} app-only)" if app else ""
-print(f"{label}: {len(current)} pins verified against committed lock{appendix}")
+appendix = ""
+if app or local:
+    appendix = f" (+{len(app)} app-only, +{len(local)} app-local)"
+print(f"{label}: {len(current)} pins verified against committed locks{appendix}")
 PY
 }
 
@@ -315,7 +340,9 @@ if [ -n "$xcode_lock" ]; then
   }
   if [ -f "$xcode_lock" ]; then
     # Never clobber an existing lock that disagrees with the committed pins.
-    if ! verify_lock "existing xcode lock" "$xcode_lock" xcode; then
+    # It may still be the incomplete canonical host seed; xcodebuild resolves
+    # the App-local closure and the post-resolution check requires it.
+    if ! verify_lock "existing xcode lock" "$xcode_lock" seed; then
       xcode_lock_status="existing-mismatch"
       classification="xcode-lock-mismatch"
       write_summary
@@ -331,7 +358,7 @@ if [ -n "$xcode_lock" ]; then
       echo "error: cannot initialize Xcode lock from committed lock: $canonical_file" >&2
       exit 1
     }
-    if ! verify_lock "initialized xcode lock" "$xcode_lock" xcode; then
+    if ! verify_lock "initialized xcode lock" "$xcode_lock" seed; then
       xcode_lock_status="initialization-invalid"
       classification="xcode-lock-invalid"
       write_summary
