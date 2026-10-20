@@ -3,6 +3,10 @@
 
 文档更新时间 / Document updated: 2026-10-20. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
+## S3-A 初始化源码已完成 / Shortcut initialization source complete
+
+实现源码 `91269c602a01a2c5cdf926aad5759521741dc0b1`：修复 App／旧快捷指令的共享准备、并发、失败重试及取消；完整本地 App 编译通过，实际 App 宿主定向 9 项通过、0 失败、0 跳过，生产 helper 检查 25 项通过。本小包不改版本和已发布安装包，下一小包 S3-B 草稿队列。[验收记录](releases/repairs/FLOE_SHORTCUTS_S3A_20261020.md)。Source qualification is complete; it awaits a future integrated installable build. Hosted actual-intent entry is distinct from operating-system Shortcuts/Siri dispatch and physical-device testing.
+
 ## 1.7.40（281）内测可安装，无签名包已发布，外测待审 / Internal available; unsigned published; external review pending
 
 - 不可变 `v1.7.40` 固定源码 `57ed0b78b9fa58c4dce140f45c6a359295b26dd1`，已合并 `main`。本地 Xcode 27 Release 归档成功，原始设备包、匹配符号和哈希已保留；同源包由云端仅做打包证明或签名上传，没有云端 App 重建。Immutable source is merged into main; the local Xcode 27 archive succeeded, and its original device package and matching symbols are retained. Cloud steps reuse that package without rebuilding the App.
