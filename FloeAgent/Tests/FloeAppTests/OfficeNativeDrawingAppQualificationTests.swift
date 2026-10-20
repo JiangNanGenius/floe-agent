@@ -1464,6 +1464,7 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     /// Read the existing native DocumentRepair command-values response without
     /// opening its UI. Diagnostic only: neither commands nor assertions change.
     private func captureActualUndoStack(_ web: WKWebView, root: URL, label: String) async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_NATIVE_UNDO_STACK_OBSERVATION"] == "1" else { return }
         let value = try await web.callAsyncJavaScript(Self.actualUndoStackScript,
             arguments: [:], in: nil, contentWorld: .page)
         guard let json = value as? String, json.utf8.count <= 32_768 else {
