@@ -28,3 +28,11 @@
 已完成的六种普通／画笔模式实时缩放、键盘恢复、返回保存与手记卡片、新增音乐偏好／播放器／界面检查沿用其对应记录；本次没有重跑无改动的模块。新增音乐随 281 交付。
 
 真实 Apple Pencil 的压力、手掌误触、长期书写手感及新增音乐听感仍由真机反馈确认。原生组件检查、完整 App 验收、可安装渠道和设备验收分别记录。
+
+## 281 交付完成
+
+- 不可变 `v1.7.40` 固定源码 `57ed0b78b9fa58c4dce140f45c6a359295b26dd1`；相较上述验收源码仅增加组件固定与交付文档，产品代码和资源一致。本地 Xcode 27 Release 归档成功，原始设备包及匹配符号已保留。首轮归档因组件目录含额外符号而被严格清单拒绝，修正本地符号位置后成功；原失败保留，校验未放宽。
+- [稳定最新版 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.40)含无签名 IPA、校验文件及最小公开来源记录。[发布流程 39380604459](https://github.com/JiangNanGenius/floe-agent/actions/runs/39380604459)完成同次 Feather 更新；独立核对标签、真实 arm64 设备包、摘要、来源证明、latest 与实时订阅通过。IPA SHA-256：`713e4bd59e3e829536888cb46af156998ac38520b44f5b2d89a5a98a450d72c5`。公开包中的原生组件、浏览器及四首音乐与验收产物一致。
+- [同源包仅签名上传 39381021373](https://github.com/JiangNanGenius/floe-agent/actions/runs/39381021373)成功；[独立 Apple 回查 39382971227](https://github.com/JiangNanGenius/floe-agent/actions/runs/39382971227)确认 1.7.40（281）为 `VALID`、未过期、现有 Floe QA `IN_BETA_TESTING`，内部可安装。
+- 外测 API 首个备注写入被 403 拒绝，未关联或送审；随后通过 Apple 网页保存定稿备注，向现有 publictest1 提交一次。[独立回查 39383590223](https://github.com/JiangNanGenius/floe-agent/actions/runs/39383590223)确认群组已关联、恰有一条 `pending_review`、`WAITING_FOR_BETA_REVIEW`、备注匹配且 issues 为空。外审批准另记；正式 App Store 提交未变。
+- 本轮代码已合并推送 main，已合并任务分支、本轮临时传输草稿和标签已清理。原始包、符号及失败／成功证据保留；完成的归档、打包临时目录与原生组件缓存清理回收超过 9 GB，App 缓存用于下一阶段增量集成。固定 iPad 模拟器已关机。S1 从活动目标移除，后续仅推进 S3-A。
