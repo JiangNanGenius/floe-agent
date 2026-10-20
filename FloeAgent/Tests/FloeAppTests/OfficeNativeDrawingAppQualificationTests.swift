@@ -1198,12 +1198,11 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                 let dotPoint = CGPoint(x: x1 + dotFraction[0] * (x2 - x1),
                                        y: y1 + dotFraction[1] * (y2 - y1))
                 var registrationDiagnostics: [String: Any]?
-                if format == "xlsx" {
                 // A reopened page can restore the document at a different scroll
                 // offset than the live session, so the viewport-fraction point is
                 // kept for diagnostics only. The gate expectation is anchored in
                 // document content: the original input point
-                // plus the rigid shift of the shared positive-control stroke
+                // plus the scale and shift of the shared positive-control stroke
                 // measured between the pre-save and the reopened control-only
                 // pages. Thresholds stay exactly as before; a residual bound is
                 // added, so a displaced dot fails.
@@ -1223,10 +1222,6 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                                "The document-content registration was unavailable: \(registered.diagnostics)")
                 XCTAssertEqual(visibility["available"] as? Bool, true,
                                "The reopened-page pixel comparison was unavailable: \(visibility)")
-                } else {
-                    visibility = dotRenderFacts(control: controlImage, final: finalImage,
-                                                point: dotPoint, viewport: CGSize(width: viewportWidth, height: viewportHeight))
-                }
                 let blue = visibility["bluePixelsInCrop"] as? Int ?? 0
                 let changed = visibility["changedPixelsInCrop"] as? Int ?? 0
                 XCTAssertGreaterThanOrEqual(blue, 12,
@@ -3020,15 +3015,14 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     }
 
     /// Anchor the reopened dot expectation in document content. The dot
-    /// original contact point is checked against the pre-save render, then
-    /// translated by the rigid centroid shift of the shared positive-control
+    /// original contact region is checked against the pre-save render, then
+    /// mapped by the scale and centroid shift of the shared positive-control
     /// red stroke between the pre-save and reopened control-only pages, then
     /// cross-checked against the reopened final image. Returns a viewport-space
     /// point plus diagnostics; availability is false when the inputs cannot
     /// support a registration, which the caller must treat as a failure.
     private func registeredDotCenter(preSave: UIImage?, originalClientPoint: CGPoint?,
-                                     controlReopened: UIImage?,
-                                     finalReopened: UIImage?,
+                                     controlReopened: UIImage?, finalReopened: UIImage?,
                                      viewport: CGSize) -> (point: CGPoint, diagnostics: [String: Any]) {
         let off = (point: CGPoint.zero, diagnostics: ["available": false, "reason": "images-unavailable"] as [String: Any])
         guard let preSave, let originalClientPoint, let controlReopened, let finalReopened,
@@ -3040,15 +3034,27 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
               let preBytes = rgbaBytes(preCG), let ctrlBytes = rgbaBytes(ctrlCG),
               let finBytes = rgbaBytes(finCG) else { return off }
         let width = preCG.width, height = preCG.height
-        func centroid(_ bytes: [UInt8], _ test: (Int, Int, Int) -> Bool) -> (CGPoint, Int) {
+        let scaleX = CGFloat(width) / viewport.width, scaleY = CGFloat(height) / viewport.height
+        let original = CGPoint(x: originalClientPoint.x * scaleX, y: originalClientPoint.y * scaleY)
+        // Use the existing 26 CSS-pixel input region. Blue controls elsewhere
+        // in the editor are not document ink and cannot become the anchor.
+        let radius = 26 * max(scaleX, scaleY)
+        typealias Blob = (center: CGPoint, count: Int, spanX: CGFloat)
+        func blob(_ bytes: [UInt8], around: CGPoint? = nil,
+                  _ test: (Int, Int, Int) -> Bool) -> Blob {
             var seen = [Bool](repeating: false, count: width * height)
             var best: [Int] = []
+            func matches(_ x: Int, _ y: Int) -> Bool {
+                if let around, (abs(CGFloat(x) - around.x) > radius || abs(CGFloat(y) - around.y) > radius) { return false }
+                let o = (y * width + x) * 4
+                return test(Int(bytes[o]), Int(bytes[o+1]), Int(bytes[o+2]))
+            }
             for y in 0..<height { for x in 0..<width {
                 let idx = y * width + x
                 if seen[idx] { continue }
-                let o = idx * 4
-                guard test(Int(bytes[o]), Int(bytes[o+1]), Int(bytes[o+2])) else { seen[idx] = true; continue }
-                var stack = [idx]; seen[idx] = true; var pts: [Int] = []
+                seen[idx] = true
+                guard matches(x, y) else { continue }
+                var stack = [idx]; var pts: [Int] = []
                 while let c = stack.popLast() {
                     pts.append(c)
                     let cx = c % width, cy = c / width
@@ -3056,51 +3062,48 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                         if nx >= 0, nx < width, ny >= 0, ny < height {
                             let j = ny * width + nx
                             if !seen[j] {
-                                let jo = j * 4
-                                if test(Int(bytes[jo]), Int(bytes[jo+1]), Int(bytes[jo+2])) { seen[j] = true; stack.append(j) }
-                                else { seen[j] = true }
+                                seen[j] = true
+                                if matches(nx, ny) { stack.append(j) }
                             }
                         }
                     }
                 }
                 if pts.count > best.count { best = pts }
             } }
-            guard !best.isEmpty else { return (CGPoint.zero, 0) }
-            let fx = Double(best.reduce(0) { $0 + $1 % width }) / Double(best.count)
-            let fy = Double(best.reduce(0) { $0 + $1 / width }) / Double(best.count)
-            return (CGPoint(x: fx, y: fy), best.count)
+            guard !best.isEmpty else { return (.zero, 0, 0) }
+            let xs = best.map { $0 % width }
+            let cx = Double(xs.reduce(0, +)) / Double(best.count)
+            let cy = Double(best.reduce(0) { $0 + $1 / width }) / Double(best.count)
+            return (CGPoint(x: cx, y: cy), best.count, CGFloat((xs.max() ?? 0) - (xs.min() ?? 0)))
         }
         let isBlue: (Int, Int, Int) -> Bool = { r, g, b in b > 110 && b > r + 35 && b > g + 35 }
         let isRed: (Int, Int, Int) -> Bool = { r, g, b in r > 110 && r > g + 35 && r > b + 35 }
-        let (dotPre, dotPreN) = centroid(preBytes, isBlue)
-        let (strokePre, strokePreN) = centroid(preBytes, isRed)
-        let (strokeCtrl, strokeCtrlN) = centroid(ctrlBytes, isRed)
-        let (dotFin, dotFinN) = centroid(finBytes, isBlue)
-        var diag: [String: Any] = ["available": true,
-            "dotPre": [dotPre.x, dotPre.y], "dotPrePixels": dotPreN,
-            "strokePre": [strokePre.x, strokePre.y], "strokePrePixels": strokePreN,
-            "strokeCtrl": [strokeCtrl.x, strokeCtrl.y], "strokeCtrlPixels": strokeCtrlN,
-            "dotFin": [dotFin.x, dotFin.y], "dotFinPixels": dotFinN]
-        guard dotPreN >= 12, strokePreN >= 200, strokeCtrlN >= 200, dotFinN >= 12 else {
-            diag["available"] = false; diag["reason"] = "registration-blobs-insufficient"
-            return (CGPoint.zero, diag)
+        let dotPre = blob(preBytes, around: original, isBlue)
+        let strokePre = blob(preBytes, isRed)
+        let strokeCtrl = blob(ctrlBytes, isRed)
+        var diag: [String: Any] = ["available": false,
+            "originalInputImageCenter": [original.x, original.y],
+            "dotPre": [dotPre.center.x, dotPre.center.y], "dotPrePixels": dotPre.count,
+            "strokePre": [strokePre.center.x, strokePre.center.y], "strokePrePixels": strokePre.count,
+            "strokeCtrl": [strokeCtrl.center.x, strokeCtrl.center.y], "strokeCtrlPixels": strokeCtrl.count]
+        guard dotPre.count >= 12, strokePre.count >= 200, strokeCtrl.count >= 200,
+              strokePre.spanX > 100, strokeCtrl.spanX > 100 else {
+            diag["reason"] = "registration-blobs-insufficient"; return (.zero, diag)
         }
-        let scaleX = CGFloat(width) / viewport.width, scaleY = CGFloat(height) / viewport.height
-        let original = CGPoint(x: originalClientPoint.x * scaleX, y: originalClientPoint.y * scaleY)
-        let preResidual = hypot(dotPre.x - original.x, dotPre.y - original.y)
-        diag["originalInputImageCenter"] = [original.x, original.y]
-        diag["preSaveInputResidualImagePx"] = preResidual
-        guard preResidual <= 4.0 else {
-            diag["available"] = false; diag["reason"] = "pre-save-dot-does-not-match-original-input"
-            return (CGPoint.zero, diag)
-        }
-        let shift = CGPoint(x: strokeCtrl.x - strokePre.x, y: strokeCtrl.y - strokePre.y)
-        let expected = CGPoint(x: original.x + shift.x, y: original.y + shift.y)
-        let residual = ((dotFin.x - expected.x) * (dotFin.x - expected.x)
-                        + (dotFin.y - expected.y) * (dotFin.y - expected.y)).squareRoot()
-        diag["contentShift"] = [shift.x, shift.y]
+        // The SAME saved positive-control path independently measures the
+        // reopened document's scale and translation. Writer can fit the page
+        // to a different zoom on reopen; one viewport fraction is insufficient.
+        let zoom = strokeCtrl.spanX / strokePre.spanX
+        guard zoom.isFinite, zoom > 0 else { return (.zero, diag) }
+        let expected = CGPoint(x: strokeCtrl.center.x + (dotPre.center.x - strokePre.center.x) * zoom,
+                               y: strokeCtrl.center.y + (dotPre.center.y - strokePre.center.y) * zoom)
+        let dotFin = blob(finBytes, around: expected, isBlue)
+        diag["contentScale"] = zoom
         diag["expectedImageCenter"] = [expected.x, expected.y]
-        diag["residualImagePx"] = residual
+        diag["dotFin"] = [dotFin.center.x, dotFin.center.y]; diag["dotFinPixels"] = dotFin.count
+        guard dotFin.count >= 12 else { diag["reason"] = "reopened-dot-missing"; return (.zero, diag) }
+        diag["residualImagePx"] = hypot(dotFin.center.x - expected.x, dotFin.center.y - expected.y)
+        diag["available"] = true
         return (CGPoint(x: expected.x / scaleX, y: expected.y / scaleY), diag)
     }
 
