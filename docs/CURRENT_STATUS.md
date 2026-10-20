@@ -3,7 +3,7 @@
 
 文档更新时间 / Document updated: 2026-10-21. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
-当前剩余交付顺序为 **283 Office 新反馈＋S3-D → S4 真实定时 → S5＋S6 → S7 按执行链分组**。用户已确认 282 缩放正常；283 优先修复无标题编辑请求、空闲自动保存，并提供助手按工作表／单元格范围或页／矩形主动查看文档的工具，取代每次发送强制附带当前视图。现有文件结果工作与本轮合并验收；尚未完成 283 App 编译、原生验证或发包。S4 已准备，待本轮交付清理后接续，不重跑已通过的无关检查。详见[当前计划](FLOE_IOS_CLOSURE_PLAN_20261018.zh-CN.md)。Build 283 prioritizes the new Office editing, autosave and region-viewing feedback alongside S3-D file results. Its App qualification and delivery are pending; real scheduling follows afterward.
+当前剩余交付顺序为 **283 Office 新反馈＋S3-D＋火山引擎搜索 → S4 真实定时 → S5＋S6 → S7 按执行链分组**。用户已确认 282 缩放正常；283 优先修复无标题编辑请求、空闲自动保存，并提供助手按工作表／单元格范围或页／矩形主动查看文档的工具，取代每次发送强制附带当前视图。现有文件结果工作与本轮合并验收；用户新增的火山引擎搜索按普通方舟／Agent Plan 分开接入，菜单内独立控制可并存的功能及专业数据集，保留现有搜索默认值。尚未完成 283 App 编译、原生验证或发包。S4 已准备，待本轮交付清理后接续，不重跑已通过的无关检查。详见[当前计划](FLOE_IOS_CLOSURE_PLAN_20261018.zh-CN.md)。Build 283 covers the new Office feedback, S3-D file results and the newly requested Volcengine search provider with separate account routes and feature controls. App qualification and delivery are pending; real scheduling follows afterward.
 
 ## 1.7.41（282）内部可安装，公测已送审，无签名包已交付 / Internal available; external review pending; unsigned delivered
 
