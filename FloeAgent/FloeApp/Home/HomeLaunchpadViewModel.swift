@@ -53,6 +53,9 @@ final class HomeLaunchpadViewModel: ObservableObject {
     /// Durable-slot count currently waiting to be reviewed (pending entries).
     /// The banner is honest: 0 means nothing is queued for this surface.
     @Published private(set) var shortcutInboxCount = 0
+    /// Publishes handoff completion so submission controls refresh even when
+    /// the pending count stays zero (for example a single migrated draft).
+    @Published private(set) var shortcutHandoffInProgress = false
     /// One handoff per destination at a time across ALL live windows: the
     /// claim/ack protocol is atomic, and serializing the delivery side keeps
     /// two windows from continuing the same claim against each other.
@@ -86,12 +89,18 @@ final class HomeLaunchpadViewModel: ObservableObject {
     /// (whitespace does not count), no staged attachments, no send in
     /// flight, and no other window is mid-handoff for this destination.
     var canAcceptShortcutDraft: Bool {
+        isShortcutComposerFree
+            && !Self.destinationsInHandoff.contains(draftStorageID.uuidString)
+    }
+
+    /// Internal checks run after this caller owns the destination lock.
+    /// Testing the public locked-state predicate there would reject itself.
+    private var isShortcutComposerFree: Bool {
         acceptsShortcutInbox
             && !draft.contains(where: { !$0.isWhitespace })
             && attachments.isEmpty
             && !isSending
             && !isConsumingDraft
-            && !Self.destinationsInHandoff.contains(draftStorageID.uuidString)
     }
 
     var showsShortcutInboxBanner: Bool {
@@ -216,12 +225,14 @@ final class HomeLaunchpadViewModel: ObservableObject {
         center.providerAndModel(modelID: selectedModelID) != nil
             && draft.contains(where: { !$0.isWhitespace })
             && !isSending
+            && !Self.destinationsInHandoff.contains(draftStorageID.uuidString)
     }
 
     /// Starting a casual chat and sending a normal task share one creation
     /// gate. Opening the temporary composer never starts a model request.
     var canStartTemporaryChat: Bool {
         !isSending && center.temporarySession == nil
+            && !Self.destinationsInHandoff.contains(draftStorageID.uuidString)
     }
 
     @discardableResult
@@ -312,7 +323,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
     /// only the entry-bound receipt can distinguish them. Rendering happens
     /// as the synchronous acceptance event BEFORE the receipt is staged —
     /// nothing assigns the field after the durable commit — so typing,
-    /// staging or sending during the durable-write suspension
+    /// staging during the durable-write suspension
     /// (including an A → B → A edit) is newer work that no late callback
     /// ever overwrites — the only assignment happens synchronously BEFORE
     /// the commit suspends, and a failed placement rolls back its render
@@ -329,7 +340,11 @@ final class HomeLaunchpadViewModel: ObservableObject {
             return
         }
         Self.destinationsInHandoff.insert(destination)
-        defer { Self.destinationsInHandoff.remove(destination) }
+        shortcutHandoffInProgress = true
+        defer {
+            Self.destinationsInHandoff.remove(destination)
+            shortcutHandoffInProgress = false
+        }
         guard isShortcutInboxEnabled() else {
             // Capability off: queued records stay queued, the surface is quiet.
             if shortcutInboxCount != 0 { shortcutInboxCount = 0 }
@@ -341,7 +356,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
                 into: inbox, defaults: shortcutLegacyDefaults
             )
             await settleShortcutClaims(inbox, destination: destination)
-            guard canAcceptShortcutDraft else {
+            guard isShortcutComposerFree else {
                 await refreshShortcutInboxCount()
                 return
             }

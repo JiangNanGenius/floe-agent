@@ -909,6 +909,32 @@ struct ShortcutInboxHandoffTests {
         return (vm, try #require(receiptBox.value))
     }
 
+    @Test("Unverified intake blocks submission in every Home window and releases the gate")
+    func unverifiedIntakeBlocksSubmissionAcrossWindows() async throws {
+        let f = try await Fixture()
+        defer { f.cleanup() }
+        _ = try await f.inbox.enqueue(text: "queued", source: .intentCreate, migrationKey: nil)
+        let priorTemporaryAvailability = f.makeVM().canStartTemporaryChat
+        let queue = DispatchQueue(label: "floe-test-inbox-submit-gated")
+        queue.suspend()
+        let store = ComposerDraftStore(fileURL: f.draftFile, writeQueue: queue)
+        let (vm, _) = try await interleavedAcceptance(f: f, store: store, queue: queue) { receiving in
+            #expect(receiving.draft == "queued")
+            #expect(receiving.shortcutHandoffInProgress)
+            #expect(!receiving.canSend)
+            #expect(!receiving.canStartTemporaryChat)
+            // Rebuilding a second Home window can see the shared in-memory
+            // text before the receipt reaches disk. It must share the gate.
+            let sibling = f.makeVM(draftStore: store)
+            #expect(!sibling.canSend)
+            #expect(!sibling.canStartTemporaryChat)
+        }
+        #expect(!vm.shortcutHandoffInProgress)
+        #expect(vm.canStartTemporaryChat == priorTemporaryAvailability)
+        #expect(vm.draft == "queued")
+        #expect(try await f.inbox.pendingCount() == 0)
+    }
+
     @Test("An A → B → A edit inside the durable-commit suspension is never overwritten by the handoff")
     func editDuringDurableWriteIsNeverOverwritten() async throws {
         let f = try await Fixture()
