@@ -591,6 +591,8 @@ targets:
       - path: Tests/FloeAppTests/OfficeDocumentConversionAppQualificationTests.swift
       - path: Tests/FloeAppTests/OfficeNativeDrawingAppQualificationTests.swift
       - path: Tests/FloeAppTests/OfficeLiveInkAppQualificationTests.swift
+      - path: Tests/FloeAppTests/OfficeAssistantLivePageSendTests.swift
+      - path: Tests/FloeAppTests/OfficeWorkbookCellCreationTests.swift
       - path: Tests/FloeAppTests/OfficeNativeChartAppQualificationTests.swift
       - path: Tests/FloeAppTests/SourceControlRootIdentityTests.swift
       - path: Tests/FloeAppTests/IDEMarkdownOutlineTests.swift

@@ -206,6 +206,7 @@ public enum OfficeDocumentService {
     private static let maximumMemberBytes: UInt32 = 64 * 1_024 * 1_024
     private static let maximumXMLBytes: UInt32 = 16 * 1_024 * 1_024
     private static let maximumFields = 20_000
+    private static let maximumCreatedCellsPerUpdate = 2_000
 
     public static func inspect(url: URL) throws -> OfficeDocumentSnapshot {
         guard let kind = OfficeDocumentKind(url: url) else {
@@ -325,12 +326,34 @@ public enum OfficeDocumentService {
 
     /// Applies exact field updates. Unknown/stale IDs fail closed so a model or
     /// UI cannot accidentally edit a different package revision.
+    ///
+    /// With `allowsWorkbookCellCreation` set on a workbook, a canonical
+    /// `"<worksheet part>|c|<CELL>"` key for a cell that does not exist yet
+    /// creates that cell inside the package's own worksheet instead of
+    /// refusing: a strict finite decimal becomes a real numeric `<v>` cell
+    /// (never the inline text a formula such as `SUM` would ignore), a
+    /// `=`-prefixed value becomes a formula `<f>` with no fabricated cached
+    /// result, and digit-free text becomes preserved inline text — all through
+    /// the same cell writer the existing-cell rewrite uses. The opt-in is
+    /// bounded and fails closed otherwise: a worksheet part that the
+    /// workbook's own sheet relationships do not resolve, references outside
+    /// the canonical `A1…XFD1048576` bounds, numeric look-alikes that are not
+    /// strict decimals (for example "007", ".5", "1,000", "0x1p3", "inf",
+    /// "nan"), empty, oversized or XML-illegal values, batches above the
+    /// creation limit, and worksheets whose `<sheetData>`, `<row>` or `<c>`
+    /// structure this writer cannot preserve (positional, duplicate,
+    /// descending or non-canonical references). Without the opt-in — and for
+    /// Word and PowerPoint with it — the unknown-field refusal and every other
+    /// behavior are exactly as before. The reopen verification still reads
+    /// back every written value, created cells included, and installs nothing
+    /// unless the round-trip matches the requested text.
     @discardableResult
     public static func update(
         sourceURL: URL,
         outputURL: URL? = nil,
         updates: [String: String],
-        expectedSHA256: String? = nil
+        expectedSHA256: String? = nil,
+        allowsWorkbookCellCreation: Bool = false
     ) throws -> OfficeDocumentSnapshot {
         updateLock.lock()
         defer { updateLock.unlock() }
@@ -339,12 +362,17 @@ public enum OfficeDocumentService {
             throw OfficeDocumentError.revisionConflict
         }
         let known = Set(current.fields.map(\.id))
-        if let unknown = updates.keys.first(where: { !known.contains($0) }) {
+        let unknownKeys = updates.keys.filter { !known.contains($0) }.sorted()
+        if let unknown = unknownKeys.first, !(allowsWorkbookCellCreation && current.kind == .workbook) {
             throw OfficeDocumentError.unknownField(unknown)
         }
         guard !updates.isEmpty else { return current }
         let destination = outputURL ?? sourceURL
         let package = try OfficeArchive(url: sourceURL, maximumEntries: maximumEntries)
+        var creations: [String: [XLSXCellCodec.CellCreation]] = [:]
+        if !unknownKeys.isEmpty {
+            creations = try plannedWorkbookCellCreations(unknownKeys, updates: updates, package: package)
+        }
         var rewritten: [String: Data] = [:]
         let entries = Set(updates.keys.compactMap { $0.split(separator: "|", maxSplits: 1).first.map(String.init) })
         for entry in entries {
@@ -360,7 +388,13 @@ public enum OfficeDocumentService {
                     source: source, entry: entry, paragraphTag: "a:p", textTag: "a:t", updates: updates
                 )
             case .workbook:
-                result = try XLSXCellCodec.rewrite(source: source, entry: entry, updates: updates)
+                var workbookXML = try XLSXCellCodec.rewrite(source: source, entry: entry, updates: updates)
+                if let entryCreations = creations[entry] {
+                    workbookXML = try XLSXCellCodec.applyCreations(
+                        source: workbookXML, entry: entry, creations: entryCreations
+                    )
+                }
+                result = workbookXML
             }
             rewritten[entry] = Data(result.utf8)
         }
@@ -382,6 +416,58 @@ public enum OfficeDocumentService {
         )
         return try inspect(url: destination)
     }
+
+    /// Validates the unknown keys of an opted-in workbook update as cell
+    /// creations and returns them grouped by worksheet part. Keys arrive
+    /// sorted, so refusals are deterministic. A key may only create when its
+    /// worksheet part is one the inspector reads AND the workbook's own sheet
+    /// relationships resolve consistently — the read-only
+    /// `XLSXWorkbookPreviewReader` is the single authority for sheet
+    /// existence, so a model-selected path can never widen that set. Foreign,
+    /// malformed or non-canonical keys keep the preserved `unknownField`
+    /// refusal; unsafe values and unbounded batches report `invalidContent`.
+    private static func plannedWorkbookCellCreations(
+        _ unknownKeys: [String],
+        updates: [String: String],
+        package: OfficeArchive
+    ) throws -> [String: [XLSXCellCodec.CellCreation]] {
+        guard unknownKeys.count <= maximumCreatedCellsPerUpdate else {
+            throw OfficeDocumentError.invalidContent(
+                "one workbook cell-creation update is limited to \(maximumCreatedCellsPerUpdate) new cells; split the batch")
+        }
+        let worksheetMembers = package.paths.filter {
+            $0.hasPrefix("xl/worksheets/sheet")
+                && $0.hasSuffix(".xml")
+                && !$0.contains("/_rels/")
+        }.sorted(by: OfficePathOrder.less)
+        guard XLSXWorkbookPreviewReader.sheets(
+            package: package, worksheetMembers: worksheetMembers, limit: maximumXMLBytes
+        ) != nil else {
+            throw OfficeDocumentError.invalidContent(
+                "workbook cells can only be created when xl/workbook.xml resolves every worksheet relationship; re-read the field list and edit listed cells or repair the package first")
+        }
+        var creations: [String: [XLSXCellCodec.CellCreation]] = [:]
+        for id in unknownKeys {
+            guard let separator = id.range(of: "|c|") else {
+                throw OfficeDocumentError.unknownField(id)
+            }
+            let entry = String(id[..<separator.lowerBound])
+            guard worksheetMembers.contains(entry) else {
+                throw OfficeDocumentError.unknownField(id)
+            }
+            let reference = String(id[separator.upperBound...])
+            guard let position = XLSXCellCodec.canonicalCellReference(reference) else {
+                throw OfficeDocumentError.unknownField(id)
+            }
+            let value = updates[id] ?? ""
+            try XLSXCellCodec.validatedCreationValue(value, fieldID: id)
+            creations[entry, default: []].append(
+                XLSXCellCodec.CellCreation(reference: reference, column: position.column, row: position.row, value: value)
+            )
+        }
+        return creations
+    }
+
     private static func digest(_ url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
@@ -835,17 +921,448 @@ private enum XLSXCellCodec {
                   let value = updates["\(entry)|c|\(reference)"] else { continue }
             let style = XMLText.attribute("s", inOpeningElement: cell)
                 .map { " s=\"\(XMLText.escapeAttribute($0))\"" } ?? ""
-            let replacement: String
-            if value.hasPrefix("=") {
-                replacement = "<c r=\"\(XMLText.escapeAttribute(reference))\"\(style)><f>\(XMLText.escape(String(value.dropFirst())))</f></c>"
-            } else if Double(value) != nil, !value.trimmingCharacters(in: .whitespaces).isEmpty {
-                replacement = "<c r=\"\(XMLText.escapeAttribute(reference))\"\(style)><v>\(XMLText.escape(value))</v></c>"
-            } else {
-                replacement = "<c r=\"\(XMLText.escapeAttribute(reference))\"\(style) t=\"inlineStr\"><is><t xml:space=\"preserve\">\(XMLText.escape(value))</t></is></c>"
-            }
-            output.replaceSubrange(range, with: replacement)
+            output.replaceSubrange(range, with: cellElement(reference: reference, styleAttribute: style, value: value))
         }
         return output
+    }
+
+    /// The single cell-writing convention of this package: a `=`-prefixed
+    /// value becomes a formula with no fabricated cached result, a value that
+    /// parses as a number keeps its literal text as the numeric `<v>` an
+    /// engine sums, and anything else becomes preserved inline text. The
+    /// existing-cell rewrite and the bounded creation opt-in both go through
+    /// this function, so the two value conventions can never drift apart.
+    static func cellElement(reference: String, styleAttribute: String, value: String) -> String {
+        if value.hasPrefix("=") {
+            return "<c r=\"\(XMLText.escapeAttribute(reference))\"\(styleAttribute)><f>\(XMLText.escape(String(value.dropFirst())))</f></c>"
+        } else if Double(value) != nil, !value.trimmingCharacters(in: .whitespaces).isEmpty {
+            return "<c r=\"\(XMLText.escapeAttribute(reference))\"\(styleAttribute)><v>\(XMLText.escape(value))</v></c>"
+        } else {
+            return "<c r=\"\(XMLText.escapeAttribute(reference))\"\(styleAttribute) t=\"inlineStr\"><is><t xml:space=\"preserve\">\(XMLText.escape(value))</t></is></c>"
+        }
+    }
+
+    /// Bounds shared with the Notes `<targetEntry>|c|<CELL>` caller contract
+    /// (the tool caps operation text at 65536 UTF-8 bytes).
+    static let maximumCreatedValueBytes = 65_536
+    static let maximumCreatedFormulaCharacters = 8_192
+
+    /// One validated new cell for the explicit creation opt-in.
+    struct CellCreation {
+        let reference: String
+        let column: Int
+        let row: Int
+        let value: String
+    }
+
+    /// The canonical Excel address of the `<worksheet-part>|c|<CELL>` field
+    /// convention: one or more ASCII uppercase letters followed by one or
+    /// more ASCII digits with no leading zero, inside the real worksheet
+    /// bounds `A1…XFD1048576`. This mirrors the key shape the Notes tool
+    /// advertises and validates so both sides share one single format.
+    static func canonicalCellReference(_ value: String) -> (column: Int, row: Int)? {
+        guard !value.isEmpty, value.count <= 10 else { return nil }
+        var column = 0
+        var index = value.startIndex
+        while index < value.endIndex, isASCIIUppercase(value[index]) {
+            column = column * 26 + Int(value[index].asciiValue! - 64)
+            guard column <= 16_384 else { return nil }
+            index = value.index(after: index)
+        }
+        guard index > value.startIndex, index < value.endIndex else { return nil }
+        let digits = value[index...]
+        guard !digits.isEmpty, digits.count <= 7, digits.first != "0",
+              digits.allSatisfy(isASCIIDigit),
+              let row = Int(digits), row >= 1, row <= 1_048_576 else { return nil }
+        return (column, row)
+    }
+
+    static func cellColumnLetters(_ column: Int) -> String {
+        var value = column
+        var letters: [Character] = []
+        while value > 0 {
+            value -= 1
+            letters.append(Character(UnicodeScalar(UInt8(65 + value % 26))))
+            value /= 26
+        }
+        return String(letters.reversed())
+    }
+
+    static func isASCIIDigit(_ character: Character) -> Bool {
+        character.asciiValue.map { (48...57).contains($0) } ?? false
+    }
+
+    static func isASCIIUppercase(_ character: Character) -> Bool {
+        character.asciiValue.map { (65...90).contains($0) } ?? false
+    }
+
+    /// Creation-side value screen. It writes nothing: it only decides which
+    /// values are safe to hand to `cellElement`, the existing convention.
+    /// Strict finite decimals go numeric (a real `<v>` that `SUM` reads), a
+    /// `=`-prefixed non-empty remainder goes formula, and text containing no
+    /// ASCII digit at all goes inline text. Anything that merely looks like a
+    /// number — a Swift-parseable value that is not a strict decimal, a
+    /// non-finite "inf"/"nan", a hex literal, or any digit-bearing text an
+    /// engine might reinterpret — is refused instead of being silently
+    /// written as inline text a formula would ignore or as an invalid `<v>`.
+    static func validatedCreationValue(_ value: String, fieldID: String) throws {
+        guard !value.isEmpty, value.utf8.count <= maximumCreatedValueBytes else {
+            throw OfficeDocumentError.invalidContent(
+                "cell \(fieldID) needs a non-empty value of at most \(maximumCreatedValueBytes) UTF-8 bytes")
+        }
+        guard value.unicodeScalars.allSatisfy(XMLText.isLegalXMLText) else {
+            throw OfficeDocumentError.invalidContent(
+                "cell \(fieldID) contains characters that cannot be stored safely")
+        }
+        if value.hasPrefix("=") {
+            let formula = value.dropFirst()
+            guard !formula.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw OfficeDocumentError.invalidContent("cell \(fieldID) has an empty formula")
+            }
+            guard formula.count <= maximumCreatedFormulaCharacters else {
+                throw OfficeDocumentError.invalidContent(
+                    "cell \(fieldID) formula exceeds \(maximumCreatedFormulaCharacters) characters")
+            }
+            return
+        }
+        if isStrictDecimal(value), Double(value)?.isFinite == true {
+            return
+        }
+        if Double(value) != nil || value.contains(where: isASCIIDigit) {
+            throw OfficeDocumentError.invalidContent(
+                "cell \(fieldID) is not a safe creation value: write a strict number such as 120 or 1.5, a formula starting with =, or text without digits")
+        }
+    }
+
+    /// `-?[0-9]+(.[0-9]+)?([eE][+-]?[0-9]+)?` with a no-leading-zero integer
+    /// part (except a single `0`), scanned directly so the grammar cannot
+    /// drift. "007", ".5", "+5", "5.", "1e", "0x1p3" and anything with stray
+    /// characters are all rejected here.
+    static func isStrictDecimal(_ value: String) -> Bool {
+        let characters = Array(value)
+        var index = 0
+        if index < characters.count, characters[index] == "-" { index += 1 }
+        let integerStart = index
+        while index < characters.count, isASCIIDigit(characters[index]) { index += 1 }
+        let integerDigits = index - integerStart
+        guard integerDigits > 0 else { return false }
+        if integerDigits > 1, characters[integerStart] == "0" { return false }
+        if index < characters.count, characters[index] == "." {
+            index += 1
+            let fractionalStart = index
+            while index < characters.count, isASCIIDigit(characters[index]) { index += 1 }
+            guard index > fractionalStart else { return false }
+        }
+        if index < characters.count, characters[index] == "e" || characters[index] == "E" {
+            index += 1
+            if index < characters.count, characters[index] == "+" || characters[index] == "-" { index += 1 }
+            let exponentStart = index
+            while index < characters.count, isASCIIDigit(characters[index]) { index += 1 }
+            guard index > exponentStart else { return false }
+        }
+        return index == characters.count
+    }
+
+    /// `r` values OOXML writes as plain positive integers without leading
+    /// zeros; anything else means this writer must not reinterpret the
+    /// structure for creation.
+    static func isCanonicalPositiveInteger(_ text: String) -> Bool {
+        guard !text.isEmpty, text.count <= 7, text.first != "0", text.allSatisfy(isASCIIDigit) else { return false }
+        return true
+    }
+
+    /// One worksheet row captured in coordinates of the member source (its
+    /// outer range and the stable opening/content boundaries of its own block
+    /// text) so edits can be applied strictly right-to-left.
+    private struct CreationRow {
+        let range: Range<String.Index>
+        let number: Int
+        let block: String
+        let openingEnd: String.Index
+        let contentEnd: String.Index
+        let selfClosed: Bool
+        let cells: [(column: Int, range: Range<String.Index>)]
+        let spans: (first: Int, last: Int)?
+        let spansMalformed: Bool
+    }
+
+    /// One absolute-position string edit for the creation pass.
+    struct CreationEdit {
+        let range: Range<String.Index>
+        let text: String
+    }
+
+    /// Inserts validated new cells into the worksheet's own `sheetData` while
+    /// every other byte of the member — and every other package member —
+    /// streams through the existing copy unchanged. Cells land in column
+    /// order inside their row and rows in ascending order inside
+    /// `sheetData`; a `spans` declaration a modified row no longer fits is
+    /// dropped so the engine recomputes it honestly; `<dimension ref>` is
+    /// widened only when it currently parses as `A1` or `A1:B2`, because any
+    /// other shape is recomputed by readers anyway. Fails closed — installing
+    /// nothing — when the structure cannot be preserved: no single
+    /// `sheetData`, a `<row>` or `<c>` without a canonical ascending `r`,
+    /// unexpected content inside a row, a cell reference contradicting its
+    /// row, or a self-closed row that also has content. A target reference
+    /// that already exists is not duplicated: the normal rewrite pass ran
+    /// first and has already updated that cell.
+    static func applyCreations(source: String, entry: String, creations: [CellCreation]) throws -> String {
+        let sheetDataElements = XMLTextCodec.elementRanges(source, tag: "sheetData")
+        guard sheetDataElements.count == 1, let sheetDataRange = sheetDataElements.first else {
+            throw OfficeDocumentError.invalidContent(
+                "\(entry) needs exactly one sheetData element before cells can be created")
+        }
+        let ordered = creations.sorted { ($0.row, $0.column) < ($1.row, $1.column) }
+        guard Set(ordered.map(\.reference)).count == ordered.count else {
+            throw OfficeDocumentError.invalidContent("\(entry) received duplicate cell creation references")
+        }
+        var rows: [CreationRow] = []
+        var existingReferences = Set<String>()
+        var previousRowNumber = 0
+        var totalRowCells = 0
+        for rowRange in XMLTextCodec.elementRanges(source, tag: "row") {
+            guard rowRange.lowerBound >= sheetDataRange.lowerBound, rowRange.upperBound <= sheetDataRange.upperBound else {
+                throw OfficeDocumentError.invalidContent("\(entry) has a row element outside sheetData; creation cannot preserve it")
+            }
+            let block = String(source[rowRange])
+            guard let openingEnd = block.firstIndex(of: ">") else {
+                throw OfficeDocumentError.invalidContent("\(entry) has a malformed row element")
+            }
+            guard let numberText = XMLText.attribute("r", inOpeningElement: block),
+                  isCanonicalPositiveInteger(numberText),
+                  let number = Int(numberText), number <= 1_048_576,
+                  number > previousRowNumber else {
+                throw OfficeDocumentError.invalidContent(
+                    "\(entry) has a row without a canonical ascending r attribute; creation cannot preserve it")
+            }
+            previousRowNumber = number
+            let selfClosed = block.hasSuffix("/>")
+            var cells: [(column: Int, range: Range<String.Index>)] = []
+            var previousColumn = 0
+            var cursor = block.index(after: openingEnd)
+            for cellRange in XMLTextCodec.elementRanges(block, tag: "c") {
+                guard block[cursor..<cellRange.lowerBound].allSatisfy(\.isWhitespace) else {
+                    throw OfficeDocumentError.invalidContent(
+                        "\(entry) row \(number) has unexpected content between cells; creation cannot preserve it")
+                }
+                cursor = cellRange.upperBound
+                let cellText = String(block[cellRange])
+                guard let reference = XMLText.attribute("r", inOpeningElement: cellText),
+                      let position = canonicalCellReference(reference),
+                      position.row == number,
+                      position.column > previousColumn else {
+                    throw OfficeDocumentError.invalidContent(
+                        "\(entry) row \(number) has a cell without a canonical ascending r attribute; creation cannot preserve it")
+                }
+                previousColumn = position.column
+                cells.append((position.column, cellRange))
+                existingReferences.insert(reference)
+            }
+            let contentEnd: String.Index
+            if selfClosed {
+                guard cells.isEmpty else {
+                    throw OfficeDocumentError.invalidContent("\(entry) row \(number) is both self-closed and populated")
+                }
+                contentEnd = block.index(block.endIndex, offsetBy: -2)
+            } else if let close = block.range(of: "</row>") {
+                guard block[cursor..<close.lowerBound].allSatisfy(\.isWhitespace) else {
+                    throw OfficeDocumentError.invalidContent(
+                        "\(entry) row \(number) has unexpected content after its last cell; creation cannot preserve it")
+                }
+                contentEnd = close.lowerBound
+            } else {
+                throw OfficeDocumentError.invalidContent("\(entry) row \(number) has no row close element")
+            }
+            var spans: (first: Int, last: Int)?
+            var spansMalformed = false
+            if let text = XMLText.attribute("spans", inOpeningElement: block) {
+                let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+                if parts.count == 2, isCanonicalPositiveInteger(String(parts[0])), isCanonicalPositiveInteger(String(parts[1])),
+                   let first = Int(parts[0]), let last = Int(parts[1]), first <= last {
+                    spans = (first, last)
+                } else {
+                    spansMalformed = true
+                }
+            }
+            totalRowCells += cells.count
+            rows.append(CreationRow(
+                range: rowRange,
+                number: number,
+                block: block,
+                openingEnd: block.index(after: openingEnd),
+                contentEnd: contentEnd,
+                selfClosed: selfClosed,
+                cells: cells,
+                spans: spans,
+                spansMalformed: spansMalformed
+            ))
+        }
+        guard totalRowCells == XMLTextCodec.elementRanges(source, tag: "c").count else {
+            throw OfficeDocumentError.invalidContent("\(entry) has cell elements outside their rows; creation cannot preserve them")
+        }
+        var pendingByRow: [Int: [CellCreation]] = [:]
+        for creation in ordered where !existingReferences.contains(creation.reference) {
+            pendingByRow[creation.row, default: []].append(creation)
+        }
+        var edits: [CreationEdit] = []
+        if source[sheetDataRange].hasSuffix("/>") {
+            guard rows.isEmpty else {
+                throw OfficeDocumentError.invalidContent("\(entry) has rows outside its self-closed sheetData")
+            }
+            var replacement = "<sheetData>"
+            for group in pendingByRow.sorted(by: { $0.key < $1.key }) {
+                replacement += "<row r=\"\(group.key)\">"
+                for creation in group.value {
+                    replacement += cellElement(reference: creation.reference, styleAttribute: "", value: creation.value)
+                }
+                replacement += "</row>"
+            }
+            edits.append(CreationEdit(range: sheetDataRange, text: replacement + "</sheetData>"))
+        } else {
+            let rowsByNumber = Dictionary(uniqueKeysWithValues: rows.map { ($0.number, $0) })
+            guard let sheetDataClose = source.range(of: "</sheetData>", range: sheetDataRange)?.lowerBound else {
+                throw OfficeDocumentError.invalidContent("\(entry) has no closed sheetData element")
+            }
+            var runByAnchor: [(anchor: String.Index, text: String)] = []
+            for group in pendingByRow.sorted(by: { $0.key < $1.key }) {
+                if let row = rowsByNumber[group.key] {
+                    edits.append(CreationEdit(range: row.range, text: modifiedRow(row, adding: group.value)))
+                } else {
+                    let text = "<row r=\"\(group.key)\">"
+                        + group.value.map { cellElement(reference: $0.reference, styleAttribute: "", value: $0.value) }.joined()
+                        + "</row>"
+                    let anchor = rows.first(where: { $0.number > group.key })?.range.lowerBound ?? sheetDataClose
+                    if let last = runByAnchor.last, last.anchor == anchor {
+                        runByAnchor[runByAnchor.count - 1].text += text
+                    } else {
+                        runByAnchor.append((anchor, text))
+                    }
+                }
+            }
+            for run in runByAnchor {
+                edits.append(CreationEdit(range: run.anchor..<run.anchor, text: run.text))
+            }
+        }
+        if let dimensionEdit = dimensionWideningEdit(source: source, creations: ordered) {
+            edits.append(dimensionEdit)
+        }
+        var output = source
+        for edit in edits.sorted(by: { lhs, rhs in
+            if lhs.range.lowerBound != rhs.range.lowerBound { return lhs.range.lowerBound > rhs.range.lowerBound }
+            return !lhs.range.isEmpty && rhs.range.isEmpty
+        }) {
+            output.replaceSubrange(edit.range, with: edit.text)
+        }
+        return output
+    }
+
+    /// Rebuilds one existing row: additions are spliced right-to-left at
+    /// their column-order boundaries (stable original row-block positions),
+    /// a self-closed row is converted so its new cells land inside the
+    /// element, and a `spans` declaration the additions no longer fit into is
+    /// dropped so the engine recomputes it instead of trusting a stale hint.
+    private static func modifiedRow(_ row: CreationRow, adding additions: [CellCreation]) -> String {
+        var block = row.block
+        for addition in additions.sorted(by: { $0.column > $1.column }) {
+            let element = cellElement(reference: addition.reference, styleAttribute: "", value: addition.value)
+            let anchor = row.cells.first(where: { $0.column > addition.column })?.range.lowerBound ?? row.contentEnd
+            block.replaceSubrange(anchor..<anchor, with: element)
+        }
+        if row.selfClosed {
+            block.replaceSubrange(block.index(block.endIndex, offsetBy: -2)..<block.endIndex, with: "></row>")
+        }
+        let exceedsSpans = row.spansMalformed
+            || (row.spans.map { span in additions.contains { $0.column < span.first || $0.column > span.last } } ?? false)
+        if exceedsSpans {
+            block = removingSpansAttribute(from: block, openingEnd: row.openingEnd)
+        }
+        return block
+    }
+
+    /// Removes one whole whitespace-delimited, quote-closed `spans="…"`
+    /// attribute from the opening tag (including its single leading space) so
+    /// the row keeps every other byte unchanged. An ambiguous match — inside
+    /// a quoted value, or with a malformed quote span — is left in place:
+    /// `spans` is a recomputable hint and a wrong removal must not damage the
+    /// member.
+    private static func removingSpansAttribute(from block: String, openingEnd: String.Index) -> String {
+        guard openingEnd > block.startIndex,
+              let marker = block.range(of: "spans=", options: [], range: block.startIndex..<openingEnd),
+              marker.lowerBound > block.startIndex,
+              block[block.index(before: marker.lowerBound)].isWhitespace,
+              marker.upperBound < openingEnd else { return block }
+        let prefix = block[block.startIndex..<marker.lowerBound]
+        guard prefix.reduce(0) { $0 + ($1 == "\"" ? 1 : 0) } % 2 == 0 else { return block }
+        let quote = block[marker.upperBound]
+        guard quote == "\"" || quote == "'",
+              let valueEnd = block[marker.upperBound...].firstIndex(of: quote), valueEnd < openingEnd else { return block }
+        var output = block
+        output.replaceSubrange(block.index(before: marker.lowerBound)..<block.index(after: valueEnd), with: "")
+        return output
+    }
+
+    /// Builds the `<dimension ref>` widening edit, or `nil` (leave untouched)
+    /// when there is no single `dimension`, the current value is not a clean
+    /// `A1`/`A1:B2`, or the union would not change it.
+    private static func dimensionWideningEdit(source: String, creations: [CellCreation]) -> CreationEdit? {
+        guard !creations.isEmpty else { return nil }
+        let elements = XMLTextCodec.elementRanges(source, tag: "dimension")
+        guard elements.count == 1, let range = elements.first else { return nil }
+        var search = range
+        var marker: Range<String.Index>?
+        while let found = source.range(of: "ref=", options: [], range: search) {
+            let previous = found.lowerBound > range.lowerBound ? source[source.index(before: found.lowerBound)] : ">"
+            if (previous == " " || previous == "\t" || previous == "\n" || previous == ">"),
+               found.upperBound < range.upperBound,
+               source[found.upperBound] == "\"" || source[found.upperBound] == "'" {
+                marker = found
+                break
+            }
+            search = found.upperBound..<range.upperBound
+        }
+        guard let marker else { return nil }
+        let quote = source[marker.upperBound]
+        guard let valueEnd = source[marker.upperBound...].firstIndex(of: quote), valueEnd < range.upperBound else { return nil }
+        let valueStart = source.index(after: marker.upperBound)
+        let ref = String(source[valueStart..<valueEnd])
+        let parts = ref.split(separator: ":", omittingEmptySubsequences: false)
+        var minColumn = Int.max
+        var minRow = Int.max
+        var maxColumn = 0
+        var maxRow = 0
+        var wasSingle = false
+        switch parts.count {
+        case 1:
+            guard let corner = canonicalCellReference(String(parts[0])) else { return nil }
+            minColumn = corner.column
+            minRow = corner.row
+            maxColumn = corner.column
+            maxRow = corner.row
+            wasSingle = true
+        case 2:
+            guard let first = canonicalCellReference(String(parts[0])),
+                  let last = canonicalCellReference(String(parts[1])) else { return nil }
+            minColumn = min(first.column, last.column)
+            maxColumn = max(first.column, last.column)
+            minRow = min(first.row, last.row)
+            maxRow = max(first.row, last.row)
+        default:
+            return nil
+        }
+        for creation in creations {
+            minColumn = min(minColumn, creation.column)
+            maxColumn = max(maxColumn, creation.column)
+            minRow = min(minRow, creation.row)
+            maxRow = max(maxRow, creation.row)
+        }
+        let newRef: String
+        if wasSingle, minColumn == maxColumn, minRow == maxRow {
+            newRef = cellColumnLetters(minColumn) + String(minRow)
+        } else {
+            newRef = cellColumnLetters(minColumn) + String(minRow) + ":" + cellColumnLetters(maxColumn) + String(maxRow)
+        }
+        guard newRef != ref else { return nil }
+        return CreationEdit(range: valueStart..<valueEnd, text: newRef)
     }
 }
 
@@ -860,6 +1377,18 @@ enum SharedStringTable {
 }
 
 enum XMLText {
+    /// XML 1.0 text may contain only tab/CR/LF plus scalars from U+0020 up,
+    /// excluding the non-characters U+FFFE/U+FFFF. Creation input is screened
+    /// with this so an unsafe value fails closed instead of writing a member
+    /// that cannot reopen.
+    static func isLegalXMLText(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x09, 0x0A, 0x0D: return true
+        case 0xFFFE, 0xFFFF: return false
+        default: return scalar.value >= 0x20
+        }
+    }
+
     static func escape(_ value: String) -> String {
         value.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")

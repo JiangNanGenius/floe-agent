@@ -252,6 +252,8 @@ actor OfficeCommandCenter: OfficeCommandHost {
 
     private var proposals: [UUID: OfficeCommandProposal] = [:]
     private var proposalAccess: [UUID: OfficeCommandAccess] = [:]
+    private var proposalBindings: [UUID: OfficeProposalSessionBinding] = [:]
+    nonisolated static let proposalsDidChange = Notification.Name("FloeOfficeProposalsDidChange")
     private let grants = OfficeProposalGrantStore()
     private var appliedReceipts: [String: OfficeCommandReceipt] = [:]
     private var requestPayloads: [String: String] = [:]
@@ -401,6 +403,7 @@ actor OfficeCommandCenter: OfficeCommandHost {
             throw OfficeEngineCommandError.unsupportedFormat(command.id, resolved.format.rawValue)
         }
         let session = try await requireLiveSession(resolved, access: access)
+        guard let binding = await session.proposalReviewBinding else { throw FloeError.unauthorized }
         let live = try await session.liveEngineStatus()
         guard live.editable else {
             throw FloeError.validationFailed(live.unavailableReason
@@ -435,12 +438,18 @@ actor OfficeCommandCenter: OfficeCommandHost {
                                              expectations: OfficeCommandCodec.expectations(commands),
                                              selectionFingerprint: fingerprint,
                                              targetSummary: targetSummary)
+        guard await session.proposalReviewBinding == binding else { throw FloeError.unauthorized }
         proposalAccess[proposal.id] = access
+        proposalBindings[proposal.id] = binding
         return proposal
     }
 
     func storeProposal(_ proposal: OfficeCommandProposal) async throws {
+        guard proposalAccess[proposal.id] != nil, proposalBindings[proposal.id] != nil else {
+            throw FloeError.unauthorized
+        }
         proposals[proposal.id] = proposal
+        NotificationCenter.default.post(name: Self.proposalsDidChange, object: nil)
     }
 
     func loadProposal(id: UUID, access: OfficeCommandAccess) async throws -> OfficeCommandProposal? {
@@ -463,6 +472,8 @@ actor OfficeCommandCenter: OfficeCommandHost {
     func removeProposal(id: UUID) async throws {
         proposals.removeValue(forKey: id)
         proposalAccess.removeValue(forKey: id)
+        proposalBindings.removeValue(forKey: id)
+        NotificationCenter.default.post(name: Self.proposalsDidChange, object: nil)
     }
 
     func consumeGrant(grantID: String, proposalID: UUID, documentID: String,
@@ -505,6 +516,9 @@ actor OfficeCommandCenter: OfficeCommandHost {
             }
             requestPayloads[key] = payload
             let session = try await requireLiveSession(resolved, access: access)
+            guard proposals[proposal.id] == proposal, proposalAccess[proposal.id] == access,
+                  let binding = proposalBindings[proposal.id],
+                  await session.proposalReviewBinding == binding else { throw FloeError.unauthorized }
             switch await grants.reserve(grantID: grantID, proposalID: proposal.id,
                                         documentID: resolved.relativePath,
                                         sha256: proposal.baseSHA256) {
@@ -524,7 +538,8 @@ actor OfficeCommandCenter: OfficeCommandHost {
                 let commands = try OfficeCommandCodec.decode(proposal.commandsJSON)
                 let result = try await session.applyEngineCommands(
                     commands, expectedSelectionFingerprint: proposal.selectionFingerprint,
-                    batchID: proposal.id.uuidString)
+                    batchID: proposal.id.uuidString, expectedSHA256: proposal.baseSHA256,
+                    expectedProposalBinding: binding)
                 let receipt = OfficeCommandReceipt(documentID: resolved.relativePath,
                                                    sha256: result.sha256,
                                                    commands: commands.map(\.id),
@@ -691,6 +706,32 @@ actor OfficeCommandCenter: OfficeCommandHost {
             .sorted { $0.createdAt > $1.createdAt }
     }
 
+    /// Trusted UI query: no cross-workspace filename match, no stale controller.
+    func pendingProposals(binding: OfficeProposalSessionBinding) async -> [OfficeCommandProposal] {
+        let candidates = proposals.values.filter { proposalBindings[$0.id] == binding }
+        guard let first = candidates.first, let access = proposalAccess[first.id],
+              let resolved = try? resolve(documentID: first.documentID, access: access),
+              let session = try? await requireLiveSession(resolved, access: access),
+              await session.proposalReviewBinding == binding,
+              let live = try? await session.liveEngineStatus(), live.editable,
+              !live.unsavedChanges,
+              await session.proposalReviewBinding == binding else { return [] }
+        return candidates.filter {
+            proposals[$0.id] == $0 && proposalBindings[$0.id] == binding
+                && $0.baseSHA256.lowercased() == live.sha256.lowercased()
+        }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func discardProposal(id: UUID, expectedBinding: OfficeProposalSessionBinding) async throws {
+        guard proposalBindings[id] == expectedBinding,
+              let proposal = proposals[id], let access = proposalAccess[id],
+              let resolved = try? resolve(documentID: proposal.documentID, access: access),
+              let session = try? await requireLiveSession(resolved, access: access),
+              await session.proposalReviewBinding == expectedBinding else { throw FloeError.unauthorized }
+        discardProposal(id: id)
+    }
+
     /// The conversation that proposed this proposal, for the adopt/reject
     /// notification. Nil for workspace-originated proposals.
     func proposalOwnerConversation(proposalID: UUID) -> UUID? {
@@ -700,15 +741,20 @@ actor OfficeCommandCenter: OfficeCommandHost {
     func discardProposal(id: UUID) {
         proposals.removeValue(forKey: id)
         proposalAccess.removeValue(forKey: id)
+        proposalBindings.removeValue(forKey: id)
+        NotificationCenter.default.post(name: Self.proposalsDidChange, object: nil)
     }
 
     @discardableResult
-    func approveAndApply(proposal: OfficeCommandProposal) async throws -> OfficeCommandReceipt {
-        guard let access = proposalAccess[proposal.id] else { throw FloeError.unauthorized }
+    func approveAndApply(proposal: OfficeCommandProposal,
+                         expectedBinding: OfficeProposalSessionBinding? = nil) async throws -> OfficeCommandReceipt {
+        guard proposals[proposal.id] == proposal, let access = proposalAccess[proposal.id],
+              let binding = proposalBindings[proposal.id],
+              expectedBinding == nil || expectedBinding == binding else { throw FloeError.unauthorized }
         let grant = await grants.issueGrant(proposal: proposal)
         let receipt = try await apply(proposal: proposal, grantID: grant,
                                       requestID: "ui-\(proposal.id.uuidString)", access: access)
-        proposals.removeValue(forKey: proposal.id)
+        try await removeProposal(id: proposal.id)
         return receipt
     }
 

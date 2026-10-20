@@ -4,6 +4,7 @@ import SwiftUI
 import FloeDocuments
 import FloeNotes
 import FloeCore
+import FloeModels
 
 /// Office owns its native working-copy lifecycle. Notes only promotes a successfully saved
 /// copy into a new immutable resource revision; the original resource is never modified.
@@ -187,6 +188,12 @@ struct NotesOfficeView: View {
         .onChange(of: baseResourceID) { _, _ in scheduleMissingPreview() }
         .onAppear {
             isVisible = true
+            // Publish this mounted editor to the Notes assistant tooling:
+            // only the document selected here, only while this view is alive,
+            // and every consumer re-checks session identity, so a switch,
+            // close or replacement can never describe another document.
+            NotesOfficeLiveBinding.bind(documentID: document.id, session: office,
+                                        commit: { await self.liveCommit() })
             session.registerLeaveGuard(for: document.id) {
                 if coverRefreshRunning, !pendingCommit, office.readOnly {
                     // The only in-flight work is the read-only cover backfill
@@ -291,6 +298,7 @@ struct NotesOfficeView: View {
         }
         .onDisappear {
             isVisible = false
+            NotesOfficeLiveBinding.unbind(documentID: document.id, session: office)
             pendingExternalResource = nil
             externalRefreshTask?.cancel()
             session.removeLeaveGuard(for: document.id)
@@ -661,6 +669,65 @@ struct NotesOfficeView: View {
         externalUpdateAvailable = false
         message = nil
         await applyExternalResource(forceReload: true)
+    }
+
+    /// The assistant-facing commit route: exactly the editor's own production
+    /// save path (engine flush → verified working-copy commit → Notes promote),
+    /// never a package rewrite of older saved bytes. Returns the new revision,
+    /// resource and package digest on success; on any refusal the original
+    /// resource stays untouched and the reason is reported truthfully.
+    @MainActor private func liveCommit() async -> NotesOfficeCommitOutcome {
+        guard isVisible, let draftURL, session.store != nil else {
+            return NotesOfficeCommitOutcome(committed: false, revision: nil, resourceID: nil,
+                                            packageSHA256: nil, hadUnsavedChanges: false,
+                                            message: "The Office editor for this document is no longer open. Nothing was saved.")
+        }
+        guard !office.readOnly, office.canAct else {
+            return NotesOfficeCommitOutcome(committed: false, revision: baseRevision, resourceID: baseResourceID,
+                                            packageSHA256: nil, hadUnsavedChanges: false,
+                                            message: office.readOnly
+                                                ? "The editor is a read-only preview; there are no unsaved edits to commit."
+                                                : "The editor is busy or not ready; retry after the current operation finishes.")
+        }
+        // A pen that is still down must never be saved or cancelled underneath
+        // the user: refuse the commit (fail closed on unknown pen state) so an
+        // in-flight stroke stays intact. Completed strokes commit automatically.
+        guard !(await office.hasActivePenContact()) else {
+            return NotesOfficeCommitOutcome(committed: false, revision: baseRevision, resourceID: baseResourceID,
+                                            packageSHA256: nil, hadUnsavedChanges: true,
+                                            message: "A pen contact is still active in the editor; the commit was refused so the in-progress stroke is preserved. Lift the pen and retry.")
+        }
+        let hadEditorChanges = await office.hasLocalEditsToProtect()
+        // A successful engine save can leave the editor clean even when the
+        // following Notes promotion failed. That validated draft still needs
+        // to be committed before an assistant may edit the Notes resource.
+        guard hadEditorChanges || pendingCommit else {
+            let sha = try? FloeDigest.sha256Hex(ofFileAt: draftURL)
+            return NotesOfficeCommitOutcome(committed: true, revision: baseRevision, resourceID: baseResourceID,
+                                            packageSHA256: sha, hadUnsavedChanges: false, message: nil)
+        }
+        if hadEditorChanges {
+            guard await office.saveInPlace() else {
+                return NotesOfficeCommitOutcome(committed: false, revision: baseRevision, resourceID: baseResourceID,
+                                                packageSHA256: nil, hadUnsavedChanges: true,
+                                                message: office.error ?? "The engine save did not complete; the original resource is unchanged.")
+            }
+            pendingCommit = true
+        }
+        guard isVisible else {
+            return NotesOfficeCommitOutcome(committed: false, revision: baseRevision, resourceID: baseResourceID,
+                                            packageSHA256: nil, hadUnsavedChanges: true,
+                                            message: "The editor closed before its saved draft could be committed to Notes. The draft is preserved.")
+        }
+        await commit()
+        guard !pendingCommit, let resourceID = baseResourceID, let revision = baseRevision else {
+            return NotesOfficeCommitOutcome(committed: false, revision: nil, resourceID: nil,
+                                            packageSHA256: nil, hadUnsavedChanges: true,
+                                            message: message ?? "The saved document could not be promoted to a Notes revision; the engine draft is preserved.")
+        }
+        let sha = try? FloeDigest.sha256Hex(ofFileAt: draftURL)
+        return NotesOfficeCommitOutcome(committed: true, revision: revision, resourceID: resourceID,
+                                        packageSHA256: sha, hadUnsavedChanges: true, message: nil)
     }
 
     private func commit() async {
@@ -1072,6 +1139,232 @@ struct NotesOfficeView: View {
         }
         try await session.reload()
         recordStage("notes.preview.updated")
+    }
+}
+
+/// Outcome of an assistant-initiated commit through the editor's own save
+/// chain (engine flush → verified commit → Notes promote). Nothing here
+/// rewrites older saved bytes; a refusal leaves the resource untouched.
+struct NotesOfficeCommitOutcome: Sendable {
+    let committed: Bool
+    let revision: Int?
+    let resourceID: UUID?
+    let packageSHA256: String?
+    let hadUnsavedChanges: Bool
+    let message: String?
+}
+
+/// Identity-checked weak registry of the LIVE Office editor mounted for each
+/// Notes document, plus that editor's own production save-and-promote route.
+/// The assistant tooling may only ever reach the session that currently owns
+/// the exact document; a switch, close or replacement clears the entry.
+@MainActor enum NotesOfficeLiveBinding {
+    private struct Entry {
+        weak var session: OfficeFileSession?
+        var commit: @MainActor () async -> NotesOfficeCommitOutcome
+    }
+    private static var entries: [UUID: Entry] = [:]
+
+    static func bind(documentID: UUID, session: OfficeFileSession,
+                     commit: @escaping @MainActor () async -> NotesOfficeCommitOutcome) {
+        entries[documentID] = Entry(session: session, commit: commit)
+    }
+
+    static func unbind(documentID: UUID, session: OfficeFileSession) {
+        if entries[documentID]?.session === session { entries[documentID] = nil }
+    }
+
+    /// The live session for exactly this document. `fileName`, when present,
+    /// must match the identity the session registered with the Office command
+    /// center, so a same-id stale view can never describe another file.
+    static func boundSession(documentID: UUID, fileName: String?) -> OfficeFileSession? {
+        guard let session = entries[documentID]?.session else { return nil }
+        if let fileName, let liveID = session.liveDocumentID, liveID != fileName { return nil }
+        return session
+    }
+
+    static func commitHandler(documentID: UUID, expectedSession: OfficeFileSession)
+        -> (@MainActor () async -> NotesOfficeCommitOutcome)? {
+        guard let entry = entries[documentID], entry.session === expectedSession else { return nil }
+        return entry.commit
+    }
+}
+
+/// Which assistant conversation currently shows which Notes document. The
+/// panel (which knows both) publishes this so a per-send capture can resolve
+/// the conversation's own selected document without touching shared runtime.
+@MainActor enum NotesAssistantConversationBinding {
+    private static var documents: [UUID: UUID] = [:]
+
+    static func map(conversationID: UUID, documentID: UUID) {
+        documents[conversationID] = documentID
+    }
+
+    static func unmap(conversationID: UUID, documentID: UUID) {
+        if documents[conversationID] == documentID { documents.removeValue(forKey: conversationID) }
+    }
+
+    static func documentID(forConversation conversationID: UUID) -> UUID? {
+        documents[conversationID]
+    }
+}
+
+/// Captures the live editor's current document view for the document
+/// assistant: a `takeSnapshot` of the App's own mounted Office WKWebView
+/// (shows the engine's active sheet/slide/page at its actual scroll position,
+/// including visible but unsaved strokes; never a device screenshot) plus raw
+/// on-device Vision OCR as auxiliary evidence. Consumers re-check session
+/// identity and document revision before using a result.
+@MainActor enum NotesAssistantLivePageCapture {
+    struct Region: Sendable {
+        let text: String
+        let confidence: Double
+        let x: Int, y: Int, width: Int, height: Int
+    }
+    struct Page: Sendable {
+        let pngData: Data
+        let pixelWidth: Int
+        let pixelHeight: Int
+        let sha256: String
+        let boundsMode: String
+        let ocrRegions: [Region]
+    }
+    struct Result: Sendable {
+        let documentID: UUID
+        let revision: Int
+        let fileName: String
+        let page: Page
+        let committedSHA256: String
+        let hadUnsavedChanges: Bool
+        let selectionFenceObserved: Bool
+        let engineViewFingerprint: String?
+        let captureScope: String
+
+    }
+
+    /// Captures + OCRs the live document view bound to `documentID`. Throws a
+    /// descriptive error (never a fabricated empty success, never a cover or
+    /// older thumbnail fallback) when no live editor is bound, the session is
+    /// not usable, or the document/identity changed during the capture.
+    static func capture(documentID: UUID, document: NoteDocument, store: NotesStore) async throws -> Result {
+        guard document.kind == .office, let fileName = document.officeFileName,
+              document.officeResourceID != nil else {
+            throw NotesOfficeCaptureError.notAnOfficeDocument
+        }
+        guard let session = NotesOfficeLiveBinding.boundSession(documentID: documentID, fileName: fileName),
+              session.canAct else { throw NotesOfficeCaptureError.noLiveEditor }
+        try Task.checkCancellation()
+        let readout = try await session.liveEnginePageReadout()
+        try Task.checkCancellation()
+        let capturedPage: Page = try await Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            let page = readout.page
+            let regions = (try? VisualTextRecognizer.recognize(
+                imageData: page.pngData, pixelWidth: page.pixelWidth, pixelHeight: page.pixelHeight,
+                referencePrefix: "live", limit: 60)) ?? []
+            return Page(pngData: page.pngData, pixelWidth: page.pixelWidth, pixelHeight: page.pixelHeight,
+                        sha256: page.sha256, boundsMode: page.boundsMode,
+                        ocrRegions: regions.map {
+                            Region(text: $0.text, confidence: Double($0.confidence),
+                                   x: $0.x, y: $0.y, width: $0.width, height: $0.height)
+                        })
+        }.value
+        try Task.checkCancellation()
+        // Isolation fences: the same editor must still own the same document
+        // with the same mounted controller; otherwise nothing is returned.
+        guard NotesOfficeLiveBinding.boundSession(documentID: documentID, fileName: fileName) === session,
+              session.controllerObjectIDDereferencedMatches(readout) else {
+            throw NotesOfficeCaptureError.editorChanged
+        }
+        let latest = try await store.document(documentID)
+        guard latest.revision == document.revision, latest.officeResourceID == document.officeResourceID else {
+            throw NotesOfficeCaptureError.editorChanged
+        }
+        // Final fence AFTER the last await: the exact same session/controller
+        // binding must still hold right up to the return, so a replacement
+        // during the document re-read cannot smuggle a stale view out.
+        guard NotesOfficeLiveBinding.boundSession(documentID: documentID, fileName: fileName) === session,
+              session.controllerObjectIDDereferencedMatches(readout) else {
+            throw NotesOfficeCaptureError.editorChanged
+        }
+        return Result(documentID: documentID, revision: document.revision, fileName: fileName,
+                      page: capturedPage,
+                      committedSHA256: readout.committedSHA256,
+                      hadUnsavedChanges: readout.hadUnsavedChanges,
+                      selectionFenceObserved: readout.selectionFenceObserved,
+                      engineViewFingerprint: readout.engineViewFingerprint,
+                      captureScope: readout.captureScope)
+    }
+
+    enum NotesOfficeCaptureError: LocalizedError {
+        case notAnOfficeDocument, noLiveEditor, editorChanged
+        var errorDescription: String? {
+            switch self {
+            case .notAnOfficeDocument:
+                "The selected document is not an Office document; there is no live page to capture."
+            case .noLiveEditor:
+                "No live Office editor is open for this exact document right now. Nothing was read. Saved text remains available through section=officeText/officeFields; ask the user to reopen the document in the editor if the current page (including unsaved handwriting) is required."
+            case .editorChanged:
+                "The Office editor switched, closed or changed during the capture; the result was discarded and nothing was sent."
+            }
+        }
+    }
+}
+
+extension NotesAssistantLivePageCapture {
+    /// A live-page attachment bound to the document it was captured from.
+    /// `documentID` is never shown to the user and never folded into the
+    /// goal text; the send bridge uses it after the first await to compare
+    /// against the conversation's CURRENT binding, so an A→B→A document
+    /// switch can never deliver B's page into A's request.
+    struct SendAttachment: Sendable {
+        let documentID: UUID
+        let attachment: AttachmentRef
+    }
+
+    /// The one entry the composer send path calls (integrated by the release
+    /// owner in ThreadDetailViewModel): resolves THIS conversation's own
+    /// selected Notes document, captures its live editor view and returns it
+    /// through the same `registerPhotoData` user-image-attachment chain.
+    ///
+    /// Returns nil only for not-applicable scenarios: this conversation is not
+    /// a bound Notes assistant, its document is not (or is no longer) an
+    /// Office document, or no live Office editor is open for that exact
+    /// document. A mounted-but-failed capture (engine snapshot failure, the
+    /// editor switching or closing during the capture, attachment staging
+    /// failure) THROWS, so a request that should carry the current page can
+    /// never silently go out without it. Never returns a cover, thumbnail or
+    /// older saved image; the caller must not fold the result into the
+    /// ComposerSendCommit draft snapshot or restore it on a failure retry.
+    @MainActor static func captureForSend(conversationID: UUID, in files: FilesCenter) async throws -> SendAttachment? {
+        guard let documentID = NotesAssistantConversationBinding.documentID(forConversation: conversationID) else {
+            return nil
+        }
+        let store = try NotesRepository.shared.store()
+        guard let document = try? await store.document(documentID),
+              document.kind == .office, document.deletedAt == nil,
+              document.officeFileName != nil,
+              NotesOfficeLiveBinding.boundSession(documentID: documentID,
+                                                 fileName: document.officeFileName) != nil else {
+            return nil
+        }
+        let result = try await capture(documentID: documentID, document: document, store: store)
+        let base = ((result.fileName as NSString).deletingPathExtension as NSString).lastPathComponent
+        let suffix = OfficeInkText.t("当前页面", "current page")
+        let attachment = try files.registerPhotoData(result.page.pngData,
+                                                    displayName: "\(base)-\(suffix)",
+                                                    recordRecent: false)
+        return SendAttachment(documentID: result.documentID, attachment: attachment)
+    }
+}
+
+private extension OfficeFileSession {
+    /// True when the given readout still describes this session's mounted
+    /// controller. The readout carries only an ObjectIdentifier, so a replaced
+    /// controller (or a released one) never matches.
+    func controllerObjectIDDereferencedMatches(_ readout: OfficeLivePageReadout) -> Bool {
+        guard let controller else { return false }
+        return ObjectIdentifier(controller) == readout.controllerObjectID
     }
 }
 #endif

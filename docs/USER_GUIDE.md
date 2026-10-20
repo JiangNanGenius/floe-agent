@@ -187,7 +187,7 @@ Saving an Office document in Notes updates its automatic cover from the saved co
 1. Open a DOCX, XLSX or PPTX file, wait for it to load, then enter editing.
 2. Edit according to the format: Word supports styles, lists, alignment and tables; Excel supports cells and formulas, formatting, rows and columns, freeze panes, sorting and filtering; presentations support slide duplication, reordering and object alignment.
 3. Tap the toolbar pen button to write with Apple Pencil. In **Pen settings**, choose **Pen**, **Marker** or **Highlighter** and adjust color, width and transparency. Five dots from small to large offer quick widths; use the slider for fine adjustment with a live stroke preview. Tap **Done** to close settings and keep drawing; tap the pen button again to return to ordinary editing.
-4. For AI edits, review the preview and confirm to apply. Save your manual edits first.
+4. In Notes, open the document assistant and describe your edit. It can read the visible page, including unsaved handwriting, and saves completed strokes before changing spreadsheet cells. Lift the pen before sending. When a modification needs confirmation, use the proposal's **Apply edit** or **Discard** buttons.
 5. Save and wait for completion. Export the file when ready to share.
 
 Available operations depend on the file format; unavailable options explain why. If loading or saving fails, keep the original and check the error. Compare conflicting versions before saving.

@@ -868,6 +868,17 @@ final class ThreadDetailViewModel: ObservableObject {
         let executionMode = effectiveAgentMode
         guard !isConversationMissing, !goal.isEmpty,
               let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return }
+        let projectIDAtSend = selectedProjectID
+        let modelIDAtSend = selectedModelID
+        let inputModeAtSend = runningInputMode
+        let officeAtSend: (documentID: UUID, session: OfficeFileSession)?
+        if !isTemporary,
+           let documentID = NotesAssistantConversationBinding.documentID(forConversation: conversationID),
+           let session = NotesOfficeLiveBinding.boundSession(documentID: documentID, fileName: nil) {
+            officeAtSend = (documentID, session)
+        } else {
+            officeAtSend = nil
+        }
         let stagedAttachments = attachments
         // Temporary chat is text-only: the launch carries no attachments
         // while the staged files stay in the composer (and the ordinary
@@ -902,8 +913,9 @@ final class ThreadDetailViewModel: ObservableObject {
             guard consumesComposerDraft else { return nil }
             return ComposerSendCommit(
                 draft: originalDraft,
-                // What the launch actually carried: empty while temporary, so
-                // a successful text-only send never consumes staged files.
+                // Only user-staged files belong to the composer receipt.
+                // A live Office page is context for this request and must
+                // never be restored as a stale user-picked attachment.
                 attachments: launchAttachments,
                 editorGeneration: draftGeneration,
                 conversationID: conversationID
@@ -914,15 +926,17 @@ final class ThreadDetailViewModel: ObservableObject {
             // so the identity is captured before the await.
             let commit = makeCommit()
             do {
+                let livePageAttachments = try await officePageAttachmentsForSend(officeAtSend)
+                try Task.checkCancellation()
                 try await center.submitRunningInput(
                     content: goal,
                     in: conversationID,
                     expectedRunID: expectedRunID,
-                    mode: runningInputMode,
-                    selectedModelID: selectedModelID,
-                    workspaceID: selectedProjectID,
+                    mode: inputModeAtSend,
+                    selectedModelID: modelIDAtSend,
+                    workspaceID: projectIDAtSend,
                     executionMode: executionMode,
-                    attachments: launchAttachments
+                    attachments: launchAttachments + livePageAttachments
                 )
                 if let commit, sendOriginAllowsDraftMutation(sendOrigin) {
                     consumeSentDraft(commit)
@@ -942,13 +956,15 @@ final class ThreadDetailViewModel: ObservableObject {
         isConsumingDraft = false
         var launchAccepted = false
         do {
+            let livePageAttachments = try await officePageAttachmentsForSend(officeAtSend)
+            try Task.checkCancellation()
             let started = try await center.startRun(
                 goal: goal,
                 in: conversationID,
                 provider: provider,
                 model: model,
-                workspaceID: selectedProjectID,
-                attachments: launchAttachments,
+                workspaceID: projectIDAtSend,
+                attachments: launchAttachments + livePageAttachments,
                 executionMode: executionMode,
                 runSurface: runSurface,
                 canvasContext: canvasContext,
@@ -992,6 +1008,40 @@ final class ThreadDetailViewModel: ObservableObject {
 
             }
             actionError = presentableError(error, stage: "startOrCompleteRun")
+        }
+    }
+
+    /// The standard attachment path supplies both inline vision and the
+    /// configured text-model/OCR fallback. Capture runs inside the existing
+    /// send receipt, so failure preserves the original user draft.
+    private func officePageAttachmentsForSend(_ context: (documentID: UUID, session: OfficeFileSession)?) async throws -> [AttachmentRef] {
+        guard let context else { return [] }
+        let documentID = context.documentID
+        do {
+            guard NotesAssistantConversationBinding.documentID(forConversation: conversationID) == documentID,
+                  NotesOfficeLiveBinding.boundSession(documentID: documentID, fileName: nil) === context.session else {
+                throw CocoaError(.fileReadChangedDuringCopy)
+            }
+            let capture = try await NotesAssistantLivePageCapture.captureForSend(
+                conversationID: conversationID,
+                in: center.environment.filesCenter
+            )
+            try Task.checkCancellation()
+            guard let capture, capture.documentID == documentID,
+                  NotesAssistantConversationBinding.documentID(forConversation: conversationID) == documentID,
+                  NotesOfficeLiveBinding.boundSession(documentID: documentID, fileName: nil) === context.session else {
+                throw FloeError.validationFailed("Office page changed during capture")
+            }
+            return [capture.attachment]
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw NSError(domain: "org.floeagent.notes.live-page", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: OfficeInkText.t(
+                    "无法读取当前页面，请重试。",
+                    "Couldn't read the current page. Try again."
+                )
+            ])
         }
     }
 

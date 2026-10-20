@@ -9,6 +9,7 @@ import WebKit
 import ZIPFoundation
 import FloeDocuments
 import FloeCore
+import FloeTools
 import FloeNotes
 import FloeOfficeNative
 @testable import FloeApp
@@ -34,6 +35,158 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
     }
     func testWordRapidContactsStayVisibleAndSaveIndependently() async throws {
         try await exercise("docx", contactCount: 3)
+    }
+
+    /// Actual Notes view → its production commit closure → notes.edit → new
+    /// immutable resource. This supplies deterministic recognized numbers;
+    /// the separate sender proof verifies how the model receives the image.
+    func testNotesAssistantCreatesCellsWithoutLosingLiveInk() async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in actual Notes/native save qualification")
+        }
+        executionTimeAllowance = 450
+        continueAfterFailure = false
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-live-write-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Numbers.xlsx")
+        try OfficeDocumentBuilder.createWorkbook(at: source, sheets: [
+            .init(name: "Numbers", rows: [["11111", "123456"], ["KEEP", "=B1*2"]])
+        ])
+        let store = try NotesStore(root: root.appendingPathComponent("store"))
+        let imported = try await NoteFileImporter.importFile(source, notebookID: nil, store: store)
+        let document = try await store.create(imported)
+        let conversationID = UUID()
+        try await store.bindAssistant(conversationID: conversationID, documentID: document.id, canEdit: true)
+        await NotesRepository.shared.setStoreOverride(store)
+        defer { Task { await NotesRepository.shared.setStoreOverride(nil) } }
+        let notes = NotesSession()
+        await notes.open(using: store)
+        let selected = await notes.select(document)
+        XCTAssertTrue(selected)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        window.rootViewController = UIHostingController(rootView:
+            LiveNotesOfficeQualificationHost(session: notes).environmentObject(AppEnvironment.preview()))
+        window.windowLevel = .normal + 1
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+        try await wait {
+            let bound = NotesOfficeLiveBinding.boundSession(documentID: document.id, fileName: document.officeFileName)
+            return bound?.canAct == true && bound?.documentActionsReady == true
+        }
+        let office = try XCTUnwrap(NotesOfficeLiveBinding.boundSession(documentID: document.id, fileName: document.officeFileName))
+        do {
+            if office.readOnly {
+                let entered = await office.requestEditing()
+                XCTAssertTrue(entered, office.error ?? "Edit entry refused")
+            }
+            let native = try XCTUnwrap(office.controller as? FloeOfficeNativeViewController)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            try await wait { OfficeFileSession.hostRenderDiagnostics(native)["stage"] == "visible-render" }
+            office.useInkPreferences(workspaceIdentity: root.path, documentKey: "Numbers.xlsx")
+            let preferences = office.inkPreferences
+            let old = preferences.stroke
+            defer {
+                preferences.setPreset(old.preset); preferences.setColorHex(old.colorHex)
+                preferences.setWidthMillimeters(old.widthMillimeters)
+                preferences.setTransparencyPercent(old.transparencyPercent)
+            }
+            preferences.setPreset(.marker); preferences.setColorHex("#FF0000")
+            preferences.setWidthMillimeters(4)
+            try await office.toggleDrawing()
+            await office.applyInkPreferences()
+            _ = try await web.callAsyncJavaScript(Self.beginAndMove, arguments: ["contactIndex": 0], in: nil, contentWorld: .page)
+            _ = try await snapshot(web, label: "notes-write-active-contact")
+            let originalID = try XCTUnwrap(document.officeResourceID)
+            let originalResource = try await store.resourceURL(originalID)
+            let originalSHA = try FloeDigest.sha256Hex(ofFileAt: originalResource)
+            let runID = UUID()
+            func edit(_ baseline: NoteDocument, sha: String, call: String) async throws -> ToolExecutionOutput {
+                var operations: [[String: Any]] = (1...15).map {
+                    ["action": "updateOfficeText", "fieldID": "xl/worksheets/sheet1.xml|c|C\($0)",
+                     "text": String($0), "createCell": true]
+                }
+                operations.append(["action": "updateOfficeText", "fieldID": "xl/worksheets/sheet1.xml|c|C16",
+                                   "text": "=SUM(C1:C15)", "createCell": true])
+                let data = try JSONSerialization.data(withJSONObject: [
+                    "documentID": document.id.uuidString, "expectedRevision": baseline.revision,
+                    "expectedSHA256": sha, "title": "Recognized numbers", "operations": operations
+                ])
+                let args = try JSONDecoder().decode(NotesEditTool.Arguments.self, from: data)
+                let tool = NotesEditTool()
+                try tool.validate(args)
+                return try await tool.execute(args, context: ToolContext(runID: runID, toolCallID: call,
+                    workspaceRootURL: root, cancellation: CancellationToken(), conversationID: conversationID))
+            }
+            do {
+                _ = try await edit(document, sha: originalSHA, call: "active-contact")
+                XCTFail("An active pen contact must refuse a rewrite")
+            } catch {
+                let stillActive = try await web.evaluateJavaScript("window.__floeOfficePenState().activeStroke") as? Bool
+                XCTAssertEqual(stillActive, true)
+                let untouched = try await store.document(document.id)
+                XCTAssertEqual(untouched.officeResourceID, originalID)
+                XCTAssertEqual(untouched.revision, document.revision)
+            }
+            _ = try await web.evaluateJavaScript(Self.liftPen)
+            try await Task.sleep(for: .milliseconds(750))
+            let first = try await edit(document, sha: originalSHA, call: "commit-ink")
+            XCTAssertTrue(first.summary.contains("liveContentCommitted"), first.summary)
+            let inkDocument = try await store.document(document.id)
+            let inkResource = try await store.resourceURL(XCTUnwrap(inkDocument.officeResourceID))
+            XCTAssertEqual(try vectorCount(in: inkResource), 1)
+            let stagedInk = try NotesOfficeResourceStaging.stage(source: inkResource, fileExtension: "xlsx")
+            defer { NotesOfficeResourceStaging.remove(stagedInk) }
+            let inkSnapshot = try OfficeDocumentService.inspect(url: stagedInk)
+            XCTAssertFalse(inkSnapshot.fields.contains { $0.id.hasSuffix("|c|C1") }, "Ink commit must not claim a cell edit")
+            try await wait { notes.document?.revision == inkDocument.revision && office.canAct }
+            let saved = try await edit(inkDocument, sha: XCTUnwrap(inkSnapshot.sha256), call: "write-cells")
+            let resultAttachment = XCTAttachment(string: saved.summary)
+            resultAttachment.name = "notes-write-receipt"; resultAttachment.lifetime = .keepAlways; add(resultAttachment)
+            let finalDocument = try await store.document(document.id)
+            XCTAssertGreaterThan(finalDocument.revision, inkDocument.revision)
+            let finalResource = try await store.resourceURL(XCTUnwrap(finalDocument.officeResourceID))
+            let stagedFinal = try NotesOfficeResourceStaging.stage(source: finalResource, fileExtension: "xlsx")
+            defer { NotesOfficeResourceStaging.remove(stagedFinal) }
+            let final = try OfficeDocumentService.inspect(url: stagedFinal)
+            let fields = Dictionary(uniqueKeysWithValues: final.fields.map { ($0.id, $0.text) })
+            for number in 1...15 { XCTAssertEqual(fields["xl/worksheets/sheet1.xml|c|C\(number)"], String(number)) }
+            XCTAssertEqual(fields["xl/worksheets/sheet1.xml|c|C16"], "=SUM(C1:C15)")
+            for original in inkSnapshot.fields { XCTAssertEqual(fields[original.id], original.text) }
+            XCTAssertEqual(try vectorCount(in: finalResource), 1)
+            try await wait { notes.document?.revision == finalDocument.revision && office.canAct }
+            let refreshDeadline = ContinuousClock.now.advanced(by: .seconds(30))
+            var mountedSHA: String?
+            repeat {
+                if office.canAct { mountedSHA = try? await office.liveEngineStatus().sha256 }
+                if mountedSHA == final.sha256 { break }
+                try await Task.sleep(for: .milliseconds(100))
+            } while ContinuousClock.now < refreshDeadline
+            XCTAssertEqual(mountedSHA, final.sha256, "The same Notes editor must reopen the newly committed resource")
+            let refreshedNative = try XCTUnwrap(office.controller as? FloeOfficeNativeViewController)
+            let refreshedWeb = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: refreshedNative.view))
+            _ = try await snapshot(refreshedWeb, label: "notes-write-after-resource-refresh")
+            let calculatedCopy = try await office.exportDocument(format: "xlsx")
+            defer { try? FileManager.default.removeItem(at: calculatedCopy) }
+            let calculated = try OfficeOutputSnapshot.capture(url: calculatedCopy)
+            let sum = try XCTUnwrap(calculated.formulaCells.first { $0.cell == "C16" })
+            XCTAssertEqual(sum.formula, "SUM(C1:C15)")
+            XCTAssertEqual(sum.cachedValue.flatMap(Double.init), 120)
+            XCTAssertNil(sum.errorCode)
+            XCTAssertEqual(try vectorCount(in: calculatedCopy), 1)
+            let enginePackage = XCTAttachment(contentsOfFile: calculatedCopy)
+            enginePackage.name = "notes-write-engine-calculated-120"; enginePackage.lifetime = .keepAlways; add(enginePackage)
+            let package = XCTAttachment(contentsOfFile: finalResource)
+            package.name = "notes-write-saved-workbook"; package.lifetime = .keepAlways; add(package)
+            await office.release()
+        } catch {
+            await office.release()
+            throw error
+        }
     }
 
     private func exercise(_ format: String, requireLivePresentation: Bool = true,
@@ -424,6 +577,15 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
     delete window.__floeLiveInkQualificationEnd;
     true;
     """#
+}
+
+private struct LiveNotesOfficeQualificationHost: View {
+    let session: NotesSession
+    var body: some View {
+        if let document = session.document {
+            NotesOfficeView(session: session, document: document, onAssistant: {}, onLinkedMaps: {})
+        }
+    }
 }
 
 private final class OfficeLiveInkVectorCounter: NSObject, XMLParserDelegate {

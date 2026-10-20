@@ -409,6 +409,7 @@ final class OfficeFileSession: ObservableObject {
     /// callbacks it installs capture their generation, so a callback from a
     /// controller an earlier generation mounted can never settle this session.
     private var openGeneration = OfficeOpenGeneration()
+    private let proposalSessionID = UUID()
     /// Durable correlation identity for this session's bounded stage trace
     /// (`OfficeStageRecorder`). The pinned host logs its own per-controller
     /// identity; this one orders the App-side chain (intent -> working copy ->
@@ -1634,6 +1635,20 @@ final class OfficeFileSession: ObservableObject {
         self.liveOwnerConversationID = nil
     }
 
+    /// Refuse an alias registration that does not describe the actual open file.
+    var proposalReviewBinding: OfficeProposalSessionBinding? {
+        guard let root = liveWorkspaceRoot, let path = liveDocumentID,
+              let session, let controller,
+              OfficeLiveSessionRegistry.shared.session(root: root, relativePath: path) === self,
+              root.appendingPathComponent(path).standardizedFileURL.resolvingSymlinksInPath()
+                == session.originalURL.standardizedFileURL.resolvingSymlinksInPath() else { return nil }
+        return OfficeProposalSessionBinding(
+            documentKey: root.standardizedFileURL.resolvingSymlinksInPath().path + "|"
+                + session.originalURL.standardizedFileURL.resolvingSymlinksInPath().path,
+            sessionID: proposalSessionID, controllerID: ObjectIdentifier(controller),
+            generation: openGeneration.current)
+    }
+
     struct OfficeLiveEngineStatus {
         var sha256: String
         var readOnly: Bool
@@ -1666,6 +1681,191 @@ final class OfficeFileSession: ObservableObject {
         return await OfficeCommandBridge.selectionFingerprint(controller: controller)
     }
 
+    // MARK: - Live page readout (document assistant input)
+
+    /// One snapshot of the CURRENT live document view, captured through the
+    /// mounted Office WKWebView's own `takeSnapshot`. It therefore shows the
+    /// engine's active sheet/slide/page at its actual scroll position,
+    /// including strokes that are visible but not yet saved. This is a
+    /// snapshot of the App's own document view — not a device screen capture,
+    /// no new permissions, no cover/thumbnail side channel, and the file on
+    /// disk is never touched by the readout.
+    struct OfficeLiveRenderedPage: Sendable {
+        let pngData: Data
+        let pixelWidth: Int
+        let pixelHeight: Int
+        let sha256: String
+        /// "documentCanvasCrop" when the engine document container bounded the
+        /// snapshot, "liveViewFull" when the full document view was captured.
+        let boundsMode: String
+    }
+
+    struct OfficeLivePageReadout: Sendable {
+        let page: OfficeLiveRenderedPage
+        /// SHA-256 of the committed original file at capture time.
+        let committedSHA256: String
+        /// True when the engine reported unsaved edits before the capture.
+        let hadUnsavedChanges: Bool
+        /// Identity of the mounted controller this readout was captured from,
+        /// so the calling surface can re-check that the same editor is still
+        /// open before handing the result to a model.
+        let controllerObjectID: ObjectIdentifier
+        /// Engine selection/cursor identity sampled before the snapshot and
+        /// re-checked after. Non-nil and equal fences a selection/cursor move
+        /// during the capture; the pinned host exposes no viewport-change
+        /// event, so a pure scroll without any selection change cannot be
+        /// fenced from the App side (reported here instead of being hidden).
+        let selectionFenceObserved: Bool
+        let engineViewFingerprint: String?
+        /// Truthful scope label: the live document view as the engine rendered
+        /// it at capture instant.
+        let captureScope: String
+    }
+
+    /// Captures the live session's current document view. A controller
+    /// replacement, phase change, selection/cursor move or cancellation
+    /// during the capture fails the readout instead of returning a stale
+    /// image. Never falls back to an older cover or saved thumbnail.
+    func liveEnginePageReadout() async throws -> OfficeLivePageReadout {
+        guard canAct, phase == .ready, let controller else {
+            throw CocoaError(.featureUnsupported)
+        }
+        try Task.checkCancellation()
+        let hadUnsavedChanges = readOnly ? false : await hasLocalEditsToProtect()
+        // The engine's own selection/cursor/cell identity is the strongest
+        // view-position signal the pinned host exposes today. When the page
+        // reports none, the capture proceeds but the fence is declared
+        // unavailable downstream — never silently claimed.
+        let fingerprintBefore = await liveSelectionFingerprint()
+        guard let session else { throw CocoaError(.featureUnsupported) }
+        let committedSHA256 = try FloeDigest.sha256Hex(ofFileAt: session.originalURL)
+        let controllerObjectID = ObjectIdentifier(controller)
+        guard let web = OfficeExplicitSaveBridge.findWebView(in: controller.view) else {
+            throw CocoaError(.featureUnsupported)
+        }
+        let crop = await Self.liveDocumentCropRect(in: web)
+        let captured = try await Self.snapshotLiveDocumentView(web, cropRect: crop)
+        try Task.checkCancellation()
+        let fingerprintAfter = await liveSelectionFingerprint()
+        // The snapshot no longer describes this editor if the controller was
+        // replaced, the session left ready state, or the observed selection
+        // moved during the capture window.
+        guard phase == .ready, self.controller === controller else {
+            throw CocoaError(.fileReadChangedDuringCopy)
+        }
+        if let fingerprintBefore, let fingerprintAfter, fingerprintBefore != fingerprintAfter {
+            throw CocoaError(.fileReadChangedDuringCopy)
+        }
+        return OfficeLivePageReadout(
+            page: captured,
+            committedSHA256: committedSHA256,
+            hadUnsavedChanges: hadUnsavedChanges,
+            controllerObjectID: controllerObjectID,
+            selectionFenceObserved: fingerprintBefore != nil && fingerprintAfter != nil,
+            engineViewFingerprint: fingerprintAfter,
+            captureScope: "liveDocumentViewSnapshot")
+    }
+
+    /// True when the engine reports an in-progress pen contact — or when that
+    /// state cannot be read at all (missing probe, missing web view, JS
+    /// failure): fail closed. The assistant commit/rewrite paths must never
+    /// save, cancel or fence underneath a stroke that is still being drawn;
+    /// the ordinary completed-stroke save path is unaffected.
+    func hasActivePenContact() async -> Bool {
+        guard let controller,
+              let web = OfficeExplicitSaveBridge.findWebView(in: controller.view) else { return true }
+        let activeStroke = (try? await web.evaluateJavaScript(
+            "window.__floeOfficePenState ? window.__floeOfficePenState().activeStroke : null")) as? Bool
+        guard let activeStroke else { return true }
+        return activeStroke
+    }
+
+    /// Post-fence quiescence check for the assistant's external-rewrite path.
+    /// The caller has already committed the visible content and frozen input
+    /// through `beginExternalRefresh`; a stroke or pen contact can still have
+    /// landed in the commit→fence gap. Both the engine's active-contact state
+    /// (fail closed on unknown) and the protected-edits probe must read clean
+    /// NOW, so the caller can release the fence and fail with a
+    /// refresh-required outcome instead of silently rewriting content that
+    /// moved underneath it. Same probes the committed-cover export uses.
+    func verifyQuiescentForExternalRewrite() async -> Bool {
+        guard !(await hasActivePenContact()) else { return false }
+        return !(await hasLocalEditsToProtect())
+    }
+
+    /// Bounded read-only geometry probe of the engine's own document
+    /// container (same in-session `evaluateJavaScript` precedent as the
+    /// cover-export pen-state read). Returns nil — full-view capture — unless
+    /// the container reports a finite rect inside the view bounds.
+    private static func liveDocumentCropRect(in web: WKWebView) async -> CGRect? {
+        let probe = """
+        (() => { try {
+          const el = document.getElementById('document-container') || document.getElementById('map');
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          if (!Number.isFinite(r.left) || !Number.isFinite(r.top) ||
+              !Number.isFinite(r.width) || !Number.isFinite(r.height)) return null;
+          return JSON.stringify({x:r.left,y:r.top,width:r.width,height:r.height});
+        } catch (_) { return null; } })()
+        """
+        guard let raw = try? await web.evaluateJavaScript(probe) as? String,
+              let data = raw.data(using: .utf8),
+              let value = try? JSONDecoder().decode(CropValues.self, from: data),
+              value.width >= 64, value.height >= 64,
+              value.x >= 0, value.y >= 0,
+              value.x + value.width <= web.bounds.width * 1.01,
+              value.y + value.height <= web.bounds.height * 1.01 else { return nil }
+        return CGRect(x: value.x, y: value.y, width: value.width, height: value.height)
+    }
+
+    private struct CropValues: Decodable { let x: Double; let y: Double; let width: Double; let height: Double }
+
+    /// `takeSnapshot` on the document web view (product-code precedent:
+    /// EngineeringFilePreview), downscaled to a bounded size for OCR/visual
+    /// handoff. Only a bounded encoded PNG leaves this function.
+    private static func snapshotLiveDocumentView(_ web: WKWebView, cropRect: CGRect?) async throws -> OfficeLiveRenderedPage {
+        let configuration = WKSnapshotConfiguration()
+        if let cropRect { configuration.rect = cropRect }
+        configuration.afterScreenUpdates = true
+        let image = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<UIImage, Error>) in
+            web.takeSnapshot(with: configuration) { image, error in
+                if let image, image.size.width >= 64, image.size.height >= 64 {
+                    continuation.resume(returning: image)
+                } else {
+                    continuation.resume(throwing: error ?? CocoaError(.fileReadInapplicableStringEncoding))
+                }
+            }
+        }
+        try Task.checkCancellation()
+        guard let source = image.cgImage else { throw CocoaError(.fileReadCorruptFile) }
+        let maximumPixelWidth = 1_536
+        let maximumPixelHeight = 2_048
+        let scale = min(1.0, min(CGFloat(maximumPixelWidth) / CGFloat(source.width),
+                                 CGFloat(maximumPixelHeight) / CGFloat(source.height)))
+        let targetSize = CGSize(width: max(1, CGFloat(source.width) * scale),
+                                height: max(1, CGFloat(source.height) * scale))
+        let renderer = UIGraphicsImageRenderer(size: targetSize, format: {
+            // scale = 1: targetSize is already the FINAL pixel budget. The
+            // default renderer format would multiply by the device display
+            // scale (2x–3x), contradicting the bounded image and inflating
+            // staging/OCR cost.
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            return format
+        }())
+        let downscaled = renderer.image { context in
+            context.cgContext.interpolationQuality = .high
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+        guard let cg = downscaled.cgImage, cg.width > 0, cg.height > 0,
+              let png = downscaled.pngData(), png.count <= 8 * 1_024 * 1_024 else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return OfficeLiveRenderedPage(pngData: png, pixelWidth: cg.width, pixelHeight: cg.height,
+                                      sha256: FloeDigest.sha256Hex(png),
+                                      boundsMode: cropRect == nil ? "liveViewFull" : "documentCanvasCrop")
+    }
+
     struct OfficeEngineApplyResult {
         var facts: [String]
         var freshStateCommands: Set<String>
@@ -1681,7 +1881,9 @@ final class OfficeFileSession: ObservableObject {
     /// redirected to a different paragraph/cell/object.
     func applyEngineCommands(_ commands: [OfficeEngineCommand],
                              expectedSelectionFingerprint: String? = nil,
-                             batchID: String? = nil) async throws -> OfficeEngineApplyResult {
+                             batchID: String? = nil,
+                             expectedSHA256: String? = nil,
+                             expectedProposalBinding: OfficeProposalSessionBinding? = nil) async throws -> OfficeEngineApplyResult {
         #if canImport(FloeOfficeNative)
         guard commandReady, !readOnly, let workspace, let session, let controller else {
             throw FloeError.validationFailed(
@@ -1724,9 +1926,25 @@ final class OfficeFileSession: ObservableObject {
             }
         }
 
+        // The input fence is held: proposals cannot cross a reopen, a save or
+        // an in-memory edit that arrived while the confirmation was visible.
+        if let expectedSHA256 {
+            guard !(await hasLocalEditsToProtect()), !(await hasActivePenContact()),
+                  let expectedProposalBinding,
+                  proposalReviewBinding == expectedProposalBinding,
+                  try FloeDigest.sha256Hex(ofFileAt: session.originalURL).lowercased()
+                    == expectedSHA256.lowercased() else {
+                throw FloeError.validationFailed(OfficeInkText.t(
+                    "文档已变化，请让助手重新准备修改。",
+                    "The document changed. Ask the assistant to prepare the edit again."))
+            }
+        }
         // Baseline from the committed working copy (== original bytes). A
         // failure after dispatch restores exactly these bytes.
         let before = try OfficeOutputSnapshot.capture(url: session.workingURL)
+        if let expectedSHA256, before.sha256.lowercased() != expectedSHA256.lowercased() {
+            throw FloeError.validationFailed("The proposal no longer matches the saved document")
+        }
         // Persisted pre-batch snapshot: the pinned bundle has no undo-group
         // command, so the only honest whole-batch revert is restoring these
         // exact bytes with a CAS — never a guessed count of engine undos. The
@@ -3133,6 +3351,85 @@ struct OfficeStandaloneEditorHost: View {
     }
 }
 
+/// Appears only for a proposal belonging to this exact mounted document.
+private struct OfficePendingProposalReview: View {
+    @ObservedObject var session: OfficeFileSession
+    @EnvironmentObject private var environment: AppEnvironment
+    @State private var proposals: [OfficeCommandProposal] = []
+    @State private var busy = false
+    @State private var failure: String?
+
+    var body: some View {
+        Group {
+            if !proposals.isEmpty, session.proposalReviewBinding != nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(proposals, id: \.id) { proposal in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(proposal.summary).font(.callout)
+                            Text(proposal.targetSummary).font(.caption).foregroundStyle(.secondary)
+                            HStack {
+                                Button(OfficeInkText.t("应用修改", "Apply edit")) {
+                                    Task { await decide(proposal, apply: true) }
+                                }.buttonStyle(.borderedProminent)
+                                Button(OfficeInkText.t("放弃", "Discard"), role: .destructive) {
+                                    Task { await decide(proposal, apply: false) }
+                                }.buttonStyle(.bordered)
+                            }.frame(minHeight: 44)
+                        }
+                    }
+                    if let failure { Text(failure).font(.footnote).foregroundStyle(.secondary) }
+                }
+                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(.bar).disabled(busy || !session.commandReady)
+                .accessibilityIdentifier("office.assistant.pendingReview")
+            }
+        }
+        .task(id: session.proposalReviewBinding) { await refresh() }
+        .onChange(of: session.phase) { _, _ in Task { await refresh() } }
+        .onReceive(NotificationCenter.default.publisher(for: OfficeCommandCenter.proposalsDidChange)) { _ in
+            Task { await refresh() }
+        }
+    }
+
+    @MainActor private func refresh() async {
+        guard let binding = session.proposalReviewBinding else {
+            proposals = []; failure = nil; return
+        }
+        let pending = await environment.officeCommandCenter.pendingProposals(binding: binding)
+        guard !Task.isCancelled, session.proposalReviewBinding == binding else { return }
+        proposals = pending
+        if pending.isEmpty { failure = nil }
+    }
+
+    @MainActor private func decide(_ proposal: OfficeCommandProposal, apply: Bool) async {
+        guard !busy, let binding = session.proposalReviewBinding else { return }
+        busy = true
+        failure = nil
+        defer { busy = false }
+        let center = environment.officeCommandCenter
+        // Discard removes the stored origin; capture it before either decision.
+        let owner = await center.proposalOwnerConversation(proposalID: proposal.id)
+        guard session.proposalReviewBinding == binding else { return }
+        do {
+            var sha256: String?
+            if apply {
+                let receipt = try await center.approveAndApply(proposal: proposal, expectedBinding: binding)
+                sha256 = receipt.sha256
+            } else {
+                try await center.discardProposal(id: proposal.id, expectedBinding: binding)
+            }
+            if let owner {
+                try? await environment.conversationCenter.recordProposalDecision(
+                    conversationID: owner, proposalID: proposal.id,
+                    decision: apply ? "applied" : "rejected", revision: nil, sha256: sha256)
+            }
+        } catch {
+            if session.proposalReviewBinding == binding { failure = error.localizedDescription }
+        }
+        await refresh()
+    }
+}
+
 struct OfficeDocumentEditorView: View {
     let relativePath: String
     @ObservedObject var session: OfficeFileSession
@@ -3228,6 +3525,9 @@ struct OfficeDocumentEditorView: View {
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("office.editor.header")
                 }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                OfficePendingProposalReview(session: session)
             }
             .interactiveDismissDisabled()
             .task {

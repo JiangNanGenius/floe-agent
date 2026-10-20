@@ -84,6 +84,15 @@ struct NotesAssistantPanel: View {
             guard let conversationID else { return }
             do { try await store.setAssistantFocus(conversationID: conversationID, documentID: document.id, pageID: pageID) }
             catch { failure = error.localizedDescription }
+            // Publish this conversation's own selected document so the live
+            // Office-page capture can resolve exactly this assistant request's
+            // document at send time (never another task's, never a guess).
+            NotesAssistantConversationBinding.map(conversationID: conversationID, documentID: document.id)
+        }
+        .onDisappear {
+            if let conversationID {
+                NotesAssistantConversationBinding.unmap(conversationID: conversationID, documentID: document.id)
+            }
         }
     }
 
@@ -98,6 +107,9 @@ struct NotesAssistantPanel: View {
                 title: FloeL10n.l("notes.notes_assistant_panel.notes", document.title), purpose: .notes)
             try await store.bindAssistant(conversationID: next.id, documentID: document.id, canEdit: true)
             if let composerInput { onInputConsumed(composerInput.id) }
+            await MainActor.run {
+                NotesAssistantConversationBinding.unmap(conversationID: previous, documentID: document.id)
+            }
             conversationID = next.id
             failure = nil
         } catch { failure = error.localizedDescription }

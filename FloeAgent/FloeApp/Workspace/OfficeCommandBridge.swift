@@ -355,6 +355,14 @@ enum OfficeCommandBridge {    struct DispatchOutcome {
     """#
 }
 
+/// An editor proposal belongs to one canonical file and one mounted generation.
+struct OfficeProposalSessionBinding: Hashable, Sendable {
+    let documentKey: String
+    let sessionID: UUID
+    let controllerID: ObjectIdentifier
+    let generation: Int
+}
+
 /// Weak registry of live Office engine sessions, keyed by canonical workspace
 /// root + relative path. The editor surface registers its session so the
 /// shared command center can reach exactly that live document (and refuse
