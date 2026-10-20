@@ -2,6 +2,13 @@ import Crypto
 import Foundation
 import FloeCore
 
+/// Parsed provider output. URL citations and a provider-generated answer stay
+/// separate so model text is never relabeled as per-URL evidence.
+struct WebSearchProviderOutput: Sendable {
+    var results: [WebSearchResult]
+    var generatedAnswer: WebSearchProviderGeneratedAnswer?
+}
+
 public actor WebSearchService {
     /// Internal for privacy-audit tests: the transport configuration must
     /// stay ephemeral (no shared on-disk cache/cookie/credential state).
@@ -90,6 +97,7 @@ public actor WebSearchService {
         var combined: [WebSearchResult] = []
         var used: [WebSearchProviderKind] = []
         var failures: [String] = []
+        var generatedAnswers: [WebSearchProviderGeneratedAnswer] = []
 
         if query.mode == .deep, selected.count > 1 {
             await withTaskGroup(of: ProviderOutcome.self) { group in
@@ -100,53 +108,66 @@ public actor WebSearchService {
                 }
                 for await outcome in group {
                     switch outcome {
-                    case .success(let kind, let results):
+                    case .success(let kind, let results, let answer):
                         used.append(kind)
                         combined.append(contentsOf: results)
+                        if let answer { generatedAnswers.append(answer) }
                     case .failure(let value): failures.append(value)
                     }
                 }
             }
         } else {
-            // Fast/balanced use ordered failover. A valid empty result is
-            // treated as insufficient evidence and advances to the next
-            // configured provider.
+            // Fast/balanced use ordered failover. An empty result is
+            // insufficient evidence and advances to the next provider. A
+            // provider-generated answer without URL citations is real output,
+            // not an empty result, so it stops the failover and travels to
+            // the tool unchanged.
             let failoverCandidates = query.requestedProvider == nil ? available : selected
             for item in failoverCandidates {
                 let outcome = await run(item.0, credential: item.1, query: query, traceID: traceID)
+                var succeeded = false
                 switch outcome {
-                case .success(let kind, let results) where !results.isEmpty:
+                case .success(let kind, let results, let answer)
+                    where !results.isEmpty || answer != nil:
                     used.append(kind)
                     combined = results
-                    break
-                case .success(let kind, _): failures.append("\(kind.rawValue): empty result")
-                case .failure(let value): failures.append(value)
+                    if let answer { generatedAnswers.append(answer) }
+                    succeeded = true
+                case .success(let kind, _, _):
+                    failures.append("\(kind.rawValue): empty result")
+                case .failure(let value):
+                    failures.append(value)
                 }
-                if !combined.isEmpty { break }
+                if succeeded { break }
                 if query.requestedProvider != nil { break }
             }
         }
 
         let normalized = Self.deduplicate(combined, limit: query.maxResults)
-        guard !normalized.isEmpty else {
+        guard !normalized.isEmpty || !generatedAnswers.isEmpty else {
             FloeLogger(category: .tools).warning(
                 "webSearchFailed trace=\(traceID) attempts=\(selected.count) failures=\(failures.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
             )
             throw WebRetrievalError.allProvidersFailed(failures)
         }
         FloeLogger(category: .tools).info(
-            "webSearchFinished trace=\(traceID) providers=\(used.map(\.rawValue).joined(separator: ",")) rawResults=\(combined.count) results=\(normalized.count) failures=\(failures.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            "webSearchFinished trace=\(traceID) providers=\(used.map(\.rawValue).joined(separator: ",")) rawResults=\(combined.count) results=\(normalized.count) answers=\(generatedAnswers.count) failures=\(failures.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
         )
         return WebSearchResponse(
             query: query.text,
             results: normalized,
             providersUsed: used,
-            failures: failures
+            failures: failures,
+            generatedAnswers: generatedAnswers
         )
     }
 
     private enum ProviderOutcome: Sendable {
-        case success(WebSearchProviderKind, [WebSearchResult])
+        case success(
+            WebSearchProviderKind,
+            [WebSearchResult],
+            WebSearchProviderGeneratedAnswer?
+        )
         case failure(String)
     }
 
@@ -165,6 +186,32 @@ public actor WebSearchService {
         .googleProgrammable: URL(string: "https://customsearch.googleapis.com/customsearch/v1")!
     ]
 
+    static let volcengineFeedcoopEndpoint = URL(
+        string: "https://open.feedcoopapi.com/search_api/web_search"
+    )!
+    static let volcengineArkResponsesEndpoint = URL(
+        string: "https://ark.cn-beijing.volces.com/api/v3/responses"
+    )!
+
+    /// The exact canonical endpoint for a configuration. Volcengine has two
+    /// separate origins selected by its stored interface; a legacy custom
+    /// endpoint or an absent interface has no canonical origin and therefore
+    /// no fake-IP tunnel relaxation. Other kinds keep their single entry.
+    static func canonicalEndpoint(for configuration: WebSearchProviderConfiguration) -> URL? {
+        guard configuration.endpoint == nil else { return nil }
+        guard configuration.kind == .volcengine else {
+            return canonicalEndpoints[configuration.kind]
+        }
+        guard let options = try? VolcengineSearchOptions(options: configuration.options),
+              let interface = options.interface else { return nil }
+        switch interface {
+        case .agentPlan, .doubaoSearch:
+            return volcengineFeedcoopEndpoint
+        case .arkResponses:
+            return volcengineArkResponsesEndpoint
+        }
+    }
+
     /// Whether the effective request URL produced by `makeRequest` matches the
     /// canonical contract for its kind on scheme, host, port and path. Query
     /// and fragment are deliberately ignored: some canonical requests (Brave,
@@ -181,14 +228,31 @@ public actor WebSearchService {
             && actual.path == expected.path
     }
 
+    static func requestURLIsCanonical(
+        _ url: URL?,
+        configuration: WebSearchProviderConfiguration
+    ) -> Bool {
+        guard let url, let canonical = canonicalEndpoint(for: configuration) else {
+            return false
+        }
+        guard let actual = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let expected = URLComponents(url: canonical, resolvingAgainstBaseURL: false) else {
+            return false
+        }
+        return actual.scheme?.lowercased() == expected.scheme?.lowercased()
+            && actual.host?.lowercased() == expected.host?.lowercased()
+            && (actual.port ?? 443) == (expected.port ?? 443)
+            && actual.path == expected.path
+    }
+
     /// Decide whether this provider configuration may accept addresses in
     /// the 198.18.0.0/15 fake-IP tunnel range. Requirements:
     /// 1. the provider kind is one of the fixed built-in commercial kinds;
-    /// 2. the effective endpoint is the kind's canonical endpoint — an
-    ///    explicit endpoint override forfeits the relaxation;
+    /// 2. the effective endpoint is the configuration's canonical endpoint —
+    ///    an explicit endpoint override forfeits the relaxation;
     /// 3. the scheme is HTTPS and the port is absent or 443.
     static func allowsTransientTunnel(for configuration: WebSearchProviderConfiguration) -> Bool {
-        guard let canonical = canonicalEndpoints[configuration.kind] else { return false }
+        guard let canonical = canonicalEndpoint(for: configuration) else { return false }
         // An override always forfeits; makeRequest would use it verbatim.
         guard configuration.endpoint == nil else { return false }
         guard let components = URLComponents(url: canonical, resolvingAgainstBaseURL: false) else {
@@ -219,7 +283,7 @@ public actor WebSearchService {
             // (Brave/Google encode parameters in the query), but scheme, host,
             // port and path must equal the canonical contract.
             let allowsTransient = Self.allowsTransientTunnel(for: configuration)
-                && Self.requestURLIsCanonical(request.url, kind: configuration.kind)
+                && Self.requestURLIsCanonical(request.url, configuration: configuration)
             try validateDestination(request.url!, allowsTransient)
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
@@ -229,11 +293,15 @@ public actor WebSearchService {
                 )
                 return .failure("\(configuration.kind.rawValue): HTTP \(status)")
             }
-            let results = try Self.parse(data, provider: configuration.kind, limit: query.maxResults)
-            FloeLogger(category: .tools).info(
-                "webSearchProviderFinished trace=\(traceID) provider=\(configuration.kind.rawValue) status=\(http.statusCode) responseBytes=\(data.count) results=\(results.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            let output = try Self.parseOutput(
+                data,
+                provider: configuration.kind,
+                limit: query.maxResults
             )
-            return .success(configuration.kind, results)
+            FloeLogger(category: .tools).info(
+                "webSearchProviderFinished trace=\(traceID) provider=\(configuration.kind.rawValue) status=\(http.statusCode) responseBytes=\(data.count) results=\(output.results.count) answerChars=\(output.generatedAnswer?.text.count ?? 0) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
+            return .success(configuration.kind, output.results, output.generatedAnswer)
         } catch {
             let nsError = error as NSError
             FloeLogger(category: .tools).warning(
@@ -337,7 +405,16 @@ public actor WebSearchService {
             request = try get(endpoint, query: [URLQueryItem(name: "q", value: query.text),
                                                 URLQueryItem(name: "format", value: "json")])
 
-        case .volcengine, .custom:
+        case .volcengine:
+            request = try volcengineRequest(
+                configuration,
+                credential: credential,
+                query: query,
+                count: count,
+                now: now
+            )
+
+        case .custom:
             guard let endpoint = configuration.endpoint else {
                 throw WebRetrievalError.invalidResponse("A provider endpoint is required")
             }
@@ -348,6 +425,231 @@ public actor WebSearchService {
         request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return request
+    }
+
+    /// Volcengine has three real account/interface products plus the original
+    /// generic custom-endpoint configuration. The latter is selected only by
+    /// the ABSENCE of an interface (or by an explicit endpoint override), so
+    /// old stored records keep their exact request, endpoint and credential.
+    private static func volcengineRequest(
+        _ configuration: WebSearchProviderConfiguration,
+        credential: WebSearchCredential,
+        query: WebSearchQuery,
+        count: Int,
+        now: Date
+    ) throws -> URLRequest {
+        let apiKey = credential["apiKey"] ?? ""
+        let rawInterface = configuration.options[VolcengineSearchOptions.Key.interface]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if rawInterface.isEmpty {
+            return try legacyVolcengineRequest(
+                configuration,
+                apiKey: apiKey,
+                query: query,
+                count: count
+            )
+        }
+        guard let interface = VolcengineSearchInterface(rawValue: rawInterface) else {
+            throw WebRetrievalError.invalidResponse(
+                "Unknown Volcengine interface selection"
+            )
+        }
+        if configuration.endpoint != nil {
+            // A custom endpoint belongs to the legacy contract. Keeping it
+            // alongside a new interface would silently send the selected
+            // credential to a different destination.
+            throw WebRetrievalError.invalidResponse(
+                "Volcengine interface settings cannot be combined with a custom endpoint"
+            )
+        }
+        guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
+        let options = try VolcengineSearchOptions(options: configuration.options)
+
+        switch interface {
+        case .arkResponses:
+            return try arkResponsesRequest(
+                options: options,
+                apiKey: apiKey,
+                query: query,
+                count: count
+            )
+        case .agentPlan, .doubaoSearch:
+            return try doubaoSearchRequest(
+                options: options,
+                apiKey: apiKey,
+                query: query,
+                count: count,
+                now: now
+            )
+        }
+    }
+
+    /// The original pre-integration contract: POST {query,count} to the
+    /// user-supplied endpoint with the same Bearer credential account.
+    private static func legacyVolcengineRequest(
+        _ configuration: WebSearchProviderConfiguration,
+        apiKey: String,
+        query: WebSearchQuery,
+        count: Int
+    ) throws -> URLRequest {
+        guard let endpoint = configuration.endpoint else {
+            // Pre-integration behavior required an endpoint; a stored legacy
+            // record must not be silently promoted to a different product.
+            throw WebRetrievalError.invalidResponse(
+                "Select a Volcengine account/interface or configure a custom endpoint"
+            )
+        }
+        guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
+        var request = try post(endpoint, json: ["query": query.text, "count": count])
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    /// Standalone Ark Responses request. It is intentionally independent of
+    /// the parent Agent request: the visible model adapter and function/MCP
+    /// tool list are never changed, and the same Office tools stay available.
+    private static func arkResponsesRequest(
+        options: VolcengineSearchOptions,
+        apiKey: String,
+        query: WebSearchQuery,
+        count: Int
+    ) throws -> URLRequest {
+        // Ark web_search citations do not support provider-side domain or
+        // recency filters. Reject them with an actionable error instead of
+        // pretending they were applied.
+        guard query.domains.isEmpty, query.excludedDomains.isEmpty, query.recencyDays == nil else {
+            throw WebRetrievalError.invalidResponse(
+                "Ark Responses search does not support domain or recency filters; use the Agent Plan interface"
+            )
+        }
+        var tool: [String: Any] = ["type": "web_search"]
+        switch options.arkEngine {
+        case .doubaoCustom:
+            // Doubao Search Custom is an exclusive engine: it must never be
+            // mixed with the online-content sources.
+            tool["sources"] = ["doubao"]
+        case .onlineContent:
+            // Latest explicit product decision: one switch for the plugin
+            // interface, with all three content sources enabled together.
+            tool["sources"] = ["toutiao", "douyin", "moji"]
+            // `limit` is supported by the online-content plugin only; its
+            // effective per-search ceiling is 20.
+            tool["limit"] = min(max(1, count), 20)
+        }
+        let body: [String: Any] = [
+            "model": options.arkModel,
+            "stream": false,
+            "input": query.text,
+            "tools": [tool],
+            // Verified official range is 1...10. A web.search call answers
+            // one request, so one tool round bounds cost and latency.
+            "max_tool_calls": 1
+        ]
+        var request = try post(volcengineArkResponsesEndpoint, json: body)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    /// Direct Doubao Search Custom HTTP API, shared by the Agent Plan and
+    /// separate Doubao Search product credentials. Only the Keychain account
+    /// differs; the request contract is identical.
+    private static func doubaoSearchRequest(
+        options: VolcengineSearchOptions,
+        apiKey: String,
+        query: WebSearchQuery,
+        count: Int,
+        now: Date
+    ) throws -> URLRequest {
+        let trimmedQuery = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            throw WebRetrievalError.invalidResponse("Volcengine search query is empty")
+        }
+        // The vendor's documented limit is 1...100 characters. A longer query
+        // is rejected rather than silently truncated (which would change the
+        // user's search).
+        guard trimmedQuery.count <= 100 else {
+            throw WebRetrievalError.invalidResponse(
+                "Volcengine Doubao Search accepts queries up to 100 characters; shorten the query"
+            )
+        }
+
+        var filter: [String: Any] = [
+            "AuthInfoLevel": options.authoritativeOnly ? 1 : 0,
+            "NeedContent": false,
+            "NeedUrl": true
+        ]
+        if !query.domains.isEmpty {
+            filter["Sites"] = try volcengineDomainList(
+                query.domains,
+                maximum: 20,
+                field: "sites"
+            )
+        }
+        if !query.excludedDomains.isEmpty {
+            filter["BlockHosts"] = try volcengineDomainList(
+                query.excludedDomains,
+                maximum: 5,
+                field: "blocked hosts"
+            )
+        }
+
+        var body: [String: Any] = [
+            "Query": trimmedQuery,
+            "SearchType": "web",
+            "Count": min(max(1, count), 50),
+            "Filter": filter,
+            "QueryControl": ["QueryRewrite": options.queryRewrite]
+        ]
+        if let timeRange = volcengineTimeRange(days: query.recencyDays, now: now) {
+            body["TimeRange"] = timeRange
+        }
+        var request = try post(volcengineFeedcoopEndpoint, json: body)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    /// Vendor filter values are pipe-separated and the source API caps the
+    /// lists. Exceeding a cap is an explicit error, never a silent prefix.
+    private static func volcengineDomainList(
+        _ values: [String],
+        maximum: Int,
+        field: String
+    ) throws -> String {
+        guard values.count <= maximum else {
+            throw WebRetrievalError.invalidResponse(
+                "Volcengine \(field) accepts at most \(maximum) entries"
+            )
+        }
+        let cleaned = try values.map { value -> String in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  !trimmed.contains("|"),
+                  trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
+                throw WebRetrievalError.invalidResponse(
+                    "Volcengine \(field) contains an invalid domain"
+                )
+            }
+            return trimmed
+        }
+        return cleaned.joined(separator: "|")
+    }
+
+    /// Official enum values, or an explicit UTC date range beyond one year.
+    static func volcengineTimeRange(days: Int?, now: Date) -> String? {
+        guard let days, days > 0 else { return nil }
+        switch days {
+        case ...1: return "OneDay"
+        case ...7: return "OneWeek"
+        case ...31: return "OneMonth"
+        case ...365: return "OneYear"
+        default:
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "yyyy-MM-dd"
+            let start = now.addingTimeInterval(-Double(days - 1) * 86_400)
+            return "\(formatter.string(from: start))..\(formatter.string(from: now))"
+        }
     }
 
     private static func post(_ url: URL, json: [String: Any]) throws -> URLRequest {
@@ -444,16 +746,71 @@ public actor WebSearchService {
     }
 
     static func parse(_ data: Data, provider: WebSearchProviderKind, limit: Int) throws -> [WebSearchResult] {
-        let root = try JSONSerialization.jsonObject(with: data)
+        try parseOutput(data, provider: provider, limit: limit).results
+    }
+
+    /// Full provider output. Only Ark carries a separate generated answer;
+    /// every other provider returns an empty answer field.
+    static func parseOutput(
+        _ data: Data,
+        provider: WebSearchProviderKind,
+        limit: Int
+    ) throws -> WebSearchProviderOutput {
+        let root: Any
+        do {
+            root = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw WebRetrievalError.invalidResponse("response is not valid JSON")
+        }
+        guard let object = root as? [String: Any] else {
+            if provider == .volcengine {
+                throw WebRetrievalError.invalidResponse("response root is not a JSON object")
+            }
+            // Preserve the existing tolerant behavior for providers whose
+            // parser historically treated a non-object root as no results.
+            return WebSearchProviderOutput(results: [], generatedAnswer: nil)
+        }
+        if provider == .volcengine, isArkResponse(object) {
+            return try parseArkResponse(object, limit: limit)
+        }
+        if provider == .volcengine,
+           let error = object["error"], !(error is NSNull) {
+            throw WebRetrievalError.invalidResponse(providerErrorMessage(error))
+        }
+        return WebSearchProviderOutput(
+            results: parseGenericResults(object, provider: provider, limit: limit),
+            generatedAnswer: nil
+        )
+    }
+
+    /// Ark Responses objects are distinguishable from the direct search API
+    /// and the original custom-endpoint envelopes by their response shape.
+    private static func isArkResponse(_ object: [String: Any]) -> Bool {
+        if object["object"] as? String == "response" { return true }
+        if let output = object["output"] as? [[String: Any]], !output.isEmpty { return true }
+        if let identifier = object["id"] as? String, identifier.hasPrefix("resp_") { return true }
+        return false
+    }
+
+    private static func parseGenericResults(
+        _ root: Any,
+        provider: WebSearchProviderKind,
+        limit: Int
+    ) -> [WebSearchResult] {
         let dictionaries = resultDictionaries(root, provider: provider)
         return dictionaries.prefix(max(1, limit)).compactMap { item in
-            let title = string(item, keys: ["title", "name"])
-            let rawURL = string(item, keys: ["url", "link"])
+            let title = string(item, keys: ["title", "name", "Title"])
+            let rawURL = string(item, keys: ["url", "link", "Url"])
             guard !title.isEmpty, let url = URL(string: rawURL), url.scheme == "https" || url.scheme == "http" else { return nil }
             // Excerpt priority preserves existing providers and adds Brave's
             // documented `description`. `extra_snippets` stays a SEPARATE,
             // bounded list and is never concatenated into the main excerpt.
-            let snippet = string(item, keys: ["snippet", "summary", "passage", "content", "text", "description"])
+            // Volcengine's direct API uses PascalCase Snippet/Summary; the
+            // legacy custom endpoint keeps lower-case keys.
+            let snippet = string(item, keys: [
+                "snippet", "summary", "passage", "content", "text", "description",
+                "Snippet", "Summary"
+            ])
             let seed = "\(provider.rawValue)|\(url.absoluteString)"
             return WebSearchResult(
                 title: title,
@@ -463,8 +820,10 @@ public actor WebSearchService {
                 // Only explicit provider publication fields feed publishedAt.
                 // Brave's `page_age` (published OR modified) and `age`
                 // (relative) are surfaced separately and never relabeled.
-                publishedAt: optionalString(item, keys: ["date", "published_date", "publishedAt"]),
-                score: item["score"] as? Double,
+                publishedAt: optionalString(item, keys: [
+                    "date", "published_date", "publishedAt", "PublishTime"
+                ]),
+                score: (item["score"] as? Double) ?? (item["RankScore"] as? Double),
                 provider: provider,
                 citationID: String(sha256Hex(Data(seed.utf8)).prefix(12)),
                 extraSnippets: boundedStrings(item["extra_snippets"], maxCount: 5, maxCharacters: 1_000),
@@ -473,17 +832,119 @@ public actor WebSearchService {
                 pageFetched: optionalString(item, keys: ["page_fetched"]),
                 sourceProfileName: nestedString(item, parent: "profile", keys: ["long_name", "name"]),
                 sourceProfileURL: nestedString(item, parent: "profile", keys: ["url"]),
-                faviconURL: nestedString(item, parent: "meta_url", keys: ["favicon"]),
+                faviconURL: optionalString(item, keys: ["LogoUrl"])
+                    ?? nestedString(item, parent: "meta_url", keys: ["favicon"]),
                 displayPath: nestedString(item, parent: "meta_url", keys: ["path"]),
                 contentState: .searchMetadataOnly
             )
         }
     }
 
+    /// Ark Responses: citations live in `output[].content[].annotations[]`;
+    /// the visible assistant text is a separate provider-generated answer and
+    /// is never copied into citation snippets.
+    private static func parseArkResponse(
+        _ object: [String: Any],
+        limit: Int
+    ) throws -> WebSearchProviderOutput {
+        if let error = object["error"], !(error is NSNull) {
+            throw WebRetrievalError.invalidResponse(providerErrorMessage(error))
+        }
+        let status = (object["status"] as? String)?.lowercased()
+        switch status {
+        case nil, .some("completed"):
+            break
+        case .some("failed"):
+            throw WebRetrievalError.invalidResponse("Ark Responses search failed")
+        case .some("incomplete"):
+            let reason = ((object["incomplete_details"] as? [String: Any])?["reason"] as? String)
+                .map { " (\($0))" } ?? ""
+            throw WebRetrievalError.invalidResponse(
+                "Ark Responses search was incomplete\(reason)"
+            )
+        case .some(let value):
+            throw WebRetrievalError.invalidResponse(
+                "Ark Responses search returned status \(value)"
+            )
+        }
+
+        var citations: [WebSearchResult] = []
+        var answerParts: [String] = []
+        var seenURLs = Set<String>()
+        if let output = object["output"] as? [[String: Any]] {
+            for item in output {
+                guard item["type"] as? String == "message" else { continue }
+                guard let content = item["content"] as? [[String: Any]] else { continue }
+                for part in content {
+                    guard part["type"] as? String == "output_text" else { continue }
+                    if let text = part["text"] as? String, !text.isEmpty {
+                        answerParts.append(text)
+                    }
+                    guard let annotations = part["annotations"] as? [[String: Any]] else {
+                        continue
+                    }
+                    for annotation in annotations {
+                        guard annotation["type"] as? String == "url_citation" else { continue }
+                        guard let rawURL = annotation["url"] as? String,
+                              let url = URL(string: rawURL),
+                              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                            continue
+                        }
+                        guard let title = (annotation["title"] as? String)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines),
+                            !title.isEmpty else {
+                            // A citation without a title is not fabricated from
+                            // its URL or from the answer text.
+                            continue
+                        }
+                        let key = url.absoluteString.lowercased()
+                        guard seenURLs.insert(key).inserted else { continue }
+                        let snippet = (annotation["summary"] as? String) ?? ""
+                        let seed = "volcengine|\(url.absoluteString)"
+                        citations.append(WebSearchResult(
+                            title: title,
+                            url: url,
+                            snippet: String(snippet.prefix(4_000)),
+                            sourceName: annotation["site_name"] as? String,
+                            publishedAt: annotation["publish_time"] as? String,
+                            provider: .volcengine,
+                            citationID: String(sha256Hex(Data(seed.utf8)).prefix(12)),
+                            contentState: .searchMetadataOnly
+                        ))
+                    }
+                }
+            }
+        }
+        if answerParts.isEmpty, let text = object["output_text"] as? String {
+            answerParts.append(text)
+        }
+        let answer = WebSearchProviderGeneratedAnswer.bounded(
+            provider: .volcengine,
+            text: answerParts.joined(separator: "\n\n")
+        )
+        return WebSearchProviderOutput(
+            results: Array(citations.prefix(max(1, limit))),
+            generatedAnswer: answer
+        )
+    }
+
+    private static func providerErrorMessage(_ error: Any) -> String {
+        if let message = (error as? [String: Any])?["message"] as? String, !message.isEmpty {
+            return "Provider error: \(String(message.prefix(512)))"
+        }
+        if let message = error as? String, !message.isEmpty {
+            return "Provider error: \(String(message.prefix(512)))"
+        }
+        return "Provider returned an error response"
+    }
+
     /// Source display name: existing flat keys keep priority; Brave's
-    /// `profile`/`meta_url` objects are the documented fallback.
+    /// `profile`/`meta_url` objects are the documented fallback. Volcengine's
+    /// direct API uses PascalCase SiteName.
     private static func sourceName(_ item: [String: Any]) -> String? {
-        if let flat = optionalString(item, keys: ["siteName", "site", "source"]) { return flat }
+        if let flat = optionalString(item, keys: ["siteName", "site", "source", "SiteName"]) {
+            return flat
+        }
         return nestedString(item, parent: "profile", keys: ["long_name", "name"])
             ?? nestedString(item, parent: "meta_url", keys: ["hostname"])
     }

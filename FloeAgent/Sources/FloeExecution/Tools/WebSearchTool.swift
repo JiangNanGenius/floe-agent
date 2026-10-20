@@ -16,7 +16,7 @@ public struct WebSearchTool: AgentTool {
 
     public static let name = "web.search"
     public static let toolDescription =
-        "Search the public web without opening the visual browser. Returns normalized titles, URLs, snippets, index metadata (page_age = published OR last modified date, relative age, crawl date, source profile/favicon), provider provenance, citation IDs and an explicit contentState=searchMetadataOnly. Index metadata is NOT page verification: excerpts and dates come from the search index; use web.fetch (or browser tools when interaction is required) before relying on actual page contents, publication dates or quotes. Use fast for one search provider, balanced for ordinary research, or deep to query up to three configured providers concurrently."
+        "Search the public web without opening the visual browser. Returns normalized titles, URLs, snippets, index metadata (page_age = published OR last modified date, relative age, crawl date, source profile/favicon), provider provenance, citation IDs and an explicit contentState=searchMetadataOnly. Index metadata is NOT page verification: excerpts and dates come from the search index; use web.fetch (or browser tools when interaction is required) before relying on actual page contents, publication dates or quotes. Some providers also return a bounded provider-generated answer, marked separately from URL citations and still not fetched-page evidence. Use fast for one search provider, balanced for ordinary research, or deep to query up to three configured providers concurrently."
     public static let parametersJSON = #"""
     {
       "type":"object",
@@ -100,6 +100,7 @@ public struct WebSearchTool: AgentTool {
         var included = eligible.count
         var snippetLimit = 4_000
         var extraLimit = 2_000
+        var answerLimit = 1_500
         var queryCap = 2_000
         var failureCap = 1_500
 
@@ -110,6 +111,7 @@ public struct WebSearchTool: AgentTool {
                 included: included,
                 snippetLimit: snippetLimit,
                 extraLimit: extraLimit,
+                answerLimit: answerLimit,
                 titleCap: 300,
                 queryCap: queryCap,
                 failureCap: failureCap,
@@ -124,9 +126,15 @@ public struct WebSearchTool: AgentTool {
                     maximumSummaryCharacters: maximumCharacters
                 )
             }
-            // 1. shrink snippets/extras first (rows and citations survive);
-            // 2. shrink the top-level query/failure text (still visible);
-            // 3. drop trailing rows; 4. shrink metadata further.
+            // 1. shrink a provider-generated answer first; it is auxiliary
+            // text, while URL citations must stay whole and visible;
+            // 2. shrink snippets/extras (rows and citations survive);
+            // 3. shrink the top-level query/failure text (still visible);
+            // 4. drop trailing rows; 5. shrink metadata further.
+            if answerLimit > 0, !response.generatedAnswers.isEmpty {
+                answerLimit = answerLimit > 200 ? answerLimit / 2 : 0
+                continue
+            }
             if snippetLimit > 0 {
                 snippetLimit /= 2
                 extraLimit /= 2
@@ -208,6 +216,7 @@ public struct WebSearchTool: AgentTool {
         included: Int,
         snippetLimit: Int,
         extraLimit: Int,
+        answerLimit: Int,
         titleCap: Int,
         queryCap: Int,
         failureCap: Int,
@@ -283,6 +292,21 @@ public struct WebSearchTool: AgentTool {
                 "contentState": result.effectiveContentState.rawValue
             ] as [String: Any]
         }
+        var generatedAnswers: [[String: Any]] = []
+        if answerLimit > 0 {
+            for answer in response.generatedAnswers {
+                let piece = bounded(answer.text, answerLimit)
+                let wasTruncated = piece.truncated || answer.truncated
+                if wasTruncated { truncated = true }
+                guard !piece.text.isEmpty else { continue }
+                generatedAnswers.append([
+                    "provider": answer.provider.rawValue,
+                    "answer": piece.text,
+                    "answerTruncated": wasTruncated,
+                    "originalCharacters": answer.originalCharacters
+                ])
+            }
+        }
         var payload: [String: Any] = [
             "query": query.text,
             "providers": response.providersUsed.map(\.rawValue),
@@ -297,6 +321,13 @@ public struct WebSearchTool: AgentTool {
             "omittedResults": max(0, response.results.count - entries.count),
             "results": entries
         ]
+        if !generatedAnswers.isEmpty {
+            payload["generatedAnswers"] = generatedAnswers
+            payload["providerGeneratedAnswerNote"] =
+                "Provider-generated answer text. Not fetched-page evidence and not a citation snippet; use the normalized URL results and web.fetch for verification."
+        } else if !response.generatedAnswers.isEmpty {
+            payload["generatedAnswersOmitted"] = true
+        }
         if query.truncated {
             payload["queryTruncated"] = true
             payload["originalQueryChars"] = response.query.count
@@ -346,6 +377,7 @@ public struct WebSearchTool: AgentTool {
                 payload["failuresTruncated"] = true
             }
             if omittedOversizeURLRows > 0 { payload["omittedOversizeURLRows"] = omittedOversizeURLRows }
+            if !response.generatedAnswers.isEmpty { payload["generatedAnswersOmitted"] = true }
             if includeNote { payload["metadataNote"] = metadataNote }
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
             let summary = String(decoding: data, as: UTF8.self)
@@ -370,13 +402,14 @@ public struct WebSearchTool: AgentTool {
         }
         // The minimal explicit page is tiny; a budget below it is a caller
         // error rather than a content problem.
-        let minimal: [String: Any] = [
+        var minimal: [String: Any] = [
             "error": "resultExceedsBudget",
             "truncated": true,
             "returned": 0,
             "available": response.results.count,
             "results": []
         ]
+        if !response.generatedAnswers.isEmpty { minimal["generatedAnswersOmitted"] = true }
         let data = try JSONSerialization.data(withJSONObject: minimal, options: [.sortedKeys])
         return ToolExecutionOutput(
             summary: String(decoding: data, as: UTF8.self),
