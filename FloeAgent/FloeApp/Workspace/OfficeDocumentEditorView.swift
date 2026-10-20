@@ -3386,7 +3386,8 @@ private struct OfficePendingProposalReview: View {
         }
         .task(id: session.proposalReviewBinding) { await refresh() }
         .onChange(of: session.phase) { _, _ in Task { await refresh() } }
-        .onReceive(NotificationCenter.default.publisher(for: OfficeCommandCenter.proposalsDidChange)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: OfficeCommandCenter.proposalsDidChange)
+            .receive(on: DispatchQueue.main)) { _ in
             Task { await refresh() }
         }
     }

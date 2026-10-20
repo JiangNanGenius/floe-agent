@@ -1263,10 +1263,22 @@ private enum XLSXCellCodec {
     /// dropped so the engine recomputes it instead of trusting a stale hint.
     private static func modifiedRow(_ row: CreationRow, adding additions: [CellCreation]) -> String {
         var block = row.block
-        for addition in additions.sorted(by: { $0.column > $1.column }) {
-            let element = cellElement(reference: addition.reference, styleAttribute: "", value: addition.value)
+        // additions arrive in ascending column order; equal anchors are
+        // contiguous, so one run per boundary keeps ascending order without
+        // ever reusing an index across its own insertion. Each distinct
+        // anchor is then applied exactly once, right-to-left.
+        var runs: [(anchor: String.Index, text: String)] = []
+        for addition in additions {
             let anchor = row.cells.first(where: { $0.column > addition.column })?.range.lowerBound ?? row.contentEnd
-            block.replaceSubrange(anchor..<anchor, with: element)
+            let element = cellElement(reference: addition.reference, styleAttribute: "", value: addition.value)
+            if runs.last?.anchor == anchor {
+                runs[runs.count - 1].text += element
+            } else {
+                runs.append((anchor, element))
+            }
+        }
+        for run in runs.sorted(by: { $0.anchor > $1.anchor }) {
+            block.replaceSubrange(run.anchor..<run.anchor, with: run.text)
         }
         if row.selfClosed {
             block.replaceSubrange(block.index(block.endIndex, offsetBy: -2)..<block.endIndex, with: "></row>")
@@ -1293,9 +1305,11 @@ private enum XLSXCellCodec {
               marker.upperBound < openingEnd else { return block }
         let prefix = block[block.startIndex..<marker.lowerBound]
         guard prefix.reduce(0) { $0 + ($1 == "\"" ? 1 : 0) } % 2 == 0 else { return block }
-        let quote = block[marker.upperBound]
+        let quoteIndex = marker.upperBound
+        let quote = block[quoteIndex]
         guard quote == "\"" || quote == "'",
-              let valueEnd = block[marker.upperBound...].firstIndex(of: quote), valueEnd < openingEnd else { return block }
+              let valueEnd = block[block.index(after: quoteIndex)...].firstIndex(of: quote),
+              valueEnd < openingEnd else { return block }
         var output = block
         output.replaceSubrange(block.index(before: marker.lowerBound)..<block.index(after: valueEnd), with: "")
         return output
@@ -1321,9 +1335,12 @@ private enum XLSXCellCodec {
             search = found.upperBound..<range.upperBound
         }
         guard let marker else { return nil }
-        let quote = source[marker.upperBound]
-        guard let valueEnd = source[marker.upperBound...].firstIndex(of: quote), valueEnd < range.upperBound else { return nil }
-        let valueStart = source.index(after: marker.upperBound)
+        let quoteIndex = marker.upperBound
+        let quote = source[quoteIndex]
+        guard quote == "\"" || quote == "'",
+              let valueEnd = source[source.index(after: quoteIndex)...].firstIndex(of: quote),
+              valueEnd < range.upperBound else { return nil }
+        let valueStart = source.index(after: quoteIndex)
         let ref = String(source[valueStart..<valueEnd])
         let parts = ref.split(separator: ":", omittingEmptySubsequences: false)
         var minColumn = Int.max

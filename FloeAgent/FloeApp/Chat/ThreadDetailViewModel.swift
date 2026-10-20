@@ -1020,7 +1020,7 @@ final class ThreadDetailViewModel: ObservableObject {
         do {
             guard NotesAssistantConversationBinding.documentID(forConversation: conversationID) == documentID,
                   NotesOfficeLiveBinding.boundSession(documentID: documentID, fileName: nil) === context.session else {
-                throw CocoaError(.fileReadChangedDuringCopy)
+                throw FloeError.validationFailed("The Office editor changed before capture")
             }
             let capture = try await NotesAssistantLivePageCapture.captureForSend(
                 conversationID: conversationID,
