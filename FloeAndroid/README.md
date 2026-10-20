@@ -16,6 +16,14 @@ public status and limits are recorded in
 shown as being prepared are not implemented product capabilities. Android has no
 local LLM backend.
 
+## Android Alpha
+
+[Download 0.1.0-alpha.1](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.1)
+contains one signed ARM64 APK and SHA256SUMS. Install updates manually for now.
+Cloud configuration, real replies and cold-start persistence were checked on an
+API 37 / 16 KiB tablet emulator; Samsung-device acceptance remains pending.
+G02 is still active; see the implementation record above for remaining work.
+
 ## Layout and ownership
 
 | Module | Responsibility |
