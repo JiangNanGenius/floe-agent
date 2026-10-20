@@ -29,7 +29,10 @@ import UIKit
 ///   * Readiness is state-observed: the seam must publish
 ///     `ink-dirty-verified`, which the app produces only after the
 ///     production bridge reports the contact drained AND the engine's own
-///     `.uno:ModifiedStatus` probe plus `hasUncommittedChanges` report dirty.
+///     `.uno:ModifiedStatus` probe (TRUE, never unknown) plus the session's
+///     production `hasLocalEditsToProtect()` predicate both report these
+///     edits worth protecting; the on-disk `hasUncommittedChanges` flag is
+///     receipt evidence only, never a pass condition.
 ///     There is no fixed sleep standing in for the flush, and the real Back
 ///     guard still performs its own asynchronous save.
 ///   * Final proof: the settled card identity must be
@@ -99,7 +102,21 @@ final class OfficeInkCardLoopUITests: XCTestCase {
         continueAfterFailure = false
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true
             || UIDevice.current.userInterfaceIdiom == .pad
-        let token = String(UUID().uuidString.lowercased().filter { $0.isHexDigit }.prefix(8))
+        // Handshake override for the output-proof flow (bounded, opt-in):
+        // the runner may pin the fixture token with FLOE_OFFICE_INK_CARD_TOKEN
+        // so it can pre-launch the seeding, freeze the pre-drawing baseline
+        // for the SAME uniquely titled document, and only then start the
+        // suite. The ENTIRE string is validated as 4...12 lowercase hex
+        // characters; any other value (empty, malformed, wrong length,
+        // uppercase, non-hex) falls back to the original random token with
+        // no silent character deletion. The suite is already opt-in via
+        // FLOE_OFFICE_INK_CARD_UI, and the App-side fixture re-validates the
+        // token strictly before anything seeds.
+        let hexDigits = Set("0123456789abcdef")
+        let pinned = ProcessInfo.processInfo.environment["FLOE_OFFICE_INK_CARD_TOKEN"] ?? ""
+        let token = (4...12).contains(pinned.count) && pinned.allSatisfy { hexDigits.contains($0) }
+            ? pinned
+            : String(UUID().uuidString.lowercased().filter { $0.isHexDigit }.prefix(8))
         XCTAssertGreaterThanOrEqual(token.count, 4, "the run token must be parseable by the fixture")
         let title = ownedTitle(format: format, token: token)
 
@@ -229,7 +246,7 @@ final class OfficeInkCardLoopUITests: XCTestCase {
         attachText("status=\(finalStatus) facts=\(factsElement.exists ? factsElement.label : "none") token=\(token) title=\(title)",
                    name: "\(casePrefix)-seam-receipt")
         XCTAssertEqual(finalStatus, "ink-dirty-verified",
-                       "the seam must drain the contact through the production bridge and observe BOTH the engine modified state and the session dirty state before the Back save")
+                       "the seam must drain the contact through the production bridge and observe BOTH the engine's TRUE modified state and the session's production protection predicate before the Back save")
 
         // Visible red ink in the REAL editor before any navigation.
         let editorAfter = web.screenshot().image
@@ -286,7 +303,14 @@ final class OfficeInkCardLoopUITests: XCTestCase {
             XCTAssertNotEqual(baselinePNG, finalPNG,
                               "the post-save card must be fresh bytes, not a re-labeled cache entry")
         }
-        attachText("POSTFLIGHT title=\(title) baseline-revision=\(baselineCover.revision) final-revision=\(settled.revision) marker=INKCARD-ORIG-\(format.fileSuffix)-\(token)",
+        // The bounded POSTFLIGHT identity now also carries the UI-OBSERVED
+        // card source rule ids: the production officeSavedPreview rule can
+        // only render when the saved preview is bound to the document's
+        // CURRENT office resource (NoteModels.matchingOfficePreviewResourceID
+        // requires officePreviewSourceID == officeResourceID), so the runner
+        // postflight can pin the frozen baseline resource against the exact
+        // pre-contact generation via the persisted edit-history lineage.
+        attachText("POSTFLIGHT title=\(title) baseline-source=\(baselineCover.source) baseline-revision=\(baselineCover.revision) final-source=\(settled.source) final-revision=\(settled.revision) marker=INKCARD-ORIG-\(format.fileSuffix)-\(token)",
                    name: "\(casePrefix)-postflight-instructions")
     }
 

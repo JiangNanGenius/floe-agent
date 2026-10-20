@@ -357,7 +357,11 @@ static NSString *FloeBundledFontCatalogFingerprint(NSBundle *bundle) {
 // Replay Pencil contacts through the pinned frontend's canvas mouse routing.
 // Freehand is one-shot in the core. After each contact, enqueue Escape then
 // re-arm on the same ordered engine channel; commandstatechanged is delayed
-// and must never decide whether the next contact is allowed to draw.
+// and must never decide whether the next contact is allowed to draw. On a
+// system cancellation the order is Escape, contact-ending mouseup, re-arm:
+// the re-arm must be LAST, because a mouseup the just-armed Writer/Calc
+// create tool consumes deactivates it (only Impress ignores it; see the
+// cancel handler).
 //
 // The engine keeps an in-progress create inside sdr::overlay::OverlayManager
 // until the EndCreate mouse-up inserts the vector into the model, and this
@@ -980,6 +984,23 @@ static NSString *FloeInkInputGatingScript() {
             }
             return map;
         };
+        // The create-tool arm half of resetTool, as its own service so the
+        // cancel route can order it AFTER the contact-ending mouseup without
+        // repeating the Escape pair. Byte-identical engine effect to the
+        // former inline block: one Freeline dispatch, one armedDispatches
+        // increment, one inactive-keyboard intent per call. A throwing
+        // sendUnoCommand propagates to the caller exactly as before.
+        const armFreeline = (map) => {
+            map.sendUnoCommand('.uno:Freeline_Unfilled');
+            state.armedDispatches += 1;
+            // The pinned iOS TextInput.blur only records the keyboard as
+            // inactive; it never blurs the DOM. Keep that intent inactive
+            // on every re-arm. The native host ends the WebView editing
+            // session when the mode is enabled.
+            if (typeof map.setAcceptInput === 'function') {
+                try { map.setAcceptInput(false); } catch (ignored) {}
+            }
+        };
         const resetTool = (arm) => {
             const map = mapOf();
             if (!map) return false;
@@ -988,17 +1009,7 @@ static NSString *FloeInkInputGatingScript() {
             // frontend selection rectangle while the core still owns it.
             map._docLayer.postKeyboardEvent('input', 0, 1281);
             map._docLayer.postKeyboardEvent('up', 0, 1281);
-            if (arm) {
-                map.sendUnoCommand('.uno:Freeline_Unfilled');
-                state.armedDispatches += 1;
-                // The pinned iOS TextInput.blur only records the keyboard as
-                // inactive; it never blurs the DOM. Keep that intent inactive
-                // on every re-arm. The native host ends the WebView editing
-                // session when the mode is enabled.
-                if (typeof map.setAcceptInput === 'function') {
-                    try { map.setAcceptInput(false); } catch (ignored) {}
-                }
-            }
+            if (arm) armFreeline(map);
             return true;
         };
         // A stale graphic selection is drawn by the frontend, not the core.
@@ -1349,11 +1360,36 @@ static NSString *FloeInkInputGatingScript() {
             finish(event, drawing);
         };
         // System cancellation abandons only the unfinished contact. Drop
-        // its preview, post the ordered Escape before ending the frontend
-        // contact, and preserve all completed strokes and pending handoffs.
-        // If the abort cannot post, disarm without replaying mouseup or
-        // claiming completion. The native cancel/save regression checks the
-        // resulting document, including zero-motion contacts.
+        // its preview, abort the running core create with the ordered Escape,
+        // replay the contact-ending mouseup while no create tool was freshly
+        // armed, and only THEN re-arm, iff drawing was active. The re-arm
+        // must be the last engine event of the abort: in the pinned engine a
+        // mouseup that arrives after the arm is consumed by the new
+        // Writer/Calc create tool and deactivates it (sw ribbar/drawbase.cxx
+        // SwDrawBase::MouseButtonUp with no live create and no marks calls
+        // LeaveDrawCreate() and returns true, then uibase/docvw/edtwin.cxx
+        // SwEditWin::MouseButtonUp Deactivate()s the DrawFunc, clears it and
+        // Edit()s; sc drawfunc/fuconstr.cxx FuConstruct::SimpleMouseButtonUp
+        // re-dispatches the same create slot on mouseup with no action, and
+        // ui/view/tabvwsh2.cxx ExecuteDrawFunc toggles a same-slot dispatch
+        // to SID_OBJECT_SELECT/FuSelection). Impress only survives the
+        // post-arm mouseup because sd func/fuconstr.cxx
+        // FuConstruct::IsIgnoreUnexpectedMouseButtonUp (tdf#153446) ignores
+        // a mouseup its tool instance never saw a press for. The Escape pair
+        // itself keeps the tool armed (svx svdview.cxx SdrView::KeyInput
+        // KEY_ESCAPE runs only BrkAction), so ending the contact BEFORE the
+        // re-arm is the order every shell tolerates; it is also the exact
+        // order the ordinary completion already uses (mouseup, Escape, arm).
+        // If the abort cannot post, fail closed as before: no mouseup, no
+        // re-arm, gate off with the existing engine error. A throwing mouseup
+        // or a re-arm that then fails also leaves the gate off with the
+        // honest error. Completed strokes and pending handoffs are preserved
+        // in every path, including zero-motion contacts. The native
+        // cancel/save regression checks the resulting document.
+        // restoreShapeHandles stays in the outer finally exactly as the
+        // original route had it: no escaping exception, from any branch or
+        // even from the error coercion itself, may strand the hidden handle
+        // section that down suspended.
         const cancel = (event) => {
             if (!owns(event)) return;
             stop(event);
@@ -1361,20 +1397,37 @@ static NSString *FloeInkInputGatingScript() {
             contact = null;
             state.activeStroke = false;
             dropStrokePreview('pointercancel');
+            const rearm = drawing;
             let aborted = false;
             try {
-                aborted = resetTool(drawing);
-                if (!aborted) {
+                try {
+                    aborted = resetTool(false);
+                    if (!aborted) {
+                        drawing = false;
+                        state.error = 'engine-unavailable';
+                    }
+                } catch (error) {
                     drawing = false;
-                    state.error = 'engine-unavailable';
+                    state.error = String(error);
                 }
-            } catch (error) {
-                drawing = false;
-                state.error = String(error);
-            } finally {
                 if (aborted) {
-                    try { mouse('mouseup', event, 0, document); } catch (ignored) {}
+                    try {
+                        mouse('mouseup', event, 0, document);
+                        if (rearm) {
+                            const map = mapOf();
+                            if (!map) {
+                                drawing = false;
+                                state.error = 'engine-unavailable';
+                            } else {
+                                armFreeline(map);
+                            }
+                        }
+                    } catch (error) {
+                        drawing = false;
+                        state.error = String(error);
+                    }
                 }
+            } finally {
                 restoreShapeHandles();
             }
         };

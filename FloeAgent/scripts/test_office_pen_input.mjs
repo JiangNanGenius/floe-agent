@@ -1657,8 +1657,33 @@ check('source/abort-drops-own-preview-with-cancel-reason',
   script.includes("dropStrokePreview('pointercancel')"));
 check('source/no-stroke-increment-in-cancel',
   !/const cancel = \(event\) => \{[\s\S]*?state\.strokes \+= 1/.test(script));
+// Kept check, widened (pencil-cancel-rearm-order-repair-20261020): the old
+// literal matched the pre-fix cancel body, whose `resetTool(drawing)` IS the
+// buggy order (Escape + re-arm, then the mouseup that a just-armed
+// Writer/Calc create tool consumes and deactivates). The intent — the abort
+// must run through the ordered resetTool service, never handcrafted key
+// posts — is preserved unchanged, and additionally satisfied by the ordered
+// shape (resetTool(false) abort, contact-ending mouseup, then the narrow
+// armFreeline re-arm). Check 56 pins the new order itself.
+const orderedCancelShape = () => {
+  const start = script.indexOf('const cancel = (event) => {');
+  const stop = script.indexOf('const blockFinger', start);
+  if (start < 0 || stop <= start) return false;
+  const body = script.slice(start, stop);
+  const abortIdx = body.indexOf('resetTool(false)');
+  const upIdx = body.indexOf("mouse('mouseup'");
+  const armIdx = body.indexOf('armFreeline(');
+  const lastFin = body.lastIndexOf('} finally {');
+  return abortIdx >= 0 && upIdx > abortIdx && armIdx > upIdx
+    && !body.includes('resetTool(drawing)')
+    && !body.includes('postKeyboardEvent')
+    && lastFin > armIdx
+    && body.slice(lastFin).includes('restoreShapeHandles();')
+    && !body.slice(lastFin).includes("mouse('mouseup'");
+};
 check('source/reset-tool-runs-inside-cancel',
-  /const cancel = \(event\) => \{[\s\S]*?resetTool\(drawing\)/.test(script));
+  /const cancel = \(event\) => \{[\s\S]*?resetTool\(drawing\)/.test(script)
+  || orderedCancelShape());
 
 // --- fail-closed shape-handle abort ordering (durable regressions) --------
 // The failShapeHandles path discards only the unfinished contact. The
@@ -1834,6 +1859,327 @@ check('source/reset-tool-runs-inside-cancel',
   check('abort/source-escape-before-mouseup-in-failshape-body',
     resetIdx >= 0 && upIdx > resetIdx,
     JSON.stringify({ resetIdx, upIdx, len: body.length }));
+}
+
+
+// ---------------------------------------------------------------------------
+// 56-60. Pinned-core behavioural model: cancel cleanup vs re-arm order.
+// The mock below applies, per app, what the PINNED Collabora core (engine
+// 27b21dc1) does with the events this gate posts; the function-level
+// evidence lives in
+// Local/Private/pencil-cancel-rearm-order-repair-20261020/CAUSE.md:
+//   writer: Escape (svx svdview.cxx SdrView::KeyInput KEY_ESCAPE) only runs
+//     BrkAction and KEEPS the create tool armed; a mouseup that the armed
+//     Writer tool receives with no live create and no marks runs
+//     SwDrawBase::MouseButtonUp -> LeaveDrawCreate() and returns true, and
+//     SwEditWin::MouseButtonUp then Deactivate()s + clears the DrawFunc and
+//     Edit()s: the tool is DISARMED (only when a press was seen:
+//     !m_bMBPressed short-circuits the whole draw branch).
+//   calc: a same-slot create dispatch while that tool is the current one
+//     toggles to SID_OBJECT_SELECT/FuSelection
+//     (sc ui/view/tabvwsh2.cxx ExecuteDrawFunc) — whether the dispatch
+//     arrives as a post-Escape re-arm cmd or is re-dispatched by
+//     FuConstruct::SimpleMouseButtonUp on an actionless mouseup, the armed
+//     freeline tool ends disarmed.
+//   impress: the same post-arm mouseup is HARMLESS because
+//     sd func/fuconstr.cxx IsIgnoreUnexpectedMouseButtonUp (tdf#153446)
+//     ignores a mouseup whose tool instance never saw a press, and its
+//     dispatch re-arms rather than toggling. That is exactly why the real
+//     App34 run passed PPT and failed Word/Excel with the same wire order.
+// Freehand is one-shot: a mouseup WITH a live create commits it and leaves
+// the tool disarmed in every app (the ordinary completion path relies on the
+// gate re-arming behind it, which stays unchanged here).
+// The Writer/Calc checks FAIL the pre-fix order and PASS the ordered
+// candidate; the Impress checks PASS both sources. No bridge flag is used as
+// core evidence: armedness/geometry come from the model, dispatches from the
+// recorded DOM timeline.
+const attachCoreModel = (w, mode, opts = {}) => {
+  const m = {
+    mode, armed: false, create: null, mbDown: false, toolSawDown: false,
+    beginCreates: 0, droppedDowns: 0, commits: [], brks: 0, timeline: [],
+    cmdCalls: 0,
+  };
+  const pushCmd = (name) => {
+    m.cmdCalls += 1;
+    m.timeline.push(['cmd', name]);
+    if (name !== '.uno:Freeline_Unfilled') return;
+    if (opts.boomArm && m.cmdCalls === 3) throw new Error('arm-boom');
+    if (mode === 'calc' && m.armed) {
+      // same-slot dispatch toggles the running create tool off
+      m.armed = false;
+      m.timeline.push(['toggle-off-cmd']);
+    } else {
+      m.armed = true;
+      m.toolSawDown = false;
+    }
+  };
+  const origCmd = w.map.sendUnoCommand.bind(w.map);
+  w.map.sendUnoCommand = (name) => {
+    pushCmd(name);
+    return origCmd(name);
+  };
+  const origPost = w.map._docLayer.postKeyboardEvent.bind(w.map._docLayer);
+  w.map._docLayer.postKeyboardEvent = (kind, char, key) => {
+    m.timeline.push(['key', kind, key]);
+    if (kind === 'input' && key === 1281 && m.create !== null) {
+      m.create = null; // BrkCreateObj: the unfinished path is discarded
+      m.brks += 1;
+      m.timeline.push(['brk']);
+    }
+    if (opts.boomKeyOnce && !opts.boomKeyOnce.f && kind === 'up' && key === 1281
+      && m.brks >= 1) {
+      opts.boomKeyOnce.f = true;
+      throw new Error('kb-boom');
+    }
+    return origPost(kind, char, key);
+  };
+  w.window.addEventListener('mousedown', (e) => {
+    m.mbDown = true;
+    m.timeline.push(['down', e.clientX, e.clientY]);
+    if (m.armed) {
+      m.beginCreates += 1;
+      m.create = { pts: [[e.clientX, e.clientY]] };
+      m.toolSawDown = true;
+      m.timeline.push(['beg']);
+    } else {
+      m.droppedDowns += 1; // core is not in create mode: no BeginCreateObject
+      m.timeline.push(['drop-down']);
+    }
+  });
+  w.window.addEventListener('mousemove', (e) => {
+    if (m.create !== null) {
+      m.create.pts.push([e.clientX, e.clientY]);
+      m.timeline.push(['move']);
+    }
+  });
+  w.window.addEventListener('mouseup', (e) => {
+    m.timeline.push(['up', e.clientX, e.clientY]);
+    if (opts.throwUpOnce && !opts.throwUpOnce.f && m.brks >= 1
+      && opts.throwUpOn === 'up-after-brk') {
+      opts.throwUpOnce.f = true;
+      throw new Error('up-boom');
+    }
+    if (!m.mbDown) return; // no matching press (Writer's m_bMBPressed gate)
+    m.mbDown = false;
+    if (m.create !== null) {
+      m.create.pts.push([e.clientX, e.clientY]); // DragStat End folds the up point in
+      m.commits.push(m.create.pts);              // EndCreateObj inserts the path
+      m.create = null;
+      m.armed = false;              // one-shot: the core leaves create mode
+      m.timeline.push(['commit']);
+      return;
+    }
+    if (m.armed) {
+      if (mode === 'impress') {
+        m.timeline.push([m.toolSawDown ? 'harmless-up' : 'ignored-up']);
+      } else {
+        m.armed = false;
+        m.timeline.push(['disarm-up']);
+      }
+    }
+    if (opts.killMapOnDisarmUp && mode !== 'impress' && !m.armed) {
+      w.window.app.map = null;
+      m.timeline.push(['map-killed']);
+    }
+  });
+  m.upBeforeRearmAfterLastBrk = () => {
+    const brk = m.timeline.map((e) => e[0]).lastIndexOf('brk');
+    if (brk < 0) return false;
+    const up = m.timeline.findIndex((e, i) => i > brk && e[0] === 'up');
+    const cmd = m.timeline.findIndex((e, i) => i > brk && e[0] === 'cmd');
+    return up >= 0 && cmd >= 0 && up < cmd;
+  };
+  return m;
+};
+
+const cancelRearmScenario = (mode, opts = {}) => {
+  const w = newWorld();
+  const m = attachCoreModel(w, mode, opts);
+  w.arm();
+  w.strokeAt([[100, 100], [140, 120], [180, 140]]); // red control stroke
+  const ctlBegins = m.beginCreates;
+  const ctlCommits = m.commits.length;
+  w.pen('pointerdown', 300, 300, w.canvas, { pointerId: 501 });
+  w.pen('pointermove', 320, 310, w.canvas, { pointerId: 501 });
+  w.pen('pointermove', 340, 320, w.canvas, { pointerId: 501 });
+  w.pen('pointercancel', 340, 320, w.canvas, { pointerId: 501 });
+  // Snapshot AT the cancel, before the next stroke's ordinary re-arm can
+  // mask the defect: this is the exact state the next contact sees.
+  const atCancel = {
+    armed: m.armed,
+    begins: m.beginCreates,
+    commits: m.commits.length,
+    brks: m.brks,
+    upBeforeCmd: m.upBeforeRearmAfterLastBrk(),
+    cancelUps: m.timeline.filter((e) => e[0] === 'up' && e[1] === 340).length,
+    drawing: w.state().drawing,
+    error: w.state().error,
+    armedDispatches: w.state().armedDispatches,
+  };
+  // the next genuine stroke
+  w.pen('pointerdown', 400, 420, w.canvas, { pointerId: 502 });
+  w.pen('pointermove', 420, 430, w.canvas, { pointerId: 502 });
+  w.pen('pointermove', 440, 440, w.canvas, { pointerId: 502 });
+  w.pen('pointerup', 460, 450, w.canvas, { pointerId: 502 });
+  return { m, w, ctlBegins, ctlCommits, atCancel,
+    nextPts: [[400, 420], [420, 430], [440, 440], [460, 450]] };
+};
+
+// 56. Source-shape of the ordered route itself (Escape abort -> mouseup ->
+//     narrow armFreeline -> restore in the outer finally only). FAILS PRE-FIX.
+{
+  check('source/cancel-aborts-cleanup-before-rearm', orderedCancelShape(),
+    'ordered cancel shape (Escape abort -> mouseup -> armFreeline, restore in finally)');
+}
+
+// 57. Writer: at the cancel the just-armed tool must still be alive. FAILS
+//     pre-fix: the post-arm mouseup runs SwDrawBase::MouseButtonUp
+//     LeaveDrawCreate + SwEditWin Deactivate/SetDrawFuncPtr(null)/Edit.
+{
+  const { m, w, ctlBegins, ctlCommits, atCancel, nextPts } = cancelRearmScenario('writer');
+  check('model/writer-cancel-breaks-own-create-only',
+    atCancel.brks === 1 && atCancel.commits === ctlCommits
+    && !m.commits.some((p) => p[0][0] === 300),
+    JSON.stringify({ brks: atCancel.brks, commits: m.commits }));
+  check('model/writer-armed-at-cancel',
+    atCancel.armed === true && atCancel.drawing === true && atCancel.error === null,
+    JSON.stringify(atCancel));
+  check('model/writer-mouseup-before-rearm-cmd', atCancel.upBeforeCmd === true,
+    JSON.stringify(m.timeline));
+  check('model/writer-cancel-one-mouseup-exactly', atCancel.cancelUps === 1,
+    JSON.stringify(m.timeline));
+  check('model/writer-next-stroke-begins-and-commits',
+    m.beginCreates === ctlBegins + 2 && m.commits.length === ctlCommits + 1
+    && JSON.stringify(m.commits[ctlCommits]) === JSON.stringify(nextPts),
+    JSON.stringify({ begins: m.beginCreates, commits: m.commits }));
+  check('model/writer-frontend-invariants-across-cancel',
+    w.state().strokes === 2 && w.state().previewHandoffs === 2
+    && w.state().activeStroke === false
+    && m.droppedDowns === 0
+    && m.timeline.filter((e) => e[0] === 'up').length === 3,
+    JSON.stringify({ s: w.state(), d: m.droppedDowns, t: m.timeline }));
+}
+
+// 58. Calc: same contract against the same-slot toggle semantics
+//     (ExecuteDrawFunc/FuConstruct::SimpleMouseButtonUp). FAILS pre-fix with
+//     a different core function and the same net disarm.
+{
+  const { m, w, ctlBegins, ctlCommits, atCancel, nextPts } = cancelRearmScenario('calc');
+  check('model/cancel-breaks-own-create-only-calc',
+    atCancel.brks === 1 && atCancel.commits === ctlCommits,
+    JSON.stringify({ brks: atCancel.brks, commits: m.commits }));
+  check('model/calc-armed-at-cancel',
+    atCancel.armed === true && atCancel.drawing === true && atCancel.error === null,
+    JSON.stringify(atCancel));
+  check('model/calc-mouseup-before-rearm-cmd', atCancel.upBeforeCmd === true,
+    JSON.stringify(m.timeline));
+  check('model/calc-next-stroke-begins-and-commits',
+    m.beginCreates === ctlBegins + 2 && m.commits.length === ctlCommits + 1
+    && JSON.stringify(m.commits[ctlCommits]) === JSON.stringify(nextPts),
+    JSON.stringify({ begins: m.beginCreates, commits: m.commits }));
+}
+
+// 59. Impress: the tdf#153446 guard made this app survive the old order; it
+//     must survive the new order too. PASSES BOTH SOURCES (regression lock).
+{
+  const { m, w, ctlBegins, ctlCommits, atCancel, nextPts } = cancelRearmScenario('impress');
+  check('model/impress-armed-at-cancel',
+    atCancel.armed === true && atCancel.drawing === true && atCancel.error === null,
+    JSON.stringify(atCancel));
+  check('model/impress-next-stroke-begins-and-commits',
+    m.beginCreates === ctlBegins + 2 && m.commits.length === ctlCommits + 1
+    && JSON.stringify(m.commits[ctlCommits]) === JSON.stringify(nextPts),
+    JSON.stringify({ begins: m.beginCreates, commits: m.commits }));
+  check('model/impress-canceled-contact-no-commit',
+    w.state().strokes === 2 && !m.commits.some((p) => p[0][0] === 300)
+    && m.droppedDowns === 0,
+    JSON.stringify({ s: w.state(), d: m.droppedDowns, commits: m.commits }));
+}
+
+// 60. Failure contracts on the ordered route (writer mode).
+// a) The contact-ending mouseup throws: the gate must fail closed WITHOUT
+//    re-arming after the failed cleanup. FAILS pre-fix (the throw was
+//    silently swallowed after the arm and the gate stayed logically armed).
+{
+  const w = newWorld();
+  const throwUpOnce = { f: false };
+  const m = attachCoreModel(w, 'writer', { throwUpOnce, throwUpOn: 'up-after-brk' });
+  w.arm();
+  w.strokeAt([[100, 100], [140, 120], [180, 140]]);
+  const dispatchesBefore = m.timeline.length;
+  const armedDispatchesBefore = w.state().armedDispatches;
+  w.pen('pointerdown', 300, 300, w.canvas, { pointerId: 511 });
+  w.pen('pointermove', 320, 310, w.canvas, { pointerId: 511 });
+  w.pen('pointercancel', 320, 310, w.canvas, { pointerId: 511 });
+  check('model/mouseup-throw-fails-closed',
+    w.state().drawing === false && String(w.state().error).includes('up-boom')
+    && w.state().strokes === 1 && w.state().activeStroke === false,
+    JSON.stringify(w.state()));
+  check('model/mouseup-throw-no-rearm-after-cleanup-failure',
+    w.state().armedDispatches === armedDispatchesBefore
+    && m.timeline.slice(dispatchesBefore).filter((e) => e[0] === 'cmd').length === 0,
+    JSON.stringify({ s: w.state(), t: m.timeline.slice(dispatchesBefore) }));
+}
+// b) The re-arm dispatch itself throws: fail closed, gate off, no stroke.
+//    PASSES BOTH SOURCES (the existing honest-error policy is preserved).
+{
+  const w = newWorld();
+  const m = attachCoreModel(w, 'writer', { boomArm: true });
+  w.arm();
+  w.strokeAt([[100, 100], [140, 120], [180, 140]]);
+  w.pen('pointerdown', 300, 300, w.canvas, { pointerId: 521 });
+  w.pen('pointermove', 320, 310, w.canvas, { pointerId: 521 });
+  w.pen('pointercancel', 320, 310, w.canvas, { pointerId: 521 });
+  w.pen('pointerdown', 400, 420, w.canvas, { pointerId: 522 });
+  check('model/rearm-throw-fails-closed',
+    w.state().drawing === false && String(w.state().error).includes('arm-boom')
+    && w.state().strokes === 1 && w.state().activeStroke === false,
+    JSON.stringify({ s: w.state(), t: m.timeline }));
+}
+// c) The engine channel disappears at the re-arm moment (killed by the
+//    contact-ending mouseup dispatch itself): the gate must disarm with the
+//    existing engine-unavailable error. FAILS pre-fix: there the arm was
+//    already posted before the up, so the gate stayed armed on a dead core.
+{
+  const w = newWorld();
+  const m = attachCoreModel(w, 'writer', { killMapOnDisarmUp: true });
+  w.arm();
+  w.strokeAt([[100, 100], [140, 120], [180, 140]]);
+  const armedBefore = w.state().armedDispatches;
+  w.pen('pointerdown', 300, 300, w.canvas, { pointerId: 531 });
+  w.pen('pointermove', 320, 310, w.canvas, { pointerId: 531 });
+  w.pen('pointercancel', 320, 310, w.canvas, { pointerId: 531 });
+  check('model/map-lost-at-rearm-disarms-with-existing-error',
+    w.state().drawing === false && w.state().error === 'engine-unavailable'
+    && w.state().armedDispatches === armedBefore
+    && w.state().strokes === 1,
+    JSON.stringify({ s: w.state(), t: m.timeline }));
+}
+// d) Non-owned cancels and prior pending previews under the model stay
+//    untouched. PASSES BOTH SOURCES (preservation contracts).
+{
+  const w = newWorld();
+  const m = attachCoreModel(w, 'writer');
+  w.arm();
+  w.strokeAt([[100, 100], [140, 120], [180, 140]]);
+  const brkBefore = m.brks;
+  const upBefore = m.timeline.filter((e) => e[0] === 'up').length;
+  w.pen('pointerdown', 300, 300, w.canvas, { pointerId: 541 });
+  w.pen('pointermove', 320, 310, w.canvas, { pointerId: 541 });
+  w.pen('pointercancel', 320, 310, w.canvas, { pointerId: 542 }); // wrong id
+  w.pen('pointercancel', 320, 310, w.canvas, { pointerId: 541, pointerType: 'touch' });
+  check('model/non-owned-cancels-change-nothing',
+    m.brks === brkBefore
+    && m.timeline.filter((e) => e[0] === 'up').length === upBefore
+    && w.state().activeStroke === true && w.state().strokes === 1,
+    JSON.stringify({ brks: m.brks, s: w.state() }));
+  check('model/prior-pending-preview-survives-cancel',
+    w.preview().pending === 1, JSON.stringify(w.preview()));
+  w.pen('pointercancel', 320, 310, w.canvas, { pointerId: 541 });
+  check('model/owned-cancel-preserves-prior-preview',
+    w.preview().pending === 1 && m.brks === brkBefore + 1
+    && w.state().strokes === 1 && w.state().lastPreviewClear === 'pointercancel',
+    JSON.stringify({ p: w.preview(), brks: m.brks, s: w.state() }));
 }
 
 console.log(`${checks} checks, ${failures} failed`);

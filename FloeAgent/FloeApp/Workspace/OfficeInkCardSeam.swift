@@ -56,7 +56,12 @@ import FloeOfficeNative
 /// (`activeStroke == false`, `strokes` delta), then `ink-dirty-verified` only
 /// when BOTH the engine's own `.uno:ModifiedStatus` probe
 /// (`OfficeExplicitSaveBridge.modifiedStatusProbeScript`, fail-closed on
-/// unknown) AND the session's published `hasUncommittedChanges` report dirty.
+/// unknown — only a parsed TRUE counts) AND the session's production
+/// close-protection predicate `hasLocalEditsToProtect()` report these edits
+/// as worth protecting; Notes-owned Back still performs its direct save. The
+/// on-disk `hasUncommittedChanges` flag (flushed working copy only, blind to
+/// in-memory edits by contract) is recorded in the receipt as evidence and
+/// never gates the pass.
 /// `bridgeActiveObserved`/`bridgePreviewFlagObserved` are the bridge's own
 /// state flags recorded during the contact — bridge bookkeeping evidence,
 /// NOT painted-frame proof. The painted evidence is the UI test's real
@@ -68,9 +73,10 @@ import FloeOfficeNative
 /// There is no generic execution surface: every script is one fixed literal
 /// that only ever performs this one labeled fixture workflow. The only
 /// private data arguments are a per-run lease token, a per-run owner token
-/// and this controller's canonical staged working-copy path (a PRIVATE
-/// capture-only comparison argument; the fixture-owned file name is used only
-/// for the App-side live session registry binding). No path, name, token,
+/// and the host-published engine document path of this session's editor (the
+/// exact private engine copy URL the controller loaded; a PRIVATE capture-only
+/// comparison argument; the fixture-owned file name is used only for the
+/// App-side live session registry binding). No path, name, token,
 /// document text or error text ever reaches a status, fact or receipt.
 ///
 /// Release builds: the entire file compiles out (`#if DEBUG`), the mount
@@ -231,21 +237,40 @@ final class OfficeInkCardSeamModel: ObservableObject {
         }
         // (2) Ownership identity against the ACTUAL pinned native host. The
         // bundled engine (verified against the exact pinned browser bundle
-        // b95ed4e6…) exposes no document-name accessor, and the local-kit
-        // mount binds the engine document to the staged working-copy PATH,
-        // not the library file name. The Swift-side chain is checked first:
+        // b95ed4e6…) exposes no document-name accessor. The pinned upstream
+        // UIDocument chain copies the staged working file into a fresh
+        // private directory under the session's engine copy root and hands
+        // the bundled editor THAT copy as `file_path`, so the live engine
+        // document is the host's private engine copy, never the session
+        // working copy itself. The Swift-side chain is checked first:
         // the production live session registry binds the fixture-owned file
         // name to this exact session, and this session's captured controller
         // still owns the exact staged working copy (`workingFileURL`). Then
         // the page identity is captured ONCE as real object references plus
-        // the exact raw document string, validated against this controller's
-        // canonical staged path with one exact path equality. Without this
-        // capture there is no dispatch; with it, every later hop compares the
-        // CURRENT objects to the captured binding, never to fresh values.
+        // the exact raw document string, validated with one exact canonical
+        // local-path equality against the host-published engine document
+        // URL — the very `file_path` this controller's editor loaded.
+        // Without this capture there is no dispatch; with it, every later
+        // hop compares the CURRENT objects to the captured binding, never
+        // to fresh values.
         let ownedFileName = OfficeInkCardLoopFixture.ownedFileName(format: format, token: token)
         let stagedPath = native.workingFileURL.path
         guard stagedPath.hasPrefix("/"), stagedPath.count > 1, stagedPath.count <= 4096 else {
             facts = "ownerProbe=staged-identity-unavailable"
+            status = "failed-owner-unknown"
+            return
+        }
+        // The page's live document is the controller's private engine copy,
+        // not the staged working copy: the UIDocument open copies the working
+        // file into a fresh directory under the session's engine copy root
+        // and the bundled editor loads that copy. Identity is therefore
+        // established against the host-published engine document URL with the
+        // same one exact canonical path equality; a missing engine document
+        // identity fails closed exactly like a missing staged identity.
+        guard let engineDocumentPath = native.engineDocumentFileURL?.path,
+              engineDocumentPath.hasPrefix("/"), engineDocumentPath.count > 1,
+              engineDocumentPath.count <= 4096 else {
+            facts = "ownerProbe=engine-document-identity-unavailable"
             status = "failed-owner-unknown"
             return
         }
@@ -268,7 +293,7 @@ final class OfficeInkCardSeamModel: ObservableObject {
         // page installs the binding and then loses the Swift task.
         capturedOwnerWeb = web
         capturedOwnerToken = ownerToken
-        let ownerProbe = await captureOwner(web: web, stagedPath: stagedPath, ownerToken: ownerToken)
+        let ownerProbe = await captureOwner(web: web, expectedDocPath: engineDocumentPath, ownerToken: ownerToken)
         guard ownerProbe == "ok" else {
             await releaseCapturedOwner()
             if ownerProbe == "cancelled" || invalidated || Task.isCancelled {
@@ -281,7 +306,8 @@ final class OfficeInkCardSeamModel: ObservableObject {
                  "engine-document-unloaded", "engine-backend-unknown",
                  "host-facts-absent", "canvas-unavailable", "canvas-disconnected",
                  "owner-binding-busy", "probe-arguments-invalid", "probe-threw",
-                 "js-error", "probe-absent", "cancelled":
+                 "js-error", "probe-absent", "cancelled",
+                 "engine-document-identity-unavailable":
                 status = "failed-owner-unknown"
             default:
                 status = "failed-owner-mismatch"
@@ -357,10 +383,43 @@ final class OfficeInkCardSeamModel: ObservableObject {
             return
         }
         let stroke = preferences.stroke
-        guard stroke.preset == .marker, stroke.colorHex == "#FF0000",
-              abs(stroke.widthMillimeters - 2.0) < 0.001,
-              stroke.transparencyPercent == 0,
-              session.inkApplyOutcome == .verified, session.inkError == nil else {
+        // Preserve the exact positive style predicate, including rejection of
+        // non-finite widths, and record the failed branch before restore can
+        // overwrite the apply result. Only fixed codes reach this DEBUG receipt.
+        let strokeMatches = stroke.preset == .marker
+            && stroke.colorHex == "#FF0000"
+            && abs(stroke.widthMillimeters - 2.0) < 0.001
+            && stroke.transparencyPercent == 0
+        let styleFailure: String?
+        // Root-approved output-based acceptance (OUTPUT_BASED_ACCEPTANCE.md §2):
+        // the pinned stack cannot fresh-ack unchanged ink attribute values, so
+        // an error-free apply whose outcome is honestly `.dispatchedUnverified`
+        // still proceeds to contact. Style truth is proven terminally on the
+        // actual saved file bytes: the read-only runner postflight verifies the
+        // saved OOXML line width/colour/opacity on the committed resource after
+        // the real Back save. This records the pending state honestly — there
+        // is no `.verified` conversion, no synthetic event, and the guard
+        // predicate, the restore and every ownership fence stay unchanged.
+        var stylePendingFileProof = false
+        if !strokeMatches {
+            styleFailure = "stroke-state"
+        } else if session.inkError != nil {
+            styleFailure = "apply-error"
+        } else if session.inkApplyOutcome == nil {
+            styleFailure = "apply-none"
+        } else if session.inkApplyOutcome == .dispatchedUnverified {
+            styleFailure = nil
+            stylePendingFileProof = true
+        } else if session.inkApplyOutcome != .verified {
+            styleFailure = "apply-unverified"
+        } else {
+            styleFailure = nil
+        }
+        if stylePendingFileProof {
+            facts = "styleDispatch=unverified-pending-fileproof"
+        }
+        if let styleFailure {
+            facts = "styleGuard=\(styleFailure)"
             let restored = await restore(preferences, savedStroke, session: session,
                                          controller: controller, web: web,
                                          ownerToken: ownerToken)
@@ -476,7 +535,11 @@ final class OfficeInkCardSeamModel: ObservableObject {
             status = failureAfterRestore("failed-route", restored: restored)
             return
         }
-        facts = Self.redactedFacts(receipt)
+        // Keep the honest pending-fileproof marker (when this run proceeded on
+        // an error-free `.dispatchedUnverified` apply) in front of the bounded
+        // receipt facts; `.verified` runs stay byte-identical to before.
+        facts = (stylePendingFileProof ? "styleDispatch=unverified-pending-fileproof " : "")
+            + Self.redactedFacts(receipt)
         guard (receipt["routeReady"] as? Bool) == true,
               (receipt["ownerBindingHeld"] as? Bool) == true,
               (receipt["fenceHeld"] as? Bool) == true,
@@ -502,12 +565,28 @@ final class OfficeInkCardSeamModel: ObservableObject {
         }
         status = "lifted"
         // (5) State-observed ink commitment — no fixed delay standing in for
-        // a flush. Bounded polling of the engine's authoritative modified
-        // flag AND the session's own published dirty state. `null`/unknown
-        // is never read as clean; the deadline is an honest failure, not a
-        // silent success. The real Back guard still owns the save itself.
-        var dirtyObserved = false
-        var engineSaidModified = false
+        // a flush. Bounded polling of TWO production-truth signals:
+        //   * the engine's authoritative IN-MEMORY `.uno:ModifiedStatus`
+        //     probe, fail-closed: only a parsed TRUE counts and unknown /
+        //     `null` is never read as modified;
+        //   * the production close-protection predicate also used by standalone
+        //     Back, `session.hasLocalEditsToProtect()` — working-copy
+        //     dirty, engine-modified TRUE, or engine state UNKNOWN all mean
+        //     "protect", and only a definitive engine FALSE with a clean
+        //     working copy means "nothing to save".
+        // The session's on-disk `hasUncommittedChanges` flag is recorded as
+        // RECEIPT EVIDENCE ONLY and never gates the pass: per the production
+        // contract (OfficeDocumentEditorView.hasLocalEditsToProtect) it
+        // tracks the flushed working-copy FILE and ignores in-memory
+        // keyboard/pen edits, so a fresh pen contact routinely reads
+        // engine-modified=1 while the working copy is not yet flushed.
+        // The pre-fix predicate required BOTH and false-failed exactly that
+        // real-ink state, refusing to let the real Back run.
+        // The deadline is an honest failure, not a silent success; the real
+        // Back guard still owns the save itself.
+        var engineSaidModified = false     // in-memory `.uno:ModifiedStatus`; sticky once TRUE
+        var protectEditsObserved = false   // production `hasLocalEditsToProtect()` result
+        var workingCopyChanged = false     // on-disk `hasUncommittedChanges`; evidence only
         let deadline = Date().addingTimeInterval(30)
         while Date() < deadline {
             guard stillOwns(session: session, controller: controller,
@@ -522,7 +601,7 @@ final class OfficeInkCardSeamModel: ObservableObject {
             // stops the wait and skips every engine-visible restore.
             let loopOwnerCode = await ownerBindingStatus(web: web, ownerToken: ownerToken)
             // POST-AWAIT Swift identity/cancellation check before reading
-            // session dirty state or issuing the engine probe.
+            // session state or issuing the engine probe.
             guard stillOwns(session: session, controller: controller,
                         preferences: preferences) else {
                 facts += " ownerCheck=swift-owner-lost restore=skipped-owner"
@@ -534,7 +613,7 @@ final class OfficeInkCardSeamModel: ObservableObject {
                 status = (invalidated || Task.isCancelled) ? "cancelled" : "failed-owner-lost"
                 return
             }
-            dirtyObserved = session.hasUncommittedChanges
+            workingCopyChanged = session.hasUncommittedChanges
             let probe = try? await web.evaluateJavaScript(
                 OfficeExplicitSaveBridge.modifiedStatusProbeScript)
             // POST-AWAIT: the engine probe can suspend; a replacement must not
@@ -563,11 +642,49 @@ final class OfficeInkCardSeamModel: ObservableObject {
             } else if let text = probe as? String, text == "true" {
                 engineSaidModified = true
             }
-            if dirtyObserved, engineSaidModified { break }
+            // Production close-protection predicate. Standalone Back awaits it;
+            // Notes-owned Back saves directly. It performs an engine probe and
+            // working-copy digest, so it is another await: the captured
+            // Swift owner AND the captured page binding are re-checked
+            // AFTER it before its result is allowed to count.
+            protectEditsObserved = await session.hasLocalEditsToProtect()
+            guard stillOwns(session: session, controller: controller,
+                        preferences: preferences) else {
+                facts += " ownerCheck=swift-owner-lost restore=skipped-owner"
+                status = (invalidated || Task.isCancelled) ? "cancelled" : "failed-owner-lost"
+                return
+            }
+            let protectOwnerCode = await ownerBindingStatus(web: web, ownerToken: ownerToken)
+            // POST-AWAIT Swift identity/cancellation check before letting
+            // the predicate result count.
+            guard stillOwns(session: session, controller: controller,
+                        preferences: preferences) else {
+                facts += " ownerCheck=swift-owner-lost restore=skipped-owner"
+                status = (invalidated || Task.isCancelled) ? "cancelled" : "failed-owner-lost"
+                return
+            }
+            guard protectOwnerCode == "ok" else {
+                facts += " ownerCheck=\(protectOwnerCode) restore=skipped-owner"
+                status = (invalidated || Task.isCancelled) ? "cancelled" : "failed-owner-lost"
+                return
+            }
+            // Pass requires the engine's in-memory flag TRUE (never inferred
+            // from unknown) AND production's own protection predicate TRUE.
+            // `workingCopyChanged` is receipt evidence only and never gates.
+            if engineSaidModified, protectEditsObserved { break }
             try? await Task.sleep(for: .milliseconds(80))
         }
-        guard dirtyObserved, engineSaidModified else {
-            facts += " dirty=\(dirtyObserved ? 1 : 0) modified=\(engineSaidModified ? 1 : 0)"
+        // Publish the truthfully separated observed values ONCE, on BOTH the
+        // success and the failure receipt: the engine's in-memory modified
+        // flag, the production protection predicate result, and the on-disk
+        // working-copy flag (evidence only). The values are the final loop
+        // observations — never hardcoded — and the bounded flags carry no
+        // path, token or document text. Owner loss inside the loop already
+        // returned with its own status before this point.
+        facts += " engineModified=\(engineSaidModified ? 1 : 0)"
+            + " protectEdits=\(protectEditsObserved ? 1 : 0)"
+            + " workingCopyChanged=\(workingCopyChanged ? 1 : 0)"
+        guard engineSaidModified, protectEditsObserved else {
             let restored = await restore(preferences, savedStroke, session: session,
                                          controller: controller, web: web,
                                          ownerToken: ownerToken)
@@ -660,12 +777,12 @@ final class OfficeInkCardSeamModel: ObservableObject {
     /// Installs the capture-once page binding. Only bounded fixed codes are
     /// returned; a JS error is folded to `js-error` and never carries page
     /// text, a path, the token or an NSError message.
-    private func captureOwner(web: WKWebView, stagedPath: String, ownerToken: String) async -> String {
+    private func captureOwner(web: WKWebView, expectedDocPath: String, ownerToken: String) async -> String {
         guard !invalidated, !Task.isCancelled else { return "cancelled" }
         do {
             let result = try await web.callAsyncJavaScript(
                 Self.ownerCaptureScript,
-                arguments: ["expectedDocPath": stagedPath, "ownerToken": ownerToken],
+                arguments: ["expectedDocPath": expectedDocPath, "ownerToken": ownerToken],
                 in: nil,
                 contentWorld: .page) as? [String: Any]
             // Re-read cancellation once the page await resumes; the binding
@@ -853,13 +970,15 @@ final class OfficeInkCardSeamModel: ObservableObject {
     /// bundled engine (`browserBundleSHA256` b95ed4e6…): it exposes no
     /// `getDocumentName`/`_docName`; a local-kit mount binds its live document
     /// through `app.map.options.doc` (the canonical local `file_path` the
-    /// controller loaded), the engine's own backing permission
+    /// controller loaded — the UIDocument's private engine copy, never the
+    /// session working copy), the engine's own backing permission
     /// `app.file.readOnly`, the current `map._docLayer`, and the host's frozen
     /// per-mount facts (`window.__floeOfficeSession`) built from THIS
     /// controller's staged working copy. The document path is compared as ONE
     /// exact canonical local-path equality against the private
-    /// `expectedDocPath` argument (remote or synthetic protocols, traversal,
-    /// empty or duplicated segments, query suffixes and percent-encoding are
+    /// `expectedDocPath` argument (the host-published engine document URL;
+    /// remote or synthetic protocols, traversal, empty or duplicated segments,
+    /// query suffixes and percent-encoding are
     /// canonicalized or rejected; prefixes, suffixes and deeper unrelated
     /// paths never match). On success it installs the immutable in-page
     /// binding holding the EXACT live app/map/docLayer/file/mount/canvas

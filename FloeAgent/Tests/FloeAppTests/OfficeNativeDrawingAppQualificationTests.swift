@@ -38,6 +38,81 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     func testPPTXZeroMotionNativePenDotPersistsAndReopens() async throws {
         try await exerciseZeroMotionPenDot("pptx")
     }
+
+    /// Selected-style alpha acceptance (design HANDOFF §3): the explicitly
+    /// selected highlighter preset (4.0 mm, 60% transparency) must persist a
+    /// dot whose fill alpha equals the alpha derived from that real stroke
+    /// (40000), while the opaque cross-negative terms keep the frozen opaque
+    /// selectors above byte-stable: they still pass no extended seam
+    /// arguments and still gate nil/100000 exactly as accepted in v1.
+    func testDOCXZeroMotionHighlighterDotPersistsAndReopens() async throws {
+        try await exerciseZeroMotionPenDot("docx", dotPreset: .highlighter)
+    }
+    func testXLSXZeroMotionHighlighterDotPersistsAndReopens() async throws {
+        try await exerciseZeroMotionPenDot("xlsx", dotPreset: .highlighter)
+    }
+    func testPPTXZeroMotionHighlighterDotPersistsAndReopens() async throws {
+        try await exerciseZeroMotionPenDot("pptx", dotPreset: .highlighter)
+    }
+
+    /// After-dot lifecycle (design HANDOFF §3.5) through the actual production
+    /// bridge and the saved OOXML only: a moving stroke completes and persists
+    /// after a zero-motion dot; each repeat tap persists exactly one new dot;
+    /// the mixed tap+moving-ink document keeps exact counts, distinct geometry
+    /// and per-style attributes; one real `.uno:Undo` removes only the newest
+    /// dot with the prior strokes unchanged and `.uno:Redo` restores it.
+    func testDOCXZeroMotionDotLifecycleNextStrokeRepeatTapsUndoRedo() async throws {
+        try await exerciseDotLifecycle("docx")
+    }
+    func testXLSXZeroMotionDotLifecycleNextStrokeRepeatTapsUndoRedo() async throws {
+        try await exerciseDotLifecycle("xlsx")
+    }
+    func testPPTXZeroMotionDotLifecycleNextStrokeRepeatTapsUndoRedo() async throws {
+        try await exerciseDotLifecycle("pptx")
+    }
+
+    /// True-cancel contract. The integrated carrier owns a genuine
+    /// window-level pointercancel listener (FloeOfficeNative.mm ce3543f,
+    /// HEAD 08303a31) that aborts the unfinished contact instead of releasing
+    /// it like an up. This test dispatches only a genuine
+    /// pointerdown+pointercancel at one identical point (never a normal
+    /// pointerup, no handler bypass), requires that the saved document
+    /// persists no dot, and proves the next moving stroke completes through
+    /// the same bridge afterwards. It is a permanent cancel-route regression
+    /// gate, never skipped or weakened.
+    func testDOCXZeroMotionDotTruePointerCancelPersistsNoDot() async throws {
+        try await exerciseDotCancel("docx")
+    }
+    func testXLSXZeroMotionDotTruePointerCancelPersistsNoDot() async throws {
+        try await exerciseDotCancel("xlsx")
+    }
+    func testPPTXZeroMotionDotTruePointerCancelPersistsNoDot() async throws {
+        try await exerciseDotCancel("pptx")
+    }
+
+    /// Moving true-cancel contract (root review): a genuine pointerdown +
+    /// several real pointermove + pointercancel sequence on the production
+    /// window listener must leave the bridge with no stranded active stroke,
+    /// must persist no partial path and no dot of any representation for the
+    /// canceled contact, and must not disturb the previously completed
+    /// strokes; the next genuine moving stroke still completes through the
+    /// same bridge. Every event is a real dispatched PointerEvent reaching
+    /// the pinned bridge's own registered listener — never a private
+    /// cancel-handler call, never a fabricated up, no epsilon. On the
+    /// integrated carrier (FloeOfficeNative.mm ce3543f, HEAD 08303a31) the
+    /// ordered pointercancel closure aborts the unfinished core create, so
+    /// the no-partial-ink gate is expected to pass; any persisted partial
+    /// ink here is a genuine cancel-route regression. Never skipped, never
+    /// weakened.
+    func testDOCXMovingStrokeTruePointerCancelPersistsNoPartialPath() async throws {
+        try await exerciseDotMovingCancel("docx")
+    }
+    func testXLSXMovingStrokeTruePointerCancelPersistsNoPartialPath() async throws {
+        try await exerciseDotMovingCancel("xlsx")
+    }
+    func testPPTXMovingStrokeTruePointerCancelPersistsNoPartialPath() async throws {
+        try await exerciseDotMovingCancel("pptx")
+    }
     func testXLSXControlledStaleShapeHandleSelectionReplayStillDraws() async throws {
         try await exerciseStaleShapeHandleReplay("xlsx")
     }
@@ -599,7 +674,16 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     /// control-only save/reopen is produced from the same fixture first, so
     /// the control proves the route/tool before the zero-motion contact and
     /// provides the exact render baseline for the reopened-page pixel diff.
-    private func exerciseZeroMotionPenDot(_ format: String) async throws {
+    /// `dotPreset` selects the real dot ink style. `.marker` (the three frozen
+    /// selectors) keeps its explicit 0% transparency, the original seam
+    /// arguments, waits and the nil/100000 opaque gate unchanged.
+    /// `.highlighter` selects the real highlighter preset and derives the
+    /// expected dot alpha from the actually selected stroke (strict 40000;
+    /// a missing alpha element is valid only when the expectation is 100000),
+    /// adds the opposite-style alpha/width cross-negatives below and requests
+    /// the paint handoff receipt from the extended seam.
+    private func exerciseZeroMotionPenDot(_ format: String,
+                                          dotPreset: OfficeInkStylePreset = .marker) async throws {
         guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
             throw XCTSkip("Opt-in native zero-motion dot baseline; not executed")
         }
@@ -647,18 +731,15 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         var dotFraction: [Double]?
         var controlStyleEMU = 0
         var dotStyleEMU = 0
+        var dotAlphaExpected = 100_000
         var controlShapeCount = 0
         var dotShapeCount = 0
         // A persisted zero-motion dot is either the native filled circle the
         // engine finalizes for a tap (prstGeom ellipse, selected colour, no
         // outline) or, if another representation ever persisted, the previous
-        // path-based candidate.
-        let isNativeDotShape: (DrawingQualificationXML.VectorShape) -> Bool = { shape in
-            shape.prstGeometry == "ellipse"
-                && (shape.fillColorHex ?? "").uppercased() == "0000FF"
-                && shape.lineIsNoFill
-                && shape.paths.isEmpty
-        }
+        // path-based candidate. The classifier is the accepted v1 predicate,
+        // now shared with the new lifecycle exercises.
+        let isNativeDotShape = Self.nativeDotShape
         do {
             await session.open(source)
             try await wait(120, "initial native open") {
@@ -744,19 +825,32 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             // pointermove, no preview-only substitute and no epsilon.
             try await session.toggleDrawing()
             XCTAssertTrue(session.drawingMode, "the App must re-arm drawing for the dot")
-            preferences.setPreset(.marker)
+            preferences.setPreset(dotPreset)
             preferences.setColorHex("#0000FF")
-            preferences.setTransparencyPercent(0)
+            if dotPreset == .marker {
+                preferences.setTransparencyPercent(0)
+            }
             await session.applyInkPreferences()
-            XCTAssertNil(session.inkError, "dot marker preferences must apply")
+            XCTAssertNil(session.inkError, "dot \(dotPreset.rawValue) preferences must apply")
             let dotInkAck = session.inkApplyOutcome.map {
                 $0 == .verified ? "verified" : "dispatchedUnverified"
             } ?? "nil"
-            XCTAssertEqual(preferences.stroke.preset, .marker)
-            XCTAssertEqual(preferences.stroke.widthMillimeters, 2.0)
+            XCTAssertEqual(preferences.stroke.preset, dotPreset)
+            XCTAssertEqual(preferences.stroke.widthMillimeters, dotPreset.widthMillimeters)
             XCTAssertEqual(preferences.stroke.colorHex, "#0000FF")
             let dotStroke = preferences.stroke
             dotStyleEMU = dotStroke.lineWidthValue * 360
+            dotAlphaExpected = (100 - dotStroke.transparencyPercent) * 1_000
+            if dotPreset == .marker {
+                XCTAssertEqual(preferences.stroke.widthMillimeters, 2.0)
+                XCTAssertEqual(preferences.stroke.transparencyPercent, 0,
+                               "the frozen opaque marker variant must really carry no transparency")
+                XCTAssertEqual(dotAlphaExpected, 100_000)
+            } else {
+                XCTAssertEqual(preferences.stroke.transparencyPercent, dotPreset.transparencyPercent)
+                XCTAssertGreaterThan(preferences.stroke.transparencyPercent, 0,
+                                     "the explicitly selected highlighter variant must really be transparent")
+            }
             let nativeFlagBeforeDot = try nativeDrawingFlag(native)
             let nativeRenderBeforeDot = OfficeFileSession.hostRenderDiagnostics(native)
             let preDotFacts = try await officePenFacts(web)
@@ -764,8 +858,10 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             XCTAssertEqual(preDotFacts["drawing"] as? Bool, true)
             XCTAssertEqual(preDotFacts["activeStroke"] as? Bool, false,
                            "a previous stroke must not remain active before the dot")
+            let wantsPaintReceipt = dotPreset != .marker
             let zeroMotion = try await receiveZeroMotionDot(web: web, native: native, window: window,
-                                                            root: root, syntheticSource: source)
+                                                            root: root, syntheticSource: source,
+                                                            paintReceipt: wantsPaintReceipt)
             if let raw = zeroMotion["dotFraction"] as? [Any], raw.count == 2,
                let fx = (raw[0] as? NSNumber)?.doubleValue,
                let fy = (raw[1] as? NSNumber)?.doubleValue, fx.isFinite, fy.isFinite {
@@ -812,6 +908,9 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                     && zeroMotion["activeAfterUp"] as? Bool == false
                     && zeroMotion["strokeDelta"] as? Int == 1
                     && zeroMotion["coreEventDelta"] as? Int == 2
+            }
+            if wantsPaintReceipt && dotRouteAccepted {
+                validateDotPaintReceipt(zeroMotion, label: "\(dotPreset.rawValue) dot")
             }
             try await Task.sleep(for: .milliseconds(350))
             let postDotFacts = try await officePenFacts(web)
@@ -876,6 +975,15 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                 XCTAssertEqual(dotShapes.count, 1,
                                "The zero-motion contact must save exactly one new dot object")
                 let dot = dotShapes[0]
+                // Cross-negative expectations derived from the actual selection:
+                // the opposite style's alpha/width MUST reject this real
+                // persisted dot, so no "either style allowed" gate can exist.
+                let oppositeAlphaValue = dotAlphaExpected == 100_000 ? 40_000 : 100_000
+                let oppositePreset: OfficeInkStylePreset = dotPreset == .highlighter ? .marker : .highlighter
+                let oppositeWidthEMU = OfficeInkStroke(colorHex: "#0000FF",
+                                                       widthMillimeters: oppositePreset.widthMillimeters,
+                                                       transparencyPercent: oppositePreset.transparencyPercent,
+                                                       preset: oppositePreset).lineWidthValue * 360
                 if isNativeDotShape(dot) {
                     // Native filled-circle persistence: the diameter is the
                     // square extent, the colour/alpha live in the fill, and an
@@ -889,16 +997,26 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                     XCTAssertEqual(diameterEMU, heightEMU,
                                    "The native dot extent must be square (a true circle): \(dot)")
                     XCTAssertTrue(abs(diameterEMU - dotStyleEMU) <= 635,
-                                  "The native dot diameter must equal the 2.0 mm marker width: \(dot)")
-                    XCTAssertTrue(dot.fillAlphaValue == nil || dot.fillAlphaValue == 100_000,
-                                  "Opaque marker dot must not save a transparent fill alpha: \(dot)")
+                                  "The native dot diameter must equal the selected \(dotPreset.rawValue) width \(dotStyleEMU) EMU: \(dot)")
+                    XCTAssertTrue(Self.dotAlphaSatisfies(dot.fillAlphaValue, expected: dotAlphaExpected),
+                                  "The native dot fill alpha must equal the selected \(dotPreset.rawValue) style alpha \(dotAlphaExpected) (nil is only valid for the 100000 expectation): \(dot)")
+                    XCTAssertFalse(Self.dotAlphaSatisfies(dot.fillAlphaValue, expected: oppositeAlphaValue),
+                                  "cross-negative: a selected \(dotPreset.rawValue) dot must not satisfy the opposite alpha \(oppositeAlphaValue): \(dot)")
+                    XCTAssertFalse(abs(diameterEMU - oppositeWidthEMU) <= 635,
+                                  "cross-negative: the selected \(dotPreset.rawValue) dot must not satisfy the opposite width \(oppositeWidthEMU) EMU: \(dot)")
                 } else {
                     XCTAssertTrue(dot.colorHex?.uppercased() == "0000FF",
                                   "The persisted dot must retain its selected marker blue: \(dot)")
                     XCTAssertTrue(dot.widthEMU.map { abs($0 - dotStyleEMU) <= 635 } == true,
-                                  "The persisted dot must retain its selected 2.0 mm marker width: \(dot)")
-                    XCTAssertTrue(dot.alphaValue == nil || dot.alphaValue == 100_000,
-                                  "Opaque marker dot must not save a transparent line alpha: \(dot)")
+                                  "The persisted dot must retain its selected \(dotPreset.rawValue) width: \(dot)")
+                    XCTAssertTrue(Self.dotAlphaSatisfies(dot.alphaValue, expected: dotAlphaExpected),
+                                  "The persisted dot line alpha must equal the selected \(dotPreset.rawValue) style alpha \(dotAlphaExpected) (nil is only valid for the 100000 expectation): \(dot)")
+                    XCTAssertFalse(Self.dotAlphaSatisfies(dot.alphaValue, expected: oppositeAlphaValue),
+                                  "cross-negative: a selected \(dotPreset.rawValue) dot must not satisfy the opposite alpha \(oppositeAlphaValue): \(dot)")
+                    if let persistedWidthEMU = dot.widthEMU {
+                        XCTAssertFalse(abs(persistedWidthEMU - oppositeWidthEMU) <= 635,
+                                      "cross-negative: the selected \(dotPreset.rawValue) dot must not satisfy the opposite width \(oppositeWidthEMU) EMU: \(dot)")
+                    }
                 }
             }
             if format == "xlsx" {
@@ -938,7 +1056,9 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                     "hasUncommittedChangesAfterDot": session.hasUncommittedChanges
                 ] as [String: Any],
                 "controlStyle": ["color": "#FF0000", "widthEMU": controlStyleEMU, "alpha": 100_000],
-                "dotStyle": ["color": "#0000FF", "widthEMU": dotStyleEMU, "alpha": 100_000],
+                "dotStyle": ["color": "#0000FF", "widthEMU": dotStyleEMU, "alpha": dotAlphaExpected,
+                             "preset": dotPreset.rawValue,
+                             "transparencyPercent": dotStroke.transparencyPercent],
                 "controlPersisted": controlPersisted,
                 "dotRouteAccepted": dotRouteAccepted,
                 "controlSavedShapes": controlShapeCount,
@@ -1092,6 +1212,890 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             attach(receiptURL, name: "zero-motion-reopen-verification-\(format)")
             await reopenFinal.release()
         } catch { await reopenFinal.release(); throw error }
+    }
+
+    /// Accepted v1 native filled-circle classifier, shared by the frozen
+    /// opaque/highlighter dot acceptance and the new lifecycle exercises.
+    private static func nativeDotShape(_ shape: DrawingQualificationXML.VectorShape) -> Bool {
+        shape.prstGeometry == "ellipse"
+            && (shape.fillColorHex ?? "").uppercased() == "0000FF"
+            && shape.lineIsNoFill
+            && shape.paths.isEmpty
+    }
+
+    /// Strict selected-style alpha rule. The expectation is derived from the
+    /// actually selected stroke/transparency: a missing alpha element is valid
+    /// only for the fully opaque expectation (100000); every other
+    /// expectation must match the saved alpha exactly, so an
+    /// opaque-vs-transparent cross-mismatch always fails.
+    private static func dotAlphaSatisfies(_ actual: Int?, expected: Int) -> Bool {
+        if expected == 100_000 { return actual == nil || actual == 100_000 }
+        return actual == expected
+    }
+
+    /// Select one qualification ink style through the real per-document
+    /// preference API and the App apply action, proving the applied state.
+    private func applyInkStyle(_ style: OfficeInkStroke, preferences: OfficeInkPreferences,
+                               session: OfficeFileSession, stage: String) async throws {
+        preferences.setPreset(style.preset)
+        preferences.setColorHex(style.colorHex)
+        preferences.setWidthMillimeters(style.widthMillimeters)
+        preferences.setTransparencyPercent(style.transparencyPercent)
+        await session.applyInkPreferences()
+        XCTAssertNil(session.inkError, "\(stage): App ink preferences failed to apply")
+        XCTAssertEqual(preferences.stroke.preset, style.preset, "\(stage): preset mismatch")
+        XCTAssertEqual(preferences.stroke.colorHex, style.colorHex, "\(stage): colour mismatch")
+        XCTAssertEqual(preferences.stroke.widthMillimeters, style.widthMillimeters, "\(stage): width mismatch")
+        XCTAssertEqual(preferences.stroke.transparencyPercent, style.transparencyPercent, "\(stage): transparency mismatch")
+    }
+
+    /// The extended seam's paint handoff receipt (design HANDOFF §3.4, root
+    /// review strengthened for sole attribution): the completed zero-motion
+    /// contact must own its preview paint handoff ALONE. The seam
+    /// state-observes the bridge's own pending set immediately before the new
+    /// contact with a bounded poll; only a drained (0) pre-contact pending
+    /// makes the per-contact attribution honest, because the bridge's
+    /// `lastClearReason` records the LAST clear of the whole pending set and
+    /// cannot prove ownership while several handoffs are pending. The bounded
+    /// drain poll must then observe an ACTUAL clear (`clearsAfter >
+    /// clearsBefore`) whose reason is the bridge's geometric
+    /// `handoffEvidenceComplete` value `painted`. Every field is a real
+    /// bridge diagnostic (`__floeOfficePenState`/`__floeOfficePenPreview`);
+    /// no success flag is invented and no timestamp alone is accepted.
+    private func validateDotPaintReceipt(_ zeroMotion: [String: Any], label: String) {
+        guard let paint = zeroMotion["paint"] as? [String: Any] else {
+            XCTFail("\(label): the extended zero-motion seam did not return its paint receipt")
+            return
+        }
+        XCTAssertEqual(paint["available"] as? Bool, true,
+                       "\(label): the live preview surface was unavailable, so the paint handoff receipt cannot be taken: \(paint)")
+        XCTAssertEqual(paint["preContactPending"] as? Int, 0,
+                       "\(label): another preview handoff was still pending before this contact (bounded poll waited \(paint["preContactWaitedMilliseconds"] ?? -1) ms), so per-contact own-paint attribution is impossible and was not faked: \(paint)")
+        XCTAssertEqual(paint["pendingAtUp"] as? Int, 1,
+                       "\(label): the completed dot contact must register exactly its own sole preview paint handoff: \(paint)")
+        XCTAssertEqual(paint["pendingAfterUp"] as? Int, 0,
+                       "\(label): preview paint handoffs were still pending at the probe-window boundary: \(paint)")
+        let clearsBefore = paint["clearsBefore"] as? Int ?? -1
+        let clearsAfter = paint["clearsAfter"] as? Int ?? -2
+        XCTAssertGreaterThan(clearsAfter, clearsBefore,
+                             "\(label): the bounded drain poll observed no actual preview clear for this contact; a stale lastClearReason was not accepted as success: \(paint)")
+        XCTAssertEqual(paint["lastClearReason"] as? String, "painted",
+                       "\(label): the engine tile paint did not clear the pending preview handoff with paint evidence: \(paint)")
+    }
+
+    /// One genuine zero-motion tap through the production seam with the full
+    /// frozen contact contract plus its paint handoff receipt. The contact
+    /// still dispatches exactly pointerdown+pointerup at one identical point;
+    /// `candidateOffset` only rotates the seam's existing real layout
+    /// candidates so repeat taps persist at distinct positions.
+    private func receiveValidatedDotTap(web: WKWebView, native: FloeOfficeNativeViewController,
+                                        window: UIWindow, root: URL, syntheticSource: URL,
+                                        label: String, candidateOffset: Int) async throws
+        -> (receipt: [String: Any], routeAccepted: Bool) {
+        let zeroMotion = try await receiveZeroMotionDot(web: web, native: native, window: window,
+                                                        root: root, syntheticSource: syntheticSource,
+                                                        paintReceipt: true, candidateOffset: candidateOffset,
+                                                        receiptName: "zero-motion-dot-\(label)")
+        let routeReady = zeroMotion["routeReady"] as? Bool == true
+        XCTAssertTrue(routeReady, "\(label): the exact zero-motion input route was not prepared: \(zeroMotion)")
+        guard routeReady else { return (zeroMotion, false) }
+        XCTAssertEqual(zeroMotion["eventsDispatched"] as? Int, 2,
+                       "\(label): the zero-motion seam must dispatch exactly one down and one second event")
+        XCTAssertEqual(zeroMotion["movesDispatched"] as? Int, 0,
+                       "\(label): the zero-motion seam must not fabricate a move")
+        XCTAssertEqual(zeroMotion["secondEventKind"] as? String, "pointerup",
+                       "\(label): a completed dot tap must end with the real pointerup")
+        if let rawPoints = zeroMotion["clientPoints"] as? [[Any]], rawPoints.count == 2,
+           let x0 = (rawPoints[0][0] as? NSNumber)?.doubleValue,
+           let y0 = (rawPoints[0][1] as? NSNumber)?.doubleValue,
+           let x1 = (rawPoints[1][0] as? NSNumber)?.doubleValue,
+           let y1 = (rawPoints[1][1] as? NSNumber)?.doubleValue {
+            XCTAssertEqual(x0, x1, "\(label): the zero-motion down and up must use one identical X")
+            XCTAssertEqual(y0, y1, "\(label): the zero-motion down and up must use one identical Y")
+        } else {
+            XCTFail("\(label): the zero-motion receipt did not expose its two identical client points")
+        }
+        XCTAssertEqual(zeroMotion["downAccepted"] as? Bool, true,
+                       "\(label): the actual production pen bridge did not accept the zero-motion down")
+        XCTAssertEqual(zeroMotion["activeAfterDown"] as? Bool, true,
+                       "\(label): the production bridge must own the contact after the zero-motion down")
+        XCTAssertEqual(zeroMotion["activeAfterUp"] as? Bool, false,
+                       "\(label): the production bridge must finish the zero-motion contact")
+        XCTAssertEqual(zeroMotion["strokeDelta"] as? Int, 1,
+                       "\(label): the production bridge must count the completed zero-motion contact")
+        XCTAssertEqual(zeroMotion["coreEventDelta"] as? Int, 2,
+                       "\(label): the canonical replay for a zero-motion contact must be exactly mousedown+mouseup")
+        let accepted = zeroMotion["downAccepted"] as? Bool == true
+            && zeroMotion["activeAfterDown"] as? Bool == true
+            && zeroMotion["activeAfterUp"] as? Bool == false
+            && zeroMotion["strokeDelta"] as? Int == 1
+            && zeroMotion["coreEventDelta"] as? Int == 2
+        if accepted { validateDotPaintReceipt(zeroMotion, label: label) }
+        return (zeroMotion, accepted)
+    }
+
+    /// Dispatch one real engine command through the pinned frontend's
+    /// production `map.sendUnoCommand` (the same dispatcher route the accepted
+    /// stale-handle test uses for `.uno:SelectObject`) and retain its bounded
+    /// receipt before any decoding assertion. No interpreter-local undo and no
+    /// fixture injection substitute for the engine action.
+    @discardableResult
+    private func dispatchDotCommand(_ command: String, web: WKWebView, root: URL,
+                                    label: String) async throws -> [String: Any] {
+        var resultType = "not-returned"
+        do {
+            let receipt: Any? = try await web.callAsyncJavaScript(Self.dotUndoCommandScript,
+                arguments: ["command": command], in: nil, contentWorld: .page)
+            resultType = receipt.map { String(reflecting: type(of: $0)) } ?? "nil"
+            guard let json = receipt as? String else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 74, userInfo: [
+                    NSLocalizedDescriptionKey: "Real UNO \(command) dispatch did not return its JSON-string receipt (type=\(resultType))"
+                ])
+            }
+            guard json.utf8.count <= 16_384 else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 75, userInfo: [
+                    NSLocalizedDescriptionKey: "Real UNO \(command) receipt exceeded its bounded transport"
+                ])
+            }
+            let receiptURL = root.appendingPathComponent("\(label).json")
+            try Data(json.utf8).write(to: receiptURL, options: .atomic)
+            attach(receiptURL, name: label)
+            guard let decoded = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
+                throw NSError(domain: "OfficeNativeDrawingQualification", code: 76, userInfo: [
+                    NSLocalizedDescriptionKey: "Real UNO \(command) receipt was not a JSON object"
+                ])
+            }
+            XCTAssertEqual(decoded["command"] as? String, command, "\(label): the real dispatcher echoed a different command")
+            XCTAssertNil(decoded["dispatchError"], "\(label): the real UNO \(command) dispatch failed: \(decoded)")
+            return decoded
+        } catch {
+            let nsError = error as NSError
+            let facts: [String: Any] = ["stage": "dispatch-real-uno-\(command)", "command": command,
+                                        "WKResultType": resultType, "errorDomain": nsError.domain,
+                                        "errorCode": nsError.code]
+            let url = root.appendingPathComponent("\(label)-transport-failure.json")
+            if let bytes = try? JSONSerialization.data(withJSONObject: facts, options: [.prettyPrinted, .sortedKeys]) {
+                try? bytes.write(to: url, options: .atomic)
+                attach(url, name: "\(label)-transport-failure")
+            }
+            throw error
+        }
+    }
+
+    private static let dotUndoCommandScript = #"""
+    const app = window.app;
+    const map = app && app.map;
+    if (!map || typeof map.sendUnoCommand !== 'function')
+        throw new Error('production UNO dispatcher unavailable');
+    const before = typeof window.__floeOfficePenState === 'function' ? window.__floeOfficePenState() : null;
+    let dispatchError = null;
+    try { map.sendUnoCommand(command); }
+    catch (error) { dispatchError = String(error && error.message || error).slice(0, 128); }
+    await new Promise(resolve => setTimeout(resolve, 400));
+    const selection = app.definitions && app.definitions.graphicSelection
+        && typeof app.definitions.graphicSelection.hasActiveSelection === 'function'
+        ? app.definitions.graphicSelection.hasActiveSelection() === true : null;
+    const out = {command, selectionActiveAfter: selection, before,
+        after: typeof window.__floeOfficePenState === 'function' ? window.__floeOfficePenState() : null};
+    if (dispatchError) out.dispatchError = dispatchError;
+    return JSON.stringify(out);
+    """#
+
+    /// Moving-ink identity: placement + paths + line alpha, order-stable.
+    private func penShapeIdentities(_ pkg: DrawingQualificationXML, widthEMU: Int) -> [String] {
+        pkg.vectorShapes.filter { shape in
+            shape.colorHex?.uppercased() == "FF0000"
+                && shape.widthEMU.map { abs($0 - widthEMU) <= 635 } == true
+                && !shape.paths.isEmpty
+        }.sorted { $0.description < $1.description }
+         .map { "\($0.placement ?? "nil")|\($0.paths.joined(separator: ";"))|\($0.alphaValue.map(String.init) ?? "none")" }
+    }
+
+    /// Dot identity: the shape's own saved placement (or anchor, then the
+    /// full semantic description as the honest fallback).
+    private func dotPlacements(_ pkg: DrawingQualificationXML) -> [String] {
+        pkg.vectorShapes.filter { Self.nativeDotShape($0) }
+            .sorted { $0.description < $1.description }
+            .map { $0.placement ?? $0.anchor ?? $0.description }
+    }
+
+    private func unclassifiedShapes(_ pkg: DrawingQualificationXML, penWidthEMU: Int) -> [DrawingQualificationXML.VectorShape] {
+        pkg.vectorShapes.filter { shape in
+            let isPen = shape.colorHex?.uppercased() == "FF0000"
+                && shape.widthEMU.map { abs($0 - penWidthEMU) <= 635 } == true
+                && !shape.paths.isEmpty
+            return !isPen && !Self.nativeDotShape(shape)
+        }
+    }
+
+    /// After-dot lifecycle acceptance (design HANDOFF §3.5) through the actual
+    /// production pen bridge and the saved OOXML only: a moving stroke
+    /// completes and persists after a zero-motion dot; each repeat tap
+    /// persists exactly one new dot at its own position; the mixed
+    /// tap+moving-ink document keeps exact counts, distinct geometry and
+    /// per-style attributes with the paint handoff receipt on every tap; one
+    /// real `.uno:Undo` removes only the newest dot while every prior stroke
+    /// stays identical, and `.uno:Redo` restores it at its original position.
+    /// Authoritative file inspection only; no preview-only or fixture-based
+    /// substitution.
+    private func exerciseDotLifecycle(_ format: String) async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in native zero-motion dot lifecycle; not executed")
+        }
+        executionTimeAllowance = 600
+        continueAfterFailure = true
+        let fm = FileManager.default
+        let documents = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let root = documents.appendingPathComponent("Qualification/OfficeDotLifecycle-\(format)-\(UUID().uuidString)",
+                                                   isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        print("FLOE_DOT_LIFECYCLE_ARTIFACT_ROOT=\(root.path)")
+        let source = root.appendingPathComponent("original.\(format)")
+        switch format {
+        case "docx":
+            try OfficeDocumentBuilder.createWord(at: source, title: "中文圆点生命周期验收",
+                paragraphs: ["LIFECYCLE-DOT-KEEP 中文正文 12345", "Second paragraph remains editable."])
+        case "xlsx":
+            try OfficeDocumentBuilder.createWorkbook(at: source, sheets: [
+                OfficeWorkbookSheet(name: "圆点周期", rows: [["LIFECYCLE-DOT-KEEP", "数值"], ["原值", "12"], ["公式", "=B2*2"]])
+            ])
+        default:
+            try OfficeDocumentBuilder.createPresentation(at: source, title: "中文圆点生命周期验收", slides: [
+                OfficePresentationSlide(title: "LIFECYCLE-DOT-KEEP", bullets: ["中文原文 12345", "Editable original content"],
+                                        notes: "LIFECYCLE-NOTES-KEEP")
+            ])
+        }
+        let sourceHash = try hash(source)
+        let baseline = try package(source, format: format)
+        XCTAssertEqual(baseline.customGeometryPaths.count, 0, "Fixture must contain no preinserted strokes")
+        attach(source, name: "lifecycle-source-\(format)")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = mount(session, in: scene)
+        defer { window.isHidden = true; window.rootViewController = nil; previousKeyWindow?.makeKey() }
+        let penStyle = OfficeInkStroke(colorHex: "#FF0000", widthMillimeters: 0.5,
+                                       transparencyPercent: 0, preset: .pen)
+        let markerStyle = OfficeInkStroke(colorHex: "#0000FF", widthMillimeters: 2.0,
+                                          transparencyPercent: 0, preset: .marker)
+        var tapReceipts: [[String: Any]] = []
+        var strokeReceipts: [[String: Any]] = []
+        var undoReceipt: [String: Any] = [:]
+        var redoReceipt: [String: Any] = [:]
+        do {
+            await session.open(source)
+            try await wait(120, "lifecycle native open") {
+                session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            if session.readOnly {
+                let accepted = await session.requestEditing()
+                XCTAssertTrue(accepted, "Actual App edit entry rejected: \(session.error ?? "unknown")")
+            }
+            try await wait(150, "lifecycle editable native document") {
+                !session.readOnly && session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            session.useInkPreferences(workspaceIdentity: root.path, documentKey: source.lastPathComponent)
+            let preferences = session.inkPreferences
+            let previousStroke = preferences.stroke
+            defer {
+                preferences.setPreset(previousStroke.preset)
+                preferences.setColorHex(previousStroke.colorHex)
+                preferences.setWidthMillimeters(previousStroke.widthMillimeters)
+                preferences.setTransparencyPercent(previousStroke.transparencyPercent)
+            }
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode, "the real App drawing toggle must arm")
+            try await applyInkStyle(penStyle, preferences: preferences, session: session, stage: "lifecycle pen")
+            let appliedPen = preferences.stroke
+            let appliedPenEMU = appliedPen.lineWidthValue * 360
+            let controlStimulus = StrokeStimulus(index: 0, kind: .band, gapMilliseconds: 30, style: .pen)
+            let controlReceipt = try await receiveStroke(0, web: web, native: native, window: window,
+                root: root, syntheticSource: source, stimulus: controlStimulus, previousPoints: [])
+            try validateHitDiagnostics(controlReceipt, stimulus: controlStimulus)
+            XCTAssertEqual(controlReceipt["strokeDelta"] as? Int, 1,
+                           "The first moving stroke must complete through the actual pen bridge")
+            strokeReceipts.append(controlReceipt)
+            // The first dot, in the selected marker style.
+            try await applyInkStyle(markerStyle, preferences: preferences, session: session, stage: "lifecycle marker")
+            let appliedDot = preferences.stroke
+            let appliedDotEMU = appliedDot.lineWidthValue * 360
+            let tap1 = try await receiveValidatedDotTap(web: web, native: native, window: window,
+                                                        root: root, syntheticSource: source,
+                                                        label: "tap1", candidateOffset: 0)
+            tapReceipts.append(tap1.receipt)
+            // Requirement: after a genuine zero-motion contact the next moving
+            // stroke works. The pen style is re-selected through the real
+            // preference API without disarming drawing mode.
+            try await applyInkStyle(penStyle, preferences: preferences, session: session, stage: "lifecycle pen after dot")
+            let nextStimulus = StrokeStimulus(index: 1, kind: .band, gapMilliseconds: 30, style: .pen)
+            let nextStroke = try await receiveStroke(1, web: web, native: native, window: window,
+                root: root, syntheticSource: source, stimulus: nextStimulus, previousPoints: [])
+            try validateHitDiagnostics(nextStroke, stimulus: nextStimulus)
+            XCTAssertEqual(nextStroke["strokeDelta"] as? Int, 1,
+                           "A moving stroke after a zero-motion dot must complete through the actual pen bridge")
+            strokeReceipts.append(nextStroke)
+            // Repeat taps: two further genuine zero-motion contacts. Each tap
+            // must itself complete through the bridge and paint-clear.
+            try await applyInkStyle(markerStyle, preferences: preferences, session: session, stage: "lifecycle marker repeat")
+            let tap2 = try await receiveValidatedDotTap(web: web, native: native, window: window,
+                                                       root: root, syntheticSource: source,
+                                                       label: "tap2", candidateOffset: 1)
+            let tap3 = try await receiveValidatedDotTap(web: web, native: native, window: window,
+                                                       root: root, syntheticSource: source,
+                                                       label: "tap3", candidateOffset: 2)
+            tapReceipts.append(contentsOf: [tap2.receipt, tap3.receipt])
+            try await session.toggleDrawing()
+            XCTAssertFalse(session.drawingMode, "the drawing toggle must disarm before the saves")
+            let allCopy = root.appendingPathComponent("lifecycle-all.\(format)")
+            try fm.copyItem(at: try await session.exportDocument(format: format), to: allCopy)
+            attach(allCopy, name: "dot-lifecycle-saved-all-\(format)")
+            XCTAssertEqual(try hash(source), sourceHash, "Lifecycle export altered the original fixture")
+            let savedAll = try package(allCopy, format: format)
+            XCTAssertTrue(savedAll.text.contains("LIFECYCLE-DOT-KEEP"), "Lifecycle save lost original content")
+            if format == "xlsx" {
+                XCTAssertEqual(savedAll.cells["B2"], "12", "Excel basic value lost")
+                XCTAssertEqual(savedAll.formulas["B3"], "B2*2", "Excel formula lost or flattened")
+                XCTAssertGreaterThanOrEqual(savedAll.validAnchors, 1, "Lifecycle shapes need a valid Excel sheet anchor")
+            }
+            if format == "pptx" { XCTAssertTrue(savedAll.text.contains("LIFECYCLE-NOTES-KEEP"), "Speaker notes lost") }
+            // Mixed tap + moving-ink document: exact counts, geometry and style.
+            XCTAssertEqual(penShapeIdentities(savedAll, widthEMU: appliedPenEMU).count, 2,
+                           "The mixed document must keep exactly two selected-style pen paths: \(savedAll.vectorShapes)")
+            XCTAssertEqual(Set(savedAll.customGeometryPaths).count, 2, "The two moving strokes must have distinct geometry")
+            XCTAssertEqual(savedAll.customGeometryPaths.count, 2,
+                           "The three dots must not add custom geometry paths: \(savedAll.customGeometryPaths.count)")
+            XCTAssertTrue(savedAll.customGeometryPointCounts.allSatisfy { $0 >= 3 }, "Moving strokes need real vector points")
+            let allDotIds = dotPlacements(savedAll)
+            XCTAssertEqual(allDotIds.count, 3, "Each repeat tap must persist exactly one new dot: \(savedAll.vectorShapes)")
+            XCTAssertEqual(Set(allDotIds).count, 3, "Each tapped dot must persist at its own distinct position: \(allDotIds)")
+            XCTAssertEqual(unclassifiedShapes(savedAll, penWidthEMU: appliedPenEMU).count, 0,
+                           "No other persisted vector shape is allowed: \(savedAll.vectorShapes)")
+            for dot in savedAll.vectorShapes.filter({ Self.nativeDotShape($0) }) {
+                XCTAssertTrue(dot.widthEMU == nil || dot.widthEMU == 0,
+                              "A tapped dot must not save an outline width: \(dot)")
+                XCTAssertTrue(dot.extentEMU?.count == 2
+                              && (dot.extentEMU?[0] ?? -1) == (dot.extentEMU?[1] ?? -2)
+                              && abs((dot.extentEMU?[0] ?? -1) - appliedDotEMU) <= 635,
+                              "Every tapped dot must keep the selected marker width as its square extent: \(dot)")
+                XCTAssertTrue(Self.dotAlphaSatisfies(dot.fillAlphaValue, expected: 100_000),
+                              "Tapped opaque marker dots must keep the opaque fill alpha: \(dot)")
+                XCTAssertFalse(Self.dotAlphaSatisfies(dot.fillAlphaValue, expected: 40_000),
+                               "cross-negative: an opaque tapped dot must not satisfy the highlighter alpha: \(dot)")
+            }
+            let allPenIdentities = penShapeIdentities(savedAll, widthEMU: appliedPenEMU)
+            // One real engine undo action must remove only the newest dot.
+            undoReceipt = try await dispatchDotCommand(".uno:Undo", web: web, root: root, label: "dot-undo-receipt")
+            let undoCopy = root.appendingPathComponent("lifecycle-undo.\(format)")
+            try fm.copyItem(at: try await session.exportDocument(format: format), to: undoCopy)
+            attach(undoCopy, name: "dot-lifecycle-saved-undo-\(format)")
+            let savedUndo = try package(undoCopy, format: format)
+            XCTAssertTrue(savedUndo.text.contains("LIFECYCLE-DOT-KEEP"), "Undo save lost original content")
+            XCTAssertEqual(penShapeIdentities(savedUndo, widthEMU: appliedPenEMU), allPenIdentities,
+                           "One undo action must leave every prior moving stroke unchanged")
+            let undoDotIds = dotPlacements(savedUndo)
+            XCTAssertEqual(undoDotIds.count, 2, "One undo action must remove exactly the newest dot: \(savedUndo.vectorShapes)")
+            XCTAssertEqual(unclassifiedShapes(savedUndo, penWidthEMU: appliedPenEMU).count, 0,
+                           "Undo must not persist any other shape: \(savedUndo.vectorShapes)")
+            XCTAssertEqual(Set(allDotIds).subtracting(undoDotIds).count, 1,
+                           "Undo must remove exactly one previously saved dot position: all=\(allDotIds) undo=\(undoDotIds)")
+            XCTAssertTrue(Set(undoDotIds).isSubset(of: Set(allDotIds)),
+                          "Undo must not move or restyle any surviving dot: \(undoDotIds)")
+            // Redo restores the removed dot with the prior document unchanged.
+            redoReceipt = try await dispatchDotCommand(".uno:Redo", web: web, root: root, label: "dot-redo-receipt")
+            let redoCopy = root.appendingPathComponent("lifecycle-redo.\(format)")
+            try fm.copyItem(at: try await session.exportDocument(format: format), to: redoCopy)
+            attach(redoCopy, name: "dot-lifecycle-saved-redo-\(format)")
+            let savedRedo = try package(redoCopy, format: format)
+            XCTAssertEqual(penShapeIdentities(savedRedo, widthEMU: appliedPenEMU), allPenIdentities,
+                           "Redo must keep the prior moving strokes unchanged")
+            XCTAssertEqual(dotPlacements(savedRedo), allDotIds,
+                           "Redo must restore the undone dot at its original position with no other change")
+            XCTAssertEqual(savedRedo.vectorShapes.map(\.description).sorted(),
+                           savedAll.vectorShapes.map(\.description).sorted(),
+                           "After redo the saved shape set must equal the pre-undo shape set")
+            XCTAssertEqual(try hash(source), sourceHash, "Undo/redo exports altered the original fixture")
+            let manifest: [String: Any] = [
+                "case": "dot-lifecycle", "format": format, "sourceSHA256": sourceHash,
+                "savedAllSHA256": try hash(allCopy), "savedUndoSHA256": try hash(undoCopy),
+                "savedRedoSHA256": try hash(redoCopy),
+                "humanContract": "After a zero-motion dot the next moving stroke persists; each repeat tap adds exactly one dot; one undo removes only the newest dot leaving prior strokes unchanged; redo restores it.",
+                "route": "OfficeFileSession.toggleDrawing/applyInkPreferences/production pen bridge dot seam (pointerdown+pointerup at one point)/stroke seam/map.sendUnoCommand(.uno:Undo|.uno:Redo)/exportDocument/OOXML file inspection",
+                "penStyle": ["color": "#FF0000", "widthEMU": appliedPenEMU,
+                             "alpha": (100 - appliedPen.transparencyPercent) * 1_000],
+                "dotStyle": ["color": "#0000FF", "widthEMU": appliedDotEMU, "preset": appliedDot.preset.rawValue,
+                             "alpha": (100 - appliedDot.transparencyPercent) * 1_000],
+                "strokeReceipts": strokeReceipts, "tapReceipts": tapReceipts,
+                "undoReceipt": undoReceipt, "redoReceipt": redoReceipt,
+                "dotPlacementsAll": allDotIds, "dotPlacementsAfterUndo": undoDotIds,
+                "savedAllShapes": savedAll.vectorShapes.map { ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1, "paths": $0.paths.count, "alpha": $0.alphaValue ?? -1, "prst": $0.prstGeometry ?? "none", "fillColor": $0.fillColorHex ?? "MISSING", "fillAlpha": $0.fillAlphaValue ?? -1, "lineNoFill": $0.lineIsNoFill, "extentEMU": $0.extentEMU ?? [], "placement": $0.placement ?? "none"] as [String: Any] },
+                "savedUndoShapes": savedUndo.vectorShapes.map { ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1, "paths": $0.paths.count, "alpha": $0.alphaValue ?? -1, "prst": $0.prstGeometry ?? "none", "fillColor": $0.fillColorHex ?? "MISSING", "fillAlpha": $0.fillAlphaValue ?? -1, "lineNoFill": $0.lineIsNoFill, "extentEMU": $0.extentEMU ?? [], "placement": $0.placement ?? "none"] as [String: Any] },
+                "savedRedoShapes": savedRedo.vectorShapes.map { ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1, "paths": $0.paths.count, "alpha": $0.alphaValue ?? -1, "prst": $0.prstGeometry ?? "none", "fillColor": $0.fillColorHex ?? "MISSING", "fillAlpha": $0.fillAlphaValue ?? -1, "lineNoFill": $0.lineIsNoFill, "extentEMU": $0.extentEMU ?? [], "placement": $0.placement ?? "none"] as [String: Any] },
+                "hardwarePointerInput": "not-tested",
+                "visualReview": "pending-primary-image-review"
+            ]
+            let receiptURL = root.appendingPathComponent("dot-lifecycle-verification.json")
+            try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+                .write(to: receiptURL, options: .atomic)
+            attach(receiptURL, name: "dot-lifecycle-verification-\(format)")
+            await session.release()
+        } catch {
+            await session.release()
+            throw error
+        }
+    }
+
+    /// True-cancel acceptance. The integrated carrier owns a genuine
+    /// window-level pointercancel listener (FloeOfficeNative.mm ce3543f,
+    /// HEAD 08303a31): the cancel drops the contact's own preview with the
+    /// `pointercancel` reason, posts the ordered Escape before ending the
+    /// frontend contact and preserves every completed stroke — a
+    /// between-down-and-up cancel must persist NOTHING. (The older pinned
+    /// carrier routed window pointercancel to the normal up handler and
+    /// finalized a dot; that closure is now integrated, so the no-dot gate
+    /// below is expected to PASS and remains a permanent cancel-route
+    /// regression gate.) This test dispatches only a real
+    /// pointerdown+pointercancel at one identical point through the
+    /// production listener (never a normal pointerup, no handler bypass, no
+    /// epsilon), records the bridge's own counters and clear reasons, then
+    /// requires that the saved document persists no dot of any representation
+    /// while the next true moving stroke completes and persists through the
+    /// same bridge. Never skipped, never weakened.
+    private func exerciseDotCancel(_ format: String) async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in native true-pointer-cancel dot contract; not executed")
+        }
+        executionTimeAllowance = 600
+        continueAfterFailure = true
+        let fm = FileManager.default
+        let documents = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let root = documents.appendingPathComponent("Qualification/OfficeDotCancel-\(format)-\(UUID().uuidString)",
+                                                   isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        print("FLOE_DOT_CANCEL_ARTIFACT_ROOT=\(root.path)")
+        let source = root.appendingPathComponent("original.\(format)")
+        switch format {
+        case "docx":
+            try OfficeDocumentBuilder.createWord(at: source, title: "中文取消触点验收",
+                paragraphs: ["CANCEL-DOT-KEEP 中文正文 12345", "Second paragraph remains editable."])
+        case "xlsx":
+            try OfficeDocumentBuilder.createWorkbook(at: source, sheets: [
+                OfficeWorkbookSheet(name: "取消", rows: [["CANCEL-DOT-KEEP", "数值"], ["原值", "12"], ["公式", "=B2*2"]])
+            ])
+        default:
+            try OfficeDocumentBuilder.createPresentation(at: source, title: "中文取消触点验收", slides: [
+                OfficePresentationSlide(title: "CANCEL-DOT-KEEP", bullets: ["中文原文 12345", "Editable original content"],
+                                        notes: "CANCEL-NOTES-KEEP")
+            ])
+        }
+        let sourceHash = try hash(source)
+        let baseline = try package(source, format: format)
+        XCTAssertEqual(baseline.customGeometryPaths.count, 0, "Fixture must contain no preinserted strokes")
+        attach(source, name: "cancel-source-\(format)")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = mount(session, in: scene)
+        defer { window.isHidden = true; window.rootViewController = nil; previousKeyWindow?.makeKey() }
+        let penStyle = OfficeInkStroke(colorHex: "#FF0000", widthMillimeters: 0.5,
+                                       transparencyPercent: 0, preset: .pen)
+        let markerStyle = OfficeInkStroke(colorHex: "#0000FF", widthMillimeters: 2.0,
+                                          transparencyPercent: 0, preset: .marker)
+        do {
+            await session.open(source)
+            try await wait(120, "cancel native open") {
+                session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            if session.readOnly {
+                let accepted = await session.requestEditing()
+                XCTAssertTrue(accepted, "Actual App edit entry rejected: \(session.error ?? "unknown")")
+            }
+            try await wait(150, "cancel editable native document") {
+                !session.readOnly && session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            session.useInkPreferences(workspaceIdentity: root.path, documentKey: source.lastPathComponent)
+            let preferences = session.inkPreferences
+            let previousStroke = preferences.stroke
+            defer {
+                preferences.setPreset(previousStroke.preset)
+                preferences.setColorHex(previousStroke.colorHex)
+                preferences.setWidthMillimeters(previousStroke.widthMillimeters)
+                preferences.setTransparencyPercent(previousStroke.transparencyPercent)
+            }
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode, "the real App drawing toggle must arm")
+            try await applyInkStyle(penStyle, preferences: preferences, session: session, stage: "cancel pen")
+            let appliedPen = preferences.stroke
+            let appliedPenEMU = appliedPen.lineWidthValue * 360
+            let controlStimulus = StrokeStimulus(index: 0, kind: .band, gapMilliseconds: 30, style: .pen)
+            let controlReceipt = try await receiveStroke(0, web: web, native: native, window: window,
+                root: root, syntheticSource: source, stimulus: controlStimulus, previousPoints: [])
+            try validateHitDiagnostics(controlReceipt, stimulus: controlStimulus)
+            XCTAssertEqual(controlReceipt["strokeDelta"] as? Int, 1,
+                           "The cancel-case positive control did not complete through the actual pen bridge")
+            // The canceled contact: the same real seam, but the second event
+            // is an actual pointercancel at the identical point.
+            try await applyInkStyle(markerStyle, preferences: preferences, session: session, stage: "cancel marker")
+            let appliedDot = preferences.stroke
+            let preCancelFacts = try await officePenFacts(web)
+            XCTAssertEqual(preCancelFacts["drawing"] as? Bool, true)
+            XCTAssertEqual(preCancelFacts["activeStroke"] as? Bool, false,
+                           "a previous stroke must not remain active before the canceled contact")
+            let cancel = try await receiveZeroMotionDot(web: web, native: native, window: window,
+                                                        root: root, syntheticSource: source,
+                                                        cancelWithPointerCancel: true,
+                                                        receiptName: "zero-motion-dot-cancel")
+            let routeReady = cancel["routeReady"] as? Bool == true
+            XCTAssertTrue(routeReady, "The real cancel route was not prepared; this is not classified as a cancel-persistence defect: \(cancel)")
+            XCTAssertEqual(cancel["eventsDispatched"] as? Int, 2,
+                           "The cancel seam must dispatch exactly one down and the real pointercancel")
+            XCTAssertEqual(cancel["movesDispatched"] as? Int, 0,
+                           "The cancel seam must not fabricate a move")
+            XCTAssertEqual(cancel["secondEventKind"] as? String, "pointercancel",
+                           "The cancel seam must dispatch the real pointercancel, never a normal pointerup")
+            if let rawPoints = cancel["clientPoints"] as? [[Any]], rawPoints.count == 2,
+               let x0 = (rawPoints[0][0] as? NSNumber)?.doubleValue,
+               let y0 = (rawPoints[0][1] as? NSNumber)?.doubleValue,
+               let x1 = (rawPoints[1][0] as? NSNumber)?.doubleValue,
+               let y1 = (rawPoints[1][1] as? NSNumber)?.doubleValue {
+                XCTAssertEqual(x0, x1, "The cancel down and pointercancel must use one identical X")
+                XCTAssertEqual(y0, y1, "The cancel down and pointercancel must use one identical Y")
+            } else {
+                XCTFail("The cancel receipt did not expose its two identical client points")
+            }
+            XCTAssertEqual(cancel["downAccepted"] as? Bool, true,
+                           "The actual production pen bridge did not accept the zero-motion down")
+            XCTAssertEqual(cancel["activeAfterDown"] as? Bool, true,
+                           "The production bridge must own the contact after the zero-motion down")
+            XCTAssertEqual(cancel["activeAfterUp"] as? Bool, false,
+                           "A canceled contact must not strand the production bridge in an active stroke")
+            if let preContactPending = cancel["preContactPending"] as? Int {
+                XCTAssertEqual(preContactPending, 0,
+                               "Another preview handoff was still pending before the canceled contact (waited \(cancel["preContactWaitedMilliseconds"] ?? -1) ms); the cancel evidence was not attributed across contacts")
+            }
+            if let cancelPreview = cancel["cancelPreview"] as? [String: Any] {
+                let clearsBefore = cancelPreview["clearsBeforeContact"] as? Int ?? -1
+                let clearsAfter = cancelPreview["clearsAfterContact"] as? Int ?? -2
+                if clearsAfter > clearsBefore {
+                    XCTAssertEqual(cancelPreview["lastClearReason"] as? String, "pointercancel",
+                                   "The canceled contact's own preview drop must carry the bridge's pointercancel reason, never a paint success: \(cancelPreview)")
+                }
+            }
+            try await Task.sleep(for: .milliseconds(350))
+            let postCancelFacts = try await officePenFacts(web)
+            XCTAssertEqual(postCancelFacts["activeStroke"] as? Bool, false,
+                           "The canceled contact must not leave an active stroke")
+            XCTAssertEqual(postCancelFacts["drawing"] as? Bool, true,
+                           "The canceled contact must leave the pen gate armed for the next contact")
+            // Requirement: the next true stroke still works through the bridge.
+            try await applyInkStyle(penStyle, preferences: preferences, session: session, stage: "cancel pen after")
+            let nextStimulus = StrokeStimulus(index: 1, kind: .band, gapMilliseconds: 30, style: .pen)
+            let nextStroke = try await receiveStroke(1, web: web, native: native, window: window,
+                root: root, syntheticSource: source, stimulus: nextStimulus, previousPoints: [])
+            try validateHitDiagnostics(nextStroke, stimulus: nextStimulus)
+            XCTAssertEqual(nextStroke["strokeDelta"] as? Int, 1,
+                           "A moving stroke after a canceled contact must complete through the actual pen bridge")
+            try await session.toggleDrawing()
+            XCTAssertFalse(session.drawingMode)
+            let savedCopy = root.appendingPathComponent("cancel-saved.\(format)")
+            try fm.copyItem(at: try await session.exportDocument(format: format), to: savedCopy)
+            attach(savedCopy, name: "dot-cancel-saved-\(format)")
+            XCTAssertEqual(try hash(source), sourceHash, "Cancel export altered the original fixture")
+            let saved = try package(savedCopy, format: format)
+            XCTAssertTrue(saved.text.contains("CANCEL-DOT-KEEP"), "Cancel save lost original content")
+            if format == "xlsx" {
+                XCTAssertEqual(saved.cells["B2"], "12", "Excel basic value lost")
+                XCTAssertEqual(saved.formulas["B3"], "B2*2", "Excel formula lost or flattened")
+            }
+            if format == "pptx" { XCTAssertTrue(saved.text.contains("CANCEL-NOTES-KEEP"), "Speaker notes lost") }
+            // Authoritative file inspection: exactly the two true strokes and
+            // no dot of any representation from the canceled contact.
+            let cancelDots = saved.vectorShapes.filter { shape in
+                Self.nativeDotShape(shape)
+                    || (shape.colorHex?.uppercased() == "0000FF" && !shape.paths.isEmpty)
+                    || ((shape.fillColorHex ?? "").uppercased() == "0000FF" && shape.prstGeometry != nil)
+            }
+            XCTAssertEqual(penShapeIdentities(saved, widthEMU: appliedPenEMU).count, 2,
+                           "The two true strokes must persist with their selected style: \(saved.vectorShapes)")
+            XCTAssertEqual(Set(saved.customGeometryPaths).count, 2, "Exactly the two moving strokes may own custom geometry")
+            XCTAssertEqual(saved.customGeometryPaths.count, 2, "The canceled contact must not add any vector path")
+            let downAccepted = cancel["downAccepted"] as? Bool == true
+            if downAccepted {
+                XCTAssertEqual(cancelDots.count, 0,
+                    "CANCEL DEFECT (EXPECTED on the pinned pointercancel->up route, not a weakened test): the real "
+                    + "pointercancel between down and up finalized as \(cancelDots.count) persisted dot(s) in the saved "
+                    + "\(format); the human contract requires a canceled zero-motion contact to persist nothing. "
+                    + "bridge counters: strokeDelta=\(String(describing: cancel["strokeDelta"])) "
+                    + "coreEventDelta=\(String(describing: cancel["coreEventDelta"])). shapes=\(saved.vectorShapes)")
+            } else {
+                XCTAssertEqual(cancelDots.count, 0,
+                               "The canceled contact never reached the engine, so no dot may persist either: \(saved.vectorShapes)")
+            }
+            let manifest: [String: Any] = [
+                "case": "dot-cancel", "format": format, "sourceSHA256": sourceHash,
+                "savedSHA256": try hash(savedCopy),
+                "humanContract": "A genuine between-down-and-up cancel (real pointercancel on the production listener) must persist no dot; the next true stroke must still complete through the same bridge.",
+                "expectedCurrent": "Integrated carrier (FloeOfficeNative.mm ce3543f, HEAD 08303a31) owns the ordered pointercancel closure, so the no-dot gate is expected to pass; any dot persisted through the cancel route is a real regression and fails this gate.",
+                "route": "OfficeFileSession.toggleDrawing/applyInkPreferences/stroke seam/marker select/pointerdown+pointercancel at one point on the production listener/exportDocument/OOXML file inspection",
+                "controlReceipt": controlReceipt, "cancelReceipt": cancel,
+                "nextStrokeReceipt": nextStroke,
+                "preCancelPenFacts": preCancelFacts, "postCancelPenFacts": postCancelFacts,
+                "penStyle": ["color": "#FF0000", "widthEMU": appliedPenEMU],
+                "dotStyle": ["color": "#0000FF", "widthEMU": appliedDot.lineWidthValue * 360, "preset": appliedDot.preset.rawValue],
+                "savedShapes": saved.vectorShapes.map { ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1, "paths": $0.paths.count, "alpha": $0.alphaValue ?? -1, "prst": $0.prstGeometry ?? "none", "fillColor": $0.fillColorHex ?? "MISSING", "fillAlpha": $0.fillAlphaValue ?? -1, "lineNoFill": $0.lineIsNoFill, "extentEMU": $0.extentEMU ?? [], "placement": $0.placement ?? "none"] as [String: Any] },
+                "cancelDotShapes": cancelDots.map { ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1, "paths": $0.paths.count, "prst": $0.prstGeometry ?? "none", "fillColor": $0.fillColorHex ?? "MISSING", "extentEMU": $0.extentEMU ?? []] as [String: Any] },
+                "hardwarePointerInput": "not-tested",
+                "visualReview": "pending-primary-image-review"
+            ]
+            let receiptURL = root.appendingPathComponent("dot-cancel-verification.json")
+            try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+                .write(to: receiptURL, options: .atomic)
+            attach(receiptURL, name: "dot-cancel-verification-\(format)")
+            await session.release()
+        } catch {
+            await session.release()
+            throw error
+        }
+    }
+
+    /// Moving true-cancel acceptance (root review). The pinned bridge owns a
+    /// genuine window-level pointercancel listener (FloeOfficeNative.mm
+    /// ce3543f, HEAD 08303a31): a moving pointerdown + several real
+    /// pointermove + pointercancel sequence must abandon ONLY the unfinished
+    /// contact — the bridge drops its live preview with the `pointercancel`
+    /// reason, posts the ordered Escape before ending the frontend contact
+    /// and preserves every completed stroke — so the saved document persists
+    /// no partial path and no dot of any representation for the canceled
+    /// contact, the previously completed stroke stays identical, and the
+    /// next genuine moving stroke completes through the same bridge. All
+    /// events are real dispatched PointerEvents on the production dispatch
+    /// target (the genuine listener path); this test never calls a private
+    /// cancel handler, never fabricates an up and uses no epsilon. A
+    /// persisted partial ink here is a genuine cancel-route regression;
+    /// the gate is never skipped or weakened.
+    private func exerciseDotMovingCancel(_ format: String) async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in native moving true-pointer-cancel contract; not executed")
+        }
+        executionTimeAllowance = 600
+        continueAfterFailure = true
+        let fm = FileManager.default
+        let documents = try fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let root = documents.appendingPathComponent("Qualification/OfficeDotMovingCancel-\(format)-\(UUID().uuidString)",
+                                                   isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        print("FLOE_DOT_MOVING_CANCEL_ARTIFACT_ROOT=\(root.path)")
+        let source = root.appendingPathComponent("original.\(format)")
+        switch format {
+        case "docx":
+            try OfficeDocumentBuilder.createWord(at: source, title: "中文移动取消触点验收",
+                paragraphs: ["CANCEL-MOVE-KEEP 中文正文 12345", "Second paragraph remains editable."])
+        case "xlsx":
+            try OfficeDocumentBuilder.createWorkbook(at: source, sheets: [
+                OfficeWorkbookSheet(name: "移动取消", rows: [["CANCEL-MOVE-KEEP", "数值"], ["原值", "12"], ["公式", "=B2*2"]])
+            ])
+        default:
+            try OfficeDocumentBuilder.createPresentation(at: source, title: "中文移动取消触点验收", slides: [
+                OfficePresentationSlide(title: "CANCEL-MOVE-KEEP", bullets: ["中文原文 12345", "Editable original content"],
+                                        notes: "CANCEL-MOVE-NOTES-KEEP")
+            ])
+        }
+        let sourceHash = try hash(source)
+        let baseline = try package(source, format: format)
+        XCTAssertEqual(baseline.customGeometryPaths.count, 0, "Fixture must contain no preinserted strokes")
+        attach(source, name: "moving-cancel-source-\(format)")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = mount(session, in: scene)
+        defer { window.isHidden = true; window.rootViewController = nil; previousKeyWindow?.makeKey() }
+        let penStyle = OfficeInkStroke(colorHex: "#FF0000", widthMillimeters: 0.5,
+                                       transparencyPercent: 0, preset: .pen)
+        let markerStyle = OfficeInkStroke(colorHex: "#0000FF", widthMillimeters: 2.0,
+                                          transparencyPercent: 0, preset: .marker)
+        do {
+            await session.open(source)
+            try await wait(120, "moving-cancel native open") {
+                session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            if session.readOnly {
+                let accepted = await session.requestEditing()
+                XCTAssertTrue(accepted, "Actual App edit entry rejected: \(session.error ?? "unknown")")
+            }
+            try await wait(150, "moving-cancel editable native document") {
+                !session.readOnly && session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            session.useInkPreferences(workspaceIdentity: root.path, documentKey: source.lastPathComponent)
+            let preferences = session.inkPreferences
+            let previousStroke = preferences.stroke
+            defer {
+                preferences.setPreset(previousStroke.preset)
+                preferences.setColorHex(previousStroke.colorHex)
+                preferences.setWidthMillimeters(previousStroke.widthMillimeters)
+                preferences.setTransparencyPercent(previousStroke.transparencyPercent)
+            }
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode, "the real App drawing toggle must arm")
+            try await applyInkStyle(penStyle, preferences: preferences, session: session, stage: "moving-cancel pen")
+            let appliedPen = preferences.stroke
+            let appliedPenEMU = appliedPen.lineWidthValue * 360
+            let controlStimulus = StrokeStimulus(index: 0, kind: .band, gapMilliseconds: 30, style: .pen)
+            let controlReceipt = try await receiveStroke(0, web: web, native: native, window: window,
+                root: root, syntheticSource: source, stimulus: controlStimulus, previousPoints: [])
+            try validateHitDiagnostics(controlReceipt, stimulus: controlStimulus)
+            XCTAssertEqual(controlReceipt["strokeDelta"] as? Int, 1,
+                           "The moving-cancel positive control did not complete through the actual pen bridge")
+            // The canceled moving contact: the same real seam, but the
+            // contact carries several genuine pointermove events and ends
+            // with the real pointercancel — never a normal pointerup.
+            try await applyInkStyle(markerStyle, preferences: preferences, session: session, stage: "moving-cancel marker")
+            let appliedDot = preferences.stroke
+            let preCancelFacts = try await officePenFacts(web)
+            XCTAssertEqual(preCancelFacts["drawing"] as? Bool, true)
+            XCTAssertEqual(preCancelFacts["activeStroke"] as? Bool, false,
+                           "a previous stroke must not remain active before the canceled moving contact")
+            let movingSteps = 5
+            let cancel = try await receiveZeroMotionDot(web: web, native: native, window: window,
+                                                        root: root, syntheticSource: source,
+                                                        cancelWithPointerCancel: true,
+                                                        movingSteps: movingSteps,
+                                                        receiptName: "moving-dot-cancel")
+            let routeReady = cancel["routeReady"] as? Bool == true
+            XCTAssertTrue(routeReady, "The real moving-cancel route was not prepared; this is not classified as a cancel-persistence defect: \(cancel)")
+            XCTAssertEqual(cancel["eventsDispatched"] as? Int, 2 + movingSteps,
+                           "The moving-cancel seam must dispatch exactly one down, \(movingSteps) real moves and the pointercancel")
+            XCTAssertEqual(cancel["movesDispatched"] as? Int, movingSteps,
+                           "The moving-cancel seam must dispatch exactly its \(movingSteps) genuine pointermove events")
+            XCTAssertEqual(cancel["secondEventKind"] as? String, "pointercancel",
+                           "The moving-cancel seam must end the contact with the real pointercancel, never a normal pointerup")
+            if let movePoints = cancel["movePoints"] as? [[Any]] {
+                XCTAssertEqual(movePoints.count, movingSteps, "The receipt must expose every dispatched move point")
+                var previousPoint: [Double]?
+                for raw in movePoints {
+                    guard raw.count == 2,
+                          let x = (raw[0] as? NSNumber)?.doubleValue,
+                          let y = (raw[1] as? NSNumber)?.doubleValue else {
+                        XCTFail("The moving-cancel receipt returned an invalid move point: \(raw)")
+                        continue
+                    }
+                    if let previous = previousPoint {
+                        XCTAssertFalse(previous[0] == x && previous[1] == y,
+                                       "Every real pointermove must advance the contact to a distinct point: \(movePoints)")
+                    }
+                    previousPoint = [x, y]
+                }
+            } else {
+                XCTFail("The moving-cancel receipt did not expose its real move points")
+            }
+            XCTAssertEqual(cancel["downAccepted"] as? Bool, true,
+                           "The actual production pen bridge did not accept the moving down")
+            XCTAssertEqual(cancel["activeAfterDown"] as? Bool, true,
+                           "The production bridge must own the contact right after the moving down")
+            XCTAssertEqual(cancel["activeAfterMoves"] as? Bool, true,
+                           "The production pen bridge must keep this unfinished contact active through the \(movingSteps) genuine moves")
+            XCTAssertEqual(cancel["activeAfterUp"] as? Bool, false,
+                           "A canceled moving contact must not strand the production bridge in an active stroke")
+            if let preContactPending = cancel["preContactPending"] as? Int {
+                XCTAssertEqual(preContactPending, 0,
+                               "Another preview handoff was still pending before the canceled moving contact (waited \(cancel["preContactWaitedMilliseconds"] ?? -1) ms); the cancel evidence was not attributed across contacts")
+            }
+            if let cancelPreview = cancel["cancelPreview"] as? [String: Any] {
+                let clearsBefore = cancelPreview["clearsBeforeContact"] as? Int ?? -1
+                let clearsAfter = cancelPreview["clearsAfterContact"] as? Int ?? -2
+                if clearsAfter > clearsBefore {
+                    XCTAssertEqual(cancelPreview["lastClearReason"] as? String, "pointercancel",
+                                   "The canceled contact's own preview drop must carry the bridge's pointercancel reason, never a paint success: \(cancelPreview)")
+                }
+            }
+            try await Task.sleep(for: .milliseconds(350))
+            let postCancelFacts = try await officePenFacts(web)
+            XCTAssertEqual(postCancelFacts["activeStroke"] as? Bool, false,
+                           "The canceled moving contact must not leave an active stroke")
+            XCTAssertEqual(postCancelFacts["drawing"] as? Bool, true,
+                           "The canceled moving contact must leave the pen gate armed for the next contact")
+            // Requirement: the next true stroke still works through the bridge.
+            try await applyInkStyle(penStyle, preferences: preferences, session: session, stage: "moving-cancel pen after")
+            let nextStimulus = StrokeStimulus(index: 1, kind: .band, gapMilliseconds: 30, style: .pen)
+            let nextStroke = try await receiveStroke(1, web: web, native: native, window: window,
+                root: root, syntheticSource: source, stimulus: nextStimulus, previousPoints: [])
+            try validateHitDiagnostics(nextStroke, stimulus: nextStimulus)
+            XCTAssertEqual(nextStroke["strokeDelta"] as? Int, 1,
+                           "A moving stroke after a canceled moving contact must complete through the actual pen bridge")
+            try await session.toggleDrawing()
+            XCTAssertFalse(session.drawingMode)
+            let savedCopy = root.appendingPathComponent("moving-cancel-saved.\(format)")
+            try fm.copyItem(at: try await session.exportDocument(format: format), to: savedCopy)
+            attach(savedCopy, name: "dot-moving-cancel-saved-\(format)")
+            XCTAssertEqual(try hash(source), sourceHash, "Moving-cancel export altered the original fixture")
+            let saved = try package(savedCopy, format: format)
+            XCTAssertTrue(saved.text.contains("CANCEL-MOVE-KEEP"), "Moving-cancel save lost original content")
+            if format == "xlsx" {
+                XCTAssertEqual(saved.cells["B2"], "12", "Excel basic value lost")
+                XCTAssertEqual(saved.formulas["B3"], "B2*2", "Excel formula lost or flattened")
+            }
+            if format == "pptx" { XCTAssertTrue(saved.text.contains("CANCEL-MOVE-NOTES-KEEP"), "Speaker notes lost") }
+            // Authoritative file inspection: exactly the two true strokes, no
+            // partial path and no dot of any representation from the canceled
+            // moving contact, and every previously completed stroke kept.
+            let cancelShapes = saved.vectorShapes.filter { shape in
+                Self.nativeDotShape(shape)
+                    || (shape.colorHex?.uppercased() == "0000FF" && !shape.paths.isEmpty)
+                    || ((shape.fillColorHex ?? "").uppercased() == "0000FF" && shape.prstGeometry != nil)
+            }
+            XCTAssertEqual(penShapeIdentities(saved, widthEMU: appliedPenEMU).count, 2,
+                           "The control and the recovery stroke must persist unchanged with their selected style: \(saved.vectorShapes)")
+            XCTAssertEqual(Set(saved.customGeometryPaths).count, 2, "Exactly the two true strokes may own custom geometry")
+            XCTAssertEqual(saved.customGeometryPaths.count, 2,
+                           "The canceled moving contact must not persist any vector path of its own: \(saved.customGeometryPaths)")
+            let downAccepted = cancel["downAccepted"] as? Bool == true
+            if downAccepted {
+                XCTAssertEqual(cancelShapes.count, 0,
+                    "MOVING CANCEL DEFECT: the real pointerdown + \(movingSteps) moves + pointercancel on the production "
+                    + "listener finalized as \(cancelShapes.count) persisted shape(s) in the saved \(format); the human "
+                    + "contract requires a canceled moving contact to persist nothing. bridge counters: "
+                    + "strokeDelta=\(String(describing: cancel["strokeDelta"])) "
+                    + "coreEventDelta=\(String(describing: cancel["coreEventDelta"])). shapes=\(saved.vectorShapes)")
+            } else {
+                XCTAssertEqual(cancelShapes.count, 0,
+                               "The canceled contact never reached the engine, so no marker ink may persist either: \(saved.vectorShapes)")
+            }
+            let manifest: [String: Any] = [
+                "case": "dot-moving-cancel", "format": format, "sourceSHA256": sourceHash,
+                "savedSHA256": try hash(savedCopy),
+                "humanContract": "A genuine moving pointerdown + several real pointermove + pointercancel on the production listener must persist no partial path and no dot; previously completed strokes stay unchanged; the next true stroke still completes through the same bridge.",
+                "carrierExpectation": "Integrated carrier (FloeOfficeNative.mm ce3543f, HEAD 08303a31) owns the ordered pointercancel closure, so the no-partial-ink gate is expected to pass; any persisted ink is a real cancel-route regression.",
+                "route": "OfficeFileSession.toggleDrawing/applyInkPreferences/stroke seam/marker select/pointerdown+five real pointermove+pointercancel on the production listener/exportDocument/OOXML file inspection",
+                "movingSteps": movingSteps,
+                "controlReceipt": controlReceipt, "cancelReceipt": cancel,
+                "nextStrokeReceipt": nextStroke,
+                "preCancelPenFacts": preCancelFacts, "postCancelPenFacts": postCancelFacts,
+                "penStyle": ["color": "#FF0000", "widthEMU": appliedPenEMU],
+                "dotStyle": ["color": "#0000FF", "widthEMU": appliedDot.lineWidthValue * 360, "preset": appliedDot.preset.rawValue],
+                "savedShapes": saved.vectorShapes.map { ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1, "paths": $0.paths.count, "alpha": $0.alphaValue ?? -1, "prst": $0.prstGeometry ?? "none", "fillColor": $0.fillColorHex ?? "MISSING", "fillAlpha": $0.fillAlphaValue ?? -1, "lineNoFill": $0.lineIsNoFill, "extentEMU": $0.extentEMU ?? [], "placement": $0.placement ?? "none"] as [String: Any] },
+                "cancelShapes": cancelShapes.map { ["color": $0.colorHex ?? "MISSING", "widthEMU": $0.widthEMU ?? -1, "paths": $0.paths.count, "prst": $0.prstGeometry ?? "none", "fillColor": $0.fillColorHex ?? "MISSING", "extentEMU": $0.extentEMU ?? []] as [String: Any] },
+                "hardwarePointerInput": "not-tested",
+                "visualReview": "pending-primary-image-review"
+            ]
+            let receiptURL = root.appendingPathComponent("dot-moving-cancel-verification.json")
+            try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+                .write(to: receiptURL, options: .atomic)
+            attach(receiptURL, name: "dot-moving-cancel-verification-\(format)")
+            await session.release()
+        } catch {
+            await session.release()
+            throw error
+        }
     }
 
     /// Deterministic regression for the real S1 routing branch. A real engine
@@ -1549,15 +2553,33 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     /// Dedicated zero-motion seam. It only calls the real production bridge
     /// with a bounded JSON receipt; all acceptance facts stay on the page and
     /// no assertion is inferred from the preview.
+    /// `paintReceipt`/`candidateOffset`/`cancelWithPointerCancel`/
+    /// `movingSteps` extend the seam only when explicitly requested; the
+    /// frozen opaque callers pass none, which keeps the original v1 argument
+    /// set, script behavior and receipt file names unchanged. `movingSteps`
+    /// (only honored together with `cancelWithPointerCancel`) turns the
+    /// second contact into a genuine moving sequence — pointerdown, that many
+    /// real pointermove events, then pointercancel — for the moving
+    /// true-cancel exercise.
     private func receiveZeroMotionDot(web: WKWebView, native: FloeOfficeNativeViewController,
                                       window: UIWindow, root: URL,
-                                      syntheticSource: URL) async throws -> [String: Any] {
+                                      syntheticSource: URL,
+                                      paintReceipt: Bool = false,
+                                      candidateOffset: Int = 0,
+                                      cancelWithPointerCancel: Bool = false,
+                                      movingSteps: Int = 0,
+                                      receiptName: String = "zero-motion-dot") async throws -> [String: Any] {
+        var arguments: [String: Any] = [:]
+        if paintReceipt { arguments["paintReceipt"] = true }
+        if candidateOffset > 0 { arguments["candidateOffset"] = candidateOffset }
+        if cancelWithPointerCancel { arguments["cancelWithPointerCancel"] = true }
+        if movingSteps > 0 { arguments["movingSteps"] = movingSteps }
         var resultType = "not-returned"
         var jsonByteCount: Int?
         var stage = "call-zero-motion-pen-bridge"
         do {
             let receipt: Any? = try await web.callAsyncJavaScript(Self.zeroMotionDotScript,
-                arguments: [:], in: nil, contentWorld: .page)
+                arguments: arguments, in: nil, contentWorld: .page)
             resultType = receipt.map { String(reflecting: type(of: $0)) } ?? "nil"
             stage = "decode-zero-motion-WK-JSON-string"
             guard let json = receipt as? String else {
@@ -1569,9 +2591,9 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
                 throw NSError(domain: "OfficeNativeDrawingQualification", code: 71,
                     userInfo: [NSLocalizedDescriptionKey: "Zero-motion receipt exceeded its bounded transport"])
             }
-            let receiptURL = root.appendingPathComponent("zero-motion-dot-receipt.json")
+            let receiptURL = root.appendingPathComponent("\(receiptName)-receipt.json")
             try Data(json.utf8).write(to: receiptURL, options: .atomic)
-            attach(receiptURL, name: "zero-motion-dot-actual-WK-receipt")
+            attach(receiptURL, name: "\(receiptName)-actual-WK-receipt")
             guard let decoded = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
                 throw NSError(domain: "OfficeNativeDrawingQualification", code: 72,
                     userInfo: [NSLocalizedDescriptionKey: "Zero-motion receipt was not a JSON object"])
@@ -1582,10 +2604,10 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
             let facts: [String: Any] = ["stage": stage, "WKResultType": resultType,
                 "receiptJSONBytes": jsonByteCount ?? -1, "errorDomain": nsError.domain,
                 "errorCode": nsError.code]
-            let url = root.appendingPathComponent("zero-motion-dot-transport-failure.json")
+            let url = root.appendingPathComponent("\(receiptName)-transport-failure.json")
             if let bytes = try? JSONSerialization.data(withJSONObject: facts, options: [.prettyPrinted, .sortedKeys]) {
                 try? bytes.write(to: url, options: .atomic)
-                attach(url, name: "zero-motion-dot-transport-failure")
+                attach(url, name: "\(receiptName)-transport-failure")
             }
             await retainStrokeFailure(1, stage: "zero-motion-dot", resultType: resultType,
                                       jsonByteCount: jsonByteCount, error: error, web: web, native: native,
@@ -2472,6 +3494,13 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         || typeof window.__floeOfficePenState !== 'function')
         throw new Error('production pen bridge or native document canvas unavailable');
     const finite = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const wantPaint = typeof paintReceipt !== 'undefined' && paintReceipt === true;
+    const realCancel = typeof cancelWithPointerCancel !== 'undefined' && cancelWithPointerCancel === true;
+    const candidateOffsetApplied = typeof candidateOffset !== 'undefined'
+        && Number.isInteger(candidateOffset) && candidateOffset > 0 ? candidateOffset : 0;
+    const movingStepsRequested = typeof movingSteps !== 'undefined'
+        && Number.isInteger(movingSteps) && Number.isFinite(movingSteps) && movingSteps > 0
+        ? movingSteps : 0;
     const round2 = (value) => Math.round(value * 100) / 100;
     const bounded = (value, limit) => typeof value === 'string'
         ? (value.length > limit ? value.slice(0, limit) : value) : null;
@@ -2532,8 +3561,14 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     // inside the canvas. The candidates are real layout fractions, never a
     // fabricated target; the control band is at the upper-left.
     const candidates = [[.72,.72],[.72,.58],[.58,.72],[.81,.66],[.66,.81],[.84,.30],[.30,.84]];
+    // Repeat taps rotate the same real layout candidates so each contact gets
+    // its own position; no fabricated point is introduced.
+    const orderedCandidates = candidateOffsetApplied > 0
+        ? candidates.slice(candidateOffsetApplied % candidates.length)
+            .concat(candidates.slice(0, candidateOffsetApplied % candidates.length))
+        : candidates;
     let chosen = null;
-    for (const [fx, fy] of candidates) {
+    for (const [fx, fy] of orderedCandidates) {
         const px = x1 + fx * (x2 - x1), py = y1 + fy * (y2 - y1);
         let hit = null;
         try { hit = document.elementFromPoint(px, py); } catch (ignored) {}
@@ -2548,33 +3583,116 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
     const point = chosen.point;
     const dispatchTarget = chosen.hit;
     const pointerId = 941;
-    const eventOptions = (buttons, pressure) => ({
-        bubbles:true, cancelable:true, composed:true, pointerType:'pen',
-        pointerId, isPrimary:true, clientX:point[0], clientY:point[1],
-        button:0, buttons, pressure
-    });
-    const downEvent = new PointerEvent('pointerdown', eventOptions(1, .5));
-    const upEvent = new PointerEvent('pointerup', eventOptions(0, 0));
+    const eventOptions = (buttons, pressure, at) => {
+        const p = Array.isArray(at) && at.length === 2 ? at : point;
+        return {
+            bubbles:true, cancelable:true, composed:true, pointerType:'pen',
+            pointerId, isPrimary:true, clientX:p[0], clientY:p[1],
+            button:0, buttons, pressure
+        };
+    };
+    // The real second contact event. With cancelWithPointerCancel the seam
+    // dispatches a genuine pointercancel — the same pointerId/pointerType
+    // landing on the pinned bridge's own registered window listener — and
+    // never a normal pointerup. The frozen opaque route keeps pointerup.
+    const secondEventKind = realCancel ? 'pointercancel' : 'pointerup';
+    // A moving cancel extends the SAME genuine contact with real pointermove
+    // events before the pointercancel: the engine really started an
+    // unfinished contact that the cancel must abandon. Moves are honest,
+    // small, strictly increasing steps from the same real chosen point.
+    const movingContact = realCancel && movingStepsRequested > 0;
     const dispatchFacts = targetFacts(dispatchTarget);
     const observedHitFacts = targetFacts(chosen.hit);
+    // Own-contact state observation (root review): with a bounded poll,
+    // drain the bridge's pending preview handoffs BEFORE this contact. Only
+    // a 0 pre-contact pending makes the later lastClearReason attributable
+    // to this contact alone; the counts stay real bridge diagnostics and no
+    // attribution is faked when the set cannot drain inside the bound.
+    let preContactPending = null;
+    let preContactWaited = null;
+    if (wantPaint || realCancel) {
+        const preStart = performance.now();
+        let prePreview = typeof window.__floeOfficePenPreview === 'function'
+            ? window.__floeOfficePenPreview() : null;
+        preContactPending = prePreview ? prePreview.pending : -1;
+        while (preContactPending > 0 && performance.now() - preStart < 7000) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+            prePreview = typeof window.__floeOfficePenPreview === 'function'
+                ? window.__floeOfficePenPreview() : null;
+            preContactPending = prePreview ? prePreview.pending : -1;
+        }
+        preContactWaited = Math.round(performance.now() - preStart);
+    }
+    const clearsBeforeContact = window.__floeOfficePenState().previewClears;
+    const downEvent = new PointerEvent('pointerdown', eventOptions(1, .5));
     dispatchTarget.dispatchEvent(downEvent);
     const afterDown = window.__floeOfficePenState();
     const previewAfterDown = typeof window.__floeOfficePenPreview === 'function'
         ? window.__floeOfficePenPreview() : null;
+    const movePoints = [];
+    let afterMoves = null;
+    let previewAfterMoves = null;
+    if (movingContact) {
+        for (let step = 1; step <= movingStepsRequested; step += 1) {
+            const at = [point[0] + step * 2.5, point[1] + step * 1.5];
+            movePoints.push([round2(at[0]), round2(at[1])]);
+            dispatchTarget.dispatchEvent(new PointerEvent('pointermove',
+                eventOptions(1, .5, at)));
+        }
+        afterMoves = window.__floeOfficePenState();
+        previewAfterMoves = typeof window.__floeOfficePenPreview === 'function'
+            ? window.__floeOfficePenPreview() : null;
+    }
     await new Promise(resolve => setTimeout(resolve, 40));
-    dispatchTarget.dispatchEvent(upEvent);
+    const secondPoint = movingContact && movePoints.length
+        ? movePoints[movePoints.length - 1] : point;
+    const secondEvent = new PointerEvent(secondEventKind, eventOptions(0, 0, secondPoint));
+    dispatchTarget.dispatchEvent(secondEvent);
     const afterUp = window.__floeOfficePenState();
     const previewAfterUp = typeof window.__floeOfficePenPreview === 'function'
         ? window.__floeOfficePenPreview() : null;
+    const clearsAfterContact = afterUp.previewClears;
+    const lastClearReasonAfterContact = afterUp.lastPreviewClear === undefined
+        ? null : afterUp.lastPreviewClear;
     const strokeDelta = afterUp.strokes - before.strokes;
     const coreEventDelta = afterUp.coreEvents - before.coreEvents;
-    return JSON.stringify({
+    let paint = null;
+    if (wantPaint) {
+        const pendingAtUp = previewAfterUp ? previewAfterUp.pending : -1;
+        const clearsBefore = afterUp.previewClears;
+        const startedAt = performance.now();
+        let pendingNow = pendingAtUp;
+        let reasonNow = afterUp.lastPreviewClear;
+        while (performance.now() - startedAt < 6500) {
+            const previewNow = typeof window.__floeOfficePenPreview === 'function'
+                ? window.__floeOfficePenPreview() : null;
+            const stateNow = window.__floeOfficePenState();
+            pendingNow = previewNow ? previewNow.pending : -1;
+            reasonNow = stateNow.lastPreviewClear;
+            if (!previewNow || previewNow.available !== true || pendingNow <= 0) break;
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        paint = {available: !!(previewAfterUp && previewAfterUp.available === true),
+            preContactPending: preContactPending,
+            preContactWaitedMilliseconds: preContactWaited,
+            pendingAtUp: pendingAtUp,
+            clearsBefore: clearsBefore,
+            clearsAfter: window.__floeOfficePenState().previewClears,
+            lastClearReason: reasonNow === undefined ? null : reasonNow,
+            pendingAfterUp: pendingNow,
+            waitedMilliseconds: Math.round(performance.now() - startedAt)};
+    }
+    const receipt = {
         routeReady: true, route: base.route,
         pointClient: [round2(point[0]), round2(point[1])],
-        clientPoints: [[point[0], point[1]], [point[0], point[1]]],
+        clientPoints: movingContact
+            ? [[point[0], point[1]]].concat(movePoints, [secondPoint])
+            : [[point[0], point[1]], [point[0], point[1]]],
         dotFraction: chosen.fraction,
-        pressure: {down: finite(downEvent.pressure), up: finite(upEvent.pressure)},
-        eventsDispatched: 2, movesDispatched: 0, pointerId,
+        pressure: {down: finite(downEvent.pressure), up: finite(secondEvent.pressure)},
+        eventsDispatched: movingContact ? 2 + movingStepsRequested : 2,
+        movesDispatched: movingContact ? movingStepsRequested : 0,
+        pointerId,
         dispatchTarget: dispatchFacts, observedHitTarget: observedHitFacts,
         candidateProbes: base.candidateProbes,
         before, afterDown, afterUp,
@@ -2585,7 +3703,36 @@ final class OfficeNativeDrawingAppQualificationTests: XCTestCase {
         previewAfterDown, previewAfterUp,
         visibleDocumentRect: base.visibleDocumentRect, canvasRect: base.canvasRect,
         hardwarePointerInput: 'not-tested', pressureSource: 'synthetic-known-finite'
-    });
+    };
+    // Extended seam facts are present only for explicitly extended callers,
+    // so the frozen opaque receipt bytes stay unchanged.
+    if (wantPaint || realCancel || candidateOffsetApplied > 0) {
+        receipt.paint = paint;
+        receipt.secondEventKind = secondEventKind;
+        receipt.candidateOffset = candidateOffsetApplied;
+    }
+    if (realCancel) {
+        receipt.preContactPending = preContactPending;
+        receipt.preContactWaitedMilliseconds = preContactWaited;
+        // The bridge's own clear counters around this contact: when the
+        // contact itself caused a preview drop, that drop must carry the
+        // pointercancel reason — a paint success for a canceled contact is
+        // the exact defect shape this gate exists to catch.
+        receipt.cancelPreview = {
+            clearsBeforeContact: clearsBeforeContact,
+            clearsAfterContact: clearsAfterContact,
+            lastClearReason: lastClearReasonAfterContact
+        };
+    }
+    if (movingContact) {
+        // Only a moving contact exposes the mid-sequence state; the frozen
+        // and zero-cancel receipts keep their existing key sets unchanged.
+        receipt.activeAfterMoves = afterMoves.activeStroke === true;
+        receipt.movePoints = movePoints;
+        receipt.afterMoves = afterMoves;
+        receipt.previewAfterMoves = previewAfterMoves;
+    }
+    return JSON.stringify(receipt);
     """#
 
     /// Fresh reopened-page geometry for mapping the original dot fraction to
