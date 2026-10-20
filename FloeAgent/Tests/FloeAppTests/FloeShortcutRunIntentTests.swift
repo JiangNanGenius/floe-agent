@@ -83,7 +83,7 @@ final class FloeShortcutRunIntentTests: XCTestCase {
         state: String = "completed",
         stopReason: String = "endTurn",
         prefixEvents: [RunEventRecord] = []
-    ) {
+    ) throws {
         world.runs[runID] = RunRecord(
             id: runID, conversationID: conversationID, state: state,
             goal: "Synthetic intent goal",
@@ -103,16 +103,19 @@ final class FloeShortcutRunIntentTests: XCTestCase {
                 text: answer)
             events.append(RunEventRecord(
                 runID: runID, sequence: 999, kind: .assistantText,
-                payloadJSON: "{\"text\":\"\(answer)\"}"))
+                payloadJSON: String(decoding: try JSONSerialization.data(
+                    withJSONObject: ["text": answer]), as: UTF8.self)))
         }
         // The production terminal marker carries the proven message id only
         // when that row really persisted (or a real CONFIRM bound it).
-        let marker = finalMessageID.map {
-            ",\"finalMessageID\":\"\($0.uuidString)\""
-        } ?? ""
+        var terminalPayload = ["stopReason": stopReason]
+        if let finalMessageID {
+            terminalPayload["finalMessageID"] = finalMessageID.uuidString
+        }
         world.events[runID] = events + [
             RunEventRecord(runID: runID, sequence: 1_000, kind: .terminal,
-                           payloadJSON: "{\"stopReason\":\"\(stopReason)\"}\(marker)")
+                           payloadJSON: String(decoding: try JSONSerialization.data(
+                            withJSONObject: terminalPayload), as: UTF8.self))
         ]
     }
 
@@ -131,7 +134,7 @@ final class FloeShortcutRunIntentTests: XCTestCase {
     @MainActor
     func testStatusIntentReturnsTheExactRun() async throws {
         let world = World()
-        seedCompleted(world, answer: "Final answer")
+        try seedCompleted(world, answer: "Final answer")
         let service = makeService(world)
         var intent = GetFloeRunStatusIntent()
         intent.run = entity()
@@ -150,7 +153,7 @@ final class FloeShortcutRunIntentTests: XCTestCase {
     @MainActor
     func testStatusIntentRejectsCrossTaskReference() async throws {
         let world = World()
-        seedCompleted(world, answer: "Final answer")
+        try seedCompleted(world, answer: "Final answer")
         let service = makeService(world)
         var intent = GetFloeRunStatusIntent()
         intent.run = entity(conversationID: otherConversationID)
@@ -170,7 +173,7 @@ final class FloeShortcutRunIntentTests: XCTestCase {
     @MainActor
     func testStatusIntentRejectsMalformedTaskIdentifier() async throws {
         let world = World()
-        seedCompleted(world, answer: "Final answer")
+        try seedCompleted(world, answer: "Final answer")
         let service = makeService(world)
         var entity = entity()
         entity.conversationID = "not-a-uuid"
@@ -192,7 +195,7 @@ final class FloeShortcutRunIntentTests: XCTestCase {
     @MainActor
     func testStatusIntentRejectsEmptyTaskIdentifier() async throws {
         let world = World()
-        seedCompleted(world, answer: "Final answer")
+        try seedCompleted(world, answer: "Final answer")
         let service = makeService(world)
         var entity = entity()
         entity.conversationID = ""
@@ -256,7 +259,7 @@ final class FloeShortcutRunIntentTests: XCTestCase {
     @MainActor
     func testTextIntentReturnsOnlyTheExactRunsFinalText() async throws {
         let world = World()
-        seedCompleted(world, answer: "Final answer for this run")
+        try seedCompleted(world, answer: "Final answer for this run")
         let service = makeService(world)
         var intent = GetFloeRunTextIntent()
         intent.run = entity()
@@ -271,7 +274,7 @@ final class FloeShortcutRunIntentTests: XCTestCase {
     @MainActor
     func testTextIntentRefusesStepOnlyRun() async throws {
         let world = World()
-        seedCompleted(
+        try seedCompleted(
             world, answer: "I will check",
             prefixEvents: [RunEventRecord(
                 runID: runID, sequence: 900, kind: .error,
@@ -356,7 +359,7 @@ final class FloeShortcutRunIntentTests: XCTestCase {
     @MainActor
     func testCancelIntentOnFinishedRunReportsFinishedWithoutRequesting() async throws {
         let world = World()
-        seedCompleted(world, answer: "Final answer")
+        try seedCompleted(world, answer: "Final answer")
         let service = makeService(world)
         var intent = CancelFloeRunIntent()
         intent.run = entity()

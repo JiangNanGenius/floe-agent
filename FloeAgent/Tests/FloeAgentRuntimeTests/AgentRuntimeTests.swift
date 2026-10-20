@@ -488,7 +488,7 @@ struct AgentRuntimeTests {
         let adapter = MockAdapter()
         adapter.script = [
             [
-                .textDelta(.init(text: "I will now check the logs")),
+                .textDelta(.init(text: "I will now inspect the logs")),
                 .completed(.init(stopReason: .endTurn))
             ],
             [
@@ -508,6 +508,11 @@ struct AgentRuntimeTests {
         // signal may fire, so no repair step can ever be adopted as the
         // final reply.
         #expect(sink.transitions.contains("verifying"))
+        #expect(adapter.requests.count == 2)
+        let repairRequest = try #require(adapter.requests.dropFirst().first)
+        #expect(repairRequest.messages.contains {
+            $0.role == "system" && $0.content.contains("promised an immediate action but emitted no structured tool call")
+        })
         #expect(sink.verifiedDraftSeals.isEmpty)
         #expect(sink.verifiedDraftConfirmations.isEmpty)
     }

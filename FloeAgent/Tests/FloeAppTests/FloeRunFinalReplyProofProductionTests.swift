@@ -166,7 +166,7 @@ struct FloeRunFinalReplyProofProductionTests {
         let adapter = MockAdapter()
         adapter.script = [
             [
-                .textDelta(.init(text: "I will now check the logs")),
+                .textDelta(.init(text: "I will now inspect the logs")),
                 .completed(.init(stopReason: .endTurn))
             ],
             [
@@ -192,8 +192,13 @@ struct FloeRunFinalReplyProofProductionTests {
         )
         try await service.start(goal: "Check the logs and answer")
 
+        #expect(adapter.requests.count == 2)
+        let repairRequest = try #require(adapter.requests.dropFirst().first)
+        #expect(repairRequest.messages.contains {
+            $0.role == "system" && $0.content.contains("promised an immediate action but emitted no structured tool call")
+        })
         let events = try await environment.runs.events(runID: service.runID)
-        // The repair sealed "I will now check the logs" as a step. The empty
+        // The repair sealed "I will now inspect the logs" as a step. The empty
         // follow-up completion must write the honest noFinalText surface and
         // the terminal marker must carry NO final-message identity — the
         // step row is never re-proven as the answer.
@@ -205,7 +210,7 @@ struct FloeRunFinalReplyProofProductionTests {
         #expect(try payload(terminal)["stopReason"] == "endTurn")
 
         let rows = try await assistantRows(environment)
-        #expect(rows.map(\.content) == ["I will now check the logs"])
+        #expect(rows.map(\.content) == ["I will now inspect the logs"])
         #expect(try await environment.runs.run(id: service.runID)?.state == "completed")
     }
 
@@ -216,7 +221,7 @@ struct FloeRunFinalReplyProofProductionTests {
             upstream: environment.conversations,
             failAppendsFromOrdinal: 3
         )
-        let duplicated = "I will now check the data"
+        let duplicated = "I will now inspect the data"
         let adapter = MockAdapter()
         adapter.script = [
             // Turn 1: a deferred-action promise is repaired; step row A lands.
@@ -257,6 +262,11 @@ struct FloeRunFinalReplyProofProductionTests {
         )
         try await service.start(goal: "Inspect the data and answer")
 
+        #expect(adapter.requests.count == 3)
+        let repairRequest = try #require(adapter.requests.dropFirst().first)
+        #expect(repairRequest.messages.contains {
+            $0.role == "system" && $0.content.contains("promised an immediate action but emitted no structured tool call")
+        })
         let events = try await environment.runs.events(runID: service.runID)
         // Durability failure fully blocks the clean terminal: no terminal
         // marker exists at all, so there is no carrier for a false id.
