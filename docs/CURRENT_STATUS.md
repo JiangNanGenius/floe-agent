@@ -3,13 +3,13 @@
 
 文档更新时间 / Document updated: 2026-10-21. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
-当前剩余交付顺序为 **S3-D＋S4 → S5＋S6 → S7 按执行链分组**。Office 本轮反馈及 S3-C 已随 282 交付并清理；D／S4 共享下一轮必要集成验收和安装包，不重复已通过的 C 或无关历史矩阵。详见[当前计划](FLOE_IOS_CLOSURE_PLAN_20261018.zh-CN.md)。Office and C are delivered; files and actual scheduling are next, with scoped checks and a shared integration checkpoint.
+当前剩余交付顺序为 **283 Office 新反馈＋S3-D → S4 真实定时 → S5＋S6 → S7 按执行链分组**。用户已确认 282 缩放正常；283 优先修复无标题编辑请求、空闲自动保存，并提供助手按工作表／单元格范围或页／矩形主动查看文档的工具，取代每次发送强制附带当前视图。现有文件结果工作与本轮合并验收；尚未完成 283 App 编译、原生验证或发包。S4 已准备，待本轮交付清理后接续，不重跑已通过的无关检查。详见[当前计划](FLOE_IOS_CLOSURE_PLAN_20261018.zh-CN.md)。Build 283 prioritizes the new Office editing, autosave and region-viewing feedback alongside S3-D file results. Its App qualification and delivery are pending; real scheduling follows afterward.
 
-## 1.7.41（282）内部可安装，无签名包与 Feather 已交付 / Internal available; unsigned and Feather delivered
+## 1.7.41（282）内部可安装，公测已送审，无签名包已交付 / Internal available; external review pending; unsigned delivered
 
 - 不可变 `v1.7.41` → `268e21cb8aaaf13c92f3b35a07e57ae1071126ee`，本地 Xcode 27 设备归档及匹配符号已保存；同源包由云端只签名／打包，没有 App 重建。
 - 当前 Office 页面的未保存笔迹进入助手请求；编辑器提交后可新增数字、求和、保存回读；移除永久魔棒命令，修复实时捏合及落笔预览。S3-A／B／C 的初始化、草稿队列和精确运行查询／文本已集成。文件结果和真实定时留 D／S4。Current Office ink and editing paths plus A/B/C are integrated; files and actual scheduling remain next.
-- [内部上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/39478307360)与[独立只读回查](https://github.com/JiangNanGenius/floe-agent/actions/runs/39482127761)成功：VALID、未过期、现有 Floe QA／IN_BETA_TESTING，**内部可安装**。未新增 282 外审，275 正式提交及已有 281 外测申请不变。Internal availability is verified; no new external submission was made.
+- [内部上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/39478307360)与[独立只读回查](https://github.com/JiangNanGenius/floe-agent/actions/runs/39482127761)成功：VALID、未过期、现有 Floe QA／IN_BETA_TESTING，**内部可安装**。随后按新增授权通过 Safari 向现有 publictest1 送审一次；[独立回读](https://github.com/JiangNanGenius/floe-agent/actions/runs/39493804095)确认为 `WAITING_FOR_BETA_REVIEW`、唯一一条 `pending_review`、群组已关联。外部可安装仍待 Apple 批准；275 正式提交及已有 281 申请未改，不重复送审。Internal installation is verified; one publictest1 submission is waiting for Beta Review. External installation awaits approval.
 - [稳定最新版 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.41)与[同次 Feather 发布](https://github.com/JiangNanGenius/floe-agent/actions/runs/39479921433)成功；仅无签名 IPA／校验及精简来源文件。SHA-256 `7fac824e544f0c75d52d69317e71616799c2ddfe090836eddc208cc6b50f0dff`，实时 Feed 的版本／源码／地址／大小／摘要独立匹配。Installation outside TestFlight requires the user's own signing.
 - 原失败和通过证据保留，仅补验受影响用例；模拟器关闭，任务分支、私有 draft、缓存与展开副本已清理。真实 Pencil 手感／压力／手掌误触及联网手写识别准确率仍不以模拟器证明。[282 交付](releases/testflight/BUILD_282_LOCAL_VERIFICATION.md) · [Office 验收](releases/repairs/FLOE_OFFICE_ASSISTANT_LIVE_INK_20261021.md) · [C 验收](releases/repairs/FLOE_SHORTCUTS_S3C_20261021.md)。
 
