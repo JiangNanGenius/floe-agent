@@ -113,6 +113,7 @@ final class FloeShortcutRunServiceTests: XCTestCase {
         var pauses: [TimeInterval] = []
         var virtualTime: TimeInterval = 0
         var pauseDelay: Duration?
+        var pauseObserver: (@Sendable () -> Void)?
         var capabilityEnabled = true
         var cancelSideEffect: ((UUID) -> Void)?
     }
@@ -155,6 +156,7 @@ final class FloeShortcutRunServiceTests: XCTestCase {
             pause: { seconds in
                 world.pauses.append(seconds)
                 world.virtualTime += seconds
+                world.pauseObserver?()
                 if let delay = world.pauseDelay {
                     try? await Task.sleep(for: delay)
                 } else {
@@ -703,10 +705,15 @@ final class FloeShortcutRunServiceTests: XCTestCase {
         world.conversations[conversationID] = makeConversation()
         let service = makeService(world)
         world.pauseDelay = .seconds(5)
-        let task = Task { try await service.wait(runID: runID, timeout: 30) }
-        for _ in 0..<10_000 where world.pauses.isEmpty {
-            await Task.yield()
+        let targetRunID = runID
+        let started = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        world.pauseObserver = { [continuation = started.continuation] in continuation.yield(()) }
+        let task = Task { [service, targetRunID] in
+            try await service.wait(runID: targetRunID, timeout: 30)
         }
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        started.continuation.finish()
         XCTAssertFalse(world.pauses.isEmpty, "wait should be polling before cancellation")
         task.cancel()
         let outcome = try await task.value
@@ -723,10 +730,11 @@ final class FloeShortcutRunServiceTests: XCTestCase {
         world.runs[runID] = makeRun(state: "streamingModel")
         world.conversations[conversationID] = makeConversation()
         let service = makeService(world)
-        let outcome = await Task { () -> FloeRunWaitOutcome in
+        let targetRunID = runID
+        let outcome = await Task { [service, targetRunID] () -> FloeRunWaitOutcome in
             withUnsafeCurrentTask { $0?.cancel() }
-            return (try? await service.wait(runID: runID, timeout: 30))
-                ?? .budgetExhausted(.unavailable(runID: runID, reason: .stateUnrecognized))
+            return (try? await service.wait(runID: targetRunID, timeout: 30))
+                ?? .budgetExhausted(.unavailable(runID: targetRunID, reason: .stateUnrecognized))
         }.value
         guard case .waitCancelled = outcome else {
             return XCTFail("expected waitCancelled, got \(outcome)")
