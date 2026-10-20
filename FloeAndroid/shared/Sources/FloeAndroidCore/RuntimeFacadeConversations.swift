@@ -1288,6 +1288,10 @@ public struct ConversationSessionReply: Sendable, Equatable {
     public let pendingInputsTotalCount: Int
     public let pendingInputsTruncated: Bool
     public let taskPolicy: TaskPolicy
+    /// The REAL row purpose. `ordinary` for every durable projection; the
+    /// live temporary session projects `temporary` from its own hosted
+    /// record (never from a payload or a guessed flag).
+    public let purpose: ConversationPurpose
 
     public init(conversationID: UUID, resourceID: String, revision: String,
                 title: String, createdAtRaw: String, updatedAtRaw: String,
@@ -1298,7 +1302,8 @@ public struct ConversationSessionReply: Sendable, Equatable {
                 runsTruncated: Bool,
                 pendingInputs: [PendingUserInputWire],
                 pendingInputsTotalCount: Int, pendingInputsTruncated: Bool,
-                taskPolicy: TaskPolicy) {
+                taskPolicy: TaskPolicy,
+                purpose: ConversationPurpose = .ordinary) {
         self.conversationID = conversationID
         self.resourceID = resourceID
         self.revision = revision
@@ -1316,6 +1321,7 @@ public struct ConversationSessionReply: Sendable, Equatable {
         self.pendingInputsTotalCount = pendingInputsTotalCount
         self.pendingInputsTruncated = pendingInputsTruncated
         self.taskPolicy = taskPolicy
+        self.purpose = purpose
     }
 
     public var wireObject: [String: Any] {
@@ -1327,7 +1333,7 @@ public struct ConversationSessionReply: Sendable, Equatable {
             "createdAt": createdAtRaw,
             "updatedAt": updatedAtRaw,
             "titleOrigin": titleOrigin,
-            "purpose": ConversationPurpose.ordinary.rawValue,
+            "purpose": purpose.rawValue,
             "firstScreen": firstScreen.wireObject,
             "messagesTotalCount": messagesTotalCount,
             "runs": runs.map(\.wireObject),
@@ -2029,6 +2035,19 @@ public actor FacadeConversationDomain {
     /// minus live run state). Every value comes from an ORIGINAL store or a
     /// bounded SQL read; counts are real; truncation is flagged.
     public func get(conversationID: UUID) async throws -> ConversationSessionReply {
+        // LIVE TEMPORARY SESSION: the App's ordinary conversation contract
+        // must read the session's REAL original ephemeral stores. The route
+        // is epoch-exact and identity-only; an absent/ended session falls
+        // through to the unchanged ordinary path (which answers notFound
+        // because a temporary conversation never has a durable row).
+        if let route = await TemporaryLiveRouting.route(
+            epoch: context.hostEpoch, conversationID: conversationID) {
+            let reply = try await TemporaryConversationProjection
+                .sessionReply(route: route, content: content)
+            try await TemporaryLiveRouting.requireStillLive(
+                route, epoch: context.hostEpoch)
+            return reply
+        }
         let record = try await ordinaryConversation(id: conversationID)
 
         let database = self.database
@@ -2783,6 +2802,28 @@ public actor FacadeConversationDomain {
                             payload: SettingsDomainV1.JSONValue?) async throws
         -> ConversationMessagePageReply
     {
+        // LIVE TEMPORARY SESSION: page the session's RAM messages through
+        // the SAME keyset/budget discipline. Ordinary order below is kept
+        // byte-for-byte (existence first, then payload parse).
+        if let route = await TemporaryLiveRouting.route(
+            epoch: context.hostEpoch, conversationID: conversationID) {
+            let query = try ConversationMessagePageQuery.parse(
+                payload, decodeCursor: Self.decodeMessageCursor)
+            let messages: [PersistedMessage]
+            do {
+                messages = try await route.stores.conversations
+                    .messages(conversationID: conversationID)
+            } catch {
+                throw ConversationDomainError
+                    .persistenceUnavailable("temporaryReadFailed")
+            }
+            let reply = try await TemporaryConversationProjection.messagePageReply(
+                messages: messages, before: query.cursor, limit: query.limit,
+                route: route, content: content)
+            try await TemporaryLiveRouting.requireStillLive(
+                route, epoch: context.hostEpoch)
+            return reply
+        }
         _ = try await ordinaryConversation(id: conversationID)
         let query = try ConversationMessagePageQuery.parse(payload,
                                                             decodeCursor: Self.decodeMessageCursor)
@@ -2903,6 +2944,18 @@ public actor FacadeConversationDomain {
         -> ConversationContentSliceReply
     {
         let request = try ConversationContentReadRequest.parse(payload)
+        // LIVE TEMPORARY SESSION: the handle authority is the session's own
+        // incarnation + RAM message existence. No durable row is consulted.
+        if let route = await TemporaryLiveRouting.route(
+            epoch: context.hostEpoch, conversationID: conversationID) {
+            let reply = try await content.readTemporary(
+                conversationID: conversationID,
+                incarnation: route.incarnation,
+                request: request)
+            try await TemporaryLiveRouting.requireStillLive(
+                route, epoch: context.hostEpoch)
+            return reply
+        }
         _ = try await ordinaryConversation(id: conversationID)
         return try await content.read(conversationID: conversationID, request: request)
     }

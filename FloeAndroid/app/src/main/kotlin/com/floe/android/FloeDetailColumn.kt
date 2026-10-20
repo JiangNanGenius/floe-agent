@@ -119,6 +119,7 @@ private fun ConversationDestination(
         conversationId,
         isTemporary = temporary != null,
         incarnationId = temporary?.incarnationId,
+        temporaryNativeRootEpoch = temporary?.nativeRootEpoch ?: -1L,
     )
     if (runtimeHost == null || holder == null) {
         FloePlaceholderPage(

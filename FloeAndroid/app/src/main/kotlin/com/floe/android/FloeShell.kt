@@ -123,15 +123,45 @@ private fun FloeShellContent(
     // attachment picker. Observed here so composables stay observe-only.
     if (runtimeHost != null) {
         AttachmentPickerEffect(runtimeHost)
-        val requestedNavigation by runtimeHost.conversations.navigationRequest.collectAsState()
-        LaunchedEffect(requestedNavigation) {
-            requestedNavigation?.let { target ->
-                runtimeHost.conversations.navigationRequest.value = null
-                applyHostNavigation(target, selection, runtimeHost) { next ->
-                    selection = next
-                    selectionKey = next.key
-                    drawerOpen = false
-                    inspectorRoute = null
+        LaunchedEffect(runtimeHost) {
+            // ONE serial consumer for host navigation. Collecting (instead of
+            // keying a LaunchedEffect on the value) means clearing the
+            // request cannot cancel the application halfway through a
+            // temporary-fence await: the final route commit always runs.
+            runtimeHost.conversations.navigationRequest.collect { requested ->
+                if (requested != null) {
+                    runtimeHost.conversations.navigationRequest.value = null
+                    // Home request ownership travels THROUGH the final route
+                    // commit: the claim is taken before the fence await and
+                    // re-validated after it, so an intent invalidated during
+                    // the wait can never move the route. A Home-owned route
+                    // is consumed exactly once; any other navigation commits
+                    // normally, so a kept ordinary conversation can always be
+                    // reopened from TaskCenter/history.
+                    runtimeHost.home.applyHostNavigation(
+                        target = requested,
+                        waitForAdmission = {
+                            val currentTemporary =
+                                runtimeHost.conversations.activeTemporarySession()
+                            val visibleSelection = selectionFromKey(selectionKey)
+                            val leavingConversation =
+                                visibleSelection is SidebarSelection.Conversation &&
+                                    requested.key != visibleSelection.key
+                            if (currentTemporary != null && leavingConversation) {
+                                runtimeHost.conversations.tempFence.beginEnd(currentTemporary)
+                                runtimeHost.conversations.tempFence
+                                    .awaitAdmission(currentTemporary)
+                            } else {
+                                true
+                            }
+                        },
+                        commit = { next ->
+                            selection = next
+                            selectionKey = next.key
+                            drawerOpen = false
+                            inspectorRoute = null
+                        },
+                    )
                 }
             }
         }
@@ -181,8 +211,32 @@ private fun FloeShellContent(
             !settingsVisible && !previewVisible &&
             selectionKey != SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK).key
         BackHandler(enabled = baseNavCanRun) {
-            selection = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
-            selectionKey = selection.key
+            // System Back at a conversation surface IS an actual navigation
+            // to New Task: when a temporary session owns the surface it
+            // must pass the same synchronous fence as every other route
+            // (TMP-NAV-2). Refusal/timeout never moves the route; ordinary
+            // surfaces keep the direct platform behavior.
+            val currentTemporary = runtimeHost?.conversations?.activeTemporarySession()
+            if (runtimeHost != null && currentTemporary != null &&
+                selection is SidebarSelection.Conversation
+            ) {
+                val ref = currentTemporary
+                scope.launch {
+                    runtimeHost.conversations.tempFence.beginEnd(ref)
+                    if (runtimeHost.conversations.tempFence.awaitAdmission(ref)) {
+                        runtimeHost.home.onNavigation(
+                            SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK))
+                        selection =
+                            SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
+                        selectionKey = selection.key
+                    }
+                }
+            } else {
+                runtimeHost?.home?.onNavigation(
+                    SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK))
+                selection = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
+                selectionKey = selection.key
+            }
         }
         BackHandler(enabled = drawerOpen) { drawerOpen = false }
 
@@ -211,6 +265,7 @@ private fun FloeShellContent(
                         runtimeHost.conversations.tempFence.beginEnd(ref)
                         val admitted = runtimeHost.conversations.tempFence.awaitAdmission(ref)
                         if (admitted) {
+                            runtimeHost?.home?.onNavigation(target)
                             selection = target
                             selectionKey = target.key
                             drawerOpen = false
@@ -219,6 +274,7 @@ private fun FloeShellContent(
                     }
                 }
                 else -> {
+                    runtimeHost?.home?.onNavigation(target)
                     selection = target
                     selectionKey = target.key
                     drawerOpen = false
@@ -436,26 +492,3 @@ private fun mapInspectorContent(content: com.floe.android.feature.conversation.I
         com.floe.android.feature.conversation.InspectorRouteUi.CHILD_AGENTS -> InspectorContent.CHILD_AGENTS
         com.floe.android.feature.conversation.InspectorRouteUi.PERMISSIONS -> InspectorContent.PERMISSIONS
     }
-
-/**
- * Applies a host-requested navigation. Leaving a temporary conversation
- * surfaces fences through [com.floe.android.host.TemporaryNavigationFence]
- * before the route actually moves; the caller's [commit] performs the move.
- */
-private suspend fun applyHostNavigation(
-    target: SidebarSelection,
-    current: SidebarSelection,
-    runtimeHost: RuntimeHost,
-    commit: (SidebarSelection) -> Unit,
-) {
-    val currentTemporary = runtimeHost.conversations.activeTemporarySession()
-    val leavingConversation = current is SidebarSelection.Conversation &&
-        target.key != current.key
-    if (currentTemporary != null && leavingConversation) {
-        runtimeHost.conversations.tempFence.beginEnd(currentTemporary)
-        if (!runtimeHost.conversations.tempFence.awaitAdmission(currentTemporary)) {
-            return
-        }
-    }
-    commit(target)
-}

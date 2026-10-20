@@ -227,14 +227,16 @@ extension FacadeRunDomain {
         }
     }
 
-    /// Reads one real bounded durable page through the ORIGINAL append-only
-    /// store and materializes it into the pump window. Temporary bundles
-    /// (RB5) have no SQLite store: the RAM store IS the snapshot authority
-    /// there and the window refresh is skipped honestly (the run's OWN
-    /// bundle decides — never the durable singleton).
+    /// Reads one real bounded append-only page through the RUN'S OWN store
+    /// and materializes it into the pump window. Ordinary → SQLite; a
+    /// temporary run (RB5) → the SAME `EphemeralRunStore` the service
+    /// appends to, whose per-run sequences are monotonic exactly like the
+    /// SQLite counter. The durable singleton is never a fallback, and the
+    /// temporary App contract (`event.poll` frames + terminal) stops being
+    /// permanently `notAttached`.
     private func refreshWindow(runID: UUID, bundle: RunPersistenceBundle) async {
-        guard let sqlite = bundle.runs as? SQLiteRunStore else { return }
-        await components.events.refreshDurableWindow(runID: runID, store: sqlite)
+        await components.events.refreshDurableWindow(runID: runID,
+                                                     store: bundle.runs)
     }
 
     private func markStateObserved(runID: UUID, harnessState: HarnessState) {
@@ -287,10 +289,16 @@ enum RunSnapshotWireBuilder {
                       components: RunDomainComponents,
                       query: SnapshotQuery,
                       ownership: RunOwnership?,
-                      liveService: ConversationRunService?) async -> RunDomainReply {
+                      liveService: ConversationRunService?,
+                      readBundle: RunPersistenceBundle? = nil) async -> RunDomainReply {
+        // The RUN'S OWN stores answer every run-scoped read. An ordinary
+        // run's bundle IS the durable cluster; a temporary run's bundle is
+        // the session's ORIGINAL Ephemeral* set. The durable singleton is
+        // never a fallback for a supplied temporary bundle.
+        let stores = readBundle ?? ownership?.bundle ?? components.durable
         let record: RunRecord?
         do {
-            record = try await components.durable.runs.run(id: query.runID)
+            record = try await stores.runs.run(id: query.runID)
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.persistenceUnavailable,
                                                            .storeReadFailed)))
@@ -351,18 +359,18 @@ enum RunSnapshotWireBuilder {
             fields["approvalRevision"] = .null
         }
 
-        // Durable watermark from the ORIGINAL append-only sequence.
-        var watermark = 0
-        if let sqlite = components.durable.runs as? SQLiteRunStore {
-            let recent = try? await sqlite.recentEvents(runID: record.id, limit: 1)
-            watermark = recent?.last?.sequence ?? 0
-        }
+        // Watermark from the run's OWN append-only sequence (durable SQLite
+        // or the temporary session's RAM store). The wire label is frozen;
+        // the value is the real per-run sequence either way.
+        let recentWatermark = try? await stores.runs.recentEvents(
+            runID: record.id, limit: 1)
+        let watermark = recentWatermark?.last?.sequence ?? 0
         fields["durableWatermark"] = .integer(Int64(watermark))
 
         // Usage (original records, bounded to last 16 + run totals).
         var usageFields: [SettingsDomainV1.JSONValue] = []
         var totals = (input: 0, output: 0)
-        let usageRecords = (try? await components.durable.runs.usage(runID: record.id)) ?? []
+        let usageRecords = (try? await stores.runs.usage(runID: record.id)) ?? []
         if !usageRecords.isEmpty {
             for usage in usageRecords.suffix(16) {
                 totals.input += usage.inputTokens
@@ -384,8 +392,9 @@ enum RunSnapshotWireBuilder {
             "truncated": .boolean(usageRecords.count > usageFields.count),
         ])
 
-        // Errors (durable, redacted by the original service path).
-        let errors = (try? await components.durable.runs.errors(runID: record.id)) ?? []
+        // Errors from the run's OWN store (redacted by the original
+        // service path exactly as before).
+        let errors = (try? await stores.runs.errors(runID: record.id)) ?? []
         fields["errors"] = .array(errors.suffix(8).map { error in
             .object([
                 "kind": .string(error.kind),
@@ -396,8 +405,9 @@ enum RunSnapshotWireBuilder {
         })
         fields["errorsTruncated"] = .boolean(errors.count > 8)
 
-        // Plan/goal (intelligence store, when durably bound).
-        if let intelligence = components.durable.intelligence {
+        // Plan/goal from the bundle's own intelligence store (nil for a
+        // temporary session: goal mode was refused at admission).
+        if let intelligence = stores.intelligence {
             let plan = try? await intelligence.latestPlan(conversationID: record.conversationID)
             fields["plan"] = plan.map { planJSON($0) } ?? .null
             let goals = (try? await intelligence.goals(conversationID: record.conversationID)) ?? []
@@ -414,8 +424,10 @@ enum RunSnapshotWireBuilder {
             fields["goals"] = .null
         }
 
-        // Children from the durable graph (no UI emulation).
-        if let store = components.durable.childRuns,
+        // Children from the bundle's own child graph (nil for temporary:
+        // the original DelegateTool keeps children in-memory; the snapshot
+        // honestly reports the empty durable graph).
+        if let store = stores.childRuns,
            let children = try? await store.children(parentRunID: record.id) {
             fields["children"] = .array(children.prefix(RunDomainLimits.maximumChildItems).map {
                 .object(FacadeRunDomain.childJSON($0))
@@ -426,10 +438,10 @@ enum RunSnapshotWireBuilder {
             fields["childrenTruncated"] = .boolean(false)
         }
 
-        // Pending inputs (durable queue truth).
+        // Pending inputs from the bundle's own queue (RAM for temporary).
         var inputItems: [SettingsDomainV1.JSONValue] = []
         var queuedIDs: [UUID] = []
-        if let pending = try? await components.durable.runningInputs.pending(
+        if let pending = try? await stores.runningInputs.pending(
             conversationID: record.conversationID) {
             for item in pending.prefix(RunDomainLimits.maximumPendingInputItems) {
                 if item.status == .queued { queuedIDs.append(item.id) }
@@ -456,8 +468,13 @@ enum RunSnapshotWireBuilder {
             "version": .string(RunWireRevision.queueVersion(orderedIDs: queuedIDs)),
         ])
 
-        // Task-policy revision for run.policy.update CAS.
-        if let policy = try? await components.workspaceStore.taskPolicy(
+        // Task-policy revision for run.policy.update CAS. A temporary run
+        // has NO durable task_policies row (the run lane synthesizes the
+        // ORIGINAL default in RAM); report the honest null instead of
+        // reading the durable workspace store through a RAM-only id.
+        if stores.identity == .temporary {
+            fields["policyRevision"] = .null
+        } else if let policy = try? await components.workspaceStore.taskPolicy(
             conversationID: record.conversationID) {
             fields["policyRevision"] = .object([
                 "resourceID": .string(RunWireRevision.taskPolicyResourceID(record.conversationID)),

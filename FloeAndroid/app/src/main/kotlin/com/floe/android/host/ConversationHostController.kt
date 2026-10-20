@@ -54,6 +54,14 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 
 /**
+ * The shared reader's aggregate content bound divided by the P0 per-chunk
+ * clamp (4 MiB / 32 KiB); one oversized message can never loop past what the
+ * reader can legally return.
+ */
+private const val MAXIMUM_CONTENT_CHUNKS = 128
+
+
+/**
  * App-host binding for the conversation feature component: conversation
  * lifecycle, history, run launch/control, approvals, temporary sessions and
  * composer-side callbacks. Implements [ConversationUiCallbacks] exactly and
@@ -352,9 +360,21 @@ class ConversationHostController internal constructor(
         isTemporary: Boolean,
         incarnationId: String?,
         initialDraft: ComposerDraftSeedUi? = null,
+        temporaryNativeRootEpoch: Long = -1L,
     ): com.floe.android.feature.conversation.ConversationFlowHolder {
         val existing = holders[conversationId]
         if (existing != null && existing.holder.session.conversationId == conversationId) {
+            // The temporary identity is part of the presentation projection:
+            // Keep/End gates and the text-only composer read
+            // state.isTemporary/temporaryIncarnationId. A view reconstruction
+            // must re-assert the SAME identity (a genuinely ended session is
+            // no longer in activeTemporary and this surface is retired by
+            // the navigation fence, never silently re-labelled ordinary).
+            existing.builder.isTemporary = isTemporary
+            existing.builder.temporaryIncarnationId = incarnationId
+            if (temporaryNativeRootEpoch >= 0L) {
+                existing.holder.temporaryNativeRootEpoch = temporaryNativeRootEpoch
+            }
             return existing.holder
         }
         val epoch = sessionEpochs.incrementAndGet()
@@ -363,9 +383,18 @@ class ConversationHostController internal constructor(
             conversationId,
             initialDraft,
         )
+        if (temporaryNativeRootEpoch >= 0L) {
+            holder.temporaryNativeRootEpoch = temporaryNativeRootEpoch
+        }
         val builder = ThreadProjectionBuilder(conversationId).also {
             val projection = currentModels()
             it.applyModels(projection.models, projection.needsProvider)
+            // A RAM-only temporary session is a REAL conversation identity:
+            // its builder must carry the exact hosted incarnation from the
+            // first frame so the composer ceiling, Keep and End all observe
+            // temporary truth (previously left at the ordinary defaults).
+            it.isTemporary = isTemporary
+            it.temporaryIncarnationId = incarnationId
         }
         holders[conversationId] = ConversationFlowHolderEntry(
             holder = holder,
@@ -398,6 +427,45 @@ class ConversationHostController internal constructor(
     /** The currently active temporary session ref, if any. */
     fun activeTemporarySession(): TemporarySessionRef? =
         activeTemporary.values.firstOrNull()
+
+    /**
+     * Retire a NATIVE temporary ref that became stale because its owning Home
+     * request was invalidated by an actual navigation/New Task. This is NOT
+     * a route transition of the CURRENT UI fence: it removes only the exact
+     * stale ref and sends the EXISTING `temp.end` command, whose synchronous
+     * binder admission fences the exact live tuple (a replacement session
+     * under another id is never touched). No fake success and no new command.
+     */
+    fun retireLateTemporarySession(ref: TemporarySessionRef): Boolean {
+        // Exactly-once: only the call that actually RETIRED the exact live
+        // tuple submits `temp.end`. An already-retired ref (fence admission
+        // or a previous late callback) emits nothing; a replacement session
+        // under another id is never touched.
+        val retired = activeTemporary.remove(ref.conversationId, ref)
+        if (retired) sendLateTemporaryEnd(ref)
+        return retired
+    }
+
+    /** Exact by-id variant for a pending Home send whose ref is still in the
+     * controller map but may not be the first active value. */
+    fun retireLateTemporarySession(conversationID: String): Boolean {
+        val ref = activeTemporary.remove(conversationID) ?: return false
+        sendLateTemporaryEnd(ref)
+        return true
+    }
+
+    private fun sendLateTemporaryEnd(ref: TemporarySessionRef) {
+        host.trackOperation(
+            HostCommandRequest(
+                command = "temp.end",
+                scope = HostScope.ConversationLifecycle(ref.conversationId),
+                stateful = true,
+                correlationID = client().correlationID("tend-late"),
+                revision = HostRevision(
+                    "session.${ref.conversationId}", ref.incarnationId),
+            ),
+        ) { /* native admission/cleanup owns the result; no UI route change */ }
+    }
 
     /**
      * The exact native incarnation fence has linearized for [ref]. Retire
@@ -844,9 +912,102 @@ class ConversationHostController internal constructor(
                     entry.builder.hasEarlierMessages = page.hasEarlier
                     entry.holder.applyHostSnapshot(entry.builder.build())
                     applied = true
+                    // Oversize rows carry an owned handle instead of an
+                    // incomplete inline prefix. Fetch the FULL content
+                    // through the SAME content.read contract (temporary
+                    // handles are re-authorized by the session incarnation
+                    // core-side); never guess or truncate locally.
+                    fetchOversizeContent(outcome.value, entry, session)
                 }
             }
             onSettled?.invoke(applied)
+        }
+    }
+
+    /**
+     * Bounded full-content fetch for message rows that arrived as owned
+     * handles. The reader returns <=32 KiB chunks (the P0 chunk clamp) and
+     * an explicit done/nextOffset; the loop stops at the reader's own
+     * 4 MiB aggregate bound. Every reply is fenced on the ORIGINAL
+     * holder/session identity, so a late chunk can never touch a rebound
+     * thread or a replaced temporary incarnation.
+     */
+    private fun fetchOversizeContent(
+        value: kotlinx.serialization.json.JsonElement?,
+        entry: ConversationFlowHolderEntry,
+        session: ConversationSessionToken,
+    ) {
+        for ((messageID, handle) in ConversationWire.contentHandles(value)) {
+            fetchContentSlice(
+                entry = entry,
+                session = session,
+                messageID = messageID,
+                handle = handle,
+                offset = 0,
+                depth = 0,
+            )
+        }
+    }
+
+    private fun fetchContentSlice(
+        entry: ConversationFlowHolderEntry,
+        session: ConversationSessionToken,
+        messageID: String,
+        handle: String,
+        offset: Int,
+        depth: Int,
+    ) {
+        if (depth > MAXIMUM_CONTENT_CHUNKS) return
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return
+        host.trackOperation(
+            HostCommandRequest(
+                command = "content.read",
+                scope = HostScope.ConversationLifecycle(session.conversationId),
+                stateful = false,
+                correlationID = client().correlationID("cread"),
+                payload = JsonObject(
+                    mapOf(
+                        "handle" to JsonPrimitive(handle),
+                        "offset" to JsonPrimitive(offset),
+                        "maxBytes" to JsonPrimitive(32_768),
+                    ),
+                ),
+            ),
+        ) { outcome ->
+            if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) {
+                return@trackOperation
+            }
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val slice = ConversationWire.decodeContentSlice(outcome.value)
+                        ?: return@trackOperation
+                    entry.builder.appendMessageContent(messageID, slice.chunk)
+                    entry.holder.applyHostSnapshot(entry.builder.build())
+                    if (!slice.done) {
+                        val next = slice.nextOffset
+                        if (next != null && next > offset) {
+                            fetchContentSlice(
+                                entry = entry,
+                                session = session,
+                                messageID = messageID,
+                                handle = handle,
+                                offset = next,
+                                depth = depth + 1,
+                            )
+                        }
+                    }
+                }
+                is HostOperationOutcome.Rejected -> {
+                    entry.builder.actionError(outcome.code)
+                    entry.holder.applyHostSnapshot(entry.builder.build())
+                }
+                is HostOperationOutcome.Failed -> {
+                    entry.builder.actionError(outcome.code)
+                    entry.holder.applyHostSnapshot(entry.builder.build())
+                }
+                HostOperationOutcome.Cancelled,
+                HostOperationOutcome.Superseded -> Unit
+            }
         }
     }
 
@@ -2275,6 +2436,7 @@ class ConversationHostController internal constructor(
                             } else {
                                 null
                             },
+                            temporaryNativeRootEpoch = nativeRootEpoch,
                         )
                         // The holder's own session epoch is the exact App-side
                         // identity used by Keep/End callbacks; never a

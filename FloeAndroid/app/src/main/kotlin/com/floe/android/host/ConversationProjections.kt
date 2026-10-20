@@ -259,6 +259,22 @@ class ThreadProjectionBuilder internal constructor(
         }
     }
 
+    /**
+     * Appends one verified `content.read` chunk to the SAME message row.
+     * Only an oversize row that arrived with a handle can reach this; the
+     * row's text grows in exact chunk order and the row identity/role/run is
+     * never rewritten.
+     */
+    internal fun appendMessageContent(messageID: String, chunk: String) {
+        if (chunk.isEmpty()) return
+        userMessages[messageID]?.let {
+            userMessages[messageID] = it.copy(text = it.text + chunk)
+        }
+        assistantMessages[messageID]?.let {
+            assistantMessages[messageID] = it.copy(text = it.text + chunk)
+        }
+    }
+
     internal fun applyPrepared(prepared: ConversationWire.Prepared) {
         // A new run owns a fresh live tail: the previous run's buffers must
         // never leak into it.
@@ -930,6 +946,44 @@ internal object ConversationWire {
         }
         val hasEarlier = root.bool("hasEarlier") ?: (earlierCursor != null)
         return MessagePage(rows, earlierCursor, hasEarlier)
+    }
+
+    /**
+     * The oversize-row handles of one ACTUAL `conversation.messagePage`
+     * reply. A row whose FULL content moved to an owned handle carries
+     * `contentHandle` and no inline content; the host fetches it through the
+     * SAME `content.read` contract (temporary handles are re-authorized by
+     * the session incarnation core-side). Rows with inline content are not
+     * listed and are never re-read.
+     */
+    fun contentHandles(value: JsonElement?): List<Pair<String, String>> {
+        val root = value as? JsonObject ?: return emptyList()
+        val rows = root["rows"] as? JsonArray ?: return emptyList()
+        return rows.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val id = obj.string("id") ?: return@mapNotNull null
+            val handle = obj.string("contentHandle")?.takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+            if (!handle.startsWith("chunk:v1:")) return@mapNotNull null
+            id to handle
+        }
+    }
+
+    data class ContentSlice(
+        val chunk: String,
+        val done: Boolean,
+        val nextOffset: Int?,
+    )
+
+    /** Decodes one ACTUAL `conversationLifecycle content.read` reply. */
+    fun decodeContentSlice(value: JsonElement?): ContentSlice? {
+        val root = value as? JsonObject ?: return null
+        val chunk = root.string("chunk") ?: return null
+        return ContentSlice(
+            chunk = chunk,
+            done = root.bool("done") ?: false,
+            nextOffset = root.long("nextOffset")?.toInt(),
+        )
     }
 
     /**

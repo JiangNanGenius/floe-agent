@@ -168,10 +168,17 @@ public final class FacadeEventPump: @unchecked Sendable {
 
     // MARK: Durable window refresh (async side)
 
-    /// Reads ONE real durable page through the ORIGINAL store API and
+    /// Reads ONE real append-only page through the RUN'S OWN store API and
     /// materializes it into the bounded window. Called by per-run track tasks
     /// (RB4) and by this package's tests; never from a synchronous binder.
-    public func refreshDurableWindow(runID: UUID, store: SQLiteRunStore) async {
+    ///
+    /// The store is the run's OWN persistence bundle: the ordinary SQLite
+    /// store, or the temporary session's ORIGINAL `EphemeralRunStore` (whose
+    /// per-run sequences are monotonic exactly like the SQLite counter).
+    /// The pump contract (monotonic sequence, bounded window, explicit
+    /// notAttached/runGone) is identical; no store is synthesized and the
+    /// durable singleton is never substituted for a temporary run.
+    public func refreshDurableWindow(runID: UUID, store: any RunStore) async {
         let page: [RunEventRecord]
         let run: RunRecord?
         do {
