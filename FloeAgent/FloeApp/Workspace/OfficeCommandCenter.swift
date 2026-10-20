@@ -1265,34 +1265,27 @@ final class OfficePDFExportReceipt: @unchecked Sendable {
     private var settled: Result<URL, Error>?
 
     func wait() async throws -> URL {
-        lock.lock()
-        if let settled {
-            lock.unlock()
-            return try settled.get()
-        }
-        if continuation != nil {
-            lock.unlock()
-            throw CocoaError(.coderInvalidValue)
-        }
-        lock.unlock()
         return try await withCheckedThrowingContinuation { continuation in
-            lock.lock()
-            if let settled {
-                lock.unlock()
-                continuation.resume(with: settled)
-                return
+            let immediate: Result<URL, Error>? = lock.withLock {
+                if let settled { return settled }
+                guard self.continuation == nil else {
+                    return .failure(CocoaError(.coderInvalidValue))
+                }
+                self.continuation = continuation
+                return nil
             }
-            self.continuation = continuation
-            lock.unlock()
+            if let immediate { continuation.resume(with: immediate) }
         }
     }
 
     func resolve(_ result: Result<URL, Error>) {
-        lock.lock()
-        if settled == nil { settled = result }
-        let waiting = continuation
-        continuation = nil
-        lock.unlock()
+        let waiting: CheckedContinuation<URL, Error>? = lock.withLock {
+            guard settled == nil else { return nil }
+            settled = result
+            let waiting = continuation
+            continuation = nil
+            return waiting
+        }
         waiting?.resume(with: result)
     }
 }
