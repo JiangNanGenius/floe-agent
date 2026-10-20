@@ -1340,7 +1340,7 @@ extension NotesAssistantLivePageCapture {
         guard let documentID = NotesAssistantConversationBinding.documentID(forConversation: conversationID) else {
             return nil
         }
-        let store = try NotesRepository.shared.store()
+        let store = try await NotesRepository.shared.store()
         guard let document = try? await store.document(documentID),
               document.kind == .office, document.deletedAt == nil,
               document.officeFileName != nil,

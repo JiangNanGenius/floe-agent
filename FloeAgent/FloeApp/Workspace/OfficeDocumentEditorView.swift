@@ -1751,10 +1751,10 @@ final class OfficeFileSession: ObservableObject {
         // replaced, the session left ready state, or the observed selection
         // moved during the capture window.
         guard phase == .ready, self.controller === controller else {
-            throw CocoaError(.fileReadChangedDuringCopy)
+            throw FloeError.validationFailed("The Office editor changed during capture")
         }
         if let fingerprintBefore, let fingerprintAfter, fingerprintBefore != fingerprintAfter {
-            throw CocoaError(.fileReadChangedDuringCopy)
+            throw FloeError.validationFailed("The Office editor changed during capture")
         }
         return OfficeLivePageReadout(
             page: captured,
