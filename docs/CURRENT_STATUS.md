@@ -3,9 +3,11 @@
 
 文档更新时间 / Document updated: 2026-10-20. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
+当前推进采用合并交付：**S3-C／D＋S4 → S5＋S6 → S7 按执行链分组**。组内定向验证和提交，源码就绪后集中完整 App／原生验收与发包；新增故障按影响补验，设备能力保留分别验收。当前 C 尚在实施，未新增合格安装包；现有 281 保持不可变。详见[当前计划](FLOE_IOS_CLOSURE_PLAN_20261018.zh-CN.md#合并实施与验证节点2026-10-20)。Delivery checkpoints are consolidated; implementation checks remain scoped, and physical-device acceptance remains separate. C is in progress; this plan change does not qualify a new build.
+
 ## S3-B 草稿队列源码已完成 / Durable shortcut drafts qualified
 
-验收源码 `88dc1b71487a5906cbae96903d38504bfe536a4b`：连续草稿不覆盖、顺序领取、旧数据迁移、落盘回执及失败／重启恢复完成；真实存储探针 34 项通过，完整 App／测试宿主编译通过，原生 **62 通过、0 失败、0 跳过**。源码推送 main，下一小包 S3-C 运行查询与文本结果；安装包随后续集成，现有 281 不变。[验收记录](releases/repairs/FLOE_SHORTCUTS_S3B_20261020.md)。The source stage is qualified; hosted production Intent/Home paths are distinct from system Shortcuts/Siri dispatch and physical-device acceptance.
+验收源码 `88dc1b71487a5906cbae96903d38504bfe536a4b`：连续草稿不覆盖、顺序领取、旧数据迁移、落盘回执及失败／重启恢复完成；真实存储探针 34 项通过，完整 App／测试宿主编译通过，原生 **62 通过、0 失败、0 跳过**。源码推送 main，S3-C 运行查询与文本结果已启动；安装包随后续集成，现有 281 不变。[验收记录](releases/repairs/FLOE_SHORTCUTS_S3B_20261020.md)。The source stage is qualified; hosted production Intent/Home paths are distinct from system Shortcuts/Siri dispatch and physical-device acceptance.
 
 ## S3-A 初始化源码已完成 / Shortcut initialization source complete
 
@@ -17,6 +19,7 @@
 - [稳定最新版 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.40) 与 Feather 已交付无签名 IPA／校验文件；[同一次发布流程](https://github.com/JiangNanGenius/floe-agent/actions/runs/39380604459)成功。独立核对标签、源码、实际 arm64 设备包、远端摘要、来源证明、latest 指针及实时订阅全部通过，IPA SHA-256 为 `713e4bd59e3e829536888cb46af156998ac38520b44f5b2d89a5a98a450d72c5`。Stable latest Release and Feather carry the verified unsigned IPA and checksum; independent source, device-binary, digest, attestation and feed checks passed. Installation requires your own signing.
 - TestFlight：[仅签名上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/39381021373)成功；[独立只读回查](https://github.com/JiangNanGenius/floe-agent/actions/runs/39382971227)确认 281 为 `VALID`、未过期、`APP_STORE_ELIGIBLE`，现有 Floe QA 为 `IN_BETA_TESTING`，**内部可安装**。Independent readback confirms VALID, unexpired and available in the existing internal Floe QA group.
 - 外测：API 在首个审核备注写入处返回 403，未关联或提交；随后通过已登录的 Apple 网页保存定稿备注并向现有 `publictest1` 送审一次。[独立回查](https://github.com/JiangNanGenius/floe-agent/actions/runs/39383590223)确认群组已关联、恰有一条 `pending_review`、`WAITING_FOR_BETA_REVIEW`、备注匹配且 issues 为空。外测等待审核批准，原正式 App Store 提交保持不变。The existing publictest1 group received one web submission after the API refused the first write; readback confirms one pending review and matching notes. External installation awaits approval; the formal App Store submission is unchanged.
+- 2026-10-20 [再次只读回查](https://github.com/JiangNanGenius/floe-agent/actions/runs/39399876835)：281 仍为 `VALID`、未过期，`publictest1` 已关联，恰有一条 `pending_review`／`WAITING_FOR_BETA_REVIEW`，审核备注匹配且 issues 为空；保留现有申请，不重复送审。Latest readback confirms one existing pending external review; no duplicate submission was made.
 - 本轮 Office 笔点及直接受影响边界共 12 项 App／真实引擎用例通过，0 失败、0 跳过；保留此前实时缩放、手记预览与音乐验收。本次公开 IPA 中原生组件、浏览器和四首音乐与验收产物一致。真实 Pencil 压感、防误触和设备手感继续由用户真机反馈确认。Twelve affected App/native-engine cases passed; prior zoom, Notes-preview and music evidence is retained. Physical Pencil acceptance remains with the user. [修复与验收](releases/repairs/FLOE_OFFICE_PENCIL_S1_20261020.md) · [发布说明](releases/notes/RELEASE_NOTES_1.7.40_BUILD_281.md)。
 
 ## 1.7.34（275）内部可用；未提交外部审核 / Internal available; no external submission
