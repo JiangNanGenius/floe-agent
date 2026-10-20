@@ -17,6 +17,11 @@ actor FakeOfficeHost: OfficeCommandHost {
     var applyReceipt: OfficeCommandReceipt
     var exportReceipt: OfficeExportReceipt
     var applyError: Error?
+    /// S3-D focused tests opt this into committing real bytes at the export
+    /// path so the production run-output publication exercises the full
+    /// commit → snapshot → verify chain against a real file. `nil` (default)
+    /// preserves the original synthetic-receipt behavior untouched.
+    var exportRealPayload: Data?
     private(set) var proposals: [UUID: OfficeCommandProposal] = [:]
     private(set) var proposalAccess: [UUID: OfficeCommandAccess] = [:]
     private(set) var applyCount = 0
@@ -93,8 +98,19 @@ actor FakeOfficeHost: OfficeCommandHost {
         exportOutput = relativeOutput
         var receipt = exportReceipt
         receipt.relativePath = relativeOutput
+        if let payload = exportRealPayload, let path = access.workspacePath,
+           !path.isEmpty, FileManager.default.fileExists(atPath: path) {
+            let url = URL(fileURLWithPath: path).appendingPathComponent(relativeOutput)
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
+            try payload.write(to: url, options: .atomic)
+            receipt.sha256 = try FloeDigest.sha256Hex(payload)
+            receipt.byteCount = payload.count
+        }
         return receipt
     }
+
+    func setExportPayload(_ data: Data?) { exportRealPayload = data }
 }
 
 @Suite("document.office.edit tool contract")
@@ -249,10 +265,16 @@ struct OfficeEditToolContractTests {
         #expect(query.summary.contains("excel.numberFormat"))
         #expect(query.summary.contains("requiresSelectionFingerprint"))
 
+        // S3-D compatibility: this host-contract export assertion runs through
+        // the supported legacy direct binding (neither tool-call nor task),
+        // which keeps the pre-publication behavior byte-identical. Bound-run
+        // publication with a real committed copy has its own focused
+        // coverage in RunOutputPublicationProducerTests.
         let export = try await tool.execute(OfficeEditArguments(action: .export, path: "sheet.xlsx",
                                                                 output: "copy.xlsx"),
-                                            context: context(root: root))
+                                            context: context(root: root, conversationID: nil, toolCallID: nil))
         #expect(export.exitStatus == 0)
+        #expect(export.outputFiles.isEmpty)
         #expect(export.summary.contains("exported=copy.xlsx"))
         #expect(export.summary.contains("sourceUnchanged=true"))
         #expect(await fake.exportOutput == "copy.xlsx")

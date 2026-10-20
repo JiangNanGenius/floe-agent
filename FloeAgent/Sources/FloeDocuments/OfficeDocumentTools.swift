@@ -49,6 +49,91 @@ enum OfficeWorksheetToolMetadata {
     }
 }
 
+/// Module-internal support for S3-D run-output publication at trusted commit
+/// boundaries (the canonical snapshots live only in the core
+/// `RunOutputSnapshotStore`; this helper measures post-write identity and
+/// maps typed publication failures into observable tool errors). Fixed
+/// failure policy: a bound-run publication failure throws (the produced
+/// original is preserved); genuine legacy direct contexts (no call AND no
+/// task binding) and temporary runs (no durable run output by design) keep
+/// their byte-identical legacy summaries; a partially bound context fails
+/// rather than silently skipping.
+enum RunOutputProducerSupport {
+    enum State {
+        case required
+        case legacyDirect
+        case temporaryExempt
+        case partiallyBound
+    }
+
+    struct CommitIdentity { var sha256: String; var byteCount: Int }
+
+    static func state(_ context: ToolContext) -> State {
+        let hasCall = context.toolCallID?.isEmpty == false
+        let hasTask = context.conversationID != nil
+        if !hasCall && !hasTask { return .legacyDirect }
+        if hasCall != hasTask { return .partiallyBound }
+        if context.temporaryReadOnly { return .temporaryExempt }
+        return .required
+    }
+
+    static var partialBindingFailure: FloeError {
+        FloeError.validationFailed(
+            "run output publication requires both the tool-call and task binding")
+    }
+
+    static func publicationFailure(_ error: RunOutputSnapshotError) -> FloeError {
+        switch error {
+        case .bindingMissing: return FloeError.validationFailed("run output publication failed (unbound)")
+        case .policyRefused: return FloeError.validationFailed("run output publication refused by policy")
+        case .identityInvalid: return FloeError.validationFailed("run output publication failed (invalid identity)")
+        case .sourceUnavailable: return FloeError.validationFailed("run output publication failed (source unavailable)")
+        case .commitIdentityStale: return FloeError.validationFailed("run output publication failed (stale commit identity)")
+        case .conflict(let name): return FloeError.validationFailed("run output publication failed (conflict: \(name))")
+        case .overCap: return FloeError.validationFailed("run output publication failed (over cap)")
+        case .snapshotAliased: return FloeError.validationFailed("run output publication failed (aliased snapshot)")
+        case .ioFailure: return FloeError.storageCorrupted("run output publication failed (storage)")
+        }
+    }
+
+    /// Post-write stat + streamed digest for producers whose commit boundary
+    /// does not already hand over a verified digest. Cancellation propagates.
+    static func measure(_ url: URL, context: ToolContext) throws -> CommitIdentity {
+        let digest = try FloeDigest.sha256Hex(ofFileAt: url,
+                                              isCancelled: { context.cancellation.isCancelled })
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard values.isRegularFile == true, let size = values.fileSize, size >= 0 else {
+            throw FloeError.validationFailed("committed output is not a regular file")
+        }
+        return CommitIdentity(sha256: digest, byteCount: size)
+    }
+
+    /// Accepts either a bare extension or a path and returns the lowercase
+    /// extension used for type mapping.
+    static func normalizedExtension(_ value: String) -> String {
+        let ext = (value as NSString).pathExtension
+        return ext.isEmpty ? value.lowercased() : ext.lowercased()
+    }
+
+    static func officeMIME(_ extOrPath: String) -> String {
+        switch normalizedExtension(extOrPath) {
+        case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        case "pptx": return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        default: return "application/octet-stream"
+        }
+    }
+
+    static func officeUTI(_ extOrPath: String) -> String? {
+        switch normalizedExtension(extOrPath) {
+        case "docx": return "org.openxmlformats.wordprocessingml.document"
+        case "xlsx": return "org.openxmlformats.spreadsheetml.sheet"
+        case "pptx": return "org.openxmlformats.presentationml.presentation"
+        default: return nil
+        }
+    }
+}
+
 private enum OfficeToolSupport {
     static let maximumOfficeBytes = 128 * 1_024 * 1_024
 
@@ -94,6 +179,52 @@ private enum OfficeToolSupport {
         }
         if let expected, (trimmed as NSString).pathExtension.lowercased() != expected {
             throw FloeError.validationFailed("path must end in .\(expected)")
+        }
+    }
+}
+
+/// S3-D: freeze a successfully created Office document into the run's
+/// snapshot namespace from its real post-write identity. Only ever called
+/// after the builder succeeded; the created original is never touched. A
+/// bound-run publication failure throws an observable error; genuine legacy
+/// direct and temporary contexts keep the legacy result untouched; a
+/// partially bound context fails. Cancellation always propagates.
+private func publishedCreateOutput(
+    summary: String,
+    url: URL,
+    producerTool: String,
+    context: ToolContext
+) throws -> ToolExecutionOutput {
+    switch RunOutputProducerSupport.state(context) {
+    case .legacyDirect, .temporaryExempt:
+        return OfficeToolSupport.output(summary)
+    case .partiallyBound:
+        throw RunOutputProducerSupport.partialBindingFailure
+    case .required:
+        do {
+            let identity = try RunOutputProducerSupport.measure(url, context: context)
+            let ext = url.pathExtension.lowercased()
+            let published = try RunOutputSnapshotStore.publish(
+                RunOutputSnapshotRequest(
+                    producerTool: producerTool,
+                    slot: "document",
+                    commit: RunOutputCommit(
+                        sourceURL: url,
+                        sha256: identity.sha256,
+                        byteCount: identity.byteCount,
+                        displayName: url.lastPathComponent,
+                        mimeType: RunOutputProducerSupport.officeMIME(ext),
+                        uti: RunOutputProducerSupport.officeUTI(ext)
+                    )
+                ),
+                using: context
+            )
+            return ToolExecutionOutput(digesting: summary, exitStatus: 0, outputFiles: [published])
+        } catch let error as RunOutputSnapshotError {
+            throw RunOutputProducerSupport.publicationFailure(error)
+        } catch {
+            if (error as? FloeError) == .cancelled || error is CancellationError { throw error }
+            throw FloeError.storageCorrupted("run output publication failed (source unreadable)")
         }
     }
 }
@@ -215,7 +346,9 @@ public struct DocumentCreateWordTool: AgentTool {
             try OfficeDocumentBuilder.createWord(at: url, title: args.title, paragraphs: args.paragraphs)
             // Generated Word files are plain styled paragraphs. Say so instead
             // of implying fillable form fields exist.
-            return OfficeToolSupport.output("created=\(args.path) format=docx paragraphs=\(args.paragraphs.count + 1) fillableFields=0 titleStyle=Title verified=true note=Plain document; no fillable form fields. Use document.office.inspect/updateText for text edits.")
+            return try publishedCreateOutput(
+                summary: "created=\(args.path) format=docx paragraphs=\(args.paragraphs.count + 1) fillableFields=0 titleStyle=Title verified=true note=Plain document; no fillable form fields. Use document.office.inspect/updateText for text edits.",
+                url: url, producerTool: Self.name, context: context)
         } catch {
             return OfficeToolSupport.output("status=error error=\(error.localizedDescription)", exitStatus: 2)
         }
@@ -248,7 +381,9 @@ public struct DocumentCreateWorkbookTool: AgentTool {
         do {
             let url = try OfficeToolSupport.resolve(args.path, context: context, fallback: rootProvider, mustExist: false)
             try OfficeDocumentBuilder.createWorkbook(at: url, sheets: args.sheets)
-            return OfficeToolSupport.output("created=\(args.path) format=xlsx sheets=\(args.sheets.count) verified=true")
+            return try publishedCreateOutput(
+                summary: "created=\(args.path) format=xlsx sheets=\(args.sheets.count) verified=true",
+                url: url, producerTool: Self.name, context: context)
         } catch {
             return OfficeToolSupport.output("status=error error=\(error.localizedDescription)", exitStatus: 2)
         }
@@ -322,9 +457,9 @@ public struct PresentationCreateDeckTool: AgentTool {
             let objects = slides.compactMap(\.objects).flatMap { $0 }
             let charts = objects.filter { $0.kind == .chart }.count
             let images = objects.filter { $0.kind == .image }.count
-            return OfficeToolSupport.output(
-                "created=\(args.path) format=pptx slides=\(args.slides.count) objects=\(objects.count) charts=\(charts) images=\(images) verified=true"
-            )
+            return try publishedCreateOutput(
+                summary: "created=\(args.path) format=pptx slides=\(args.slides.count) objects=\(objects.count) charts=\(charts) images=\(images) verified=true",
+                url: url, producerTool: Self.name, context: context)
         } catch {
             return OfficeToolSupport.output("status=error error=\(error.localizedDescription)", exitStatus: 2)
         }
