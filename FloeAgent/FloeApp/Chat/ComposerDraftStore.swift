@@ -22,6 +22,15 @@
 //   superseded snapshot is skipped. Lifecycle transitions flush the newest
 //   snapshot with a bounded wait, and a failed or corrupt write is
 //   reported (`lastWriteState`) instead of being swallowed.
+// - A Shortcuts inbox handoff is proven by an exact `ShortcutHandoffReceipt`
+//   (destination + entry id + claim token) serialized in the SAME snapshot
+//   as the placed text. The claim is acknowledged only against a receipt the
+//   write pipeline verified on disk — never inferred from text content,
+//   never from in-memory state. Ordinary edits, clears and sends preserve
+//   unsettled receipts until the source acknowledges them; a failed durable
+//   write rolls back its own unverified placement (without touching newer
+//   human content) so the slot stays retryable and no receipt ever proves
+//   something the disk does not hold.
 //
 // Storage is a single JSON document in Application Support. An unreadable
 // document is preserved beside the live file, never deleted. A future
@@ -128,6 +137,36 @@ final class ComposerDraftStore: ObservableObject {
         return matches && allowTextRecovery
     }
 
+    /// Durable proof that ONE exact Shortcuts inbox entry was placed into
+    /// ONE destination composer slot.
+    ///
+    /// A receipt is serialized inside the same snapshot as the placed text,
+    /// so a snapshot that reaches disk carries the text and its receipt
+    /// atomically. A claim may be acknowledged only while this exact receipt
+    /// is verified ON DISK — never inferred from text content (unrelated
+    /// human prose can contain the same phrase; distinct queue entries can
+    /// carry identical payloads) and never from in-memory state alone (a
+    /// failed write proves nothing). The claim token is part of the
+    /// identity: releasing a claim rotates it in the source store, so a
+    /// receipt from an abandoned delivery can never settle a newer handoff.
+    /// OWNERSHIP INVARIANT: a receipt may only be staged in the SAME
+    /// main-actor turn in which the destination composer synchronously
+    /// accepted the text (render-before-persist). A landed receipt therefore
+    /// always proves a placement that actually reached the visible composer;
+    /// there is no durable state for "placed but unrendered", and a crash
+    /// before a later ack can only settle a real acceptance.
+    struct ShortcutHandoffReceipt: Codable, Equatable, Hashable {
+        let destinationID: String
+        let entryID: UUID
+        let claimToken: String
+
+        init(destinationID: String, entryID: UUID, claimToken: String) {
+            self.destinationID = destinationID
+            self.entryID = entryID
+            self.claimToken = claimToken
+        }
+    }
+
     /// Outcome of the durable write pipeline. The composer surfaces
     /// `.failed` so a save problem is visible; nothing is silently dropped.
     enum WriteState: Equatable {
@@ -154,9 +193,16 @@ final class ComposerDraftStore: ObservableObject {
     @Published private(set) var lastWriteState: WriteState = .idle
 
     private var entries: [UUID: Entry]
+    /// Unsettled handoff receipts keyed by inbox entry id, so distinct
+    /// entries with identical payloads stay distinct. Serialized with every
+    /// snapshot (never with drafts alone) and deliberately NOT bucketed:
+    /// temporary-chat ids never receive inbox handoffs, and the receipt
+    /// survives ordinary edits, clears and sends until its source settles.
+    private var handoffs: [UUID: ShortcutHandoffReceipt] = [:]
     /// Temporary-chat drafts live in a RAM-only bucket: `submitSnapshot`
-    /// serializes `entries` alone, so lifecycle flushes can never persist an
-    /// ephemeral draft, regardless of when the exclusion flag changes.
+    /// serializes `entries` alone (plus the durable receipt ledger), so
+    /// lifecycle flushes can never persist an ephemeral draft, regardless
+    /// of when the exclusion flag changes.
     private var ephemeralEntries: [UUID: Entry] = [:]
     /// Conversation ids whose drafts must stay in `ephemeralEntries`.
     private var temporaryExcludedIDs: Set<UUID> = []
@@ -199,10 +245,13 @@ final class ComposerDraftStore: ObservableObject {
             label: "app.floe.composer-drafts.write", qos: .utility
         )
         var loaded: [UUID: Entry] = [:]
+        var loadedHandoffs: [UUID: ShortcutHandoffReceipt] = [:]
         var loadFailure: String?
         if FileManager.default.fileExists(atPath: fileURL.path) {
             do {
-                loaded = try Self.decode(Self.readData(from: fileURL))
+                let document = try Self.decodeDocument(Self.readData(from: fileURL))
+                loaded = document.drafts
+                loadedHandoffs = document.handoffs
             } catch {
                 // Never discard the user's unreadable input: keep a copy for
                 // recovery, start from an empty map and report the failure.
@@ -215,6 +264,15 @@ final class ComposerDraftStore: ObservableObject {
             }
         }
         self.entries = loaded
+        self.handoffs = loadedHandoffs
+        // A successfully loaded document IS the disk state: its receipts are
+        // proven on disk (this is the crash-between-durable-write-and-ack
+        // recovery path). A missing file or a failed decode proves nothing,
+        // so the verified receipt set stays empty and no claim can be
+        // acknowledged until a future write lands.
+        if loadFailure == nil, !loadedHandoffs.isEmpty {
+            writer.seedPersisted(receipts: Set(loadedHandoffs.values))
+        }
         if let loadFailure {
             self.pendingLoadFailure = loadFailure
             self.lastWriteState = .failed(message: loadFailure)
@@ -463,6 +521,124 @@ final class ComposerDraftStore: ObservableObject {
         syncWriteState()
     }
 
+    /// Verified durable commit for ONE destination-checked handoff (the
+    /// Shortcuts draft inbox). The debounced typing path acknowledges only an
+    /// in-memory assignment; this primitive is the durable counterpart: it
+    /// applies the exact write (rejected when `expectedRevision` no longer
+    /// matches, so newer human content is never overwritten), stages the
+    /// handoff receipt in the SAME snapshot as the placed text, cancels the
+    /// pending debounce, submits immediately with a must-land guarantee (a
+    /// placement snapshot is never skipped as "superseded" while its receipt
+    /// would move on to a later snapshot — later snapshots may still carry
+    /// the receipt, but the placed text itself is guaranteed to have reached
+    /// disk), and suspends — without blocking the main thread — until the
+    /// newest snapshot is on disk.
+    ///
+    /// Returns true ONLY when the bytes (text AND receipt) are verified
+    /// durable; callers may acknowledge their source record with that result
+    /// and nothing less. On a failed write the method rolls back exactly its
+    /// own mutation: the shared slot is restored (so the handoff stays
+    /// retryable and the failure does not leave an occupied slot that would
+    /// block every later delivery) ONLY while the slot still holds this
+    /// commit's content — a newer human edit, clear, or send during the
+    /// suspension always wins and is never rolled back — and the unverified
+    /// receipt is removed, so a disk failure can never produce a
+    /// receipt-backed ack later.
+    func commitDurable(
+        text: String,
+        attachments: [AttachmentRef] = [],
+        conversationID: UUID,
+        expectedRevision: Int?,
+        handoff: ShortcutHandoffReceipt? = nil
+    ) async -> Bool {
+        let previous = bucket(for: conversationID)[conversationID]
+        let previousReceipt = handoff.flatMap { handoffs[$0.entryID] }
+        guard save(
+            text: text, attachments: attachments,
+            conversationID: conversationID, expectedRevision: expectedRevision
+        ) != nil else { return false }
+        let commitRevision = bucket(for: conversationID)[conversationID]?.revision
+        if let handoff {
+            // Same main-actor turn as the save above: the snapshot submitted
+            // below serializes text and receipt as ONE atomic document
+            // version. Distinct entry ids never collapse into each other.
+            handoffs[handoff.entryID] = handoff
+        }
+        pendingWrite?.cancel()
+        pendingWrite = nil
+        let version = snapshotVersion
+        submitSnapshot(requiringLanding: handoff != nil)
+        let tracker = self.writer
+        let placed = await withCheckedContinuation { continuation in
+            // The write queue is serial and the snapshot closure was enqueued
+            // synchronously above: this closure runs after it, so the
+            // bookkeeping it reads reflects exactly this snapshot's outcome.
+            writeQueue.async {
+                continuation.resume(
+                    returning: tracker.persistedVersion >= version && tracker.lastFailure == nil
+                )
+            }
+        }
+        if placed { return true }
+        // The bytes never reached disk. Undo this commit's own mutation so
+        // the shared slot does not stay occupied while the VM field is empty
+        // (that asymmetry is what made failed writes permanently retry-
+        // blocking). Never roll back newer human content: restore only while
+        // the slot still holds exactly what this commit wrote.
+        let current = bucket(for: conversationID)[conversationID]
+        if current?.revision == commitRevision, current?.text == text {
+            setEntry(previous, for: conversationID)
+            // The rollback is itself a text change: the generation advances
+            // so a token captured against the failed placement can never be
+            // mistaken for the restored draft.
+            textGenerations[conversationID, default: 0] += 1
+        }
+        if let handoff, handoffs[handoff.entryID] == handoff {
+            handoffs[handoff.entryID] = previousReceipt
+        }
+        markDirty()
+        return false
+    }
+
+    /// True only when the most recent write pipeline VERIFIED this exact
+    /// receipt on disk: the same snapshot carried it, its bytes landed, and
+    /// (for a fresh process) it came out of the readable draft document.
+    /// In-memory staging, text containment and equality inference are NOT
+    /// proof — a settle that acknowledges on anything less would credit an
+    /// undelivered or unrelated entry. Callers must ALSO hold the ownership
+    /// invariant that a receipt is only ever staged in the same main-actor
+    /// turn in which the live composer synchronously accepted the text;
+    /// disk proof then means a VISIBLE acceptance already happened.
+    func handoffReceiptOnDisk(_ receipt: ShortcutHandoffReceipt) -> Bool {
+        writer.persistedReceipts.contains(receipt)
+    }
+
+    /// Receipts still awaiting their source ack, in memory. The ledger is
+    /// the unsettled-evidence surface: a staged receipt means the composer
+    /// already accepted that draft, and it survives ordinary edits, clears
+    /// and sends until `settleHandoff` (after ack) retires it. There is
+    /// deliberately NO withdrawal primitive: with render-before-persist, a
+    /// failure to durable-verify rolls back inside `commitDurable` itself
+    /// (never reaching disk), and a landed receipt always follows a real
+    /// acceptance, so no "unrendered success" state exists to retract.
+    var unsettledHandoffReceipts: [ShortcutHandoffReceipt] {
+        handoffs.values.sorted { $0.entryID.uuidString < $1.entryID.uuidString }
+    }
+
+    /// Post-ack housekeeping: the source record is settled, so the receipt
+    /// evidence retires. Ordinary debounced persistence follows; the ack
+    /// itself is already durable in the source store either way. A receipt
+    /// that lingers on disk after its row was acknowledged or tombstoned is
+    /// INERT forever: `ack` requires the row to still be `claimed` with
+    /// exactly this token, and an acknowledged row is gone (or a delivered
+    /// tombstone that can never be re-claimed), so nothing can settle on the
+    /// stale bytes a second time.
+    func settleHandoff(entryID: UUID, claimToken: String) {
+        guard handoffs[entryID]?.claimToken == claimToken else { return }
+        handoffs[entryID] = nil
+        markDirty()
+    }
+
     /// Bounded flush for lifecycle transitions: waits up to `timeout` for the
     /// newest snapshot to reach disk and returns whether it did. The main
     /// thread is only parked during a background/terminate transition.
@@ -503,8 +679,15 @@ final class ComposerDraftStore: ObservableObject {
 
     /// Submits the current snapshot for background serialization. A snapshot
     /// older than one already submitted is skipped; a pending debounce for
-    /// the same version is not resubmitted.
-    private func submitSnapshot() {
+    /// the same version is not resubmitted. A `requiringLanding` snapshot (a
+    /// handoff placement being durably verified) is NEVER skipped: its exact
+    /// bytes must reach disk once, even when a newer human-edit snapshot is
+    /// already queued behind it. That ordering guarantee is what makes a
+    /// landed receipt mean "the accepted text was on disk" — a later snapshot
+    /// may carry the receipt forward while a human edit extends or replaces
+    /// the draft text after acceptance, but the accepted placement itself is
+    /// proven by the snapshot that had to land.
+    private func submitSnapshot(requiringLanding: Bool = false) {
         let version = snapshotVersion
         if version == submittedVersion,
            writer.persistedVersion >= version,
@@ -513,14 +696,17 @@ final class ComposerDraftStore: ObservableObject {
         }
         submittedVersion = version
         let snapshot = entries
+        let receiptSnapshot = handoffs
+        let verifiedReceipts = Set(receiptSnapshot.values)
         let url = fileURL
         let writer = self.writer
-        writer.begin(version: version)
+        writer.begin(version: version, mustLand: requiringLanding)
         lastWriteState = .pending
         writeQueue.async { [weak self] in
             // A newer snapshot was requested while this one waited. Writing
-            // this older state would only be overwritten — skip it.
-            guard writer.latestRequested <= version else {
+            // this older state would only be overwritten — skip it, unless
+            // this version is a handoff placement that must land.
+            guard writer.latestRequested <= version || writer.requiresLanding(version) else {
                 Task { @MainActor [weak self] in self?.syncWriteState() }
                 return
             }
@@ -530,12 +716,12 @@ final class ComposerDraftStore: ObservableObject {
                     at: url.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                let data = try Self.encode(snapshot)
+                let data = try Self.encodeDocument(drafts: snapshot, handoffs: receiptSnapshot)
                 try data.write(to: url, options: .atomic)
-                writer.complete(version: version)
+                writer.complete(version: version, receipts: verifiedReceipts)
                 wrote = true
             } catch {
-                writer.fail(error.localizedDescription)
+                writer.fail(version: version, message: error.localizedDescription)
             }
             let succeeded = wrote
             Task { @MainActor [weak self] in
@@ -569,8 +755,36 @@ final class ComposerDraftStore: ObservableObject {
         try Data(contentsOf: url)
     }
 
-    private nonisolated static func decode(_ data: Data) throws -> [UUID: Entry] {
-        let raw = try JSONDecoder().decode([String: Entry].self, from: data)
+    /// The on-disk document. Version 2 wraps the draft map so a handoff
+    /// receipt serializes atomically with the text it proves. A version 1
+    /// document (a bare `[uuid: Entry]` JSON object — every file written
+    /// before this protocol existed) still loads, so a failed or never-
+    /// attempted v2 write leaves the recoverable bytes readable: each entry
+    /// survives a process restart and the missing receipt ledger simply
+    /// proves nothing, which is exactly the honest default.
+    private struct PersistedDocument: Codable {
+        var drafts: [String: Entry]
+        var handoffs: [String: ShortcutHandoffReceipt]
+    }
+
+    private nonisolated static func decodeDocument(
+        _ data: Data
+    ) throws -> (drafts: [UUID: Entry], handoffs: [UUID: ShortcutHandoffReceipt]) {
+        let decoder = JSONDecoder()
+        if let document = try? decoder.decode(PersistedDocument.self, from: data) {
+            return (
+                try decodeDrafts(document.drafts),
+                try decodeHandoffs(document.handoffs)
+            )
+        }
+        // v1: the whole root object is the draft map; no receipts existed.
+        let raw = try decoder.decode([String: Entry].self, from: data)
+        return (try decodeDrafts(raw), [:])
+    }
+
+    private nonisolated static func decodeDrafts(
+        _ raw: [String: Entry]
+    ) throws -> [UUID: Entry] {
         var decoded: [UUID: Entry] = [:]
         for (key, value) in raw {
             guard let id = UUID(uuidString: key) else {
@@ -586,14 +800,38 @@ final class ComposerDraftStore: ObservableObject {
         return decoded
     }
 
-    private nonisolated static func encode(_ entries: [UUID: Entry]) throws -> Data {
-        var raw: [String: Entry] = [:]
-        for (key, value) in entries {
-            raw[key.uuidString] = value
+    private nonisolated static func decodeHandoffs(
+        _ raw: [String: ShortcutHandoffReceipt]
+    ) throws -> [UUID: ShortcutHandoffReceipt] {
+        var decoded: [UUID: ShortcutHandoffReceipt] = [:]
+        for (key, value) in raw {
+            guard let id = UUID(uuidString: key), value.entryID == id else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: [],
+                        debugDescription: FloeL10n.l("chat.composer_draft_store.the_draft_key_is_not_a", key)
+                    )
+                )
+            }
+            decoded[id] = value
+        }
+        return decoded
+    }
+
+    private nonisolated static func encodeDocument(
+        drafts: [UUID: Entry], handoffs: [UUID: ShortcutHandoffReceipt]
+    ) throws -> Data {
+        var rawDrafts: [String: Entry] = [:]
+        for (key, value) in drafts {
+            rawDrafts[key.uuidString] = value
+        }
+        var rawHandoffs: [String: ShortcutHandoffReceipt] = [:]
+        for (key, value) in handoffs {
+            rawHandoffs[key.uuidString] = value
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        return try encoder.encode(raw)
+        return try encoder.encode(PersistedDocument(drafts: rawDrafts, handoffs: rawHandoffs))
     }
 
     /// Moves an unreadable draft document aside (copy as a fallback) so the
@@ -623,16 +861,23 @@ final class ComposerDraftStore: ObservableObject {
     }
 
     /// Lock-protected write bookkeeping shared between the main actor and the
-    /// serial write queue.
+    /// serial write queue. Also the single authority on what is PROVEN ON
+    /// DISK: the receipt set of the most recent snapshot whose bytes actually
+    /// landed (seeded from the loaded document at init), plus the must-land
+    /// obligations that keep a handoff placement from being skipped as
+    /// "superseded" before it ever reached disk.
     private final class DraftWriteTracker: @unchecked Sendable {
         private let lock = NSLock()
         private var requested: UInt64 = 0
         private var persisted: UInt64 = 0
         private var failure: String?
+        private var landingObligations: Set<UInt64> = []
+        private var landedReceipts: Set<ComposerDraftStore.ShortcutHandoffReceipt> = []
 
-        func begin(version: UInt64) {
+        func begin(version: UInt64, mustLand: Bool = false) {
             lock.lock()
             requested = max(requested, version)
+            if mustLand { landingObligations.insert(version) }
             lock.unlock()
         }
 
@@ -654,16 +899,43 @@ final class ComposerDraftStore: ObservableObject {
             return failure
         }
 
-        func complete(version: UInt64) {
+        func requiresLanding(_ version: UInt64) -> Bool {
             lock.lock()
-            persisted = max(persisted, version)
-            failure = nil
+            defer { lock.unlock() }
+            return landingObligations.contains(version)
+        }
+
+        var persistedReceipts: Set<ComposerDraftStore.ShortcutHandoffReceipt> {
+            lock.lock()
+            defer { lock.unlock() }
+            return landedReceipts
+        }
+
+        /// A successfully loaded document IS disk state: seed the verified
+        /// receipts from it (crash-after-write-before-ack recovery).
+        func seedPersisted(receipts: Set<ComposerDraftStore.ShortcutHandoffReceipt>) {
+            lock.lock()
+            landedReceipts = receipts
             lock.unlock()
         }
 
-        func fail(_ message: String) {
+        func complete(version: UInt64, receipts: Set<ComposerDraftStore.ShortcutHandoffReceipt>) {
+            lock.lock()
+            persisted = max(persisted, version)
+            failure = nil
+            landingObligations.remove(version)
+            landedReceipts = receipts
+            lock.unlock()
+        }
+
+        func fail(version: UInt64, message: String) {
             lock.lock()
             failure = message
+            landingObligations.remove(version)
+            // `landedReceipts` deliberately stays at the last snapshot that
+            // ACTUALLY landed: a failed write changes nothing on disk, so
+            // receipts proven before the failure remain proven and the
+            // receipt the failed commit had staged proves nothing.
             lock.unlock()
         }
     }

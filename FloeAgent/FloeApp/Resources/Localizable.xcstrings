@@ -53346,6 +53346,57 @@
         }
       }
     },
+    "shortcuts.inbox.take": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Insert next"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "填入"
+          }
+        }
+      }
+    },
+    "shortcuts.inbox.waiting": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shortcuts drafts waiting: %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "快捷指令草稿待填入：%lld"
+          }
+        }
+      }
+    },
+    "shortcuts.inbox.waiting.one": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shortcuts draft waiting: %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "快捷指令草稿待填入：%lld"
+          }
+        }
+      }
+    },
     "shortcuts.intent.create_task.description": {
       "extractionState": "manual",
       "localizations": {

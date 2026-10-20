@@ -566,6 +566,8 @@ targets:
       - path: Tests/FloeAppTests/ChatAttachmentOpenTests.swift
       - path: Tests/FloeAppTests/AppQualificationEnvironment.swift
       - path: Tests/FloeAppTests/FloeShortcutsInitializationTests.swift
+      - path: Tests/FloeAppTests/ShortcutInboxHandoffTests.swift
+      - path: Tests/FloeAppTests/ShortcutInboxStoreTests.swift
       - path: Tests/FloeAppTests/NotesMarkdownPaginationTests.swift
       - path: Tests/FloeAppTests/NotesInkRefreshTests.swift
       - path: Tests/FloeAppTests/DesignBuiltinNodeTests.swift

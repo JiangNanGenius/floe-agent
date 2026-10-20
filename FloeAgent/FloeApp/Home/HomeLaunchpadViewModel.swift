@@ -43,6 +43,61 @@ extension HomeTaskStarting {
 @MainActor
 final class HomeLaunchpadViewModel: ObservableObject {
 
+    // MARK: - Shortcuts draft inbox
+
+    /// True only for the canonical Home launchpad composer (the ordinary
+    /// Home / New Task / Workspace start surfaces). Creative design entry and
+    /// any other draft identity NEVER consume the Shortcuts queue, so an
+    /// unrelated editor cannot take over the handoff.
+    let acceptsShortcutInbox: Bool
+    /// Durable-slot count currently waiting to be reviewed (pending entries).
+    /// The banner is honest: 0 means nothing is queued for this surface.
+    @Published private(set) var shortcutInboxCount = 0
+    /// One handoff per destination at a time across ALL live windows: the
+    /// claim/ack protocol is atomic, and serializing the delivery side keeps
+    /// two windows from continuing the same claim against each other.
+    @MainActor private static var destinationsInHandoff: Set<String> = []
+
+    /// Test seam: an injected durable store (production resolves the
+    /// app-owned database store; no parallel runtime is ever created).
+    private let shortcutInboxOverride: (any ShortcutDraftInboxStore)?
+    /// Test seam for the durable commit (see `commitDurableOverride`): tests
+    /// inject a slow commit to prove the late-callback guard deterministically.
+    typealias ShortcutDurableCommit = @MainActor (
+        _ text: String,
+        _ expectedRevision: Int?,
+        _ receipt: ComposerDraftStore.ShortcutHandoffReceipt
+    ) async -> Bool
+    private let commitDurableOverride: ShortcutDurableCommit?
+    /// The launchpad's durable draft slot, injectable for isolated tests.
+    let draftStore: ComposerDraftStore
+    private let isShortcutInboxEnabled: () -> Bool
+    /// Legacy single-slot defaults for the one-time migration. nil uses the
+    /// production App Group suite; isolated tests MUST inject a private
+    /// suite so no real app defaults are ever touched.
+    private let shortcutLegacyDefaults: UserDefaults?
+
+    private func resolveShortcutInbox() -> any ShortcutDraftInboxStore {
+        shortcutInboxOverride
+            ?? (SQLiteShortcutDraftInboxStore(database: environment.database) as any ShortcutDraftInboxStore)
+    }
+
+    /// The composer is actually free to receive a draft: no human text
+    /// (whitespace does not count), no staged attachments, no send in
+    /// flight, and no other window is mid-handoff for this destination.
+    var canAcceptShortcutDraft: Bool {
+        acceptsShortcutInbox
+            && !draft.contains(where: { !$0.isWhitespace })
+            && attachments.isEmpty
+            && !isSending
+            && !isConsumingDraft
+            && !Self.destinationsInHandoff.contains(draftStorageID.uuidString)
+    }
+
+    var showsShortcutInboxBanner: Bool {
+        acceptsShortcutInbox && shortcutInboxCount > 0
+    }
+
     // MARK: - Composer state
 
     /// Draft text. Preserved verbatim across a failed send. Every real
@@ -108,7 +163,13 @@ final class HomeLaunchpadViewModel: ObservableObject {
         selectedProjectID: UUID? = nil,
         draftStorageID: UUID = ComposerDraftStore.homeDraftID,
         initialDraft: String? = nil,
-        designLaunchBindingProvider: (@MainActor () -> DesignLaunchBinding?)? = nil
+        designLaunchBindingProvider: (@MainActor () -> DesignLaunchBinding?)? = nil,
+        acceptsShortcutInbox: Bool = false,
+        shortcutInbox: (any ShortcutDraftInboxStore)? = nil,
+        draftStore: ComposerDraftStore = .shared,
+        isShortcutInboxEnabled: @escaping () -> Bool = { AppleCapabilityPreferences.isEnabled(.shortcuts) },
+        shortcutLegacyDefaults: UserDefaults? = nil,
+        shortcutCommitDurable: ShortcutDurableCommit? = nil
     ) {
         self.center = center
         self.environment = center.environment
@@ -116,10 +177,16 @@ final class HomeLaunchpadViewModel: ObservableObject {
         self.selectedProjectID = selectedProjectID
         self.draftStorageID = draftStorageID
         self.designLaunchBindingProvider = designLaunchBindingProvider
+        self.acceptsShortcutInbox = acceptsShortcutInbox
+        self.shortcutInboxOverride = shortcutInbox
+        self.draftStore = draftStore
+        self.isShortcutInboxEnabled = isShortcutInboxEnabled
+        self.shortcutLegacyDefaults = shortcutLegacyDefaults
+        self.commitDurableOverride = shortcutCommitDurable
         // An unsent Home draft (and staged attachments) survive app restarts
         // under the stable launchpad identity — not the per-launch staging
         // UUID, which rotates after each send.
-        let stored = ComposerDraftStore.shared.entry(for: draftStorageID)
+        let stored = draftStore.entry(for: draftStorageID)
         _draft = Published(initialValue: stored?.text ?? initialDraft ?? "")
         _attachments = Published(initialValue: stored?.attachments ?? [])
         // Default the draft policy to the user's global default agent mode so
@@ -227,6 +294,264 @@ final class HomeLaunchpadViewModel: ObservableObject {
         activeTasks = active
         recentConversations = center.conversations
         reconcileModelSelection()
+        await refreshShortcutInboxCount()
+    }
+
+    // MARK: - Shortcuts draft inbox handoff
+
+    /// Delivers the oldest queued Shortcuts draft into this composer.
+    /// Only the canonical Home route accepts (Creative and foreign draft
+    /// identities never consume). Existing human text or staged attachments
+    /// always win: the entry stays durably queued and the composer is
+    /// untouched. Delivery identity is an explicit durable receipt —
+    /// (destination, inbox entry id, claim token) — serialized in the SAME
+    /// snapshot as the placed text; a claim is acknowledged ONLY while that
+    /// exact receipt is verified on disk. No text containment, no equality
+    /// inference, no in-memory-only proof: unrelated prose can quote the
+    /// same phrase and two queue entries can carry identical payloads, so
+    /// only the entry-bound receipt can distinguish them. Rendering happens
+    /// as the synchronous acceptance event BEFORE the receipt is staged —
+    /// nothing assigns the field after the durable commit — so typing,
+    /// staging or sending during the durable-write suspension
+    /// (including an A → B → A edit) is newer work that no late callback
+    /// ever overwrites — the only assignment happens synchronously BEFORE
+    /// the commit suspends, and a failed placement rolls back its render
+    /// only while the field is generation-unchanged since. Every
+    /// settle/release stays token-guarded, so stale callbacks cannot disturb
+    /// a newer handoff, and a restart can only settle a receipt that proves
+    /// a VISIBLE acceptance. On success the FIFO queue advances to the next
+    /// entry; on any failure the entry remains recoverable.
+    func acceptShortcutInbox() async {
+        guard acceptsShortcutInbox else { return }
+        let destination = draftStorageID.uuidString
+        guard !Self.destinationsInHandoff.contains(destination) else {
+            await refreshShortcutInboxCount()
+            return
+        }
+        Self.destinationsInHandoff.insert(destination)
+        defer { Self.destinationsInHandoff.remove(destination) }
+        guard isShortcutInboxEnabled() else {
+            // Capability off: queued records stay queued, the surface is quiet.
+            if shortcutInboxCount != 0 { shortcutInboxCount = 0 }
+            return
+        }
+        let inbox = resolveShortcutInbox()
+        do {
+            try await FloeShortcutInbox.migrateLegacyDraft(
+                into: inbox, defaults: shortcutLegacyDefaults
+            )
+            await settleShortcutClaims(inbox, destination: destination)
+            guard canAcceptShortcutDraft else {
+                await refreshShortcutInboxCount()
+                return
+            }
+            // Capture the live field identity BEFORE the await: any human
+            // edit during the claim — including a retyped A → B → A — is
+            // rejected below and the claim is released.
+            let capturedGeneration = draftGeneration
+            guard let claim = try await inbox.claimNext(destinationID: destination, at: Date()),
+                  let claimToken = claim.claimToken else {
+                await refreshShortcutInboxCount()
+                return
+            }
+            guard !draft.contains(where: { !$0.isWhitespace }),
+                  draftGeneration == capturedGeneration,
+                  attachments.isEmpty, !isSending, !isConsumingDraft
+            else {
+                _ = try? await inbox.release(id: claim.id, claimToken: claimToken)
+                await refreshShortcutInboxCount()
+                return
+            }
+            let outcome = await deliverShortcutDraft(
+                claim.text, inbox: inbox, id: claim.id, claimToken: claimToken,
+                destination: destination
+            )
+            if case .failed = outcome {
+                _ = try? await inbox.release(id: claim.id, claimToken: claimToken)
+            }
+        } catch {
+            // The queue keeps every entry in its durable state; nothing is
+            // acknowledged or discarded by this path.
+            FloeLogger(category: .app).error(
+                "shortcutInboxAcceptFailed error=\(error.localizedDescription)"
+            )
+        }
+        await refreshShortcutInboxCount()
+    }
+
+    private enum ShortcutDeliveryOutcome {
+        /// The composer synchronously accepted the draft, its entry-bound
+        /// receipt was verified durable, and the source was settled (or is
+        /// left for an idempotent token-matched settle from the disk bytes —
+        /// which is honest because the acceptance already visibly occurred).
+        case delivered
+        /// Nothing was acknowledged: the commit failed or the slot was
+        /// already occupied. Any render is rolled back when the human has
+        /// not touched the field since, and the caller releases the claim
+        /// back to `pending`; no receipt reached disk, so a restart can only
+        /// re-deliver, never falsely ack.
+        case failed
+    }
+
+    /// Delivers ONE inbox entry with the render-before-persist ownership
+    /// invariant: the live composer synchronously accepts the text FIRST,
+    /// and only the same main-actor turn stages the entry-bound receipt and
+    /// submits its must-land snapshot, so any receipt that can ever be
+    /// disk-verified proves a placement that ACTUALLY reached the visible
+    /// composer. There is no durable "placed but unrendered" state to
+    /// withdraw (the previous design's crash window: a human edit during the
+    /// commit could leave a landed receipt whose withdrawal or release then
+    /// failed, letting a restart settle an entry the user never saw).
+    /// After the commit suspends, any human typing/staging/send is newer
+    /// work that no late callback ever overwrites: the render already
+    /// happened before the suspension and nothing assigns `draft` after it.
+    /// On a failed durable commit the pre-commit render is rolled back only
+    /// while the field is generation-unchanged since acceptance — a human
+    /// who edited the just-rendered draft keeps their content either way.
+    private func deliverShortcutDraft(
+        _ text: String,
+        inbox: any ShortcutDraftInboxStore,
+        id: UUID,
+        claimToken: String,
+        destination: String
+    ) async -> ShortcutDeliveryOutcome {
+        // Re-check the SHARED durable slot AND the live composer right up to
+        // the render: human text, staged attachments or a send in flight
+        // must never be displaced or overwritten.
+        let stored = draftStore.entry(for: draftStorageID)
+        let slotFree = (stored?.text ?? "").trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty && (stored?.attachments ?? []).isEmpty
+        guard slotFree,
+              !draft.contains(where: { !$0.isWhitespace }),
+              attachments.isEmpty, !isSending, !isConsumingDraft
+        else { return .failed }
+        let receipt = ComposerDraftStore.ShortcutHandoffReceipt(
+            destinationID: destination, entryID: id, claimToken: claimToken
+        )
+        // 1. Logical UI acceptance — synchronous, and the only `draft`
+        //    assignment in this flow. `renderedGeneration` is the exact
+        //    generation this acceptance creates (the setter's didSet bumps
+        //    once; the queue payload is validated non-empty on enqueue, so
+        //    the assignment always changes the field).
+        let preAcceptanceDraft = draft
+        let renderedGeneration = draftGeneration &+ 1
+        draft = text
+        // 2. Durable placement + receipt. Same main-actor turn through the
+        //    store's synchronous CAS prefix, so no human event can slip
+        //    between the render above and the receipt staging below.
+        let committed: Bool
+        if let commitDurableOverride {
+            committed = await commitDurableOverride(text, stored?.revision, receipt)
+        } else {
+            committed = await draftStore.commitDurable(
+                text: text, attachments: [],
+                conversationID: draftStorageID, expectedRevision: stored?.revision,
+                handoff: receipt
+            )
+        }
+        if !committed {
+            // Generation-safe rollback of an UNPROVEN placement: restore the
+            // field only while the human has not touched it since acceptance;
+            // their newer content always wins and is never rolled back.
+            if draftGeneration == renderedGeneration {
+                draft = preAcceptanceDraft
+            }
+            return .failed
+        }
+        // 3. Ack only now: acceptance was visible AND the bytes (text +
+        //    receipt) are verified durable. Nothing touches the composer
+        //    field after the commit suspension, ever.
+        do {
+            let acked = try await inbox.ack(id: id, claimToken: claimToken)
+            if acked {
+                // The source record is settled; retire the receipt evidence.
+                draftStore.settleHandoff(entryID: id, claimToken: claimToken)
+            } else {
+                // Destination holds the text durably (the receipt proves it);
+                // the token-guarded ack simply lost a race and the settle
+                // path will settle it from the disk-verified receipt.
+                FloeLogger(category: .app).error("shortcutInboxAckUnsettled id=\(id.uuidString.prefix(8))")
+            }
+            return .delivered
+        } catch {
+            // The draft IS visible and durable; a transient ack failure is
+            // recoverable by the settle path against the on-disk receipt,
+            // so the handoff itself is not reported as lost. The entry
+            // stays claimed until a token-matched settle.
+            FloeLogger(category: .app).error(
+                "shortcutInboxAckThrew id=\(id.uuidString.prefix(8)) error=\(error.localizedDescription)"
+            )
+            return .delivered
+        }
+    }
+
+    /// Settles claims left by dead processes and by a launchpad instance
+    /// that was replaced mid-handoff. Delivery identity is the receipt, not
+    /// the text: a claim is acknowledged idempotently ONLY while the
+    /// destination's draft document verifiably carries its exact
+    /// (destination, entry id, claim token) receipt on disk — the
+    /// crash-after-durable-write-before-ack case. Anything else is
+    /// re-delivered (composer free) or left claimed/released (composer busy
+    /// or dead token), never acknowledged on containment or equality.
+    private func settleShortcutClaims(
+        _ inbox: any ShortcutDraftInboxStore,
+        destination: String
+    ) async {
+        // Same destination, live process: a previous launchpad instance left
+        // this claim (closed window after the durable save, or between save
+        // and ack). Under the destination handoff lock only one instance can
+        // be delivery-active, so settling here is safe.
+        let resumable = (try? await inbox.claims(destinationID: destination)) ?? []
+        for row in resumable {
+            guard let token = row.claimToken else { continue }
+            if draftStore.handoffReceiptOnDisk(
+                ComposerDraftStore.ShortcutHandoffReceipt(
+                    destinationID: destination, entryID: row.id, claimToken: token
+                )
+            ) {
+                let acked = try? await inbox.ack(id: row.id, claimToken: token)
+                if acked == true {
+                    draftStore.settleHandoff(entryID: row.id, claimToken: token)
+                }
+            } else if !draft.contains(where: { !$0.isWhitespace }),
+                      attachments.isEmpty, !isSending, !isConsumingDraft {
+                let outcome = await deliverShortcutDraft(
+                    row.text, inbox: inbox, id: row.id, claimToken: token,
+                    destination: destination
+                )
+                if case .failed = outcome {
+                    _ = try? await inbox.release(id: row.id, claimToken: token)
+                }
+            }
+        }
+        // Claims from dead processes: settle or recover, never continue a
+        // delivery on a token whose owner no longer exists.
+        let abandoned = (try? await inbox.abandonedClaims()) ?? []
+        for row in abandoned where row.destinationID == destination {
+            guard let token = row.claimToken else { continue }
+            if draftStore.handoffReceiptOnDisk(
+                ComposerDraftStore.ShortcutHandoffReceipt(
+                    destinationID: destination, entryID: row.id, claimToken: token
+                )
+            ) {
+                let acked = try? await inbox.ack(id: row.id, claimToken: token)
+                if acked == true {
+                    draftStore.settleHandoff(entryID: row.id, claimToken: token)
+                }
+            } else {
+                _ = try? await inbox.release(id: row.id, claimToken: token)
+            }
+        }
+    }
+
+    private func refreshShortcutInboxCount() async {
+        guard acceptsShortcutInbox, isShortcutInboxEnabled() else {
+            if shortcutInboxCount != 0 { shortcutInboxCount = 0 }
+            return
+        }
+        let count = ((try? await resolveShortcutInbox().pendingCount()) ?? 0)
+        if shortcutInboxCount != count { shortcutInboxCount = count }
     }
 
     // MARK: - Model validation
@@ -320,6 +645,10 @@ final class HomeLaunchpadViewModel: ObservableObject {
             // local-model catalog reconcile used to sit between the durable
             // commit and the navigation.
             Task { await load() }
+            // The send may have been the only thing blocking the Shortcuts
+            // FIFO. If the field emptied (newer human text keeps the queue
+            // waiting), the next durable draft can now be reviewed.
+            Task { await self.acceptShortcutInbox() }
             return conversationID
         } catch {
             // Failure keeps the draft and creates no lingering thread. The

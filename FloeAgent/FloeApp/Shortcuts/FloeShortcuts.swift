@@ -41,21 +41,90 @@ import FloeExecution
 import FloeModels
 import FloePersistence
 
+/// Durable FIFO inbox for the draft-style Shortcuts actions
+/// (`SendToFloe` / `CreateFloeTask`).
+///
+/// The legacy implementation stored ONE string in
+/// `UserDefaults("group.org.floeagent.ios").shortcuts.pendingDraft`; two
+/// consecutive submissions overwrote the first, and consumption deleted the
+/// draft before anything durable accepted it. The queue now lives in
+/// FloePersistence (`shortcut_draft_inbox`) with atomic claim/ack handoff;
+/// the legacy key is read exactly once by the migration below.
 enum FloeShortcutInbox {
     static let suite = "group.org.floeagent.ios"
-    static let pendingDraftKey = "shortcuts.pendingDraft"
+    /// Legacy single-slot key. Owned only by the one-time migration; new
+    /// drafts never write it.
+    static let legacyPendingDraftKey = "shortcuts.pendingDraft"
+    /// Stable migration identity for ONE exact captured legacy value: a
+    /// crash/retry between "durable enqueue" and "legacy key deletion"
+    /// re-enqueues the SAME row and proceeds to delete the key, while a
+    /// DIFFERENT value written later is a distinct entry instead of being
+    /// swallowed by the old row or tombstone.
+    static func legacyMigrationIdentity(for raw: String) -> String {
+        "pendingDraft:" + FloeDigest.sha256Hex(Data(raw.utf8))
+    }
+    /// Posted after a draft is durably enqueued so an open Home surface can
+    /// update its count and take the draft when the composer is free.
+    static let didEnqueue = Notification.Name("floe.shortcuts.draftEnqueued")
 
-    static func enqueue(_ draft: String) {
-        UserDefaults(suiteName: suite)?.set(draft, forKey: pendingDraftKey)
+    /// Enqueues one draft for later review in Home. Throws (and reports no
+    /// success) when the Shortcuts capability is off, the draft is empty, or
+    /// the app's durable stores are not reachable yet.
+    static func enqueue(_ draft: String, source: ShortcutDraftInboxSource) async throws {
+        try await FloeShortcutsRuntime.shared.enqueueDraft(draft, source: source)
     }
 
-    static func consume() -> String? {
-        let defaults = UserDefaults(suiteName: suite)
-        let draft = defaults?.string(forKey: pendingDraftKey)
-        defaults?.removeObject(forKey: pendingDraftKey)
-        return draft
+    /// Moves the legacy single-slot draft into the durable queue once. An
+    /// existing draft is never overwritten: the migration lands as its own
+    /// FIFO entry, identified by the exact bytes captured here. Removal of
+    /// the legacy key happens only after the enqueue is durable, and only
+    /// while the key still holds those same bytes; a whitespace-only legacy
+    /// value carries no content and is simply cleared.
+    static func migrateLegacyDraft(
+        into store: any ShortcutDraftInboxStore,
+        defaults: UserDefaults? = nil
+    ) async throws {
+        let defaults = defaults ?? UserDefaults(suiteName: suite)
+        guard let defaults,
+              let raw = defaults.string(forKey: legacyPendingDraftKey) else { return }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            _ = try await store.enqueue(
+                text: text, source: .legacyMigration,
+                migrationKey: legacyMigrationIdentity(for: raw)
+            )
+        }
+        // Remove ONLY the exact value this call migrated. If a concurrent
+        // legacy writer replaced the key while the enqueue awaited, that newer
+        // value is not ours to delete; a later migration call queues it.
+        if defaults.string(forKey: legacyPendingDraftKey) == raw {
+            defaults.removeObject(forKey: legacyPendingDraftKey)
+        }
     }
 }
+
+#if DEBUG
+/// Hosted-test persistence context for the ACTUAL draft intents.
+///
+/// It lets `SendToFloeIntent` / `CreateFloeTaskIntent` run their real
+/// `perform()` → runtime → readiness → queue path against an isolated inbox,
+/// throwaway legacy defaults and a private NotificationCenter. It never
+/// changes the real capability preferences, the app-owned queue, App Group
+/// defaults, Home's draft or the default NotificationCenter, and the whole
+/// seam (including this type) is compiled out of Release builds.
+///
+/// Scoping is per TASK (`@TaskLocal` below), never process-global: an
+/// unrelated concurrent Send/Create cannot be routed into fixture storage
+/// while a test awaits, and the test's `perform()` sequence cannot capture
+/// concurrent real input. The value is only read/written from `@MainActor`
+/// code, so it carries no cross-isolation use despite its test-only fields.
+struct FloeDraftEnqueueDebugContext: @unchecked Sendable {
+    let inbox: any ShortcutDraftInboxStore
+    let legacyDefaults: UserDefaults
+    let notifications: NotificationCenter
+    let shortcutsEnabled: () -> Bool
+}
+#endif
 
 /// App Intents are launched by the system, sometimes without presenting the
 /// app. Keep the intent layer thin and route all durable work through the same
@@ -64,12 +133,79 @@ enum FloeShortcutInbox {
 final class FloeShortcutsRuntime {
     static let shared = FloeShortcutsRuntime()
 
+    #if DEBUG
+    /// Task-scoped by one hosted test via `$debugDraftEnqueueContext
+    /// .withValue`; there is deliberately no process-global install path.
+    @TaskLocal static var debugDraftEnqueueContext: FloeDraftEnqueueDebugContext?
+    #endif
+
     private weak var environment: AppEnvironment?
 
     private init() {}
 
     func install(environment: AppEnvironment) {
         self.environment = environment
+    }
+
+    /// Durable FIFO enqueue shared by the draft-style intents. Every failure
+    /// throws — the Shortcuts run then honestly shows failure and the user
+    /// can retry; nothing is acknowledged that was not persisted.
+    ///
+    /// A draft needs durable storage, not a configured model: joining the ONE
+    /// shared launch migration makes the queue table reachable on a cold
+    /// App-Intent entry without requiring provider readiness. The same
+    /// single-flight bootstrap used by `run`/`schedule` runs at most once per
+    /// process; no second environment or store graph is created here.
+    func enqueueDraft(_ draft: String, source: ShortcutDraftInboxSource) async throws {
+        #if DEBUG
+        let debugContext = Self.debugDraftEnqueueContext
+        let shortcutsEnabled = debugContext?.shortcutsEnabled()
+            ?? AppleCapabilityPreferences.isEnabled(.shortcuts)
+        #else
+        let shortcutsEnabled = AppleCapabilityPreferences.isEnabled(.shortcuts)
+        #endif
+        guard shortcutsEnabled else {
+            throw FloeError.invalidConfiguration("Shortcuts is disabled in Floe Settings")
+        }
+        guard let environment else {
+            throw FloeError.invalidConfiguration("Floe is still starting; retry the shortcut")
+        }
+        let cleanDraft = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanDraft.isEmpty else {
+            throw FloeError.validationFailed("Task must not be empty")
+        }
+        try Task.checkCancellation()
+        await environment.bootstrap()
+        try Task.checkCancellation()
+        guard !environment.isEphemeral,
+              environment.persistenceReady,
+              environment.bootstrapError == nil else {
+            throw FloeShortcutRunError.durableStorageUnavailable
+        }
+        #if DEBUG
+        if let debugContext {
+            // The real readiness path above already ran on the launched App
+            // graph; only the durable destination is task-scoped.
+            try await FloeShortcutInbox.migrateLegacyDraft(
+                into: debugContext.inbox, defaults: debugContext.legacyDefaults
+            )
+            try Task.checkCancellation()
+            _ = try await debugContext.inbox.enqueue(
+                text: cleanDraft, source: source, migrationKey: nil
+            )
+            debugContext.notifications.post(name: FloeShortcutInbox.didEnqueue, object: nil)
+            return
+        }
+        #endif
+        let store = SQLiteShortcutDraftInboxStore(database: environment.database)
+        try await FloeShortcutInbox.migrateLegacyDraft(into: store)
+        // The legacy migration awaited a durable write: re-check the caller
+        // before appending THIS new draft. A cancelled Shortcuts run must not
+        // enqueue after its awaited work, while the migrated legacy draft
+        // (already durable) stays safely queued.
+        try Task.checkCancellation()
+        _ = try await store.enqueue(text: cleanDraft, source: source, migrationKey: nil)
+        NotificationCenter.default.post(name: FloeShortcutInbox.didEnqueue, object: nil)
     }
 
     func run(prompt: String, title: String?) async throws -> UUID {
@@ -198,7 +334,7 @@ struct SendToFloeIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
         let task = "\(prompt.trimmingCharacters(in: .whitespacesAndNewlines))\n\n\(text)"
-        FloeShortcutInbox.enqueue(task)
+        try await FloeShortcutInbox.enqueue(task, source: .intentSend)
         return .result(value: FloeL10n.l("shortcuts.intent.send_to_floe.result_placed"))
     }
 }
@@ -219,7 +355,7 @@ struct CreateFloeTaskIntent: AppIntent {
     }
 
     func perform() async throws -> some IntentResult {
-        FloeShortcutInbox.enqueue(taskDescription)
+        try await FloeShortcutInbox.enqueue(taskDescription, source: .intentCreate)
         return .result()
     }
 }

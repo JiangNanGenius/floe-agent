@@ -36,12 +36,18 @@ struct HomeLaunchpadView: View {
         self.center = center
         self.designStart = designStart
         self.onTaskCreated = onTaskCreated
+        // Only the canonical Home composer may take Shortcuts drafts.
+        // Creative design entry (designStart) and any foreign draft identity
+        // never consume the queue, so a wrong route cannot take over.
+        let acceptsShortcutInbox = draftStorageID == ComposerDraftStore.homeDraftID
+            && !designStart
         _viewModel = StateObject(wrappedValue: HomeLaunchpadViewModel(
             center: center,
             selectedProjectID: workspaceID,
             draftStorageID: draftStorageID,
             initialDraft: initialDraft,
-            designLaunchBindingProvider: designLaunchBindingProvider
+            designLaunchBindingProvider: designLaunchBindingProvider,
+            acceptsShortcutInbox: acceptsShortcutInbox
         ))
     }
 
@@ -81,10 +87,16 @@ struct HomeLaunchpadView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await viewModel.load()
-            if AppleCapabilityPreferences.isEnabled(.shortcuts),
-               let pending = FloeShortcutInbox.consume() {
-                viewModel.draft = pending
-            }
+            // Durable FIFO delivery: the view model only accepts into an
+            // empty, idle composer, acknowledges only while the entry-
+            // specific handoff receipt is verified on disk beside the placed
+            // text, and keeps every other entry safely queued.
+            await viewModel.acceptShortcutInbox()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: FloeShortcutInbox.didEnqueue)) { _ in
+            // A Shortcuts run just placed a draft while Home is open: update
+            // the count and, if the composer is free, deliver it now.
+            Task { await viewModel.acceptShortcutInbox() }
         }
         // A Settings change reloads the center asynchronously; both the stored
         // default and the offered model list can change under an open Home
@@ -148,6 +160,9 @@ struct HomeLaunchpadView: View {
 
     private var composer: some View {
         VStack(spacing: 0) {
+            if viewModel.showsShortcutInboxBanner {
+                shortcutInboxBar
+            }
             if !viewModel.pendingApprovals.isEmpty {
                 approvalsStrip
             }
@@ -182,6 +197,30 @@ struct HomeLaunchpadView: View {
     }
 
     // MARK: - Status strips
+
+    /// Compact actionable notice for queued Shortcuts drafts. It only shows
+    /// when entries are actually waiting; taking a draft is explicit when
+    /// the composer is busy and automatic once it is free again.
+    private var shortcutInboxBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "tray.and.arrow.down")
+                .foregroundStyle(FloeTheme.primary)
+                .accessibilityHidden(true)
+            Text(FloeL10n.plural("shortcuts.inbox.waiting", count: viewModel.shortcutInboxCount))
+                .font(FloeTheme.Typography.metadata)
+            Spacer()
+            Button("shortcuts.inbox.take") {
+                Task { await viewModel.acceptShortcutInbox() }
+            }
+            .buttonStyle(.bordered)
+            .disabled(!viewModel.canAcceptShortcutDraft)
+            .frame(minHeight: FloeTheme.minimumTarget)
+            .accessibilityIdentifier("home.shortcuts.inbox.take")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(FloeTheme.primary.opacity(0.08))
+    }
 
     private var approvalsStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
