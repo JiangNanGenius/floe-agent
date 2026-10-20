@@ -207,9 +207,27 @@ final class FloeShortcutRunFilesTests: XCTestCase {
     ) -> FloeShortcutRunService {
         let store = runs!
         let conversations = self.conversations!
+        let database = self.database!
         let reader = SQLiteRunOutputReader(database: database)
         let root = artifactRoot!
         let counters = counters
+        let manifest: (@Sendable (UUID, UUID) async throws -> [RunOutputManifestRow])?
+        if includeManifest {
+            manifest = { runID, conversationID in
+                counters.manifestCalls += 1
+                if let manifestError { throw manifestError }
+                return try await reader.manifestRows(
+                    runID: runID, expectedConversationID: conversationID)
+            }
+        } else { manifest = nil }
+        let verifier: (@Sendable (RunOutputFile) async -> RunOutputSnapshotVerification)?
+        if includeVerifier {
+            verifier = { receipt in
+                counters.verifyCalls += 1
+                if let verifyOverride { return await verifyOverride(receipt) }
+                return RunOutputSnapshotStore.verify(receipt, artifactRoot: root)
+            }
+        } else { verifier = nil }
         return FloeShortcutRunService(deps: FloeShortcutRunDeps(
             ensureReady: { _ in },
             capabilityEnabled: capabilityEnabled,
@@ -229,22 +247,8 @@ final class FloeShortcutRunFilesTests: XCTestCase {
                 try await SQLiteRunReplyReader(database: database)
                     .provenFinalReplyText(runID: runID, conversationID: conversationID, messageID: messageID)
             },
-            runOutputManifest: includeManifest ? { runID, conversationID in
-                await withCheckedContinuation { (continuation: CheckedContinuation<[RunOutputManifestRow], Never>) in
-                    counters.manifestCalls += 1
-                    continuation.resume(returning: [])
-                }
-                if let manifestError { throw manifestError }
-                return try await reader.manifestRows(
-                    runID: runID, expectedConversationID: conversationID)
-            } : nil,
-            verifyRunOutputSnapshot: includeVerifier ? { receipt in
-                counters.verifyCalls += 1
-                if let verifyOverride {
-                    return await verifyOverride(receipt)
-                }
-                return RunOutputSnapshotStore.verify(receipt, artifactRoot: root)
-            } : nil,
+            runOutputManifest: manifest,
+            verifyRunOutputSnapshot: verifier,
             monotonicNow: { 0 },
             pause: { _ in }
         ))
@@ -579,7 +583,7 @@ final class FloeShortcutRunFilesTests: XCTestCase {
 
     func testStorageFailureSurfaceIsDurableRead() async throws {
         try await seedConversation(conversationID)
-        await seedRun(conversationID: conversationID, runID: runID,
+        try await seedRun(conversationID: conversationID, runID: runID,
                       state: "completed", withTerminalProof: "done")
         let counters = CallCounters()
         let service = makeService(
@@ -596,7 +600,7 @@ final class FloeShortcutRunFilesTests: XCTestCase {
 
     func testMissingDependencyIsHonestUnavailableNotEmptySuccess() async throws {
         try await seedConversation(conversationID)
-        await seedRun(conversationID: conversationID, runID: runID,
+        try await seedRun(conversationID: conversationID, runID: runID,
                       state: "completed", withTerminalProof: "done")
         let counters = CallCounters()
         let service = makeService(counters: counters, includeManifest: false)
@@ -614,7 +618,7 @@ final class FloeShortcutRunFilesTests: XCTestCase {
             let conversation = UUID()
             try await seedConversation(conversation, purpose: purpose)
             let run = UUID()
-            await seedRun(conversationID: conversation, runID: run,
+            try await seedRun(conversationID: conversation, runID: run,
                           state: "completed", withTerminalProof: "irrelevant")
             let counters = CallCounters()
             let service = makeService(counters: counters)
@@ -747,14 +751,15 @@ final class FloeShortcutRunFilesTests: XCTestCase {
 
     func testCapabilityDisabledStillRefusesBeforeAnyRead() async throws {
         try await seedConversation(conversationID)
-        await seedRun(conversationID: conversationID, runID: runID,
+        try await seedRun(conversationID: conversationID, runID: runID,
                       state: "completed", withTerminalProof: "done")
         let counters = CallCounters()
         let service = makeService(
             counters: counters, capabilityEnabled: { false })
-        await XCTAssertThrowsErrorAsync(
+        await XCTAssertThrowsErrorAsync {
             try await service.fileResult(
-                runID: runID, expectedConversationID: conversationID))
+                runID: runID, expectedConversationID: conversationID)
+        }
         XCTAssertEqual(counters.manifestCalls, 0)
     }
 
@@ -991,6 +996,7 @@ final class FloeShortcutRunFilesTests: XCTestCase {
 
 private func XCTAssertThrowsErrorAsync<T>(
     _ expression: () async throws -> T,
+    isolation: isolated (any Actor)? = #isolation,
     file: StaticString = #filePath,
     line: UInt = #line
 ) async {
