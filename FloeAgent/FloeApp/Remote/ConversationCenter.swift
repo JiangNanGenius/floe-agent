@@ -6228,6 +6228,7 @@ final class ConversationCenter: ObservableObject {
         durableRunIDs: [UUID],
         storeRoot: URL? = nil,
         artifactRoot: URL? = nil,
+        isolation: isolated (any Actor)? = #isolation,
         deleteConversation: () async throws -> Void
     ) async throws -> Bool {
         if durableRunIDs.isEmpty {
