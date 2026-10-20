@@ -18,11 +18,10 @@
  #include <officecfg/Office/Common.hxx>
  
  using namespace com::sun::star;
-@@ -590,6 +594,97 @@
-     if (mpCurrentCreate!=nullptr)
+@@ -591,6 +595,121 @@
      {
          sal_uInt32 nCount=maDragStat.GetPointCount();
-+
+ 
 +        // FLOE-OFFICE-ZERO-MOTION-DOT begin
 +        // The production Pencil bridge finalizes a tap as exactly one
 +        // mousedown+mouseup at one identical document point: the DragStat has
@@ -42,10 +41,34 @@
 +        // Cancels (Escape/back/right-click), other tools, multi-point creates,
 +        // MinMove-satisfied interactive creates, the selection fallback and a
 +        // zero configured line width keep their current behaviour untouched.
++        // Real diag3 App33 runs proved the live create object no longer
++        // reports FreehandLine at this point: while the one-point contact is
++        // being created, SdrCreateView::ShowCreateObj() writes the working
++        // path onto the object (NbcSetPathPoly -> SdrPathObj::ImpForceKind),
++        // which demotes a degenerate freehand path (svdopath.cxx), so a
++        // kind-equality test on mpCurrentCreate alone never fires for a real
++        // tap. The stable creation intent is the view's current create-tool
++        // identity mnCurrentInvent/mnCurrentIdent: every app begin path reads
++        // them (BegCreateObj -> ImpBegCreateObj) and SetCurrentObj is their
++        // only writer. The live dynamic kind check only bounds the final path
++        // SHAPE: these demoted kinds are shared with other tools' objects,
++        // so ink intent comes from the tool-identity checks, not from the
++        // object kind alone, and no universal origin proof is claimed.
++        // BegCreatePreparedObject can override the begin kind from a prepared
++        // object without touching those fields; the Default-inventor and real
++        // SdrPathObj checks stay, and the Office freeline route uses the
++        // regular BegCreateObj path (the only in-tree prepared-object caller
++        // is Impress 3D scenes, inventor E3d, excluded by the inventor check).
 +        if (nCount == 1
 +            && (eCmd == SdrCreateCmd::ForceEnd || !maDragStat.IsMinMoved())
 +            && mpCurrentCreate->GetObjInventor() == SdrInventor::Default
-+            && mpCurrentCreate->GetObjIdentifier() == SdrObjKind::FreehandLine)
++            && mnCurrentInvent == SdrInventor::Default
++            && mnCurrentIdent == SdrObjKind::FreehandLine
++            && dynamic_cast<SdrPathObj*>(mpCurrentCreate.get()) != nullptr
++            && (mpCurrentCreate->GetObjIdentifier() == SdrObjKind::FreehandLine
++                || mpCurrentCreate->GetObjIdentifier() == SdrObjKind::PolyLine
++                || mpCurrentCreate->GetObjIdentifier() == SdrObjKind::PathLine
++                || mpCurrentCreate->GetObjIdentifier() == SdrObjKind::Line))
 +        {
 +            const SfxItemSet& rCreateSet = mpCurrentCreate->GetMergedItemSet();
 +            const sal_uInt32 nLineWidthHmm = rCreateSet.Get(XATTR_LINEWIDTH).GetValue();
@@ -113,6 +136,7 @@
 +            }
 +        }
 +        // FLOE-OFFICE-ZERO-MOTION-DOT end
- 
++
          if (nCount<=1 && eCmd==SdrCreateCmd::ForceEnd)
          {
+             BrkCreateObj(); // objects with only a single point don't exist (at least today)

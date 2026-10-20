@@ -666,7 +666,7 @@
         "preparedSHA256": "3754d754f819140a75bca4cd2f9865588096672ba5338e45df77ddc053d7e1a5"
       }
     },
-    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered — including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
+    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered \u2014 including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
   },
   "kitCallbackLifecycleOverlay": {
     "patch": "patches/ios-kit-callback-lifecycle.patch",
@@ -764,13 +764,13 @@
           "libsvxcorelo.a": {
             "sourceFile": "engine/svx/source/svdraw/svdcrtv.cxx",
             "originalSHA256": "f95838f7e7cf1b49e0c8ca1f853bf2f20997d927b7a8accbc02a42e0a30f529e",
-            "patchedSHA256": "485111e9dc0d9c060c9b12598fe0fda057199b73cb2dfab8365257f45f4c1bc9",
+            "patchedSHA256": "f6f0d1faa4829667194b3cf01a460673490a48425aba1357d3d028c4dbb14cf3",
             "archive": "source/engine/instdir/program/libsvxcorelo.a",
             "members": {
               "svdcrtv.o": "engine/svx/source/svdraw/svdcrtv.cxx"
             },
             "patch": "patches/ios-svdcrtv-zero-motion-dot.patch",
-            "patchSHA256": "2cb5d64199a33b96fa2a742218c602f2f479b08e1d11dcc47e5ffc1570a6d285",
+            "patchSHA256": "6501eba9ad993d21c67c6fb53e31c6e95e98761448b935012aa19c9e34fef59b",
             "compileOverrides": {
               "flags": [
                 "-DSVXCORE_DLLIMPLEMENTATION"
@@ -884,13 +884,13 @@
           "libsvxcorelo.a": {
             "sourceFile": "engine/svx/source/svdraw/svdcrtv.cxx",
             "originalSHA256": "f95838f7e7cf1b49e0c8ca1f853bf2f20997d927b7a8accbc02a42e0a30f529e",
-            "patchedSHA256": "485111e9dc0d9c060c9b12598fe0fda057199b73cb2dfab8365257f45f4c1bc9",
+            "patchedSHA256": "f6f0d1faa4829667194b3cf01a460673490a48425aba1357d3d028c4dbb14cf3",
             "archive": "source/engine/instdir/program/libsvxcorelo.a",
             "members": {
               "svdcrtv.o": "engine/svx/source/svdraw/svdcrtv.cxx"
             },
             "patch": "patches/ios-svdcrtv-zero-motion-dot.patch",
-            "patchSHA256": "2cb5d64199a33b96fa2a742218c602f2f479b08e1d11dcc47e5ffc1570a6d285",
+            "patchSHA256": "6501eba9ad993d21c67c6fb53e31c6e95e98761448b935012aa19c9e34fef59b",
             "compileOverrides": {
               "flags": [
                 "-DSVXCORE_DLLIMPLEMENTATION"
