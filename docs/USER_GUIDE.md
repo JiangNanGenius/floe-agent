@@ -1,4 +1,4 @@
-<!-- docs-updated: 2026-10-16 -->
+<!-- docs-updated: 2026-10-20 -->
 <!-- doc-anchor: section-1 -->
 # Floe Agent User Manual
 
@@ -390,6 +390,8 @@ Live input, file transcription and video subtitles are separate paths. Check tex
 
 <!-- doc-anchor: section-21 -->
 ## 17. Skills, MCP, mail and automation
+
+**Shortcuts drafts (awaiting an integrated build):** Repeated **Send to Floe** and **Create a task** actions keep separate drafts. Home fills a free composer in order and preserves existing text and attachments; when drafts are waiting, free the composer and use **Insert next**. Review the draft and send it yourself. Queued drafts survive reopening, and older unsent drafts migrate automatically. Adding a draft does not require a configured model.
 
 Skills supply methods; installation/enabling does not grant file, network or account access. Use only needed skills and inspect source/version. MCP tools depend on configured, available servers.
 

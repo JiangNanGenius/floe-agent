@@ -3,6 +3,10 @@
 
 文档更新时间 / Document updated: 2026-10-20. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
+## S3-B 草稿队列源码已完成 / Durable shortcut drafts qualified
+
+验收源码 `88dc1b71487a5906cbae96903d38504bfe536a4b`：连续草稿不覆盖、顺序领取、旧数据迁移、落盘回执及失败／重启恢复完成；真实存储探针 34 项通过，完整 App／测试宿主编译通过，原生 **62 通过、0 失败、0 跳过**。源码推送 main，下一小包 S3-C 运行查询与文本结果；安装包随后续集成，现有 281 不变。[验收记录](releases/repairs/FLOE_SHORTCUTS_S3B_20261020.md)。The source stage is qualified; hosted production Intent/Home paths are distinct from system Shortcuts/Siri dispatch and physical-device acceptance.
+
 ## S3-A 初始化源码已完成 / Shortcut initialization source complete
 
 实现源码 `91269c602a01a2c5cdf926aad5759521741dc0b1`：修复 App／旧快捷指令的共享准备、并发、失败重试及取消；完整本地 App 编译通过，实际 App 宿主定向 9 项通过、0 失败、0 跳过，生产 helper 检查 25 项通过。本小包不改版本和已发布安装包，下一小包 S3-B 草稿队列。[验收记录](releases/repairs/FLOE_SHORTCUTS_S3A_20261020.md)。Source qualification is complete; it awaits a future integrated installable build. Hosted actual-intent entry is distinct from operating-system Shortcuts/Siri dispatch and physical-device testing.

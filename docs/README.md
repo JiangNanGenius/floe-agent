@@ -35,6 +35,7 @@
 | [../README.md](../README.md) / [../README.zh-CN.md](../README.zh-CN.md) | 项目门面：能力总览与当前交付版本 |
 | [USER_GUIDE.md](USER_GUIDE.md) / [USER_GUIDE.zh-CN.md](USER_GUIDE.zh-CN.md) | 使用说明（工具、后台任务、Python、字体、工作区、远端） |
 | [FEATHER_SOURCE.md](FEATHER_SOURCE.md) | Feather/AltStore 安装源：稳定源地址、官网深层链接、发布校验与手动添加步骤 |
+| [Shortcuts draft queue S3-B](releases/repairs/FLOE_SHORTCUTS_S3B_20261020.md) | 持久草稿、迁移及恢复源码验收：62 项原生通过；待后续安装包集成 / Durable draft source qualification; installable integration pending |
 | [Build 256 stability work](releases/repairs/FLOE_256_STABILITY.md) | 候选修复：Linux 配置恢复、按任务选性能、本地终端和 Office 自由绘制；非发布记录 |
 | [Office／Pencil S1 本地验收](releases/repairs/FLOE_OFFICE_PENCIL_S1_20261020.md) | 本轮原生组件及完整 App：三格式笔点与边界共 12 项通过；281 交付状态单独记录 |
 | [Office 连续双指缩放源码实现](releases/repairs/FLOE_OFFICE_LIVE_PINCH_SOURCE_20261019.md) | 连续缩放源码、组件及分模式验收历史；剩余 S1 问题分别跟踪 |
