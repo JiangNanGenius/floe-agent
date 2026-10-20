@@ -1868,13 +1868,28 @@ check('source/reset-tool-runs-inside-cancel',
 // 27b21dc1) does with the events this gate posts; the function-level
 // evidence lives in
 // Local/Private/pencil-cancel-rearm-order-repair-20261020/CAUSE.md:
-//   writer: Escape (svx svdview.cxx SdrView::KeyInput KEY_ESCAPE) only runs
-//     BrkAction and KEEPS the create tool armed; a mouseup that the armed
-//     Writer tool receives with no live create and no marks runs
-//     SwDrawBase::MouseButtonUp -> LeaveDrawCreate() and returns true, and
-//     SwEditWin::MouseButtonUp then Deactivate()s + clears the DrawFunc and
-//     Edit()s: the tool is DISARMED (only when a press was seen:
-//     !m_bMBPressed short-circuits the whole draw branch).
+//   writer (CORRECTED by pencil-word-cancel-residual-repair-20261020 against
+//     the actual App33+App35 Word wire and engine 27b21dc1): Escape (svx
+//     svdview.cxx SdrView::KeyInput KEY_ESCAPE) only runs BrkAction and
+//     KEEPS the create tool armed. An actionless mouseup is NOT the
+//     LeaveDrawCreate path the earlier CAUSE.md assumed: that block is gated
+//     by IsMarkObj() || IsMarkPoints(), and svx svdmrkv.hxx defines
+//     IsMarkObj() as a RUNNING BeginMark/EndMark — which the aborted create
+//     never started — so SwDrawBase::MouseButtonUp returns FALSE and
+//     SwEditWin::MouseButtonUp (edtwin.cxx 4902-4930) only ReleaseMouse()s:
+//     the tool AND SwView's m_nDrawSfxId slot survive untouched. The
+//     same-slot .uno:Freeline_Unfilled re-arm then matches
+//     nSlotId == m_nDrawSfxId and takes SwView::ExecDraw's DESELECT branch
+//     (viewdraw.cxx 204-224): Deactivate + SetDrawFuncPtr(nullptr) +
+//     LeaveDrawCreate — it DISARMS. The next down reaches
+//     SwEditWin::MouseButtonDown/EnterDrawMode (edtwin.cxx 3346/5701) with
+//     no DrawFuncPtr and never BegCreateObjects: exactly the App33 (old
+//     order) AND App35 (ordered 03bc) Word result — only the byte-identical
+//     control path saved, no next Beg, while Calc/Impress survive on their
+//     different net states. The candidate dispatches exactly ONE
+//     .uno:SelectObject first (different-slot switch to DrawSelection,
+//     resetting the slot), so the single Freeline then creates a fresh
+//     ConstPolygon — the desktop arrow-then-pen flow.
 //   calc: a same-slot create dispatch while that tool is the current one
 //     toggles to SID_OBJECT_SELECT/FuSelection
 //     (sc ui/view/tabvwsh2.cxx ExecuteDrawFunc) — whether the dispatch
@@ -1895,15 +1910,42 @@ check('source/reset-tool-runs-inside-cancel',
 // recorded DOM timeline.
 const attachCoreModel = (w, mode, opts = {}) => {
   const m = {
-    mode, armed: false, create: null, mbDown: false, toolSawDown: false,
+    mode, armed: false, tool: null, create: null, mbDown: false, toolSawDown: false,
     beginCreates: 0, droppedDowns: 0, commits: [], brks: 0, timeline: [],
     cmdCalls: 0,
   };
   const pushCmd = (name) => {
     m.cmdCalls += 1;
     m.timeline.push(['cmd', name]);
+    if (name === '.uno:SelectObject') {
+      if (opts.boomSelect) throw new Error('select-boom');
+      if (mode === 'writer') {
+        // SwView::ExecDraw DIFFERENT-slot switch branch (viewdraw.cxx
+        // 238-243/360-366): DrawSelection replaces the surviving create
+        // tool and LeaveDrawCreate resets m_nDrawSfxId.
+        m.tool = 'selection';
+        m.armed = false;
+        m.timeline.push(['select-tool']);
+      }
+      return;
+    }
     if (name !== '.uno:Freeline_Unfilled') return;
-    if (opts.boomArm && m.cmdCalls === 3) throw new Error('arm-boom');
+    if (opts.boomArm && m.brks >= 1) throw new Error('arm-boom');
+    if (mode === 'writer') {
+      if (m.tool === 'freeline') {
+        // Same-slot Freeline dispatch: SwView::ExecDraw's DESELECT branch
+        // (viewdraw.cxx 204-224) — Deactivate, SetDrawFuncPtr(nullptr),
+        // LeaveDrawCreate — the tool is CLEARED, not (re-)armed.
+        m.tool = null;
+        m.armed = false;
+        m.timeline.push(['deselect-cmd']);
+      } else {
+        m.tool = 'freeline';
+        m.armed = true;
+        m.toolSawDown = false;
+      }
+      return;
+    }
     if (mode === 'calc' && m.armed) {
       // same-slot dispatch toggles the running create tool off
       m.armed = false;
@@ -1965,6 +2007,11 @@ const attachCoreModel = (w, mode, opts = {}) => {
       m.create.pts.push([e.clientX, e.clientY]); // DragStat End folds the up point in
       m.commits.push(m.create.pts);              // EndCreateObj inserts the path
       m.create = null;
+      if (mode === 'writer') m.tool = null; // EndCreate -> EnterSelectMode's
+      // GetSelectedObjCount()==0 + !IsObjSelectable branch runs
+      // LeaveDrawCreate() (drawbase.cxx ~350-362) and SwEditWin clears the
+      // DrawFunc — proven by the App33 wire where the post-finish arm cmd
+      // took the switch branch and the NEXT (cancel) contact did BegCreate.
       m.armed = false;              // one-shot: the core leaves create mode
       m.timeline.push(['commit']);
       return;
@@ -1972,12 +2019,21 @@ const attachCoreModel = (w, mode, opts = {}) => {
     if (m.armed) {
       if (mode === 'impress') {
         m.timeline.push([m.toolSawDown ? 'harmless-up' : 'ignored-up']);
+      } else if (mode === 'writer') {
+        // Actionless up with NO running mark: SwDrawBase::MouseButtonUp's
+        // no-create exit block is gated by IsMarkObj() || IsMarkPoints();
+        // include/svx/svdmrkv.hxx defines IsMarkObj() as a RUNNING
+        // BeginMark/EndMark (mpMarkObjOverlay) — the aborted create never
+        // started one — so the function returns FALSE and
+        // SwEditWin::MouseButtonUp (edtwin.cxx 4902-4930) only ReleaseMouse()s.
+        // The tool AND SwView's slot id SURVIVE: a complete NO-OP.
+        m.timeline.push(['no-op-up']);
       } else {
         m.armed = false;
         m.timeline.push(['disarm-up']);
       }
     }
-    if (opts.killMapOnDisarmUp && mode !== 'impress' && !m.armed) {
+    if (opts.killMapOnDisarmUp && mode !== 'impress' && m.brks >= 1) {
       w.window.app.map = null;
       m.timeline.push(['map-killed']);
     }
@@ -1994,6 +2050,12 @@ const attachCoreModel = (w, mode, opts = {}) => {
 
 const cancelRearmScenario = (mode, opts = {}) => {
   const w = newWorld();
+  // Model each app's REAL document type: the candidate normalizes Writer
+  // only, so 'text' arms the normalization branch while 'sheet' and
+  // 'presentation' must keep the currently-passing single-arm wire.
+  if (mode === 'writer') w.map._docLayer._docType = 'text';
+  else if (mode === 'calc') w.map._docLayer._docType = 'spreadsheet';
+  else if (mode === 'impress') w.map._docLayer._docType = 'presentation';
   const m = attachCoreModel(w, mode, opts);
   w.arm();
   w.strokeAt([[100, 100], [140, 120], [180, 140]]); // red control stroke
@@ -2007,6 +2069,7 @@ const cancelRearmScenario = (mode, opts = {}) => {
   // mask the defect: this is the exact state the next contact sees.
   const atCancel = {
     armed: m.armed,
+    tool: m.tool,
     begins: m.beginCreates,
     commits: m.commits.length,
     brks: m.brks,
@@ -2032,9 +2095,12 @@ const cancelRearmScenario = (mode, opts = {}) => {
     'ordered cancel shape (Escape abort -> mouseup -> armFreeline, restore in finally)');
 }
 
-// 57. Writer: at the cancel the just-armed tool must still be alive. FAILS
-//     pre-fix: the post-arm mouseup runs SwDrawBase::MouseButtonUp
-//     LeaveDrawCreate + SwEditWin Deactivate/SetDrawFuncPtr(null)/Edit.
+// 57. Writer: at the cancel the create tool must still be alive AND the arm
+//     dispatch must actually (re-)arm it. FAILS both the pre-174 order and
+//     the ordered 03bc on the CORRECTED model (the no-op mouseup leaves the
+//     same slot current, so a bare Freeline deselects); PASSES the
+//     normalized candidate. Same check names/expressions as the tracked
+//     harness — only the pinned model they run against is corrected.
 {
   const { m, w, ctlBegins, ctlCommits, atCancel, nextPts } = cancelRearmScenario('writer');
   check('model/writer-cancel-breaks-own-create-only',
@@ -2102,6 +2168,7 @@ const cancelRearmScenario = (mode, opts = {}) => {
 //    silently swallowed after the arm and the gate stayed logically armed).
 {
   const w = newWorld();
+  w.map._docLayer._docType = 'text';
   const throwUpOnce = { f: false };
   const m = attachCoreModel(w, 'writer', { throwUpOnce, throwUpOn: 'up-after-brk' });
   w.arm();
@@ -2124,6 +2191,7 @@ const cancelRearmScenario = (mode, opts = {}) => {
 //    PASSES BOTH SOURCES (the existing honest-error policy is preserved).
 {
   const w = newWorld();
+  w.map._docLayer._docType = 'text';
   const m = attachCoreModel(w, 'writer', { boomArm: true });
   w.arm();
   w.strokeAt([[100, 100], [140, 120], [180, 140]]);
@@ -2142,6 +2210,7 @@ const cancelRearmScenario = (mode, opts = {}) => {
 //    already posted before the up, so the gate stayed armed on a dead core.
 {
   const w = newWorld();
+  w.map._docLayer._docType = 'text';
   const m = attachCoreModel(w, 'writer', { killMapOnDisarmUp: true });
   w.arm();
   w.strokeAt([[100, 100], [140, 120], [180, 140]]);
@@ -2159,6 +2228,7 @@ const cancelRearmScenario = (mode, opts = {}) => {
 //    untouched. PASSES BOTH SOURCES (preservation contracts).
 {
   const w = newWorld();
+  w.map._docLayer._docType = 'text';
   const m = attachCoreModel(w, 'writer');
   w.arm();
   w.strokeAt([[100, 100], [140, 120], [180, 140]]);
@@ -2180,6 +2250,170 @@ const cancelRearmScenario = (mode, opts = {}) => {
     w.preview().pending === 1 && m.brks === brkBefore + 1
     && w.state().strokes === 1 && w.state().lastPreviewClear === 'pointercancel',
     JSON.stringify({ p: w.preview(), brks: m.brks, s: w.state() }));
+}
+
+
+// ---------------------------------------------------------------------------
+// 61-72. pencil-word-cancel-residual-repair-20261020: the Writer cancel
+// re-arm step must normalize the surviving create-tool slot with exactly ONE
+// select-tool dispatch, then the single unchanged Freeline arm, so the next
+// genuine down actually reaches BeginCreateObject. Sheet/presentation/unknown
+// document types keep the byte-identical single-arm wire that currently
+// passes; the ordinary completion never normalizes. The checks named here as
+// failing on the 03bc before-source are the pinned defect family; every
+// pre-existing check above is retained unweakened.
+// ---------------------------------------------------------------------------
+{
+  const w = newWorld();
+  w.map._docLayer._docType = 'text';
+  w.arm();
+  w.strokeAt([[100, 100], [140, 120], [180, 140]]);
+  const beforeCancel = w.uno.slice();
+  w.pen('pointerdown', 300, 300, w.canvas, { pointerId: 701 });
+  w.pen('pointermove', 320, 310, w.canvas, { pointerId: 701 });
+  w.pen('pointercancel', 320, 310, w.canvas, { pointerId: 701 });
+  const tail = w.uno.slice(beforeCancel.length);
+  check('wire/writer-cancel-normalizes-then-arms-exactly-once',
+    JSON.stringify(tail) === JSON.stringify(['.uno:SelectObject', '.uno:Freeline_Unfilled'])
+    && w.uno.filter((c) => c === '.uno:SelectObject').length === 1
+    && w.uno.filter((c) => c === '.uno:Freeline_Unfilled').length === 3,
+    JSON.stringify({ tail, uno: w.uno }));
+  check('wire/writer-normalization-not-an-armed-dispatch',
+    w.state().armedDispatches === 3 && w.state().drawing === true
+    && w.state().error === null && w.state().strokes === 1,
+    JSON.stringify(w.state()));
+}
+
+{
+  const w = newWorld();
+  w.map._docLayer._docType = 'text';
+  const m = attachCoreModel(w, 'writer');
+  w.arm();
+  w.strokeAt([[100, 100], [140, 120], [180, 140]]);
+  w.pen('pointerdown', 300, 300, w.canvas, { pointerId: 711 });
+  w.pen('pointermove', 320, 310, w.canvas, { pointerId: 711 });
+  w.pen('pointercancel', 320, 310, w.canvas, { pointerId: 711 });
+  const brkIdx = m.timeline.map((e) => e[0]).lastIndexOf('brk');
+  const kinds = brkIdx >= 0
+    ? m.timeline.slice(brkIdx + 1)
+      .filter((e) => e[0] === 'up' || e[0] === 'cmd' || e[0] === 'no-op-up'
+        || e[0] === 'select-tool' || e[0] === 'deselect-cmd' || e[0] === 'disarm-up'
+        || e[0] === 'toggle-off-cmd' || e[0] === 'harmless-up' || e[0] === 'ignored-up')
+      .map((e) => (e[0] === 'cmd' ? e[1] : e[0]))
+    : [];
+  check('model/writer-order-up-noop-then-select-then-single-arm',
+    JSON.stringify(kinds) === JSON.stringify(['up', 'no-op-up',
+      '.uno:SelectObject', 'select-tool', '.uno:Freeline_Unfilled']),
+    JSON.stringify(m.timeline));
+}
+
+{
+  const w = newWorld();
+  w.map._docLayer._docType = 'text';
+  const m = attachCoreModel(w, 'writer', { boomSelect: true });
+  w.arm();
+  w.strokeAt([[100, 100], [140, 120], [180, 140]]);
+  const armedBefore = w.state().armedDispatches;
+  const cmdBefore = m.cmdCalls;
+  w.pen('pointerdown', 300, 300, w.canvas, { pointerId: 721 });
+  w.pen('pointermove', 320, 310, w.canvas, { pointerId: 721 });
+  w.pen('pointercancel', 320, 310, w.canvas, { pointerId: 721 });
+  check('failclosed/writer-normalization-throw-disarms',
+    w.state().drawing === false && String(w.state().error).includes('select-boom')
+    && w.state().strokes === 1 && w.state().activeStroke === false
+    && w.state().armedDispatches === armedBefore,
+    JSON.stringify(w.state()));
+  const boomBrkIdx = m.timeline.map((e) => e[0]).lastIndexOf('brk');
+  check('failclosed/writer-normalization-throw-posts-no-arm-and-keeps-abort',
+    m.cmdCalls === cmdBefore + 1
+    && boomBrkIdx >= 0
+    && !m.timeline.slice(boomBrkIdx + 1).some((e) => e[0] === 'cmd'
+      && e[1] === '.uno:Freeline_Unfilled')
+    && m.brks === 1 && !m.commits.some((p) => p[0][0] === 300)
+    && w.preview().stroke === false && w.preview().pending === 1
+    && w.state().lastPreviewClear === 'pointercancel',
+    JSON.stringify({ t: m.timeline.slice(boomBrkIdx), p: w.preview() }));
+}
+
+for (const [name, docType] of [
+  ['spreadsheet', 'spreadsheet'], ['presentation', 'presentation'], ['unknown', undefined],
+]) {
+  const w = newWorld();
+  if (docType !== undefined) w.map._docLayer._docType = docType;
+  w.arm();
+  w.strokeAt([[100, 100], [140, 120], [180, 140]]);
+  const before = w.uno.length;
+  w.pen('pointerdown', 300, 300, w.canvas, { pointerId: 731 });
+  w.pen('pointermove', 320, 310, w.canvas, { pointerId: 731 });
+  w.pen('pointercancel', 320, 310, w.canvas, { pointerId: 731 });
+  const tail = w.uno.slice(before);
+  check(`wire/${name}-doc-type-cancel-wire-unchanged`,
+    JSON.stringify(tail) === JSON.stringify(['.uno:Freeline_Unfilled'])
+    && !w.uno.includes('.uno:SelectObject')
+    && w.state().armedDispatches === 3,
+    JSON.stringify({ tail, uno: w.uno }));
+}
+
+{
+  const w = newWorld();
+  w.map._docLayer._docType = 'text';
+  w.arm();
+  w.strokeAt([[100, 100], [140, 120], [180, 140]]);
+  w.strokeAt([[200, 210], [240, 230], [280, 250]]);
+  check('wire/writer-ordinary-completion-never-normalizes',
+    !w.uno.includes('.uno:SelectObject')
+    && w.uno.filter((c) => c === '.uno:Freeline_Unfilled').length === 3
+    && w.state().strokes === 2 && w.state().armedDispatches === 3,
+    JSON.stringify({ uno: w.uno, s: w.state() }));
+}
+
+{
+  const start = script.indexOf('const cancel = (event) => {');
+  const stop = script.indexOf('const blockFinger', start);
+  const body = start >= 0 && stop > start ? script.slice(start, stop) : '';
+  const selectCalls = script.split("map.sendUnoCommand('.uno:SelectObject')").length - 1;
+  const normCalls = body.split('normalizeWriterTool(map)').length - 1;
+  check('source/writer-cancel-normalization-single-select',
+    selectCalls === 1 && normCalls === 1
+    && body.indexOf("mouse('mouseup'") < body.indexOf('normalizeWriterTool(map)')
+    && body.indexOf('normalizeWriterTool(map)') < body.indexOf('armFreeline(map)')
+    && body.includes("_docType === 'text'")
+    && (body.split('armFreeline(map)').length - 1) === 1
+    && script.split('normalizeWriterTool').length - 1 === 2
+    && !body.includes('resetTool(drawing)')
+    && !body.includes('postKeyboardEvent')
+    && !body.includes('sendUnoCommand'),
+    JSON.stringify({ selectCalls, normCalls }));
+  const armAnchor = `const armFreeline = (map) => {
+            map.sendUnoCommand('.uno:Freeline_Unfilled');
+            state.armedDispatches += 1;`;
+  const resetBody = (script.match(/const resetTool = \(arm\) => \{[\s\S]*?\n        \};/) || [''])[0];
+  check('source/arm-and-reset-services-untouched',
+    script.includes(armAnchor)
+    && resetBody.includes('if (arm) armFreeline(map);')
+    && !resetBody.includes('SelectObject'),
+    JSON.stringify({ hasArm: script.includes(armAnchor) }));
+}
+
+{
+  const w = newWorld();
+  w.map._docLayer._docType = 'text';
+  const m = attachCoreModel(w, 'writer');
+  w.arm();
+  w.pen('pointerdown', 100, 100, w.canvas, { pointerId: 741 });
+  w.pen('pointermove', 120, 110, w.canvas, { pointerId: 741 });
+  w.pen('pointercancel', 120, 110, w.canvas, { pointerId: 741 });
+  w.pen('pointerdown', 200, 200, w.canvas, { pointerId: 742 });
+  w.pen('pointermove', 220, 210, w.canvas, { pointerId: 742 });
+  w.pen('pointercancel', 220, 210, w.canvas, { pointerId: 742 });
+  check('model/writer-double-cancel-normalizes-per-abort',
+    m.brks === 2 && m.commits.length === 0 && m.droppedDowns === 0
+    && m.beginCreates === 2 && m.tool === 'freeline'
+    && w.uno.filter((c) => c === '.uno:SelectObject').length === 2
+    && w.uno.filter((c) => c === '.uno:Freeline_Unfilled').length === 3
+    && w.state().armedDispatches === 3 && w.state().strokes === 0
+    && w.state().drawing === true && w.state().error === null,
+    JSON.stringify({ t: m.timeline, uno: w.uno, s: w.state() }));
 }
 
 console.log(`${checks} checks, ${failures} failed`);

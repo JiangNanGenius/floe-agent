@@ -358,10 +358,13 @@ static NSString *FloeBundledFontCatalogFingerprint(NSBundle *bundle) {
 // Freehand is one-shot in the core. After each contact, enqueue Escape then
 // re-arm on the same ordered engine channel; commandstatechanged is delayed
 // and must never decide whether the next contact is allowed to draw. On a
-// system cancellation the order is Escape, contact-ending mouseup, re-arm:
-// the re-arm must be LAST, because a mouseup the just-armed Writer/Calc
-// create tool consumes deactivates it (only Impress ignores it; see the
-// cancel handler).
+// system cancellation the order is Escape, contact-ending mouseup, then the
+// re-arm LAST. The pinned per-app up consumption differs and the cancel
+// handler compensates: Calc's actionless up self-toggles to the select tool
+// and Impress ignores it, but Writer's is a complete no-op that leaves the
+// same create-tool slot current, where a bare Freeline re-dispatch would
+// deselect instead of re-arming (see the cancel handler and normalize-
+// WriterTool). The ordinary completion is unchanged (mouseup, Escape, arm).
 //
 // The engine keeps an in-progress create inside sdr::overlay::OverlayManager
 // until the EndCreate mouse-up inserts the vector into the model, and this
@@ -1001,6 +1004,18 @@ static NSString *FloeInkInputGatingScript() {
                 try { map.setAcceptInput(false); } catch (ignored) {}
             }
         };
+        // The cancel route's Writer-only pre-arm tool normalization. One
+        // select-tool dispatch makes sw uiview/viewdraw.cxx SwView::ExecDraw
+        // take its different-slot switch (DrawSelection + LeaveDrawCreate),
+        // resetting m_nDrawSfxId so the single Freeline arm afterwards
+        // creates a fresh ConstPolygon instead of hitting the same-slot
+        // deselect branch. It is NOT an arm: it never touches
+        // state.armedDispatches, never posts keys, and is sent on no other
+        // route or document type. A throwing dispatch propagates to the
+        // cancel caller exactly like a throwing arm (fail closed).
+        const normalizeWriterTool = (map) => {
+            map.sendUnoCommand('.uno:SelectObject');
+        };
         const resetTool = (arm) => {
             const map = mapOf();
             if (!map) return false;
@@ -1362,24 +1377,42 @@ static NSString *FloeInkInputGatingScript() {
         // System cancellation abandons only the unfinished contact. Drop
         // its preview, abort the running core create with the ordered Escape,
         // replay the contact-ending mouseup while no create tool was freshly
-        // armed, and only THEN re-arm, iff drawing was active. The re-arm
-        // must be the last engine event of the abort: in the pinned engine a
-        // mouseup that arrives after the arm is consumed by the new
-        // Writer/Calc create tool and deactivates it (sw ribbar/drawbase.cxx
-        // SwDrawBase::MouseButtonUp with no live create and no marks calls
-        // LeaveDrawCreate() and returns true, then uibase/docvw/edtwin.cxx
-        // SwEditWin::MouseButtonUp Deactivate()s the DrawFunc, clears it and
-        // Edit()s; sc drawfunc/fuconstr.cxx FuConstruct::SimpleMouseButtonUp
-        // re-dispatches the same create slot on mouseup with no action, and
-        // ui/view/tabvwsh2.cxx ExecuteDrawFunc toggles a same-slot dispatch
-        // to SID_OBJECT_SELECT/FuSelection). Impress only survives the
-        // post-arm mouseup because sd func/fuconstr.cxx
-        // FuConstruct::IsIgnoreUnexpectedMouseButtonUp (tdf#153446) ignores
-        // a mouseup its tool instance never saw a press for. The Escape pair
-        // itself keeps the tool armed (svx svdview.cxx SdrView::KeyInput
-        // KEY_ESCAPE runs only BrkAction), so ending the contact BEFORE the
-        // re-arm is the order every shell tolerates; it is also the exact
-        // order the ordinary completion already uses (mouseup, Escape, arm).
+        // armed, and only THEN re-arm, iff drawing was active. The pinned
+        // per-app consumption of that actionless mouseup (engine 27b21dc1)
+        // is NOT uniform, and the prior model of Writer was wrong: in Writer
+        // the up is a complete no-op — sw ribbar/drawbase.cxx
+        // SwDrawBase::MouseButtonUp's no-create exit block is gated by
+        // IsMarkObj() || IsMarkPoints(), and include/svx/svdmrkv.hxx defines
+        // IsMarkObj() as a RUNNING BeginMark/EndMark (mpMarkObjOverlay),
+        // which an aborted create never started; the function returns false,
+        // and sw docvw/edtwin.cxx SwEditWin::MouseButtonUp (4902-4930) then
+        // only ReleaseMouse()s and returns — the create tool AND its SwView
+        // slot id m_nDrawSfxId survive. A .uno:Freeline_Unfilled dispatch
+        // arriving in that state matches nSlotId == m_nDrawSfxId and takes
+        // sw uiview/viewdraw.cxx SwView::ExecDraw's same-slot DESELECT
+        // branch (204-224): Deactivate, SetDrawFuncPtr(nullptr),
+        // LeaveDrawCreate — it DISARMS instead of re-arming, so the next
+        // down reaches SwEditWin::EnterDrawMode (edtwin.cxx 3346/5701) with
+        // no DrawFuncPtr and never BegCreateObjects (exactly the App33 and
+        // App35 Word wire: the byte-identical control path saved, no next
+        // Beg). Calc instead self-toggles (sc drawfunc/fuconstr.cxx
+        // FuConstruct::SimpleMouseButtonUp re-dispatches the slot and
+        // ui/view/tabvwsh2.cxx ExecuteDrawFunc returns to FuSelection) and
+        // Impress ignores the unexpected up (sd func/fuconstr.cxx
+        // IsIgnoreUnexpectedMouseButtonUp, tdf#153446); both leave the arm
+        // dispatch on a DIFFERENT slot, which is why the generic cleanup-
+        // before-re-arm order fixed XLSX/PPTX but not DOCX. On a text
+        // document the re-arm is therefore preceded by exactly ONE
+        // select-tool dispatch: SwView::ExecDraw sees a different slot,
+        // replaces the surviving create tool with DrawSelection and resets
+        // m_nDrawSfxId (switch branch 238-243/360-366), so the single
+        // Freeline arm below creates a fresh ConstPolygon — the desktop
+        // arrow-then-pen flow: one leave-tool step plus one arm, never a
+        // repeated Escape, never a second Freeline, never on sheet or
+        // presentation documents. The Escape pair itself keeps the tool
+        // armed (svx svdview.cxx SdrView::KeyInput KEY_ESCAPE runs only
+        // BrkAction) and the contact-ending mouseup stays before the final
+        // arm in every app.
         // If the abort cannot post, fail closed as before: no mouseup, no
         // re-arm, gate off with the existing engine error. A throwing mouseup
         // or a re-arm that then fails also leaves the gate off with the
@@ -1419,6 +1452,14 @@ static NSString *FloeInkInputGatingScript() {
                                 drawing = false;
                                 state.error = 'engine-unavailable';
                             } else {
+                                // Writer-only: reset the surviving
+                                // create-tool slot first (see the route
+                                // comment), then the one unchanged Freeline
+                                // arm. Sheet/presentation/unknown document
+                                // types keep the byte-identical single-arm
+                                // wire that currently passes.
+                                if (map._docLayer._docType === 'text')
+                                    normalizeWriterTool(map);
                                 armFreeline(map);
                             }
                         }
