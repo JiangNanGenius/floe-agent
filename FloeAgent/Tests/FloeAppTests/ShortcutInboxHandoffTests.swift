@@ -998,7 +998,7 @@ struct ShortcutInboxHandoffTests {
         ).first)
         #expect(claim.state == .claimed)
         await faulty.setAckFault(false)
-        let vm2 = f.makeVM(draftStore: store, inbox: faulty)
+        let vm2 = f.makeVM(inbox: faulty, draftStore: store)
         await vm2.acceptShortcutInbox()
         // No redelivery, no overwrite: the human's newer text stands, the
         // entry is settled, and the receipt evidence is retired.
@@ -1023,7 +1023,7 @@ struct ShortcutInboxHandoffTests {
         let brokenStore = ComposerDraftStore(fileURL: brokenFile)
         let faulty = FaultyInbox(base: f.inbox)
         await faulty.setReleaseFault(true)
-        let vm1 = f.makeVM(draftStore: brokenStore, inbox: faulty)
+        let vm1 = f.makeVM(inbox: faulty, draftStore: brokenStore)
         await vm1.acceptShortcutInbox()
         await faulty.setReleaseFault(false)
         // The unproven render rolled back (human never touched the field);
@@ -1046,7 +1046,7 @@ struct ShortcutInboxHandoffTests {
         try FileManager.default.removeItem(at: brokenURL)
         try FileManager.default.createDirectory(at: brokenURL, withIntermediateDirectories: true)
         let fixedStore = ComposerDraftStore(fileURL: brokenFile)
-        let vm2 = f.makeVM(draftStore: fixedStore, inbox: faulty)
+        let vm2 = f.makeVM(inbox: faulty, draftStore: fixedStore)
         await vm2.acceptShortcutInbox()
         #expect(vm2.draft == "queued")
         #expect(try await f.inbox.entry(id: claim.id) == nil)
