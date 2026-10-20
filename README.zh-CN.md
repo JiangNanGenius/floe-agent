@@ -2,7 +2,7 @@
   <img src="docs/images/floe-agent-icon.png" width="88" alt="Floe Agent 应用图标">
   <h1>Floe Agent</h1>
   <p><strong>你的模型，你的文件，你的电脑。</strong></p>
-  <p>Floe Agent 是面向 iPad 和 iPhone（iOS / iPadOS）的开源 AI 智能体工作空间，以 iPad 体验为先。把 AI 任务、手记、Office 文档、创作与开发放进同一处，云端 AI 使用自备 API Key（BYOK）。Android Alpha 测试版现已推出，目前支持基础云端对话。</p>
+  <p>Floe Agent 是面向 iOS 和 Android 的开源设备端 AI 智能体工作空间，以 iPad 体验为先，同时原生支持 iPhone。把 AI 任务、手记、Office 文档、创作与开发放进同一处——设备端 Linux 环境可直接运行代码、软件包与网页服务，支持的本地模型可在设备端完成推理，云端 AI 使用你自己准备的 API Key（BYOK）。</p>
   <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/">官网</a> · <a href="docs/USER_GUIDE.zh-CN.md">使用手册</a> · <a href="docs/README.md">文档中心</a></p>
 </div>
 
@@ -40,7 +40,7 @@ https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json
 | iOS / iPadOS · TestFlight | 需要有效测试资格；可安装构建与到期时间以 TestFlight 为准。 |
 | iOS / iPadOS · Feather / AltStore | 先安装对应 App，点击上方按钮添加源，再按自己的签名方式安装。 |
 | iOS / iPadOS · GitHub IPA | 从发布页下载 IPA 和校验文件；IPA 未签名，需要自行签名。 |
-| Android 测试版 | Android 9+（ARM64）。从 [Android 发布页](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.1) 下载签名 APK 与校验文件并手动安装；目前更新也需手动。需自备云端 API Key，不含本地模型。 |
+| Android 测试版 | Android 9+（ARM64）。从 [Android 发布页](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.1) 下载签名 APK 与校验文件并手动安装；目前更新也需手动。当前测试版支持使用自备云端 Key（BYOK）的基础对话，以及配置与历史恢复；不含本地模型，设备端 Linux 环境与本地 AI 将在后续版本来到 Android，并逐步对齐 iOS 能力、发展 Android 特色功能。 |
 
 iOS / iPadOS 首次使用：**安装 → 配置模型 → 新建任务 → 打开成果**。核心手记、文件整理和画布无需 AI 服务商；AI 功能使用你配置的服务商或设备支持的本地模型。Android 首次使用：**安装 → 添加云端模型 Key → 开始对话**。
 
@@ -48,18 +48,20 @@ iOS / iPadOS 首次使用：**安装 → 配置模型 → 新建任务 → 打�
 
 ## 主要功能
 
-下表介绍 iOS 版功能。Android 测试版目前支持使用自备云端 Key 的基础对话，以及配置与历史恢复；后续会逐步对齐 iOS 能力，并发展 Android 特色功能。
+下表介绍 Floe 的核心工作流程，具体可用性因平台与发布版本而异；Android 测试版现状请见上方安装说明与 [Android 发布记录](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.1)。
 
 | 工作方式 | 在 Floe 中做什么 | 操作指南 |
 | --- | --- | --- |
 | AI 任务 | 在同一任务中连续提问、使用资料、执行工具并保留成果。 | [任务与工作区](docs/USER_GUIDE.zh-CN.md#3-新建任务与选择工作区) |
+| 设备端 Linux 环境 | 智能体代码直接在设备上的持久 Linux 环境运行：Shell、Python、Node 与 apt 软件包、后台任务和本地网页预览均支持。需下载并校验镜像；软件包必须适配该环境。 | [本地终端与 Linux](docs/USER_GUIDE.zh-CN.md#9-本地终端与-linux-性能配置) |
+| 本地 AI | 在设备端使用支持的本地模型推理——系统模型或下载的模型（Beta）。可用性取决于设备与模型状态；本地模型与 Linux 共享设备内存。 | [模型配置](docs/USER_GUIDE.zh-CN.md#2-配置模型与辅助能力) |
 | 手记 | 导入 PDF 与图片，搜索、Pencil 批注，并围绕文档提问。 | [手记](docs/USER_GUIDE.zh-CN.md#7-手记导入搜索与书写) |
 | Office | 创建、编辑、保存 DOCX、XLSX 与 PPTX。复杂格式需检查保存结果。 | [文档、表格与演示](docs/USER_GUIDE.zh-CN.md#8-office编辑批注保存和重新打开) |
 | 画布与媒体 | 在画布组织素材，进入图像、视频和音频工作台处理细节。 | [画布与媒体](docs/USER_GUIDE.zh-CN.md#15-画布图像音视频) |
 | 图纸与 3D | 查看工程文件，编辑支持的图元，使用图纸助手。能力随格式而异。 | [工程图纸](docs/USER_GUIDE.zh-CN.md#14-工程图纸与图纸助手) |
-| 开发与远程 | 编辑代码，使用本地 Linux、Git、网页预览与授权的远程主机。 | [本地终端](docs/USER_GUIDE.zh-CN.md#9-本地终端与-linux-性能配置) · [远程连接](docs/USER_GUIDE.zh-CN.md#12-远程设备桌面与网络诊断) |
+| 开发与远程 | 编辑代码、跟踪 Git 变更，并使用授权的远程主机。 | [终端与端口](docs/USER_GUIDE.zh-CN.md#9-本地终端与-linux-性能配置) · [远程连接](docs/USER_GUIDE.zh-CN.md#12-远程设备桌面与网络诊断) |
 
-模型请求直接发送至你选择的服务商；密钥保存在设备钥匙串。文件、上传与远程操作遵循任务权限，重要操作按当前策略确认。详见[安全说明](SECURITY.zh-CN.md)。
+云端模型请求直接发送至你选择的服务商；支持的本地模型在设备端完成推理。密钥保存在设备钥匙串。文件、上传与远程操作遵循任务权限，重要操作按当前策略确认。详见[安全说明](SECURITY.zh-CN.md)。
 
 ## 看看 Floe 如何工作
 
