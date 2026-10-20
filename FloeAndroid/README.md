@@ -21,7 +21,9 @@ local LLM backend.
 [Download 0.1.0-alpha.1](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.1)
 contains one signed ARM64 APK and SHA256SUMS. Install updates manually for now.
 Cloud configuration, real replies and cold-start persistence were checked on an
-API 37 / 16 KiB tablet emulator; Samsung-device acceptance remains pending.
+API 37 / 16 KiB tablet emulator and a Samsung SM-G9810 running Android 13 / API 33
+with 4 KiB pages. Long-stream stop/resume on Samsung and advanced G02 flows still
+need their own acceptance checks.
 G02 is still active; see the implementation record above for remaining work.
 
 ## Layout and ownership
