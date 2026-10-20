@@ -3,7 +3,7 @@
 
 文档更新时间 / Document updated: 2026-10-21. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
-当前剩余交付顺序为 **283 Office 新反馈＋S3-D＋火山引擎搜索 → S4 真实定时 → S5＋S6 → S7 按执行链分组**。用户已确认 282 缩放正常；283 优先修复无标题编辑请求、空闲自动保存，并提供助手按工作表／单元格范围或页／矩形主动查看文档的工具，取代每次发送强制附带当前视图。现有文件结果工作与本轮合并验收；用户新增的火山引擎搜索按普通方舟／Agent Plan 分开接入，菜单内独立控制可并存的功能及专业数据集，保留现有搜索默认值。尚未完成 283 App 编译、原生验证或发包。S4 已准备，待本轮交付清理后接续，不重跑已通过的无关检查。详见[当前计划](FLOE_IOS_CLOSURE_PLAN_20261018.zh-CN.md)。Build 283 covers the new Office feedback, S3-D file results and the newly requested Volcengine search provider with separate account routes and feature controls. App qualification and delivery are pending; real scheduling follows afterward.
+当前剩余交付顺序为 **283 Office／手记新反馈＋S3-D＋火山引擎搜索 → S4 真实定时 → S5＋S6 → S7 按执行链分组**。用户已确认 282 缩放正常；283 收尾无标题编辑请求、空闲自动保存、助手按工作表／单元格范围或页／矩形查看文档，并修复新增的 Office 荧光笔白底和手记书写频繁冲突。文件结果与本轮合并验收。火山引擎按普通方舟／Agent Plan 分开接入；联网内容模式默认启用头条、抖音百科、墨迹天气，不设三项独立开关，保留现有搜索默认值。部分真实模块测试已通过，283 完整 App／原生验证和发包仍待完成。交付并清理后接续 S4；已通过的无关检查不重跑。详见[当前计划](FLOE_IOS_CLOSURE_PLAN_20261018.zh-CN.md)。Build 283 combines Office/Notes feedback, S3-D files and Volcengine search. New fixes cover the Office highlighter's white background and frequent Notes drawing conflicts. Online-content sources are enabled together without individual switches. Focused module checks have passed; full App qualification and delivery remain pending. Real scheduling follows delivery and cleanup.
 
 ## 1.7.41（282）内部可安装，公测已送审，无签名包已交付 / Internal available; external review pending; unsigned delivered
 
