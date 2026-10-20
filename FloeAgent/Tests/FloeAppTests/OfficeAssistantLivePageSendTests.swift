@@ -196,7 +196,7 @@ final class OfficeAssistantLivePageSendTests: XCTestCase {
             let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
             try await wait {
                 let facts = OfficeFileSession.hostRenderDiagnostics(native)
-                facts["stage"] == "visible-render" && facts["docLoaded"] == "1"
+                return facts["stage"] == "visible-render" && facts["docLoaded"] == "1"
             }
             let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
 
@@ -548,7 +548,7 @@ private final class SenderProofCaptureBox: @unchecked Sendable {
 
     var snapshot: Captured {
         lock.lock(); defer { lock.unlock() }
-        Captured(requests: requests, ownerRunIDs: ownerRunIDs,
+        return Captured(requests: requests, ownerRunIDs: ownerRunIDs,
                  sawNilCredentials: sawNilCredentials, streamCount: requests.count)
     }
 }
