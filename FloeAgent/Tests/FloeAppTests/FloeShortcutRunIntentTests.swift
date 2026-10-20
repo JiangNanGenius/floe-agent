@@ -139,11 +139,12 @@ final class FloeShortcutRunIntentTests: XCTestCase {
         let result = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
             try await intent.perform()
         }
-        XCTAssertEqual(result.value.runID, runID.uuidString)
-        XCTAssertEqual(result.value.conversationID, conversationID.uuidString)
-        XCTAssertEqual(result.value.state, .completed)
-        XCTAssertTrue(result.value.isFinished)
-        XCTAssertTrue(result.value.isSuccessful)
+        let returned = try XCTUnwrap(result.value)
+        XCTAssertEqual(returned.runID, runID.uuidString)
+        XCTAssertEqual(returned.conversationID, conversationID.uuidString)
+        XCTAssertEqual(returned.state, .completed)
+        XCTAssertTrue(returned.isFinished)
+        XCTAssertTrue(returned.isSuccessful)
     }
 
     @MainActor
@@ -313,8 +314,9 @@ final class FloeShortcutRunIntentTests: XCTestCase {
         let result = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
             try await intent.perform()
         }
-        XCTAssertTrue(result.value.waitTimedOut)
-        XCTAssertEqual(result.value.state, .running)
+        let returned = try XCTUnwrap(result.value)
+        XCTAssertTrue(returned.waitTimedOut)
+        XCTAssertEqual(returned.state, .running)
         XCTAssertTrue(world.cancelCalls.isEmpty,
             "a timed-out wait must not cancel the target run")
     }
@@ -362,9 +364,10 @@ final class FloeShortcutRunIntentTests: XCTestCase {
         let result = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
             try await intent.perform()
         }
+        let returned = try XCTUnwrap(result.value)
         XCTAssertTrue(world.cancelCalls.isEmpty)
-        XCTAssertTrue(result.value.isFinished)
-        XCTAssertFalse(result.value.cancellationRequested)
+        XCTAssertTrue(returned.isFinished)
+        XCTAssertFalse(returned.cancellationRequested)
     }
 
     // MARK: Start
@@ -390,8 +393,9 @@ final class FloeShortcutRunIntentTests: XCTestCase {
         let result = try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
             try await intent.perform()
         }
-        XCTAssertEqual(result.value.runID, runID.uuidString)
-        XCTAssertEqual(result.value.conversationID, conversationID.uuidString)
+        let returned = try XCTUnwrap(result.value)
+        XCTAssertEqual(returned.runID, runID.uuidString)
+        XCTAssertEqual(returned.conversationID, conversationID.uuidString)
     }
 
     // MARK: Legacy compatibility
@@ -402,7 +406,8 @@ final class FloeShortcutRunIntentTests: XCTestCase {
     @MainActor
     func testLegacyRunIntentStillReturnsStringIdentifier() {
         let perform: @MainActor (RunFloeTaskIntent) async throws -> String = { intent in
-            try await intent.perform().value
+            let result = try await intent.perform()
+            return try XCTUnwrap(result.value)
         }
         _ = perform
     }

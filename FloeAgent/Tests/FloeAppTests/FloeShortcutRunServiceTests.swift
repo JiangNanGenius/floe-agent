@@ -319,7 +319,8 @@ final class FloeShortcutRunServiceTests: XCTestCase {
         let result = try await service.textResult(runID: runID)
         XCTAssertEqual(result.text, "Final answer.")
         XCTAssertEqual(result.completeness, .complete)
-        XCTAssertEqual(world.readerCalls, [(runID, try XCTUnwrap(finalID))],
+        XCTAssertEqual(world.readerCalls.map(\.runID), [runID])
+        XCTAssertEqual(world.readerCalls.map(\.messageID), [try XCTUnwrap(finalID)],
             "the read must resolve exactly the marker's proven message id")
     }
 

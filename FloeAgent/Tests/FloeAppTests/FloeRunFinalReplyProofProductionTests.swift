@@ -137,9 +137,9 @@ struct FloeRunFinalReplyProofProductionTests {
 
         let events = try await environment.runs.events(runID: service.runID)
         let terminal = try #require(events.last { $0.kind == .terminal })
-        let provenID = try #require(
-            UUID(uuidString: try #require(try payload(terminal)["finalMessageID"]))
-        )
+        let terminalPayload = try payload(terminal)
+        let provenIDString = try #require(terminalPayload["finalMessageID"])
+        let provenID = try #require(UUID(uuidString: provenIDString))
 
         // The draft sealed exactly once; "CONFIRM" never became a row and no
         // finalAssistant duplicate was written. The terminal proves the very
