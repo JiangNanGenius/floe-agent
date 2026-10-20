@@ -1,4 +1,4 @@
 {
-  "zh-Hans": "请重点体验手记内 Office 助手读取当前手写内容、写入空白单元格并求和保存，以及助手侧栏开启时的普通／画笔双指缩放。请检查落笔过程中线段是否持续显示、连续书写和保存重开后的笔迹，并反馈真实 Apple Pencil 的跟手、压感及误触表现。",
-  "en-US": "Try reading handwritten content with the Office assistant in Notes, filling blank cells, calculating totals and saving. Check two-finger zoom with drawing on or off while the assistant sidebar is open, live stroke visibility, continuous writing, and ink after save/reopen. Please report physical Apple Pencil responsiveness, pressure and palm rejection."
+  "zh-Hans": "请重点体验手记内 Office 助手读取当前手写内容、写入空白单元格并求和保存，以及助手侧栏开启时的普通／画笔双指缩放。请检查落笔过程中线段是否持续显示、连续书写和保存重开后的笔迹，并反馈真实 Apple Pencil 的跟手、压感及误触表现。 快捷指令可按同一次运行查询、等待、取消并取回最终文本。",
+  "en-US": "Try reading handwritten content with the Office assistant in Notes, filling blank cells, calculating totals and saving. Check two-finger zoom with drawing on or off while the assistant sidebar is open, live stroke visibility, continuous writing, and ink after save/reopen. Please report physical Apple Pencil responsiveness, pressure and palm rejection. Shortcuts can query, wait for, cancel and retrieve final text from the same run."
 }

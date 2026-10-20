@@ -6,6 +6,7 @@
 - 改善落笔期间的线段显示和普通／画笔模式下的实时双指缩放，包括助手侧栏开启的场景。
 - 移除魔棒“文档命令”表单，有实际编辑提案时保留应用／放弃操作。
 - 修复手记助手新建或重开会话时缺少关联工作区的问题。
+- 快捷指令可查询、有限等待、取消并取回同一次运行的最终文本，保留旧运行入口兼容性。
 
 受影响功能已完成本地 App 编译、模拟器交互及保存回读检查。真实 Apple Pencil 的压感、防误触和设备手感继续由真机反馈确认。无签名 IPA 需自行签名安装，支持 iOS／iPadOS 26 及以上。
 
@@ -15,5 +16,6 @@
 - Improves live stroke rendering and two-finger zoom with drawing on or off, including when the assistant sidebar is open.
 - Removes the permanent Document Commands form; Apply and Discard remain available for actual editing proposals.
 - Fixes missing workspace bindings when creating or reopening a Notes assistant conversation.
+- Adds status, bounded waiting, cancellation and final text for the exact Shortcuts run, while preserving the legacy run action.
 
 Relevant local App builds, Simulator interactions and save/readback checks have passed. Physical Apple Pencil pressure, palm rejection and device feel remain subject to device feedback. The unsigned IPA requires signing for installation and supports iOS/iPadOS 26+.

@@ -38,6 +38,8 @@
 | [Shortcuts draft queue S3-B](releases/repairs/FLOE_SHORTCUTS_S3B_20261020.md) | 持久草稿、迁移及恢复源码验收：62 项原生通过；待后续安装包集成 / Durable draft source qualification; installable integration pending |
 | [Build 256 stability work](releases/repairs/FLOE_256_STABILITY.md) | 候选修复：Linux 配置恢复、按任务选性能、本地终端和 Office 自由绘制；非发布记录 |
 | [Office／Pencil S1 本地验收](releases/repairs/FLOE_OFFICE_PENCIL_S1_20261020.md) | 本轮原生组件及完整 App：三格式笔点与边界共 12 项通过；281 交付状态单独记录 |
+| [Office 当前页面与实时笔迹](releases/repairs/FLOE_OFFICE_ASSISTANT_LIVE_INK_20261021.md) | 当前笔迹进入实际助手请求、同一手记写入求和保存，以及带侧栏／动画的普通与画笔实时缩放；282 交付另行记录 |
+| [Shortcuts 精确运行与文本 S3-C](releases/repairs/FLOE_SHORTCUTS_S3C_20261021.md) | 原 137 项通过保留，13 项 Intent 与 3 项实际修复／保存证明补验通过；文件和定时接续 D／S4 |
 | [Office 连续双指缩放源码实现](releases/repairs/FLOE_OFFICE_LIVE_PINCH_SOURCE_20261019.md) | 连续缩放源码、组件及分模式验收历史；剩余 S1 问题分别跟踪 |
 | [Excel 双指缩放锚点修复](releases/repairs/FLOE_CALC_ZOOM_ANCHOR_20261020.md) | 修复旧单元格重定位；普通／画笔完整 App 模拟器用例 2 通过，匹配设备组件及新安装包待交付 |
 | [FLOE_156_FEEDBACK_REPAIR.md](releases/repairs/FLOE_156_FEEDBACK_REPAIR.md) | 反馈修复记录、PPTX 可见渲染门禁与 2026-09-22 宿主重建/重新固定更新 |
