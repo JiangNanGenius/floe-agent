@@ -66,7 +66,8 @@ final class FloeShortcutRunFilesTests: XCTestCase {
 
     // MARK: - Seeding helpers (real durable shapes, real encoders)
 
-    private func seedConversation(_ id: UUID, purpose: ConversationPurpose = .ordinary) async throws {
+    private func seedConversation(_ id: UUID, purpose: ConversationPurpose = .ordinary,
+                                  isolation: isolated (any Actor)? = #isolation) async throws {
         try await conversations.saveConversation(.init(
             id: id, title: "Synthetic files task",
             createdAt: Date(), updatedAt: Date(), purpose: purpose))
@@ -77,7 +78,8 @@ final class FloeShortcutRunFilesTests: XCTestCase {
         conversationID: UUID,
         runID: UUID,
         state: String,
-        withTerminalProof answer: String? = nil
+        withTerminalProof answer: String? = nil,
+        isolation: isolated (any Actor)? = #isolation
     ) async throws -> UUID {
         try await runs.saveRun(.init(
             id: runID, conversationID: conversationID, state: state,
@@ -97,7 +99,8 @@ final class FloeShortcutRunFilesTests: XCTestCase {
     /// toolResult → flushed assistant text → terminal. A terminal proof
     /// written before later tool events is not a final reply the
     /// production reader accepts.
-    private func seedRunShell(conversationID: UUID, runID: UUID, state: String, ended: Bool) async throws {
+    private func seedRunShell(conversationID: UUID, runID: UUID, state: String, ended: Bool,
+                              isolation: isolated (any Actor)? = #isolation) async throws {
         try await runs.saveRun(.init(
             id: runID, conversationID: conversationID, state: state,
             goal: "Synthetic files goal",
@@ -106,7 +109,8 @@ final class FloeShortcutRunFilesTests: XCTestCase {
 
     /// Appends the durable completion proof in production order. Call only
     /// AFTER every tool event for the run has been appended.
-    private func appendTerminalProof(runID: UUID, conversationID: UUID, answer: String) async throws {
+    private func appendTerminalProof(runID: UUID, conversationID: UUID, answer: String,
+                                     isolation: isolated (any Actor)? = #isolation) async throws {
         let messageID = UUID()
         try await conversations.appendMessage(.init(
             id: messageID, conversationID: conversationID, role: "assistant",
@@ -174,7 +178,8 @@ final class FloeShortcutRunFilesTests: XCTestCase {
         tool: String,
         callID: String,
         status: String,
-        receipts: [RunOutputFile]? = nil
+        receipts: [RunOutputFile]? = nil,
+        isolation: isolated (any Actor)? = #isolation
     ) async throws {
         var map: [String: String] = [
             "tool": tool, "id": callID, "status": status,
