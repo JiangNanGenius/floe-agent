@@ -529,6 +529,13 @@ public enum AndroidRuntimeBootstrap {
             return true
         }
         guard committed else { return .rejected(.alreadyDraining) }
+        // G02 temporary package (RB5 successor) pre-bootstrap registration:
+        // the REAL optional-domain extension is registered in the idle
+        // window and attaches INSIDE the owned install below. The ordinary
+        // base installs INDEPENDENTLY of it: an attach failure is honest
+        // and non-gating, and `registerExtension` naturally refuses once a
+        // generation is installing or live (idempotent per process).
+        G02TemporaryDomainRegistration.registerIfNeeded()
         // G02: construct the real domain service graph over THIS
         // generation's owned cluster and bind every G02 command handler
         // before the bootstrap terminal settles. Failure leaves the

@@ -753,6 +753,29 @@ public actor FacadeRunDomain {
 
     func liveService(_ runID: UUID) -> ConversationRunService? { liveServices[runID] }
 
+    // MARK: - Temporary lane (RB5 successor) explicit owned-run dispatch
+    // (narrow additive surface; ordinary wire behavior is untouched)
+
+    /// The temporary session's explicit cancel dispatch for ONE owned run
+    /// launched through `start(query:…bundleOverride:)` (RB5 T5). It
+    /// dispatches the ORIGINAL `ConversationRunService.cancel()` for a live
+    /// service, or marks the queued launch honestly; the run owner detaches
+    /// its RB1 owned-work tokens ONLY after its REAL final writes — never
+    /// here, never on a timeout, never for a foreign identity.
+    public func dispatchTemporaryRunCancel(runID: UUID) async {
+        if let service = liveServices[runID] {
+            await service.cancel()
+        } else {
+            _ = markLaunchCancelRequested(runID)
+        }
+    }
+
+    /// Honest live-ownership observation for one temporary run id (status
+    /// only — never a fence; the synchronous navigation gate is).
+    public func hasLiveTemporaryRun(runID: UUID) -> Bool {
+        liveServices[runID] != nil
+    }
+
     /// Trusted ordinary wire-launch CAS, executed inside the original
     /// launch writer before configuration or launch effects. This does not
     /// prohibit multiple live services on an already established task.
@@ -1236,6 +1259,29 @@ public actor FacadeRunDomain {
             }
             query = try RunStartQuery.parse(payload: envelope.payloadValue,
                                             conversationID: conversationID)
+            // LIVE TEMPORARY SESSION: the App addresses a temporary thread
+            // through the SAME ordinary `run.start` contract. The canonical
+            // `conversation.get` reply carries the session revision
+            // (`session.<hosted>/<incarnation>`), so this branch proves that
+            // exact revision against the LIVE session and launches through
+            // the RB5 port with the SAME original ephemeral bundle and the
+            // create-intent shape (the port's real hosted-identity check
+            // lives in EphemeralRunLaunchStore). No durable conversation
+            // proof exists — and none is substituted — for a RAM-only id.
+            if let tempRoute = await TemporaryLiveRouting.route(
+                epoch: epoch, conversationID: conversationID) {
+                guard envelope.revision?.resourceID == tempRoute.revisionResourceID,
+                      envelope.revision?.version == tempRoute.revisionVersion else {
+                    throw RunDomainError(.staleRevision, .revisionMismatch)
+                }
+                guard ordinaryWireAdmissions.insert(conversationID).inserted else {
+                    throw RunDomainError(.duplicateInFlight, .launchAlreadyInFlight)
+                }
+                admittedConversation = conversationID
+                return await launchTemporaryRun(query: query, route: tempRoute,
+                                                receipt: receipt,
+                                                correlation: correlation)
+            }
             // Reserve before the FIRST await. This fences only overlapping
             // admission of two ordinary wire sends. The defer releases on
             // every success/refusal; it never holds for service lifetime.
@@ -1270,6 +1316,74 @@ public actor FacadeRunDomain {
         return await start(query: query, receipt: receipt,
                            conversationID: conversationID,
                            expectedConversationRevision: envelope.revision?.version)
+    }
+
+    /// Launch a LIVE temporary session through the ONE production RB5 port.
+    /// The port appends its prepared/started stages to the SAME receipt and
+    /// returns the REAL run id minted by the run domain; this method only
+    /// maps the port's typed refusal back into the run vocabulary (never a
+    /// fake accepted, never an ordinary fallback).
+    private func launchTemporaryRun(query: RunStartQuery,
+                                    route: TemporaryLiveRoute,
+                                    receipt: String?,
+                                    correlation: String) async -> RunDomainReply {
+        guard let domain = TemporaryDomainFacade.current(epoch: epoch) else {
+            return RunDomainReply(.rejected(RunDomainError(
+                .needsConfiguration, .temporaryDomainUnbound)))
+        }
+        let reply = await domain.temporaryLaunch(
+            conversationID: route.conversationID,
+            incarnation: route.incarnation,
+            correlation: correlation,
+            receipt: receipt,
+            goal: query.goal,
+            mode: query.mode.rawValue,
+            preferredModelID: query.modelID,
+            attachmentCount: query.stagedAttachmentHandles.count,
+            stagedAttachmentHandles: query.stagedAttachmentHandles.count)
+        switch reply {
+        case .launched(let runID):
+            return RunDomainReply(.mutationAccepted(detail: [
+                "launched": "true",
+                "runID": runID.uuidString,
+            ]))
+        case .refused(let error):
+            return RunDomainReply(.rejected(Self.mapTemporaryLaunchError(error)))
+        }
+    }
+
+    /// Closed mapping of the temporary port's typed refusal into the run
+    /// domain's vocabulary. The App already received the operation receipt;
+    /// this is the terminal classification. Nothing is widened and no
+    /// refusal becomes a success.
+    static func mapTemporaryLaunchError(_ error: TemporaryDomainError)
+        -> RunDomainError
+    {
+        switch error.code {
+        case .notFound:
+            return RunDomainError(.notFound, .conversationMissing)
+        case .staleRevision:
+            return RunDomainError(.staleRevision, .revisionMismatch)
+        case .duplicateInFlight:
+            return RunDomainError(.duplicateInFlight, .launchAlreadyInFlight)
+        case .invalidState:
+            return RunDomainError(.invalidState,
+                                  error.reason == .goalModeUnsupportedStore
+                                      ? .goalModeUnsupportedStore
+                                      : .payloadInvalid)
+        case .sessionDiscarded:
+            return RunDomainError(.sessionFenced, .generationRetired)
+        case .persistenceUnavailable:
+            return RunDomainError(.persistenceUnavailable, .storeWriteFailed)
+        case .needsConfiguration:
+            return RunDomainError(.needsConfiguration, .temporaryDomainUnbound)
+        case .capabilityUnavailable:
+            return RunDomainError(.capabilityNotUsable, .temporaryDomainUnbound)
+        case .payloadTooLarge:
+            return RunDomainError(.payloadTooLarge, .payloadTooLarge)
+        case .internalError:
+            return RunDomainError(.internalError, .internal)
+        }
     }
 
     /// Wire surface for `run.startTask` (explicit create intent, NO owner
@@ -1309,7 +1423,12 @@ public actor FacadeRunDomain {
         }
         let record: RunRecord
         do {
-            record = try await durableRecord(query.runID, conversationID: query.conversationID)
+            // The run's OWN record. Temporary runs live in the session RAM
+            // store; a terminal temporary run still reads that store while
+            // the session is live (ownership may already have retired).
+            // Ordinary/unowned runs keep the exact durable read.
+            record = try await controlRunRecord(query.runID,
+                                                conversationID: query.conversationID)
         } catch let error as RunDomainError {
             return RunDomainReply(.rejected(error))
         } catch {
@@ -1398,6 +1517,15 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(error))
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
+        }
+        // A LIVE temporary session retries the SAME run id from its OWN RAM
+        // history (never the durable run/checkpoint cluster). The App's
+        // retry revision is run.<id>/<state>; the route proves the session
+        // incarnation/epoch bound to that conversation.
+        if let route = await TemporaryLiveRouting.route(
+            epoch: epoch, conversationID: query.conversationID) {
+            return await retryTemporary(query: query, route: route,
+                                        receipt: receipt, envelope: envelope)
         }
         // A per-conversation delete guard refuses EVERY new run admission
         // (retry included) BEFORE the live-owner duplicate check: the fence
@@ -1607,6 +1735,11 @@ public actor FacadeRunDomain {
             // durable row; a direct steer payload here is a shape error.
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
         }
+        if let route = await TemporaryLiveRouting.route(
+            epoch: epoch, conversationID: query.conversationID) {
+            return await queueTemporary(query: query, route: route,
+                                        envelope: envelope)
+        }
         do {
             let digest = try await components.conversationRevisions
                 .digest(conversationID: query.conversationID) ?? ""
@@ -1689,6 +1822,11 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(error))
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
+        }
+        if let route = await TemporaryLiveRouting.route(
+            epoch: epoch, conversationID: query.conversationID) {
+            return await steerTemporary(query: query, route: route,
+                                        envelope: envelope)
         }
         do {
             try requireNoGuard(conversationID: query.conversationID)
@@ -1826,6 +1964,12 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
         }
+        if let route = await TemporaryLiveRouting.route(
+            epoch: epoch, conversationID: query.conversationID) {
+            return await mutateTemporaryInput(
+                query: query, route: route, envelope: envelope,
+                editText: query.content)
+        }
         do {
             let digest = try await components.conversationRevisions
                 .digest(conversationID: query.conversationID) ?? ""
@@ -1875,6 +2019,12 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
         }
+        if let route = await TemporaryLiveRouting.route(
+            epoch: epoch, conversationID: query.conversationID) {
+            return await mutateTemporaryInput(
+                query: query, route: route, envelope: envelope,
+                editText: nil)
+        }
         return await mutateInput(conversationID: query.conversationID, inputID: query.inputID,
                                  expectedVersion: query.expectedInputVersion,
                                  envelope: envelope) { [weak self] in
@@ -1903,6 +2053,11 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(error))
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
+        }
+        if let route = await TemporaryLiveRouting.route(
+            epoch: epoch, conversationID: query.conversationID) {
+            return await reorderTemporaryInputs(query: query, route: route,
+                                                envelope: envelope)
         }
         do {
             try requireNoGuard(conversationID: query.conversationID)
@@ -2004,6 +2159,563 @@ public actor FacadeRunDomain {
         } catch {
             return false
         }
+    }
+
+    // MARK: - LIVE temporary session: ordinary run control over RAM
+
+    /// `run.queue` for the LIVE temporary session: the SAME session-revision
+    /// CAS, ingress scan and queue semantics as the ordinary lane, but the
+    /// row is enqueued into the run's OWN `EphemeralRunningInputStore` (the
+    /// one the service is attached to). No durable queue/input row exists.
+    private func queueTemporary(query: RunQueueQuery,
+                                route: TemporaryLiveRoute,
+                                envelope: RunCommandEnvelope) async
+        -> RunDomainReply
+    {
+        do {
+            try envelope.revisionMatches(resourceID: route.revisionResourceID,
+                                         version: route.revisionVersion)
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision,
+                                                           .revisionAbsent)))
+        }
+        guard query.stagedAttachmentHandles.isEmpty else {
+            // Temporary is text-only by policy. Never resolve/stage handles.
+            return RunDomainReply(.rejected(RunDomainError(
+                .capabilityNotUsable, .payloadInvalid)))
+        }
+        let scanned = RunIngressScan.scan(query.content)
+        guard !scanned.isBlank else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState,
+                                                           .payloadInvalid)))
+        }
+        do {
+            try requireNoGuard(conversationID: query.conversationID)
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
+        }
+        // Queue targets the ACTIVE run; a stale/ended target is a typed
+        // refusal (the App restores the draft), never a stranded RAM row.
+        guard let ownership = owners[query.runID],
+              ownership.conversationID == query.conversationID,
+              liveServices[query.runID] != nil else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState,
+                                                           .runNotRetryable)))
+        }
+        do {
+            let stored = try await ownership.bundle.runningInputs.enqueue(
+                PendingUserInput(
+                    conversationID: query.conversationID,
+                    targetRunID: query.runID,
+                    content: scanned.sanitizedText
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                    mode: .queue,
+                    attachments: [],
+                    selectedModelID: query.selectedModelID,
+                    workspaceID: nil,
+                    executionMode: "agent"))
+            return RunDomainReply(.mutationAccepted(detail: [
+                "inputID": stored.id.uuidString,
+                "position": String(stored.position),
+                "status": stored.status.rawValue,
+                "inputVersion": RunWireRevision.inputVersion(updatedAt: stored.updatedAt),
+            ]))
+        } catch {
+            let detail = (error as? FloeError).map { "\($0)" } ?? ""
+            if detail.contains("queue is full") {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .queueFull)))
+            }
+            if detail.contains("empty") {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState,
+                                                               .payloadInvalid)))
+            }
+            return RunDomainReply(.rejected(RunDomainError(.persistenceUnavailable,
+                                                           .storeWriteFailed)))
+        }
+    }
+
+    /// `run.steer` for the LIVE temporary session. Uses the SAME live
+    /// `ConversationRunService.steer` and the SAME exactly-once steer-status
+    /// transitions, but all rows live in the run's ephemeral bundle.
+    private func steerTemporary(query: RunSteerQuery,
+                                route: TemporaryLiveRoute,
+                                envelope: RunCommandEnvelope) async
+        -> RunDomainReply
+    {
+        let bundle = route.runBundle
+        do {
+            try requireNoGuard(conversationID: query.conversationID)
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
+        }
+        let liveService = (owners[query.runID]?.phase == .handedOff
+                            || owners[query.runID]?.phase == .terminating)
+            ? liveServices[query.runID] : nil
+        guard let service = liveService else {
+            // Native steerTargetEndedQueued parity: keep the RAM row queued;
+            // NEVER fabricate a promotion and never auto-launch.
+            let row = try? await bundle.runningInputs.input(id: query.inputID)
+            if row == nil {
+                return RunDomainReply(.rejected(RunDomainError(.notFound,
+                                                               .inputMissing)))
+            }
+            return RunDomainReply(.mutationAccepted(detail: [
+                "promoted": "false", "reason": "steerTargetEndedQueued",
+            ]))
+        }
+        let record: RunRecord?
+        do {
+            record = try await bundle.runs.run(id: query.runID)
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.persistenceUnavailable,
+                                                           .storeReadFailed)))
+        }
+        guard let record, record.conversationID == query.conversationID else {
+            return RunDomainReply(.rejected(RunDomainError(.notFound, .runMissing)))
+        }
+        guard query.expectedState == record.state else {
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision,
+                                                           .revisionMismatch)))
+        }
+        do {
+            try envelope.revisionMatches(
+                resourceID: RunWireRevision.runResourceID(query.runID),
+                version: record.state)
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision,
+                                                           .revisionAbsent)))
+        }
+        let promoted: PendingUserInput?
+        do {
+            promoted = try await bundle.runningInputs.beginSteerPromotion(
+                id: query.inputID, expectedRunID: query.runID)
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.persistenceUnavailable,
+                                                           .storeWriteFailed)))
+        }
+        guard let input = promoted else {
+            if let existing = try? await bundle.runningInputs.input(id: query.inputID),
+               existing.targetRunID == query.runID,
+               (existing.status == .steerPending || existing.status == .promoting) {
+                let replay = await service.steer(RuntimeSteerInput(
+                    id: existing.id,
+                    content: existing.content,
+                    images: ConversationHistoryAssembler.inlineImages(existing.attachments),
+                    attachments: existing.attachments,
+                    createdAt: existing.createdAt),
+                    expectedRunID: query.runID)
+                if case .alreadyAccepted = replay {
+                    return RunDomainReply(.mutationAccepted(detail: [
+                        "accepted": "true", "alreadyAccepted": "true",
+                        "inputID": existing.id.uuidString]))
+                }
+            }
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision,
+                                                           .revisionMismatch)))
+        }
+        guard input.conversationID == query.conversationID else {
+            try? await bundle.runningInputs.restoreQueued(id: input.id)
+            return RunDomainReply(.rejected(RunDomainError(.notFound, .inputMissing)))
+        }
+        let steerImages = ConversationHistoryAssembler.inlineImages(input.attachments)
+        let acceptance = await service.steer(RuntimeSteerInput(
+            id: input.id,
+            content: input.content,
+            images: steerImages,
+            attachments: input.attachments,
+            createdAt: input.createdAt),
+            expectedRunID: query.runID)
+        switch acceptance {
+        case .accepted:
+            do {
+                try await bundle.runningInputs.markSteerAccepted(
+                    id: input.id, runID: query.runID)
+            } catch {
+                _ = await service.withdrawSteer(id: input.id)
+                try? await bundle.runningInputs.restoreQueued(id: input.id)
+                return RunDomainReply(.rejected(RunDomainError(
+                    .persistenceUnavailable, .storeWriteFailed)))
+            }
+            return RunDomainReply(.mutationAccepted(detail: [
+                "accepted": "true", "inputID": input.id.uuidString]))
+        case .alreadyAccepted:
+            return RunDomainReply(.mutationAccepted(detail: [
+                "accepted": "true", "alreadyAccepted": "true",
+                "inputID": input.id.uuidString]))
+        case .rejected(let reason):
+            try? await bundle.runningInputs.restoreQueued(id: input.id)
+            let closed = reason.contains("no longer accepting")
+            return RunDomainReply(.rejected(RunDomainError(
+                .invalidState, closed ? .steerAlreadyConsumed : .steerRaceConsumed)))
+        }
+    }
+
+    /// `run.input.edit`/`run.input.remove` for the LIVE temporary session.
+    /// The App sends the SESSION revision plus the row's
+    /// `expectedInputVersion`; both are proven here. A steerPending row
+    /// withdraws its live steer first (ORIGINAL ordering).
+    private func mutateTemporaryInput(query: RunInputEditQuery,
+                                      route: TemporaryLiveRoute,
+                                      envelope: RunCommandEnvelope,
+                                      editText: String?) async -> RunDomainReply
+    {
+        await mutateTemporaryInput(
+            conversationID: query.conversationID, inputID: query.inputID,
+            expectedVersion: query.expectedInputVersion,
+            route: route, envelope: envelope, editText: editText)
+    }
+
+    private func mutateTemporaryInput(query: RunInputRemoveQuery,
+                                      route: TemporaryLiveRoute,
+                                      envelope: RunCommandEnvelope,
+                                      editText: String?) async -> RunDomainReply
+    {
+        await mutateTemporaryInput(
+            conversationID: query.conversationID, inputID: query.inputID,
+            expectedVersion: query.expectedInputVersion,
+            route: route, envelope: envelope, editText: editText)
+    }
+
+    private func mutateTemporaryInput(conversationID: UUID, inputID: UUID,
+                                      expectedVersion: String,
+                                      route: TemporaryLiveRoute,
+                                      envelope: RunCommandEnvelope,
+                                      editText: String?) async -> RunDomainReply
+    {
+        let bundle = route.runBundle
+        do {
+            try requireNoGuard(conversationID: conversationID)
+            // The App's real pending-input envelope revision is the session
+            // revision; the ROW CAS is the payload's expectedInputVersion.
+            try envelope.revisionMatches(resourceID: route.revisionResourceID,
+                                         version: route.revisionVersion)
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision,
+                                                           .revisionAbsent)))
+        }
+        let row: PendingUserInput?
+        do {
+            row = try await bundle.runningInputs.input(id: inputID)
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.persistenceUnavailable,
+                                                           .storeReadFailed)))
+        }
+        guard let row, row.conversationID == conversationID else {
+            return RunDomainReply(.rejected(RunDomainError(.notFound, .inputMissing)))
+        }
+        guard RunWireRevision.inputVersion(updatedAt: row.updatedAt)
+                == expectedVersion else {
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision,
+                                                           .revisionMismatch)))
+        }
+        if row.status == .steerPending {
+            guard await withdrawTemporarySteer(row, bundle: bundle) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState,
+                                                               .steerAlreadyConsumed)))
+            }
+        }
+        do {
+            if let editText {
+                let scanned = RunIngressScan.scan(editText)
+                guard !scanned.isBlank else {
+                    return RunDomainReply(.rejected(RunDomainError(
+                        .invalidState, .payloadInvalid)))
+                }
+                try await bundle.runningInputs.updateContent(
+                    id: row.id,
+                    content: scanned.sanitizedText
+                        .trimmingCharacters(in: .whitespacesAndNewlines))
+            } else {
+                try await bundle.runningInputs.cancel(id: row.id)
+            }
+            return RunDomainReply(.mutationAccepted(detail: [
+                "inputID": inputID.uuidString, "mutated": "true"]))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState,
+                                                           .inputNotQueued)))
+        }
+    }
+
+    /// `run.input.reorder` for the LIVE temporary session. The queue order
+    /// and its digest are recomputed from the RAM rows; the envelope CAS is
+    /// the SAME `pendingQueue.<conversation>/<version>` contract.
+    private func reorderTemporaryInputs(query: RunInputReorderQuery,
+                                        route: TemporaryLiveRoute,
+                                        envelope: RunCommandEnvelope) async
+        -> RunDomainReply
+    {
+        do {
+            try requireNoGuard(conversationID: query.conversationID)
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
+        }
+        let pending: [PendingUserInput]
+        do {
+            pending = try await route.stores.runningInputs.pending(
+                conversationID: query.conversationID)
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.persistenceUnavailable,
+                                                           .storeReadFailed)))
+        }
+        let currentOrder = pending.filter { $0.status == .queued }.map(\.id)
+        guard Set(currentOrder) == Set(query.orderedIDs),
+              currentOrder.count == query.orderedIDs.count,
+              RunWireRevision.queueVersion(orderedIDs: currentOrder)
+                == query.expectedQueueVersion else {
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision,
+                                                           .revisionMismatch)))
+        }
+        do {
+            try envelope.revisionMatches(
+                resourceID: RunWireRevision.pendingQueueResourceID(
+                    query.conversationID),
+                version: query.expectedQueueVersion)
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision,
+                                                           .revisionAbsent)))
+        }
+        do {
+            try await route.stores.runningInputs.reorder(
+                conversationID: query.conversationID,
+                orderedIDs: query.orderedIDs)
+            return RunDomainReply(.mutationAccepted(detail: [
+                "reordered": "true",
+                "queueVersion": RunWireRevision.queueVersion(
+                    orderedIDs: query.orderedIDs)]))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision,
+                                                           .revisionMismatch)))
+        }
+    }
+
+    /// Temporary counterpart of the ORIGINAL steer-withdraw ordering: retract
+    /// the live runtime steer BEFORE restoring the RAM row to queued.
+    private func withdrawTemporarySteer(_ row: PendingUserInput,
+                                        bundle: RunPersistenceBundle) async -> Bool {
+        guard row.status == .steerPending else { return true }
+        guard row.consumedRunID == nil else { return false }
+        if let service = row.targetRunID.flatMap({ liveServices[$0] }) {
+            guard await service.withdrawSteer(id: row.id) else { return false }
+        }
+        do {
+            try await bundle.runningInputs.restoreQueued(id: row.id)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// `run.retry` for the LIVE temporary session: re-own the SAME run id
+    /// over the SAME ephemeral bundle and resume from its RAM history (no
+    /// durable checkpoint is read or written). The App's `run.<id>/<state>`
+    /// revision CAS is preserved exactly.
+    private func retryTemporary(query: RunRetryQuery,
+                                route: TemporaryLiveRoute,
+                                receipt: String,
+                                envelope: RunCommandEnvelope) async
+        -> RunDomainReply
+    {
+        if isGlobalAdmissionFencedNow() {
+            return RunDomainReply(.rejected(RunDomainError(.sessionFenced,
+                                                           .deletingGuarded)))
+        }
+        do {
+            try requireNoGuard(conversationID: query.conversationID)
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
+        }
+        guard owners[query.runID] == nil else {
+            return RunDomainReply(.rejected(RunDomainError(.duplicateInFlight,
+                                                           .launchAlreadyInFlight)))
+        }
+        let record: RunRecord
+        do {
+            guard let found = try await route.stores.runs.run(id: query.runID),
+                  found.conversationID == query.conversationID else {
+                throw RunDomainError(.notFound, .runMissing)
+            }
+            record = found
+            if record.state != query.expectedState {
+                throw RunDomainError(.staleRevision, .revisionMismatch)
+            }
+            try envelope.revisionMatches(
+                resourceID: RunWireRevision.runResourceID(query.runID),
+                version: record.state)
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.persistenceUnavailable,
+                                                           .storeReadFailed)))
+        }
+        guard Self.activeRunStates.contains(record.state)
+                || record.state == "failed" || record.state == "interrupted"
+                || record.state == "checkpointed" else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState,
+                                                           .runNotRetryable)))
+        }
+        let launch: RunModelAssembly.ResolvedPair
+        do {
+            guard let modelID = record.modelID, let providerID = record.providerID else {
+                throw RunDomainError(.needsConfiguration, .modelDisabled)
+            }
+            launch = try await assembly.resolveSelected(providerID: providerID,
+                                                        modelID: modelID)
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.needsConfiguration,
+                                                           .providerDisabled)))
+        }
+        switch RuntimeOwnedWorkRegistry.shared.attach(epoch: epoch, kind: .run,
+                                                      ownerID: record.id.uuidString) {
+        case .attached(let token):
+            var ownership = RunOwnership(conversationID: record.conversationID,
+                                         runID: record.id, epoch: epoch,
+                                         identity: .temporary,
+                                         launchToken: issueFence(record.conversationID),
+                                         bundle: route.runBundle)
+            ownership.commandReceipt = receipt
+            ownership.phase = .prepared
+            ownership.ownedTokens[RuntimeOwnedWorkKind.run.rawValue] = token
+            register(ownership)
+            recordDrainEvidence(conversationID: record.conversationID, token: token)
+            if retirementFenced || globalFence != nil
+                || deleteGuards[record.conversationID] != nil {
+                await retire(runID: record.id, terminalSucceeded: false,
+                             feedTerminal: false)
+                return RunDomainReply(.rejected(
+                    RunDomainError(.sessionFenced, .deletingGuarded)))
+            }
+        case .rejected:
+            return RunDomainReply(.rejected(RunDomainError(.sessionFenced,
+                                                           .generationRetired)))
+        case .invalidIdentity:
+            return RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
+        }
+        let gate: CatastrophicActionGate
+        do {
+            switch RunGateAdmission.admit(context: components.context) {
+            case .usable(let admittedGate):
+                gate = admittedGate
+            case .needsCorpus:
+                throw RunDomainError(.needsConfiguration, .corpusAbsent)
+            }
+            if !components.context.isTransportQualified {
+                throw RunDomainError(.transportUnavailable, .transportNotQualified)
+            }
+        } catch let error as RunDomainError {
+            return await failTemporaryRetry(runID: record.id, error: error,
+                                            bundle: route.runBundle)
+        } catch {
+            return await failTemporaryRetry(
+                runID: record.id,
+                error: RunDomainError(.persistenceUnavailable, .storeReadFailed),
+                bundle: route.runBundle)
+        }
+        let history: [ConversationMessage]
+        do {
+            history = try await loadRunHistory(
+                conversationID: record.conversationID,
+                excludingRun: record.id,
+                bundle: route.runBundle)
+        } catch let error as RunDomainError {
+            return await failTemporaryRetry(runID: record.id, error: error,
+                                            bundle: route.runBundle)
+        } catch {
+            return await failTemporaryRetry(
+                runID: record.id,
+                error: RunDomainError(.persistenceUnavailable, .storeReadFailed),
+                bundle: route.runBundle)
+        }
+        guard let mode = ConversationMode(rawValue: record.conversationMode ?? "chat") else {
+            return await failTemporaryRetry(
+                runID: record.id,
+                error: RunDomainError(.invalidState, .payloadInvalid),
+                bundle: route.runBundle)
+        }
+        let service: ConversationRunService
+        do {
+            service = try await makeService(
+                runID: record.id, conversationID: record.conversationID,
+                goal: record.goal, mode: mode, launch: launch,
+                history: history, images: [], bundle: route.runBundle,
+                draftPolicy: nil,
+                gate: gate, workspaceName: nil,
+                hostToolCeiling: route.frozenToolCeiling.sorted(by: <),
+                environmentID: nil)
+        } catch let error as RunDomainError {
+            return await failTemporaryRetry(runID: record.id, error: error,
+                                            bundle: route.runBundle)
+        } catch {
+            return await failTemporaryRetry(
+                runID: record.id,
+                error: RunDomainError(.persistenceUnavailable, .storeWriteFailed),
+                bundle: route.runBundle)
+        }
+        liveServices[record.id] = service
+        guard var handed = owners[record.id] else {
+            return RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
+        }
+        handed.phase = .handedOff
+        handed.startedEffectEmitted = components.effects.append(
+            receipt: receipt, kind: .started,
+            detail: ["runID": record.id.uuidString,
+                     "resumed": "history"])
+        register(handed)
+        if let temporary = TemporaryDomainFacade.current(epoch: epoch) {
+            await temporary.noteTemporaryRunStarted(
+                conversationID: route.conversationID,
+                incarnation: route.incarnation,
+                runID: record.id)
+        }
+        // Re-opening the SAME run id is a real new stream incarnation: the
+        // previous terminal record must be reset to the non-terminal
+        // preparing state BEFORE the service starts. Without this the
+        // service's own launch-failure classifier sees the old terminal
+        // record and would truthfully do nothing, hiding a real start error.
+        var retryRecord = record
+        retryRecord.state = "preparing"
+        retryRecord.endedAt = nil
+        do {
+            try await route.stores.runs.saveRun(retryRecord)
+        } catch {
+            return await failTemporaryRetry(
+                runID: record.id,
+                error: RunDomainError(.persistenceUnavailable, .storeWriteFailed),
+                bundle: route.runBundle)
+        }
+        ownedLaunchTasks(preparedRunID: record.id, service: service,
+                         goal: record.goal, resumeFrom: nil)
+        return RunDomainReply(.mutationAccepted(detail: [
+            "resumed": "true", "source": "history",
+        ]))
+    }
+
+    private func failTemporaryRetry(runID: UUID, error: RunDomainError,
+                                    bundle: RunPersistenceBundle) async
+        -> RunDomainReply
+    {
+        await markCommittedLaunchAbandoned(runID: runID,
+                                           reason: "temporaryRetryFailed",
+                                           bundle: bundle)
+        await retire(runID: runID, terminalSucceeded: false, feedTerminal: false)
+        return RunDomainReply(.rejected(error))
     }
 
     // MARK: - run.approval.resolve
@@ -2221,11 +2933,23 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
         }
+        // Reads use the RUN'S OWN bundle: an owned run already carries its
+        // immutable identity; a terminal live-temporary run whose ownership
+        // retired still reads the SAME session RAM store while the session
+        // is live. No durable singleton is ever substituted for a known
+        // temporary run (and no RAM store is used for an ordinary one).
+        var readBundle: RunPersistenceBundle? = owners[owner.runID]?.bundle
+        if readBundle == nil,
+           let route = await TemporaryLiveRouting.route(
+            epoch: epoch, conversationID: owner.taskID) {
+            readBundle = route.runBundle
+        }
         return await RunSnapshotWireBuilder.build(
             domain: self, components: components,
             query: SnapshotQuery(conversationID: owner.taskID, runID: owner.runID),
             ownership: owners[owner.runID],
-            liveService: liveServices[owner.runID])
+            liveService: liveServices[owner.runID],
+            readBundle: readBundle)
     }
 
     public func childList(envelope: RunCommandEnvelope) async -> RunDomainReply {
@@ -2339,6 +3063,18 @@ public actor FacadeRunDomain {
             RuntimeOwnedWorkRegistry.shared.detach(token)
         }
         unregister(ownership)
+        // A temporary run's REAL terminal is also reflected in the RB5
+        // session's owned-run ledger (status/temp.end cancel dispatch only;
+        // the RB1 tokens above are already detached at real completion).
+        if ownership.identity == .temporary,
+           let temporary = TemporaryDomainFacade.current(epoch: epoch),
+           let route = await temporary.liveRoute(
+            conversationID: ownership.conversationID) {
+            await temporary.noteTemporaryRunRetired(
+                conversationID: ownership.conversationID,
+                incarnation: route.incarnation,
+                runID: ownership.runID)
+        }
         // Honest late-cancel bookkeeping (bounded): remember the id this
         // generation retired so a cancel arriving after retirement answers
         // alreadyRequested rather than runMissing.
@@ -2409,6 +3145,35 @@ public actor FacadeRunDomain {
     }
 
     internal var feedDeliveredObserved: [UUID: Int] = [:]
+
+    /// Run-scoped CONTROL read over the run's OWN bundle. An owned run
+    /// already carries its immutable bundle; a terminal temporary run whose
+    /// ownership retired still reads the live session's RAM store. An
+    /// ordinary unowned run falls back to the exact durable read. A known
+    /// temporary conversation never reads the durable singleton.
+    func controlRunRecord(_ runID: UUID, conversationID: UUID) async throws
+        -> RunRecord
+    {
+        let store: any RunStore
+        if let bundle = owners[runID]?.bundle {
+            store = bundle.runs
+        } else if let route = await TemporaryLiveRouting.route(
+            epoch: epoch, conversationID: conversationID) {
+            store = route.stores.runs
+        } else {
+            store = durable.runs
+        }
+        let record: RunRecord?
+        do {
+            record = try await store.run(id: runID)
+        } catch {
+            throw RunDomainError(.persistenceUnavailable, .storeReadFailed)
+        }
+        guard let record, record.conversationID == conversationID else {
+            throw RunDomainError(.notFound, .runMissing)
+        }
+        return record
+    }
 
     func durableRecord(_ runID: UUID, conversationID: UUID) async throws -> RunRecord {
         // Wire control paths (cancel/retry/skillcancel) are ordinary-only:

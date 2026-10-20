@@ -2,6 +2,7 @@
 package com.floe.android.host
 
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +37,8 @@ class HomeLaunchpadHostTest {
     private val modelId = "B2F1A0C4-1111-4222-8333-444455556666"
     private val secondModelId = "C3F2B1D5-2222-4333-8444-555566667777"
     private val runId = "22222222-2222-4222-8222-222222222222"
+    private val tempId = "33333333-3333-4333-8333-333333333333"
+    private val tempIncarnation = "44444444-4444-4444-8444-444444444444"
 
     private class Exchange(
         val script: (String) -> String,
@@ -63,8 +66,19 @@ class HomeLaunchpadHostTest {
 
     private class Script {
         var rejectRunStart = false
+        var rejectTempStart = false
+        var temporary = false
         var modelRows = ""
     }
+
+    private fun temporarySessionValue(): String =
+        """{"session":"active","conversationID":"$tempId",""" +
+            """"incarnation":"$tempIncarnation","ceiling":"public-web","rootEpoch":7}"""
+
+    private fun temporarySessionReply(): String =
+        """{"conversationID":"$tempId","resourceID":"session.$tempId",""" +
+            """"revision":"$tempIncarnation","title":"Temporary",""" +
+            """"runs":[],"pendingInputs":[]}"""
 
     private fun providerRow(): String =
         """{"id":"$providerId","kind":"custom","wireProtocol":"openAIChatCompletions",""" +
@@ -132,11 +146,26 @@ class HomeLaunchpadHostTest {
                     "op:v1:conversationGet" -> effectPage(
                         correlation, "conversationGet",
                         accepted(
-                            """{"conversationID":"$createdId","title":"Task",""" +
+                            if (script.temporary) temporarySessionReply()
+                            else """{"conversationID":"$createdId","title":"Task",""" +
                                 """"revision":{"resourceID":"conversation.${createdId.uppercase()}","version":"digest-1"},""" +
                                 """"runs":[],"pendingInputs":[]}""",
                         ),
                     )
+                    "op:v1:tempStart" -> {
+                        if (script.rejectTempStart) {
+                            effectPage(
+                                correlation, "tempStart",
+                                """{"sequence":1,"kind":"rejected","code":"runtimeUnavailable",""" +
+                                    """"detail":${detail("reason" to "temporary_unavailable")}}""",
+                            )
+                        } else {
+                            effectPage(
+                                correlation, "tempStart",
+                                accepted(temporarySessionValue()),
+                            )
+                        }
+                    }
                     "op:v1:messagePage" -> effectPage(
                         correlation, "messagePage",
                         accepted("""{"rows":[],"hasEarlier":false,"earlierCursor":null}"""),
@@ -188,6 +217,8 @@ class HomeLaunchpadHostTest {
                 """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"op:v1:conversationCreate"}"""
             raw.contains("\"command\":\"conversation.get\"") ->
                 """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"op:v1:conversationGet"}"""
+            raw.contains("\"command\":\"temp.start\"") ->
+                """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"op:v1:tempStart"}"""
             raw.contains("\"command\":\"conversation.messagePage\"") ->
                 """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"op:v1:messagePage"}"""
             raw.contains("\"command\":\"run.start\"") ->
@@ -327,4 +358,67 @@ class HomeLaunchpadHostTest {
         assertEquals(1, exchange.envelopesOf("run.start").size)
         host.stop()
     }
+    @Test
+    fun emptyTemporaryHeaderOpensRealRamThreadWithoutLaunching() = runBlocking {
+        val script = Script().apply { temporary = true }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        val failure = AtomicReference<String?>(null)
+        val admitted = AtomicInteger(0)
+        host.home.send(
+            "",
+            "chat",
+            temporary = true,
+            onAdmitted = { _: HomeSendToken, _: Boolean -> admitted.incrementAndGet() },
+        ) { failure.set(it) }
+        assertTrue(
+            "the empty header must start exactly one real temporary session",
+            awaitUntil { exchange.envelopesOf("temp.start").size == 1 },
+        )
+        assertTrue(awaitUntil { admitted.get() == 1 })
+        assertTrue(awaitUntil { !host.home.sending.value })
+        val ref = host.conversations.activeTemporarySession()
+        assertNotNull(ref)
+        assertEquals(tempId, ref!!.conversationId)
+        assertEquals(tempIncarnation, ref.incarnationId)
+        assertTrue(exchange.envelopesOf("run.start").isEmpty())
+        val entry = host.conversations.entryFor(tempId)
+        assertNotNull(entry)
+        host.conversations.loadThread(entry!!.holder.session)
+        assertTrue(awaitUntil { entry.holder.snapshot.value?.hasLoaded == true })
+        val snapshot = entry.holder.snapshot.value!!
+        assertFalse(snapshot.isConversationMissing)
+        assertTrue(snapshot.isTemporary)
+        assertEquals(tempIncarnation, snapshot.temporaryIncarnationId)
+        assertNull(failure.get())
+        host.stop()
+    }
+
+    @Test
+    fun rejectedTemporaryStartNeverAdmitsOrLaunches() = runBlocking {
+        val script = Script().apply {
+            temporary = true
+            rejectTempStart = true
+        }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        val failure = AtomicReference<String?>(null)
+        val admitted = AtomicInteger(0)
+        host.home.send(
+            "keep me",
+            "chat",
+            temporary = true,
+            onAdmitted = { _: HomeSendToken, _: Boolean -> admitted.incrementAndGet() },
+        ) { failure.set(it) }
+        assertTrue(awaitUntil { failure.get() != null })
+        assertEquals(0, admitted.get())
+        assertTrue(awaitUntil { !host.home.sending.value })
+        assertEquals(1, exchange.envelopesOf("temp.start").size)
+        assertTrue(exchange.envelopesOf("run.start").isEmpty())
+        assertNull(host.conversations.activeTemporarySession())
+        val payload = exchange.envelopesOf("temp.start").first()["payload"]!!.jsonObject
+        assertEquals("keep me", payload["draft"]!!.jsonPrimitive.content)
+        host.stop()
+    }
+
 }

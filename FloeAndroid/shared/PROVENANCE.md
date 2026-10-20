@@ -19,7 +19,7 @@ iOS sources and `FloeAgent/Package.swift` are NOT edited by this overlay.
 | FloeSecurity | 13 → 12 | 12 links + `Resources/catastrophic-patterns.json` copy; **`KeychainStore.swift` excluded entirely** |
 | FloeTools | 25 | 23 links + `MCPRemoteToolSource.swift`, `NetworkDestinationPolicy.swift` copies |
 | FloeSkills | 22 | all links |
-| FloePersistence | 71 | original links plus reviewed `ConversationStore.swift` and `RunLaunchStore.swift` mirrors; same 46-migration chain, no second store |
+| FloePersistence | 71 | original links plus reviewed `ConversationStore.swift`, `RunLaunchStore.swift`, `ConversationPromoter.swift` and the frozen byte-identical v46 `DatabaseManager.swift` mirrors; same 46-migration chain, no second store |
 | FloeAgentRuntime | 40 | all links (ConversationRunService/FloeAgentRuntime actor/HarnessEventChannel authority) |
 | FloeAndroidWebTools | 5 | 3 links (`WebRetrievalModels.swift`, `Tools/WebFetchTool.swift`, `Tools/WebSearchTool.swift`) + 2 narrow mirrors (`HTTPRequestService.swift`, `WebSearchService.swift`) — see D1 section |
 
@@ -332,3 +332,65 @@ The corresponding regression suite is
 `RuntimeFacadeEmptyHeaderActivationTests`; authored, compiled and executed
 status must be taken from the current qualification receipt, not this source
 provenance note.
+
+
+## G02 temporary-session package — actual qualification (2026-10-20, job-10f263aaecec4d4d)
+
+`Sources/FloePersistence/ConversationPromoter.swift`: the overlay SYMLINK to
+`../../../../FloeAgent/Sources/FloePersistence/ConversationPromoter.swift`
+was atomically replaced (link itself, never written through) with a reviewed
+regular Android mirror of upstream SHA-256
+`314dc5e671623e7b21dff65998177b6ed1b0239eea86f0ae965a39dfff1918a4`, whose
+upstream bytes remain byte-identical and untouched. The mirror is purely
+additive: `promote(_:)` keeps byte-compatible behavior by delegating with a
+nil fence; the new `PromotionCommitFence`
+(`allowsCommit`/`beginFinalCommit`/`finishFinalCommit`) plus
+`promote(_:commitFence:)` implement the TMP-COMMIT-1 repair — discard is
+linearized against the ACTUAL SQLite COMMIT (the final guard registers the
+commit attempt atomically inside the writer closure; `finishFinalCommit`
+resolves only after the writer await really committed or really threw).
+No schema, no journal, no second DB, no behavior change for any existing
+caller. Mirror SHA-256: `2f1ae3ff90fab50a981d39f3939000c3857adafb05d76f70c8936bf9cea94729`.
+
+New FloeAndroidCore files (this package, all original Android-owned):
+`RuntimeFacadeTemporarySupport.swift` (closed vocabulary, the commit-boundary
+fence state machine, the synchronous `TemporaryNavigationGate` and the typed
+`value.navigationFence` acknowledgement), `RuntimeFacadeTemporary.swift`
+(one service-owned RAM session per accepted epoch; start/end/keep/launch;
+original Ephemeral stores; original promoter Keep pipeline; retirement),
+`RuntimeFacadeTemporaryBridge.swift` (the frozen three binder keys with the
+TMP-NAV-2 synchronous admission in the submit path and the
+`G02TemporaryDomainExtension` production attach) and
+`RuntimeFacadeTemporaryRunAdapter.swift` (the sole production
+`TemporaryRunDomainPort` over the live RUN-S2 `start(query:…bundleOverride:)`
+seam, RB5 T1-T5).
+
+Narrow additive host edits: `RuntimeFacadeRuns.swift` gained exactly two
+public actor methods (`dispatchTemporaryRunCancel(runID:)`,
+`hasLiveTemporaryRun(runID:)`) for the RB5 T5 explicit cancel dispatch —
+the first-send activation bytes and everything else are unchanged;
+`RuntimeFacadeBootstrap.swift` gained exactly one pre-bootstrap line
+(`G02TemporaryDomainRegistration.registerIfNeeded()`) so the ordinary base
+still installs INDEPENDENTLY of this optional graph. Tests:
+`RuntimeFacadeTemporary{Support,Session,Keep,Ceiling,PositiveLaunch}Tests.swift`
+carry all 51 original authored intents against the current live API, and
+`RuntimeFacadeTemporaryNavigationFenceTests.swift` covers the two mandatory
+boundary repairs on the real binder/mailbox/pump/file-backed DB. Three
+`G02CompositionIntegrationTests` expectations were rebased because the
+temporary family is now REAL-integrated (ready via actual bound keys;
+privacy stays honestly blocked; the frozen-family substitute rule kept).
+Authored/compiled/executed status lives in the qualification receipt, not
+this note.
+
+### G02 DatabaseManager v46 freeze (2026-10-20, Main integration guard)
+
+`Sources/FloePersistence/DatabaseManager.swift`: the overlay SYMLINK was
+atomically replaced (link itself; upstream never written) with a byte-identical
+regular mirror of upstream `currentSchemaVersion = 46` at SHA-256
+`5ab9f989…`-verified freeze (full hash recorded in
+`Local/Private/android-g02-20261018/runtime-temporary-session-qualification/databasemanager-v46-freeze.txt`).
+This freezes the Android binding at the existing v46 chain while tracked iOS
+main moves to v47 (`V47ShortcutInbox`, NOT included on Android); no Swift
+logic, schema or migration changed. A later coordinated portable migration is
+documented separately (shared/ANDROID_PERSISTENCE_BASELINE.md is a Main-owned
+future note), never by silently repointing to newer upstream bytes.

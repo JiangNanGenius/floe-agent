@@ -99,18 +99,25 @@ public struct ConversationContentBinding: Sendable, Equatable {
     /// digest encoder is domain-parameterized precisely for lane-owned
     /// domains; no P0 source was edited.
     public let contentDigest: String
+    /// NON-nil ONLY for a LIVE temporary session row: the exact session
+    /// incarnation that owns the RAM message. Every read re-proves that
+    /// incarnation (and message existence in the session's own store)
+    /// before bytes are returned. Ordinary bindings keep nil.
+    public let temporaryIncarnation: UUID?
 
     /// Domain literal for the content-handle digest.
     public static let digestDomain = "floe.conversation-content-handle.v1"
 
     init(handle: String, conversationID: UUID, messageID: UUID,
-         hostEpoch: UInt64, totalBytes: Int, contentDigest: String) {
+         hostEpoch: UInt64, totalBytes: Int, contentDigest: String,
+         temporaryIncarnation: UUID? = nil) {
         self.handle = handle
         self.conversationID = conversationID
         self.messageID = messageID
         self.hostEpoch = hostEpoch
         self.totalBytes = totalBytes
         self.contentDigest = contentDigest
+        self.temporaryIncarnation = temporaryIncarnation
     }
 
     static func digest(of text: String) -> String {
@@ -309,6 +316,81 @@ public actor FacadeConversationContentAuthority {
         }
     }
 
+    /// Publishes one oversize row of the LIVE temporary session. The bytes
+    /// stay in the SAME generation-owned bounded reader; the binding carries
+    /// the session incarnation and is re-authorized against the session's
+    /// OWN RAM store on every read. No durable row, no second cache and no
+    /// truncation: a saturated/absent message is a typed nil the page
+    /// assembly turns into a refusal.
+    public func publishTemporary(conversationID: UUID, messageID: UUID,
+                                 incarnation: UUID, text: String) async
+        -> (handle: String, totalBytes: Int)?
+    {
+        guard let route = await TemporaryLiveRouting.route(
+            epoch: context.hostEpoch, conversationID: conversationID),
+              route.incarnation == incarnation else { return nil }
+        let bytes = Data(text.utf8)
+        guard !bytes.isEmpty else { return nil }
+        guard let messages = try? await route.stores.conversations.messages(
+            conversationID: conversationID),
+              messages.contains(where: { $0.id == messageID }) else { return nil }
+        guard bindings.count < Self.maximumBindings else { return nil }
+        switch await publisher.stage(bytes) {
+        case .staged(let handle):
+            let binding = ConversationContentBinding(
+                handle: handle,
+                conversationID: conversationID,
+                messageID: messageID,
+                hostEpoch: context.hostEpoch,
+                totalBytes: bytes.count,
+                contentDigest: ConversationContentBinding.digest(of: text),
+                temporaryIncarnation: incarnation)
+            bindings[handle] = Entry(binding: binding)
+            order.append(handle)
+            while bindings.count > Self.maximumBindings, let oldest = order.first {
+                order.removeFirst()
+                bindings.removeValue(forKey: oldest)
+                await publisher.release(handle: oldest)
+            }
+            return (handle, bytes.count)
+        case .saturated, .rejectedEmpty:
+            return nil
+        }
+    }
+
+    /// `conversationLifecycle content.read` for the LIVE temporary session.
+    /// The handle must be bound to THIS conversation AND this exact live
+    /// incarnation, and the message must still exist in the session's RAM
+    /// conversation. A discarded/promoted session or a different incarnation
+    /// is the SAME typed notFound as an unknown handle.
+    public func readTemporary(conversationID: UUID,
+                              incarnation: UUID,
+                              request: ConversationContentReadRequest) async throws
+        -> ConversationContentSliceReply
+    {
+        guard let binding = bindings[request.handle],
+              binding.binding.conversationID == conversationID,
+              binding.binding.temporaryIncarnation == incarnation,
+              binding.binding.hostEpoch == context.hostEpoch else {
+            throw ConversationDomainError.notFound
+        }
+        try await requireLiveTemporaryBinding(binding.binding)
+        return try await performRead(binding: binding.binding, request: request)
+    }
+
+    private func requireLiveTemporaryBinding(_ binding: ConversationContentBinding) async throws {
+        guard let incarnation = binding.temporaryIncarnation,
+              let route = await TemporaryLiveRouting.route(
+                epoch: context.hostEpoch,
+                conversationID: binding.conversationID),
+              route.incarnation == incarnation,
+              let messages = try? await route.stores.conversations.messages(
+                conversationID: binding.conversationID),
+              messages.contains(where: { $0.id == binding.messageID }) else {
+            throw ConversationDomainError.notFound
+        }
+    }
+
     /// Bounded one-row existence probe on the ORIGINAL messages table
     /// (exact `(id, conversation_id)` pairing; mirrors the pairing the
     /// store's own messagePage guarantees).
@@ -338,6 +420,7 @@ public actor FacadeConversationContentAuthority {
     {
         guard let binding = bindings[request.handle],
               binding.binding.conversationID == conversationID,
+              binding.binding.temporaryIncarnation == nil,
               binding.binding.hostEpoch == context.hostEpoch else {
             throw ConversationDomainError.notFound
         }
@@ -356,6 +439,7 @@ public actor FacadeConversationContentAuthority {
         -> ConversationContentSliceReply
     {
         guard let binding = bindings[request.handle],
+              binding.binding.temporaryIncarnation == nil,
               binding.binding.hostEpoch == context.hostEpoch else {
             throw ConversationDomainError.notFound
         }

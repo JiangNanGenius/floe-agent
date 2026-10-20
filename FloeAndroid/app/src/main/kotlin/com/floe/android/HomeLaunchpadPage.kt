@@ -36,13 +36,13 @@ import com.floe.android.design.FloeChipMenu
 import com.floe.android.design.FloeChipTone
 import com.floe.android.design.FloeComposer
 import com.floe.android.design.FloeComposerChip
-import com.floe.android.design.FloeDraftStore
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeInfoDialog
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeToolbar
 import com.floe.android.design.ComposerAvailability
+import com.floe.android.host.HomeSendToken
 import com.floe.android.host.RuntimeHost
 
 private enum class HomeDialog {
@@ -67,7 +67,9 @@ fun HomeLaunchpadPage(
     runtimeHost: RuntimeHost? = null,
 ) {
     val colors = Floe.colors
-    var field by remember { mutableStateOf(TextFieldValue(FloeFoundation.draftStore.draft(FloeDraftStore.HOME_DRAFT))) }
+    var field by remember {
+        mutableStateOf(TextFieldValue(HomeDraftTransfer.draft(FloeFoundation.draftStore)))
+    }
     // The RAM draft store is updated synchronously with every edit so a
     // navigation/rotation cancellation can never race ahead of the last
     // text change; selection/composition stay in the live TextFieldValue.
@@ -103,6 +105,17 @@ fun HomeLaunchpadPage(
     } else {
         val sendingState by runtimeHost.home.sending.collectAsState()
         sendingState
+    }
+    // The service-owned Home identity of THIS surface. It survives rotation/
+    // view reconstruction (the host object is process-scoped) and is the
+    // origin proof every temporary send carries; it is part of the page's
+    // top-level state so the send path can never capture it from an inner
+    // conditional scope.
+    val homeGeneration = if (runtimeHost == null) {
+        0L
+    } else {
+        val generation by runtimeHost.home.homeGeneration.collectAsState()
+        generation
     }
     // Real composer model options from the SAME F1 projection the thread
     // composer uses; the picker offers exactly the usable rows (never a
@@ -154,6 +167,19 @@ fun HomeLaunchpadPage(
                                 text = text,
                                 mode = agentModeKey,
                                 temporary = true,
+                                originHomeGeneration = homeGeneration,
+                                onAdmitted = { _: HomeSendToken, draftTransferred: Boolean ->
+                                    // The REAL temp.start committed and the
+                                    // host consumed THIS request's exact
+                                    // HOME_DRAFT text under its ownership
+                                    // lock. Clear the visible field only
+                                    // when the handoff really happened and
+                                    // the field still shows that exact text
+                                    // (a newer edit always survives).
+                                    if (draftTransferred && field.text == text) {
+                                        field = TextFieldValue("")
+                                    }
+                                },
                             ) { dialog = HomeDialog.TEMP_CHAT }
                         } else {
                             dialog = HomeDialog.TEMP_CHAT
@@ -196,7 +222,7 @@ fun HomeLaunchpadPage(
             value = field,
             onValueChange = { next ->
                 field = next
-                FloeFoundation.draftStore.update(FloeDraftStore.HOME_DRAFT, next.text)
+                HomeDraftTransfer.update(FloeFoundation.draftStore, next.text)
             },
             maxLines = if (compact) FloeLayout.ComposerMaxLinesCompact else FloeLayout.ComposerMaxLinesRegular,
             availability = availability.copy(attachmentsProcessing = sending),
@@ -209,7 +235,7 @@ fun HomeLaunchpadPage(
             onSend = {
                 if (runtimeHost != null && !sending) {
                     val text = field.text
-                    FloeFoundation.draftStore.update(FloeDraftStore.HOME_DRAFT, "")
+                    HomeDraftTransfer.update(FloeFoundation.draftStore, "")
                     field = TextFieldValue("")
                     runtimeHost.home.send(
                         text = text,
@@ -219,7 +245,7 @@ fun HomeLaunchpadPage(
                         // Restore the draft on an honest failure; the error is
                         // surfaced on the launchpad instead of losing text.
                         field = TextFieldValue(text)
-                        FloeFoundation.draftStore.update(FloeDraftStore.HOME_DRAFT, text)
+                        HomeDraftTransfer.update(FloeFoundation.draftStore, text)
                         dialog = HomeDialog.SEND_FAILED
                     }
                 }

@@ -551,10 +551,14 @@ class ProviderHostController internal constructor(
         val candidate = ProviderWire.candidateJson(
             providerID = providerID,
             // Existing rows keep their PERSISTED ProviderKind; only a new
-            // draft derives its kind from the chosen catalog preset. A
-            // first-install draft has NO supplier: never key the map with null
-            // (ConcurrentHashMap.get(null) throws NPE).
+            // draft derives its kind from the chosen catalog preset.
             kind = ProviderWire.extrasFor(providerID)?.kind
+                // Null-safe lookup: a new draft may have no chosen preset at
+                // all. ConcurrentHashMap.get(null) threw (Main
+                // MAIN_FORMAL_FIRST_SAVE_CRASH_20261020). Semantics are the
+                // exact trivial equivalent: persisted-kind precedence first,
+                // catalog preset lookup ONLY when presetId exists, then the
+                // true custom fallback.
                 ?: draft.supplier?.presetId?.let { catalogKinds[it] }
                 ?: CUSTOM_PROVIDER_KIND,
             createIntent = existingProviderID(identity) == null,

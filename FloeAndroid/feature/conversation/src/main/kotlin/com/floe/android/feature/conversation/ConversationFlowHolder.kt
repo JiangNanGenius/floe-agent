@@ -86,6 +86,15 @@ class ConversationFlowHolder(
     var session: ConversationSessionToken = ConversationSessionToken(conversationIdInternal, 0L)
         private set
 
+    /**
+     * The EXACT trusted native root epoch bound from the authoritative
+     * temp.start value (MAIN_TEMP_ACK_NATIVE_EPOCH_DECISION). -1 = unbound:
+     * Keep/End construct their TemporarySessionRef with this value and the
+     * navigation fence therefore fails closed until the host binds it.
+     * Never the UI session counter and never a fabricated zero.
+     */
+    var temporaryNativeRootEpoch: Long = -1L
+
     /** Latest host projection for THIS session (null before the first page). */
     val snapshot: MutableState<ThreadUiState?> = mutableStateOf(null)
 
@@ -1393,7 +1402,12 @@ class ConversationFlowHolder(
         val incarnation = state.temporaryIncarnationId
             ?: return rejected(ConversationRejectedReason.STALE)
         if (!state.isTemporary) return rejected(ConversationRejectedReason.STALE)
-        temporaryKeepBound = TemporarySessionRef(conversationId, session.sessionEpoch, incarnation)
+        temporaryKeepBound = TemporarySessionRef(
+            conversationId,
+            session.sessionEpoch,
+            incarnation,
+            nativeRootEpoch = temporaryNativeRootEpoch,
+        )
         temporaryKeepState = TemporaryKeepStateUi.Saving
         actionError = null
         val started = host.keepTemporaryChat(temporaryKeepBound!!)
@@ -1449,7 +1463,12 @@ class ConversationFlowHolder(
         val incarnation = state.temporaryIncarnationId
             ?: return rejected(ConversationRejectedReason.STALE)
         if (!state.isTemporary) return rejected(ConversationRejectedReason.STALE)
-        temporaryEndBound = TemporarySessionRef(conversationId, session.sessionEpoch, incarnation)
+        temporaryEndBound = TemporarySessionRef(
+            conversationId,
+            session.sessionEpoch,
+            incarnation,
+            nativeRootEpoch = temporaryNativeRootEpoch,
+        )
         val started = host.endTemporaryChat(temporaryEndBound!!)
         if (!started) temporaryEndBound = null
         return if (started) ConversationFlowResult.Accepted
