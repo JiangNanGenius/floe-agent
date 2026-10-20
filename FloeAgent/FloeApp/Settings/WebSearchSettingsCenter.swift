@@ -1,4 +1,4 @@
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI)
 import Foundation
 import SwiftUI
 import FloeCore
@@ -12,27 +12,41 @@ final class WebSearchSettingsCenter: ObservableObject {
 
     @Published private(set) var providers: [WebSearchProviderConfiguration] = []
     private let defaults: UserDefaults
-    private let cloud: NSUbiquitousKeyValueStore
-    private let keychain = KeychainStore(service: keychainService, synchronizable: true)
+    private let cloud: WebSearchCloudStoring
+    private let credentialStore: WebSearchCredentialStore
+    private let dataProManager: VolcengineDataProManaging?
 
-    init(defaults: UserDefaults = .standard, cloud: NSUbiquitousKeyValueStore = .default) {
+    init(
+        defaults: UserDefaults = .standard,
+        cloud: WebSearchCloudStoring? = nil,
+        credentialStore: WebSearchCredentialStore? = nil,
+        dataProManager: VolcengineDataProManaging? = nil
+    ) {
         self.defaults = defaults
-        self.cloud = cloud
+        self.cloud = cloud ?? UbiquitousWebSearchCloudStore(store: .default)
+        self.credentialStore = credentialStore ?? .keychain(service: Self.keychainService)
+        #if canImport(UIKit)
+        self.dataProManager = dataProManager ?? MCPSettingsCenterDataProManager.shared
+        #else
+        self.dataProManager = dataProManager
+        #endif
         reload()
-        NotificationCenter.default.addObserver(
-            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: cloud,
-            queue: .main
-        ) { [weak self] notification in
-            let reason = (notification.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? NSNumber)?.intValue ?? -1
-            Task { @MainActor [weak self, reason] in
-                FloeLogger(category: .sync).info(
-                    "webSearchSettingsExternalChange reason=\(reason)"
-                )
-                self?.reload()
+        if let object = self.cloud.notificationObject {
+            NotificationCenter.default.addObserver(
+                forName: self.cloud.externalChangeNotification,
+                object: object,
+                queue: .main
+            ) { [weak self] notification in
+                let reason = (notification.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? NSNumber)?.intValue ?? -1
+                Task { @MainActor [weak self, reason] in
+                    FloeLogger(category: .sync).info(
+                        "webSearchSettingsExternalChange reason=\(reason)"
+                    )
+                    self?.reload()
+                }
             }
         }
-        cloud.synchronize()
+        self.cloud.synchronize()
     }
 
     func reload() {
@@ -54,16 +68,27 @@ final class WebSearchSettingsCenter: ObservableObject {
     }
 
     func upsert(_ configuration: WebSearchProviderConfiguration, credential: WebSearchCredential?) throws {
+        // A Keychain write failure must not publish an enabled configuration
+        // whose selected account still holds another interface's secret. The
+        // secret is stored BEFORE any in-memory/persisted provider mutation.
+        let hasSuppliedCredential = credential?.values["apiKey"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        if configuration.kind == .volcengine,
+           configuration.enabled,
+           !hasSuppliedCredential,
+           !hasCredential(account: configuration.credentialAccount) {
+            throw VolcengineSearchSettingsError.missingCredential
+        }
+        if let credential {
+            let data = try JSONEncoder().encode(credential)
+            try credentialStore.write(configuration.credentialAccount, data)
+        }
         if let index = providers.firstIndex(where: { $0.id == configuration.id }) {
             providers[index] = configuration
         } else {
             providers.append(configuration)
         }
         providers.sort { $0.priority < $1.priority }
-        if let credential {
-            let data = try JSONEncoder().encode(credential)
-            try keychain.store(account: configuration.credentialAccount, secret: data)
-        }
         FloeLogger(category: .sync).info(
             "webSearchProviderSaved provider=\(configuration.kind.rawValue) enabled=\(configuration.enabled) endpointHost=\(configuration.endpoint?.host ?? "default") credentialUpdated=\(credential != nil)"
         )
@@ -79,19 +104,120 @@ final class WebSearchSettingsCenter: ObservableObject {
     func remove(id: UUID) {
         guard let item = providers.first(where: { $0.id == id }) else { return }
         providers.removeAll { $0.id == id }
-        try? keychain.delete(account: item.credentialAccount)
+        try? credentialStore.delete(item.credentialAccount)
         persist()
     }
 
     func credential(for configuration: WebSearchProviderConfiguration) -> WebSearchCredential? {
-        if let data = try? keychain.read(account: configuration.credentialAccount) {
-            return try? JSONDecoder().decode(WebSearchCredential.self, from: data)
+        credential(forAccount: configuration.credentialAccount)
+            ?? (configuration.kind == .bochaWeb
+                ? credential(forAccount: "web-search.bochaAI")
+                : nil)
+    }
+
+    func credential(forAccount account: String) -> WebSearchCredential? {
+        guard let data = try? credentialStore.read(account) else { return nil }
+        return try? JSONDecoder().decode(WebSearchCredential.self, from: data)
+    }
+
+    func hasCredential(account: String) -> Bool {
+        guard let data = try? credentialStore.read(account) else { return false }
+        return !data.isEmpty
+    }
+
+    /// DataPro is a separate feature-owned MCP server. It is available only
+    /// for the Agent Plan account and never reads an Ark model key.
+    func dataProState(for configuration: WebSearchProviderConfiguration) -> VolcengineDataProState {
+        guard configuration.kind == .volcengine, let dataProManager else {
+            return .inactive
         }
-        if configuration.kind == .bochaWeb,
-           let legacy = try? keychain.read(account: "web-search.bochaAI") {
-            return try? JSONDecoder().decode(WebSearchCredential.self, from: legacy)
+        let serverID = VolcengineDataProPlan.serverID(for: configuration)
+        if let existing = dataProManager.currentServer(serverID: serverID),
+           !VolcengineDataProPlan.matchesOwnedServer(existing) {
+            // Never surface an unrelated user MCP as this feature's state.
+            return .inactive
         }
-        return nil
+        return dataProManager.state(serverID: serverID)
+    }
+
+    /// Observe the existing MCP center's published state for this feature's
+    /// owned server. The callback is fenced to the Agent Plan interface, the
+    /// provider-derived server ID and the feature's exact server identity.
+    func observeDataPro(
+        for configuration: WebSearchProviderConfiguration,
+        onChange: @escaping @MainActor (VolcengineDataProState) -> Void
+    ) -> VolcengineDataProObservation? {
+        guard configuration.kind == .volcengine, let dataProManager else {
+            return nil
+        }
+        let options: VolcengineSearchOptions
+        do {
+            options = try VolcengineSearchOptions(options: configuration.options)
+        } catch {
+            return nil
+        }
+        guard options.interface == .agentPlan else { return nil }
+        let serverID = VolcengineDataProPlan.serverID(for: configuration)
+        return dataProManager.observeState(serverID: serverID) { state in
+            if let existing = dataProManager.currentServer(serverID: serverID),
+               !VolcengineDataProPlan.matchesOwnedServer(existing) {
+                onChange(.inactive)
+            } else {
+                onChange(state)
+            }
+        }
+    }
+
+    func refreshDataPro(for configuration: WebSearchProviderConfiguration) async -> VolcengineDataProState {
+        guard configuration.kind == .volcengine, let dataProManager else {
+            return .inactive
+        }
+        let serverID = VolcengineDataProPlan.serverID(for: configuration)
+        if let existing = dataProManager.currentServer(serverID: serverID),
+           !VolcengineDataProPlan.matchesOwnedServer(existing) {
+            return .inactive
+        }
+        await dataProManager.refresh(serverID: serverID)
+        return dataProManager.state(serverID: serverID)
+    }
+
+    func setDataProEnabled(
+        _ enabled: Bool,
+        for configuration: WebSearchProviderConfiguration,
+        credential: String?
+    ) async throws {
+        guard configuration.kind == .volcengine else {
+            throw VolcengineSearchSettingsError.providerKindMismatch
+        }
+        guard let dataProManager else {
+            if enabled { throw VolcengineSearchSettingsError.dataProUnavailable }
+            return
+        }
+        let server = try VolcengineDataProPlan.server(for: configuration)
+        let existing = dataProManager.currentServer(serverID: server.id)
+        if let existing, !VolcengineDataProPlan.matchesOwnedServer(existing) {
+            // Do not overwrite an unrelated MCP that occupies the persisted
+            // UUID. Disabling is a safe no-op; enabling must be explicit.
+            if enabled { throw VolcengineSearchSettingsError.serverIdentityConflict }
+            return
+        }
+        if enabled {
+            // DataPro requires the Agent Plan account. This check happens
+            // before any MCP mutation, so an ordinary Ark key is never sent.
+            let options: VolcengineSearchOptions
+            do {
+                options = try VolcengineSearchOptions(options: configuration.options)
+            } catch {
+                throw VolcengineSearchSettingsError.malformedInterfaceSelection
+            }
+            guard options.interface == .agentPlan else {
+                throw VolcengineSearchSettingsError.requiresAgentPlan
+            }
+            try await dataProManager.upsert(server, credential: credential)
+            dataProManager.setEnabled(true, serverID: server.id)
+        } else if existing != nil {
+            dataProManager.setEnabled(false, serverID: server.id)
+        }
     }
 
     nonisolated static func resolvedConfigurations() async -> [(WebSearchProviderConfiguration, WebSearchCredential)] {
@@ -152,7 +278,29 @@ final class WebSearchSettingsCenter: ObservableObject {
             (.googleProgrammable, "Google Programmable Search"), (.searxng, "SearXNG")
         ]
         return kinds.enumerated().map { index, value in
-            WebSearchProviderConfiguration(
+            if value.0 == .volcengine {
+                // New installs default to the Agent Plan account/interface but
+                // stay disabled. The account is namespaced by provider ID so
+                // two Volcengine configurations cannot share one credential.
+                // Existing stored legacy records are untouched by this preset.
+                let id = UUID()
+                return WebSearchProviderConfiguration(
+                    id: id,
+                    kind: value.0,
+                    displayName: value.1,
+                    credentialAccount: VolcengineSettingsDraft.perProviderCredentialAccount(
+                        for: id,
+                        interface: .agentPlan
+                    ),
+                    enabled: false,
+                    priority: index,
+                    options: [
+                        VolcengineSearchOptions.Key.interface:
+                            VolcengineSearchInterface.agentPlan.rawValue
+                    ]
+                )
+            }
+            return WebSearchProviderConfiguration(
                 kind: value.0,
                 displayName: value.1,
                 credentialAccount: "web-search.\(value.0.rawValue)",
@@ -190,9 +338,9 @@ final class WebSearchSettingsCenter: ObservableObject {
     }
 
     private func migrateBochaCredentialIfNeeded() {
-        guard (try? keychain.read(account: "web-search.bochaWeb")) == nil,
-              let legacy = try? keychain.read(account: "web-search.bochaAI") else { return }
-        try? keychain.store(account: "web-search.bochaWeb", secret: legacy)
+        guard (try? credentialStore.read("web-search.bochaWeb")) == nil,
+              let legacy = try? credentialStore.read("web-search.bochaAI") else { return }
+        try? credentialStore.write("web-search.bochaWeb", legacy)
     }
 
     nonisolated static func runtimeProviderNote() -> String? {
@@ -204,6 +352,7 @@ final class WebSearchSettingsCenter: ObservableObject {
     }
 }
 
+#if canImport(UIKit)
 struct WebSearchSettingsView: View {
     @ObservedObject var center: WebSearchSettingsCenter
     @State private var editing: WebSearchProviderConfiguration?
@@ -231,7 +380,11 @@ struct WebSearchSettingsView: View {
         }
         .navigationTitle(FloeL10n.l("websearch.title"))
         .sheet(item: $editing) { configuration in
-            WebSearchProviderEditor(center: center, configuration: configuration)
+            if configuration.kind == .volcengine {
+                VolcengineSearchEditor(center: center, configuration: configuration)
+            } else {
+                WebSearchProviderEditor(center: center, configuration: configuration)
+            }
         }
     }
 }
@@ -351,4 +504,5 @@ private struct WebSearchProviderEditor: View {
         } catch { errorMessage = error.localizedDescription }
     }
 }
+#endif
 #endif
