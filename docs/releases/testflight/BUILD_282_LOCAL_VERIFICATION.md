@@ -20,9 +20,17 @@
 
 ## 内部 TestFlight / Internal TestFlight
 
-复用已保存的本地设备包，仅做云端签名／上传，没有云端 App 重建：[上传和内部准备](https://github.com/JiangNanGenius/floe-agent/actions/runs/39478307360)成功；[独立只读回查](https://github.com/JiangNanGenius/floe-agent/actions/runs/39482127761)确认 1.7.41（282）`VALID`、未过期、`APP_STORE_ELIGIBLE`，只关联现有内部 Floe QA，`IN_BETA_TESTING`——**内部可安装**。The exact local artifact was signed/uploaded without rebuilding; independent readback confirms availability in the existing internal group.
+复用已保存的本地设备包，仅做云端签名／上传，没有云端 App 重建：[上传和内部准备](https://github.com/JiangNanGenius/floe-agent/actions/runs/39478307360)成功；[独立只读回查](https://github.com/JiangNanGenius/floe-agent/actions/runs/39482127761)确认 1.7.41（282）`VALID`、未过期、`APP_STORE_ELIGIBLE`，当时只关联现有内部 Floe QA，`IN_BETA_TESTING`——**内部可安装**。The exact local artifact was signed/uploaded without rebuilding; independent readback confirms availability in the existing internal group.
 
-Apple 的处理记录曾为 PROCESSING、errors/warnings 为空；保留当时记录及成功回执，没有重复上传。未新增 282 外测提交，未重新查询／提交 281 外审，275 正式 App Store 提交保持不变。Earlier processing evidence is retained; no duplicate upload or new external submission was made.
+Apple 的处理记录曾为 PROCESSING、errors/warnings 为空；保留当时记录及成功回执，没有重复上传。截至内部交付时尚未提交 282 外测；后续单次提交见下节。未重新查询／提交 281 外审，275 正式 App Store 提交保持不变。Earlier processing evidence is retained; there was no duplicate upload. The later external submission is recorded below.
+
+## 公开 TestFlight 送审 / External Beta App Review submission
+
+2026-10-21，用户追加授权 282 公开 TestFlight。复用同一个已上传包，通过用户已登录的 Safari 正常审核界面，单次提交到现有 `publictest1`，保留内部 Floe QA。[独立只读回读](https://github.com/JiangNanGenius/floe-agent/actions/runs/39493804095)确认 `VALID`、未过期、`WAITING_FOR_BETA_REVIEW`、`publictest1` 已关联，只有一条 `pending_review` 记录。**等待审核，尚未确认外测可安装。** The existing uploaded build was submitted once to the existing external group. Independent readback confirms one pending review; external approval or availability is not claimed.
+
+此前 API 尝试在审核备注写入处返回 403，并在组关联及送审前停止；原失败和当时零提交回读保留。网页提交沿用已有应用级审核备注；双语版本测试说明已核对，包含本轮发现的 Office 编辑与保存限制。没有声称准备的新备注文件已写入，也没有重建或重新上传 App。The failed API attempt is retained. The successful web submission reused existing app-level notes and verified bilingual build test information; it did not rebuild or upload the App again.
+
+用户反馈 282 实机缩放正常；Office 编辑参数失败、自动保存和按需跨区域查看文档，作为新的 283 修复范围接续，不以 282 的本地检查代替验收。Physical zoom was confirmed by the user; the new Office feedback continues in Build 283.
 
 ## 稳定无签名 Release 与 Feather / Stable unsigned Release and Feather
 
@@ -42,3 +50,5 @@ Apple 的处理记录曾为 PROCESSING、errors/warnings 为空；保留当时�
 导出并核对日志后，删除本轮三个内部缓存，实测可用空间增加 **5,706,735,616 bytes（5.31 GiB）**；三个外部展开副本清理后实测增加 **1,898,262,528 bytes（1.77 GiB）**。外部 du 为约 5.46 GiB，APFS 共享使实际回收较小，未将其当作实际增量。此前原生／模拟器缓存清理按原记录单独保留，不重复计数。原始设备 ZIP、重传 transport、签名私有 IPA、11 组符号、archive 小元数据、回滚及全部原失败／资格证据保留，可恢复而无需为分发重建。
 
 C 和本轮 Office 从活动目标移除。下一包 D 固定同次运行的真实文件归属／稳定快照／摘要及错误恢复，再接 S4；D／S4 合用下一次必要的 App 集成和发包，仅补验受影响行为，不把已通过 C 重启为新一轮全套验证。C is complete; file results and scheduling continue under bounded scope and shared integration checks.
+
+2026-10-21 接续调整：新反馈优先并入 283，与 D 文件结果共用必要集成；S4 真实定时顺延其后，避免重新扩大本轮。Follow-up: Build 283 combines the new Office fixes with D file results; real scheduling follows afterward.

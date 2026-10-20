@@ -1,6 +1,14 @@
 # Floe 1.7 TestFlight delivery
 
-## Latest: 1.7.33 (274) — internal available; publictest1 submitted, waiting for Apple review
+## Latest: 1.7.41 (282) — internal available; publictest1 review pending
+
+2026-10-21: immutable `v1.7.41` source `268e21cb8aaaf13c92f3b35a07e57ae1071126ee` is available in the existing internal Floe QA group. The same uploaded build was submitted once through the authenticated Safari session to the existing `publictest1`. [Independent readback](https://github.com/JiangNanGenius/floe-agent/actions/runs/39493804095) confirms `VALID`, unexpired, the external group attached, `WAITING_FOR_BETA_REVIEW`, and exactly one `pending_review` submission. External approval and installation are not yet confirmed. Build 281 was not queried or resubmitted; the formal 275 submission is unchanged.
+
+282 已完成内部可安装、同源稳定无签名安装包和 Feather 交付；本次公开 TestFlight 正在等待审核。用户已确认实机缩放正常，新反馈的 Office 编辑、自动保存与助手按区域查看文档接入 283。
+
+[Local verification and delivery record](BUILD_282_LOCAL_VERIFICATION.md) · [Stable unsigned Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.41).
+
+## Previous: 1.7.33 (274) — internal available; publictest1 submitted, waiting for Apple review
 
 2026-10-15 21:04–21:30 UTC: immutable `v1.7.33` source `0de810f08639315ba38ff82607e2da1fcf596f26` completed the local Xcode 27.0 (27A266a) Release archive (`CODE_SIGNING_ALLOWED=NO`, six jobs) and the minimum cloud signing/upload step without rebuilding the App ([run 38805969523](https://github.com/JiangNanGenius/floe-agent/actions/runs/38805969523)). Apple confirmed `VALID`, unexpired, `APP_STORE_ELIGIBLE` and the existing Floe QA group `IN_BETA_TESTING` — internal installation is available. The signed IPA was downloaded and independently validated (sha256 `2d54b5ad…`, `codesign --verify --deep --strict` valid, versions/SDK/UUID matching the retained archive).
 
