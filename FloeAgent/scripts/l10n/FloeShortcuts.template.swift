@@ -80,6 +80,7 @@ enum FloeShortcutInbox {
     /// the legacy key happens only after the enqueue is durable, and only
     /// while the key still holds those same bytes; a whitespace-only legacy
     /// value carries no content and is simply cleared.
+    @MainActor
     static func migrateLegacyDraft(
         into store: any ShortcutDraftInboxStore,
         defaults: UserDefaults? = nil
