@@ -176,7 +176,7 @@ import FloeNotes
                            reason: String? = nil,
                            revision: Int = 7,
                            resourceID: UUID? = nil,
-                           packageSHA: String? = anchorSHA,
+                           packageSHA: String? = String(repeating: "ab", count: 32),
                            generation: Int? = 42,
                            correlation: String? = "corr-1",
                            dirty: Bool? = false) -> OfficeSavedProof {
