@@ -114,7 +114,10 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
                                    "text": "=SUM(C1:C15)", "createCell": true])
                 let data = try JSONSerialization.data(withJSONObject: [
                     "documentID": document.id.uuidString, "expectedRevision": baseline.revision,
-                    "expectedSHA256": sha, "title": "Recognized numbers", "operations": operations
+                    // Match the schema-valid payload seen on Build 282: no
+                    // optional batch title. Exercise validation AND the real
+                    // mounted editor/save/rewrite chain with that payload.
+                    "expectedSHA256": sha, "operations": operations
                 ])
                 let args = try JSONDecoder().decode(NotesEditTool.Arguments.self, from: data)
                 let tool = NotesEditTool()
