@@ -5,6 +5,8 @@
 
 当前推进采用合并交付：**S3-C／D＋S4 → S5＋S6 → S7 按执行链分组**。组内定向验证和提交，源码就绪后集中完整 App／原生验收与发包；新增故障按影响补验，设备能力保留分别验收。当前 C 尚在实施，未新增合格安装包；现有 281 保持不可变。详见[当前计划](FLOE_IOS_CLOSURE_PLAN_20261018.zh-CN.md#合并实施与验证节点2026-10-20)。Delivery checkpoints are consolidated; implementation checks remain scoped, and physical-device acceptance remains separate. C is in progress; this plan change does not qualify a new build.
 
+2026-10-20 新真机反馈已插入本轮优先修复：Office 助手缺少当前页面的笔迹输入、移除魔术棒文档命令、缩放仍延至松手及笔迹偶发闪现。历史 S1 的模拟器证据保留，但不证明这些新反馈已解决；当前尚无包含本次修复的新安装包。New physical-device feedback is now in the current round: missing Office ink context for the assistant, removal of Commands, delayed pinch updates, and intermittent live ink. Earlier simulator qualification does not close these reports.
+
 ## S3-B 草稿队列源码已完成 / Durable shortcut drafts qualified
 
 验收源码 `88dc1b71487a5906cbae96903d38504bfe536a4b`：连续草稿不覆盖、顺序领取、旧数据迁移、落盘回执及失败／重启恢复完成；真实存储探针 34 项通过，完整 App／测试宿主编译通过，原生 **62 通过、0 失败、0 跳过**。源码推送 main，S3-C 运行查询与文本结果已启动；安装包随后续集成，现有 281 不变。[验收记录](releases/repairs/FLOE_SHORTCUTS_S3B_20261020.md)。The source stage is qualified; hosted production Intent/Home paths are distinct from system Shortcuts/Siri dispatch and physical-device acceptance.
