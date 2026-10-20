@@ -10,18 +10,11 @@
  #include <svx/svdouno.hxx>
  #include <svx/svdopath.hxx>
  #include <svx/sdr/overlay/overlaypolypolygon.hxx>
-@@ -39,6 +42,7 @@
- #include <svx/sdr/contact/viewcontact.hxx>
- #include <svx/sdr/overlay/overlayprimitive2dsequenceobject.hxx>
- #include <vcl/ptrstyle.hxx>
-+#include <vcl/outdev.hxx>
- #include <officecfg/Office/Common.hxx>
- 
- using namespace com::sun::star;
-@@ -591,6 +595,121 @@
+@@ -590,6 +593,129 @@
+     if (mpCurrentCreate!=nullptr)
      {
          sal_uInt32 nCount=maDragStat.GetPointCount();
- 
++
 +        // FLOE-OFFICE-ZERO-MOTION-DOT begin
 +        // The production Pencil bridge finalizes a tap as exactly one
 +        // mousedown+mouseup at one identical document point: the DragStat has
@@ -30,10 +23,24 @@
 +        // via ForceEnd, Calc/Impress because a 1-point freehand EndCreate
 +        // fails with NextPoint). For the ink tool only, finalize that exact
 +        // zero-motion contact as a real native filled circle: diameter = the
-+        // effective stroke line width (the item value is 1/100 mm; converted
-+        // to the model unit), centered on the contact point, carrying the
-+        // stroke colour and its transparency as the fill, and no outline (an
-+        // outline of W around a W-diameter circle would paint outer 2W).
++        // effective stroke line width, centered on the contact point,
++        // carrying the stroke colour and its transparency as the fill, and an
++        // explicit zero line width so no outline leaks from the module pool
++        // defaults (an outline of W around a W-diameter circle would paint
++        // outer 2W, and a default-width outline attribute would be saved).
++        // The merged width scalar is expressed in the model's core metric
++        // (SwDrawModel::SwDrawModel uses SetScaleUnit(MapUnit::MapTwip);
++        // Calc/Impress/Draw use MapUnit::Map100thMM per SdrModel), because
++        // that is the domain the line-width slot dispatch contract stores and
++        // every module's own attribute consumers read it in; it is therefore
++        // used directly in model units. Reinterpreting it as 1/100 mm and
++        // converting again halves the finalized dot in twips-based documents.
++        // The create rectangle carries Right = Left + nDiameter (and the same
++        // on Bottom): geometry consumers of this object size read the
++        // half-open span (tools::Rectangle::getOpenWidth = Right - Left,
++        // svx_getLogicRectHack -> getOpenWidth in SvxShape::getSize), so a
++        // closed-minus-one construction would save one unit below the
++        // selected diameter.
 +        // The object goes through the same factory, layer, grid-offset and
 +        // InsertObjectAtView ownership/undo lifecycle a completed stroke uses,
 +        // and the temporary create is torn down exactly like BrkCreateObj()
@@ -71,23 +78,16 @@
 +                || mpCurrentCreate->GetObjIdentifier() == SdrObjKind::Line))
 +        {
 +            const SfxItemSet& rCreateSet = mpCurrentCreate->GetMergedItemSet();
-+            const sal_uInt32 nLineWidthHmm = rCreateSet.Get(XATTR_LINEWIDTH).GetValue();
++            const sal_uInt32 nLineWidth = rCreateSet.Get(XATTR_LINEWIDTH).GetValue();
 +            const Color aInkColor = rCreateSet.Get(XATTR_LINECOLOR).GetColorValue();
 +            const sal_uInt16 nInkTransparence = rCreateSet.Get(XATTR_LINETRANSPARENCE).GetValue();
 +            sal_Int32 nDiameter = 0;
-+            if (nLineWidthHmm >= 1)
++            if (nLineWidth >= 1)
 +            {
-+                const MapUnit eModelUnit = GetModel().GetScaleUnit();
-+                if (eModelUnit == MapUnit::Map100thMM)
-+                {
-+                    nDiameter = static_cast<sal_Int32>(nLineWidthHmm);
-+                }
-+                else
-+                {
-+                    nDiameter = static_cast<sal_Int32>(OutputDevice::LogicToLogic(
-+                        Size(static_cast<tools::Long>(nLineWidthHmm), 0),
-+                        MapMode(MapUnit::Map100thMM), MapMode(eModelUnit)).Width());
-+                }
++                // Value domain == this model's scale unit (see header above):
++                // no unit conversion here; Map100thMM documents already match,
++                // MapTwip documents must not be converted twice.
++                nDiameter = static_cast<sal_Int32>(nLineWidth);
 +            }
 +            if (nDiameter >= 1 && mpCreatePV != nullptr)
 +            {
@@ -95,8 +95,8 @@
 +                const sal_Int32 nHalf = nDiameter / 2;
 +                const tools::Rectangle aCircleRect(
 +                    aContact.X() - nHalf, aContact.Y() - nHalf,
-+                    aContact.X() - nHalf + nDiameter - 1,
-+                    aContact.Y() - nHalf + nDiameter - 1);
++                    aContact.X() - nHalf + nDiameter,
++                    aContact.Y() - nHalf + nDiameter);
 +
 +                // Same teardown order as BrkCreateObj(): overlay down, create
 +                // state reset, references cleared; the page view is kept in a
@@ -117,6 +117,7 @@
 +                    aDotSet.Put(XFillColorItem(OUString(), aInkColor));
 +                    aDotSet.Put(XFillTransparenceItem(nInkTransparence));
 +                    aDotSet.Put(XLineStyleItem(drawing::LineStyle_NONE));
++                    aDotSet.Put(XLineWidthItem(0));
 +                    pDot->SetMergedItemSet(aDotSet);
 +                    SetupObjLayer(pDotPV, maActualLayer, pDot.get());
 +                    basegfx::B2DVector aGridOffset(0.0, 0.0);
@@ -136,7 +137,6 @@
 +            }
 +        }
 +        // FLOE-OFFICE-ZERO-MOTION-DOT end
-+
+ 
          if (nCount<=1 && eCmd==SdrCreateCmd::ForceEnd)
          {
-             BrkCreateObj(); // objects with only a single point don't exist (at least today)
