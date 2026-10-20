@@ -1254,15 +1254,7 @@ struct NotesReadTool: AgentTool {
             let validation = await anchor.session.requestAutosaveTransaction(reason: "regionValidation")
             try context.cancellation.throwIfCancelled()
             guard Self.regionValidationStillQuiescent(validation, anchor: anchor) else {
-                let outcome = validation.outcome.rawValue
-                let reason = validation.reason ?? "unknown"
-                let detail = validation.error.map { " (\($0.prefix(200)))" } ?? ""
-                throw NoteError.conflict(
-                    "The live Office document changed while the region was rendering "
-                        + "(validation outcome=\(outcome), reason=\(reason))\(detail). The produced output is "
-                        + "obsolete and was discarded — the visible content may have received new edits during "
-                        + "the export. The autosave owner coalesces and rechecks; retry the region read after the "
-                        + "current edit settles, or close the editor to render the saved state.")
+                throw NoteError.conflict
             }
         } else {
             // The editor was closed (or read-only) when the render started.
@@ -1270,10 +1262,10 @@ struct NotesReadTool: AgentTool {
             // state can no longer be proven equal to the saved package; the
             // honest current path discards the output instead of hiding
             // possible concurrent unsaved edits behind a saved snapshot.
-            if let appeared = await MainActor.run({
+            if let appeared = await MainActor.run(body: {
                 NotesOfficeLiveBinding.boundSession(documentID: document.id,
                                                     fileName: document.officeFileName)
-            }), await MainActor.run({ !appeared.readOnly }) {
+            }), await MainActor.run(body: { !appeared.readOnly }) {
                 let validation = await appeared.requestAutosaveTransaction(reason: "regionValidation")
                 try context.cancellation.throwIfCancelled()
                 // No initial anchor identity exists for a session that
@@ -1289,13 +1281,7 @@ struct NotesReadTool: AgentTool {
                                                resourceID: provenResourceID,
                                                sha256: provenSHA256 ?? actualSHA,
                                                sessionIdentity: nil)) else {
-                    let outcome = validation.outcome.rawValue
-                    let reason = validation.reason ?? "unknown"
-                    throw NoteError.conflict(
-                        "A live Office editor opened for this document while the region was rendering and its "
-                            + "visible content is not provably the saved package (validation outcome=\(outcome), "
-                            + "reason=\(reason)). The region output was discarded honestly; retry after the editor "
-                            + "settles or close it to render the saved state.")
+                    throw NoteError.conflict
                 }
             }
         }
