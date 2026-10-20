@@ -1222,6 +1222,29 @@ public actor ConversationRunService {
                 // nested JSON and must be verified by digest before use.
                 persisted["artifactRefsJSON"] = encoded
             }
+            // S3-D: sealed run-output receipts persist inside the SAME
+            // completion-critical toolResult event as nested JSON (one
+            // append, exact call/run association, no parallel event family).
+            // A receipt encoding failure is a durability failure, never a
+            // swallowed `try?` and never a silent success: the run keeps its
+            // existing honest-completion contract through durabilityFailure.
+            if !result.outputFiles.isEmpty {
+                do {
+                    let data = try JSONEncoder().encode(result.outputFiles)
+                    guard let encoded = String(data: data, encoding: .utf8) else {
+                        throw FloeError.storageCorrupted(
+                            "run output receipts are not valid UTF-8 JSON"
+                        )
+                    }
+                    persisted["outputFilesJSON"] = encoded
+                } catch {
+                    durabilityFailure =
+                        "Unable to persist run output receipts for tool '\(finishedToolName)': \(error.localizedDescription)"
+                    logger.error(
+                        "runOutputReceiptEncodeFailed run=\(runID.uuidString) tool=\(finishedToolName)"
+                    )
+                }
+            }
             _ = await appendEventReliably(
                 runID: runID, kind: .toolResult,
                 payloadJSON: Self.jsonPayload(persisted),

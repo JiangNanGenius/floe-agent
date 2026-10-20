@@ -1458,6 +1458,11 @@ public struct SubagentRunner: Sendable {
                     outputDigest: result.outputDigest,
                     exitStatus: result.exitStatus,
                     artifacts: result.artifacts,
+                    // S3-D: clipping bounds the summary body only. Sealed
+                    // user-output receipts describe committed snapshots, not
+                    // the prose, and must survive both the pending-batch
+                    // first-bound and the replayed-pair rebuild.
+                    outputFiles: result.outputFiles,
                     provenance: result.provenance,
                     maximumSummaryCharacters: maximumResultBytes
                 )
@@ -1582,6 +1587,11 @@ public struct SubagentRunner: Sendable {
                     outputDigest: result.outputDigest,
                     exitStatus: result.exitStatus,
                     artifacts: result.artifacts,
+                    // S3-D: clipping bounds the summary body only. Sealed
+                    // user-output receipts describe committed snapshots, not
+                    // the prose, and must survive both the pending-batch
+                    // first-bound and the replayed-pair rebuild.
+                    outputFiles: result.outputFiles,
                     provenance: result.provenance,
                     maximumSummaryCharacters: maximumResultBytes
                 )
