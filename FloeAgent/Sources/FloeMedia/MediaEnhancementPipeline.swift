@@ -274,7 +274,7 @@ public actor MediaEnhancementService: FrameProcessing {
         writer.startSession(atSourceTime: .zero)
         defer { try? FileManager.default.removeItem(at: staged) }
 
-        let expectedOutputFrames = max(1, Int((source.durationSeconds * targetFPS).rounded()))
+        let expectedOutputFrames = max(1, Int(ceil(source.durationSeconds * targetFPS)))
         let work = VideoEnhancementWork(
             reader: reader, videoOutput: videoOutput, videoInput: videoInput, adaptor: adaptor,
             writer: writer, control: control, engine: interpolationEngine, superResolutionEngine: superResolutionEngine,
@@ -322,6 +322,7 @@ public actor MediaEnhancementService: FrameProcessing {
                 throw FloeError.internalError("video stream did not finish before audio copy")
             }
             _ = audioStream
+            writer.endSession(atSourceTime: CMTime(seconds: source.durationSeconds, preferredTimescale: 600_000))
             try await control.finish()
         } catch {
             throw FloeError.internalError("Media writer did not finish: \(error.localizedDescription)")
@@ -706,18 +707,20 @@ final class VideoEnhancementWork: @unchecked Sendable {
     }
 
     private func execute() throws -> VideoEnhancementOutcome {
+        let clock = try MediaOutputFrameClock(fps: targetFPS)
         var sourceFrameCount = 0
         var interpolatedFrames = 0
         var outputIndex = 0
         var motionObserved = false
         var diffSamples: [Double] = []
+        let maximumFrames = MediaEnhancementGuards.Limits().maximumSourceFrames
 
         func checkCancellation() throws {
             try cancellation?.throwIfCancelled()
             if control.writer.status == .cancelled || control.reader.status == .cancelled { throw FloeError.cancelled }
         }
 
-        func readNext() throws -> CVPixelBuffer? {
+        func readNext() throws -> (buffer: CVPixelBuffer, pts: CMTime)? {
             while true {
                 try checkCancellation()
                 guard let sample = videoOutput.copyNextSampleBuffer() else {
@@ -728,91 +731,123 @@ final class VideoEnhancementWork: @unchecked Sendable {
                     return nil
                 }
                 guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else { continue }
-                return pixelBuffer
+                let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+                guard pts.isNumeric, pts.seconds.isFinite else {
+                    throw FloeError.validationFailed("A decoded video frame has no usable timestamp")
+                }
+                return (pixelBuffer, pts)
             }
         }
 
-        func append(_ buffer: CVPixelBuffer, index: Int) throws {
+        func append(_ buffer: CVPixelBuffer, at time: CMTime) throws {
+            guard outputIndex < maximumFrames else { throw FloeError.validationFailed("Output frame bound exceeded") }
             while !videoInput.isReadyForMoreMediaData {
                 try checkCancellation()
+                guard writer.status == .writing else {
+                    throw writer.error ?? FloeError.internalError("Video writer stopped accepting frames")
+                }
                 Thread.sleep(forTimeInterval: 0.002)
             }
-            let time = CMTime(
-                value: Int64((Double(index) * 60_000.0 / targetFPS).rounded()),
-                timescale: 60_000
-            )
             guard adaptor.append(buffer, withPresentationTime: time) else {
-                throw writer.error ?? FloeError.internalError("Video append failed at frame \(index)")
+                throw writer.error ?? FloeError.internalError("Video append failed at frame \(outputIndex)")
             }
+            outputIndex += 1
+        }
+
+        func gridTime(_ index: Int) throws -> CMTime {
+            CMTime(value: try clock.ticks(at: index), timescale: clock.numerator)
         }
 
         func upright(_ buffer: CVPixelBuffer) throws -> CVPixelBuffer {
             guard exifOrientation != 1 else { return buffer }
-            let upright = try store.makeBuffer(
-                format: MediaImageBridge.bgra,
-                width: source.displayWidth,
-                height: source.displayHeight
-            )
+            let upright = try store.makeBuffer(format: MediaImageBridge.bgra,
+                width: source.displayWidth, height: source.displayHeight)
             try bridge.render(source: buffer, destination: upright, exifOrientation: exifOrientation)
             return upright
         }
 
         var current = try readNext()
-        var previousInput: CVPixelBuffer?
         while let frame = current {
             try checkCancellation()
             sourceFrameCount += 1
-            let normalized = try upright(frame)
+            guard sourceFrameCount <= maximumFrames else { throw FloeError.validationFailed("Source frame bound exceeded") }
+            let normalized = try upright(frame.buffer)
             let nextRaw = try readNext()
-            let next = try nextRaw.map { try upright($0) }
-
-            // Motion sampling for the post-encode duplicate check (bounded).
+            if let nextRaw, CMTimeCompare(nextRaw.pts, frame.pts) <= 0 {
+                throw FloeError.validationFailed("Decoded frame timestamps are not increasing")
+            }
+            let next = try nextRaw.map { try upright($0.buffer) }
             if let next, diffSamples.count < 6 {
                 let diff = try MediaModelReadiness.meanAbsoluteDifference(normalized, next)
                 diffSamples.append(diff)
                 if diff > 0.002 { motionObserved = true }
             }
-            previousInput = normalized
 
             switch (engine, superResolutionEngine) {
             case (let engine?, nil):
-                try append(normalized, index: outputIndex)
-                outputIndex += 1
-                if let next {
-                    let destinations = try (0..<engine.interpolatedPerPair).map { _ in
+                let end = nextRaw?.pts ?? CMTime(seconds: source.durationSeconds, preferredTimescale: 600_000)
+                let assetEnd = CMTime(seconds: source.durationSeconds, preferredTimescale: 600_000)
+                // The same output clock runs through every actual input PTS
+                // interval. Source frames are emitted only when they lie on
+                // that clock; 24->60 is not approximated by a fixed 3x loop.
+                while CMTimeCompare(try gridTime(outputIndex), end) < 0,
+                      CMTimeCompare(try gridTime(outputIndex), assetEnd) < 0 {
+                    try checkCancellation()
+                    let time = try gridTime(outputIndex)
+                    if next == nil || CMTimeCompare(time, frame.pts) <= 0 {
+                        // Hold the first/last available source across the
+                        // bounded leading/trailing gap; never invent motion.
+                        try append(normalized, at: time)
+                        continue
+                    }
+                    let batchLimit = max(1, engine.interpolatedPerPair)
+                    var batchPhases: [Float] = []
+                    var batchTimes: [CMTime] = []
+                    for offset in 0..<batchLimit {
+                        let index = outputIndex + offset
+                        let targetTime = try gridTime(index)
+                        guard CMTimeCompare(targetTime, end) < 0,
+                              CMTimeCompare(targetTime, assetEnd) < 0 else { break }
+                        let phase = try clock.phase(at: index, sourcePTS: frame.pts.seconds,
+                                                   nextPTS: nextRaw!.pts.seconds)
+                        guard phase > 0, phase < 1 else {
+                            throw FloeError.validationFailed("An interpolation phase fell outside its source pair")
+                        }
+                        batchPhases.append(min(Float(1).nextDown, max(Float.leastNonzeroMagnitude, Float(phase))))
+                        batchTimes.append(targetTime)
+                    }
+                    let destinations = try batchTimes.map { _ in
                         try store.makeBuffer(format: MediaImageBridge.bgra, width: outputWidth, height: outputHeight)
                     }
-                    if !destinations.isEmpty {
-                        try engine.interpolate(current: normalized, next: next, phases: phases, outputs: destinations)
-                        for destination in destinations {
-                            try append(destination, index: outputIndex)
-                            outputIndex += 1
-                            interpolatedFrames += 1
-                        }
+                    guard !destinations.isEmpty, let next else {
+                        throw FloeError.internalError("No source pair for an output clock sample")
+                    }
+                    try engine.interpolate(current: normalized, next: next, phases: batchPhases, outputs: destinations)
+                    for (index, destination) in destinations.enumerated() {
+                        try append(destination, at: batchTimes[index]); interpolatedFrames += 1
                     }
                 }
             case (nil, let engine?):
-                let destination = try store.makeBuffer(format: MediaImageBridge.bgra, width: outputWidth, height: outputHeight)
-                try engine.scale(current: normalized, output: destination)
-                try append(destination, index: outputIndex)
-                outputIndex += 1
+                // Spatial enhancement does not retime VFR video.
+                if CMTimeCompare(frame.pts, .zero) >= 0, frame.pts.seconds < source.durationSeconds {
+                    let destination = try store.makeBuffer(format: MediaImageBridge.bgra,
+                        width: outputWidth, height: outputHeight)
+                    try engine.scale(current: normalized, output: destination)
+                    try append(destination, at: frame.pts)
+                }
             default:
                 throw FloeError.internalError("No enhancement engine is attached")
             }
-
-            if outputIndex % 10 == 0 || next == nil {
-                progress(MediaEnhancementProgress(phase: .processing, completedUnits: outputIndex, totalUnits: max(1, expectedOutputFrames)))
-            }
-            current = next
+            progress(MediaEnhancementProgress(phase: .processing, completedUnits: outputIndex,
+                                              totalUnits: max(1, expectedOutputFrames)))
+            current = nextRaw
         }
+        guard outputIndex > 0 else { throw FloeError.validationFailed("No timed video frames were produced") }
         videoInput.markAsFinished()
-        return VideoEnhancementOutcome(
-            sourceFrameCount: sourceFrameCount,
-            interpolatedFrames: interpolatedFrames,
-            videoFinished: true,
-            motionObserved: motionObserved
-        )
+        return VideoEnhancementOutcome(sourceFrameCount: sourceFrameCount,
+            interpolatedFrames: interpolatedFrames, videoFinished: true, motionObserved: motionObserved)
     }
+
 }
 
 // MARK: - Output validation

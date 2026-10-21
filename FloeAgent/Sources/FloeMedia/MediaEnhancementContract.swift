@@ -421,20 +421,26 @@ public enum MediaEnhancementGuards {
                 throw FloeError.validationFailed("Source has no usable constant frame rate (reported \(source.naturalFPS))")
             }
             let ratio = targetFPS / source.naturalFPS
-            let rounded = ratio.rounded()
-            guard abs(ratio - rounded) < 0.001, rounded >= 2, rounded <= Double(limits.maximumUpscaleWhileInterpolating) else {
+            guard ratio >= 2, ratio <= Double(limits.maximumUpscaleWhileInterpolating) else {
                 throw FloeError.validationFailed(
-                    "targetFPS must be an integer 2...\(limits.maximumUpscaleWhileInterpolating)x multiple of the source frame rate \(source.naturalFPS); got \(targetFPS)"
+                    "targetFPS must be within 2...\(limits.maximumUpscaleWhileInterpolating)x multiple of the source frame rate \(source.naturalFPS); got \(targetFPS)"
                 )
             }
-            let estimatedFrames = Int((source.durationSeconds * source.naturalFPS).rounded()) * Int(rounded)
+            guard source.durationSeconds.isFinite, source.durationSeconds > 0 else {
+                throw FloeError.validationFailed("Source duration must be positive and finite")
+            }
+            let estimate = ceil(source.durationSeconds * targetFPS)
+            guard estimate.isFinite, estimate <= Double(limits.maximumSourceFrames) else {
+                throw FloeError.validationFailed("Estimated output exceeds the frame bound")
+            }
+            let estimatedFrames = Int(estimate)
             guard estimatedFrames <= limits.maximumSourceFrames else {
                 throw FloeError.validationFailed("Estimated output frames \(estimatedFrames) exceed the \(limits.maximumSourceFrames) frame bound")
             }
             guard source.durationSeconds <= limits.maximumDurationSeconds else {
                 throw FloeError.validationFailed("Source duration exceeds the \(Int(limits.maximumDurationSeconds)) second bound")
             }
-            return (source.displayWidth, source.displayHeight, Int(rounded))
+            return (source.displayWidth, source.displayHeight, Int(ceil(ratio)))
         case .superResolution(let scaleFactor):
             guard scaleFactor >= 2, scaleFactor <= 4 else {
                 throw FloeError.validationFailed("scaleFactor must be 2, 3 or 4")
@@ -484,3 +490,51 @@ public enum MediaFrameOrientation {
 }
 
 #endif
+
+
+/// One rational output clock. NTSC rates retain their /1001 clock and other
+/// rates use a bounded rational approximation; no per-frame timestamp rounding
+/// or accumulation is used. Actual input PTS determine interpolation phases.
+public struct MediaOutputFrameClock: Sendable, Equatable {
+    public let numerator: Int32
+    public let denominator: Int64
+
+    public init(fps: Double) throws {
+        guard fps.isFinite, fps > 0, fps <= 240 else {
+            throw FloeError.validationFailed("Output frame rate must be finite and within 0...240")
+        }
+        let ntsc = (fps * 1001).rounded()
+        let rawNumerator: Int64
+        let rawDenominator: Int64
+        if abs(fps - ntsc / 1001) < 0.000001 {
+            rawNumerator = Int64(ntsc); rawDenominator = 1001
+        } else {
+            rawNumerator = Int64((fps * 1_000_000).rounded()); rawDenominator = 1_000_000
+        }
+        guard rawNumerator > 0 else { throw FloeError.validationFailed("Output rate is below the supported clock precision") }
+        var a = rawNumerator, b = rawDenominator
+        while b != 0 { let remainder = a % b; a = b; b = remainder }
+        numerator = Int32(rawNumerator / a)
+        denominator = rawDenominator / a
+    }
+
+    public func ticks(at index: Int) throws -> Int64 {
+        guard index >= 0 else { throw FloeError.validationFailed("Frame index cannot be negative") }
+        let (value, overflow) = Int64(index).multipliedReportingOverflow(by: denominator)
+        guard !overflow else { throw FloeError.validationFailed("Output clock overflow") }
+        return value
+    }
+
+    public func seconds(at index: Int) throws -> Double {
+        Double(try ticks(at: index)) / Double(numerator)
+    }
+
+    /// Strictly interior samples require synthesis; endpoints use their
+    /// original pixels. A missing/descending source clock is never guessed.
+    public func phase(at index: Int, sourcePTS: Double, nextPTS: Double) throws -> Double {
+        guard sourcePTS.isFinite, nextPTS.isFinite, nextPTS > sourcePTS else {
+            throw FloeError.validationFailed("Source frame timestamps must be finite and increasing")
+        }
+        return (try seconds(at: index) - sourcePTS) / (nextPTS - sourcePTS)
+    }
+}

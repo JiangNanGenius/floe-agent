@@ -261,15 +261,14 @@ final class VideoToolboxInterpolationEngine: MediaInterpolationEngine, @unchecke
         }
         let destinations = try outputs.enumerated().map { index, _ -> VTFrameProcessorFrame in
             let half = try store.makeBuffer(format: MediaImageBridge.rgbaHalf, width: width, height: height)
-            guard let frame = VTFrameProcessorFrame(buffer: half, presentationTimeStamp: CMTime(value: Int64(index + 1), timescale: 10)) else {
+            guard let frame = VTFrameProcessorFrame(buffer: half, presentationTimeStamp: CMTime(seconds: Double(phases[index]), preferredTimescale: 1_000_000)) else {
                 throw FloeError.internalError("Could not allocate an interpolation destination")
             }
             return frame
         }
-        let mode: VTFrameRateConversionParameters.SubmissionMode = lock.withLock {
-            defer { submissions += 1 }
-            return submissions == 0 ? .random : .sequential
-        }
+        // Each invocation is an independent normalized 0...1 source pair,
+        // including chunks of one VFR gap; those clocks are not sequential.
+        let mode: VTFrameRateConversionParameters.SubmissionMode = .random
         guard let parameters = VTFrameRateConversionParameters(
             sourceFrame: sourceFrame,
             nextFrame: nextFrame,

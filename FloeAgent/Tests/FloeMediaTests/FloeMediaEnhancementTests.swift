@@ -373,3 +373,41 @@ struct MediaModelContractTests {
         #expect(digest.contains("sha256=abc"))
     }
 }
+
+@Suite("Rational enhancement output clock")
+struct MediaOutputFrameClockTests {
+    @Test func nonIntegerRateUsesActualPairPhases() throws {
+        let clock = try MediaOutputFrameClock(fps: 60)
+        #expect(abs(try clock.phase(at: 1, sourcePTS: 0, nextPTS: 1.0 / 24) - 0.4) < 1e-9)
+        #expect(abs(try clock.phase(at: 2, sourcePTS: 0, nextPTS: 1.0 / 24) - 0.8) < 1e-9)
+        #expect(abs(try clock.phase(at: 3, sourcePTS: 1.0 / 24, nextPTS: 2.0 / 24) - 0.2) < 1e-9)
+        #expect(abs(try clock.phase(at: 4, sourcePTS: 1.0 / 24, nextPTS: 2.0 / 24) - 0.6) < 1e-9)
+        #expect(try clock.ticks(at: 5) == 5)
+    }
+
+    @Test func ntscClockDoesNotAccumulatePerFrameRounding() throws {
+        let clock = try MediaOutputFrameClock(fps: 60_000.0 / 1001)
+        #expect(clock.numerator == 60_000)
+        #expect(clock.denominator == 1001)
+        #expect(try clock.ticks(at: 200_000) == 200_200_000)
+        #expect(abs(try clock.seconds(at: 200_000) - 200_200_000.0 / 60_000) < 1e-10)
+    }
+
+    @Test func variableInputTimestampChangesThePhase() throws {
+        let clock = try MediaOutputFrameClock(fps: 60)
+        #expect(abs(try clock.phase(at: 3, sourcePTS: 0.04, nextPTS: 0.10) - 1.0 / 6) < 1e-9)
+        #expect(try clock.phase(at: 6, sourcePTS: 0.04, nextPTS: 0.10) == 1)
+        #expect(throws: (any Error).self) { try clock.phase(at: 1, sourcePTS: 1, nextPTS: 1) }
+        #expect(throws: (any Error).self) { try clock.phase(at: 1, sourcePTS: .nan, nextPTS: 1) }
+        #expect(throws: (any Error).self) { try clock.phase(at: 1, sourcePTS: 1, nextPTS: 0) }
+    }
+
+    @Test func invalidAndOverflowingClocksAreRefused() throws {
+        for fps in [0.0, -1, .nan, .infinity, 241] {
+            #expect(throws: (any Error).self) { try MediaOutputFrameClock(fps: fps) }
+        }
+        let clock = try MediaOutputFrameClock(fps: 60_000.0 / 1001)
+        #expect(throws: (any Error).self) { try clock.ticks(at: -1) }
+        #expect(throws: (any Error).self) { try clock.ticks(at: Int.max) }
+    }
+}

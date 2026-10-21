@@ -566,6 +566,10 @@ final class CoreMLInterpolationEngine: MediaInterpolationEngine, @unchecked Send
     }
 
     func interpolate(current: CVPixelBuffer, next: CVPixelBuffer, phases: [Float], outputs: [CVPixelBuffer]) throws {
+        guard phases.count == outputs.count, !phases.isEmpty,
+              phases.allSatisfy({ $0.isFinite && $0 > 0 && $0 < 1 }) else {
+            throw FloeError.validationFailed("Interpolation requires one interior phase per output")
+        }
         let tile = loaded.contract.tileSize
         guard width >= 1, height >= 1 else { throw FloeError.internalError("invalid interpolation target") }
         let tileStride = max(1, tile - quality.tileOverlap)
