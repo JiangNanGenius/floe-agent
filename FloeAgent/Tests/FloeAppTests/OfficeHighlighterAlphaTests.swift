@@ -1771,6 +1771,26 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(450))
             let geometry = try await geometryProbe(web)
             let image = try await snapshot(web, root: root, name: name)
+            if url.pathExtension.lowercased() == "xlsx" {
+                // The Notes card uses the committed-PDF cover path, which is
+                // distinct from the WK editor image. Preserve its actual PDF
+                // and rendered PNG for the primary's visual/pixel comparison;
+                // a successful editor snapshot alone cannot qualify the cover.
+                let inputSHA = try hash(url)
+                let exported = try await session.exportCommittedCoverPDF(expectedSHA256: inputSHA)
+                defer { try? FileManager.default.removeItem(at: exported) }
+                let pdf = root.appendingPathComponent("\(name)-cover.pdf")
+                try FileManager.default.copyItem(at: exported, to: pdf)
+                attach(pdf, name: "\(name)-cover-pdf")
+                let data = try await Task.detached(priority: .userInitiated) {
+                    try OfficeSavedCoverRenderer.firstPageData(at: pdf)
+                }.value
+                let png = root.appendingPathComponent("\(name)-cover.png")
+                try data.write(to: png, options: .atomic)
+                attach(png, name: "\(name)-cover-png")
+                XCTAssertNotNil(UIImage(data: data), "The production cover renderer returned no image")
+                XCTAssertEqual(try hash(url), inputSHA, "Cover export changed its committed input")
+            }
             await session.release()
             return (image, geometry)
         } catch {
