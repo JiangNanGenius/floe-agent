@@ -264,9 +264,7 @@ final class NDEFReaderService: NSObject, NDEFReading, @unchecked Sendable {
             delegate: delegate,
             sessionBox: NFCNDEFSessionBox(session)
         )
-        lock.lock()
-        self.active = active
-        lock.unlock()
+        lock.withLock { self.active = active }
 
         scheduleTimeout(active, seconds: min(max(timeout, 5), 55))
         scheduleCancellation(active, cancellation: cancellation)
@@ -520,15 +518,15 @@ final class NDEFReaderService: NSObject, NDEFReading, @unchecked Sendable {
             return .busy
         case .readerSessionInvalidationErrorFirstNDEFTagRead:
             return .readFailed(code: "firstTagRead")
-        case .unsupportedFeature:
+        case .readerErrorUnsupportedFeature:
             return .unavailable
-        case .securityViolation:
+        case .readerErrorSecurityViolation:
             return .entitlementMissing
-        case .radioDisabled:
+        case .readerErrorRadioDisabled:
             return .radioDisabled
-        case .ineligible:
+        case .readerErrorIneligible:
             return .ineligible
-        case .accessNotAccepted:
+        case .readerErrorAccessNotAccepted:
             return .accessNotAccepted
         case .ndefReaderSessionErrorZeroLengthMessage:
             return .emptyTag
