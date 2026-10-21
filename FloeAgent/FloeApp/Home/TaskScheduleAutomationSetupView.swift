@@ -106,9 +106,9 @@ struct TaskScheduleAutomationSetupView: View {
 
     private var cadenceText: String {
         switch schedule.cadence {
-        case .once: setupText(zh: "一次", en: "One time")
-        case .daily: setupText(zh: "每天", en: "Daily")
-        case .weekly: setupText(zh: "每周", en: "Weekly")
+        case .once: return setupText(zh: "一次", en: "One time")
+        case .daily: return setupText(zh: "每天", en: "Daily")
+        case .weekly: return setupText(zh: "每周", en: "Weekly")
         case .interval:
             let seconds = schedule.intervalSeconds ?? 0
             if seconds >= 3_600 {
@@ -116,7 +116,7 @@ struct TaskScheduleAutomationSetupView: View {
             }
             return setupText(zh: "每 \(max(1, seconds / 60)) 分钟", en: "Every \(max(1, seconds / 60)) minutes")
         case .afterSuccess:
-            setupText(zh: "任务成功后", en: "After a task succeeds")
+            return setupText(zh: "任务成功后", en: "After a task succeeds")
         }
     }
 
