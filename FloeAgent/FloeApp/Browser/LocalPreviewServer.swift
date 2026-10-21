@@ -491,7 +491,7 @@ private struct PreviewStopTool: AgentTool {
     let environment: LocalPreviewCoordinator
     func validate(_ args: Arguments) throws {}
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        environment.stop(owner: try previewOwner(for: context))
+        await environment.stop(owner: try previewOwner(for: context))
     }
 }
 
