@@ -19,24 +19,27 @@ local LLM backend.
 
 ## Android Alpha
 
-[Download 0.1.0-alpha.5](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.5)
+[Download 0.1.0-alpha.6](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.6)
 contains one signed ARM64 APK and SHA256SUMS. Install updates manually for now.
-Alpha5 fixes settings result races and privacy-summary recovery, with focused
-local tests and actual API37 / 16 KiB tablet-emulator checks using a local
-provider fixture. Its public APK and checksum were independently downloaded
-and verified. The physical Samsung SM-G9810 remains on Alpha4; Alpha5 phone
-acceptance is not claimed. Earlier Alpha3/4 compatibility evidence is retained
-in [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md).
+Alpha6 repairs private task-folder ownership, path checks and durable retry,
+and recovers unsettled memory, personalization and usage settings pages.
+53 affected JVM checks and 91 native host checks passed. The signed full APK
+was upgraded and checked on the existing API37 / 16 KiB tablet emulator:
+permission failure preserved the file and queue; correcting the test fixture
+let the real startup retry remove the owned file and complete the queue while
+preserving a separate export and model configuration. Original data was then
+restored and read back on the exact final APK. No paid cloud calls were made.
+The public APK, checksum and immutable source tag were independently verified.
 
-G02 remains active. R1–R6 stage deliveries are complete; **G02-R7** is repairing
-managed private-workspace cleanup and recovery of memory, personalization and
-usage settings. The cleanup adapter is already bound: relative-path validation
-and history-clear integration with the existing ownership/retry lifecycle need
-repair. A directory-cleanup failure is not a successful deletion. The current
-code batch will receive focused integrated checks before another stage release.
-See the [current sequential targets](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan).
-Later targets are a backlog, not prequeued worker tasks. Alpha delivery does not
-close the full 41-operation G02 scope.
+G02 remains in final acceptance accounting. R1–R7 stage deliveries are complete;
+the two known R6 code gaps (private cleanup and other settings-page recovery)
+are closed. The next checkpoint reuses existing source-bound evidence to close
+the operation ledger and identifies only actual missing checks/code; it does
+not replay the historical test matrix. Samsung remains on Alpha4, and no
+Alpha6 phone acceptance or full 41-operation App acceptance is claimed.
+See the [implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md) and
+[current sequential targets](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan).
+Later targets are a backlog, not prequeued worker tasks.
 
 ## Layout and ownership
 
