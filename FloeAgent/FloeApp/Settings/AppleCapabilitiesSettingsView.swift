@@ -4,11 +4,39 @@ import SwiftUI
 import FloeTools
 
 import FloeCore
+#if canImport(HealthKit)
+import HealthKit
+#endif
+#if canImport(CoreNFC)
+import CoreNFC
+#endif
 /// Device-local feature gates for public Apple-framework integrations. The
 /// switch controls whether a tool is advertised to the model; the operating
 /// system remains the final authority and prompts only on first real use.
 enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
-    case calendar, reminders, home, maps, web, watch, vision, mail, documents, camera, location, shortcuts, automation, clipboard
+    case calendar, reminders, home, maps, web, watch, vision, mail, documents, camera, location, shortcuts, automation, clipboard, health, nfc, contacts, media, alarm
+
+    var isAvailableOnDevice: Bool {
+        switch self {
+        case .watch:
+            // No companion product is shipped in this milestone.
+            return false
+        case .health:
+            #if canImport(HealthKit)
+            return HKHealthStore.isHealthDataAvailable()
+            #else
+            return false
+            #endif
+        case .nfc:
+            #if canImport(CoreNFC)
+            return NFCNDEFReaderSession.readingAvailable
+            #else
+            return false
+            #endif
+        default:
+            return true
+        }
+    }
 
     var id: String { rawValue }
     var title: String {
@@ -27,6 +55,11 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .shortcuts: "Shortcuts"
         case .automation: FloeL10n.l("settings.apple_capabilities_settings_view.automation")
         case .clipboard: FloeL10n.l("settings.apple_capabilities_settings_view.clipboard")
+        case .health: FloeL10n.l("settings.apple_capabilities_settings_view.health")
+        case .contacts: FloeL10n.l("settings.apple_capabilities_settings_view.contacts")
+        case .media: FloeL10n.l("settings.apple_capabilities_settings_view.media_library")
+        case .nfc: FloeL10n.l("settings.apple_capabilities_settings_view.nfc")
+        case .alarm: FloeL10n.l("settings.apple_capabilities_settings_view.alarm")
         }
     }
     var icon: String {
@@ -45,6 +78,11 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .shortcuts: "square.on.square"
         case .automation: "clock.arrow.trianglehead.counterclockwise.rotate.90"
         case .clipboard: "doc.on.clipboard"
+        case .health: "heart"
+        case .contacts: "person.crop.circle"
+        case .media: "music.note.list"
+        case .nfc: "antenna.radiowaves.left.and.right"
+        case .alarm: "alarm"
         }
     }
     var detail: String {
@@ -63,6 +101,11 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .shortcuts: FloeL10n.l("settings.apple_capabilities_settings_view.runs_your_shortcut_by_name_execution")
         case .automation: FloeL10n.l("settings.apple_capabilities_settings_view.create_and_manage_floe_automations_that")
         case .clipboard: FloeL10n.l("settings.apple_capabilities_settings_view.read_or_write_system_clipboard_text")
+        case .health: FloeL10n.l("settings.apple_capabilities_settings_view.read_only_health_metrics_after_authorization")
+        case .contacts: FloeL10n.l("settings.apple_capabilities_settings_view.search_contacts_by_name_organization_phone_or_email")
+        case .media: FloeL10n.l("settings.apple_capabilities_settings_view.search_and_play_media_from_your_local_library")
+        case .nfc: FloeL10n.l("settings.apple_capabilities_settings_view.scan_one_tag_foreground_only_read_only")
+        case .alarm: FloeL10n.l("settings.apple_capabilities_settings_view.schedule_system_alarms_and_timers")
         }
     }
     var toolPrefixes: [String] {
@@ -81,6 +124,11 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .shortcuts: ["apple.shortcuts."]
         case .automation: ["apple.automation."]
         case .clipboard: ["apple.clipboard."]
+        case .health: ["apple.health."]
+        case .contacts: ["apple.contacts."]
+        case .media: ["apple.media."]
+        case .nfc: ["apple.nfc."]
+        case .alarm: ["apple.alarm."]
         }
     }
 }
@@ -90,6 +138,7 @@ enum AppleCapabilityPreferences {
     private static let prefix = "floe.appleCapability."
 
     static func isEnabled(_ capability: AppleCapability, defaults: UserDefaults = .standard) -> Bool {
+        guard capability.isAvailableOnDevice else { return false }
         let key = prefix + capability.rawValue
         return defaults.object(forKey: key) == nil ? true : defaults.bool(forKey: key)
     }
@@ -131,7 +180,7 @@ struct AppleCapabilitiesSettingsView: View {
     var body: some View {
         Form {
             Section {
-                ForEach(AppleCapability.allCases) { capability in
+                ForEach(AppleCapability.allCases.filter(\.isAvailableOnDevice)) { capability in
                     Toggle(isOn: Binding(
                         get: { values[capability] ?? true },
                         set: {
@@ -154,8 +203,13 @@ struct AppleCapabilitiesSettingsView: View {
                 }
             } header: {
                 Text("settings.apple_capabilities_settings_view.system_capabilities_available_to_the_agent")
-            } footer: {
-                Text("settings.apple_capabilities_settings_view.the_switches_here_only_decide_whether")
+            }
+            Section {
+                NavigationLink {
+                    SharedDocumentsSettingsView(center: .shared)
+                } label: {
+                    Label(SharedDocumentsCopy.locationName, systemImage: "folder")
+                }
             }
         }
         .navigationTitle(FloeL10n.l("settings.apple_capabilities_settings_view.apple_capabilities"))

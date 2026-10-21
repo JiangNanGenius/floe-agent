@@ -62,14 +62,14 @@ final class DocumentIntakeRoutingRegistry {
     private var order: [UUID] = []
 
     func setActive(_ active: Bool, sceneID: String) {
-        guard scenes[sceneID] != nil || scenes.count < 32 else { return }
+        guard admitScene(sceneID) else { return }
         var scene = scenes[sceneID] ?? Scene()
         scene.active = active
         scenes[sceneID] = scene
     }
 
     func noteSelectionChanged(_ documentID: UUID?, sceneID: String) {
-        guard scenes[sceneID] != nil || scenes.count < 32 else { return }
+        guard admitScene(sceneID) else { return }
         var scene = scenes[sceneID] ?? Scene()
         scene.noteID = documentID
         scene.knowsNoteSelection = true
@@ -77,6 +77,15 @@ final class DocumentIntakeRoutingRegistry {
     }
 
     func removeScene(_ sceneID: String) { scenes.removeValue(forKey: sceneID) }
+
+    private func admitScene(_ sceneID: String) -> Bool {
+        if scenes[sceneID] != nil || scenes.count < 32 { return true }
+        // Closed/covered windows cannot hold every slot forever. Eviction
+        // only defers an old automatic presentation to explicit Open.
+        guard let inactive = scenes.first(where: { !$0.value.active })?.key else { return false }
+        scenes.removeValue(forKey: inactive)
+        return true
+    }
 
     func capture(_ route: DocumentIntakeRouteSnapshot, sceneID: String, eventID: UUID) {
         order.removeAll { $0 == eventID }

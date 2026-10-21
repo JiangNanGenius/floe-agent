@@ -1468,8 +1468,6 @@ func registerAppleSystemTools(
     ToolCatalog.register(AppleMailComposeTool.self); registry.register(AppleMailComposeTool())
     ToolCatalog.register(AppleHomeListTool.self); registry.register(AppleHomeListTool())
     ToolCatalog.register(AppleHomeControlTool.self); registry.register(AppleHomeControlTool())
-    ToolCatalog.register(AppleWatchStatusTool.self); registry.register(AppleWatchStatusTool())
-    ToolCatalog.register(AppleWatchUpdateTool.self); registry.register(AppleWatchUpdateTool())
     ToolCatalog.register(AppleCurrentLocationTool.self); registry.register(AppleCurrentLocationTool())
     let automationStore = SQLiteTaskScheduleStore(database: database)
     ToolCatalog.register(AppleAutomationListTool.self); registry.register(AppleAutomationListTool(store: automationStore))

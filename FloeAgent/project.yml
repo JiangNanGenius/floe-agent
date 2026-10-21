@@ -60,6 +60,7 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: FloeApp
+      - path: FloeWidgets/FloeSystemAlarmControlIntents.swift
         excludes:
           - Resources/Capabilities
           - Resources/Audio
@@ -129,6 +130,10 @@ targets:
       properties:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleURLTypes:
+          - CFBundleURLName: org.floeagent.ios.routes
+            CFBundleURLSchemes:
+              - floe
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: org.floeagent.note
             UTTypeDescription: Floe Note
@@ -146,6 +151,33 @@ targets:
               public.filename-extension:
                 - floecanvas
               public.mime-type: application/vnd.floe.canvas
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Floe Note
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - org.floeagent.note
+          - CFBundleTypeName: Floe Canvas
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - org.floeagent.canvas
+          - CFBundleTypeName: PDF and Office documents
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.adobe.pdf
+              - org.openxmlformats.wordprocessingml.document
+              - org.openxmlformats.spreadsheetml.sheet
+              - org.openxmlformats.presentationml.presentation
+              - com.microsoft.word.doc
+              - com.microsoft.excel.xls
+              - com.microsoft.powerpoint.ppt
+              - org.oasis-open.opendocument.text
+              - org.oasis-open.opendocument.spreadsheet
+              - org.oasis-open.opendocument.presentation
+              - public.rtf
+        LSSupportsOpeningDocumentsInPlace: true
         FLOEGitHubOAuthClientID: $(FLOE_GITHUB_OAUTH_CLIENT_ID)
         ITSAppUsesNonExemptEncryption: false
         NSAppTransportSecurity:
@@ -160,8 +192,14 @@ targets:
         NSPhotoLibraryUsageDescription: Floe opens your photo library only when you choose an image for a task.
         NSPhotoLibraryAddUsageDescription: Floe saves generated or edited images only when you ask it to save them to Photos.
         NSHomeKitUsageDescription: Floe accesses your Home only when you enable Home tools and request an automation action.
+        NSHealthShareUsageDescription: Floe reads the Health data you request after you authorize access.
+        NFCReaderUsageDescription: Floe reads a nearby NFC tag when you request a scan.
         NSLocalNetworkUsageDescription: Floe scans your local network only when you ask the agent to discover nearby services and devices.
         NSBluetoothAlwaysUsageDescription: Floe uses Bluetooth only when you ask it to connect to a nearby BLE serial device.
+        NSContactsUsageDescription: Floe reads the contacts you ask it to find.
+        NSAlarmKitUsageDescription: Floe schedules the alarms and timers you create in the app.
+        NSSupportsLiveActivities: true
+        NSAppleMusicUsageDescription: Floe finds and plays items from your media library when you request them.
         NSBonjourServices:
           - _home-assistant._tcp
           - _http._tcp
@@ -200,6 +238,9 @@ targets:
         com.apple.developer.icloud-services:
           - CloudKit
         com.apple.developer.homekit: true
+        com.apple.developer.healthkit: true
+        com.apple.developer.nfc.readersession.formats:
+          - NDEF
         com.apple.security.application-groups:
           - group.org.floeagent.ios
     dependencies:
@@ -285,6 +326,12 @@ targets:
       - package: FloeShellEngine
         product: FloeShellEngine
       - target: FloeScreenShare
+        embed: true
+      - target: FloeShare
+        embed: true
+      - target: FloeWidgets
+        embed: true
+      - target: FloeFileProvider
         embed: true
     preBuildScripts:
       - name: Verify bundled Linux boot pair
@@ -418,6 +465,10 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: FloeShare
+      # Required-reason API declaration for this extension executable (it
+      # links FloeCore, whose code calls UserDefaults / file metadata).
+      - path: FloeApp/Resources/PrivacyManifests/FloeShare/PrivacyInfo.xcprivacy
+        buildPhase: resources
     info:
       path: FloeShare/Info.plist
       properties:
@@ -425,10 +476,12 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
-          NSExtensionActivationRule:
-            NSExtensionActivationSupportsText: true
-            NSExtensionActivationSupportsWebURLWithMaxCount: 1
-            NSExtensionActivationSupportsImageWithMaxCount: 1
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 5
+              NSExtensionActivationSupportsImageWithMaxCount: 5
+              NSExtensionActivationSupportsFileWithMaxCount: 5
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
     entitlements:
@@ -463,6 +516,10 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: FloeWidgets
+      # Required-reason API declaration for this extension executable (it
+      # links FloeCore, whose code calls UserDefaults / file metadata).
+      - path: FloeApp/Resources/PrivacyManifests/FloeWidgets/PrivacyInfo.xcprivacy
+        buildPhase: resources
     info:
       path: FloeWidgets/Info.plist
       properties:
@@ -496,6 +553,60 @@ targets:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: Apple Distribution
           PROVISIONING_PROFILE_SPECIFIER: Floe Widgets TestFlight AppGroup 2026
+
+  FloeFileProvider:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: FloeFileProvider
+      # Required-reason API declaration for this extension executable (it
+      # links FloePersistence/FloeCore, whose code reads file metadata).
+      - path: FloeApp/Resources/PrivacyManifests/FloeFileProvider/PrivacyInfo.xcprivacy
+        buildPhase: resources
+    info:
+      path: FloeFileProvider/Info.plist
+      properties:
+        CFBundleDisplayName: Floe Shared Documents
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.fileprovider-nonui
+          NSExtensionFileProviderDocumentGroup: group.org.floeagent.ios
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).FloeFileProviderExtension
+          NSExtensionFileProviderSupportsEnumeration: true
+          # Commits are transactional and invisible until completion.
+          NSExtensionFileProviderAppliesChangesAtomically: true
+          NSExtensionFileProviderDownloadPipelineDepth: 4
+          NSExtensionFileProviderUploadPipelineDepth: 4
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+    entitlements:
+      path: FloeFileProvider/FloeFileProvider.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.org.floeagent.ios
+    dependencies:
+      - package: FloeAgentPackages
+        product: FloeCore
+      - package: FloeAgentPackages
+        product: FloePersistence
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.fileprovider
+        PRODUCT_NAME: FloeFileProvider
+        PRODUCT_MODULE_NAME: FloeFileProvider
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "1.7.43"
+        CURRENT_PROJECT_VERSION: "284"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER: Floe FileProvider TestFlight AppGroup 2026
+
 
   FloeAgentUITests:
     type: bundle.ui-testing
@@ -576,6 +687,12 @@ targets:
       - path: Tests/FloePersistenceTests/RunReplyReaderTests.swift
       - path: Tests/FloeAppTests/ShortcutInboxHandoffTests.swift
       - path: Tests/FloeAppTests/ShortcutInboxStoreTests.swift
+      - path: Tests/FloeAppTests/ShareIntakeTests.swift
+      - path: Tests/FloeAppTests/ExternalDocumentIntakeTests.swift
+      - path: Tests/FloeAppTests/SharedDocumentsStoreTests.swift
+      - path: Tests/FloeAppTests/FileProviderBridgeTests.swift
+      - path: FloeFileProvider/SharedDocumentsFileProviderItem.swift
+      - path: FloeFileProvider/SharedDocumentsFileProviderBridge.swift
       - path: Tests/FloeAppTests/NotesMarkdownPaginationTests.swift
       - path: Tests/FloeAppTests/NotesInkRefreshTests.swift
       - path: Tests/FloeAppTests/DesignBuiltinNodeTests.swift
@@ -602,6 +719,9 @@ targets:
       - path: Tests/FloeAppTests/ComposerLaunchHandoffTests.swift
       - path: Tests/FloeAppTests/ProviderSaveRegressionTests.swift
       - path: Tests/FloeAppTests/PersonalToolPaginationTests.swift
+      - path: Tests/FloeAppTests/ContactsReadToolsTests.swift
+      - path: Tests/FloeAppTests/SystemMediaToolsTests.swift
+      - path: Tests/FloeAppTests/SystemAlarmToolsTests.swift
       - path: Tests/FloeAppTests/AppleCalendarOccurrenceAppQualificationTests.swift
       - path: Tests/FloeAppTests/TemporaryChatPolicyTests.swift
       - path: Tests/FloeAppTests/LocalShellClientIsolationTests.swift
@@ -689,6 +809,7 @@ targets:
       #   * primary's ConfigSync capability-decision helper tests and C's
       #     provider metadata/migration suite are pure offline logic.
       - path: Tests/FloeAgentRuntimeTests/ChildRunPersistenceTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ChildRunResumeTests.swift
       # S2: run the same integrity and temporary-ceiling suites in the App.
       - path: Tests/FloeAgentRuntimeTests/TemporaryChatCeilingTests.swift
       - path: Tests/FloeAgentRuntimeTests/TemporaryReadOnlyRuntimeTests.swift
@@ -754,6 +875,7 @@ targets:
       - path: Tests/FloePersistenceTests/RunLifecycleRetentionTests.swift
       - path: Tests/FloePersistenceTests/TaskLifecycleStoreTests.swift
       - path: Tests/FloePersistenceTests/ChildRunPayloadTests.swift
+      - path: Tests/FloePersistenceTests/ChildRunStoreTests.swift
       - path: Tests/FloeProvidersTests/ProviderCapabilityMetadataTests.swift
       - path: Tests/FloeSyncTests/DeferredConfigSyncTests.swift
       - path: Tests/FloeAppTests/NativeCADDrawingAssemblyClosureTests.swift
@@ -819,6 +941,13 @@ targets:
       - path: Tests/FloeAppTests/OfficePDFExportAcceptanceTests.swift
       - path: Tests/FloeAppTests/DocumentExportServiceTests.swift
       - path: Tests/FloeAppTests/RunOutputFileViewTests.swift
+      - path: Tests/FloeAppTests/BrowserTaskSessionTests.swift
+      - path: Tests/FloeAppTests/BrowserPreviewOwnershipTests.swift
+      - path: Tests/FloeCoreTests/FloeAppEntryRouteTests.swift
+      - path: Tests/FloeAppTests/WidgetTaskSnapshotTests.swift
+      - path: Tests/FloeCoreTests/WidgetTaskSnapshotCodecTests.swift
+      - path: Tests/FloeAppTests/HealthReadToolsTests.swift
+      - path: Tests/FloeAppTests/NDEFReadToolsTests.swift
       - path: Qualification/Notes/Tests/NotesStoreTests.swift
     dependencies:
       - target: FloeAgent

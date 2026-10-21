@@ -8,6 +8,7 @@ import PencilKit
 import FloeCore
 struct NotesRootView: View {
     @FocusState private var searchFocused: Bool
+    @SceneStorage("floe.windowSceneIdentity") private var sceneID = UUID().uuidString
     @State private var session = NotesSession(tabDefaults: .standard)
     @State private var query = ""
     @AppStorage("notes.library.grid") private var grid = true
@@ -187,8 +188,15 @@ struct NotesRootView: View {
             .alert("notes.notes_root_view.notes", isPresented: Binding(get: { session.errorMessage != nil }, set: { if !$0 { session.errorMessage = nil } })) {
                 Button("workspace.office_document_editor_view.ok") { session.errorMessage = nil }
             } message: { Text(session.errorMessage ?? "") }
+            .onChange(of: session.document?.id, initial: true) { _, documentID in
+                DocumentIntakeRoutingRegistry.shared.noteSelectionChanged(documentID, sceneID: sceneID)
+            }
+            .onReceive(environment.documentIntakeCenter.$noteOpenRequest) { _ in
+                adoptPendingDocument()
+            }
             .task {
                 await session.open()
+                adoptPendingDocument()
                 #if DEBUG
                 await NotesOfficeThumbnailFixture.seedIfRequested(session: session)
                 await NotesAIActualOutputFixture.seedIfRequested(session: session)
@@ -197,6 +205,18 @@ struct NotesRootView: View {
                 await OfficeRealEngineQualificationFixture.seedIfRequested(session: session)
                 #endif
             }
+        }
+    }
+
+    private func adoptPendingDocument() {
+        // Let the existing session-open task finish before claiming a replay.
+        guard session.store != nil,
+              let request = environment.documentIntakeCenter.noteOpenRequest,
+              request.sceneID == nil || request.sceneID == sceneID,
+              environment.documentIntakeCenter.claimNoteOpen(request) else { return }
+        Task { @MainActor in
+            let opened = await session.adoptImportedDocument(request.documentID)
+            environment.documentIntakeCenter.completeNoteOpen(request, opened: opened)
         }
     }
 
