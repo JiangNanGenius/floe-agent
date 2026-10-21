@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "note": "Model catalog for the floe-video skill. Entries with status=pending-assets are staged: conversion and GitHub Release upload happen in the media-model CI job. status=ready entries must carry file URLs with SHA-256 and a verified license. Apt never installs these.",
+  "note": "Staged floe-video models. Prepared retained bytes remain unavailable until current host/device qualification and immutable release read-back. The normal hub build/sign workflow alone regenerates catalog.json and catalog.sig. Apt never installs these.",
   "models": [
     {
       "id": "floe/model-rife-v4",
@@ -11,13 +11,13 @@
       "license": "MIT",
       "source": "https://github.com/hzwer/Practical-RIFE",
       "minAppVersion": "1.7.0",
-      "status": "pending-assets",
+      "status": "pending-qualification",
       "files": [],
       "reviewedSourceCommit": "bbfd2ea90910789a860ea3e2b32a240cd577b75e",
       "codeLicenseEvidence": "https://github.com/hzwer/Practical-RIFE/blob/bbfd2ea90910789a860ea3e2b32a240cd577b75e/LICENSE",
-      "conversionStatus": "coreml-converted-local",
-      "deviceQualification": "macOS-native-qualified; simulator unsupported",
-      "notes": "RIFE 4.25 Lite (2024-10-20 release) converted locally from the pinned archive (flownet.pkl sha256 81cdba223fe72a120130cc8552e5d2ecac824259d406f0c15323b3decf96b8b1) with the pinned Practical-RIFE architecture; Core ML inputs frame0/frame1 (RGB 256x256) + timestep, output frame; FLOAT32 compute precision (fp16 measured unusable); PyTorch reference comparison maxAbsDiff=0.00197 psnr=59.19dB; installable bundle not published; readiness requires a hash-verified fixture inference. Bundle LICENSE.txt carries the full MIT text plus a pinned-commit/weights attribution header staged by fetch_assets.py and verified by package_models.py --provenance.",
+      "conversionStatus": "retained-conversion-pending-current-round",
+      "deviceQualification": "not-executed-current-round",
+      "notes": "Exact retained bytes prepared. Install remains unavailable until current host/device qualification and immutable publication read-back. RGB8 model features; no HDR inference claim.",
       "weightsSha256": "81cdba223fe72a120130cc8552e5d2ecac824259d406f0c15323b3decf96b8b1",
       "weightsArchiveSha256": "e84366c23e0eb1a637a55aad2e4f3442ec2bf4c388043b4aabbf590be289e6e8",
       "coremlContract": {
@@ -71,7 +71,106 @@
         }
       },
       "weightsLicense": "MIT",
-      "weightsLicenseEvidence": "Practical-RIFE README (pinned commit bbfd2ea90910789a860ea3e2b32a240cd577b75e): \"The content of these links are under the same MIT license as this project.\" README sha256 b695ac5d4a69c2f551512678883f8234d784c286d805ca546f4873cb465959b4; LICENSE sha256 7932fb49341512b959b1744a6d9cbb39e5a1ec89da438a34d0454d5d8df9fecd; weights archive sha256 e84366c23e0eb1a637a55aad2e4f3442ec2bf4c388043b4aabbf590be289e6e8"
+      "weightsLicenseEvidence": "Practical-RIFE README (pinned commit bbfd2ea90910789a860ea3e2b32a240cd577b75e): \"The content of these links are under the same MIT license as this project.\" README sha256 b695ac5d4a69c2f551512678883f8234d784c286d805ca546f4873cb465959b4; LICENSE sha256 7932fb49341512b959b1744a6d9cbb39e5a1ec89da438a34d0454d5d8df9fecd; weights archive sha256 e84366c23e0eb1a637a55aad2e4f3442ec2bf4c388043b4aabbf590be289e6e8",
+      "preparedAssets": {
+        "files": [
+          {
+            "assetName": "floe-model-rife-v4--DISTRIBUTION.json",
+            "path": "DISTRIBUTION.json",
+            "sha256": "81ef7ef643127f669cfbf836b142c44d34df9260002c43cbc1f75f062f87016e",
+            "sizeBytes": 1233
+          },
+          {
+            "assetName": "floe-model-rife-v4--LICENSE.txt",
+            "path": "LICENSE.txt",
+            "sha256": "ecc8b6a156c86f43bc7c0c46e478b8460aa065662a4229f350a64540fcee143d",
+            "sizeBytes": 1987
+          },
+          {
+            "assetName": "floe-model-rife-v4--ORIGINAL-MANIFEST.json",
+            "path": "ORIGINAL-MANIFEST.json",
+            "sha256": "05fc0094fbe1370c822b3dd15f10b3b391af2ddc7737856c8055a3a0f0266731",
+            "sizeBytes": 1925
+          },
+          {
+            "assetName": "floe-model-rife-v4--PROVENANCE.json",
+            "path": "PROVENANCE.json",
+            "sha256": "4e4870ab54bd912a15ee918b65bbb51a5ebd9ed4773161507194bb7eed9334b0",
+            "sizeBytes": 1355
+          },
+          {
+            "assetName": "floe-model-rife-v4--contract.json",
+            "path": "contract.json",
+            "sha256": "a8f5ec2980032f030d0509444c416eab01342a355c33d778be1673f8d26bcd38",
+            "sizeBytes": 1586
+          },
+          {
+            "assetName": "floe-model-rife-v4--fixtures--expected.png",
+            "path": "fixtures/expected.png",
+            "sha256": "70c450d55cdba0a6ab1c0eb4f319f45abf05b8f1d86cb23b55e854dd88363608",
+            "sizeBytes": 131084
+          },
+          {
+            "assetName": "floe-model-rife-v4--fixtures--frame0.png",
+            "path": "fixtures/frame0.png",
+            "sha256": "70ff9171d62ad9659e41bf2c7aff5ee27c4c0cce0c615ef65878eb743afe23d8",
+            "sizeBytes": 134947
+          },
+          {
+            "assetName": "floe-model-rife-v4--fixtures--frame1.png",
+            "path": "fixtures/frame1.png",
+            "sha256": "cdb230719dcdf7d17c3653235424782d3ff049a803c2d737cd3f0e1bac53b2f3",
+            "sizeBytes": 134053
+          },
+          {
+            "assetName": "floe-model-rife-v4--manifest.json",
+            "path": "manifest.json",
+            "sha256": "7987f475ef14ac176dedbf7d71dbc1d78176d2791fffbe6a1b37cb87b65bff02",
+            "sizeBytes": 2242
+          },
+          {
+            "assetName": "floe-model-rife-v4--model.mlmodelc--analytics--coremldata.bin",
+            "path": "model.mlmodelc/analytics/coremldata.bin",
+            "sha256": "31c9ce498b24427fae345ac2691c51cc93f8f8b192fb2d9696c17841ed1e3cd0",
+            "sizeBytes": 243
+          },
+          {
+            "assetName": "floe-model-rife-v4--model.mlmodelc--coremldata.bin",
+            "path": "model.mlmodelc/coremldata.bin",
+            "sha256": "05a92b86e44b24b0bf037f5c279395e99a61d7287515a84e3c6a4918fc4ee98a",
+            "sizeBytes": 414
+          },
+          {
+            "assetName": "floe-model-rife-v4--model.mlmodelc--metadata.json",
+            "path": "model.mlmodelc/metadata.json",
+            "sha256": "a8f429807dbbbd0600f2927e7e39c5043a0a566998ff860b76f867c48c5c610b",
+            "sizeBytes": 2666
+          },
+          {
+            "assetName": "floe-model-rife-v4--model.mlmodelc--model.mil",
+            "path": "model.mlmodelc/model.mil",
+            "sha256": "322e9fa55f83fbec2d378bf352f4d32e49efa5df10274dfef157c3aae71c6896",
+            "sizeBytes": 170244
+          },
+          {
+            "assetName": "floe-model-rife-v4--model.mlmodelc--weights--weight.bin",
+            "path": "model.mlmodelc/weights/weight.bin",
+            "sha256": "18ae154b3c57446072b558a5ce439d46c8976070f4b8bdb2d0e1f44c794334b1",
+            "sizeBytes": 23007072
+          }
+        ],
+        "manifestSHA256": "7987f475ef14ac176dedbf7d71dbc1d78176d2791fffbe6a1b37cb87b65bff02",
+        "originalManifestSHA256": "05fc0094fbe1370c822b3dd15f10b3b391af2ddc7737856c8055a3a0f0266731",
+        "runtimeContract": {
+          "alpha": "external-plane-SDR",
+          "computePrecision": "FLOAT32",
+          "hdr": false,
+          "imageFeaturePrecision": "RGB8",
+          "layout": "model.mlmodelc",
+          "timestep": "interior-phase-tensor"
+        },
+        "version": "4.25.0-lite"
+      }
     },
     {
       "id": "floe/model-film",
@@ -131,13 +230,13 @@
       "license": "BSD-3-Clause",
       "source": "https://github.com/xinntao/Real-ESRGAN",
       "minAppVersion": "1.7.0",
-      "status": "pending-assets",
+      "status": "pending-qualification",
       "files": [],
       "reviewedSourceCommit": "a4abfb2979a7bbff3f69f58f58ae324608821e27",
       "codeLicenseEvidence": "https://github.com/xinntao/Real-ESRGAN/blob/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE",
-      "conversionStatus": "coreml-converted-local",
-      "deviceQualification": "macOS-native-qualified; simulator unsupported",
-      "notes": "Real-ESRGAN x4plus converted locally from the pinned checkpoint (RealESRGAN_x4plus.pth sha256 4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1) with the pinned BasicSR v1.4.2 RRDBNet architecture; Core ML input image (RGB 256x256), output image_out at x4; PyTorch reference comparison maxAbsDiff=0.001965 psnr=59.04dB; installable bundle not published; readiness requires a hash-verified fixture inference. Architecture provenance now pinned to BasicSR commit 651835a1b9d38dbbdaf45750f56906be2364f01a (tag v1.4.2, rrdbnet_arch.py sha256 6aa8eb3f77e918b90eeff4ebfaf8745abe0c40eb8fcc03abbc1928693d70ab58, Apache-2.0 LICENSE.txt); the bundle LICENSE.txt retains the full Real-ESRGAN BSD-3-Clause text and the BasicSR Apache-2.0 text with weights/architecture evidence recorded separately; weights sha256 4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1; output x4; installable bundle not published.",
+      "conversionStatus": "retained-conversion-pending-current-round",
+      "deviceQualification": "not-executed-current-round",
+      "notes": "Exact retained bytes prepared. Install remains unavailable until current host/device qualification and immutable publication read-back. RGB8 model features; no HDR inference claim.",
       "weightsSha256": "4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1",
       "coremlContract": {
         "inputs": [
@@ -176,7 +275,100 @@
       "architectureLicenseEvidence": "https://github.com/XPixelGroup/BasicSR/blob/651835a1b9d38dbbdaf45750f56906be2364f01a/LICENSE.txt (sha256 5447872f21ddc29dc0dc060d5c885513c01c904e9da9931bba69898a6fb4d415; note /LICENSE is a directory, /LICENSE.txt is the real text)",
       "weightsLicense": "BSD-3-Clause (repository license only)",
       "weightsLicenseStatus": "Upstream publishes no separate model-weights license grant; only the repository LICENSE exists. Recorded as an unresolved limitation: bundles stay internal/pending-assets until clarified.",
-      "weightsLicenseEvidence": "https://github.com/xinntao/Real-ESRGAN/blob/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE (sha256 4a699ec4863d96a91fc265948a0c90033f7e8735d515524dcf3444736406e0c2; no separate weights grant found in the pinned README)"
+      "weightsLicenseEvidence": "https://github.com/xinntao/Real-ESRGAN/blob/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE (sha256 4a699ec4863d96a91fc265948a0c90033f7e8735d515524dcf3444736406e0c2; no separate weights grant found in the pinned README)",
+      "preparedAssets": {
+        "files": [
+          {
+            "assetName": "floe-model-realesrgan-x4plus--DISTRIBUTION.json",
+            "path": "DISTRIBUTION.json",
+            "sha256": "d4afb54e1b077be5de032d1d54dd3b24d0bbc7937522a086773829d6d0992e31",
+            "sizeBytes": 1113
+          },
+          {
+            "assetName": "floe-model-realesrgan-x4plus--LICENSE.txt",
+            "path": "LICENSE.txt",
+            "sha256": "b9fba5243d43e9a5204fd51393e931df20dd9d61db9db146a0d53accf316064c",
+            "sizeBytes": 14600
+          },
+          {
+            "assetName": "floe-model-realesrgan-x4plus--ORIGINAL-MANIFEST.json",
+            "path": "ORIGINAL-MANIFEST.json",
+            "sha256": "651f3e2105928db4f6dc3b2e4161d51e6728bbd693bc254474dd436ffeb47c27",
+            "sizeBytes": 1783
+          },
+          {
+            "assetName": "floe-model-realesrgan-x4plus--PROVENANCE.json",
+            "path": "PROVENANCE.json",
+            "sha256": "619707c31b15ef1f7c526590f01269a44915e053365ba83917fb5281a07f0a85",
+            "sizeBytes": 2049
+          },
+          {
+            "assetName": "floe-model-realesrgan-x4plus--contract.json",
+            "path": "contract.json",
+            "sha256": "90988b1dc66a232433a80d4a6b3d77693fa6c96008d4615d50cd10a4303255ed",
+            "sizeBytes": 1194
+          },
+          {
+            "assetName": "floe-model-realesrgan-x4plus--fixtures--expected.png",
+            "path": "fixtures/expected.png",
+            "sha256": "57d362b35e8cab25652ce860623653c85c17db91ad1c5171878ea5750c40500e",
+            "sizeBytes": 1508308
+          },
+          {
+            "assetName": "floe-model-realesrgan-x4plus--fixtures--input.png",
+            "path": "fixtures/input.png",
+            "sha256": "70ff9171d62ad9659e41bf2c7aff5ee27c4c0cce0c615ef65878eb743afe23d8",
+            "sizeBytes": 134947
+          },
+          {
+            "assetName": "floe-model-realesrgan-x4plus--manifest.json",
+            "path": "manifest.json",
+            "sha256": "dc292be7bef44b91e623647993413c4328241fd819451eb85c859c7faacf31d9",
+            "sizeBytes": 2100
+          },
+          {
+            "assetName": "floe-model-realesrgan-x4plus--model.mlmodelc--analytics--coremldata.bin",
+            "path": "model.mlmodelc/analytics/coremldata.bin",
+            "sha256": "f3269d0b13f57cea2135959d433722d466beaf7a85c237de673b904508a53103",
+            "sizeBytes": 243
+          },
+          {
+            "assetName": "floe-model-realesrgan-x4plus--model.mlmodelc--coremldata.bin",
+            "path": "model.mlmodelc/coremldata.bin",
+            "sha256": "fdcfb640e3bc9810752fc9603432c401a3ff0adce2106ac097a8da58dce73895",
+            "sizeBytes": 371
+          },
+          {
+            "assetName": "floe-model-realesrgan-x4plus--model.mlmodelc--metadata.json",
+            "path": "model.mlmodelc/metadata.json",
+            "sha256": "7f745cee19668612c54bd9c2fbf7038667e749b035edf9c88175dc867414fc71",
+            "sizeBytes": 1810
+          },
+          {
+            "assetName": "floe-model-realesrgan-x4plus--model.mlmodelc--model.mil",
+            "path": "model.mlmodelc/model.mil",
+            "sha256": "6328fb3b27338e38ef9524ef9c40803fda284511aef9c5a24fe90d7ea8612521",
+            "sizeBytes": 624749
+          },
+          {
+            "assetName": "floe-model-realesrgan-x4plus--model.mlmodelc--weights--weight.bin",
+            "path": "model.mlmodelc/weights/weight.bin",
+            "sha256": "e1a6e725cbcde351873697efbdd3e6d228c9c6c193bc441a3a6c527c8e078d5f",
+            "sizeBytes": 66836864
+          }
+        ],
+        "manifestSHA256": "dc292be7bef44b91e623647993413c4328241fd819451eb85c859c7faacf31d9",
+        "originalManifestSHA256": "651f3e2105928db4f6dc3b2e4161d51e6728bbd693bc254474dd436ffeb47c27",
+        "runtimeContract": {
+          "alpha": "external-plane-SDR",
+          "computePrecision": "FLOAT32",
+          "hdr": false,
+          "imageFeaturePrecision": "RGB8",
+          "layout": "model.mlmodelc",
+          "timestep": null
+        },
+        "version": "1.0.0"
+      }
     },
     {
       "id": "floe/model-realesrgan-x2plus",
@@ -187,13 +379,13 @@
       "license": "BSD-3-Clause",
       "source": "https://github.com/xinntao/Real-ESRGAN",
       "minAppVersion": "1.7.0",
-      "status": "pending-assets",
+      "status": "pending-qualification",
       "files": [],
       "reviewedSourceCommit": "a4abfb2979a7bbff3f69f58f58ae324608821e27",
       "codeLicenseEvidence": "https://github.com/xinntao/Real-ESRGAN/blob/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE",
-      "conversionStatus": "coreml-converted-local",
-      "deviceQualification": "macOS-native-qualified; simulator unsupported",
-      "notes": "Real-ESRGAN x2plus converted locally from the pinned checkpoint (RealESRGAN_x2plus.pth sha256 49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb) with the pinned BasicSR v1.4.2 RRDBNet architecture; Core ML input image (RGB 256x256), output image_out at x2; PyTorch reference comparison maxAbsDiff=0.001962 psnr=59.02dB; installable bundle not published; readiness requires a hash-verified fixture inference. Architecture provenance now pinned to BasicSR commit 651835a1b9d38dbbdaf45750f56906be2364f01a (tag v1.4.2, rrdbnet_arch.py sha256 6aa8eb3f77e918b90eeff4ebfaf8745abe0c40eb8fcc03abbc1928693d70ab58, Apache-2.0 LICENSE.txt); the bundle LICENSE.txt retains the full Real-ESRGAN BSD-3-Clause text and the BasicSR Apache-2.0 text with weights/architecture evidence recorded separately; weights sha256 49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb; output x2; installable bundle not published.",
+      "conversionStatus": "retained-conversion-pending-current-round",
+      "deviceQualification": "not-executed-current-round",
+      "notes": "Exact retained bytes prepared. Install remains unavailable until current host/device qualification and immutable publication read-back. RGB8 model features; no HDR inference claim.",
       "weightsSha256": "49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb",
       "coremlContract": {
         "inputs": [
@@ -232,7 +424,100 @@
       "architectureLicenseEvidence": "https://github.com/XPixelGroup/BasicSR/blob/651835a1b9d38dbbdaf45750f56906be2364f01a/LICENSE.txt (sha256 5447872f21ddc29dc0dc060d5c885513c01c904e9da9931bba69898a6fb4d415; note /LICENSE is a directory, /LICENSE.txt is the real text)",
       "weightsLicense": "BSD-3-Clause (repository license only)",
       "weightsLicenseStatus": "Upstream publishes no separate model-weights license grant; only the repository LICENSE exists. Recorded as an unresolved limitation: bundles stay internal/pending-assets until clarified.",
-      "weightsLicenseEvidence": "https://github.com/xinntao/Real-ESRGAN/blob/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE (sha256 4a699ec4863d96a91fc265948a0c90033f7e8735d515524dcf3444736406e0c2; no separate weights grant found in the pinned README)"
+      "weightsLicenseEvidence": "https://github.com/xinntao/Real-ESRGAN/blob/a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE (sha256 4a699ec4863d96a91fc265948a0c90033f7e8735d515524dcf3444736406e0c2; no separate weights grant found in the pinned README)",
+      "preparedAssets": {
+        "files": [
+          {
+            "assetName": "floe-model-realesrgan-x2plus--DISTRIBUTION.json",
+            "path": "DISTRIBUTION.json",
+            "sha256": "104fdbd461a39a18c6ebc968c0cefd3da91e88d679993a094b29fda18e169380",
+            "sizeBytes": 1113
+          },
+          {
+            "assetName": "floe-model-realesrgan-x2plus--LICENSE.txt",
+            "path": "LICENSE.txt",
+            "sha256": "de28c3315156660054df78184b41d8a50494c81eabe98a72a5aff8623cccc619",
+            "sizeBytes": 14600
+          },
+          {
+            "assetName": "floe-model-realesrgan-x2plus--ORIGINAL-MANIFEST.json",
+            "path": "ORIGINAL-MANIFEST.json",
+            "sha256": "ff2b5aedee5b27061d1bbdead0978b63bbb6c7f4edbae5ed448458c08402f1aa",
+            "sizeBytes": 1782
+          },
+          {
+            "assetName": "floe-model-realesrgan-x2plus--PROVENANCE.json",
+            "path": "PROVENANCE.json",
+            "sha256": "07c5d8fe9fd7f4e151439a1eb06b81062737f35d6b49addbdd36be1c20fd6667",
+            "sizeBytes": 2052
+          },
+          {
+            "assetName": "floe-model-realesrgan-x2plus--contract.json",
+            "path": "contract.json",
+            "sha256": "bcafc9efb56aea043c8cfb0c97112d5453f8fe8a92eae63e1e5564d87d10d153",
+            "sizeBytes": 1194
+          },
+          {
+            "assetName": "floe-model-realesrgan-x2plus--fixtures--expected.png",
+            "path": "fixtures/expected.png",
+            "sha256": "621bad009ce6828fd647ca9b5977eb0e99c631642b4f7800436712124f377010",
+            "sizeBytes": 452070
+          },
+          {
+            "assetName": "floe-model-realesrgan-x2plus--fixtures--input.png",
+            "path": "fixtures/input.png",
+            "sha256": "70ff9171d62ad9659e41bf2c7aff5ee27c4c0cce0c615ef65878eb743afe23d8",
+            "sizeBytes": 134947
+          },
+          {
+            "assetName": "floe-model-realesrgan-x2plus--manifest.json",
+            "path": "manifest.json",
+            "sha256": "0ea4120c01702fdb7589d925291d31565648baaf17fb2c80faecdea4b728cbe3",
+            "sizeBytes": 2099
+          },
+          {
+            "assetName": "floe-model-realesrgan-x2plus--model.mlmodelc--analytics--coremldata.bin",
+            "path": "model.mlmodelc/analytics/coremldata.bin",
+            "sha256": "7c42ad670ec2ea40fd737050e8834c7c4a5845321f53cb61c8ed3481a55b6239",
+            "sizeBytes": 243
+          },
+          {
+            "assetName": "floe-model-realesrgan-x2plus--model.mlmodelc--coremldata.bin",
+            "path": "model.mlmodelc/coremldata.bin",
+            "sha256": "5ceda8e39c4f1aaebb14e0fc4a64646261cccdf100c25c0aa11fd5a6fad21b12",
+            "sizeBytes": 371
+          },
+          {
+            "assetName": "floe-model-realesrgan-x2plus--model.mlmodelc--metadata.json",
+            "path": "model.mlmodelc/metadata.json",
+            "sha256": "9e505e0f86f7f559ab9a0c31d5566a0b37e993b657ca5b036d6c4f179e00f595",
+            "sizeBytes": 1862
+          },
+          {
+            "assetName": "floe-model-realesrgan-x2plus--model.mlmodelc--model.mil",
+            "path": "model.mlmodelc/model.mil",
+            "sha256": "fc3fe45d8632c8ca4d9d18a9662b6580bb467d97a0016f717305cd5da752612d",
+            "sizeBytes": 625877
+          },
+          {
+            "assetName": "floe-model-realesrgan-x2plus--model.mlmodelc--weights--weight.bin",
+            "path": "model.mlmodelc/weights/weight.bin",
+            "sha256": "29860c56a95a2bdbf7e8dca269d0eadce2c75ce6132b97ae61b4a021d058b2fc",
+            "sizeBytes": 66857600
+          }
+        ],
+        "manifestSHA256": "0ea4120c01702fdb7589d925291d31565648baaf17fb2c80faecdea4b728cbe3",
+        "originalManifestSHA256": "ff2b5aedee5b27061d1bbdead0978b63bbb6c7f4edbae5ed448458c08402f1aa",
+        "runtimeContract": {
+          "alpha": "external-plane-SDR",
+          "computePrecision": "FLOAT32",
+          "hdr": false,
+          "imageFeaturePrecision": "RGB8",
+          "layout": "model.mlmodelc",
+          "timestep": null
+        },
+        "version": "1.0.0"
+      }
     },
     {
       "id": "floe/model-realesrgan-anime",

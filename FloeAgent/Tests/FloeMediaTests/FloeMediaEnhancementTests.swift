@@ -411,3 +411,187 @@ struct MediaOutputFrameClockTests {
         #expect(throws: (any Error).self) { try clock.ticks(at: Int.max) }
     }
 }
+
+#if canImport(AVFoundation)
+import AVFoundation
+import CoreImage
+import CoreVideo
+import ImageIO
+import UniformTypeIdentifiers
+
+@Suite("Enhancement precision and alpha contracts")
+struct MediaEnhancementPixelContractTests {
+    private func source(hdr: Bool = false, alpha: Bool = false, image: Bool = false) -> MediaSourceDescriptor {
+        MediaSourceDescriptor(url: URL(fileURLWithPath: "/input.mov"), isImage: image,
+            width: 64, height: 64, displayWidth: 64, displayHeight: 64, naturalFPS: 24,
+            durationSeconds: 1, hasAudio: false, hadRotation: false,
+            colorPrimary: hdr ? kCVImageBufferColorPrimaries_ITU_R_2020 as String : nil,
+            transferFunction: hdr ? kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String : nil,
+            isHDR: hdr, hasAlpha: alpha, codec: nil)
+    }
+
+    @Test func hdrNegotiatesPrecisionAndRefusesRGB8Engines() throws {
+        let input = source(hdr: true)
+        let native = try MediaEnhancementFormat(source: input, mode: .quality, output: URL(fileURLWithPath: "/output.mov"))
+        #expect(native.workingPixelFormat == kCVPixelFormatType_64RGBAHalf)
+        #expect(native.readerPixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
+        #expect(native.codec == .hevc)
+        #expect(native.videoColorProperties[AVVideoTransferFunctionKey] as? String == input.transferFunction)
+        for engine in [MediaEnhancementMode.coreml, .lowLatency, .metalFX] {
+            #expect(throws: (any Error).self) { try MediaEnhancementFormat(source: input, mode: engine, output: URL(fileURLWithPath: "/out.mov")) }
+        }
+        #expect(throws: (any Error).self) { try MediaEnhancementFormat(source: source(hdr: true, alpha: true), mode: .quality, output: URL(fileURLWithPath: "/out.mov")) }
+    }
+
+    @Test func encodedHEVCDepthComesFromTheConfigurationRecord() {
+        var record = Data(repeating: 0, count: 23)
+        record[0] = 1; record[17] = 0xFA
+        #expect(MediaSourceInspector.hevcBitDepth(record) == 10)
+        record[17] = 0xF8
+        #expect(MediaSourceInspector.hevcBitDepth(record) == 8)
+        #expect(MediaSourceInspector.hevcBitDepth(Data([1, 2, 3])) == nil)
+    }
+
+    @Test func alphaRequiresAnActualAlphaContainer() throws {
+        #expect(throws: (any Error).self) { try MediaEnhancementFormat(source: source(alpha: true), mode: .quality, output: URL(fileURLWithPath: "/out.mp4")) }
+        #expect(throws: (any Error).self) { try MediaEnhancementFormat(source: source(alpha: true, image: true), mode: .coreml, output: URL(fileURLWithPath: "/out.jpg")) }
+        let video = try MediaEnhancementFormat(source: source(alpha: true), mode: .coreml, output: URL(fileURLWithPath: "/out.mov"))
+        #expect(video.codec == .hevcWithAlpha)
+        let image = try MediaEnhancementFormat(source: source(alpha: true, image: true), mode: .coreml, output: URL(fileURLWithPath: "/out.png"))
+        #expect(image.alpha)
+        #expect(image.workingPixelFormat == kCVPixelFormatType_32BGRA)
+    }
+
+    @Test func halfFloatBridgeRetainsHighlightsAndRGB8ClippingIsDetected() throws {
+        let format = try MediaEnhancementFormat(source: source(hdr: true), mode: .quality, output: URL(fileURLWithPath: "/out.mov"))
+        let bridge = MediaImageBridge(colorSpace: format.workingSpace)
+        let store = MediaPixelBufferStore()
+        let half = try store.makeBuffer(format: format.workingPixelFormat, width: 64, height: 64)
+        let light = CIImage(color: CIColor(red: 4, green: 2, blue: 1, alpha: 1)).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+        try bridge.render(image: light, destination: half)
+        let original = try MediaPixelEvidence.capture(half, bridge: bridge)
+        #expect(original.maximumLinearRGB > 3.5)
+        let second = try bridge.bgraToHalfRGBA(half, store: store)
+        let retained = try MediaPixelEvidence.capture(second, bridge: bridge)
+        try MediaPixelEvidence.requireRange(source: original, output: retained)
+        let clipped = try store.makeBuffer(format: MediaImageBridge.bgra, width: 64, height: 64)
+        try bridge.render(source: half, destination: clipped)
+        #expect(throws: (any Error).self) { try MediaPixelEvidence.requireRange(source: original, output: MediaPixelEvidence.capture(clipped, bridge: bridge)) }
+        // A second SDR request cannot mutate the first request's working space.
+        let sdr = MediaImageBridge()
+        #expect(bridge.colorSpace.name != sdr.colorSpace.name)
+        #expect(try MediaPixelEvidence.capture(second, bridge: bridge).maximumLinearRGB > 3.5)
+    }
+
+    @Test func floatingTIFFReopensWithoutClippingHighlights() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("floe-float-tiff-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("out.tiff")
+        let format = try MediaEnhancementFormat(source: source(hdr: true, image: true), mode: .quality, output: url)
+        let bridge = MediaImageBridge(colorSpace: format.workingSpace)
+        let image = CIImage(color: CIColor(red: 4, green: 2, blue: 1, alpha: 1)).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+        let bytes = try #require(bridge.cicontext.tiffRepresentation(of: image, format: .RGBAh, colorSpace: format.workingSpace, options: [:]))
+        try bytes.write(to: url)
+        let evidence = try MediaPixelEvidence.capture(image, bridge: bridge)
+        #expect(evidence.maximumLinearRGB > 1.1)
+        _ = try MediaEnhancementValidator.validateImage(staged: url, expectedWidth: 64, expectedHeight: 64, format: format, evidence: evidence, bridge: bridge)
+        // A dark interpolated output is valid; encoding must preserve that
+        // output's own range rather than an unrelated bright source endpoint.
+        let dark = MediaPixelEvidence(maximumLinearRGB: 0.2, minimumAlpha: 1, maximumAlpha: 1)
+        try dark.verify(reopened: dark, format: format)
+    }
+
+    @Test func alphaUsesTheActualPhaseAndStraightColor() throws {
+        let bridge = MediaImageBridge(), store = MediaPixelBufferStore()
+        func buffer(_ alpha: CGFloat) throws -> CVPixelBuffer {
+            let result = try store.makeBuffer(format: MediaImageBridge.bgra, width: 64, height: 64)
+            try bridge.render(image: CIImage(color: CIColor(red: 1, green: 0, blue: 0, alpha: alpha)).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64)), destination: result)
+            return result
+        }
+        let first = try buffer(0.2), second = try buffer(0.8)
+        let color = try bridge.opaqueColor(first, store: store)
+        let straight = try MediaPixelEvidence.capture(color, bridge: bridge)
+        #expect(straight.minimumAlpha > 0.99)
+        #expect(straight.maximumLinearRGB > 0.95)
+        let output = try store.makeBuffer(format: MediaImageBridge.bgra, width: 64, height: 64)
+        try bridge.restoreAlpha(color: color, current: first, next: second, phase: 0.25, destination: output)
+        let restored = try MediaPixelEvidence.capture(output, bridge: bridge)
+        #expect(abs(restored.minimumAlpha - 0.35) < 0.02)
+        #expect(abs(restored.maximumAlpha - 0.35) < 0.02)
+        let format = try MediaEnhancementFormat(source: source(alpha: true), mode: .coreml, output: URL(fileURLWithPath: "/out.mov"))
+        #expect(throws: (any Error).self) { try restored.verify(reopened: straight, format: format) }
+    }
+
+    @Test func reopenedPNGVerifiesTransparentPixelsAndRejectsFlattening() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("floe-alpha-reopen-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let format = try MediaEnhancementFormat(source: source(alpha: true, image: true), mode: .coreml, output: root.appendingPathComponent("out.png"))
+        let bridge = MediaImageBridge()
+        let alpha = CIImage(color: CIColor(red: 1, green: 0, blue: 0, alpha: 0.25)).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+        let evidence = try MediaPixelEvidence.capture(alpha, bridge: bridge)
+        func write(_ image: CIImage, name: String) throws -> URL {
+            let url = root.appendingPathComponent(name)
+            let cg = try #require(bridge.cicontext.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: bridge.colorSpace))
+            let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))
+            CGImageDestinationAddImage(destination, cg, nil)
+            #expect(CGImageDestinationFinalize(destination))
+            return url
+        }
+        let preserved = try write(alpha, name: "alpha.png")
+        _ = try MediaEnhancementValidator.validateImage(staged: preserved, expectedWidth: 64, expectedHeight: 64, format: format, evidence: evidence, bridge: bridge)
+        let flattened = try write(alpha.settingAlphaOne(in: alpha.extent), name: "opaque.png")
+        #expect(throws: (any Error).self) { try MediaEnhancementValidator.validateImage(staged: flattened, expectedWidth: 64, expectedHeight: 64, format: format, evidence: evidence, bridge: bridge) }
+    }
+}
+#endif
+
+@Suite("Enhancement downloadable model layout")
+struct MediaModelDownloadLayoutTests {
+    private func fixture(version: String = "1.0.0") throws -> (ModelArtifact, [String: Data]) {
+        let id = "floe/test-model", capability = "video.superResolution"
+        let contract: [String: Any] = ["id": id, "version": version, "capability": capability, "kind": "coreml", "tileSize": 16,
+                                       "inputs": [], "outputs": []]
+        var bytes = ["contract.json": try JSONSerialization.data(withJSONObject: contract),
+                     "LICENSE.txt": Data("MIT test fixture".utf8), "PROVENANCE.json": Data("{}".utf8),
+                     "model.mlmodelc/weights/weight.bin": Data([1, 2, 3, 4])]
+        let members: [[String: Any]] = bytes.sorted { $0.key < $1.key }.map {
+            ["path": $0.key, "sha256": FloeDigest.sha256Hex($0.value), "sizeBytes": $0.value.count]
+        }
+        bytes["manifest.json"] = try JSONSerialization.data(withJSONObject: ["id": id, "version": version, "capability": capability, "license": "MIT", "files": members])
+        let files = bytes.sorted { $0.key < $1.key }.map {
+            ModelArtifact.File(path: $0.key, url: "https://example.invalid/" + $0.key.replacingOccurrences(of: "/", with: "--"),
+                               sha256: FloeDigest.sha256Hex($0.value), sizeBytes: Int64($0.value.count))
+        }
+        return (ModelArtifact(id: id, version: "1.0.0", kind: "coreml", capability: capability, files: files, license: "MIT", status: "ready"), bytes)
+    }
+
+    @Test func exactDownloadInstallsButCorruptedBytesAndContractMismatchDoNot() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("floe-model-layout-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (artifact, bytes) = try fixture()
+        let downloads = Dictionary(uniqueKeysWithValues: artifact.files.map { ($0.url, bytes[$0.path]!) })
+        let store = ModelArtifactStore(rootURL: root) { url, _ in try #require(downloads[url.absoluteString]) }
+        let installed = try await store.install(artifact, scope: .shared, cancellation: nil)
+        #expect(installed.version == artifact.version)
+        #expect(FileManager.default.fileExists(atPath: URL(fileURLWithPath: installed.rootPath).appendingPathComponent("manifest.json").path))
+        let (mismatched, wrongBytes) = try fixture(version: "9.0.0")
+        let wrongDownloads = Dictionary(uniqueKeysWithValues: mismatched.files.map { ($0.url, wrongBytes[$0.path]!) })
+        let refused = ModelArtifactStore(rootURL: root.appendingPathComponent("mismatch")) { url, _ in try #require(wrongDownloads[url.absoluteString]) }
+        await #expect(throws: (any Error).self) { try await refused.install(mismatched, scope: .shared, cancellation: nil) }
+        #expect(await refused.installed().isEmpty)
+        let corrupt = ModelArtifactStore(rootURL: root.appendingPathComponent("corrupt")) { _, _ in Data([0]) }
+        await #expect(throws: (any Error).self) { try await corrupt.install(artifact, scope: .shared, cancellation: nil) }
+        #expect(await corrupt.installed().isEmpty)
+    }
+
+    @Test func preparedCatalogBytesRemainUnavailable() throws {
+        var artifact = try fixture().0
+        artifact.status = "pending-qualification"
+        #expect(!artifact.isInstallable)
+        artifact.status = "ready"
+        artifact.files = []
+        #expect(!artifact.isInstallable)
+    }
+}

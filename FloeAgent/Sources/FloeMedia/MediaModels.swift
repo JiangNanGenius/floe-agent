@@ -255,6 +255,9 @@ public actor ModelArtifactStore {
                 try fileManager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try data.write(to: target, options: .atomic)
             }
+            if artifact.kind == "coreml", ["video.interpolate", "video.superResolution"].contains(artifact.capability) {
+                try validateEnhancementBundle(at: staging, id: artifact.id, version: artifact.version, capability: artifact.capability)
+            }
             // Never replace a registered model until explicit removal has completed.
             guard !fileManager.fileExists(atPath: destination.path), !existingModels.contains(where: { $0.id == artifact.id }) else {
                 throw FloeError.validationFailed("Model already installed; remove it before installing another version")
@@ -323,16 +326,8 @@ public actor ModelArtifactStore {
                 throw FloeError.validationFailed("model bundle manifest and contract disagree on id/version")
             }
         }
-        if let existing = try installedChecked().first(where: { $0.id == manifest.id }) {
-            if existing.version == manifest.version,
-               URL(fileURLWithPath: existing.rootPath).standardizedFileURL ==
-               (try safePath("\(scope.rawValue)/\(manifest.id)/\(manifest.version)", beneath: rootURL)).standardizedFileURL {
-                return existing
-            }
-            throw FloeError.validationFailed("Model already installed; remove it before installing another version")
-        }
         for file in manifest.files {
-            let source = bundleURL.appendingPathComponent(file.path)
+            let source = try safePath(file.path, beneath: bundleURL)
             guard fileManager.fileExists(atPath: source.path) else {
                 throw FloeError.validationFailed("model bundle is missing \(file.path)")
             }
@@ -341,6 +336,18 @@ public actor ModelArtifactStore {
                 throw FloeError.validationFailed("sha256 mismatch for \(file.path)")
             }
             _ = try safePath(file.path, beneath: bundleURL)
+        }
+        try validateEnhancementBundle(at: bundleURL, id: manifest.id, version: manifest.version, capability: manifest.capability)
+        if let existing = try installedChecked().first(where: { $0.id == manifest.id }) {
+            if existing.version == manifest.version,
+               URL(fileURLWithPath: existing.rootPath).standardizedFileURL ==
+               (try safePath("\(scope.rawValue)/\(manifest.id)/\(manifest.version)", beneath: rootURL)).standardizedFileURL {
+                try validateEnhancementBundle(at: URL(fileURLWithPath: existing.rootPath), id: manifest.id, version: manifest.version, capability: manifest.capability)
+                let installedManifest = try Data(floeContentsOf: URL(fileURLWithPath: existing.rootPath).appendingPathComponent("manifest.json"))
+                guard installedManifest == manifestData else { throw FloeError.validationFailed("Installed model version has different bytes") }
+                return existing
+            }
+            throw FloeError.validationFailed("Model already installed; remove it before installing another version")
         }
         let destination = try safePath("\(scope.rawValue)/\(manifest.id)/\(manifest.version)", beneath: rootURL)
         let staging = destination.deletingLastPathComponent()
@@ -408,6 +415,51 @@ public actor ModelArtifactStore {
         return models.map {
             "\($0.id) \($0.version) capability=\($0.capability) scope=\($0.scope.rawValue) path=\($0.rootPath)"
         }.joined(separator: "\n")
+    }
+
+    /// Checks the downloadable layout before it becomes a registered install.
+    /// This proves identity and bytes; runtime inference readiness is separate.
+    private func validateEnhancementBundle(at root: URL, id: String, version: String, capability: String) throws {
+        struct Contract: Decodable { var id: String; var version: String; var capability: String; var kind: String; var tileSize: Int }
+        struct Manifest: Decodable {
+            struct File: Decodable { var path: String; var sha256: String; var sizeBytes: Int64 }
+            var id: String; var version: String; var capability: String; var files: [File]
+        }
+        let contract = try JSONDecoder().decode(Contract.self, from: Data(floeContentsOf: safePath("contract.json", beneath: root)))
+        let manifest = try JSONDecoder().decode(Manifest.self, from: Data(floeContentsOf: safePath("manifest.json", beneath: root)))
+        guard contract.id == id, contract.version == version, contract.capability == capability,
+              contract.kind == "coreml", contract.tileSize > 0,
+              manifest.id == id, manifest.version == version, manifest.capability == capability,
+              Set(manifest.files.map(\.path)).count == manifest.files.count else {
+            throw FloeError.validationFailed("Model catalog, manifest and runtime contract identity differ")
+        }
+        let paths = Set(manifest.files.map(\.path))
+        guard paths.contains("contract.json"), paths.contains("LICENSE.txt"), paths.contains("PROVENANCE.json"),
+              paths.contains(where: { $0.hasPrefix("model.mlmodelc/") }) else {
+            throw FloeError.validationFailed("Model bundle is missing runtime files or required notices")
+        }
+        for file in manifest.files {
+            let url = try safePath(file.path, beneath: root)
+            let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            guard file.sha256.count == 64, file.sha256.allSatisfy(\.isHexDigit),
+                  size.map(Int64.init) == file.sizeBytes,
+                  try FloeDigest.sha256Hex(ofFileAt: url).caseInsensitiveCompare(file.sha256) == .orderedSame else {
+                throw FloeError.validationFailed("Model bundle byte mismatch: \(file.path)")
+            }
+        }
+        guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else {
+            throw FloeError.validationFailed("Model bundle cannot be enumerated")
+        }
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isSymbolicLink != true else { throw FloeError.validationFailed("Model bundle contains a symbolic link") }
+            if values.isRegularFile == true {
+                let relative = String(url.path.dropFirst(root.path.count + 1))
+                guard relative == "manifest.json" || relative == ".floe-readiness.json" || paths.contains(relative) else {
+                    throw FloeError.validationFailed("Unlisted model bundle member: \(relative)")
+                }
+            }
+        }
     }
 
     private func safePath(_ relative: String, beneath root: URL) throws -> URL {

@@ -28,8 +28,6 @@ public actor MediaEnhancementService: FrameProcessing {
 
     private let runtime: MediaCoreMLRuntime
     private let limits: Limits
-    private let bridge = MediaImageBridge()
-    private let store = MediaPixelBufferStore()
 
     /// - Parameter modelResolver: resolves installed model ids for `mode=coreml`.
     ///   Workspace scope is never held here: each request snapshots the
@@ -89,9 +87,15 @@ public actor MediaEnhancementService: FrameProcessing {
         if exists && !request.overwrite {
             throw FloeError.validationFailed("output already exists; pass overwrite=true to replace it explicitly")
         }
+        let cancellation = request.cancellation?.derived() ?? CancellationToken()
+        let effective = FrameProcessingRequest(operation: request.operation, input: request.input, output: request.output,
+            mode: request.mode, modelID: request.modelID, quality: request.quality, overwrite: request.overwrite,
+            workspaceRoot: request.workspaceRoot, progress: request.progress, cancellation: cancellation)
         do {
-            return try await run(request: request, mode: mode, quality: quality,
-                                 inputURL: inputURL, outputURL: outputURL)
+            return try await withTaskCancellationHandler {
+                try cancellation.throwIfCancelled()
+                return try await run(request: effective, mode: mode, quality: quality, inputURL: inputURL, outputURL: outputURL)
+            } onCancel: { cancellation.cancel() }
         } catch is CancellationError {
             throw FloeError.cancelled
         }
@@ -157,12 +161,15 @@ public actor MediaEnhancementService: FrameProcessing {
         inputURL: URL,
         outputURL: URL
     ) async throws -> MediaEnhancementResult {
+        let format = try MediaEnhancementFormat(source: source, mode: mode, output: outputURL)
+        let bridge = MediaImageBridge(colorSpace: format.workingSpace)
+        let store = MediaPixelBufferStore()
         let container = try videoContainer(for: outputURL)
         let targetFPS: Double
         let phases: [Float]
         let interpolationEngine: (any MediaInterpolationEngine)?
         let superResolutionEngine: (any MediaSuperResolutionEngine)?
-        var warnings: [String] = []
+        var warnings: [String] = [format.description]
 
         switch request.operation {
         case .interpolation(let fps):
@@ -171,7 +178,7 @@ public actor MediaEnhancementService: FrameProcessing {
             superResolutionEngine = nil
             interpolationEngine = try await makeInterpolationEngine(
                 mode: mode, quality: quality, source: source,
-                framesPerPair: framesPerPair, modelID: request.modelID
+                framesPerPair: framesPerPair, modelID: request.modelID, bridge: bridge, store: store
             )
         case .superResolution(let scaleFactor):
             guard !source.isImage else { throw FloeError.validationFailed("Use the image path for still images") }
@@ -180,13 +187,14 @@ public actor MediaEnhancementService: FrameProcessing {
             interpolationEngine = nil
             superResolutionEngine = try await makeSuperResolutionEngine(
                 mode: mode, quality: quality, source: source,
-                scaleFactor: scaleFactor, modelID: request.modelID, inputType: .video
+                scaleFactor: scaleFactor, modelID: request.modelID, inputType: .video, bridge: bridge, store: store
             )
         }
 
         let engineName = interpolationEngine?.name ?? superResolutionEngine?.name ?? "none"
         let prepared = try (interpolationEngine?.prepare() ?? superResolutionEngine?.prepare() ?? [])
         warnings.append(contentsOf: prepared.filter { !$0.hasPrefix("engine=") })
+        defer { interpolationEngine?.teardown(); superResolutionEngine?.teardown() }
 
         let asset = AVURLAsset(url: inputURL)
         let videoTracks = try await asset.loadTracks(withMediaType: .video)
@@ -198,25 +206,28 @@ public actor MediaEnhancementService: FrameProcessing {
         let reader = try AVAssetReader(asset: asset)
         let videoOutput = AVAssetReaderTrackOutput(
             track: videoTrack,
-            outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: MediaImageBridge.bgra]
+            outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: format.readerPixelFormat]
         )
         videoOutput.alwaysCopiesSampleData = false
         guard reader.canAdd(videoOutput) else { throw FloeError.validationFailed("Cannot decode the video track") }
 
         let writer = try AVAssetWriter(outputURL: staged, fileType: container.fileType)
         var videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoCodecKey: format.codec,
             AVVideoWidthKey: outputWidth,
             AVVideoHeightKey: outputHeight
         ]
         let bitrate = Self.derivedBitrate(width: outputWidth, height: outputHeight, fps: targetFPS)
-        videoSettings[AVVideoCompressionPropertiesKey] = [
+        var compression: [String: Any] = [
             AVVideoAverageBitRateKey: bitrate,
-            AVVideoMaxKeyFrameIntervalKey: Int(max(1, (targetFPS * 2).rounded())),
-            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
+            AVVideoMaxKeyFrameIntervalKey: Int(max(1, (targetFPS * 2).rounded()))
         ]
+        if format.hdr { compression[AVVideoProfileLevelKey] = "HEVC_Main10_AutoLevel" }
+        else if !format.alpha { compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel }
+        videoSettings[AVVideoCompressionPropertiesKey] = compression
+        if format.hdr { videoSettings[AVVideoColorPropertiesKey] = format.videoColorProperties }
         guard writer.canApply(outputSettings: videoSettings, forMediaType: .video) else {
-            throw FloeError.validationFailed("Device rejected the requested H.264 settings for \(outputWidth)x\(outputHeight)")
+            throw FloeError.validationFailed("Device rejected the requested \(format.codec.rawValue) settings for \(outputWidth)x\(outputHeight)")
         }
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoInput.expectsMediaDataInRealTime = false
@@ -224,7 +235,7 @@ public actor MediaEnhancementService: FrameProcessing {
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: videoInput,
             sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: MediaImageBridge.bgra,
+                kCVPixelBufferPixelFormatTypeKey as String: format.writerPixelFormat,
                 kCVPixelBufferWidthKey as String: outputWidth,
                 kCVPixelBufferHeightKey as String: outputHeight,
                 kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]
@@ -280,7 +291,8 @@ public actor MediaEnhancementService: FrameProcessing {
             writer: writer, control: control, engine: interpolationEngine, superResolutionEngine: superResolutionEngine,
             phases: phases, framesPerPair: framesPerPair, source: source, outputWidth: outputWidth,
             outputHeight: outputHeight, targetFPS: targetFPS, exifOrientation: exifOrientation,
-            expectedOutputFrames: expectedOutputFrames, bridge: bridge, store: store,
+            expectedOutputFrames: expectedOutputFrames, maximumFrames: limits.guards.maximumSourceFrames,
+            format: format, bridge: bridge, store: store,
             cancellation: request.cancellation, progress: request.progress
         )
 
@@ -338,7 +350,7 @@ public actor MediaEnhancementService: FrameProcessing {
             expectAudio: source.hasAudio && audioStream != nil,
             expectInterpolatedFrames: interpolationEngine != nil,
             motionObserved: outcome.motionObserved,
-            limits: limits
+            limits: limits, format: format, evidence: outcome.pixelEvidence
         )
         try request.cancellation?.throwIfCancelled()
 
@@ -383,32 +395,46 @@ public actor MediaEnhancementService: FrameProcessing {
         guard case .superResolution(let scaleFactor) = request.operation else {
             throw FloeError.validationFailed("Frame interpolation requires a video input")
         }
+        let format = try MediaEnhancementFormat(source: source, mode: mode, output: outputURL)
+        let bridge = MediaImageBridge(colorSpace: format.workingSpace)
+        let store = MediaPixelBufferStore()
         let engine = try await makeSuperResolutionEngine(
             mode: mode, quality: quality, source: source,
-            scaleFactor: scaleFactor, modelID: request.modelID, inputType: .image
+            scaleFactor: scaleFactor, modelID: request.modelID, inputType: .image, bridge: bridge, store: store
         )
-        var warnings = try engine.prepare().filter { !$0.hasPrefix("engine=") }
+        let warnings = try engine.prepare().filter { !$0.hasPrefix("engine=") } + [format.description]
         defer { engine.teardown() }
 
         guard let imageSource = CGImageSourceCreateWithURL(inputURL as CFURL, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+              let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, [kCGImageSourceShouldAllowFloat: true] as CFDictionary) else {
             throw FloeError.validationFailed("Image could not be decoded")
         }
-        let inputBuffer = try store.makeBuffer(format: MediaImageBridge.bgra, width: source.width, height: source.height)
+        if format.hdr {
+            guard cgImage.bitsPerComponent >= 16, let space = cgImage.colorSpace,
+                  space.model == .rgb || space.model == .monochrome else {
+                throw FloeError.invalidConfiguration("The high precision image could not be decoded with its original precision and color space")
+            }
+        }
         let orientationProperty = (CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any])?[kCGImagePropertyOrientation] as? UInt32
-        try bridge.render(
-            source: buffer(from: cgImage, width: source.width, height: source.height),
-            destination: inputBuffer,
-            exifOrientation: orientationProperty ?? 1
-        )
-        let outputBuffer = try store.makeBuffer(format: MediaImageBridge.bgra, width: outputWidth, height: outputHeight)
-        try engine.scale(current: inputBuffer, output: outputBuffer)
-
+        let inputBuffer = try store.makeBuffer(format: format.workingPixelFormat, width: source.displayWidth, height: source.displayHeight)
+        try bridge.render(image: CIImage(cgImage: cgImage).oriented(forExifOrientation: Int32(orientationProperty ?? 1)), destination: inputBuffer)
+        let outputBuffer = try store.makeBuffer(format: format.workingPixelFormat, width: outputWidth, height: outputHeight)
+        let engineInput = format.alpha ? try bridge.opaqueColor(inputBuffer, store: store) : inputBuffer
+        try request.cancellation?.throwIfCancelled()
+        try engine.scale(current: engineInput, output: outputBuffer, cancellation: request.cancellation)
+        let finalBuffer: CVPixelBuffer
+        if format.alpha {
+            finalBuffer = try store.makeBuffer(format: format.workingPixelFormat, width: outputWidth, height: outputHeight)
+            try bridge.restoreAlpha(color: outputBuffer, current: inputBuffer, destination: finalBuffer)
+        } else { finalBuffer = outputBuffer }
+        let evidence = try MediaPixelEvidence.capture(finalBuffer, bridge: bridge)
+        if format.hdr { try MediaPixelEvidence.requireRange(source: MediaPixelEvidence.capture(inputBuffer, bridge: bridge), output: evidence) }
         let staged = outputURL.stagedSibling
         defer { try? FileManager.default.removeItem(at: staged) }
-        try writeImage(outputBuffer, to: staged, uniformType: try imageType(for: outputURL))
+        try writeImage(finalBuffer, to: staged, uniformType: try imageType(for: outputURL), format: format, bridge: bridge)
         let validation = try MediaEnhancementValidator.validateImage(
-            staged: staged, expectedWidth: outputWidth, expectedHeight: outputHeight
+            staged: staged, expectedWidth: outputWidth, expectedHeight: outputHeight,
+            format: format, evidence: evidence, bridge: bridge
         )
         try request.cancellation?.throwIfCancelled()
         let receipt = try commit(staged: staged, destination: outputURL, overwrite: request.overwrite, cancellation: request.cancellation)
@@ -444,7 +470,7 @@ public actor MediaEnhancementService: FrameProcessing {
         quality: MediaEnhancementQuality,
         source: MediaSourceDescriptor,
         framesPerPair: Int,
-        modelID: String?
+        modelID: String?, bridge: MediaImageBridge, store: MediaPixelBufferStore
     ) async throws -> any MediaInterpolationEngine {
         switch mode {
         case .quality:
@@ -497,7 +523,7 @@ public actor MediaEnhancementService: FrameProcessing {
         source: MediaSourceDescriptor,
         scaleFactor: Int,
         modelID: String?,
-        inputType: MediaSRInputType
+        inputType: MediaSRInputType, bridge: MediaImageBridge, store: MediaPixelBufferStore
     ) async throws -> any MediaSuperResolutionEngine {
         switch mode {
         case .quality:
@@ -584,28 +610,22 @@ public actor MediaEnhancementService: FrameProcessing {
         }
     }
 
-    private func buffer(from image: CGImage, width: Int, height: Int) throws -> CVPixelBuffer {
-        let buffer = try store.makeBuffer(format: MediaImageBridge.bgra, width: width, height: height)
-        bridge.cicontext.render(
-            CIImage(cgImage: image), to: buffer,
-            bounds: CGRect(x: 0, y: 0, width: width, height: height),
-            colorSpace: bridge.colorSpace
-        )
-        return buffer
-    }
-
-    private func writeImage(_ buffer: CVPixelBuffer, to url: URL, uniformType: UTType) throws {
-        let image = CIImage(cvPixelBuffer: buffer)
-        guard let cgImage = bridge.cicontext.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: bridge.colorSpace) else {
-            throw FloeError.internalError("Could not encode the enhanced image")
+    private func writeImage(_ buffer: CVPixelBuffer, to url: URL, uniformType: UTType,
+                            format: MediaEnhancementFormat, bridge: MediaImageBridge) throws {
+        let image = bridge.image(buffer)
+        if format.hdr {
+            guard let bytes = bridge.cicontext.tiffRepresentation(of: image, format: .RGBAh, colorSpace: format.workingSpace, options: [:]) else {
+                throw FloeError.invalidConfiguration("Floating-point TIFF encoding is unavailable")
+            }
+            try bytes.write(to: url, options: .atomic)
+            return
         }
-        guard let destination = CGImageDestinationCreateWithURL(url as CFURL, uniformType.identifier as CFString, 1, nil) else {
-            throw FloeError.internalError("Could not create an image destination for \(url.lastPathComponent)")
+        guard let cgImage = bridge.cicontext.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: bridge.colorSpace),
+              let destination = CGImageDestinationCreateWithURL(url as CFURL, uniformType.identifier as CFString, 1, nil) else {
+            throw FloeError.internalError("Could not create the enhanced image")
         }
         CGImageDestinationAddImage(destination, cgImage, nil)
-        guard CGImageDestinationFinalize(destination) else {
-            throw FloeError.internalError("Image encoding failed")
-        }
+        guard CGImageDestinationFinalize(destination) else { throw FloeError.internalError("Image encoding failed") }
     }
 
 }
@@ -634,6 +654,7 @@ struct VideoEnhancementOutcome: Sendable {
     var interpolatedFrames: Int
     var videoFinished: Bool
     var motionObserved: Bool
+    var pixelEvidence: [MediaPixelEvidence]
 }
 
 /// All AVFoundation state for one video run. The blocking loop executes on a
@@ -655,6 +676,8 @@ final class VideoEnhancementWork: @unchecked Sendable {
     let targetFPS: Double
     let exifOrientation: UInt32
     let expectedOutputFrames: Int
+    let maximumFrames: Int
+    let format: MediaEnhancementFormat
     let bridge: MediaImageBridge
     let store: MediaPixelBufferStore
     let cancellation: CancellationToken?
@@ -668,6 +691,7 @@ final class VideoEnhancementWork: @unchecked Sendable {
         engine: (any MediaInterpolationEngine)?, superResolutionEngine: (any MediaSuperResolutionEngine)?,
         phases: [Float], framesPerPair: Int, source: MediaSourceDescriptor, outputWidth: Int,
         outputHeight: Int, targetFPS: Double, exifOrientation: UInt32, expectedOutputFrames: Int,
+        maximumFrames: Int, format: MediaEnhancementFormat,
         bridge: MediaImageBridge, store: MediaPixelBufferStore, cancellation: CancellationToken?,
         progress: @escaping @Sendable (MediaEnhancementProgress) -> Void
     ) {
@@ -687,6 +711,8 @@ final class VideoEnhancementWork: @unchecked Sendable {
         self.targetFPS = targetFPS
         self.exifOrientation = exifOrientation
         self.expectedOutputFrames = expectedOutputFrames
+        self.maximumFrames = maximumFrames
+        self.format = format
         self.bridge = bridge
         self.store = store
         self.cancellation = cancellation
@@ -713,7 +739,7 @@ final class VideoEnhancementWork: @unchecked Sendable {
         var outputIndex = 0
         var motionObserved = false
         var diffSamples: [Double] = []
-        let maximumFrames = MediaEnhancementGuards.Limits().maximumSourceFrames
+        var pixelEvidence: [MediaPixelEvidence] = []
 
         func checkCancellation() throws {
             try cancellation?.throwIfCancelled()
@@ -748,7 +774,22 @@ final class VideoEnhancementWork: @unchecked Sendable {
                 }
                 Thread.sleep(forTimeInterval: 0.002)
             }
-            guard adaptor.append(buffer, withPresentationTime: time) else {
+            if pixelEvidence.count < 8 && (format.hdr || format.alpha) {
+                pixelEvidence.append(try MediaPixelEvidence.capture(buffer, bridge: bridge))
+            }
+            let encodedBuffer: CVPixelBuffer
+            if format.hdr {
+                encodedBuffer = try store.makeBuffer(format: format.writerPixelFormat, width: outputWidth, height: outputHeight)
+                CVBufferSetAttachment(encodedBuffer, kCVImageBufferColorPrimariesKey, format.primaries! as CFString, .shouldPropagate)
+                CVBufferSetAttachment(encodedBuffer, kCVImageBufferTransferFunctionKey, format.transfer! as CFString, .shouldPropagate)
+                CVBufferSetAttachment(encodedBuffer, kCVImageBufferYCbCrMatrixKey, (format.matrix ?? (kCVImageBufferYCbCrMatrix_ITU_R_2020 as String)) as CFString, .shouldPropagate)
+                try bridge.render(source: buffer, destination: encodedBuffer, outputSpace: format.encodedSpace)
+            } else {
+                encodedBuffer = buffer
+                if format.alpha { CVBufferSetAttachment(encodedBuffer, kCVImageBufferAlphaChannelModeKey, kCVImageBufferAlphaChannelMode_PremultipliedAlpha, .shouldPropagate) }
+            }
+            try checkCancellation()
+            guard adaptor.append(encodedBuffer, withPresentationTime: time) else {
                 throw writer.error ?? FloeError.internalError("Video append failed at frame \(outputIndex)")
             }
             outputIndex += 1
@@ -759,10 +800,13 @@ final class VideoEnhancementWork: @unchecked Sendable {
         }
 
         func upright(_ buffer: CVPixelBuffer) throws -> CVPixelBuffer {
-            guard exifOrientation != 1 else { return buffer }
-            let upright = try store.makeBuffer(format: MediaImageBridge.bgra,
+            let upright = try store.makeBuffer(format: format.workingPixelFormat,
                 width: source.displayWidth, height: source.displayHeight)
-            try bridge.render(source: buffer, destination: upright, exifOrientation: exifOrientation)
+            // Decode attachments describe the source color space; only after
+            // normalization are RGB buffers interpreted in our working space.
+            var image = CIImage(cvPixelBuffer: buffer)
+            if exifOrientation != 1 { image = image.oriented(forExifOrientation: Int32(exifOrientation)) }
+            try bridge.render(image: image, destination: upright)
             return upright
         }
 
@@ -777,7 +821,7 @@ final class VideoEnhancementWork: @unchecked Sendable {
                 throw FloeError.validationFailed("Decoded frame timestamps are not increasing")
             }
             let next = try nextRaw.map { try upright($0.buffer) }
-            if let next, diffSamples.count < 6 {
+            if let next, !format.hdr, diffSamples.count < 6 {
                 let diff = try MediaModelReadiness.meanAbsoluteDifference(normalized, next)
                 diffSamples.append(diff)
                 if diff > 0.002 { motionObserved = true }
@@ -817,23 +861,42 @@ final class VideoEnhancementWork: @unchecked Sendable {
                         batchTimes.append(targetTime)
                     }
                     let destinations = try batchTimes.map { _ in
-                        try store.makeBuffer(format: MediaImageBridge.bgra, width: outputWidth, height: outputHeight)
+                        try store.makeBuffer(format: format.workingPixelFormat, width: outputWidth, height: outputHeight)
                     }
                     guard !destinations.isEmpty, let next else {
                         throw FloeError.internalError("No source pair for an output clock sample")
                     }
-                    try engine.interpolate(current: normalized, next: next, phases: batchPhases, outputs: destinations)
+                    let firstColor = format.alpha ? try bridge.opaqueColor(normalized, store: store) : normalized
+                    let nextColor = format.alpha ? try bridge.opaqueColor(next, store: store) : next
+                    try engine.interpolate(current: firstColor, next: nextColor, phases: batchPhases, outputs: destinations, cancellation: cancellation)
+                    // An HDR-to-dark transition can legitimately lose the
+                    // current frame's peak as phase approaches 1. Pixel-range
+                    // preservation is verified against each SAME output frame
+                    // before encoding and after reopening, never against an
+                    // unrelated endpoint maximum.
                     for (index, destination) in destinations.enumerated() {
-                        try append(destination, at: batchTimes[index]); interpolatedFrames += 1
+                        if format.alpha {
+                            let composed = try store.makeBuffer(format: format.workingPixelFormat, width: outputWidth, height: outputHeight)
+                            try bridge.restoreAlpha(color: destination, current: normalized, next: next,
+                                                    phase: batchPhases[index], destination: composed)
+                            try append(composed, at: batchTimes[index])
+                        } else { try append(destination, at: batchTimes[index]) }
+                        interpolatedFrames += 1
                     }
                 }
             case (nil, let engine?):
                 // Spatial enhancement does not retime VFR video.
                 if CMTimeCompare(frame.pts, .zero) >= 0, frame.pts.seconds < source.durationSeconds {
-                    let destination = try store.makeBuffer(format: MediaImageBridge.bgra,
+                    let destination = try store.makeBuffer(format: format.workingPixelFormat,
                         width: outputWidth, height: outputHeight)
-                    try engine.scale(current: normalized, output: destination)
-                    try append(destination, at: frame.pts)
+                    let color = format.alpha ? try bridge.opaqueColor(normalized, store: store) : normalized
+                    try engine.scale(current: color, output: destination, cancellation: cancellation)
+                    if format.hdr { try MediaPixelEvidence.requireRange(source: MediaPixelEvidence.capture(normalized, bridge: bridge), output: MediaPixelEvidence.capture(destination, bridge: bridge)) }
+                    if format.alpha {
+                        let composed = try store.makeBuffer(format: format.workingPixelFormat, width: outputWidth, height: outputHeight)
+                        try bridge.restoreAlpha(color: destination, current: normalized, destination: composed)
+                        try append(composed, at: frame.pts)
+                    } else { try append(destination, at: frame.pts) }
                 }
             default:
                 throw FloeError.internalError("No enhancement engine is attached")
@@ -845,9 +908,61 @@ final class VideoEnhancementWork: @unchecked Sendable {
         guard outputIndex > 0 else { throw FloeError.validationFailed("No timed video frames were produced") }
         videoInput.markAsFinished()
         return VideoEnhancementOutcome(sourceFrameCount: sourceFrameCount,
-            interpolatedFrames: interpolatedFrames, videoFinished: true, motionObserved: motionObserved)
+            interpolatedFrames: interpolatedFrames, videoFinished: true, motionObserved: motionObserved, pixelEvidence: pixelEvidence)
     }
 
+}
+
+/// Small, deterministic pixel witness captured before encoding and compared
+/// with the same frame after reopening. It detects flattened alpha and clipped
+/// highlights; metadata by itself is never accepted as pixel preservation.
+struct MediaPixelEvidence: Sendable {
+    var maximumLinearRGB: Float
+    var minimumAlpha: Float
+    var maximumAlpha: Float
+
+    static func capture(_ buffer: CVPixelBuffer, bridge: MediaImageBridge) throws -> Self {
+        try capture(bridge.image(buffer), bridge: bridge)
+    }
+
+    static func capture(_ image: CIImage, bridge: MediaImageBridge) throws -> Self {
+        let side = 16
+        let normalized = image.transformed(by: CGAffineTransform(translationX: -image.extent.minX, y: -image.extent.minY))
+        let small = normalized.transformed(by: CGAffineTransform(scaleX: CGFloat(side) / image.extent.width,
+                                                               y: CGFloat(side) / image.extent.height))
+        var values = [Float](repeating: 0, count: side * side * 4)
+        values.withUnsafeMutableBytes { bytes in
+            bridge.cicontext.render(small, toBitmap: bytes.baseAddress!, rowBytes: side * 4 * MemoryLayout<Float>.size,
+                bounds: CGRect(x: 0, y: 0, width: side, height: side), format: .RGBAf, colorSpace: bridge.colorSpace)
+        }
+        guard values.allSatisfy(\.isFinite) else { throw FloeError.validationFailed("Output pixels contain non-finite values") }
+        var result = Self(maximumLinearRGB: 0, minimumAlpha: 1, maximumAlpha: 0)
+        for index in stride(from: 0, to: values.count, by: 4) {
+            result.maximumLinearRGB = max(result.maximumLinearRGB, max(values[index], max(values[index + 1], values[index + 2])))
+            result.minimumAlpha = min(result.minimumAlpha, values[index + 3])
+            result.maximumAlpha = max(result.maximumAlpha, values[index + 3])
+        }
+        return result
+    }
+
+    static func requireRange(source: Self, output: Self) throws {
+        if source.maximumLinearRGB > 1.1 {
+            guard output.maximumLinearRGB > 1.02,
+                  output.maximumLinearRGB >= source.maximumLinearRGB * 0.5 else {
+                throw FloeError.validationFailed("HDR highlight range was clipped during processing or encoding")
+            }
+        }
+    }
+
+    func verify(reopened: Self, format: MediaEnhancementFormat) throws {
+        if format.hdr { try Self.requireRange(source: self, output: reopened) }
+        if format.alpha {
+            guard abs(minimumAlpha - reopened.minimumAlpha) <= 0.10,
+                  abs(maximumAlpha - reopened.maximumAlpha) <= 0.10 else {
+                throw FloeError.validationFailed("The reopened output did not preserve its alpha plane")
+            }
+        }
+    }
 }
 
 // MARK: - Output validation
@@ -875,7 +990,7 @@ enum MediaEnhancementValidator {
         expectAudio: Bool,
         expectInterpolatedFrames: Bool,
         motionObserved: Bool,
-        limits: MediaEnhancementService.Limits
+        limits: MediaEnhancementService.Limits, format: MediaEnhancementFormat, evidence: [MediaPixelEvidence]
     ) async throws -> VideoValidation {
         var warnings: [String] = []
         guard FileManager.default.fileExists(atPath: staged.path) else {
@@ -903,6 +1018,28 @@ enum MediaEnhancementValidator {
         let height = Int(abs(displayed.height).rounded())
         guard width == expectedWidth, height == expectedHeight else {
             throw FloeError.validationFailed("Encoded dimensions \(width)x\(height) do not match the requested \(expectedWidth)x\(expectedHeight)")
+        }
+        if format.hdr || format.alpha {
+            let inspected = try await MediaSourceInspector.inspect(url: staged)
+            guard !format.hdr || (inspected.isHDR && (inspected.bitDepth ?? 0) >= 10 && inspected.colorPrimary == format.primaries && inspected.transferFunction == format.transfer) else {
+                throw FloeError.validationFailed("Encoded HDR color information differs from the source")
+            }
+            guard !format.alpha || inspected.hasAlpha else { throw FloeError.validationFailed("Encoded output has no alpha channel") }
+            let reader = try AVAssetReader(asset: asset)
+            let decoded = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: format.readerPixelFormat])
+            guard reader.canAdd(decoded) else { throw FloeError.validationFailed("Cannot reopen the encoded precision/alpha format") }
+            reader.add(decoded)
+            guard reader.startReading() else { throw reader.error ?? FloeError.validationFailed("Cannot decode the encoded precision/alpha format") }
+            defer { reader.cancelReading() }
+            let bridge = MediaImageBridge(colorSpace: format.workingSpace)
+            for expected in evidence {
+                guard let sample = decoded.copyNextSampleBuffer(), let buffer = CMSampleBufferGetImageBuffer(sample) else {
+                    throw FloeError.validationFailed("Encoded output ended before pixel verification")
+                }
+                try expected.verify(reopened: MediaPixelEvidence.capture(buffer, bridge: bridge), format: format)
+            }
+            guard reader.status != .failed else { throw reader.error ?? FloeError.validationFailed("Pixel verification decode failed") }
+            warnings.append("reopenedPixelSamples=\(evidence.count) precision=\(format.hdr ? "10bit-PQ/HLG" : "RGB8-alpha")")
         }
         let rate = Double(try await track.load(.nominalFrameRate))
         guard rate > 0, abs(rate - expectedFPS) <= max(0.5, expectedFPS * 0.02) else {
@@ -932,7 +1069,7 @@ enum MediaEnhancementValidator {
                 warnings.append("counted frames \(counted.count) differ from fps x duration \(nominal)")
             }
         }
-        if expectInterpolatedFrames {
+        if expectInterpolatedFrames && !format.hdr {
             let duplicate = try await checkInterpolatedFrames(
                 asset: asset, track: track, motionObserved: motionObserved
             )
@@ -1008,7 +1145,8 @@ enum MediaEnhancementValidator {
         return (false, String(format: "interpolated frame minimum neighbour difference %.5f", minDifference))
     }
 
-    static func validateImage(staged: URL, expectedWidth: Int, expectedHeight: Int) throws -> ImageValidation {
+    static func validateImage(staged: URL, expectedWidth: Int, expectedHeight: Int,
+                              format: MediaEnhancementFormat, evidence: MediaPixelEvidence, bridge: MediaImageBridge) throws -> ImageValidation {
         guard let source = CGImageSourceCreateWithURL(staged as CFURL, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
@@ -1017,6 +1155,14 @@ enum MediaEnhancementValidator {
         }
         guard width == expectedWidth, height == expectedHeight else {
             throw FloeError.validationFailed("Encoded image is \(width)x\(height), expected \(expectedWidth)x\(expectedHeight)")
+        }
+        if format.alpha || format.hdr {
+            guard let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldAllowFloat: true] as CFDictionary) else { throw FloeError.validationFailed("Encoded image pixels cannot be reopened") }
+            if format.alpha && !(properties[kCGImagePropertyHasAlpha] as? Bool ?? false) {
+                throw FloeError.validationFailed("Encoded image lost its alpha channel")
+            }
+            if format.hdr && image.bitsPerComponent < 16 { throw FloeError.validationFailed("Encoded image lost its high precision") }
+            try evidence.verify(reopened: MediaPixelEvidence.capture(CIImage(cgImage: image), bridge: bridge), format: format)
         }
         let bytes = (try? staged.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         guard bytes > 0 else { throw FloeError.validationFailed("Encoded image is empty") }

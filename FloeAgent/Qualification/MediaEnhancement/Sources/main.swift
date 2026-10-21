@@ -219,9 +219,9 @@ enum Synthesizer {
         }
     }
 
-    /// Same moving pattern but tagged HDR (BT.2020 primaries, PQ transfer) so
-    /// the pipeline's HDR guard can be exercised. Returns false when the host
-    /// encoder refuses the HDR tags.
+    /// Real linear highlights (>1) encoded through a 10-bit PQ YUV buffer.
+    /// This replaces the historical tag-only RGB8 guard fixture; the source
+    /// itself must pass decoded-pixel verification before qualification.
     @discardableResult
     static func hdrVideo(url: URL, width: Int, height: Int, fps: Double, seconds: Double) throws -> Bool {
         try? FileManager.default.removeItem(at: url)
@@ -230,6 +230,7 @@ enum Synthesizer {
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
+            AVVideoCompressionPropertiesKey: [AVVideoProfileLevelKey: "HEVC_Main10_AutoLevel"],
             AVVideoColorPropertiesKey: [
                 AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_SMPTE_ST_2084_PQ,
@@ -241,7 +242,7 @@ enum Synthesizer {
         input.expectsMediaDataInRealTime = false
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: input,
-            sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange]
         )
         guard writer.canAdd(input) else { return false }
         writer.add(input)
@@ -254,18 +255,31 @@ enum Synthesizer {
                 spins += 1
                 if spins > 2500 { throw FloeError.internalError("HDR synthesis stalled") }
             }
-            let buffer = try makePixelBuffer(width: width, height: height, index: index)
+            var created: CVPixelBuffer?
+            guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                [kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary, &created) == kCVReturnSuccess,
+                let buffer = created else { throw FloeError.internalError("Could not allocate HDR10 fixture") }
+            let linear = CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)!
+            let pq = CGColorSpace(name: CGColorSpace.itur_2100_PQ)!
+            let context = CIContext(options: [.workingColorSpace: linear])
+            let extent = CGRect(x: 0, y: 0, width: width, height: height)
+            let image = CIImage(color: CIColor(red: 4, green: 2, blue: 1, alpha: 1)).cropped(to: extent)
+            CVBufferSetAttachment(buffer, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_2020, .shouldPropagate)
+            CVBufferSetAttachment(buffer, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ, .shouldPropagate)
+            CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)
+            context.render(image, to: buffer, bounds: extent, colorSpace: pq)
             let time = CMTime(value: Int64((Double(index) * 600.0 / fps).rounded()), timescale: 600)
             guard adaptor.append(buffer, withPresentationTime: time) else { return false }
         }
         input.markAsFinished()
+        writer.endSession(atSourceTime: CMTime(seconds: seconds, preferredTimescale: 600_000))
         let semaphore = DispatchSemaphore(value: 0)
         writer.finishWriting { semaphore.signal() }
         semaphore.wait()
         return writer.status == .completed
     }
 
-    /// PNG with a real alpha channel for the transparency guard.
+    /// Real transparent, translucent and opaque bands for pixel verification.
     static func transparentImage(url: URL, width: Int, height: Int) throws {
         guard let context = CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8,
@@ -274,8 +288,11 @@ enum Synthesizer {
         ) else {
             throw FloeError.internalError("could not create the transparency fixture")
         }
-        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 0.5))
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.clear(CGRect(x: 0, y: 0, width: width, height: height))
+        for (band, alpha) in [CGFloat(0), 0.25, 0.5, 1].enumerated() {
+            context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: alpha))
+            context.fill(CGRect(x: band * width / 4, y: 0, width: width / 4, height: height))
+        }
         guard let image = context.makeImage(),
               let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
             throw FloeError.internalError("could not create the transparency fixture")
@@ -284,6 +301,33 @@ enum Synthesizer {
         guard CGImageDestinationFinalize(destination) else {
             throw FloeError.internalError("could not write the transparency fixture")
         }
+    }
+
+    static func timedVideo(url: URL, timestamps: [Double], duration: Double) throws {
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 180])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input,
+            sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        guard writer.canAdd(input) else { throw FloeError.validationFailed("Timed fixture writer is unavailable") }
+        writer.add(input)
+        guard writer.startWriting() else { throw writer.error ?? FloeError.validationFailed("Timed fixture cannot start") }
+        writer.startSession(atSourceTime: .zero)
+        for (index, seconds) in timestamps.enumerated() {
+            var spins = 0
+            while !input.isReadyForMoreMediaData {
+                Thread.sleep(forTimeInterval: 0.002); spins += 1
+                if spins > 2500 { throw FloeError.validationFailed("Timed fixture writer stalled") }
+            }
+            guard adaptor.append(try makePixelBuffer(width: 320, height: 180, index: index),
+                                 withPresentationTime: CMTime(seconds: seconds, preferredTimescale: 600_000)) else {
+                throw writer.error ?? FloeError.validationFailed("Timed fixture append failed")
+            }
+        }
+        input.markAsFinished()
+        writer.endSession(atSourceTime: CMTime(seconds: duration, preferredTimescale: 600_000))
+        let semaphore = DispatchSemaphore(value: 0)
+        writer.finishWriting { semaphore.signal() }; semaphore.wait()
+        guard writer.status == .completed else { throw writer.error ?? FloeError.validationFailed("Timed fixture failed") }
     }
 
     static func image(url: URL, width: Int, height: Int) throws {
@@ -296,7 +340,7 @@ enum Synthesizer {
         guard let alphaImage = context.createCGImage(image, from: image.extent) else {
             throw FloeError.internalError("could not render the test image")
         }
-        // The guard rejects alpha sources, so the fixture must be opaque RGB.
+        // This baseline fixture deliberately uses an opaque RGB image.
         guard let opaqueContext = CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8,
             bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -534,6 +578,44 @@ func runCase(
     }
 }
 
+func requireHDRHighlight(_ url: URL) async throws {
+    let asset = AVURLAsset(url: url)
+    guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw FloeError.validationFailed("HDR output missing") }
+    let reader = try AVAssetReader(asset: asset)
+    let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange])
+    reader.add(output)
+    guard reader.startReading(), let sample = output.copyNextSampleBuffer(), let pixels = CMSampleBufferGetImageBuffer(sample) else {
+        throw FloeError.validationFailed("Cannot reopen real HDR10 pixels")
+    }
+    defer { reader.cancelReading() }
+    let linear = CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)!
+    let context = CIContext(options: [.workingColorSpace: linear])
+    let image = CIImage(cvPixelBuffer: pixels).transformed(by: CGAffineTransform(scaleX: 16.0 / 320, y: 16.0 / 180))
+    var values = [Float](repeating: 0, count: 16 * 16 * 4)
+    values.withUnsafeMutableBytes { bytes in context.render(image, toBitmap: bytes.baseAddress!, rowBytes: 16 * 16,
+        bounds: CGRect(x: 0, y: 0, width: 16, height: 16), format: .RGBAf, colorSpace: linear) }
+    guard values.allSatisfy(\.isFinite), (values.max() ?? 0) > 1.1 else { throw FloeError.validationFailed("HDR tags without actual highlight range") }
+}
+
+func requireOutputClock(_ url: URL, fps: Double, duration: Double) async throws {
+    let asset = AVURLAsset(url: url)
+    guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw FloeError.validationFailed("Timed output missing") }
+    let reader = try AVAssetReader(asset: asset)
+    let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+    reader.add(output)
+    guard reader.startReading() else { throw FloeError.validationFailed("Timed output cannot reopen") }
+    defer { reader.cancelReading() }
+    var index = 0
+    while let sample = output.copyNextSampleBuffer() {
+        let pts = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+        guard abs(pts - Double(index) / fps) < 0.00001 else { throw FloeError.validationFailed("Off-grid output PTS at \(index): \(pts)") }
+        index += 1
+    }
+    guard index == Int(ceil(duration * fps)) else { throw FloeError.validationFailed("Wrong timed output count: \(index)") }
+    let actualDuration = try await asset.load(.duration).seconds
+    guard abs(actualDuration - duration) < 0.005 else { throw FloeError.validationFailed("Tail duration changed") }
+}
+
 // MARK: - Cases
 
 // 1. VideoToolbox frame rate conversion 30 -> 60.
@@ -566,6 +648,22 @@ await runCase(
     modelID: "floe/model-rife-v4"
 ) { result in
     result.engine.contains("rife") ? nil : "unexpected engine \(result.engine)"
+}
+
+// Rational clock integration: actual CFR 24->60 and VFR gaps with a held tail.
+for (label, timestamps, duration) in [
+    ("24-to-60", (0..<24).map { Double($0) / 24 }, 1.0),
+    ("VFR-tail", [0, 0.04, 0.083333, 0.14, 0.18, 0.225, 0.27, 0.31, 0.36], 0.405)
+] {
+    let input = workspace.appendingPathComponent("clock-\(label).mov")
+    let output = workspace.appendingPathComponent("clock-\(label)-out.mov")
+    do {
+        try Synthesizer.timedVideo(url: input, timestamps: timestamps, duration: duration)
+        await runCase(name: "coreml-clock-\(label)", input: input, output: output,
+            operation: .interpolation(targetFPS: 60), mode: "coreml", modelID: "floe/model-rife-v4")
+        try await requireOutputClock(output, fps: 60, duration: duration)
+        record("clock-PTS-\(label)", status: "pass", detail: "every actual output PTS, exact count and tail reopened")
+    } catch { record("clock-PTS-\(label)", status: "fail", detail: "\(error)") }
 }
 
 // 4. VideoToolbox super resolution 4x.
@@ -702,38 +800,51 @@ await runCase(
     expectFailure: true
 )
 
-// 16. HDR sources are rejected explicitly (no silent tone-mapping claim).
+// 16. HDR preserves actual pixels on native quality; RGB8 CoreML is refused.
 let hdrSource = workspace.appendingPathComponent("source_hdr.mov")
 if (try? Synthesizer.hdrVideo(url: hdrSource, width: 320, height: 180, fps: 30, seconds: 0.5)) == true {
     await runCase(
-        name: "guard-hdr-source-rejected",
+        name: "guard-hdr-coreml-rejected",
         input: hdrSource,
         output: workspace.appendingPathComponent("out_hdr.mp4"),
         operation: .interpolation(targetFPS: 60),
-        mode: "quality",
+        mode: "coreml",
+        modelID: "floe/model-rife-v4",
         expectFailure: true
     )
-    record("synthesize-hdr", status: "pass", detail: "HDR (BT.2020/PQ) HEVC clip written")
+    do {
+        try await requireHDRHighlight(hdrSource)
+        await runCase(name: "hdr-native-quality-pixel-roundtrip", input: hdrSource,
+            output: workspace.appendingPathComponent("out_hdr_preserved.mov"), operation: .interpolation(targetFPS: 60), mode: "quality") { result in
+            result.warnings.contains(where: { $0.hasPrefix("reopenedPixelSamples=") }) ? nil : "missing reopened HDR pixel evidence"
+        }
+        try await requireHDRHighlight(workspace.appendingPathComponent("out_hdr_preserved.mov"))
+        record("hdr-independent-pixel-reopen", status: "pass", detail: "source and output both decode real linear highlights above 1")
+    } catch { record("hdr-independent-pixel-reopen", status: "fail", detail: "\(error)") }
+    record("synthesize-hdr", status: "pass", detail: "real 10-bit PQ highlight fixture written")
 } else {
     record("synthesize-hdr", status: "skipped", detail: "host encoder refused HDR tags", required: false)
-    record("guard-hdr-source-rejected", status: "skipped", detail: "no HDR fixture available", required: false)
+    record("hdr-native-quality-pixel-roundtrip", status: "fail", detail: "no real HDR fixture available")
 }
 
-// 17. Transparent images are rejected explicitly.
+// 17. Alpha-capable PNG succeeds; flattening JPEG remains explicitly refused.
 let alphaSource = workspace.appendingPathComponent("source_alpha.png")
 do {
     try Synthesizer.transparentImage(url: alphaSource, width: 128, height: 128)
     await runCase(
-        name: "guard-alpha-image-rejected",
+        name: "guard-alpha-jpeg-rejected",
         input: alphaSource,
-        output: workspace.appendingPathComponent("out_alpha.png"),
+        output: workspace.appendingPathComponent("out_alpha.jpg"),
         operation: .superResolution(scaleFactor: 2),
         mode: "coreml",
         modelID: "floe/model-realesrgan-x2plus",
         expectFailure: true
     )
+    await runCase(name: "coreml-alpha-PNG-roundtrip", input: alphaSource,
+        output: workspace.appendingPathComponent("out_alpha.png"), operation: .superResolution(scaleFactor: 2),
+        mode: "coreml", modelID: "floe/model-realesrgan-x2plus")
 } catch {
-    record("guard-alpha-image-rejected", status: "fail", detail: "alpha fixture failed: \(error)")
+    record("coreml-alpha-PNG-roundtrip", status: "fail", detail: "alpha fixture failed: \(error)")
 }
 
 // 18. Cancellation mid-run: no output, source preserved.
