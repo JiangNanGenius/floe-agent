@@ -6,7 +6,7 @@
 
 Learn to use AI tasks, Notes, Office, Drawing Assistant, Canvas and media, and local and remote development in Floe. Designed for iPad and also available on iPhone, Floe requires iOS/iPadOS 26 or later.
 
-Version note: Office autosave, region viewing, Get Run Files and Volcengine search described here target 1.7.42 (283), which has not been distributed yet.
+Version note: Office autosave, region viewing, PDF/Print options, assistant exports, Get Run Files and Volcengine search described here target 1.7.42 (283), which has not been distributed yet.
 
 ## Contents
 
@@ -188,6 +188,8 @@ Select pen, highlighter, eraser or lasso. Tap the current pen or color again to 
 
 Check save status before closing or switching. Use Trash for recovery and review attachments before permanent deletion. The document assistant has its own conversation. In ordinary chat, explicitly add Notes material and revoke access when no longer needed. Review assistant edits on the page and use Undo when appropriate. The assistant previews edits for your confirmation; applied changes can be undone. Export selected pages or the whole document to PDF, or save a portable `.floenote` archive. Editing original PDF text and converting handwriting to editable text are not supported.
 
+**Assistant exports.** Ask the document assistant to list available formats, then export. The returned file card has Preview and Share; each action verifies the file. Notebook pages export to PDF, mind maps to Markdown, and Office/engineering documents can return their original file. Modern Office files (`.docx`, `.xlsx`, `.pptx`) also export to PDF; legacy Office formats use the original file or `.floenote`. All document kinds support `.floenote`. Existing different destination files are preserved.
+
 Saving an Office document in Notes updates its automatic cover from the saved content, including ink on the first page. Opening an existing document in preview mode also fills in a missing cover. A custom cover keeps priority. If the preview cannot be updated, choose **Update preview** to retry; the saved document and ink remain intact.
 
 **Document covers.** A Notes document can use a custom cover instead of its generated preview: open the document menu and choose **Set Cover** or **Change Cover** to use a photo or a file, or **Restore Automatic Cover** to go back. The cover is independent of the document body: setting or restoring it does not change the content revision, does not enter the undo history and never modifies the original Office/PDF content, and the previous cover image is not discarded while other data still references it. The Notes assistant has the same cover action for a document selected for that task (`notes.cover`, read / set / restore): read reports the cover state, while set and restore carry the expected document revision and cover revision from a previous read, so a stale attempt is refused instead of overwriting a newer cover, and only images referenced by the selected document or files authorized in that task's workspace can be used. Unusable images are rejected and the previous cover stays. A `.floenote` archive containing a custom cover is refused by older Floe versions that do not support covers, rather than imported incompletely.
@@ -210,6 +212,8 @@ Available operations depend on the file format; unavailable options explain why.
 **Office autosave in Notes.** Completed edits save after you pause; a pen contact still down defers saving until you lift it. A failed save keeps the editing copy so you can retry.
 
 **View a specific region.** The assistant can read an Excel sheet and cell range (such as `A1:N30`), or a Word/PowerPoint page and optional rectangle, including content outside the screen. Ask it to list sheets or pages first if needed. Floe saves completed edits before returning the region image from that saved version; use a vision-capable model to view it. Lift the pen or retry if the editor is busy.
+
+**PDF export and printing.** Choose **Export Format → PDF** or **Print…** before generating the file. For XLSX, select document settings, the current sheet, workbook, named sheet or cell range, then paper, orientation, fit and margins. Word/PowerPoint support final PDF page selection; supported PDFs can use a range such as `1-3,5`. Printing sends the generated PDF to the system print panel. The original file is preserved; lift the pen before exporting.
 
 An AI edit that was not confirmed in the editor can still run as an authorized automatic copy: only after the task's runtime approves that exact tool call, the engine works on an isolated copy and publishes a new `<name>.edited.<ext>` — the original is never overwritten, the output is reopened and verified (formula cells check their persisted cached value/type/error), and an existing different file at the output path is refused. A user-confirmed edit (the editor's confirmation) keeps its existing path. Long Office/media work can be submitted as a background job: the job freezes the workspace, revision and command payload at submission, reports real progress, keeps running when you close the page, and cancellation only becomes terminal after the processor acknowledges and cleans its staging.
 
