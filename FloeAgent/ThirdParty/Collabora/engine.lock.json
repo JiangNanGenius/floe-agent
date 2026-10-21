@@ -735,7 +735,7 @@
               "vclhelperbufferdevice.o": "engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx"
             },
             "patch": "patches/ios-unified-transparency-alpha.patch",
-            "patchSHA256": "a06487a758107a813810bf74244486f8141db83c6ad4ca678e54594822c06ac3",
+            "patchSHA256": "171971cd003c8e1d3510bbf75eb1b31f3f75517a7af4243432c2f072b3ea4c7d",
             "compileOverrides": {
               "flags": [
                 "-DDRAWINGLAYER_DLLIMPLEMENTATION"
@@ -875,7 +875,7 @@
               "vclhelperbufferdevice.o": "engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx"
             },
             "patch": "patches/ios-unified-transparency-alpha.patch",
-            "patchSHA256": "a06487a758107a813810bf74244486f8141db83c6ad4ca678e54594822c06ac3",
+            "patchSHA256": "171971cd003c8e1d3510bbf75eb1b31f3f75517a7af4243432c2f072b3ea4c7d",
             "compileOverrides": {
               "flags": [
                 "-DDRAWINGLAYER_DLLIMPLEMENTATION"

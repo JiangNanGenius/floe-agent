@@ -132,6 +132,8 @@ def lifecycle_contract():
         lifecycle.identity(lock, platform, lock_path=LOCK_PATH)
         child = selected['additionalArchives']['libdrawinglayerlo.a']
         lifecycle.contract(lock, platform, spec=child)
+        lifecycle.identity(lifecycle.single_lock(lock, platform, child),
+                           platform, lock_path=LOCK_PATH)
         assert child['members'] == {
             'vclhelperbufferdevice.o':
                 'engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx'}
