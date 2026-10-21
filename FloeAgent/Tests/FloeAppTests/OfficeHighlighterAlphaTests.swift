@@ -147,7 +147,6 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
             try await waitForPaint(native)
             var web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
             try await Task.sleep(for: .milliseconds(450))
-            receipt["openedZoom"] = try await providedDiagnosticZoom(web)
             _ = try await snapshot(web, root: root, name: "provided-opened")
             receipt["openedPaint"] = OfficeFileSession.hostRenderDiagnostics(native)
             if session.readOnly {
@@ -162,7 +161,6 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
             try await waitForPaint(native)
             web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
             try await Task.sleep(for: .milliseconds(450))
-            receipt["editableZoom"] = try await providedDiagnosticZoom(web)
             _ = try await snapshot(web, root: root, name: "provided-editable")
             session.useInkPreferences(workspaceIdentity: root.path, documentKey: "provided.xlsx")
             session.inkPreferences.setPreset(.highlighter)
@@ -187,10 +185,14 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
                 ] }
                 let dense = try densified(points)
                 receipt["diagnosticPointsCSS"] = points
-                _ = try await snapshot(web, root: root, name: "provided-grid-before-stroke")
+                let gridBefore = try await snapshot(web, root: root, name: "provided-grid-before-stroke")
                 receipt["diagnosticBegin"] = try await strokePhase(web, phase: "begin", points: dense)
                 do {
-                    _ = try await snapshot(web, root: root, name: "provided-grid-contact")
+                    let contact = try await snapshot(web, root: root, name: "provided-grid-contact")
+                    let metrics = try providedGridRetention(before: gridBefore, after: contact, points: points)
+                    receipt["contactGridRetention"] = metrics
+                    XCTAssertGreaterThanOrEqual(metrics["retainedFraction"] as? Double ?? 0, 0.95,
+                                                "Grid lines disappeared during contact")
                 } catch {
                     _ = try? await strokePhase(web, phase: "cleanup", points: dense)
                     throw error
@@ -203,7 +205,11 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
                                        afterScreenUpdates: false)
                 try await Task.sleep(for: .milliseconds(750))
                 receipt["diagnosticSettledPreview"] = try await currentPreviewState(web)
-                _ = try await snapshot(web, root: root, name: "provided-grid-settled")
+                let settled = try await snapshot(web, root: root, name: "provided-grid-settled")
+                let retention = try providedGridRetention(before: gridBefore, after: settled, points: points)
+                receipt["settledGridRetention"] = retention
+                XCTAssertGreaterThanOrEqual(retention["retainedFraction"] as? Double ?? 0, 0.95,
+                                            "Post-lift repaint erased the empty-cell grid")
                 try await session.toggleDrawing()
                 let exported = try await session.exportDocument(format: "xlsx")
                 let copy = root.appendingPathComponent("provided-with-diagnostic-stroke.xlsx")
@@ -213,7 +219,7 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
             }
             XCTAssertEqual(try hash(fixture), expected, "Diagnostic changed the supplied input copy")
             receipt["inputUnchanged"] = true
-            receipt["status"] = "display captured; white-box outcome requires visual assessment"
+            receipt["status"] = "actual display and optional grid-retention assertions recorded"
             await session.release()
         } catch {
             receipt["error"] = error.localizedDescription
@@ -222,26 +228,49 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
         }
     }
 
-    private func providedDiagnosticZoom(_ web: WKWebView) async throws -> [String: Any] {
-        // The private workbook's ink extends beyond the initial portrait view.
-        // This is a real frontend zoom for diagnosis, not UIKit pinch proof.
-        let raw = try await web.evaluateJavaScript(#"""
-        (() => {
-            const map = window.app && window.app.map;
-            if (!map || typeof map.setZoom !== 'function')
-                return JSON.stringify({available:false});
-            const before = map.getZoom();
-            map.setZoom(6, {animate:false});
-            return JSON.stringify({available:true,before,after:map.getZoom()});
-        })()
-        """#)
-        let text = try XCTUnwrap(raw as? String)
-        let data = try XCTUnwrap(text.data(using: .utf8))
-        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(value["available"] as? Bool, true)
-        XCTAssertEqual((value["after"] as? NSNumber)?.intValue, 6)
-        try await Task.sleep(for: .milliseconds(900))
-        return value
+    /// Sample only neutral grid pixels selected from the BEFORE image in
+    /// the inner 60% of the actual stroke bounds, away from every U segment.
+    /// The AFTER image cannot change which pixels participate in the oracle.
+    private func providedGridRetention(before: Snapshot, after: Snapshot,
+                                       points: [[Double]]) throws -> [String: Any] {
+        guard before.width == after.width, before.height == after.height,
+              before.scale == after.scale,
+              let minX = points.map({ $0[0] }).min(), let maxX = points.map({ $0[0] }).max(),
+              let minY = points.map({ $0[1] }).min(), let maxY = points.map({ $0[1] }).max() else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 52, userInfo: [
+                NSLocalizedDescriptionKey: "Grid comparison geometry changed"])
+        }
+        let scale = Double(before.scale)
+        let left = Int((minX + (maxX - minX) * 0.20) * scale)
+        let right = Int((maxX - (maxX - minX) * 0.20) * scale)
+        let top = Int((minY + (maxY - minY) * 0.20) * scale)
+        let bottom = Int((maxY - (maxY - minY) * 0.20) * scale)
+        guard left >= 0, top >= 0, right < before.width, bottom < before.height,
+              right > left, bottom > top else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 53, userInfo: [
+                NSLocalizedDescriptionKey: "Grid oracle is outside the actual snapshot"])
+        }
+        var baseline = 0, retained = 0, whitened = 0
+        for y in top..<bottom {
+            for x in left..<right {
+                let index = (y * before.width + x) * 4
+                let original = (0..<3).map { Int(before.pixels[index + $0]) }
+                guard let low = original.min(), let high = original.max(),
+                      low >= 170, high <= 245, high - low <= 8 else { continue }
+                baseline += 1
+                let current = (0..<3).map { Int(after.pixels[index + $0]) }
+                if zip(original, current).allSatisfy({ abs($0.0 - $0.1) <= 18 }) { retained += 1 }
+                if current.allSatisfy({ $0 >= 250 }) { whitened += 1 }
+            }
+        }
+        guard baseline >= 100 else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 54, userInfo: [
+                NSLocalizedDescriptionKey: "The pre-stroke area contains too few visible grid pixels"])
+        }
+        return ["baselineGridPixels": baseline, "retainedGridPixels": retained,
+                "whitenedGridPixels": whitened,
+                "retainedFraction": Double(retained) / Double(baseline),
+                "roiPixels": [left, top, right, bottom]]
     }
 
     private func run(_ format: AlphaFixtureFormat) async throws {
