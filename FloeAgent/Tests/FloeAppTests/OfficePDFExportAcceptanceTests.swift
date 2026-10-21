@@ -11,6 +11,7 @@ import WebKit
 import PDFKit
 import FloeCore
 import FloeDocuments
+import FloeNotes
 import FloeTools
 import FloeOfficeNative
 @testable import FloeApp
@@ -117,6 +118,11 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             await session.open(source)
             try await wait("actual Office document ready") { session.documentActionsReady }
             let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await wait("actual Office tiles painted") {
+                let facts = OfficeFileSession.hostRenderDiagnostics(native)
+                return facts["stage"] == "visible-render" && facts["docLoaded"] == "1"
+                    && ((Int(facts["decodedTiles"] ?? "") ?? 0) > 0 || facts["vectorRendering"] == "1")
+            }
             XCTAssertTrue(native.responds(to: NSSelectorFromString("setOnPrintRequested:")))
             let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
             let generation = session.printRequestGeneration
@@ -126,15 +132,93 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             try await wait("native PRINT routed to app options") { session.printRequestGeneration == generation + 1 }
             try await wait("options sheet mounted") { window.rootViewController?.presentedViewController != nil }
             try await Task.sleep(for: .seconds(2))
-            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-            screenshot.name = "native-toolbar-print-options-ipad"
-            screenshot.lifetime = .keepAlways
-            add(screenshot)
+            attachWindow(window, "native-toolbar-print-options-app-window")
             XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha)
+            window.rootViewController?.dismiss(animated: false)
+            try await Task.sleep(for: .milliseconds(300))
             await session.release()
             try FileManager.default.removeItem(at: root)
         } catch {
+            // Preserve the first failure before close/unmount can report a
+            // secondary WebKit removal error.
+            XCTFail("Native toolbar Print failed: \(error)")
             await session.release()
+            return
+        }
+    }
+
+    func testAssistantExportToolReturnsActualPDFAndVisibleFileCard() async throws {
+        let (source, sha, root) = try input()
+        let workspace = root.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        let store = try NotesStore(root: root.appendingPathComponent("notes", isDirectory: true))
+        let runID = UUID(), conversationID = UUID(), callID = "call-actual-office-export"
+        var ownedRunDirectory: URL?
+        await NotesRepository.shared.setStoreOverride(store)
+        do {
+            let resource = try await store.importResource(from: source,
+                mediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            var document = NoteDocument(kind: .office, title: "Provided Workbook")
+            document.officeResourceID = resource
+            document.officeFileName = "provided.xlsx"
+            let created = try await store.create(document)
+            try await store.grantAccess(conversationID: conversationID, documentID: created.id, canEdit: false)
+            let arguments = try JSONDecoder().decode(NotesExportTool.Arguments.self,
+                from: JSONSerialization.data(withJSONObject: [
+                    "documentID": created.id.uuidString, "format": "pdf",
+                    "expectedRevision": created.revision, "targetPath": "exports/provided.pdf",
+                    "paper": "a4", "orientation": "landscape", "fit": "fitToOnePage"
+                ]))
+            let tool = NotesExportTool()
+            try tool.validate(arguments)
+            let output = try await tool.execute(arguments, context: ToolContext(
+                runID: runID, toolCallID: callID, scope: .local, workspaceRootURL: workspace,
+                cancellation: CancellationToken(), conversationID: conversationID))
+            XCTAssertEqual(output.outputFiles.count, 1)
+            let receipt = try XCTUnwrap(output.outputFiles.first)
+            let payload = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any])
+            XCTAssertEqual(payload["pageCount"] as? Int, 1)
+            XCTAssertEqual(payload["mimeType"] as? String, "application/pdf")
+            XCTAssertEqual(payload["sha256"] as? String, receipt.sha256)
+            guard case .verified(let snapshot) = RunOutputSnapshotStore.verify(receipt) else {
+                XCTFail("The actual tool must return a retrievable binary snapshot")
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            let runDirectory = snapshot.deletingLastPathComponent().deletingLastPathComponent()
+            guard runDirectory.lastPathComponent == runID.uuidString,
+                  runDirectory.deletingLastPathComponent().lastPathComponent == "RunOutputs" else {
+                XCTFail("Refuse cleanup outside this test's unique output run")
+                throw CocoaError(.fileReadInvalidFileName)
+            }
+            ownedRunDirectory = runDirectory
+            XCTAssertEqual(try Data(contentsOf: snapshot), try Data(contentsOf: workspace.appendingPathComponent("exports/provided.pdf")))
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha)
+            attach(snapshot, "assistant-tool-actual-export.pdf")
+
+            let context = RunOutputReceiptContext(runID: runID, conversationID: conversationID,
+                                                  callID: callID, toolName: NotesExportTool.name)
+            XCTAssertTrue(RunOutputReceiptGate.accepts(receipt, in: context))
+            let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first(where: { $0.activationState == .foregroundActive }))
+            let previous = scene.windows.first(where: \.isKeyWindow)
+            let window = UIWindow(windowScene: scene)
+            window.frame = scene.coordinateSpace.bounds
+            window.rootViewController = UIHostingController(rootView: NavigationStack {
+                RunOutputFilesCard(receipts: output.outputFiles, context: context)
+                    .padding().navigationTitle("Floe")
+            })
+            window.windowLevel = .normal + 1
+            window.makeKeyAndVisible()
+            try await Task.sleep(for: .seconds(2))
+            attachWindow(window, "assistant-export-file-card-app-window")
+            window.isHidden = true; window.rootViewController = nil; previous?.makeKey()
+            await NotesRepository.shared.setStoreOverride(nil)
+            if let ownedRunDirectory { try FileManager.default.removeItem(at: ownedRunDirectory) }
+            try FileManager.default.removeItem(at: root)
+        } catch {
+            await NotesRepository.shared.setStoreOverride(nil)
+            if let ownedRunDirectory { try? FileManager.default.removeItem(at: ownedRunDirectory) }
+            if !(await OfficeAutomaticExecutionGate.shared.isQuarantined) { try? FileManager.default.removeItem(at: root) }
             throw error
         }
     }
@@ -167,6 +251,17 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 
+    private func attachWindow(_ window: UIWindow, _ name: String) {
+        // Hosted App tests cannot use XCUIScreen UI-automation APIs. Capture
+        // this real App window; the runner separately records the full
+        // Simulator display, including remote UIKit Print content.
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+    }
+
     private func inspectActualSystemPrintPanel(pdf: URL) async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .first(where: { $0.activationState == .foregroundActive }))
@@ -184,12 +279,13 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             window.isHidden = true; window.rootViewController = nil; previous?.makeKey()
         }
         try await Task.sleep(for: .seconds(2))
-        XCTAssertEqual(UIPrintInteractionController.shared.printingItem as? URL, pdf)
+        // On this SDK UIKit transfers and clears printingItem after present.
+        // Check the actual printable input and mounted panel; the display
+        // recording retains the real one-page ink preview.
+        XCTAssertTrue(UIPrintInteractionController.canPrint(pdf))
         XCTAssertEqual(UIPrintInteractionController.shared.printInfo?.orientation, .landscape)
         XCTAssertNotNil(presenter.presentedViewController, "UIKit must actually present its print panel")
-        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        screenshot.name = "actual-landscape-pdf-system-print-panel"
-        screenshot.lifetime = .keepAlways; add(screenshot)
+        attachWindow(window, "actual-system-print-presenter-app-window")
     }
 
     private func raster(_ url: URL) throws -> (png: Data, yellow: Int, text: String) {
