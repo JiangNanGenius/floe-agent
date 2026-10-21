@@ -256,7 +256,10 @@
     <string name="websearch_kind_custom">自定义</string>
     <string name="providers_load_failed">无法加载提供商，请重试。</string>
     <string name="providers_probe_requires_save">请先保存此提供商，然后再测试连接或获取模型。</string>
+    <string name="providers_probe_unavailable">无法开始连接测试，请重试。</string>
     <string name="providers_custom_endpoint">自定义端点</string>
+    <string name="providers_toggle_failed">无法更新此提供商，其保持原状——请重试。</string>
+    <string name="providers_toggle_too_large">该提供商的完整配置过大，无法在此切换。请打开它进行编辑并保存。</string>
     <string name="run_state_running">运行中</string>
     <string name="run_state_completed">已完成</string>
     <string name="run_state_failed">失败</string>
@@ -264,4 +267,17 @@
     <string name="run_state_interrupted">已中断</string>
     <string name="run_state_cancelling">正在取消</string>
     <string name="run_state_idle">空闲</string>
+    <string name="goal_blocker_wrong_goal">这些证据属于其他目标。</string>
+    <string name="goal_blocker_already_terminal">这个目标已经结束。</string>
+    <string name="goal_blocker_incomplete_step">还有步骤未完成。</string>
+    <string name="goal_blocker_unsatisfied_criterion">还有完成条件未满足。</string>
+    <string name="goal_blocker_missing_evidence">还需要更多证据。</string>
+    <string name="goal_blocker_user_confirmation">需要你确认。</string>
+    <string name="goal_blocker_review_rejected">证据未通过核验。</string>
+    <string name="goal_blocker_failed_checks">还有检查需要处理。</string>
+    <string name="goal_blocker_generic">这个目标暂时还不能完成。</string>
+    <string name="compaction_did_compact">已精简对话。</string>
+    <string name="compaction_short_history">这段对话已经足够简短。</string>
+    <string name="compaction_no_history">没有可精简的对话记录。</string>
+    <string name="compaction_did_compact_tokens">已精简对话：%1$d → %2$d 个 token。</string>
 </resources>

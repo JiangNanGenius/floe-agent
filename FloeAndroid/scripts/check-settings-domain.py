@@ -3,16 +3,26 @@
 """Read-only validator for the Settings-domain P0 source candidate.
 
 Verifies, without writing anything:
-  1. The Swift and Kotlin v3 matrices are the accepted 84-entry / 19-label
-     append-only delta, mirrored field-for-field and anchored to the manual
-     golden matrix file. The first 57 entries remain the frozen legacy set and
-     `content.read` keeps its three distinct label-aware entries.
+  1. The Swift and Kotlin v3 matrices are the accepted 87-entry / 19-label
+     append-only ledger: the frozen 57 legacy entries, the frozen 27
+     Settings-domain additive tuples (each still proven by its OWN digest)
+     and exactly the three approved goal-core run-control tuples appended by
+     the 2026-10-21 batch (proven independently against goal_core_contract.py,
+     never by recomputing the frozen sections). Mirrored field-for-field and
+     anchored to the manual golden matrix file; `content.read` keeps its
+     three distinct label-aware entries.
   2. The five additive labels are declared exactly once; credentials,
-     settings.approval and operations remain reserved without commands.
-  3. The candidate baseline is 182 operations / 40 G02 / 33 fixtures / 36
-     families / 85 packages; the prior 172 operation identities, goals and
-     statuses and the 36 family / 85 package inventories are preserved by
-     frozen digest. Every new operation is exactly `planned`.
+     settings.approval and operations remain reserved without commands. No
+     goal-core row widens labels, create-intent or run-event-poll semantics
+     and child.create never appears.
+  3. The candidate baseline is 183 operations / 41 G02 / 33 fixtures / 36
+     families / 85 packages at g02.2026-10-21.2, with exactly one approved
+     planned operation (CHA-MANUAL-COMPACT) and zero added fixtures; the
+     unchanged historical validation runs on the exact prior 84-row / 182-op
+     projection (approved additions removed, historical version restored),
+     where the prior 172 operation identities, goals and statuses and the
+     36 family / 85 package inventories stay preserved by frozen digest.
+     Every new operation is exactly `planned`.
   4. The ten SET-family operations and seven declarative fixture groups map
      both ways, with no duplicate SET family and no lost G11 SET operations.
   5. The typed Swift/Kotlin vocabulary and independent test sources exist and
@@ -26,24 +36,50 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import sys
 from pathlib import Path
 
-EXPECTED_ENTRIES = 84
-EXPECTED_LEGACY_ENTRIES = 57
-EXPECTED_ADDITIVE_ENTRIES = 27
+
+def _load_goal_core_contract():
+    """Load the sibling standalone contract module robustly.
+
+    Works when this file is executed directly and when a test imports it via
+    importlib (plain `import goal_core_contract` would then miss the path).
+    """
+    try:
+        import goal_core_contract  # type: ignore
+        return goal_core_contract
+    except ImportError:
+        path = Path(__file__).resolve().parent / "goal_core_contract.py"
+        spec = importlib.util.spec_from_file_location("goal_core_contract", path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
+
+G = _load_goal_core_contract()
+
+EXPECTED_ENTRIES = G.EXPECTED_MATRIX_ENTRIES            # 87
+EXPECTED_LEGACY_ENTRIES = G.LEGACY_ENTRY_COUNT          # 57
+EXPECTED_SETTINGS_ADDITIVE_ENTRIES = G.SETTINGS_ADDITIVE_ENTRY_COUNT  # 27
+EXPECTED_GOALCORE_ADDITIVE_ENTRIES = G.GOALCORE_ADDITIVE_ENTRY_COUNT  # 3
+EXPECTED_ADDITIVE_ENTRIES = G.EXPECTED_MATRIX_ADDITIVE_ENTRIES  # 30
 EXPECTED_LABELS = 19
 EXPECTED_NEW_LABELS = 5
-EXPECTED_DISTINCT_COMMANDS = 82
+EXPECTED_DISTINCT_COMMANDS = G.EXPECTED_DISTINCT_COMMANDS      # 85
+EXPECTED_SCOPE_COMMAND_PAIRS = G.EXPECTED_SCOPE_COMMAND_PAIRS  # 86
 EXPECTED_CONFIGURATION_ENTRIES = 55
-EXPECTED_OPERATIONS = 182
-EXPECTED_G02_OPERATIONS = 40
-EXPECTED_FIXTURES = 33
-EXPECTED_FAMILIES = 36
-EXPECTED_PACKAGES = 85
-EXPECTED_BASELINE_VERSION = "g02.2026-10-19.1"
+EXPECTED_OPERATIONS = G.EXPECTED_OPERATIONS              # 183
+EXPECTED_G02_OPERATIONS = G.EXPECTED_G02_OPERATIONS      # 41
+EXPECTED_FIXTURES = G.EXPECTED_FIXTURES                  # 33 (unchanged)
+EXPECTED_FAMILIES = G.EXPECTED_FAMILIES
+EXPECTED_PACKAGES = G.EXPECTED_PACKAGES
+EXPECTED_BASELINE_VERSION = G.BASELINE_VERSION_CURRENT   # g02.2026-10-21.2
+EXPECTED_PRIOR_BASELINE_VERSION = G.BASELINE_VERSION_PREVIOUS
 EXPECTED_CONTRACT_SHA256 = (
     "f3ddecdca061ae17fbe4280b7bfb549d8a1673fd8d9ae6e1ba363332ef5db46c")
 # Independent tuple-set digests. Legacy rows were read from the frozen live
@@ -262,13 +298,16 @@ def validate_matrix(golden: dict, swift: list[dict], kotlin: list[dict],
         fail("matrix golden authority contains a private path")
     if tuple_digest(rows[:EXPECTED_LEGACY_ENTRIES]) != EXPECTED_LEGACY_TUPLE_SHA256:
         fail("frozen 57-tuple set digest changed")
-    if tuple_digest(rows[EXPECTED_LEGACY_ENTRIES:]) != EXPECTED_ADDITIVE_TUPLE_SHA256:
+    if tuple_digest(G.settings_slice(rows)) != EXPECTED_ADDITIVE_TUPLE_SHA256:
         fail("accepted 27 additive tuple set digest changed")
+    for message in G.validate_goalcore_append(rows):
+        fail("goal-core append violated the approved delta: %s" % message)
     keys = {(row["scope"], row["configurationScope"], row["command"]) for row in rows}
     if len(keys) != EXPECTED_ENTRIES:
         fail("matrix tuples are not unique on scope+configurationScope+command")
-    if len({(row["scope"], row["command"]) for row in rows}) != 83:
-        fail("scope+command pair set must have 83 unique values")
+    if len({(row["scope"], row["command"]) for row in rows}) != EXPECTED_SCOPE_COMMAND_PAIRS:
+        fail("scope+command pair set must have %d unique values"
+             % EXPECTED_SCOPE_COMMAND_PAIRS)
     if len(swift) != EXPECTED_ENTRIES:
         fail("Swift matrix has %d entries, expected %d"
              % (len(swift), EXPECTED_ENTRIES))
@@ -279,6 +318,8 @@ def validate_matrix(golden: dict, swift: list[dict], kotlin: list[dict],
         fail("Swift matrix differs from the manual golden entries")
     if kotlin != rows:
         fail("Kotlin matrix differs from the manual golden entries")
+    if expected.get("entries") != EXPECTED_ENTRIES:
+        fail("golden declared entry count changed")
     if expected.get("legacyEntries") != EXPECTED_LEGACY_ENTRIES:
         fail("golden legacy entry count changed")
     if expected.get("additiveEntries") != EXPECTED_ADDITIVE_ENTRIES:
@@ -363,8 +404,8 @@ def validate_baseline(baseline: dict, packages: dict, inventory: dict) -> None:
         fail("prior attachment reconciliation changed")
 
     add = baseline.get("settingsDomainAdditive", {})
-    if add.get("version") != EXPECTED_BASELINE_VERSION:
-        fail("settingsDomainAdditive version missing")
+    if add.get("version") != EXPECTED_PRIOR_BASELINE_VERSION:
+        fail("settingsDomainAdditive historical version changed")
     if add.get("contractSHA256") != EXPECTED_CONTRACT_SHA256:
         fail("settingsDomainAdditive contract hash changed")
     if add.get("previousDeclaredCounts") != history.get("currentDeclaredCounts"):
@@ -388,35 +429,47 @@ def validate_baseline(baseline: dict, packages: dict, inventory: dict) -> None:
     if add.get("additiveFixturePaths") != SET_FIXTURE_PATHS:
         fail("additive fixture path list changed")
 
-    if len(ops) == EXPECTED_OPERATIONS:
-        prior_ids = [oid for oid in ops if oid not in set(SET_OPERATION_IDS)]
-        prior_ops = [ops[oid] for oid in prior_ids]
-        if len(prior_ids) != 172:
-            fail("prior operation count is %d" % len(prior_ids))
-        if digest_ids(prior_ids) != PRIOR_172_OPERATION_ID_DIGEST:
-            fail("prior 172 operation IDs changed")
-        if digest_lines(["%s:%s" % (op["id"], op["goal"])
-                         for op in prior_ops]) != PRIOR_172_OPERATION_GOAL_DIGEST:
-            fail("prior 172 operation goals changed")
-        if digest_lines(["%s:%s" % (op["id"], op["status"])
-                         for op in prior_ops]) != PRIOR_172_OPERATION_STATUS_DIGEST:
-            fail("prior 172 operation statuses changed")
-        if add.get("previousOperationIdDigest") != PRIOR_172_OPERATION_ID_DIGEST:
-            fail("additive previous operation ID digest changed")
-        if add.get("previousOperationGoalDigest") != PRIOR_172_OPERATION_GOAL_DIGEST:
-            fail("additive previous operation goal digest changed")
-        if add.get("previousOperationStatusDigest") != PRIOR_172_OPERATION_STATUS_DIGEST:
-            fail("additive previous operation status digest changed")
-        new_ids = [oid for oid in ops if oid in set(SET_OPERATION_IDS)]
-        if digest_ids(new_ids) != ADDITIVE_10_ID_DIGEST:
-            fail("additive operation ID digest changed")
-        if digest_lines(["%s:%s" % (oid, ops[oid]["status"])
-                         for oid in SET_OPERATION_IDS]) != ADDITIVE_10_STATUS_DIGEST:
-            fail("additive operation status digest changed")
-        if add.get("additiveOperationIdDigest") != ADDITIVE_10_ID_DIGEST:
-            fail("recorded additive ID digest changed")
-        if add.get("additiveOperationStatusDigest") != ADDITIVE_10_STATUS_DIGEST:
-            fail("recorded additive status digest changed")
+    # The unchanged historical validation runs on the exact prior ledger:
+    # remove ONLY the approved goal-core operation and the frozen
+    # Settings-domain additions. It executes regardless of the live count, so
+    # a changed count can never skip the frozen identity/goal/status proofs.
+    prior_ids = [oid for oid in ops if oid not in set(SET_OPERATION_IDS)
+                 and oid != G.GOALCORE_OPERATION_ID]
+    prior_ops = [ops[oid] for oid in prior_ids]
+    if len(prior_ids) != 172:
+        fail("prior 172 projection count is %d" % len(prior_ids))
+    if digest_ids(prior_ids) != PRIOR_172_OPERATION_ID_DIGEST:
+        fail("prior 172 operation IDs changed")
+    if digest_lines(["%s:%s" % (op["id"], op["goal"])
+                     for op in prior_ops]) != PRIOR_172_OPERATION_GOAL_DIGEST:
+        fail("prior 172 operation goals changed")
+    if digest_lines(["%s:%s" % (op["id"], op["status"])
+                     for op in prior_ops]) != PRIOR_172_OPERATION_STATUS_DIGEST:
+        fail("prior 172 operation statuses changed")
+    if add.get("previousOperationIdDigest") != PRIOR_172_OPERATION_ID_DIGEST:
+        fail("additive previous operation ID digest changed")
+    if add.get("previousOperationGoalDigest") != PRIOR_172_OPERATION_GOAL_DIGEST:
+        fail("additive previous operation goal digest changed")
+    if add.get("previousOperationStatusDigest") != PRIOR_172_OPERATION_STATUS_DIGEST:
+        fail("additive previous operation status digest changed")
+    new_ids = [oid for oid in ops if oid in set(SET_OPERATION_IDS)]
+    if digest_ids(new_ids) != ADDITIVE_10_ID_DIGEST:
+        fail("additive operation ID digest changed")
+    if digest_lines(["%s:%s" % (oid, ops.get(oid, {}).get("status"))
+                     for oid in SET_OPERATION_IDS]) != ADDITIVE_10_STATUS_DIGEST:
+        fail("additive operation status digest changed")
+    if add.get("additiveOperationIdDigest") != ADDITIVE_10_ID_DIGEST:
+        fail("recorded additive ID digest changed")
+    if add.get("additiveOperationStatusDigest") != ADDITIVE_10_STATUS_DIGEST:
+        fail("recorded additive status digest changed")
+
+    # The goal-core record must match the approved delta AND the actual live
+    # ledger/inventory numbers (183 ops / 41 G02 / exactly one planned
+    # CHA-MANUAL-COMPACT / 33 fixtures with ZERO fixture added).
+    for message in G.validate_goalcore_record(
+            baseline.get("goalCoreRunControlAdditive"), ops,
+            len(inventory.get("entries", [])), g02):
+        fail("goal-core ledger record: %s" % message)
 
     if len(families) == EXPECTED_FAMILIES:
         if digest_lines(["%s:%s" % (f["id"], f["androidOwnerGoal"])
@@ -630,8 +683,8 @@ def validate_sources(root: Path) -> None:
     tests = (root / "FloeAndroid/shared/Tests/FloeAndroidCoreTests/BridgeEnvelopeV3Tests.swift")
     if tests.is_file():
         text = tests.read_text(encoding="utf-8")
-        if "XCTAssertEqual(goldenPairs.count, 84)" not in text:
-            fail("manual golden test is not 84 entries")
+        if "XCTAssertEqual(goldenPairs.count, 87)" not in text:
+            fail("manual golden test is not 87 entries")
         for token in ("testSettingsDomainMatrixAppendsAcceptedTuplesUnderFiveLabels",
                       "testSettingsDomainPayloadValidationRunsBeforeHandler",
                       "testSettingsDomainContentReadLabelIsolation",
@@ -639,15 +692,15 @@ def validate_sources(root: Path) -> None:
             if token not in text:
                 fail("host test lacks %s" % token)
         for token in ("let goldenPairs: [(scope: String, configurationScope: String?, command: String)]",
-                      "XCTAssertEqual(Set(goldenKeys).count, 84)"):
+                      "XCTAssertEqual(Set(goldenKeys).count, 87)"):
             if token not in text:
                 fail("host matrix test lacks %r" % token)
 
     instrumented = (root / "FloeAndroid/core/swiftbridge/src/androidTest/kotlin/com/floe/android/bridge/BridgeEnvelopeV3InstrumentedTest.kt")
     if instrumented.is_file():
         text = instrumented.read_text(encoding="utf-8")
-        if "assertEquals(84, BridgeV3CommandMatrix.ENTRIES.size)" not in text:
-            fail("Android matrix test is not 84 entries")
+        if "assertEquals(87, BridgeV3CommandMatrix.ENTRIES.size)" not in text:
+            fail("Android matrix test is not 87 entries")
         for token in ("settingsDomainCreateOnlyRequiresExplicitIntent",
                       "settingsDomainContentReadLabelIsolation"):
             if token not in text:
@@ -737,6 +790,8 @@ def validate_all(root: Path) -> tuple[list[str], dict]:
         "entries": len(golden.get("entries", [])),
         "legacyEntries": EXPECTED_LEGACY_ENTRIES,
         "additiveEntries": EXPECTED_ADDITIVE_ENTRIES,
+        "settingsAdditiveEntries": EXPECTED_SETTINGS_ADDITIVE_ENTRIES,
+        "goalCoreAdditiveEntries": EXPECTED_GOALCORE_ADDITIVE_ENTRIES,
         "labels": len(golden.get("configurationLabels", [])),
         "operations": sum(len(f.get("operations", []))
                           for f in baseline.get("families", [])),

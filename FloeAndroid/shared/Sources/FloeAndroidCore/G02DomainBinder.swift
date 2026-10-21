@@ -4,7 +4,8 @@
 //
 // `RuntimeFacadeBridge.install` binds only the foundation
 // system/effect/event handlers. Every full G02 command in the frozen
-// `planning/bridge-v3-command-matrix.golden.json` (84 rules / 19 labels)
+// `planning/bridge-v3-command-matrix.golden.json` (87 rules / 19 labels since the
+// goal-core batch 2026-10-21; 84 before)
 // needs the same honest synchronous ingress: strict envelope field re-read,
 // correlation dedupe, bounded receipt mint, bounded mailbox enqueue, and an
 // immediate receipt-only JSON answer — plus an async mailbox processor that
@@ -21,7 +22,8 @@
 //     (48 KiB page budget / 64 KiB frame) — never JSON-as-detail-string and
 //     never an empty success substitute;
 //   * unregistered keys keep the unchanged fail-closed `runtimeUnavailable`
-//     refusal — the frozen 84/19 matrix counts are not widened.
+//     refusal — the frozen matrix counts widen ONLY by the accepted additive
+// ledger (three run-control tuples; no other widening).
 //
 // This source is NOT compiled/executed by the authoring package.
 import Foundation

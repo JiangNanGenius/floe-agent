@@ -24,7 +24,7 @@
 //
 // Handler registration installs the async mailbox processors and the
 // synchronous binder submit handlers for every non-self-installing ORDINARY
-// command in the frozen 84/19 matrix; self-installing domains (RB4 runs,
+// command in the frozen 87/19 matrix (goal-core batch appended three); self-installing domains (RB4 runs,
 // attachment staging) register their own keys. Temporary/privacy keys stay
 // unregistered until their real extension binds — the frozen fail-closed
 // `runtimeUnavailable` refusal answers them (no matrix widening).
@@ -331,6 +331,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
         //    only — temporary runs stay with the later temp extension); the
         //    staging authority binds the REAL service; the feed binder's
         //    REAL adapter replaces the rejected detached bridge.
+        let taskChecklist = TaskChecklistStore(database: database)
         let runBundle = RunPersistenceBundle(
             identity: .ordinary,
             conversations: conversations,
@@ -339,7 +340,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
             launches: cluster.runLaunchStore,
             childRuns: cluster.childRunStore,
             intelligence: intelligence,
-            discovery: SQLiteConversationDiscoveryStore(database: database))
+            discovery: SQLiteConversationDiscoveryStore(database: database),
+            taskChecklist: taskChecklist)
         let runComponents = RunDomainComponents(
             context: RunIngressContext(
                 epoch: epoch,
@@ -369,7 +371,11 @@ public final class G02InstalledComposition: @unchecked Sendable {
                 try await personalizationStore.liveSnapshot(workspaceID: nil)
             },
             adapterFactoryOverride: nil,
-            registry: .shared)
+            registry: .shared,
+            // goal-core batch: the SAME original DatabaseManager's shared
+            // settings store (semantic-compaction key read only; the cluster
+            // already owns this exact store instance).
+            settings: cluster.settingsStore)
         RunDomainFacade.install(components: runComponents, registry: gen.registry)
 
         // Close the REAL feed/lease cycle with the exact accepted domain
@@ -454,6 +460,13 @@ public final class G02InstalledComposition: @unchecked Sendable {
             "usage": ObjectIdentifier(database),
             "vault": ObjectIdentifier(database),
         ]
+        // The install reservation prevents a newer graph from publishing
+        // while this build owns it. Register the ORIGINAL progress tools
+        // only after every constructor succeeded and the owner is current.
+        guard AndroidRuntimeBootstrap.bootstrapStillCurrent(epoch: epoch, owner: gen.owner) else {
+            return nil
+        }
+        registerTaskChecklistTools(store: taskChecklist, registry: runComponents.registry)
         return installed
     }
 }

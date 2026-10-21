@@ -128,6 +128,23 @@ public struct RunDomainError: Error, Sendable, Equatable {
         // IO); also used by the temporary surface, which denies images
         // before any IO by the RAM-only contract.
         case imageLoaderUnbound
+        // goal-core code batch (2026-10-21, ledger-counted ONE additive
+        // reason): the ordinary conversation currently holds a live run,
+        // an in-flight launch admission or an in-flight manual compaction,
+        // so a quiescence-requiring control (`conversation.compact`
+        // admission, its launch-side reciprocal refusal, and the
+        // goal.confirm no-live-run proof) refuses honestly. Existing
+        // reasons stay exactly as before; no existing case changed.
+        case conversationActive
+        // post-run stop wiring (Main review 2026-10-21, SECOND explicit
+        // ledger-counted additive INTERNAL reason): an in-process goal
+        // CONTINUATION launch admits under its parent review's permit; once
+        // the user's explicit run.cancel invalidated that permit (stop set +
+        // reservation removed synchronously), a continuation still inside
+        // the launch pipeline's admission window refuses honestly at the
+        // next fence re-check instead of racing the Stop. Internal machine
+        // vocabulary only: no new public command, payload or code.
+        case continuationStopped
         case `internal`
     }
     public let code: Code
@@ -222,6 +239,24 @@ public enum RunWireRevision {
     }
     public static func pendingQueueResourceID(_ conversationID: UUID) -> String {
         "pendingQueue.\(conversationID.uuidString)"
+    }
+
+    /// goal-core code batch (2026-10-21, additive identities): the durable
+    /// goal row's opaque revision identity for `goal.confirm`. The version
+    /// is the ORIGINAL monotonic goal `revision` integer (ConversationGoal.
+    /// revision, IntelligenceStore CAS), never a facade-invented counter.
+    public static func goalResourceID(_ goalID: UUID) -> String {
+        "goal.\(goalID.uuidString)"
+    }
+
+    public static func goalVersion(revision: Int) -> String { "rev:\(revision)" }
+
+    /// Accepted-plan revision identity for the plan card (`plan.accept`
+    /// proves the conversation-row digest in the envelope; this bounded
+    /// descriptor is the plan's own display identity — id + revision + the
+    /// ORIGINAL plan digest string — never an authority token).
+    public static func planVersion(revision: Int, digest: String) -> String {
+        "rev:\(revision):\(digest)"
     }
 
     /// Run revision version = the ORIGINAL durable `RunRecord.state` string.
@@ -478,6 +513,17 @@ public struct RunStartQuery: Sendable, Equatable {
     /// rejected with unsupportedRole (never a sentinel).
     public var requestedEnvironmentID: String?
     public var requestedJobID: String?
+    /// goal-core code batch (2026-10-21, ADDITIVE optional grammar): the
+    /// structured durable goal the trusted App producer created through the
+    /// ORIGINAL GoalBuilder semantics, riding the EXISTING ordinary
+    /// `run.start` goal-mode launch. nil keeps every previous launch
+    /// byte-identical (original `ensureDurableGoal` behavior). Only
+    /// mode == .goal accepts this key; the create-intent surface
+    /// (`run.startTask`) refuses it structurally. The domain commits the
+    /// goal identity + criteria/steps rows in the SAME C1 writer
+    /// transaction as the run/message/launch — no flattened prompt
+    /// substitute, no confirmation flags, no model-authored writer.
+    public var goalDefinition: StructuredGoalDefinition?
 
     public init(conversationID: UUID, goal: String, mode: RunLaunchMode,
                 providerID: UUID, modelID: UUID,
@@ -485,7 +531,8 @@ public struct RunStartQuery: Sendable, Equatable {
                 hostToolCeiling: [String]? = nil,
                 policy: DraftTaskPolicy = DraftTaskPolicy(),
                 requestedEnvironmentID: String? = nil,
-                requestedJobID: String? = nil) {
+                requestedJobID: String? = nil,
+                goalDefinition: StructuredGoalDefinition? = nil) {
         self.conversationID = conversationID
         self.goal = goal
         self.mode = mode
@@ -496,12 +543,13 @@ public struct RunStartQuery: Sendable, Equatable {
         self.policy = policy
         self.requestedEnvironmentID = requestedEnvironmentID
         self.requestedJobID = requestedJobID
+        self.goalDefinition = goalDefinition
     }
 
     public static let allowedKeys: Set<String> = [
         "goal", "mode", "providerID", "modelID", "stagedAttachments",
         "toolCeiling", "approvalMode", "recoveryPolicy", "notificationPolicy",
-        "environmentID", "jobID",
+        "environmentID", "jobID", "goalDefinition",
     ]
 
     public static func parse(payload: SettingsDomainV1.JSONValue?,
@@ -544,6 +592,13 @@ public struct RunStartQuery: Sendable, Equatable {
                 return handle
             }
         }
+        let goalDefinition = try StructuredGoalDefinition.parseOptional(object)
+        if goalDefinition != nil, mode != .goal {
+            // Structured goals are an ADDITIVE option of the EXISTING
+            // goal-mode launch only — chat/plan launches keep the exact
+            // original grammar and behavior (unknown-for-mode keys refuse).
+            throw RunDomainError(.invalidState, .payloadInvalid)
+        }
         return RunStartQuery(
             conversationID: conversationID,
             goal: goal,
@@ -554,7 +609,8 @@ public struct RunStartQuery: Sendable, Equatable {
             hostToolCeiling: ceiling,
             policy: policy,
             requestedEnvironmentID: try object.optionalString("environmentID", maxBytes: 64),
-            requestedJobID: try object.optionalString("jobID", maxBytes: 64))
+            requestedJobID: try object.optionalString("jobID", maxBytes: 64),
+            goalDefinition: goalDefinition)
     }
 
     static func approvalMode(_ object: RunPayloadReader.Object) throws -> TaskApprovalMode {
@@ -598,6 +654,85 @@ public enum RunLaunchMode: String, Sendable, CaseIterable {
     case goal
 }
 
+/// goal-core code batch (2026-10-21, additive bounded grammar): the
+/// structured goal carried by the EXISTING trusted ordinary `run.start`
+/// goal-mode launch. Mirrors the ORIGINAL iOS GoalBuilder producer fields
+/// (`ThreadDetailViewModel.createGoal`: objective + criteria +
+/// blockingConditions + stoppingConditions, each trimmed with empty
+/// entries dropped by the producer before sending). This payload can create
+/// no authority: it rides only the launch scope's existing-conversation
+/// row-digest CAS through the trusted host ingress (model/tool/imported
+/// JSON has no route here), accepts NO approval/confirmation/review flags,
+/// and is persisted by the domain as the ORIGINAL
+/// `ConversationGoal`/`GoalCriterion` rows plus ONE `Advance goal`
+/// inProgress step with the original initializer defaults inside the same
+/// C1 writer transaction (never a flattened prompt substitute).
+public struct StructuredGoalDefinition: Sendable, Equatable {
+    public var objective: String
+    public var criteria: [String]
+    public var blockingConditions: [String]
+    public var stoppingConditions: [String]
+
+    public init(objective: String, criteria: [String],
+                blockingConditions: [String], stoppingConditions: [String]) {
+        self.objective = objective
+        self.criteria = criteria
+        self.blockingConditions = blockingConditions
+        self.stoppingConditions = stoppingConditions
+    }
+
+    /// Bounded grammar ceiling (one 64 KiB envelope with slack; the run
+    /// goal text keeps its OWN separate bound).
+    public static let maximumCriteriaItems = 32
+    public static let maximumConditionItems = 16
+    public static let maximumCriterionItemBytes = 2_048
+    public static let maximumConditionItemBytes = 2_048
+    public static let allowedKeys: Set<String> = [
+        "objective", "criteria", "blockingConditions", "stoppingConditions",
+    ]
+
+    /// Closed nested parse shared with `RunStartQuery.parseFields`. Absent
+    /// key => nil (every previous launch keeps byte-identical behavior).
+    /// Malformed / unknown nested keys / oversize => typed payload refusal
+    /// BEFORE any durable effect (no residue).
+    static func parseOptional(_ object: RunPayloadReader.Object) throws -> StructuredGoalDefinition? {
+        guard object.optional("goalDefinition") != nil else { return nil }
+        let definition = try object.object("goalDefinition", allowed: Self.allowedKeys)
+        let objective = try definition.string("objective",
+                                              maxBytes: RunDomainLimits.maximumGoalBytes,
+                                              trimmed: true)
+        func items(_ key: String, maxItems: Int, itemBytes: Int) throws -> [String] {
+            guard let raw = try definition.optionalArray(key, maxItems: maxItems) else {
+                return []
+            }
+            var values: [String] = []
+            values.reserveCapacity(raw.count)
+            for item in raw {
+                guard case .string(let text) = item else {
+                    throw RunDomainError(.invalidState, .payloadInvalid)
+                }
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard trimmed.utf8.count <= itemBytes else {
+                    throw RunDomainError(.payloadTooLarge, .payloadTooLarge)
+                }
+                // Original producer semantics: empty entries are dropped.
+                if !trimmed.isEmpty { values.append(trimmed) }
+            }
+            return values
+        }
+        return StructuredGoalDefinition(
+            objective: objective,
+            criteria: try items("criteria", maxItems: Self.maximumCriteriaItems,
+                                itemBytes: Self.maximumCriterionItemBytes),
+            blockingConditions: try items("blockingConditions",
+                                          maxItems: Self.maximumConditionItems,
+                                          itemBytes: Self.maximumConditionItemBytes),
+            stoppingConditions: try items("stoppingConditions",
+                                          maxItems: Self.maximumConditionItems,
+                                          itemBytes: Self.maximumConditionItemBytes))
+    }
+}
+
 /// New-conversation launch (createIntent): title is host-authored, optional;
 /// the minted conversation/run IDs exist only after the atomic commit.
 public struct RunStartTaskQuery: Sendable, Equatable {
@@ -621,6 +756,16 @@ public struct RunStartTaskQuery: Sendable, Equatable {
         // the domain MUST replace with the real committed identity before it
         // is exposed anywhere.
         let inner = try RunStartQuery.parseFields(object, conversationID: Self.mintProbe)
+        if inner.goalDefinition != nil {
+            // goal-core code batch: the structured goal binds a DURABLE
+            // conversation identity inside the C1 transaction; a
+            // create-intent launch has no proven identity before the
+            // commit, and the original GoalBuilder flow requires the
+            // existing task. Refuse structurally (no half goal, no probe
+            // row) — the producer uses `run.start` on the existing
+            // conversation.
+            throw RunDomainError(.invalidState, .payloadInvalid)
+        }
         return RunStartTaskQuery(conversationTitle: title, inner: inner)
     }
 
@@ -1163,6 +1308,118 @@ public struct RunDomainReply: Sendable {
     }
 }
 
+// MARK: - goal-core controls (2026-10-21 additive queries)
+
+/// Execution recommendation carried by `plan.accept`: the two original
+/// buttons ("Execute on the normal plan" / "Convert to goal",
+/// ThreadDetailView.swift:346-357). Closed vocabulary; a missing key falls
+/// back to the plan row's OWN recommendation exactly like the original
+/// (`execution ?? latestPlan.executionRecommendation ?? .normal`).
+public enum PlanAcceptExecution: String, Sendable, Equatable, CaseIterable {
+    case normal
+    case goal
+}
+
+/// `plan.accept` — the single wire action that accepts the EXACT plan
+/// revision the human saw and launches it (iOS performs accept + startRun as
+/// ONE user action; accept+start are never split into two wire ops).
+/// `goal`/`mode` keys are FORBIDDEN: the execution prompt is composed
+/// host-side from the ACCEPTED durable row (never UI-supplied text, so no
+/// prompt injection can ride the wire), and the launch mode derives from the
+/// execution choice (normal -> the ordinary chat-engine launch, goal ->
+/// goal mode). The conversation-row digest CAS rides the envelope exactly
+/// like `run.start`.
+public struct PlanAcceptQuery: Sendable, Equatable {
+    public var conversationID: UUID
+    public var planID: UUID
+    public var planRevision: Int
+    public var planDigest: String
+    public var execution: PlanAcceptExecution?
+    public var providerID: UUID
+    public var modelID: UUID
+    public var policy: DraftTaskPolicy
+
+    public static let allowedKeys: Set<String> = [
+        "planID", "planRevision", "planDigest", "execution",
+        "providerID", "modelID",
+        "approvalMode", "recoveryPolicy", "notificationPolicy",
+    ]
+
+    public static func parse(payload: SettingsDomainV1.JSONValue?,
+                             conversationID: UUID) throws -> PlanAcceptQuery {
+        let object = try RunPayloadReader.Object(
+            payload ?? .object([:]), allowed: allowedKeys)
+        let revision = try object.integer("planRevision", min: 1, max: 1_048_576)
+        let digest = try object.string("planDigest", maxBytes: 128)
+        let executionRaw = try object.optionalString("execution", maxBytes: 12)
+        var execution: PlanAcceptExecution?
+        if let executionRaw {
+            guard let value = PlanAcceptExecution(rawValue: executionRaw) else {
+                throw RunDomainError(.invalidState, .payloadInvalid)
+            }
+            execution = value
+        }
+        return PlanAcceptQuery(
+            conversationID: conversationID,
+            planID: try object.uuid("planID"),
+            planRevision: Int(revision),
+            planDigest: digest,
+            execution: execution,
+            providerID: try object.uuid("providerID"),
+            modelID: try object.uuid("modelID"),
+            policy: DraftTaskPolicy(
+                approvalMode: try RunStartQuery.approvalMode(object),
+                recoveryPolicy: try RunStartQuery.recoveryPolicy(object),
+                notificationPolicy: try RunStartQuery.notificationPolicy(object)))
+    }
+}
+
+/// `goal.confirm` — the EXPLICIT human completion confirmation for a goal
+/// the durable lanes moved to `.verifying`. Identity + revision ONLY: no
+/// caller boolean, no approval flag, no review text can ride this payload
+/// (the trusted wire command itself is the human-intent proof; models,
+/// imported documents and tool output have no route to this writer).
+public struct GoalConfirmQuery: Sendable, Equatable {
+    public var conversationID: UUID
+    public var goalID: UUID
+    public var expectedGoalRevision: Int
+
+    public static let allowedKeys: Set<String> = ["goalID", "expectedGoalRevision"]
+
+    public static func parse(payload: SettingsDomainV1.JSONValue?,
+                             conversationID: UUID) throws -> GoalConfirmQuery {
+        let object = try RunPayloadReader.Object(
+            payload ?? .object([:]), allowed: allowedKeys)
+        return GoalConfirmQuery(
+            conversationID: conversationID,
+            goalID: try object.uuid("goalID"),
+            expectedGoalRevision: Int(try object.integer("expectedGoalRevision",
+                                                          min: 1, max: 1_048_576)))
+    }
+}
+
+/// `conversation.compact` — the manual context compaction trigger
+/// (original `/`-palette item). The ONLY payload key is an OPTIONAL model
+/// identity; the CORE resolves provider + model through the trusted
+/// model-config projection (default-agent preferences + providers store),
+/// validates a caller-supplied modelID against the REAL catalog and never
+/// assumes it. No localized strings cross the bridge.
+public struct ConversationCompactQuery: Sendable, Equatable {
+    public var conversationID: UUID
+    public var preferredModelID: UUID?
+
+    public static let allowedKeys: Set<String> = ["modelID"]
+
+    public static func parse(payload: SettingsDomainV1.JSONValue?,
+                             conversationID: UUID) throws -> ConversationCompactQuery {
+        let object = try RunPayloadReader.Object(
+            payload ?? .object([:]), allowed: allowedKeys)
+        return ConversationCompactQuery(
+            conversationID: conversationID,
+            preferredModelID: try object.optionalUUID("modelID"))
+    }
+}
+
 // MARK: - Handler binding plan (documentation for the future binder)
 
 /// The EXACT v3 handler keys this domain is designed to serve, computed with
@@ -1171,6 +1428,10 @@ public struct RunDomainReply: Sendable {
 /// `FacadeEventPump` handler; this package feeds it real durable windows and
 /// live consumers through per-run track tasks and MUST NOT re-register or
 /// replace the pump key). This plan registers NOTHING by itself.
+/// goal-core code batch (2026-10-21): THREE additive bindings
+/// (`plan.accept` under launch, `goal.confirm` + `conversation.compact`
+/// under conversationLifecycle — the matrices gained exactly those three
+/// tuples; no existing binding changed).
 public enum RunDomainHandlerPlan {
     public struct Binding: Sendable, Equatable {
         public let handlerKey: String
@@ -1243,6 +1504,19 @@ public enum RunDomainHandlerPlan {
                     command: "child.entries", scope: .taskExecution, configurationScope: nil,
                     serviceMethod: "FacadeRunDomain.childEntries",
                     integrationNote: "SQLiteChildRunStore.entries -> ChildRunEntryPage{entries,nextSequence} with stop-at-budget"),
+            // goal-core code batch (2026-10-21): the three additive controls.
+            Binding(handlerKey: BridgeV3.handlerKey(scope: .launch, command: "plan.accept"),
+                    command: "plan.accept", scope: .launch, configurationScope: nil,
+                    serviceMethod: "FacadeRunDomain.planAccept",
+                    integrationNote: "existing-conversation taskID + floe.conversation-row.v1 digest CAS; proves the EXACT plan revision the human saw, commits accepted plan (+ optional GoalFromPlanFactory goal) with run/message/launch in the SAME C1 writer transaction before any network, then falls through the REAL run.start pipeline (normal->chat-engine launch, goal->goal mode); host-composed canonical prompt; reply {runID,acceptedPlanRevision,goalID?}"),
+            Binding(handlerKey: BridgeV3.handlerKey(scope: .conversationLifecycle, command: "goal.confirm"),
+                    command: "goal.confirm", scope: .conversationLifecycle, configurationScope: nil,
+                    serviceMethod: "FacadeRunDomain.goalConfirm",
+                    integrationNote: "identity+revision-only payload; ORIGINAL GoalCompletionGate over the durable verifying goal with the userConfirmation evidence transform; NO live run/launch may hold the conversation; saveGoalIfRevisionMatches CAS (late/parallel writers lose honestly); blockers refuse with bounded codes and persist NO confirmation evidence on refusal"),
+            Binding(handlerKey: BridgeV3.handlerKey(scope: .conversationLifecycle, command: "conversation.compact"),
+                    command: "conversation.compact", scope: .conversationLifecycle, configurationScope: nil,
+                    serviceMethod: "FacadeRunDomain.conversationCompact",
+                    integrationNote: "original ConversationCenter.requestManualCompaction guard chain verbatim: one-per-conversation reservation SHARED with every real run launch admission; original engine/assembler/settings/model resolution; real cancel/drain; final history + live-launch proof and the summary INSERT commit atomically in the ONE original DB writer (compactionHistoryChanged/refusal windows closed); truthful shortHistory/noHistory no-ops; reply {compacted,reason,beforeTokens,afterTokens,recordID?}"),
         ]
     }
 

@@ -29,7 +29,9 @@ class ProviderWireRowsShapeTest {
     private val json = Json { ignoreUnknownKeys = false }
 
     private fun providerRow(id: String, syncRevision: Long, configured: Boolean,
-                            opaque: String?): JsonObject = JsonObject(mapOf(
+                            opaque: String?,
+                            presetID: String? = null,
+                            headers: Map<String, String> = emptyMap()): JsonObject = JsonObject(mapOf(
         "id" to JsonPrimitive(id),
         "kind" to JsonPrimitive("openai"),
         "wireProtocol" to JsonPrimitive("openAIChatCompletions"),
@@ -47,7 +49,12 @@ class ProviderWireRowsShapeTest {
             if (opaque != null) put("opaqueReference", JsonPrimitive(opaque))
             put("synchronizable", JsonPrimitive(true))
         }),
-    ))
+    ) + buildMap {
+        if (presetID != null) put("presetID", JsonPrimitive(presetID))
+        if (headers.isNotEmpty()) {
+            put("nonSecretHeaders", JsonObject(headers.mapValues { JsonPrimitive(it.value) }))
+        }
+    })
 
     @Test
     fun bareArrayIsNotADecodableProviderCarrier() {
@@ -100,5 +107,33 @@ class ProviderWireRowsShapeTest {
         assertNotNull("canonical revision must be derived", revision)
         assertEquals("provider.$id", revision!!.resourceID)
         assertEquals("7", revision.version)
+    }
+
+    @Test
+    fun additiveProjectionFeedsLosslessEditorMetadata() {
+        val id = "3F6A8C0E-3333-4D2B-9B1A-0A0A0A0A0003"
+        val value = JsonObject(mapOf(
+            "rows" to JsonArray(listOf(
+                providerRow(id, 2, true, null, presetID = "deepseek",
+                    headers = mapOf("X-Org" to "qa", "X-Route" to "direct")),
+            )),
+        ))
+        ProviderWire.decodeProviderRows(value)
+        val extras = ProviderWire.extrasFor(id)
+        assertNotNull(extras)
+        assertEquals("deepseek", extras!!.presetID)
+        assertEquals("X-Org: qa\nX-Route: direct", extras.nonSecretHeaders)
+        assertEquals("QA Provider", extras.displayName)
+
+        // Absent additive fields stay honest: no invented preset/headers, and
+        // the null display name is not replaced by the row-id fallback.
+        val legacyID = "3F6A8C0E-4444-4D2B-9B1A-0A0A0A0A0004"
+        ProviderWire.decodeProviderRows(JsonObject(mapOf(
+            "rows" to JsonArray(listOf(providerRow(legacyID, 1, false, null))))))
+        val legacy = ProviderWire.extrasFor(legacyID)
+        assertNotNull(legacy)
+        assertNull(legacy!!.presetID)
+        assertEquals("", legacy.nonSecretHeaders)
+        assertEquals("QA Provider", legacy.displayName)
     }
 }

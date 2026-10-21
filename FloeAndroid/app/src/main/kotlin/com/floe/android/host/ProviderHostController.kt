@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host
 
+import com.floe.android.feature.providers.SupplierChoice
 import com.floe.android.feature.providers.ConnectionProbeUi
 import com.floe.android.feature.providers.ConnectionTestUi
 import com.floe.android.feature.providers.ModelCapabilityUi
 import com.floe.android.feature.providers.ModelDraftRowUi
+import com.floe.android.feature.providers.ModelSavedMetadataUi
 import com.floe.android.feature.providers.OfficialMediaModelUi
 import com.floe.android.feature.providers.OfficialSupplierUi
 import com.floe.android.feature.providers.OfferConnectionUi
@@ -33,6 +35,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -63,8 +66,27 @@ import kotlinx.serialization.json.longOrNull
  */
 class ProviderHostController internal constructor(
     private val host: RuntimeHost,
-    private val routeAuthority: HostRouteAuthority = NativeHostRouteAuthority,
+    routeAuthority: HostRouteAuthority = NativeHostRouteAuthority,
 ) : ProviderUiCallbacks {
+
+    /** Trusted-host route authority (JVM fixtures inject a scripted double). */
+    internal var routeAuthority: HostRouteAuthority = routeAuthority
+
+    /**
+     * Trusted-host DRAFT probe seam (production = JNI). JVM fixtures bind a
+     * scripted double; no fake service is added to production.
+     */
+    internal var draftProbe: HostDraftProbe = NativeHostDraftProbe
+
+    /** Active draft-probe handle per editor identity (RAM only). */
+    private val draftProbeHandles = ConcurrentHashMap<String, String>()
+    /** Monotonic attempt id per editor identity (fences late polls). */
+    private val draftProbeAttempts = ConcurrentHashMap<String, Long>()
+    /** Stable identity for a draft probe of a not-yet-saved editor. */
+    private val draftProbeIDs = ConcurrentHashMap<String, String>()
+    private val draftProbeSequencer = AtomicLong(0)
+    private val permissionActionSequencer = AtomicLong(0)
+    private val permissionActions = ConcurrentHashMap<String, Long>()
 
     /** Caller-retained across configuration changes; RAM only. */
     val flowHolder = ProviderFlowHolder(this)
@@ -107,6 +129,13 @@ class ProviderHostController internal constructor(
     /** Test seam for the trusted host ingress; production is the frozen seam. */
     internal var secureIngress: HostSecureIngressSubmitter = NativeHostSecureIngressSubmitter
 
+    /**
+     * Trusted-host large-profile MODEL-SET staging (JVM fixtures replace
+     * the inner [HostModelSetStager] seam). Production routes through the
+     * JNI seam only; nothing here is a public command.
+     */
+    internal var modelSets = ProviderModelSetStagingController()
+
     internal fun start() {
         if (!admitted()) return
         // The custom-endpoint preset is a REAL, secret-free host option:
@@ -129,6 +158,16 @@ class ProviderHostController internal constructor(
     internal fun stop() {
         inFlightTests.clear()
         inFlightDiscoveries.clear()
+        // The native route/epoch fence retires any owned draft-probe work on
+        // Root retirement; the App-side handles/attempts are cleared here so
+        // a later start never resurrects stale polls.
+        draftProbeAttempts.clear()
+        permissionActions.clear()
+        draftProbeHandles.clear()
+        draftProbeIDs.clear()
+        // Un-consumed model-set stages are App-side records only; the
+        // native epoch/route fences retire the real slots.
+        modelSets.discardAll()
         countObservation?.cancel()
         countObservation = null
     }
@@ -137,6 +176,9 @@ class ProviderHostController internal constructor(
     private var lastProviderPageValue: JsonElement? = null
     private var lastModelCounts: Map<String, Int> = emptyMap()
     private var countObservation: kotlinx.coroutines.Job? = null
+    /** Fences provider/catalog page continuation chains (latest wins). */
+    private val providerPageGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private val catalogPageGeneration = java.util.concurrent.atomic.AtomicLong(0)
 
     private fun republishModelCounts() {
         val counts = host.conversations.modelCountsByProvider()
@@ -164,17 +206,90 @@ class ProviderHostController internal constructor(
 
     // --------------------------------------------------------- projections
 
+    /**
+     * Bounded continuation read (Main decision
+     * MAIN_CONFIG_READ_PAGING_DECISION_20261021): the provider page follows
+     * the ACTUAL `ConfigPageComposer` nextCursor carried by the authorized
+     * payload continuation field — strict progress (decimal index must
+     * increase), page/row bounds, refresh generation fencing (a newer
+     * refresh owns the surface; a late page never mixes into it), and error
+     * ownership (a partial snapshot is NEVER published: the last real list
+     * stays and an honest load failure is shown; malformed/foreign
+     * continuations refuse rather than coerce to page 1).
+     */
     internal fun refreshProviders() {
         if (!admitted()) return
+        fetchProviderPage(providerPageGeneration.incrementAndGet(),
+                          cursor = null, pages = 0, accumulated = ArrayList())
+    }
+
+    private fun fetchProviderPage(
+        generation: Long,
+        cursor: String?,
+        pages: Int,
+        accumulated: ArrayList<JsonElement>,
+    ) {
         host.trackOperation(
             HostCommandRequest(
                 command = "config.providers.list",
                 scope = HostScope.ApplicationConfiguration("providers"),
                 stateful = false,
                 correlationID = client().correlationID("plist"),
-                payload = JsonObject(mapOf("operation" to JsonPrimitive("snapshot"))),
+                payload = ProviderWire.providerListPayload(cursor),
             ),
-        ) { outcome -> handleProvidersPage(outcome) }
+        ) { outcome ->
+            if (providerPageGeneration.get() != generation) return@trackOperation
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val value = outcome.value
+                    val rows = value?.let { ProviderWire.pageRows(it) }
+                    if (rows == null) {
+                        publishProviderListFailure("list_page_unreadable")
+                        return@trackOperation
+                    }
+                    accumulated.addAll(rows)
+                    val meta = ProviderWire.pageMeta(value)
+                    if (meta?.hasMore == true) {
+                        val next = meta.nextCursor
+                        if (!pageProgressed(cursor, next) ||
+                            pages + 1 >= MAX_PAGE_CHAIN ||
+                            accumulated.size >= MAX_PAGE_CHAIN_ROWS) {
+                            publishProviderListFailure("list_page_continuation")
+                            return@trackOperation
+                        }
+                        fetchProviderPage(generation, next, pages + 1, accumulated)
+                        return@trackOperation
+                    }
+                    publishProviderPage(
+                        JsonObject(mapOf("rows" to JsonArray(accumulated.toList()))))
+                }
+                is HostOperationOutcome.Rejected -> {
+                    // Detailed typed code stays in diagnostics; the ordinary
+                    // UI shows natural bilingual copy only.
+                    runCatching {
+                        android.util.Log.w("FloeProviders", "list_rejected:${outcome.code}")
+                    }
+                    publishProviderListFailure(outcome.code)
+                }
+                is HostOperationOutcome.Failed -> {
+                    runCatching {
+                        android.util.Log.w("FloeProviders", "list_failed:${outcome.code}")
+                    }
+                    publishProviderListFailure(outcome.code)
+                }
+                HostOperationOutcome.Cancelled,
+                HostOperationOutcome.Superseded -> Unit
+            }
+        }
+    }
+
+    /** Composer cursor rule: an absent first continuation starts at 0+. */
+    private fun pageProgressed(previous: String?, next: String?): Boolean {
+        val nextValue = next?.toLongOrNull() ?: return false
+        if (nextValue < 0) return false
+        if (previous == null) return true
+        val previousValue = previous.toLongOrNull() ?: return false
+        return nextValue > previousValue
     }
 
     private fun loadFailureCopy(): String =
@@ -182,73 +297,61 @@ class ProviderHostController internal constructor(
             host.appContext.getString(com.floe.android.R.string.providers_load_failed)
         }.getOrElse { "Couldn't load your providers. Try again." }
 
-    private fun handleProvidersPage(outcome: HostOperationOutcome) {
-        when (outcome) {
-            is HostOperationOutcome.Completed -> {
-                lastProviderPageValue = outcome.value
-                val counts = host.conversations.modelCountsByProvider()
-                lastModelCounts = counts
-                if (counts.isEmpty()) {
-                    // The models page may not have landed yet; the collector
-                    // republishes the real counts as soon as it does.
-                    host.conversations.refreshModels()
-                }
-                val rows = outcome.value?.let { ProviderWire.decodeProviderRows(it, counts) }
-                updateDestination { state ->
-                    state.copy(
-                        list = ProviderListUiState(
-                            isLoading = false,
-                            conversationProviders = rows?.conversationProviders
-                                ?: state.list.conversationProviders,
-                            imageProviders = rows?.imageProviders
-                                ?: state.list.imageProviders,
-                            videoProviders = rows?.videoProviders
-                                ?: state.list.videoProviders,
-                            errorMessage = if (rows == null) loadFailureCopy() else null,
-                        ),
-                    )
-                }
-                // The provider side of the model join just changed: republish
-                // the composer projection AFTER the destination carries the
-                // new rows (no second catalog read).
-                host.conversations.republishModelProjection()
-            }
-            is HostOperationOutcome.Rejected -> {
-                // Detailed typed code stays in diagnostics; the ordinary UI
-                // shows natural bilingual copy only.
-                // Diagnostic only; wrapped so a host-unit environment without
-                // the Android Log service can never cancel the host scope.
-                runCatching {
-                    android.util.Log.w("FloeProviders", "list_rejected:${outcome.code}")
-                }
-                updateDestination { it.copy(list = it.list.copy(isLoading = false,
-                    errorMessage = loadFailureCopy())) }
-            }
-            is HostOperationOutcome.Failed -> {
-                runCatching {
-                    android.util.Log.w("FloeProviders", "list_failed:${outcome.code}")
-                }
-                updateDestination { it.copy(list = it.list.copy(isLoading = false,
-                    errorMessage = loadFailureCopy())) }
-            }
-            HostOperationOutcome.Cancelled,
-            HostOperationOutcome.Superseded -> Unit
+    private fun publishProviderPage(value: JsonElement) {
+        lastProviderPageValue = value
+        val counts = host.conversations.modelCountsByProvider()
+        lastModelCounts = counts
+        if (counts.isEmpty()) {
+            // The models page may not have landed yet; the collector
+            // republishes the real counts as soon as it does.
+            host.conversations.refreshModels()
         }
+        val rows = ProviderWire.decodeProviderRows(value, counts)
+        updateDestination { state ->
+            state.copy(
+                list = ProviderListUiState(
+                    isLoading = false,
+                    conversationProviders = rows?.conversationProviders
+                        ?: state.list.conversationProviders,
+                    imageProviders = rows?.imageProviders
+                        ?: state.list.imageProviders,
+                    videoProviders = rows?.videoProviders
+                        ?: state.list.videoProviders,
+                    errorMessage = if (rows == null) loadFailureCopy() else null,
+                ),
+            )
+        }
+        // The provider side of the model join just changed: republish the
+        // composer projection AFTER the destination carries the new rows
+        // (no second catalog read).
+        host.conversations.republishModelProjection()
+    }
+
+    private fun publishProviderListFailure(code: String) {
+        runCatching {
+            android.util.Log.w("FloeProviders", "list_incomplete:$code")
+        }
+        updateDestination { it.copy(list = it.list.copy(isLoading = false,
+            errorMessage = loadFailureCopy())) }
     }
 
     internal fun refreshCatalog() {
         if (!admitted()) return
+        val generation = catalogPageGeneration.incrementAndGet()
         updateDestination {
             it.copy(catalog = catalogWithCustom(it.catalog).copy(refreshInFlight = true))
         }
         // REAL contract (RuntimeFacadeConfig.catalogSearch + RB2 router):
-        // payload is CLOSED to {"query","filter"} and the completed page is
-        // the ConfigPageComposer list, delivered as the {"rows":[...]} OBJECT
-        // by the G02 binder boundary. The old {"operation":"catalog.refresh"}
-        // payload was refused as invalidEnvelope/catalogQueryMissing, which is
-        // why the chooser always showed an empty catalog.
-        submitCatalogPage(filter = "all") { entries ->
-            if (entries == null) {
+        // the payload is CLOSED to {"query","filter"(,"cursor")} and the
+        // completed page is the ConfigPageComposer document delivered as the
+        // {"rows":[…],nextCursor,hasMore} OBJECT by the domain-to-carrier
+        // binder. Both `all` and `configured` follow the ACTUAL returned
+        // continuation with the same bounded, progress-checked, generation-
+        // fenced loop; a mid-chain refusal never publishes a partial mix.
+        fetchCatalogPages(generation, filter = "all", cursor = null, pages = 0,
+                          accumulated = ArrayList()) { rows ->
+            if (rows == null) {
+                if (catalogPageGeneration.get() != generation) return@fetchCatalogPages
                 // Typed refusal (e.g. needsConfiguration/catalogNotInjected):
                 // keep the honest empty catalog + custom preset; never fake
                 // entries and never leave the UI in an endless refresh state.
@@ -261,13 +364,17 @@ class ProviderHostController internal constructor(
                         ),
                     )
                 }
-                return@submitCatalogPage
+                return@fetchCatalogPages
             }
-            // Marks come from the SERVER-SIDE configured filter page — the App
-            // never guesses which saved rows map to presets.
-            submitCatalogPage(filter = "configured") { configuredEntries ->
-                val configured = configuredEntries
-                    ?.mapNotNull { it.catalogEntryId }?.toSet() ?: emptySet()
+            // Marks come from the SERVER-SIDE configured filter page — the
+            // App never guesses which saved rows map to presets.
+            fetchCatalogPages(generation, filter = "configured", cursor = null,
+                              pages = 0, accumulated = ArrayList()) { configuredRows ->
+                if (catalogPageGeneration.get() != generation) return@fetchCatalogPages
+                val configured = configuredRows
+                    ?.mapNotNull { ProviderWire.catalogEntryOf(it)?.catalogEntryId }
+                    ?.toSet() ?: emptySet()
+                val entries = rows.mapNotNull { ProviderWire.catalogEntryOf(it) }
                 val merged = entries.map {
                     if (it.catalogEntryId in configured) it.copy(isConfigured = true) else it
                 }
@@ -286,10 +393,14 @@ class ProviderHostController internal constructor(
         }
     }
 
-    /** ONE real catalog page through the canonical command (closed payload). */
-    private fun submitCatalogPage(
+    /** ONE bounded continuation chain for one closed catalog filter. */
+    private fun fetchCatalogPages(
+        generation: Long,
         filter: String,
-        onPage: (List<OfficialSupplierUi>?) -> Unit,
+        cursor: String?,
+        pages: Int,
+        accumulated: ArrayList<JsonElement>,
+        onDone: (List<JsonElement>?) -> Unit,
     ) {
         host.trackOperation(
             HostCommandRequest(
@@ -297,19 +408,37 @@ class ProviderHostController internal constructor(
                 scope = HostScope.ApplicationConfiguration("catalog"),
                 stateful = false,
                 correlationID = client().correlationID("cat"),
-                payload = ProviderWire.catalogRequestPayload(filter),
+                payload = ProviderWire.catalogRequestPayload(filter, cursor),
             ),
         ) { outcome ->
+            if (catalogPageGeneration.get() != generation) return@trackOperation
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
                     val value = outcome.value
-                    if (value != null) {
-                        catalogKinds.putAll(ProviderWire.catalogKinds(value))
-                    }
+                    if (value != null) catalogKinds.putAll(ProviderWire.catalogKinds(value))
+                    val rows = value?.let { ProviderWire.pageRows(it) }
                     // A typed domain refusal body (errorCode) is NOT a page.
-                    onPage(value?.let { ProviderWire.decodeCatalogRows(it) })
+                    if (rows == null) {
+                        onDone(null)
+                        return@trackOperation
+                    }
+                    accumulated.addAll(rows)
+                    val meta = ProviderWire.pageMeta(value)
+                    if (meta?.hasMore == true) {
+                        val next = meta.nextCursor
+                        if (!pageProgressed(cursor, next) ||
+                            pages + 1 >= MAX_PAGE_CHAIN ||
+                            accumulated.size >= MAX_PAGE_CHAIN_ROWS) {
+                            onDone(null)
+                            return@trackOperation
+                        }
+                        fetchCatalogPages(generation, filter, next, pages + 1,
+                                          accumulated, onDone)
+                        return@trackOperation
+                    }
+                    onDone(accumulated.toList())
                 }
-                else -> onPage(null)
+                else -> onDone(null)
             }
         }
     }
@@ -352,19 +481,73 @@ class ProviderHostController internal constructor(
 
     override fun setProviderEnabled(providerId: String, enabled: Boolean): Boolean {
         if (!admitted()) return false
-        // The frozen `config.provider.save` vocabulary is exactly set/keep/
-        // clear with a COMPLETE closed candidate (the previous `enabled.set`
-        // intent was never part of it and was refused `providerSaveIntentUnknown`).
-        // A bare row summary cannot form that candidate faithfully: the real
-        // candidate also carries serviceRoleIsConversation / managedCapabilities
-        // / the exact persisted model set, which only the provider editor's
-        // loaded draft holds. Until a native metadata-only enable command (or a
-        // full-candidate read) exists, this list toggle must not fabricate a
-        // partial candidate: it refuses locally and the refreshed list row
-        // keeps showing the real persisted state. Open the provider editor to
-        // change enablement through its real Keep save.
-        return false
+        val row = findProviderRow(providerId) ?: return false
+        // Already at the requested persisted state: nothing to write.
+        if (row.enabled == enabled) return true
+        // COMPACT existing-row KEEP metadata variant of the same
+        // `config.provider.save` command (Main decision
+        // MAIN_PROVIDER_COMPACT_METADATA_DECISION_20261021). The toggle
+        // flips ONLY the persisted provider row's enabled flag under the
+        // SAME per-provider save ownership + durable writer CAS: every
+        // model row (incl. disabled/hidden ones), capability override,
+        // preference, preset sidecar and credential reference provably
+        // stays byte-identical, because NOTHING model- or secret-side is
+        // serialized or touched. No full-candidate reconstruction, so a
+        // valid 512-model profile toggles without ANY byte-bound refusal
+        // — the old ">16 KiB => can't" limitation is gone, not hidden.
+        // The ACTUAL committed advanced revision is returned natively;
+        // a pending physical reconciliation is rejected, never bypassed,
+        // and the refreshed list (never an optimistic flip) is the only
+        // success surface.
+        val revision = ProviderHostControllerRevisions.revision(providerId) ?: return false
+        host.trackOperation(
+            HostCommandRequest(
+                command = "config.provider.save",
+                scope = HostScope.ApplicationConfiguration("providers"),
+                stateful = true,
+                correlationID = client().correlationID("ptoggle"),
+                revision = revision,
+                payload = JsonObject(
+                    mapOf(
+                        "secretIntent" to JsonPrimitive("keep"),
+                        "metadata" to JsonObject(
+                            mapOf(
+                                "id" to JsonPrimitive(providerId),
+                                "isEnabled" to JsonPrimitive(enabled),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ) { outcome ->
+            // The refreshed list is the ONLY success surface: a completed
+            // metadata keep publishes the real persisted row; a typed
+            // refusal keeps the switch on the persisted value (never a
+            // fabricated success).
+            when (outcome) {
+                is HostOperationOutcome.Completed -> refreshProviders()
+                is HostOperationOutcome.Rejected,
+                is HostOperationOutcome.Failed -> {
+                    // The row must NOT silently look successful: the switch
+                    // keeps the persisted truth after the refresh, and the
+                    // list carries an actionable bilingual message now.
+                    updateDestination {
+                        it.copy(list = it.list.copy(errorMessage = runCatching {
+                            host.appContext.getString(com.floe.android.R.string.providers_toggle_failed)
+                        }.getOrElse { "Couldn't update this provider. It stayed unchanged — try again." }))
+                    }
+                    refreshProviders()
+                }
+                HostOperationOutcome.Cancelled,
+                HostOperationOutcome.Superseded -> Unit
+            }
+        }
+        return true
     }
+
+    // (The list toggle's full-profile reconstruction helper path is gone:
+    //  the compact metadata keep needs no role lookup, and the editor's
+    //  initial role comes from the holder-supplied identity as before.)
 
     override fun deleteProvider(providerId: String): Boolean {
         if (!admitted()) return false
@@ -384,18 +567,13 @@ class ProviderHostController internal constructor(
     /**
      * Opens either a blank new-provider draft or a REAL reconstruction of an
      * existing provider from the frozen read surfaces (`config.providers.list`
-     * summary + `config.models.list` rows). Nothing is invented: the identity,
-     * protocol, endpoint, enablement, custom-endpoint flags and the complete
-     * saved model set (including disabled rows, with their canonical UUIDs)
-     * come from the persisted values.
-     *
-     * Known frozen-read gap: `ConfigProviderSummary` does not expose
-     * `nonSecretHeaders` (or `presetID`), so a custom header set cannot be
-     * reconstructed. The draft carries no header text; a Keep save from this
-     * editor therefore cannot preserve headers that were never readable in
-     * this build. The exact missing metadata is reported in the handoff for a
-     * bounded native read-projection addition; no destructive blank rewrite is
-     * performed by this projection itself.
+     * summary — now carrying the bounded additive secret-free `presetID` /
+     * `nonSecretHeaders` projection Main authorized — plus the actual
+     * `config.models.list` rows). Nothing is invented: the identity, protocol,
+     * endpoint, enablement, custom-endpoint flags, catalog preset, permitted
+     * non-secret headers and the complete saved model set (including disabled
+     * rows, with their canonical UUIDs) come from the persisted values, so a
+     * Keep save from this editor preserves them instead of clearing them.
      */
     override fun seedEditorFor(
         role: ProviderServiceRoleUi,
@@ -415,49 +593,7 @@ class ProviderHostController internal constructor(
             )
         }
         val row = findProviderRow(providerID) ?: return null
-        val extras = ProviderWire.extrasFor(providerID)
-        val protocol = WireProtocolUi.entries.firstOrNull {
-            it.swiftRaw == extras?.wireProtocol
-        } ?: WireProtocolUi.OPENAI_CHAT_COMPLETIONS
-        val savedModels = host.conversations.modelRowsForProvider(providerID)
-        val draftModels = savedModels.map { model ->
-            ModelDraftRowUi(
-                // The staging key is the SAVED identity so the save path can
-                // keep the canonical ModelProfile UUID (see [modelUUIDFor]).
-                draftModelId = model.id,
-                savedModelId = model.id,
-                remoteModelID = model.remoteModelId,
-                displayName = model.displayName,
-                enabled = model.isEnabled,
-                hiddenFromPrimaryPicker = model.isHiddenFromPrimaryPicker,
-                capabilities = ProviderWire.capabilitiesOf(model.capabilitiesRaw),
-                reasoningEffort = ReasoningEffortUi.entries.firstOrNull {
-                    it.swiftRaw == model.reasoningEffort
-                } ?: ReasoningEffortUi.AUTOMATIC,
-                contextTokens = model.contextTokens,
-                maxOutputTokens = model.maxOutputTokens,
-                source = com.floe.android.feature.providers.ModelSourceUi.SAVED,
-                selectedForSave = true,
-            )
-        }
-        val defaultModelID = host.conversations.defaultAgentModelIdFor(providerID)
-            ?.takeIf { id -> draftModels.any { it.savedModelId == id } }
-        val snapshot = ProviderDraftSnapshot(
-            role = role,
-            enabled = row.enabled,
-            displayName = row.displayName,
-            // presetID is not part of the frozen summary; an existing row
-            // keeps "no preset" rather than claiming a catalog entry.
-            supplier = null,
-            protocol = protocol,
-            baseUrl = row.endpointSummary,
-            nonSecretHeaders = "",
-            allowsPlainHttp = extras?.allowsPlainHTTP ?: false,
-            toolNameCompatibility = extras?.toolNameCompatibility ?: false,
-            models = draftModels,
-            defaultModelDraftId = defaultModelID,
-            offerDecisions = emptyMap(),
-        )
+        val snapshot = snapshotForExistingProvider(providerID, role) ?: return null
         val catalog = destinationState.value.catalog
         return ProviderEditorSeedUi(
             snapshot = snapshot,
@@ -466,6 +602,57 @@ class ProviderHostController internal constructor(
             discoverySupported = role == ProviderServiceRoleUi.CONVERSATION,
             offers = ProviderWire.offersForRole(row, role),
             officialMediaModels = ProviderWire.officialMediaModels(catalog, role),
+        )
+    }
+
+    /**
+     * The ONE secret-free reconstruction of a persisted provider used by both
+     * the editor seed and the list-level enable/disable Keep candidate. Every
+     * field comes from the actual persisted projection:
+     * `config.providers.list` (identity/kind/protocol/endpoint/name/region/
+     * enablement/plain-http/tool-name flags/presetID/non-secret headers) and
+     * `config.models.list` (complete saved rows incl. disabled/hidden ones
+     * with their canonical UUIDs); the default model comes from the real
+     * `config.preferences.get` document. No field is guessed from the first
+     * model or a role string.
+     */
+    private fun snapshotForExistingProvider(
+        providerID: String,
+        role: ProviderServiceRoleUi,
+    ): ProviderDraftSnapshot? {
+        val row = findProviderRow(providerID) ?: return null
+        val extras = ProviderWire.extrasFor(providerID)
+        val protocol = WireProtocolUi.entries.firstOrNull {
+            it.swiftRaw == extras?.wireProtocol
+        } ?: WireProtocolUi.OPENAI_CHAT_COMPLETIONS
+        val savedModels = host.conversations.modelRowsForProvider(providerID)
+        val draftModels = savedModels.map(ProviderWire::savedModelDraft)
+        val defaultModelID = host.conversations.defaultAgentModelIdFor(providerID)
+            ?.takeIf { id -> draftModels.any { it.savedModelId == id } }
+        val supplier = extras?.presetID?.let { presetID ->
+            ProviderWire.supplierChoiceFor(
+                presetID = presetID,
+                displayName = destinationState.value.catalog.officialProviders
+                    .firstOrNull { it.catalogEntryId == presetID }?.name ?: presetID,
+                endpoint = row.endpointSummary,
+            )
+        }
+        return ProviderDraftSnapshot(
+            role = role,
+            enabled = row.enabled,
+            // A persisted NULL display name stays blank in the draft so the
+            // ORIGINAL "blank means preset/kind fallback" rule is preserved
+            // (never re-persist the UUID row fallback as a user name).
+            displayName = extras?.displayName ?: "",
+            supplier = supplier,
+            protocol = protocol,
+            baseUrl = row.endpointSummary,
+            nonSecretHeaders = extras?.nonSecretHeaders ?: "",
+            allowsPlainHttp = extras?.allowsPlainHTTP ?: false,
+            toolNameCompatibility = extras?.toolNameCompatibility ?: false,
+            models = draftModels,
+            defaultModelDraftId = defaultModelID,
+            offerDecisions = emptyMap(),
         )
     }
 
@@ -531,9 +718,21 @@ class ProviderHostController internal constructor(
 
     override fun editorClosed(identity: ProviderEditorIdentity, discarded: Boolean) {
         // Draft disposal is holder-owned (RAM only). In-flight host probes
-        // addressed to this identity are fenced by the identity epoch check.
+        // addressed to this identity are fenced by the identity epoch check;
+        // trusted DRAFT probe work is cancelled for real and its native slot
+        // retired with the route. A large-profile stage follows the SAME
+        // rule: only the UN-CONSUMED record is cancelled (exact owner); an
+        // accepted save already owns its typed values natively until its
+        // real terminal, and the native route/epoch fence sweeps regardless.
         inFlightTests.remove(identity.editorId)
         inFlightDiscoveries.remove(identity.editorId)
+        draftProbeAttempts.remove(identity.editorId)
+        permissionActions.remove(identity.editorId)
+        draftProbeHandles.remove(identity.editorId)?.let { handle ->
+            editorRoute(identity)?.let { route -> draftProbe.cancel(handle, route) }
+        }
+        draftProbeIDs.remove(identity.editorId)
+        modelSets.discardFor(identity.editorId)
         endEditorRoute(identity.editorId)
     }
 
@@ -567,11 +766,71 @@ class ProviderHostController internal constructor(
         )
         val existingRevision = existingProviderID(identity)
             ?.let { ProviderHostControllerRevisions.revision(it) }
+        // Large profile (Main direction B): an inline candidate over the
+        // frozen 16,384-byte bound stages the FULL selected-model body
+        // through the trusted host — ordered, idempotent chunks within the
+        // PROVEN per-model payload class — and the candidate then carries
+        // ONLY the sealed immutable reference (mutually exclusive with
+        // selectedModels; the native Set/Keep/Clear chain resolves it back
+        // into the same typed atomic request). Never a truncation, never
+        // a budget raise, never a second business store. Staging failure
+        // fails the save preflight honestly: no partial save, no
+        // optimistic success, no secret touched.
+        var effectiveCandidate = candidate
+        if (candidate.toString().encodeToByteArray().size > CANDIDATE_MAXIMUM_BYTES) {
+            val route = editorRoute(identity)
+            if (route == null) {
+                runCatching { android.util.Log.w("FloeProviders", "model_set_route_unavailable") }
+                onSaveFailed(identity, SaveFailurePhaseUi.PREFLIGHT, stagingUnavailableCopy())
+                return true
+            }
+            val rows = (candidate["selectedModels"] as? JsonArray)
+                ?.mapNotNull { it as? JsonObject } ?: emptyList()
+            if (rows.isEmpty()) {
+                // Oversize WITHOUT models: staging cannot help (it only
+                // carries model rows); the scalar payload itself exceeds
+                // the frozen candidate class. Honest typed preflight,
+                // never a silent field drop.
+                runCatching {
+                    android.util.Log.w("FloeProviders", "candidate_scalars_too_large")
+                }
+                onSaveFailed(identity, SaveFailurePhaseUi.PREFLIGHT, detailsTooLargeCopy())
+                return true
+            }
+            val staged = modelSets.stage(
+                editorID = identity.editorId,
+                providerID = providerID,
+                baseResourceID = existingRevision?.resourceID ?: "provider.$providerID",
+                baseVersion = existingRevision?.version ?: "0",
+                createIntent = existingRevision == null,
+                routeToken = route,
+                rows = rows,
+            )
+            val frozenRef = (staged as? StagedModelSet.Frozen)?.ref
+            if (frozenRef == null) {
+                val code = (staged as? StagedModelSet.Refused)?.code ?: "model_set_unavailable"
+                runCatching { android.util.Log.w("FloeProviders", "model_set_refused:$code") }
+                // The closed code stays in diagnostics; the ordinary UI
+                // shows the natural bilingual copy (product copy rule).
+                onSaveFailed(identity, SaveFailurePhaseUi.PREFLIGHT, stagingUnavailableCopy())
+                return true
+            }
+            effectiveCandidate = ProviderWire.stagedCandidateJson(candidate, frozenRef)
+            if (effectiveCandidate.toString().encodeToByteArray().size > CANDIDATE_MAXIMUM_BYTES) {
+                // Scalar-only overflow (name/headers) beyond the staged set:
+                // an honest typed preflight refusal, never a dropped field.
+                runCatching {
+                    android.util.Log.w("FloeProviders", "model_set_candidate_unsupported")
+                }
+                onSaveFailed(identity, SaveFailurePhaseUi.PREFLIGHT, detailsTooLargeCopy())
+                return true
+            }
+        }
         // One-shot credential ingress; the RAM draft is consumed here and
         // never retained, logged or placed in any error or public JSON.
         var ingressToken: String? = null
         if (credentialDraft != null) {
-            ingressToken = submitBoundProviderIntent(identity, providerID, candidate,
+            ingressToken = submitBoundProviderIntent(identity, providerID, effectiveCandidate,
                 existingRevision, credentialDraft)
             if (ingressToken == null) {
                 onSaveFailed(identity, SaveFailurePhaseUi.CREDENTIAL_COMMIT,
@@ -606,7 +865,7 @@ class ProviderHostController internal constructor(
                 payload = JsonObject(
                     mapOf(
                         "secretIntent" to JsonPrimitive("keep"),
-                        "candidate" to candidate,
+                        "candidate" to effectiveCandidate,
                     ),
                 ),
             )
@@ -619,7 +878,7 @@ class ProviderHostController internal constructor(
                 payload = JsonObject(
                     mapOf(
                         "secretIntent" to JsonPrimitive("clear"),
-                        "candidate" to candidate,
+                        "candidate" to effectiveCandidate,
                     ),
                 ),
             )
@@ -676,51 +935,133 @@ class ProviderHostController internal constructor(
         flowHolder.noteSaveAttemptFinished(identity)
     }
 
+    /** Existing composer entry points use the SAME permission owner. The
+     * provider row/endpoint and the caller's launch identity must still be
+     * current when a system-dialog result arrives. */
+    internal fun withLocalNetworkForProvider(
+        providerID: String,
+        isCurrent: () -> Boolean,
+        onDenied: (String) -> Unit,
+        dispatch: () -> Unit,
+    ): Boolean {
+        val row = findProviderRow(providerID) ?: return false
+        val endpoint = row.endpointSummary
+        val generation = client().generation()
+        val rootEpoch = host.nativeRootEpoch()
+        return host.integrations.localNetwork.runExplicitAction(
+            ownerID = providerID,
+            endpoint = endpoint,
+            isCurrent = {
+                isCurrent() && client().generation() == generation &&
+                    host.nativeRootEpoch() == rootEpoch &&
+                    findProviderRow(providerID)?.endpointSummary == endpoint
+            },
+            onDenied = onDenied,
+            dispatch = dispatch,
+        )
+    }
+
+    internal fun localNetworkDeniedCopy(code: String): String = try {
+        host.appContext.getString(
+            if (code == LocalNetworkAccessBroker.CODE_RECOVERY)
+                com.floe.android.R.string.providers_local_network_settings
+            else com.floe.android.R.string.providers_local_network_denied,
+        )
+    } catch (_: RuntimeException) { "Local network access is needed. Allow it in Settings and try again." }
+
+    private fun withProbeNetworkPermission(
+        identity: ProviderEditorIdentity,
+        probe: ConnectionProbeUi,
+        discovery: Boolean,
+    ): Boolean {
+        val broker = host.integrations.localNetwork
+        if (!broker.isLocalLikely(probe.endpointAbsoluteString)) {
+            return dispatchProviderProbe(identity, probe, discovery)
+        }
+        val action = permissionActionSequencer.incrementAndGet()
+        permissionActions[identity.editorId] = action
+        val route = editorRoute(identity)
+        val generation = client().generation()
+        val rootEpoch = host.nativeRootEpoch()
+        return broker.runExplicitAction(
+            ownerID = identity.editorId,
+            endpoint = probe.endpointAbsoluteString,
+            isCurrent = {
+                permissionActions[identity.editorId] == action && admitted() &&
+                    client().generation() == generation && host.nativeRootEpoch() == rootEpoch &&
+                    editorRoute(identity) == route
+            },
+            onDenied = { code ->
+                permissionActions.remove(identity.editorId, action)
+                publishEditor(identity) {
+                    it.copy(testState = ConnectionTestUi.Failed(localNetworkDeniedCopy(code)))
+                }
+            },
+            dispatch = {
+                permissionActions.remove(identity.editorId, action)
+                dispatchProviderProbe(identity, probe, discovery)
+            },
+        )
+    }
+
+    private fun dispatchProviderProbe(
+        identity: ProviderEditorIdentity,
+        probe: ConnectionProbeUi,
+        discovery: Boolean,
+    ): Boolean {
+        val savedTarget = probeTargetProviderID(identity, probe)
+        return if (savedTarget != null) runSavedProbe(identity, savedTarget, discovery)
+        else submitDraftProbe(identity, probe, discovery)
+    }
+
     override fun testConnection(identity: ProviderEditorIdentity, probe: ConnectionProbeUi): Boolean {
         if (!admitted()) return false
-        // The frozen public probe contract is `config.provider.probe` with a
-        // closed `{providerID}`: the ACTUAL persisted profile + its stored
-        // typed credential. There is no unsaved-draft probe API, so a new or
-        // dirty draft must never be tested against an old saved profile/key
-        // (that would imply the draft was verified). The host reports the
-        // honest save-before-test limitation instead.
-        val providerID = probeTargetProviderID(identity, probe)
-        if (providerID == null) {
-            publishEditor(identity) {
-                it.copy(testState = ConnectionTestUi.Failed(
-                    host.appContext.getString(com.floe.android.R.string.providers_probe_requires_save)))
-            }
-            return true
-        }
+        return withProbeNetworkPermission(identity, probe, discovery = false)
+    }
+
+    /** Saved-provider probe command path (unchanged frozen grammar). */
+    private fun runSavedProbe(
+        identity: ProviderEditorIdentity,
+        providerID: String,
+        discovery: Boolean,
+    ): Boolean {
         inFlightTests[identity.editorId] = providerID
-        publishEditor(identity) { it.copy(testState = ConnectionTestUi.Testing) }
+        if (!discovery) publishEditor(identity) { it.copy(testState = ConnectionTestUi.Testing) }
         host.trackOperation(
             HostCommandRequest(
                 command = "config.provider.probe",
                 scope = HostScope.ApplicationConfiguration("providers"),
                 stateful = false,
-                correlationID = client().correlationID("pprobe"),
+                correlationID = client().correlationID(if (discovery) "pdisc" else "pprobe"),
                 payload = JsonObject(mapOf("providerID" to JsonPrimitive(providerID))),
             ),
         ) { outcome ->
             inFlightTests.remove(identity.editorId)
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
-                    val count = outcome.value?.let { ProviderWire.discoveredCount(it) } ?: 0
-                    publishEditor(identity) {
-                        it.copy(testState = ConnectionTestUi.Succeeded(count))
+                    if (discovery) {
+                        val models = outcome.value?.let { ProviderWire.decodeDiscoveredModels(it) }
+                            ?: emptyList()
+                        flowHolder.mergeHostCandidateModels(identity, models)
+                    } else {
+                        val count = outcome.value?.let { ProviderWire.discoveredCount(it) } ?: 0
+                        publishEditor(identity) {
+                            it.copy(testState = ConnectionTestUi.Succeeded(count))
+                        }
                     }
                 }
-                is HostOperationOutcome.Rejected ->
+                is HostOperationOutcome.Rejected -> if (!discovery) {
                     publishEditor(identity) {
                         it.copy(testState = ConnectionTestUi.Failed(outcome.code))
                     }
-                is HostOperationOutcome.Failed ->
+                }
+                is HostOperationOutcome.Failed -> if (!discovery) {
                     publishEditor(identity) {
                         it.copy(testState = ConnectionTestUi.Failed(outcome.code))
                     }
-                HostOperationOutcome.Cancelled -> publishEditor(identity) {
-                    it.copy(testState = ConnectionTestUi.Idle)
+                }
+                HostOperationOutcome.Cancelled -> if (!discovery) {
+                    publishEditor(identity) { it.copy(testState = ConnectionTestUi.Idle) }
                 }
                 HostOperationOutcome.Superseded -> Unit
             }
@@ -728,47 +1069,161 @@ class ProviderHostController internal constructor(
         return true
     }
 
-    override fun cancelConnectionTest(identity: ProviderEditorIdentity) {
-        inFlightTests.remove(identity.editorId)
-        publishEditor(identity) { it.copy(testState = ConnectionTestUi.Idle) }
-    }
-
-    override fun discoverModels(identity: ProviderEditorIdentity, probe: ConnectionProbeUi): Boolean {
-        if (!admitted()) return false
-        val providerID = probeTargetProviderID(identity, probe)
-        if (providerID == null) {
-            publishEditor(identity) {
-                it.copy(testState = ConnectionTestUi.Failed(
-                    host.appContext.getString(com.floe.android.R.string.providers_probe_requires_save)))
+    /**
+     * Trusted-host DRAFT probe/discovery (MAIN_CONFIG_DRAFT_PROBE_PARITY
+     * _DECISION): the frozen RAM draft is mapped onto the EXACT closed save
+     * candidate and dispatched through the ORIGINAL provider adapter under
+     * this editor's OWN live route handle with the ephemeral key typed for
+     * this attempt. Nothing is autosaved, no shadow provider exists, and the
+     * result is published ONLY to the matching identity/epoch.
+     */
+    private fun submitDraftProbe(
+        identity: ProviderEditorIdentity,
+        probe: ConnectionProbeUi,
+        discovery: Boolean,
+    ): Boolean {
+        val route = editorRoute(identity)
+        if (route == null) {
+            // No accepted runtime / live editor authority: an honest typed
+            // refusal (nothing is dispatched, nothing is implied verified).
+            if (!discovery) {
+                publishEditor(identity) {
+                    it.copy(testState = ConnectionTestUi.Failed(probeUnavailableCopy()))
+                }
             }
             return true
         }
-        inFlightDiscoveries[identity.editorId] = providerID
-        host.trackOperation(
-            HostCommandRequest(
-                command = "config.provider.probe",
-                scope = HostScope.ApplicationConfiguration("providers"),
-                stateful = false,
-                correlationID = client().correlationID("pdisc"),
-                payload = JsonObject(mapOf("providerID" to JsonPrimitive(providerID))),
-            ),
-        ) { outcome ->
-            inFlightDiscoveries.remove(identity.editorId)
-            when (outcome) {
-                is HostOperationOutcome.Completed -> {
-                    val models = outcome.value?.let { ProviderWire.decodeDiscoveredModels(it) }
-                        ?: emptyList()
-                    flowHolder.mergeHostCandidateModels(identity, models)
+        val existing = existingProviderID(identity)
+        val providerID = existing ?: draftProbeIDs.computeIfAbsent(identity.editorId) {
+            UUID.randomUUID().toString()
+        }
+        val extras = ProviderWire.extrasFor(providerID)
+        val candidate = ProviderWire.draftProbeCandidate(
+            providerID = providerID,
+            kind = extras?.kind ?: CUSTOM_PROVIDER_KIND,
+            role = identity.role,
+            displayName = extras?.displayName,
+            presetID = extras?.presetID,
+            probe = probe,
+        )
+        val handle = draftProbe.submit(candidate.toString(), probe.credentialDraft, route)
+        if (handle == null) {
+            if (!discovery) {
+                publishEditor(identity) {
+                    it.copy(testState = ConnectionTestUi.Failed(probeUnavailableCopy()))
                 }
-                is HostOperationOutcome.Rejected, is HostOperationOutcome.Failed -> Unit
-                HostOperationOutcome.Cancelled, HostOperationOutcome.Superseded -> Unit
+            }
+            return true
+        }
+        val attempt = draftProbeSequencer.incrementAndGet()
+        draftProbeAttempts[identity.editorId] = attempt
+        draftProbeHandles[identity.editorId] = handle
+        if (discovery) {
+            inFlightDiscoveries[identity.editorId] = providerID
+        } else {
+            inFlightTests[identity.editorId] = providerID
+            publishEditor(identity) { it.copy(testState = ConnectionTestUi.Testing) }
+        }
+        host.scope.launch(host.ioDispatcher) {
+            val deadline = System.nanoTime() + DRAFT_PROBE_BUDGET_NANOS
+            var settled = false
+            while (System.nanoTime() < deadline) {
+                if (draftProbeAttempts[identity.editorId] != attempt) {
+                    // Superseded/cancelled/closed: the native cancel owns the
+                    // real adapter cancellation; publish nothing.
+                    draftProbe.cancel(handle, route)
+                    return@launch
+                }
+                when (val envelope = draftProbe.poll(handle, route)) {
+                    "P" -> kotlinx.coroutines.delay(DRAFT_PROBE_POLL_MILLIS)
+                    else -> {
+                        settled = true
+                        draftProbeHandles.remove(identity.editorId)
+                        inFlightTests.remove(identity.editorId)
+                        inFlightDiscoveries.remove(identity.editorId)
+                        val payload = if (envelope.startsWith("S")) {
+                            runCatching {
+                                Json.parseToJsonElement(envelope.substring(1)) as JsonObject
+                            }.getOrNull()
+                        } else {
+                            null
+                        }
+                        if (discovery) {
+                            if (payload != null) {
+                                flowHolder.mergeHostCandidateModels(
+                                    identity,
+                                    ProviderWire.decodeDiscoveredModels(payload),
+                                )
+                            }
+                        } else {
+                            val status = payload?.let { ProviderWire.statusOf(it) }
+                            val failure = payload?.let { ProviderWire.failureOf(it) }
+                            publishEditor(identity) {
+                                if (status == "connected") {
+                                    it.copy(testState = ConnectionTestUi.Succeeded(
+                                        payload?.let { value -> ProviderWire.discoveredCount(value) } ?: 0))
+                                } else {
+                                    it.copy(testState = ConnectionTestUi.Failed(
+                                        failure ?: probeUnavailableCopy()))
+                                }
+                            }
+                        }
+                        return@launch
+                    }
+                }
+            }
+            if (!settled) {
+                draftProbe.cancel(handle, route)
+                draftProbeHandles.remove(identity.editorId)
+                inFlightTests.remove(identity.editorId)
+                inFlightDiscoveries.remove(identity.editorId)
+                if (!discovery) {
+                    publishEditor(identity) {
+                        it.copy(testState = ConnectionTestUi.Failed(probeUnavailableCopy()))
+                    }
+                }
             }
         }
         return true
     }
 
+    private fun probeUnavailableCopy(): String =
+        runCatching {
+            host.appContext.getString(com.floe.android.R.string.providers_probe_unavailable)
+        }.getOrElse { "Couldn't start the connection test. Try again." }
+
+    private fun stagingUnavailableCopy(): String =
+        runCatching {
+            host.appContext.getString(com.floe.android.R.string.providers_staging_unavailable)
+        }.getOrElse { "Couldn't prepare this provider's model list for saving. Try again." }
+
+    private fun detailsTooLargeCopy(): String =
+        runCatching {
+            host.appContext.getString(com.floe.android.R.string.providers_save_details_too_large)
+        }.getOrElse { "This provider's name or headers are too large to save. Shorten them and try again." }
+
+    override fun cancelConnectionTest(identity: ProviderEditorIdentity) {
+        inFlightTests.remove(identity.editorId)
+        draftProbeAttempts.remove(identity.editorId)
+        permissionActions.remove(identity.editorId)
+        draftProbeHandles.remove(identity.editorId)?.let { handle ->
+            editorRoute(identity)?.let { route -> draftProbe.cancel(handle, route) }
+        }
+        publishEditor(identity) { it.copy(testState = ConnectionTestUi.Idle) }
+    }
+
+    override fun discoverModels(identity: ProviderEditorIdentity, probe: ConnectionProbeUi): Boolean {
+        if (!admitted()) return false
+        return withProbeNetworkPermission(identity, probe, discovery = true)
+    }
+
     override fun cancelModelDiscovery(identity: ProviderEditorIdentity) {
         inFlightDiscoveries.remove(identity.editorId)
+        draftProbeAttempts.remove(identity.editorId)
+        permissionActions.remove(identity.editorId)
+        draftProbeHandles.remove(identity.editorId)?.let { handle ->
+            editorRoute(identity)?.let { route -> draftProbe.cancel(handle, route) }
+        }
     }
 
     /**
@@ -1010,6 +1465,15 @@ class ProviderHostController internal constructor(
     private companion object {
         const val CUSTOM_PRESET_ID = "custom"
         const val CUSTOM_PROVIDER_KIND = "custom"
+        /** Frozen native `ProviderSaveCandidate` byte bound (16 KiB). */
+        const val CANDIDATE_MAXIMUM_BYTES = 16_384
+        /** Continuation bounds for one read chain (composer page budget). */
+        const val MAX_PAGE_CHAIN = 8
+        const val MAX_PAGE_CHAIN_ROWS = 256
+        /** Bounded draft-probe poll budget (adapter transport has its own
+         *  timeouts; this only stops a UI poller from running forever). */
+        const val DRAFT_PROBE_BUDGET_NANOS = 120_000_000_000L
+        const val DRAFT_PROBE_POLL_MILLIS = 150L
         /**
          * The ACTUAL holder identity for an existing provider is
          * `"<providerUUID>-<role>-<openCounter>"` (ProviderFlowHolder). The
@@ -1057,6 +1521,10 @@ internal object ProviderWire {
         val contextTokens: Int,
         val maxOutputTokens: Int,
         val reasoningEffort: String?,
+        val savedMetadata: ModelSavedMetadataUi? = null,
+        /** Exact immutable owned read (incl. opaque revision) for narrow
+         * full-snapshot model edits such as the reasoning shortcut. */
+        val originalProjection: JsonObject? = null,
     ) {
         /** Text-capable for the ordinary conversation composer. */
         val supportsText: Boolean
@@ -1070,13 +1538,39 @@ internal object ProviderWire {
         }
     }
 
-    /** ConfigProviderSummary members the App needs but the list row UI omits. */
+    /**
+     * ConfigProviderSummary members the App needs but the list row UI omits.
+     * `displayName` is the PERSISTED value (null = the original
+     * blank-means-preset/kind fallback), `presetID` and `nonSecretHeaders`
+     * come from the bounded additive secret-free read projection (Main
+     * authorization 2026-10-20) so an existing provider can be reopened and
+     * Keep-saved losslessly.
+     */
     data class ProviderExtras(
         val kind: String,
         val wireProtocol: String,
         val allowsPlainHTTP: Boolean,
         val toolNameCompatibility: Boolean,
-        val displayName: String,
+        val displayName: String?,
+        val presetID: String? = null,
+        val nonSecretHeaders: String = "",
+    )
+
+    /** Persisted preset → supplier selection (display only; an explicit
+     *  preset choice still owns endpoint-default application). */
+    fun supplierChoiceFor(
+        presetID: String,
+        displayName: String,
+        endpoint: String,
+    ): SupplierChoice = SupplierChoice(
+        presetId = presetID,
+        displayName = displayName,
+        catalogEntryId = presetID,
+        absoluteEndpointDefault = endpoint,
+        routeFamily = "",
+        authStyle = "",
+        supportsPlainHttpChoice = endpoint.startsWith("http://"),
+        suggestsToolNameCompatibility = false,
     )
 
     /** Capability bits → the editor's typed capability set. */
@@ -1095,9 +1589,19 @@ internal object ProviderWire {
      * Decodes one `config.models.list` page (`{"rows":[ModelProfile…]}`).
      * Unknown fields are ignored; a row without its real id/provider identity
      * is skipped (never fabricated).
+     *
+     * FULL-ROW READ FIDELITY (job-7d4d4e41017f4391): an unprocessed chunk
+     * marker (the additive closed `modelRead` transport row streamed by
+     * ModelPageReadController) is NEVER a model row and NEVER silently
+     * skipped — a page that still carries one means the reader did not
+     * complete the reconstruction, so the whole page fails to decode and
+     * the consumer keeps its last real projection instead of losing a
+     * saved model. Pages consumed here are ordinary complete ORIGINAL
+     * pages (the reader replaces marker pages with reconstructed rows).
      */
     fun decodeModelRows(value: JsonElement): List<ModelRow>? {
         val rows = (value as? JsonObject)?.get("rows") as? JsonArray ?: return null
+        if (rows.any { ModelPageReadController.isChunkRow(it) }) return null
         return rows.mapNotNull { element ->
             val obj = element as? JsonObject ?: return@mapNotNull null
             val id = obj.string("id") ?: return@mapNotNull null
@@ -1121,9 +1625,39 @@ internal object ProviderWire {
                 contextTokens = limits?.long("contextTokens")?.toInt() ?: 0,
                 maxOutputTokens = limits?.long("maxOutputTokens")?.toInt() ?: 0,
                 reasoningEffort = obj.string("reasoningEffort"),
+                originalProjection = obj,
+                savedMetadata = ModelSavedMetadataUi(
+                    pricingJSON = obj["pricing"]?.takeUnless { it is kotlinx.serialization.json.JsonNull }?.toString(),
+                    useSurfacesJSON = obj["useSurfaces"]?.takeUnless { it is kotlinx.serialization.json.JsonNull }?.toString(),
+                    explicitCapabilitiesJSON = obj["explicitCapabilities"]?.takeUnless { it is kotlinx.serialization.json.JsonNull }?.toString(),
+                    explicitCapabilitiesRaw = optionBits(obj["explicitCapabilities"]),
+                    capabilitiesRaw = capabilities,
+                    reasoningEffortRaw = obj.string("reasoningEffort"),
+                ),
             )
         }
     }
+
+    private fun optionBits(value: JsonElement?): Int? =
+        (value as? JsonObject)?.long("rawValue")?.toInt()
+            ?: (value as? JsonPrimitive)?.longOrNull?.toInt()
+            ?: (value as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.longOrNull?.toInt() }
+                ?.fold(0) { bits, bit -> bits or bit }
+
+    /** One production seed path, retaining metadata with the row instead
+     * of a mutable global model-ID registry or a later unrelated read. */
+    internal fun savedModelDraft(model: ModelRow): ModelDraftRowUi = ModelDraftRowUi(
+        draftModelId = model.id, savedModelId = model.id,
+        remoteModelID = model.remoteModelId, displayName = model.displayName,
+        enabled = model.isEnabled, hiddenFromPrimaryPicker = model.isHiddenFromPrimaryPicker,
+        capabilities = capabilitiesOf(model.capabilitiesRaw),
+        reasoningEffort = ReasoningEffortUi.entries.firstOrNull {
+            it.swiftRaw == model.reasoningEffort
+        } ?: ReasoningEffortUi.AUTOMATIC,
+        contextTokens = model.contextTokens, maxOutputTokens = model.maxOutputTokens,
+        source = com.floe.android.feature.providers.ModelSourceUi.SAVED,
+        selectedForSave = true, savedMetadata = model.savedMetadata,
+    )
 
     /**
      * Reads the persisted default agent model id from
@@ -1165,7 +1699,8 @@ internal object ProviderWire {
         for (element in rows) {
             val obj = element as? JsonObject ?: continue
             val id = obj.string("providerID") ?: obj.string("id") ?: continue
-            val displayName = obj.string("displayName") ?: id
+            val persistedName = obj.string("displayName")
+            val displayName = persistedName ?: id
             val enabled = obj.bool("enabled") ?: obj.bool("isEnabled") ?: true
             // The real count comes ONLY from the `config.models.list` page for
             // this provider (ConfigProviderSummary has no modelCount member;
@@ -1178,7 +1713,13 @@ internal object ProviderWire {
                     wireProtocol = obj.string("wireProtocol") ?: "",
                     allowsPlainHTTP = obj.bool("allowsPlainHTTP") ?: false,
                     toolNameCompatibility = obj.bool("toolNameCompatibility") ?: false,
-                    displayName = displayName,
+                    displayName = persistedName,
+                    // Bounded additive secret-free projection (Main
+                    // authorization 2026-10-20): persisted catalog preset and
+                    // the ORIGINAL vetted non-secret header map. Unknown to
+                    // older producers (absent = nil/empty).
+                    presetID = obj.string("presetID"),
+                    nonSecretHeaders = headerLines(obj["nonSecretHeaders"] as? JsonObject),
                 )
             }
             val secret = obj["secret"] as? JsonObject
@@ -1243,13 +1784,52 @@ internal object ProviderWire {
         }
     }
 
-    /** Closed catalog payload: the native router allows exactly these keys. */
-    fun catalogRequestPayload(filter: String): JsonObject = JsonObject(
-        mapOf(
-            "query" to JsonPrimitive(""),
-            "filter" to JsonPrimitive(filter),
-        ),
-    )
+    /** Closed catalog payload: the native router allows exactly these keys
+     *  (plus the authorized OPTIONAL continuation for paging). */
+    fun catalogRequestPayload(filter: String, cursor: String? = null): JsonObject =
+        JsonObject(buildMap {
+            put("query", JsonPrimitive(""))
+            put("filter", JsonPrimitive(filter))
+            if (cursor != null) put("cursor", JsonPrimitive(cursor))
+        })
+
+    /** Closed providers-list payload (original snapshot operation + the
+     *  authorized OPTIONAL bounded continuation cursor). */
+    fun providerListPayload(cursor: String? = null): JsonObject = JsonObject(buildMap {
+        put("operation", JsonPrimitive("snapshot"))
+        if (cursor != null) put("cursor", JsonPrimitive(cursor))
+    })
+
+    /** Legacy closed models-list payload (UNCHANGED behavior): first page
+     *  carries NO payload; a continuation carries ONLY the composer cursor
+     *  member. The additive full-row `modelRead` opt-in grammar is owned
+     *  by ModelPageReadController (the only upgraded models reader), so
+     *  this helper intentionally does not grow a second wire shape. */
+    fun modelsListPayload(cursor: String?): JsonObject? = cursor?.let {
+        JsonObject(mapOf("cursor" to JsonPrimitive(it)))
+    }
+
+    /** Rows member of one projected page document (absent = not a page). */
+    fun pageRows(value: JsonElement): List<JsonElement>? =
+        ((value as? JsonObject)?.get("rows") as? JsonArray)?.toList()
+        // A bare ARRAY carrier (pre-projection bytes at the facade boundary)
+        // is also a complete row list for in-process readers.
+            ?: (value as? JsonArray)?.toList()
+
+    /** One projected page's continuation metadata. Absent keys read as a
+     *  single complete page (never an invented continuation). */
+    data class PageMeta(val nextCursor: String?, val hasMore: Boolean)
+
+    fun pageMeta(value: JsonElement?): PageMeta? {
+        val obj = value as? JsonObject ?: return null
+        val next = (obj["nextCursor"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+        val hasMore = (obj["hasMore"] as? JsonPrimitive)?.booleanOrNull ?: false
+        return PageMeta(next, hasMore)
+    }
+
+    /** One catalog row -> the presentation entry (null when malformed). */
+    fun catalogEntryOf(element: JsonElement): OfficialSupplierUi? =
+        (element as? JsonObject)?.let { decodeCatalogEntry(it) }
 
     /** presetID -> REAL ProviderKind raw, straight from one catalog page. */
     fun catalogKinds(value: JsonElement): Map<String, String> {
@@ -1477,6 +2057,79 @@ internal object ProviderWire {
         return JsonObject(members)
     }
 
+    /** Closed persisted header OBJECT -> "Header: value" editor lines. */
+    fun headerLines(headers: JsonObject?): String =
+        headers.orEmpty().entries.joinToString("\n") { (name, value) ->
+            val text = (value as? JsonPrimitive)?.contentOrNull ?: ""
+            "$name: $text"
+        }
+
+    /**
+     * The exact closed save candidate for a trusted-host DRAFT probe: the
+     * SAME builder (`candidateJson`) and the SAME closed grammar a real save
+     * uses, built from the live editor probe fields (endpoint, protocol,
+     * permitted headers, plain-http/tool-name flags) plus the persisted
+     * identity/preset/kind context. Nothing is persisted by the probe; the
+     * candidate only carries the protocol/auth/model mapping native must
+     * validate and dispatch.
+     */
+    fun draftProbeCandidate(
+        providerID: String,
+        kind: String,
+        role: ProviderServiceRoleUi,
+        displayName: String?,
+        presetID: String?,
+        probe: ConnectionProbeUi,
+    ): JsonObject {
+        val headers = probe.nonSecretHeaders.entries.joinToString("\n") {
+            "${it.key}: ${it.value}"
+        }
+        val draft = ProviderDraftSnapshot(
+            role = role,
+            enabled = true,
+            displayName = displayName ?: "",
+            supplier = presetID?.let {
+                supplierChoiceFor(
+                    presetID = it,
+                    displayName = it,
+                    endpoint = probe.endpointAbsoluteString,
+                )
+            },
+            protocol = probe.wireProtocol,
+            baseUrl = probe.endpointAbsoluteString,
+            nonSecretHeaders = headers,
+            allowsPlainHttp = probe.allowsPlainHttp,
+            toolNameCompatibility = probe.toolNameCompatibility,
+            models = emptyList(),
+            defaultModelDraftId = null,
+        )
+        return candidateJson(
+            providerID = providerID,
+            kind = kind,
+            createIntent = false,
+            draft = draft,
+            modelUUID = { UUID.randomUUID().toString() },
+        )
+    }
+
+    /**
+     * The closed save-candidate form for a STAGED large profile: the
+     * EXACT scalar fields of [candidateJson] (same builder output — same
+     * managedCapabilities fold, same defaultModelID identity), with
+     * `selectedModels` replaced by the frozen immutable staged-set
+     * reference. Exactly one representation — the native parser refuses
+     * both forms or neither, before any effect. Row-level codec
+     * equivalence is guaranteed because the staged rows ARE the same
+     * JSON objects a small profile would have inlined (the caller passes
+     * the built candidate), and the reference itself is an opaque ASCII
+     * identity + canonical digest produced by the trusted host seam.
+     */
+    fun stagedCandidateJson(candidate: JsonObject, modelSetRef: String): JsonObject =
+        JsonObject(candidate.toMutableMap().apply {
+            remove("selectedModels")
+            put("modelSetRef", JsonPrimitive(modelSetRef))
+        })
+
     /** "Header: value" lines -> the closed OBJECT the native parser accepts. */
     private fun nonSecretHeadersJson(raw: String): JsonObject {
         val headers = LinkedHashMap<String, JsonElement>()
@@ -1503,33 +2156,52 @@ internal object ProviderWire {
         model: ModelDraftRowUi,
         modelUUID: (String) -> String,
     ): JsonObject {
-        val capabilities = effectiveCapabilities(model)
-        return JsonObject(
-            mapOf(
-                "id" to JsonPrimitive(modelUUID(model.draftModelId)),
-                "providerID" to JsonPrimitive(providerID),
-                "remoteModelID" to JsonPrimitive(model.remoteModelID),
-                "displayName" to JsonPrimitive(model.displayName.ifBlank { model.remoteModelID }),
-                "limits" to JsonObject(
-                    mapOf(
-                        "contextTokens" to JsonPrimitive(model.contextTokens),
-                        "maxOutputTokens" to JsonPrimitive(model.maxOutputTokens),
-                    ),
-                ),
-                "capabilities" to JsonPrimitive(capabilityBits(capabilities)),
-                "reasoningEffort" to JsonPrimitive(model.reasoningEffort.swiftRaw),
-                "isEnabled" to JsonPrimitive(model.enabled),
-                "isHiddenFromPrimaryPicker" to JsonPrimitive(model.hiddenFromPrimaryPicker),
-            ),
+        val saved = model.savedMetadata
+        val representedBits = ModelCapabilityUi.entries.fold(0) { bits, item -> bits or item.swiftBit }
+        // Keep persisted bits the pinned presentation does not expose.
+        val capabilities = capabilityBits(effectiveCapabilities(model)) or
+            ((saved?.capabilitiesRaw ?: 0) and representedBits.inv())
+        val fields = mutableMapOf<String, JsonElement>(
+            "id" to JsonPrimitive(modelUUID(model.draftModelId)),
+            "providerID" to JsonPrimitive(providerID),
+            "remoteModelID" to JsonPrimitive(model.remoteModelID),
+            "displayName" to JsonPrimitive(model.displayName.ifBlank { model.remoteModelID }),
+            "limits" to JsonObject(mapOf(
+                "contextTokens" to JsonPrimitive(model.contextTokens),
+                "maxOutputTokens" to JsonPrimitive(model.maxOutputTokens),
+            )),
+            "capabilities" to JsonPrimitive(capabilities),
+            "isEnabled" to JsonPrimitive(model.enabled),
+            "isHiddenFromPrimaryPicker" to JsonPrimitive(model.hiddenFromPrimaryPicker),
         )
+        val oldReasoning = ReasoningEffortUi.entries.firstOrNull {
+            it.swiftRaw == saved?.reasoningEffortRaw
+        } ?: ReasoningEffortUi.AUTOMATIC
+        if (saved == null || model.reasoningEffort != oldReasoning) {
+            fields["reasoningEffort"] = JsonPrimitive(model.reasoningEffort.swiftRaw)
+        } else {
+            saved.reasoningEffortRaw?.let { fields["reasoningEffort"] = JsonPrimitive(it) }
+        }
+        // Values originate from JsonElement.toString() on the real saved
+        // projection. Preserve exact decimal JSON and optional-zero intent.
+        saved?.pricingJSON?.let { fields["pricing"] = Json.parseToJsonElement(it) }
+        saved?.useSurfacesJSON?.let { fields["useSurfaces"] = Json.parseToJsonElement(it) }
+        val editable = listOf(ModelCapabilityUi.VISION, ModelCapabilityUi.TOOLS,
+            ModelCapabilityUi.IMAGE_GENERATION, ModelCapabilityUi.IMAGE_EDITING,
+            ModelCapabilityUi.VIDEO_GENERATION).fold(0) { bits, item -> bits or item.swiftBit }
+        val changed = saved?.capabilitiesRaw?.let { (it xor capabilities) and editable } ?: 0
+        if (changed != 0) {
+            fields["explicitCapabilities"] = JsonPrimitive((saved?.explicitCapabilitiesRaw ?: 0) or changed)
+        } else {
+            saved?.explicitCapabilitiesJSON?.let { fields["explicitCapabilities"] = Json.parseToJsonElement(it) }
+        }
+        return JsonObject(fields)
     }
 
-    /** A chat model with no explicit user bits starts text+tool capable (the
-     *  ORIGINAL defaultTextModel contract), never zero capabilities. */
     private fun effectiveCapabilities(model: ModelDraftRowUi): Set<ModelCapabilityUi> =
-        model.capabilities.ifEmpty {
+        if (model.capabilities.isEmpty() && model.savedModelId == null && model.savedMetadata == null) {
             setOf(ModelCapabilityUi.TEXT, ModelCapabilityUi.TOOLS, ModelCapabilityUi.APPROVAL)
-        }
+        } else model.capabilities
 
     private fun capabilityBits(capabilities: Set<ModelCapabilityUi>): Int =
         capabilities.fold(0) { bits, capability -> bits or capability.swiftBit }
@@ -1555,6 +2227,13 @@ internal object ProviderWire {
 
     fun discoveredCount(value: JsonElement): Int =
         ((value as? JsonObject)?.get("discoveredModels") as? JsonArray)?.size ?: 0
+
+    /** Terminal status of a settled draft-probe payload. */
+    fun statusOf(payload: JsonObject): String? = payload.string("status")
+
+    /** Redacted typed failure identifier (never a raw provider body or key). */
+    fun failureOf(payload: JsonObject): String? =
+        payload.string("errorCode") ?: payload.string("failureReason")
 
     fun decodeDiscoveredModels(value: JsonElement): List<ModelDraftRowUi> {
         val array = (value as? JsonObject)?.get("discoveredModels") as? JsonArray

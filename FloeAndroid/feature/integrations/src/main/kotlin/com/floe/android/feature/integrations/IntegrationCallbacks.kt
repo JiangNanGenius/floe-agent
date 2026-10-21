@@ -207,4 +207,16 @@ interface IntegrationUiCallbacks {
      * client is torn down and never registers). True = the host accepted;
      * the terminal state still arrives via projection. */
     fun cancelMcpRefresh(serverId: String, generation: Long): Boolean
+
+    /**
+     * The ONE explicit local-network permission action
+     * (MAIN_ANDROID37_LAN_PERMISSION_DECISION_20261021): tapped from the
+     * host-projected [LocalNetworkGuidanceUi] row. The host re-reads the
+     * REAL platform state, opens the system dialog for a still-offerable
+     * request (chained only to the captured blocked hop) or this app's
+     * settings page for recovery, and never conflates the permission with
+     * an authentication failure. True = a real platform affordance (or
+     * the captured retry hop) was started; false = nothing happened.
+     */
+    fun localNetworkGuidanceAction(): Boolean
 }

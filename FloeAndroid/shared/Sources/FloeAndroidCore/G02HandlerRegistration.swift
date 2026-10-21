@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // G02 production composition — handler registration for every
-// non-self-installing ORDINARY-base command in the frozen 84/19 matrix.
+// non-self-installing ORDINARY-base command in the frozen 87/19 matrix
+// (84 before the goal-core batch; the three additive run-control tuples
+// self-install with RB4).
 //
 // Self-installing lanes keep their own binder (RB1 system/effect/event,
 // RB4 runs via RunDomainFacade.install, attachment staging via
@@ -213,9 +215,28 @@ extension G02InstalledComposition {
                 return G02DomainBinder.wireError("invalidEnvelope",
                                                  reason: "missingTaskIdentity")
             }
+            // Additive CLOSED detail variant (Main decision 2026-10-21):
+            // absent `detail` keeps the legacy reply byte-identical; a
+            // malformed detail is a typed envelope refusal BEFORE any read.
+            let detail: ConversationDetailQuery?
+            do {
+                detail = try ConversationDetailQuery.parse(G02DomainBinder.settingsPayload(job))
+            } catch let error as ConversationDomainError {
+                return G02DomainBinder.wireError(error.wireCode, reason: error.wireReason)
+            } catch {
+                return G02DomainBinder.internalError()
+            }
             do {
                 let reply = try await domain.get(conversationID: taskID)
-                return G02DomainBinder.completedWireObject(reply.wireObject)
+                guard let detail else {
+                    return G02DomainBinder.completedWireObject(reply.wireObject)
+                }
+                var object = reply.wireObject
+                let wire = try await domain.conversationDetail(conversationID: taskID,
+                                                               query: detail)
+                let fitted = try domain.fittingDetailPage(baseObject: object, wire: wire)
+                object["detail"] = fitted.wireObject
+                return G02DomainBinder.completedWireObject(object)
             } catch let error as ConversationDomainError {
                 return G02DomainBinder.wireError(error.wireCode, reason: error.wireReason)
             } catch let error as MemoryAdapterError {

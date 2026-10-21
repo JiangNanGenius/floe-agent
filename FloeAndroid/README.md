@@ -18,13 +18,20 @@ local LLM backend.
 
 ## Android Alpha
 
-[Download 0.1.0-alpha.1](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.1)
+[Download 0.1.0-alpha.2](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.2)
 contains one signed ARM64 APK and SHA256SUMS. Install updates manually for now.
-Cloud configuration, real replies and cold-start persistence were checked on an
-API 37 / 16 KiB tablet emulator and a Samsung SM-G9810 running Android 13 / API 33
-with 4 KiB pages. Long-stream stop/resume on Samsung and advanced G02 flows still
-need their own acceptance checks.
-G02 is still active; see the implementation record above for remaining work.
+Alpha 2 was checked for ordinary cloud dialogue and upgrade on the API 37 /
+16 KiB tablet emulator. The earlier Alpha 1 cloud configuration, replies and
+cold-start persistence were checked on Samsung SM-G9810, Android 13 / API 33 /
+4 KiB. Alpha 2 on Samsung, long-stream stop/resume and advanced G02 flows still
+need their own acceptance checks. Current source batches contain additional
+changes that are not in the public APK yet.
+G02 remains active. The current execution target is **G02-R1: deliver Alpha 3**
+from the integrated source batch; Android cross-build, packaged-app checks and
+upgrade acceptance are still pending. See the
+[current inventory and sequential targets](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan).
+Later targets are a backlog, not prequeued worker tasks. Alpha delivery does not
+close the full 41-operation G02 scope.
 
 ## Layout and ownership
 

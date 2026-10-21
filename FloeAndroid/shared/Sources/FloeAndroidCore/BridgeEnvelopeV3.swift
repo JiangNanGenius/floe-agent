@@ -299,6 +299,28 @@ public enum BridgeV3 {
                     configurationScope: "privacy", revisionRequired: true),
         CommandRule(command: "privacy.modelConfiguration.clear", scope: .applicationConfiguration,
                     configurationScope: "privacy", revisionRequired: true),
+
+        // goal-core code batch (2026-10-21, job-7efd60bb51d14f02): THREE
+        // additive run-control tuples decided by MAIN_RUN_CONTROL_CLOSURE_
+        // DECISION_20261020.json (ordinary-run-control-gap-review §1-§3).
+        // APPEND-ONLY again: the 57 legacy tuples and the 27 accepted
+        // settings-domain tuples above stay byte-identical; no existing
+        // identity is renamed, deleted or relabeled; the mailbox bounds
+        // (64 queued / 16 active / 64 KiB envelope) are unchanged; there is
+        // NO child.create (the original has no human child-creation feature).
+        // `plan.accept` rides the launch scope with the SAME existing-
+        // conversation digest CAS as run.start (accept + start is ONE user
+        // action; createIntent stays forbidden). `goal.confirm` proves a
+        // conversation-scoped identity+revision and needs NO run role (the
+        // original confirm works after the run is terminal).
+        // `conversation.compact` mutates durable compaction history, not a
+        // single row: no per-row revision; core-side quiescence + atomic
+        // writer proof guard it (conversationLifecycle scope, taskID only).
+        CommandRule(command: "plan.accept", scope: .launch, revisionRequired: true),
+        CommandRule(command: "goal.confirm", scope: .conversationLifecycle,
+                    revisionRequired: true),
+        CommandRule(command: "conversation.compact", scope: .conversationLifecycle,
+                    revisionRequired: false),
     ]
 
     public enum BinderChannel: String, Sendable {

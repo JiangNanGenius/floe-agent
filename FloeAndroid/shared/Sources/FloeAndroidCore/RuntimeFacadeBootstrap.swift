@@ -540,7 +540,19 @@ public enum AndroidRuntimeBootstrap {
         // generation's owned cluster and bind every G02 command handler
         // before the bootstrap terminal settles. Failure leaves the
         // ordinary runtime honestly uninstalled (no partial advertisement).
-        let domainRuntimeReady = await G02RuntimeComposition.shared.install(gen: gen)
+        //
+        // Trusted official-catalog resource (Main's
+        // MAIN_BUNDLED_PROVIDER_CATALOG_GAP_20261020): the trusted host read
+        // the packaged, reviewed `provider/ProviderCatalog.json` asset and
+        // froze those exact bytes through the pre-start host seam
+        // (`floe_host_catalog_freeze`). Passing them here is the ONLY
+        // production injection point; when the host did not freeze a valid
+        // document this is nil and the facade keeps its honest typed
+        // `needsConfiguration(catalogNotInjected)` refusal (the Custom
+        // compatible-endpoint path stays available). Never a fixture.
+        let domainRuntimeReady = await G02RuntimeComposition.shared.install(
+            gen: gen,
+            catalogBytes: G02HostCatalog.frozenBytes())
 
         // Honest detail: bootstrap committed; ordinary runtime admission
         // remains gated per-domain (separate typed facts in status).

@@ -12,7 +12,18 @@ set_target_properties(FloeAndroidCore PROPERTIES
 # CORPUS-FIRST (2026-10-20): floe_security_corpus_jni.cpp appended the same
 # way — one additive translation unit inside the SAME floe_jni target; every
 # prior wrapper file stays byte-identical.
-add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp)
+#
+# PROVIDER-CATALOG (2026-10-21): floe_provider_catalog_jni.cpp appended the
+# same way — the trusted host freezes the packaged official catalog bytes
+# before the Root start; the ordinary bootstrap install injects them into the
+# original provider domain. Additive TU only; all prior wrappers unchanged.
+#
+# PROVIDER-DRAFT-PROBE (2026-10-21): floe_provider_draft_probe_jni.cpp
+# appended the same way — the trusted provider editor submits its frozen RAM
+# draft candidate + ephemeral key with its own live editor route; native
+# dispatches through the ORIGINAL adapter and persists nothing. Additive TU
+# only; all prior wrappers unchanged.
+add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp)
 target_link_libraries(floe_jni PRIVATE FloeAndroidCore)
 target_link_options(floe_jni PRIVATE "-Wl,-z,max-page-size=16384")
 

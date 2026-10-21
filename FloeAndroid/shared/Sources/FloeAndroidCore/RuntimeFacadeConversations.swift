@@ -1267,9 +1267,11 @@ public struct ConversationMessagePageReply: Sendable, Equatable {
 /// The honest `conversation.get` field set: the ConversationSessionSnapshot
 /// fields (:704-718) MINUS live run state (eventsByRun/pendingApprovals —
 /// RB4 durable-event/live channel), minus the UI-coalescing `revision: Int`
-/// counter (not a domain value), plus the opaque row digest. Plan/checklist/
-/// goal fields belong to the later plan/goal lanes and are OMITTED, not
-/// faked (G02 whole remains).
+/// counter (not a domain value), plus the opaque row digest. The plan and
+/// goal fields land with the goal-core code batch (2026-10-21) as REAL
+/// durable projections (nil = honest absence / budget trim, never a fake);
+/// the checklist field stays OMITTED until its own lane lands — it is not
+/// faked either.
 public struct ConversationSessionReply: Sendable, Equatable {
     public let conversationID: UUID
     public let resourceID: String
@@ -1292,6 +1294,26 @@ public struct ConversationSessionReply: Sendable, Equatable {
     /// live temporary session projects `temporary` from its own hosted
     /// record (never from a payload or a guessed flag).
     public let purpose: ConversationPurpose
+    /// goal-core batch (2026-10-21, additive): the CURRENT durable plan row
+    /// projection. nil is honest absence — temporary sessions, no plan yet,
+    /// or the bounded page-overflow trim (the derived read yields to the
+    /// authoritative message/run pages; `run.snapshot` still answers plan
+    /// state durably). The next-stage App lane binds `PlanUi` from here so
+    /// `plan.accept` can prove the EXACT revision the human saw.
+    public let plan: ConversationPlanWire?
+    /// goal-core batch: the latest NON-terminal durable goal projection
+    /// (the same reuse predicate the runtime's `ensureDurableGoal` applies).
+    /// `.verifying` here is the durable service/CAS state — `goal.confirm`
+    /// accepts it against the goal revision below; nil means no live goal.
+    public let goal: ConversationGoalWire?
+    /// Detail-read admission (Main decision 2026-10-21): explicit
+    /// availability so a page-pressure TRIM is never conflated with true
+    /// ABSENCE. `"projected"` = the summary is present; `"trimmed"` = a
+    /// durable row exists but the summary was dropped for page budget — the
+    /// consumer must use the bounded `detail` lookup; `"absent"` = no
+    /// durable row resolves. Authoritative rows and counters are untouched.
+    public let planAvailability: String
+    public let goalAvailability: String
 
     public init(conversationID: UUID, resourceID: String, revision: String,
                 title: String, createdAtRaw: String, updatedAtRaw: String,
@@ -1303,7 +1325,11 @@ public struct ConversationSessionReply: Sendable, Equatable {
                 pendingInputs: [PendingUserInputWire],
                 pendingInputsTotalCount: Int, pendingInputsTruncated: Bool,
                 taskPolicy: TaskPolicy,
-                purpose: ConversationPurpose = .ordinary) {
+                purpose: ConversationPurpose = .ordinary,
+                plan: ConversationPlanWire? = nil,
+                goal: ConversationGoalWire? = nil,
+                planAvailability: String = "absent",
+                goalAvailability: String = "absent") {
         self.conversationID = conversationID
         self.resourceID = resourceID
         self.revision = revision
@@ -1322,6 +1348,10 @@ public struct ConversationSessionReply: Sendable, Equatable {
         self.pendingInputsTruncated = pendingInputsTruncated
         self.taskPolicy = taskPolicy
         self.purpose = purpose
+        self.plan = plan
+        self.goal = goal
+        self.planAvailability = planAvailability
+        self.goalAvailability = goalAvailability
     }
 
     public var wireObject: [String: Any] {
@@ -1349,6 +1379,320 @@ public struct ConversationSessionReply: Sendable, Equatable {
         // Optional.none, which strict designValue cannot convert: the whole
         // fresh snapshot settled frameBudgetExceeded (device-proven 2026-10-20).
         object["archivedAt"] = archivedAtRaw ?? NSNull()
+        // goal-core batch: explicit NSNull for absence (same boxed-Optional
+        // lesson as archivedAt — never `Optional.none as Any`).
+        object["plan"] = plan?.wireObject ?? NSNull()
+        object["goal"] = goal?.wireObject ?? NSNull()
+        // Detail-read admission: availability is NEVER conflated with
+        // absence — "projected" | "trimmed" (use the bounded detail read) |
+        // "absent" (nothing durable resolves). The trim flags are computed
+        // by the SAME snapshot builder that dropped the summaries.
+        object["planAvailability"] = planAvailability
+        object["goalAvailability"] = goalAvailability
+        return object
+    }
+}
+
+/// goal-core batch (2026-10-21): the bounded durable PLAN projection of
+/// `conversation.get`. Machine facts only — the App localizes. The plan's
+/// own identity here (id/revision/digest) is what the human card binds, and
+/// `plan.accept` re-proves it inside the writer transaction.
+public struct ConversationPlanWire: Sendable, Equatable {
+    public let id: UUID
+    public let statusRaw: String
+    public let isDecisionComplete: Bool
+    public let executionRecommendation: String?
+    public let recommendationReason: String?
+    public let revision: Int
+    public let digest: String
+    public let title: String
+
+    public init?(plan: PlanDraft) {
+        self.id = plan.id
+        self.statusRaw = plan.status.rawValue
+        self.isDecisionComplete = plan.isDecisionComplete
+        self.executionRecommendation = plan.executionRecommendation?.rawValue
+        self.recommendationReason = plan.recommendationReason.map {
+            ConversationTextBound.bound($0, 256)
+        }
+        self.revision = plan.revision
+        self.digest = plan.digest
+        self.title = ConversationTextBound.bound(plan.title, 160)
+    }
+
+    public var wireObject: [String: Any] {
+        var object: [String: Any] = [
+            "id": id.uuidString,
+            "status": statusRaw,
+            "isDecisionComplete": isDecisionComplete,
+            "revision": revision,
+            "digest": digest,
+            "title": title,
+        ]
+        object["executionRecommendation"] = executionRecommendation ?? NSNull()
+        object["recommendationReason"] = recommendationReason ?? NSNull()
+        return object
+    }
+}
+
+/// goal-core batch: the bounded durable GOAL projection. `revision` is the
+/// ORIGINAL ConversationGoal revision (the goal.confirm CAS identity, spelled
+/// with the shared `goal.<id>` / `rev:<n>` resource vocabulary so the App
+/// echoes exactly what it saw). Counters are the durable progress the
+/// service CAS lanes maintain — never UI-emulated values.
+public struct ConversationGoalWire: Sendable, Equatable {
+    public let id: UUID
+    public let statusRaw: String
+    public let objective: String
+    public let stepsCompleted: Int
+    public let stepsTotal: Int
+    public let criteriaTotal: Int
+    public let criteriaSatisfied: Int
+    public let criteriaAwaitingUserConfirmation: Int
+    public let cycleCount: Int
+    public let modelCallCount: Int
+    public let totalIterationCount: Int
+    public let revision: Int
+    public let revisionResourceID: String
+    public let revisionVersion: String
+
+    public init?(goal: ConversationGoal) {
+        self.id = goal.id
+        self.statusRaw = goal.status.rawValue
+        self.objective = ConversationTextBound.bound(goal.objective, 512)
+        self.stepsCompleted = goal.steps.filter {
+            $0.status == .completed || $0.status == .skipped
+        }.count
+        self.stepsTotal = goal.steps.count
+        self.criteriaTotal = goal.acceptanceCriteria.count
+        self.criteriaSatisfied = goal.acceptanceCriteria.filter(\.isSatisfied).count
+        self.criteriaAwaitingUserConfirmation = goal.acceptanceCriteria.filter {
+            $0.requiresUserConfirmation && !$0.isSatisfied
+        }.count
+        self.cycleCount = goal.progress.cycleCount
+        self.modelCallCount = goal.progress.modelCallCount
+        self.totalIterationCount = goal.progress.totalIterationCount
+        self.revision = goal.revision ?? 1
+        self.revisionResourceID = "goal.\(goal.id.uuidString)"
+        self.revisionVersion = "rev:\(goal.revision ?? 1)"
+    }
+
+    public var wireObject: [String: Any] {
+        [
+            "id": id.uuidString,
+            "status": statusRaw,
+            "objective": objective,
+            "stepsCompleted": stepsCompleted,
+            "stepsTotal": stepsTotal,
+            "criteriaTotal": criteriaTotal,
+            "criteriaSatisfied": criteriaSatisfied,
+            "criteriaAwaitingUserConfirmation": criteriaAwaitingUserConfirmation,
+            "cycleCount": cycleCount,
+            "modelCallCount": modelCallCount,
+            "totalIterationCount": totalIterationCount,
+            "revision": revision,
+            "revisionResourceID": revisionResourceID,
+            "revisionVersion": revisionVersion,
+        ]
+    }
+}
+
+/// UTF-8 safe text bounding for the additive snapshot reads (identical
+/// semantics to the run domain's `boundText`: cut at a character boundary,
+/// never mid-codepoint).
+///
+/// BODY CORRECTION (2026-10-21, Main integrity review
+/// `main-core-valid-utf8-prefix-body-correction-20261021`): the previous
+/// strip-continuations loop KEPT an orphan lead byte, so
+/// `String(decoding:)` inserted U+FFFD and the result could exceed the
+/// promised bound (`bound("中中", 3)` yielded a lone 0xE4;
+/// `bound("aa中中", 3)` yielded aa+lead = 5 bytes). A Swift String's utf8
+/// is always valid UTF-8, so a lead byte determines its sequence width
+/// exactly; this walks full sequences and stops before one that would not
+/// fully fit. The result is a genuinely valid UTF-8 prefix of at most
+/// `maxBytes` bytes (zero boundary => empty). ASCII behaviour is unchanged.
+enum ConversationTextBound {
+    static func bound(_ value: String, _ maxBytes: Int) -> String {
+        let bytes = Array(value.utf8)
+        guard maxBytes > 0 else { return "" }
+        guard bytes.count > maxBytes else { return value }
+        var kept = 0
+        var index = 0
+        while index < bytes.count {
+            let width: Int
+            switch bytes[index] {
+            case 0x00...0x7F: width = 1
+            case 0xC0...0xDF: width = 2
+            case 0xE0...0xEF: width = 3
+            case 0xF0...0xF4: width = 4
+            default: width = 1   // impossible in valid String UTF-8
+            }
+            guard kept + width <= maxBytes else { break }
+            kept += width
+            index += width
+        }
+        return String(decoding: bytes.prefix(kept), as: UTF8.self)
+    }
+}
+
+// MARK: - Additive durable plan/goal DETAIL read (Main decision
+// MAIN_APP_API_ADMISSION_AND_DETAIL_READ_DECISION_20261020: closed optional
+// variant on the EXISTING conversation.get — no new command tuple, label,
+// store, table or schema. The summary `plan`/`goal` fields are counts-only
+// and may be TRIMMED under page pressure (distinguished above by
+// `planAvailability`/`goalAvailability`); the full original durable rows —
+// actual criteria, steps, evidence, blockers, stopping/budget/progress
+// fields — are delivered here, paged over canonical JSON UTF-8 with exact
+// digest + revision proofs so `plan.accept`/`goal.confirm` can bind the
+// REAL identities. Checklist NOTE: the ORIGINAL task checklist is a
+// separate service (`TaskChecklistStore.latest(conversationID:)/
+// latest(runID:)` returning `TaskChecklist{conversationID, runID, revision,
+// title, steps:[{id, title, status pending|inProgress|completed|blocked|
+// cancelled, evidence:[String]}], updatedAt}`; ConversationGoal has NO
+// checks field). The checklist detail variant below reads that original
+// store on the same owned database. Its model-supplied progress/evidence
+// never becomes Goal completion authority.
+
+/// Closed detail-request grammar. `detail` absent (or payload nil) keeps
+/// the LEGACY `conversation.get` behavior byte-identical.
+public struct ConversationDetailQuery: Sendable, Equatable {
+    public enum Kind: String, Sendable, Equatable {
+        case goal
+        case plan
+        /// Original ordinary-task progress, separate from Goal authority.
+        case checklist
+    }
+    public var kind: Kind
+    /// Optional on the first page (resolve the CURRENT durable plan /
+    /// latest non-terminal goal — falling back to the latest TERMINAL goal
+    /// so a completed goal remains inspectable, labelled by its real
+    /// status; never faked active). Required on every continuation.
+    public var id: UUID?
+    /// Raw UTF-8 byte offset into the canonical JSON; default 0.
+    public var offset: Int
+    /// Exact canonical-JSON SHA-256 from a previous page. Optional on the
+    /// first page (proven when present), REQUIRED for continuations.
+    public var digest: String?
+    /// Chunk preference in bytes (1...32_768). The FINAL serialized page
+    /// (including JSON escaping) must still fit the frozen 49_152 page
+    /// budget inside the 65_536 frame — enforced by measured shrinkage.
+    public var maxBytes: Int
+
+    public static let allowedKeys: Set<String> = ["kind", "id", "offset", "digest", "maxBytes"]
+    public static let defaultMaxBytes = 32_768
+    public static let maximumChunkPreferenceBytes = 32_768
+    public static let digestHexLength = 64
+
+    /// Strict closed parse of the `detail` member. Mixed legacy arguments
+    /// (continuation offset without exact id+digest, digest without id,
+    /// invalid boundaries, unknown members, out-of-range numbers) are typed
+    /// envelope refusals — never silently ignored.
+    public static func parse(_ payload: SettingsDomainV1.JSONValue?) throws -> ConversationDetailQuery? {
+        guard case .object(let top)? = payload, let raw = top["detail"] else { return nil }
+        guard top.keys.allSatisfy({ $0 == "detail" }) else {
+            throw ConversationDomainError.invalidEnvelope("detailMixedArguments")
+        }
+        guard case .object(let object) = raw else {
+            throw ConversationDomainError.invalidEnvelope("detailShape")
+        }
+        for key in object.keys where allowedKeys.contains(key) == false {
+            throw ConversationDomainError.invalidEnvelope("detailUnknownKey")
+        }
+        guard case .string(let kindRaw)? = object["kind"],
+              let kind = Kind(rawValue: kindRaw) else {
+            throw ConversationDomainError.invalidEnvelope("detailKind")
+        }
+        var id: UUID?
+        if let rawID = object["id"] {
+            guard case .string(let idText) = rawID,
+                  let value = UUID(uuidString: idText),
+                  value != BridgeV3.nilUUID else {
+                throw ConversationDomainError.invalidEnvelope("detailId")
+            }
+            id = value
+        }
+        var offset = 0
+        if let rawOffset = object["offset"] {
+            guard case .integer(let value) = rawOffset,
+                  value >= 0, let parsed = Int(exactly: value) else {
+                throw ConversationDomainError.invalidEnvelope("detailOffset")
+            }
+            offset = parsed
+        }
+        var digest: String?
+        if let rawDigest = object["digest"] {
+            guard case .string(let value) = rawDigest,
+                  value.utf8.count == digestHexLength,
+                  value.utf8.allSatisfy({ (48...57).contains($0) ||
+                      (65...70).contains($0) || (97...102).contains($0) })
+            else { throw ConversationDomainError.invalidEnvelope("detailDigest") }
+            digest = value.lowercased()
+        }
+        var maxBytes = defaultMaxBytes
+        if let rawMaxBytes = object["maxBytes"] {
+            guard case .integer(let value) = rawMaxBytes,
+                  value >= 1, value <= Int64(maximumChunkPreferenceBytes),
+                  let parsed = Int(exactly: value) else {
+                throw ConversationDomainError.invalidEnvelope("detailMaxBytes")
+            }
+            maxBytes = parsed
+        }
+        if offset > 0, id == nil || digest == nil {
+            throw ConversationDomainError.invalidEnvelope("detailContinuationRequiresIdAndDigest")
+        }
+        if digest != nil, id == nil {
+            throw ConversationDomainError.invalidEnvelope("detailDigestRequiresId")
+        }
+        return ConversationDetailQuery(kind: kind, id: id, offset: offset,
+                                       digest: digest, maxBytes: maxBytes)
+    }
+}
+
+/// The additive detail page (closed members). `content` is a valid UTF-8
+/// substring of the canonical JSON at exact byte boundaries; `nextOffset`
+/// is the ONLY cursor the consumer follows (0-progress never happens while
+/// `nextOffset < totalBytes`); `revision` + `revisionResourceID`/
+/// `revisionVersion` carry the REAL action-proof identities (never guessed).
+public struct ConversationDetailWire: Sendable, Equatable {
+    public let kind: String
+    public let id: UUID
+    public let status: String
+    public let revision: Int
+    public let digest: String
+    public let encoding: String
+    public let offset: Int
+    public let nextOffset: Int
+    public let totalBytes: Int
+    public let truncated: Bool
+    public let content: String
+    public let revisionResourceID: String?
+    public let revisionVersion: String?
+    public let planDigest: String?
+    public let isDecisionComplete: Bool?
+
+    public var wireObject: [String: Any] {
+        var object: [String: Any] = [
+            "kind": kind,
+            "id": id.uuidString,
+            "status": status,
+            "revision": revision,
+            "digest": digest,
+            "encoding": encoding,
+            "offset": offset,
+            "nextOffset": nextOffset,
+            "totalBytes": totalBytes,
+            "truncated": truncated,
+            "content": content,
+        ]
+        // Action-proof identities (the SAME vocabulary the write commands
+        // must echo): goal rows carry goal.<id>/rev:<n>; plan rows carry
+        // the ORIGINAL plan digest + revision number (plan.accept proves the
+        // conversation-row digest in the envelope and the plan identity in
+        // its payload).
+        object["revisionResourceID"] = revisionResourceID ?? NSNull()
+        object["revisionVersion"] = revisionVersion ?? NSNull()
+        object["planDigest"] = planDigest ?? NSNull()
+        object["isDecisionComplete"] = isDecisionComplete ?? NSNull()
         return object
     }
 }
@@ -2132,9 +2476,30 @@ public actor FacadeConversationDomain {
             .map(PendingUserInputWire.init(input:))
         let taskPolicy = try await workspaceStore.taskPolicy(conversationID: conversationID)
 
+        // goal-core batch (2026-10-21): the plan/goal READ lane over the
+        // SAME original intelligence store the durable services write — this
+        // is what lets the human accept/confirm the EXACT identities the
+        // write commands must prove. Store failures propagate through the
+        // existing typed read path (never a silent empty projection).
+        var planWire: ConversationPlanWire?
+        var goalWire: ConversationGoalWire?
+        if let latestPlan = try await intelligenceStore.latestPlan(
+            conversationID: conversationID) {
+            planWire = ConversationPlanWire(plan: latestPlan)
+        }
+        let durableGoals = try await intelligenceStore.goals(conversationID: conversationID)
+        if let activeGoal = durableGoals.first(where: { !$0.status.isTerminal }) {
+            goalWire = ConversationGoalWire(goal: activeGoal)
+        }
+
         var pendingWindow = allPending
         var pendingTruncated = false
         var runsTruncated = runsTotal > snapshotRunsWindow
+        // Detail-read admission (2026-10-21): a page-pressure TRIM is never
+        // conflated with true ABSENCE — the availability strings distinguish
+        // them and the durable rows themselves are untouched.
+        var planTrimmed = false
+        var goalTrimmed = false
 
         func build(pending: [PendingUserInputWire],
                    runs: [ConversationRunSummaryWire],
@@ -2157,7 +2522,11 @@ public actor FacadeConversationDomain {
                 pendingInputs: pending,
                 pendingInputsTotalCount: allPending.count,
                 pendingInputsTruncated: pendingTruncated,
-                taskPolicy: taskPolicy
+                taskPolicy: taskPolicy,
+                plan: planWire,
+                goal: goalWire,
+                planAvailability: planWire != nil ? "projected" : (planTrimmed ? "trimmed" : "absent"),
+                goalAvailability: goalWire != nil ? "projected" : (goalTrimmed ? "trimmed" : "absent")
             )
         }
 
@@ -2166,7 +2535,17 @@ public actor FacadeConversationDomain {
                           runsTruncated: runsTruncated)
         while ConversationWireBudget.encodedObjectBytes(reply.wireObject)
                 > SettingsDomainV1.pageBudgetBytes {
-            if pendingWindow.count > 1 {
+            // goal-core batch: the two derived reads yield FIRST (bounded
+            // summaries; `run.snapshot` still answers plan/goal durably),
+            // then the existing pending/run trims keep their exact prior
+            // order and semantics.
+            if goalWire != nil {
+                goalWire = nil
+                goalTrimmed = true
+            } else if planWire != nil {
+                planWire = nil
+                planTrimmed = true
+            } else if pendingWindow.count > 1 {
                 pendingWindow.removeLast()
                 pendingTruncated = true
             } else if pendingWindow.count == 1 {
@@ -2186,6 +2565,204 @@ public actor FacadeConversationDomain {
                           runsTruncated: runsTruncated)
         }
         return reply
+    }
+
+    // MARK: - Additive detail read (closed variant on conversation.get)
+
+    /// Resolve + page ONE durable plan/goal row's canonical JSON for the
+    /// additive `detail` variant. Same ordinary-conversation ownership,
+    /// visibility and lifecycle fences as `conversation.get` (the caller
+    /// builds on the SAME base reply first); foreign/nonexistent identities
+    /// answer the same typed notFound. Continuations re-resolve the SAME
+    /// owned row and prove the captured canonical digest BEFORE returning
+    /// bytes — a moved-on row is a typed staleRevision (the row revision is
+    /// inside the digest, so this is the real continuation-proof). No cache,
+    /// no file handles, no writes.
+    public func conversationDetail(conversationID: UUID,
+                                   query: ConversationDetailQuery) async throws
+        -> ConversationDetailWire {
+        // Ownership/visibility gate identical to the base snapshot path.
+        _ = try await ordinaryConversation(id: conversationID)
+        enum Resolved {
+            case goal(ConversationGoal)
+            case plan(PlanDraft)
+            case checklist(TaskChecklist)
+        }
+        let resolved: Resolved
+        switch query.kind {
+        case .goal:
+            if let id = query.id {
+                guard let goal = try await intelligenceStore.goal(id: id),
+                      goal.conversationID == conversationID else {
+                    throw ConversationDomainError.notFound
+                }
+                resolved = .goal(goal)
+            } else {
+                let goals = try await intelligenceStore.goals(conversationID: conversationID)
+                // Latest non-terminal goal; else the latest terminal one so
+                // completion remains inspectable (labelled by its REAL
+                // status — never presented as active).
+                guard let goal = goals.first(where: { !$0.status.isTerminal }) ?? goals.first
+                else { throw ConversationDomainError.notFound }
+                resolved = .goal(goal)
+            }
+        case .plan:
+            if let id = query.id {
+                let revisions = try await intelligenceStore.planRevisions(
+                    conversationID: conversationID)
+                guard let plan = revisions.filter({ $0.id == id }).max(by: { $0.revision < $1.revision })
+                else { throw ConversationDomainError.notFound }
+                resolved = .plan(plan)
+            } else {
+                guard let plan = try await intelligenceStore.latestPlan(
+                    conversationID: conversationID) else {
+                    throw ConversationDomainError.notFound
+                }
+                resolved = .plan(plan)
+            }
+        case .checklist:
+            // This original store uses the SAME owned database. Its progress
+            // evidence is model-authored and never Goal completion proof.
+            guard let checklist = try await TaskChecklistStore(database: database)
+                .latest(conversationID: conversationID),
+                  checklist.conversationID == conversationID,
+                  query.id == nil || query.id == checklist.runID else {
+                throw ConversationDomainError.notFound
+            }
+            resolved = .checklist(checklist)
+        }
+
+        let canonical: Data
+        let rowID: UUID
+        let rowStatus: String
+        let rowRevision: Int
+        var revisionResourceID: String?
+        var revisionVersion: String?
+        var planDigest: String?
+        var isDecisionComplete: Bool?
+        switch resolved {
+        case .goal(let goal):
+            canonical = try Self.canonicalDetailJSON(goal)
+            rowID = goal.id
+            rowStatus = goal.status.rawValue
+            rowRevision = goal.revision ?? 1
+            revisionResourceID = "goal.\(goal.id.uuidString)"
+            revisionVersion = "rev:\(rowRevision)"
+        case .plan(let plan):
+            canonical = try Self.canonicalDetailJSON(plan)
+            rowID = plan.id
+            rowStatus = plan.status.rawValue
+            rowRevision = plan.revision
+            planDigest = plan.digest
+            isDecisionComplete = plan.isDecisionComplete
+        case .checklist(let checklist):
+            canonical = try Self.canonicalDetailJSON(checklist)
+            rowID = checklist.runID
+            // Finished includes cancelled steps; it does not mean completed
+            // work or independently verified Goal completion.
+            rowStatus = checklist.isFinished ? "finished" : "inProgress"
+            rowRevision = checklist.revision
+        }
+        let digest = FloeDigest.sha256Hex(canonical)
+        if let expected = query.digest, expected != digest {
+            // The row moved (revision/status/content are inside the digest)
+            // — the continuation is stale and returns nothing.
+            throw ConversationDomainError.staleRevision
+        }
+        let bytes = Array(canonical)
+        let totalBytes = bytes.count
+        guard query.offset <= totalBytes else {
+            throw ConversationDomainError.invalidEnvelope("detailOffsetBeyondEnd")
+        }
+        // Boundary proof: the continuation offset must be a sequence
+        // boundary produced by THIS pager (never an arbitrary split).
+        if query.offset > 0, query.offset < totalBytes,
+           (bytes[query.offset] & 0xC0) == 0x80 {
+            throw ConversationDomainError.invalidEnvelope("detailOffsetBoundary")
+        }
+
+        let start = query.offset
+        var end = min(start + query.maxBytes, totalBytes)
+        // Inspect the FIRST OMITTED byte: a continuation there means the
+        // cut is inside a scalar. A continuation at end-1 can instead be
+        // the valid final byte of a complete scalar and must be retained.
+        while end > start, end < totalBytes, (bytes[end] & 0xC0) == 0x80 { end -= 1 }
+        guard end > start || start == totalBytes else {
+            throw ConversationDomainError.payloadTooLarge(maxBytes: query.maxBytes)
+        }
+        guard let content = String(bytes: bytes[start..<end], encoding: .utf8) else {
+            throw ConversationDomainError.persistenceUnavailable("detailInvalidUTF8")
+        }
+        let nextOffset = end
+        let truncated = nextOffset < totalBytes
+        let wire = ConversationDetailWire(kind: query.kind.rawValue, id: rowID,
+                                          status: rowStatus, revision: rowRevision,
+                                          digest: digest, encoding: "json-utf8",
+                                          offset: start, nextOffset: nextOffset,
+                                          totalBytes: totalBytes, truncated: truncated,
+                                          content: content,
+                                          revisionResourceID: revisionResourceID,
+                                          revisionVersion: revisionVersion,
+                                          planDigest: planDigest,
+                                          isDecisionComplete: isDecisionComplete)
+        return wire
+    }
+
+    /// Canonical deterministic JSON for the durable detail rows (sorted keys
+    /// + ISO-8601 dates — the ORIGINAL Codable layouts; no parallel model).
+    static func canonicalDetailJSON<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        do {
+            return try encoder.encode(value)
+        } catch {
+            throw ConversationDomainError.persistenceUnavailable("detailEncode")
+        }
+    }
+
+    /// Measured page-budget shrinkage for the MERGED reply (base snapshot +
+    /// detail member): the FINAL serialized object — with real JSON
+    /// escaping — must fit the frozen 49_152 page budget inside the
+    /// 65_536 envelope. Shrinking walks whole UTF-8 sequences backwards;
+    /// if not even one sequence fits, the page refuses typed (never a
+    /// zero-progress cursor, never a silently truncated page).
+    nonisolated func fittingDetailPage(baseObject: [String: Any], wire: ConversationDetailWire)
+        throws -> ConversationDetailWire {
+        var wire = wire
+        while true {
+            var merged = baseObject
+            merged["detail"] = wire.wireObject
+            let bytes = ConversationWireBudget.encodedObjectBytes(merged)
+            if bytes <= SettingsDomainV1.pageBudgetBytes { return wire }
+            guard wire.nextOffset > wire.offset else {
+                throw ConversationDomainError.payloadTooLarge(
+                    maxBytes: SettingsDomainV1.pageBudgetBytes)
+            }
+            // Re-derive a smaller chunk from the same canonical bytes: the
+            // wire carries the current chunk; shrink it by trimming whole
+            // sequences from the TAIL until the measured page fits. A
+            // UTF-8 string trim + recompute of the byte offsets keeps the
+            // cursor exact because the chunk is a valid prefix already.
+            let byteCount = wire.content.utf8.count
+            let smaller = ConversationTextBound.bound(
+                wire.content, byteCount - max(1, byteCount / 4))
+            guard !smaller.isEmpty else {
+                throw ConversationDomainError.payloadTooLarge(
+                    maxBytes: SettingsDomainV1.pageBudgetBytes)
+            }
+            let next = wire.offset + smaller.utf8.count
+            wire = ConversationDetailWire(
+                kind: wire.kind, id: wire.id, status: wire.status,
+                revision: wire.revision, digest: wire.digest, encoding: wire.encoding,
+                offset: wire.offset, nextOffset: next, totalBytes: wire.totalBytes,
+                truncated: next < wire.totalBytes,
+                content: smaller,
+                revisionResourceID: wire.revisionResourceID,
+                revisionVersion: wire.revisionVersion,
+                planDigest: wire.planDigest,
+                isDecisionComplete: wire.isDecisionComplete)
+        }
     }
 
     // MARK: - conversation.create

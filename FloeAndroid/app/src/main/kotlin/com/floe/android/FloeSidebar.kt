@@ -39,8 +39,11 @@ import com.floe.android.design.fixedSidebarRoutes
 /**
  * Shared sidebar body (persistent column and compact drawer render the same
  * structure, like iOS projects one column into two idioms). Fixed routes in
- * the locked order, then honest empty workspace/chat sections: G01 never
- * invents projects or conversations, and never imports any device history.
+ * the locked order, then the chat section. Without a runtime host (G01 /
+ * preview) the section stays an honest empty and never invents a device
+ * history; with the host it renders the REAL produced history rows (the
+ * same `conversation.list` wire the Task Center consumes) under the same
+ * serial selection path.
  */
 @Composable
 fun FloeSidebar(
@@ -49,6 +52,7 @@ fun FloeSidebar(
     onOpenSettings: () -> Unit,
     onCollapseRequested: (() -> Unit)?,
     modifier: Modifier = Modifier,
+    runtimeHost: com.floe.android.host.RuntimeHost? = null,
 ) {
     val newTaskKey = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
     val overviewKey = SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW)
@@ -138,12 +142,32 @@ fun FloeSidebar(
             )
 
             FloeSectionHeader(stringResource(R.string.chat))
-            FloeText(
-                stringResource(R.string.no_conversations_yet),
-                style = Floe.typography.metadata,
-                color = Floe.colors.secondaryLabel,
-                modifier = Modifier.padding(start = 20.dp, end = 16.dp, bottom = 4.dp),
-            )
+            val historyState = runtimeHost?.conversations?.historyHolder?.state?.value
+            val recent = historyState?.items.orEmpty().take(5)
+            if (runtimeHost == null || recent.isEmpty()) {
+                FloeText(
+                    stringResource(R.string.no_conversations_yet),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                    modifier = Modifier.padding(start = 20.dp, end = 16.dp, bottom = 4.dp),
+                )
+            } else {
+                // REAL rows from the produced history wire (same titles and
+                // running projection the Task Center list shows); a tap
+                // travels the shell's single serial selection reducer.
+                recent.forEach { item ->
+                    val key = SidebarSelection.Conversation(item.id)
+                    FloeConversationRow(
+                        title = com.floe.android.feature.conversation.conversationDisplayTitle(
+                            item,
+                            stringResource(com.floe.android.feature.conversation.R.string.history_untitled),
+                        ),
+                        selected = selection == key,
+                        onClick = { onSelect(key) },
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                    )
+                }
+            }
         }
 
         FloeDivider()

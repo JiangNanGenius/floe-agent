@@ -8,6 +8,7 @@ import com.floe.android.feature.conversation.ApprovalTargetUi
 import com.floe.android.feature.conversation.AttachmentChipUi
 import com.floe.android.feature.conversation.AttachmentKindUi
 import com.floe.android.feature.conversation.CapabilityChipUi
+import com.floe.android.feature.conversation.ChecklistDetailUi
 import com.floe.android.feature.conversation.ChecklistStepStatusUi
 import com.floe.android.feature.conversation.ChecklistStepUi
 import com.floe.android.feature.conversation.ChecklistUi
@@ -17,6 +18,10 @@ import com.floe.android.feature.conversation.ConversationListItemUi
 import com.floe.android.feature.conversation.ConversationSessionToken
 import com.floe.android.contracts.EventCursor
 import com.floe.android.feature.conversation.GoalUi
+import com.floe.android.feature.conversation.GoalCriterionRowUi
+import com.floe.android.feature.conversation.GoalDetailUi
+import com.floe.android.feature.conversation.GoalEvidenceRowUi
+import com.floe.android.feature.conversation.GoalStepRowUi
 import com.floe.android.feature.conversation.ImportantFileUi
 import com.floe.android.feature.conversation.MessagePageCursorUi
 import com.floe.android.feature.conversation.MessageRoleUi
@@ -26,6 +31,11 @@ import com.floe.android.feature.conversation.PendingInputStatusUi
 import com.floe.android.feature.conversation.PendingInputUi
 import com.floe.android.feature.conversation.PlanRecommendationUi
 import com.floe.android.feature.conversation.PlanUi
+import com.floe.android.feature.conversation.PlanAssumptionRowUi
+import com.floe.android.feature.conversation.PlanCriterionRowUi
+import com.floe.android.feature.conversation.PlanDetailUi
+import com.floe.android.feature.conversation.PlanRiskRowUi
+import com.floe.android.feature.conversation.PlanSectionRowUi
 import com.floe.android.contracts.Revision
 import com.floe.android.feature.conversation.RunEventKindUi
 import com.floe.android.feature.conversation.RunEventUi
@@ -63,6 +73,15 @@ class ThreadProjectionBuilder internal constructor(
     var taskTitle: String = ""
     var isTemporary: Boolean = false
     var temporaryIncarnationId: String? = null
+    /**
+     * The REAL durable identity an atomic Keep committed for THIS exact
+     * conversation (the `temp.keep` receipt's `conversationID`, adopted
+     * only from a committed/alreadyCommitted value carrier). Null until a
+     * committed Keep is projected: the holder's promoted guard is fenced
+     * on `promotedConversationId == conversationId && !isTemporary`, so a
+     * bare success string can never acknowledge promotion.
+     */
+    var promotedConversationId: String? = null
     var conversationRevision: Revision? = null
     var earlierCursor: MessagePageCursorUi? = null
     var hasEarlierMessages: Boolean = false
@@ -109,6 +128,17 @@ class ThreadProjectionBuilder internal constructor(
     private var liveTailClosedFor: String? = null
     private var actionError: String? = null
     private var policyApprovalMode: ApprovalModeUi = ApprovalModeUi.ASK
+    /**
+     * The REAL durable task-policy CAS pair (`taskPolicy.<uuid>` /
+     * `updatedAt`), read ONLY from actual wire pages: the `conversation.get`
+     * taskPolicy projection or the authoritative `run.snapshot`
+     * `policyRevision`. Null means "no proven revision" — a policy update
+     * then refuses instead of sending a fabricated version.
+     */
+    private var policyRevisionValue: Revision? = null
+    /** Native raw vocabulary of the persisted row (never guessed). */
+    private var policyRecoveryRaw: String? = null
+    private var policyNotificationRaw: String? = null
     private var snapshotCounter = 0L
 
     /**
@@ -141,6 +171,42 @@ class ThreadProjectionBuilder internal constructor(
 
     /** Durable child graph rows (real `child.list` page). */
     private var childRuns: List<ChildRunUi> = emptyList()
+
+    /**
+     * Additive `conversation.get` plan/goal projections (approved
+     * goal-core-code-batch-20261021 read map). Decoded ONLY from real page
+     * members: an absent member stays null (never a RAM reconstruction);
+     * a TRIMMED page is honestly labelled by the availability members
+     * below. Full criterion/step/evidence content travels the separate
+     * bounded `conversation.get.detail` byte-exact read — never inferred
+     * from these counts.
+     */
+    var plan: PlanUi? = null
+        private set
+    var goal: GoalUi? = null
+        private set
+
+    /** ROUNDS 2/3 `projected|trimmed|absent` availability (verbatim; null
+     * = a legacy reply). Trimming is never conflated with absence. */
+    var planAvailabilityRaw: String? = null
+        private set
+    var goalAvailabilityRaw: String? = null
+        private set
+
+    /** Per-run post-run review/continuation registry activity ("none"/
+     * "active"/"stopping") read ONLY from an actual `run.snapshot` page.
+     * A run the pages never mention has NO entry — never assumed. */
+    private val goalReviewByRunValue = LinkedHashMap<String, String>()
+
+    /** Host-composed localized manual-compaction status line (real reply
+     * members only; cleared by a newer durable refresh). */
+    var compactionStatus: String? = null
+        private set
+
+    /** Apply one settled `conversation.compact` reply (typed page members). */
+    fun applyCompactionStatus(line: String?) {
+        compactionStatus = line
+    }
 
     fun runIds(): Set<String> = runRows.keys.toSet()
 
@@ -194,6 +260,23 @@ class ThreadProjectionBuilder internal constructor(
             pendingInputs[input.id] = input
         }
         reply.approvalMode?.let { policyApprovalMode = it }
+        reply.policyRecoveryRaw?.let { policyRecoveryRaw = it }
+        reply.policyNotificationRaw?.let { policyNotificationRaw = it }
+        // The session reply proves a durable taskPolicy row exists when it
+        // carries the row's `updatedAt`; adopt that exact CAS identity. A
+        // reply without the member leaves the previous (possibly snapshot-
+        // derived) revision untouched — never a synthesized one.
+        if (reply.policyRevision != null) policyRevisionValue = reply.policyRevision
+        // Plan/goal summaries: the CURRENT page is the whole truth for the
+        // projection — an absent member is an absent surface (a trimmed page
+        // under native page pressure reads the same way; the accept/confirm
+        // producers then refuse rather than bind stale identities, and the
+        // bounded conversation.get.detail read is the recovery path for a
+        // TRIMMED page — the availability members record which it is).
+        plan = reply.plan
+        goal = reply.goal
+        planAvailabilityRaw = reply.planAvailabilityRaw
+        goalAvailabilityRaw = reply.goalAvailabilityRaw
     }
 
     /**
@@ -247,6 +330,14 @@ class ThreadProjectionBuilder internal constructor(
             )).copy(status = input.status, position = input.position)
         }
         page.queueRevision?.let { queueRevision = it }
+        // The snapshot is the authoritative CAS source for the live task
+        // policy (the native builder computes `policyRevision` from the
+        // persisted row itself). Adopt it whenever it proves a revision.
+        page.policyRevision?.let { policyRevisionValue = it }
+        // ROUNDS 2/3: the REAL goal-review registry activity for THIS run.
+        // A page carrying the member records it; a page WITHOUT the member
+        // (legacy) records nothing — the App never assumes active or settled.
+        page.goalReviewRaw?.let { goalReviewByRunValue[page.runID] = it }
     }
 
     internal fun applyMessagePage(page: ConversationWire.MessagePage, earlier: Boolean) {
@@ -633,6 +724,35 @@ class ThreadProjectionBuilder internal constructor(
         childRuns = rows
     }
 
+    /** The proven durable task-policy CAS pair, or null when unread. */
+    internal val policyRevision: Revision? get() = policyRevisionValue
+
+    /** Forget an invalidated revision (typed stale refusal): the next
+     * policy action must re-read the authoritative page, never replay the
+     * rejected version. The mode projection itself stays at the durable
+     * truth (the last accepted `conversation.get`/`run.snapshot` value). */
+    internal fun invalidatePolicyRevision() {
+        policyRevisionValue = null
+    }
+
+    /** Apply ONE accepted `run.policy.update` result: the accepted mode is
+     * the host's own explicit value and the reply's `policyVersion` is the
+     * REAL new CAS identity (never a bump the App invents). */
+    internal fun applyPolicyUpdateSettled(
+        mode: ApprovalModeUi,
+        policyVersion: String?,
+    ) {
+        policyApprovalMode = mode
+        if (policyVersion != null) {
+            policyRevisionValue = Revision(
+                ConversationWire.taskPolicyResourceID(conversationId),
+                policyVersion,
+            )
+        } else {
+            policyRevisionValue = null
+        }
+    }
+
     /**
      * A typed pump failure for [runID]: surfaced in the projection so the UI
      * can show an actionable line; the durable snapshot remains authoritative.
@@ -685,7 +805,7 @@ class ThreadProjectionBuilder internal constructor(
             taskTitle = taskTitle,
             isTemporary = isTemporary,
             temporaryIncarnationId = temporaryIncarnationId,
-            promotedConversationId = null,
+            promotedConversationId = promotedConversationId,
             isConversationMissing = missing,
             hasLoaded = hasLoaded,
             hasProviderActivity = assistantTail.isNotEmpty(),
@@ -715,8 +835,11 @@ class ThreadProjectionBuilder internal constructor(
             earlierMessageCursor = earlierCursor,
             importantFiles = emptyList(),
             checklist = null,
-            plan = null,
-            goal = null,
+            plan = plan,
+            goal = goal,
+            planAvailabilityRaw = planAvailabilityRaw,
+            goalAvailabilityRaw = goalAvailabilityRaw,
+            goalReviewByRun = goalReviewByRunValue.toMap(),
             childRuns = childRuns,
             decisions = emptyList(),
             childDetails = childDetails.toMap(),
@@ -726,6 +849,9 @@ class ThreadProjectionBuilder internal constructor(
             usesLocalModel = false,
             voiceAvailable = false,
             capabilityChips = emptyList(),
+            taskPolicyRevision = policyRevisionValue,
+            taskRecoveryPolicyRaw = policyRecoveryRaw,
+            taskNotificationPolicyRaw = policyNotificationRaw,
         )
     }
 
@@ -764,6 +890,25 @@ internal object ConversationWire {
         val runs: List<RunSummary>,
         val pendingInputs: List<PendingInputUi>,
         val approvalMode: ApprovalModeUi?,
+        /** `taskPolicy.<uuid>` / the row's `updatedAt` when the reply
+         * proves a durable policy row; null = no proven revision. */
+        val policyRevision: Revision? = null,
+        /** Native raw vocabulary of the persisted row (absent = unknown). */
+        val policyRecoveryRaw: String? = null,
+        val policyNotificationRaw: String? = null,
+        /** Additive goal-core batch projections (absent/null = genuinely
+         * absent — a temporary session or a store without rows answers
+         * null; never an empty-object reinterpretation). */
+        val plan: PlanUi? = null,
+        val goal: GoalUi? = null,
+        /** Additive goal-core batch projections (ROUNDS 2/3): the
+         * `projected|trimmed|absent` availability vocabulary, decoded
+         * verbatim. TRIMMING (a summary squeezed out by page pressure) is
+         * never conflated with ABSENCE (no durable row): the App offers the
+         * bounded detail read for `trimmed` and shows nothing for `absent`.
+         * Null = a legacy round-1 reply without the members. */
+        val planAvailabilityRaw: String? = null,
+        val goalAvailabilityRaw: String? = null,
     )
 
     class RunSummary(
@@ -817,6 +962,17 @@ internal object ConversationWire {
         val reasoningText: String? = null,
         val reasoningComplete: Boolean = false,
         val reasoningContinuationHandle: String? = null,
+        /** The durable task-policy CAS pair for `run.policy.update`
+         * (`taskPolicy.<uuid>` / row `updatedAt`), computed by the native
+         * snapshot builder from the persisted row. Null for a temporary run
+         * (no durable row — the honest null) or when the member is absent. */
+        val policyRevision: Revision? = null,
+        /** ROUNDS 2/3 additive `goalReview` — the REAL post-run review/
+         * continuation registry for THIS run: "none" / "active" /
+         * "stopping". Flipping stopping→none IS the settlement proof; no
+         * local timer or ack word substitutes for it. Null = a round-1
+         * page without the member (never assumed). */
+        val goalReviewRaw: String? = null,
     )
 
     class PendingApprovalWire(
@@ -874,12 +1030,84 @@ internal object ConversationWire {
         val approvalMode = policy?.string("resolvedApprovalMode")?.let { raw ->
             ApprovalModeUi.entries.firstOrNull { it.name.lowercase() == raw.lowercase() }
         }
+        // The REAL persisted row identity for run.policy.update CAS: the
+        // projection carries `updatedAt` under the native TaskPolicy raw
+        // vocabulary; a reply WITHOUT the row (or without a parseable
+        // stamp) yields NO revision — the App then re-reads the snapshot
+        // or refuses, never fabricates a version.
+        val policyRevision = policy?.string("updatedAt")?.takeIf { it.isNotBlank() }?.let {
+            Revision(taskPolicyResourceID(id), it)
+        }
         return SessionReply(
             title = root.string("title") ?: id,
             revision = revision,
             runs = runs,
             pendingInputs = pendingInputs,
             approvalMode = approvalMode,
+            policyRevision = policyRevision,
+            policyRecoveryRaw = policy?.string("recoveryPolicy"),
+            policyNotificationRaw = policy?.string("notificationPolicy"),
+            plan = decodePlanSummary(root["plan"] as? JsonObject),
+            goal = decodeGoalSummary(root["goal"] as? JsonObject),
+            planAvailabilityRaw = root.string("planAvailability"),
+            goalAvailabilityRaw = root.string("goalAvailability"),
+        )
+    }
+
+    /** The additive `conversation.get.plan` summary (approved read map):
+     * `{id,status,isDecisionComplete,executionRecommendation?,
+     *   recommendationReason?,revision,digest,title}`. A foreign/partial
+     * object without its real id/revision decodes to null — the accept
+     * action then refuses rather than binding a guessed identity. */
+    fun decodePlanSummary(obj: JsonObject?): PlanUi? {
+        if (obj == null) return null
+        val id = obj.string("id") ?: return null
+        val status = obj.string("status") ?: return null
+        val decisionComplete = obj.bool("isDecisionComplete") ?: return null
+        val revisionNumber = obj.long("revision")?.toInt() ?: return null
+        return PlanUi(
+            id = id,
+            title = obj.string("title") ?: "",
+            statusRaw = status,
+            isDecisionComplete = decisionComplete,
+            executionRecommendation = when (obj.string("executionRecommendation")) {
+                "normal" -> PlanRecommendationUi.NORMAL
+                "goal" -> PlanRecommendationUi.GOAL
+                else -> null
+            },
+            recommendationReason = obj.string("recommendationReason"),
+            revisionNumber = revisionNumber,
+            revision = Revision("plan.$id", revisionNumber.toString()),
+            digest = obj.string("digest"),
+        )
+    }
+
+    /** The additive `conversation.get.goal` summary (approved read map):
+     * counts + status + the REAL action revision identity
+     * (`revisionResourceID`/`revisionVersion` are echoed verbatim into
+     * `goal.confirm`). No criterion/step/evidence text exists in this
+     * summary; the bounded detail read (still pending from the Core owner)
+     * is the only future source, and nothing here substitutes for it. */
+    fun decodeGoalSummary(obj: JsonObject?): GoalUi? {
+        if (obj == null) return null
+        val id = obj.string("id") ?: return null
+        val status = obj.string("status") ?: return null
+        return GoalUi(
+            id = id,
+            objective = obj.string("objective") ?: "",
+            statusRaw = status,
+            stepsCompleted = obj.long("stepsCompleted")?.toInt() ?: 0,
+            stepsTotal = obj.long("stepsTotal")?.toInt() ?: 0,
+            revision = obj.long("revision")?.toInt() ?: 0,
+            revisionResourceID = obj.string("revisionResourceID"),
+            revisionVersion = obj.string("revisionVersion"),
+            criteriaTotal = obj.long("criteriaTotal")?.toInt() ?: 0,
+            criteriaSatisfied = obj.long("criteriaSatisfied")?.toInt() ?: 0,
+            criteriaAwaitingUserConfirmation =
+                obj.long("criteriaAwaitingUserConfirmation")?.toInt() ?: 0,
+            cycleCount = obj.long("cycleCount")?.toInt() ?: 0,
+            modelCallCount = obj.long("modelCallCount")?.toInt() ?: 0,
+            totalIterationCount = obj.long("totalIterationCount")?.toInt() ?: 0,
         )
     }
 
@@ -1141,6 +1369,241 @@ internal object ConversationWire {
             reasoningText = root.string("reasoningText"),
             reasoningComplete = root.bool("reasoningComplete") ?: false,
             reasoningContinuationHandle = root.string("reasoningContinuationHandle"),
+            // The native page emits `policyRevision` as an object OR an
+            // explicit null (temporary run / no durable row). Only the
+            // object form yields a CAS identity; JSON null and absence both
+            // decode to null — never a synthesized version.
+            policyRevision = (root["policyRevision"] as? JsonObject)?.let {
+                val resourceID = it.string("resourceID")
+                val version = it.string("version")
+                if (resourceID != null && version != null) Revision(resourceID, version) else null
+            },
+            goalReviewRaw = root.string("goalReview"),
+        )
+    }
+
+    /** One `conversation.get.detail` reply page (closed members; the
+     * additive ROUNDS 2/3 read). `content` is a valid UTF-8 substring of
+     * the canonical durable-row JSON at exact byte boundaries; ONLY
+     * `nextOffset` drives continuation. A malformed member decodes to null
+     * and the reader treats that as a typed failure (never a partial
+     * publish). */
+    class DetailPage(
+        val kind: String,
+        val id: String,
+        val statusRaw: String,
+        val revision: Long?,
+        val digest: String,
+        val encoding: String,
+        val offset: Long,
+        val nextOffset: Long,
+        val totalBytes: Long,
+        val truncated: Boolean,
+        val content: String,
+        val revisionResourceID: String?,
+        val revisionVersion: String?,
+        val planDigest: String?,
+        val isDecisionComplete: Boolean?,
+    )
+
+    /** Decodes the `detail` member out of a `conversation.get` reply. */
+    fun decodeDetailPage(value: JsonElement): DetailPage? {
+        val root = value as? JsonObject ?: return null
+        val detail = root["detail"] as? JsonObject ?: return null
+        val kind = detail.string("kind") ?: return null
+        if (kind != "goal" && kind != "plan" && kind != "checklist") return null
+        val id = detail.string("id") ?: return null
+        val digest = detail.string("digest") ?: return null
+        if (!digest.matches(Regex("[0-9a-f]{64}")) || detail.string("encoding") != "json-utf8") return null
+        val offset = detail.long("offset") ?: return null
+        val nextOffset = detail.long("nextOffset") ?: return null
+        val totalBytes = detail.long("totalBytes") ?: return null
+        if (offset < 0 || nextOffset < offset || totalBytes < nextOffset) return null
+        val content = detail.string("content") ?: return null
+        return DetailPage(
+            kind = kind,
+            id = id,
+            statusRaw = detail.string("status") ?: "",
+            revision = detail.long("revision"),
+            digest = digest,
+            encoding = "json-utf8",
+            offset = offset,
+            nextOffset = nextOffset,
+            totalBytes = totalBytes,
+            truncated = detail.bool("truncated") ?: false,
+            content = content,
+            revisionResourceID = detail.string("revisionResourceID"),
+            revisionVersion = detail.string("revisionVersion"),
+            planDigest = detail.string("planDigest"),
+            isDecisionComplete = detail.bool("isDecisionComplete"),
+        )
+    }
+
+    /** Reconstruct the ORIGINAL durable goal row from the fully accumulated
+     * canonical JSON (only ever called on a COMPLETE byte-exact chain).
+     * Strict: the row identity/objective/status must exist; a foreign or
+     * partial document decodes to null. Absent optional members stay null
+     * (distinct from empty), per the row's real shape. No `checks` field
+     * exists on the goal by contract — nothing is synthesized here. */
+    fun decodeGoalDetailRow(json: JsonObject): GoalDetailUi? {
+        val id = json.string("id") ?: return null
+        val objective = json.string("objective") ?: return null
+        val statusRaw = json.string("status") ?: return null
+        val criteria = (json["acceptanceCriteria"] as? JsonArray).orEmpty().mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val cid = obj.string("id") ?: return@mapNotNull null
+            GoalCriterionRowUi(
+                id = cid,
+                text = obj.string("text") ?: "",
+                isSatisfied = obj.bool("isSatisfied") ?: false,
+                evidenceIDs = (obj["evidenceIDs"] as? JsonArray)
+                    ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                    ?: emptyList(),
+                requiresUserConfirmation = obj.bool("requiresUserConfirmation") ?: false,
+            )
+        }
+        val steps = (json["steps"] as? JsonArray).orEmpty().mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val sid = obj.string("id") ?: return@mapNotNull null
+            GoalStepRowUi(
+                id = sid,
+                title = obj.string("title") ?: "",
+                detail = obj.string("detail") ?: "",
+                statusRaw = obj.string("status") ?: "pending",
+                order = obj.long("order")?.toInt() ?: 0,
+            )
+        }
+        val evidence = (json["evidence"] as? JsonArray).orEmpty().mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val eid = obj.string("id") ?: return@mapNotNull null
+            GoalEvidenceRowUi(
+                id = eid,
+                kindRaw = obj.string("kind") ?: "",
+                reference = obj.string("reference") ?: "",
+                summary = obj.string("summary") ?: "",
+                fingerprint = obj.string("fingerprint"),
+            )
+        }
+        val progress = json["progress"] as? JsonObject
+        val budgets = json["budgets"] as? JsonObject
+        return GoalDetailUi(
+            id = id,
+            objective = objective,
+            statusRaw = statusRaw,
+            revision = json.long("revision")?.toInt(),
+            sourcePlanID = json.string("sourcePlanID"),
+            sourcePlanDigest = json.string("sourcePlanDigest"),
+            criteria = criteria,
+            steps = steps.sortedBy { it.order },
+            evidence = evidence,
+            blockingConditions = (json["blockingConditions"] as? JsonArray)
+                ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content },
+            stoppingConditions = (json["stoppingConditions"] as? JsonArray)
+                ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content },
+            maxCycles = budgets?.long("maxCycles")?.toInt(),
+            maxModelCalls = budgets?.long("maxModelCalls")?.toInt(),
+            cycleCount = progress?.long("cycleCount")?.toInt() ?: 0,
+            modelCallCount = progress?.long("modelCallCount")?.toInt() ?: 0,
+            totalIterationCount = progress?.long("totalIterationCount")?.toInt() ?: 0,
+        )
+    }
+
+    /** Reconstruct the ORIGINAL durable plan row (same rules as the goal
+     * row: complete chain only, strict identity, absent ≠ empty). */
+    fun decodePlanDetailRow(json: JsonObject): PlanDetailUi? {
+        val id = json.string("id") ?: return null
+        val revision = json.long("revision")?.toInt() ?: return null
+        val statusRaw = json.string("status") ?: return null
+        val sections = (json["sections"] as? JsonArray).orEmpty().mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val sid = obj.string("id") ?: return@mapNotNull null
+            PlanSectionRowUi(
+                id = sid,
+                title = obj.string("title") ?: "",
+                body = obj.string("body") ?: "",
+                order = obj.long("order")?.toInt() ?: 0,
+            )
+        }
+        val assumptions = (json["assumptions"] as? JsonArray).orEmpty().mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val aid = obj.string("id") ?: return@mapNotNull null
+            PlanAssumptionRowUi(
+                id = aid,
+                text = obj.string("text") ?: "",
+                isAccepted = obj.bool("isAccepted") ?: false,
+            )
+        }
+        val risks = (json["risks"] as? JsonArray).orEmpty().mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val rid = obj.string("id") ?: return@mapNotNull null
+            PlanRiskRowUi(
+                id = rid,
+                text = obj.string("text") ?: "",
+                mitigation = obj.string("mitigation"),
+                severityRaw = obj.string("severity") ?: "",
+            )
+        }
+        val criteria = (json["acceptanceCriteria"] as? JsonArray).orEmpty().mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val cid = obj.string("id") ?: return@mapNotNull null
+            PlanCriterionRowUi(
+                id = cid,
+                text = obj.string("text") ?: "",
+                verification = obj.string("verification") ?: "",
+            )
+        }
+        return PlanDetailUi(
+            id = id,
+            revision = revision,
+            statusRaw = statusRaw,
+            title = json.string("title") ?: "",
+            summary = json.string("summary") ?: "",
+            sections = sections.sortedBy { it.order },
+            assumptions = assumptions,
+            risks = risks,
+            criteria = criteria,
+            digest = json.string("digest"),
+        )
+    }
+
+    /** Reconstruct the ORIGINAL durable checklist row from its canonical
+     * JSON (complete byte-exact chain only). The body carries NO id field;
+     * identity travels the reply-level `detail.id` (the real runID) and the
+     * body's `runID`/`revision` must agree with the proven page — any
+     * mismatch decodes to null (typed failure, never a merged snapshot).
+     * Original step statuses are preserved verbatim (completed stays
+     * distinct from cancelled). */
+    fun decodeChecklistDetailRow(
+        json: JsonObject,
+        pageRunID: String,
+        pageRevision: Long?,
+        pageStatusRaw: String,
+    ): ChecklistDetailUi? {
+        val bodyRunID = json.string("runID") ?: return null
+        if (bodyRunID != pageRunID) return null
+        val revision = json.long("revision")?.toInt() ?: return null
+        if (pageRevision != null && pageRevision.toInt() != revision) return null
+        val steps = (json["steps"] as? JsonArray).orEmpty().mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val sid = obj.string("id") ?: return@mapNotNull null
+            val statusRaw = obj.string("status") ?: return@mapNotNull null
+            val status = ChecklistStepStatusUi.entries.firstOrNull { it.swiftRaw == statusRaw }
+                ?: return@mapNotNull null
+            ChecklistStepUi(
+                id = sid,
+                title = obj.string("title") ?: "",
+                status = status,
+                evidence = (obj["evidence"] as? JsonArray)
+                    ?.mapNotNull { (it as? JsonPrimitive)?.content }
+                    ?: emptyList(),
+            )
+        }
+        return ChecklistDetailUi(
+            runID = bodyRunID,
+            revision = revision,
+            title = json.string("title") ?: "",
+            statusRaw = pageStatusRaw,
+            steps = steps,
         )
     }
 
@@ -1200,6 +1663,49 @@ internal object ConversationWire {
         )
         request.providerId?.let { members["providerID"] = JsonPrimitive(it) }
         request.modelId?.let { members["modelID"] = JsonPrimitive(it) }
+        // Product CHAT (an explicit ordinary chat-only turn) sends the EMPTY
+        // tool ceiling: the current native assembly already maps an empty
+        // ceiling to `toolsEnabled=false`. AGENT omits the key and keeps the
+        // native tool path enabled. This NEVER generalizes from the wire
+        // `mode:"chat"` — AGENT also travels the chat spelling — only from
+        // the composer's own CHAT selection on an ORDINARY launch (a
+        // temporary session's ceiling is the native frozen public-web
+        // allowlist and must stay unchanged).
+        if (request.executionMode == AgentExecutionModeUi.CHAT &&
+            request.temporaryIncarnationId == null
+        ) {
+            members["toolCeiling"] = JsonArray(emptyList())
+        }
+        // The Home draft-task policy for the FIRST fresh launch of a new
+        // ordinary conversation (⇄ persisted atomically with the launch by
+        // the native C1). Absent key = the ORIGINAL native default (.ask);
+        // recovery/notification keep their existing defaults (never sent).
+        request.approvalMode?.let { members["approvalMode"] = JsonPrimitive(it.swiftRaw) }
+        // Structured thread GoalBuilder definition (approved additive
+        // `goalDefinition` key; mode goal only — the caller contract is the
+        // host's createGoal path). Closed members mirror
+        // `RunStartQuery.goalDefinitionKeys`; empty criteria arrays stay
+        // ABSENT (the ORIGINAL native default-criterion rule is Swift-side,
+        // never composed here). Bounds are the native parser's; the host
+        // refuses an over-budget producer BEFORE dispatch.
+        request.goalDefinition?.let { definition ->
+            val objective = definition.objective.trim()
+            if (objective.isNotEmpty() && request.executionMode == AgentExecutionModeUi.GOAL) {
+                val goalMembers = mutableMapOf<String, JsonElement>(
+                    "objective" to JsonPrimitive(objective),
+                )
+                definition.boundedCriteria()?.let {
+                    goalMembers["criteria"] = JsonArray(it.map { v -> JsonPrimitive(v) })
+                }
+                definition.boundedBlockingConditions()?.let {
+                    goalMembers["blockingConditions"] = JsonArray(it.map { v -> JsonPrimitive(v) })
+                }
+                definition.boundedStoppingConditions()?.let {
+                    goalMembers["stoppingConditions"] = JsonArray(it.map { v -> JsonPrimitive(v) })
+                }
+                members["goalDefinition"] = JsonObject(goalMembers)
+            }
+        }
         return JsonObject(members)
     }
 
@@ -1398,6 +1904,10 @@ internal object ConversationWire {
     /** `pendingQueue.<UPPER uuid>`. */
     fun pendingQueueResourceID(conversationID: String): String =
         "pendingQueue.${upperUUID(conversationID)}"
+
+    /** `taskPolicy.<UPPER uuid>` (native `RunWireRevision.taskPolicyResourceID`). */
+    fun taskPolicyResourceID(conversationID: String): String =
+        "taskPolicy.${upperUUID(conversationID)}"
 
     /** `approval.<callID>` verbatim (call ids are opaque provider ids). */
     fun approvalResourceID(callID: String): String = "approval.$callID"

@@ -15,6 +15,14 @@
 // inside the SAME original writer transaction (canonical privateTask
 // workspace + ownership + task policy for a GENUINELY EMPTY ordinary header
 // that was created through the conversation domain without any ownership).
+//
+// SECOND MIRROR DELTA (goal-core code batch, job-7efd60bb51d14f02,
+// 2026-10-21): the additive `AtomicIntelligenceRunLaunchStore.prepare`
+// overload with a post-digest-CAS, pre-first-write atomic commit hook used
+// by `plan.accept` and the structured `goalDefinition` launch. Every
+// original caller and public method keeps its exact original behavior
+// (existing signatures are unchanged; the private transaction helper just
+// gains a nil-defaulted parameter threaded to the new hook site).
 
 import Foundation
 import GRDB
@@ -144,7 +152,28 @@ public protocol ExistingConversationRunLaunchStore: RunLaunchStore {
                  expectedRow: @escaping @Sendable (Database, Row?) throws -> Void) async throws -> PreparedRun
 }
 
-public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore {
+/// ANDROID MIRROR ADDITION (goal-core code batch, job-7efd60bb51d14f02,
+/// 2026-10-21; additive — the two protocols/methods above are byte-equal to
+/// the reviewed mirror before this batch): the C1 atomic intelligence seam.
+/// `plan.accept` (accepted plan + optional GoalFromPlanFactory goal) and the
+/// structured `goalDefinition` on an ordinary goal-mode `run.start` must
+/// commit through the ORIGINAL statement twins INSIDE the SAME writer
+/// transaction that commits the run + user message + launch, AFTER the
+/// existing-row digest CAS and BEFORE any relational repair or run row. A
+/// throw anywhere rolls the WHOLE launch back: no accepted-plan irrecoverable
+/// residue, no half goal, no orphan run — one DatabaseManager, schema v46,
+/// no second store, no new table, no network inside the transaction (the
+/// commit closure runs only durable statements over values already proven at
+/// admission). Only the durable `SQLiteRunLaunchStore` (the reviewed mirror)
+/// provides this capability; the ORIGINAL EphemeralRunLaunchStore never
+/// conforms, so a temporary launch structurally cannot carry intelligence.
+public protocol AtomicIntelligenceRunLaunchStore: ExistingConversationRunLaunchStore {
+    func prepare(_ request: RunLaunchRequest,
+                 expectedRow: @escaping @Sendable (Database, Row?) throws -> Void,
+                 atomicIntelligence: (@Sendable (Database) throws -> Void)?) async throws -> PreparedRun
+}
+
+public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore, AtomicIntelligenceRunLaunchStore {
     private let database: DatabaseManager
 
     public init(database: DatabaseManager) {
@@ -152,7 +181,7 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore {
     }
 
     public func prepare(_ request: RunLaunchRequest) async throws -> PreparedRun {
-        try await prepareTransaction(request, expectedRow: nil)
+        try await prepareTransaction(request, expectedRow: nil, atomicIntelligence: nil)
     }
 
     /// Additive Android seam, following ConversationStore's expectedRow
@@ -162,12 +191,32 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore {
         guard request.conversationID != nil else {
             throw FloeError.validationFailed("Existing-row proof requires an existing conversation")
         }
-        return try await prepareTransaction(request, expectedRow: expectedRow)
+        return try await prepareTransaction(request, expectedRow: expectedRow,
+                                            atomicIntelligence: nil)
+    }
+
+    /// ANDROID MIRROR ADDITION (goal-core code batch): the C1 atomic
+    /// intelligence commit. Requires an existing conversation (the digest
+    /// CAS runs first); the `atomicIntelligence` closure — plan-revision /
+    /// goal-row statement twins — executes INSIDE the same writer
+    /// transaction immediately after the expected-row proof and before any
+    /// configuration repair or run/message insert. A throw rolls back every
+    /// durable effect of this launch (provable C0 no-effect). Original
+    /// callers keep the two methods above unchanged.
+    public func prepare(_ request: RunLaunchRequest,
+                        expectedRow: @escaping @Sendable (Database, Row?) throws -> Void,
+                        atomicIntelligence: (@Sendable (Database) throws -> Void)?) async throws -> PreparedRun {
+        guard request.conversationID != nil else {
+            throw FloeError.validationFailed("Existing-row proof requires an existing conversation")
+        }
+        return try await prepareTransaction(request, expectedRow: expectedRow,
+                                            atomicIntelligence: atomicIntelligence)
     }
 
     private func prepareTransaction(
         _ request: RunLaunchRequest,
-        expectedRow: (@Sendable (Database, Row?) throws -> Void)?
+        expectedRow: (@Sendable (Database, Row?) throws -> Void)?,
+        atomicIntelligence: (@Sendable (Database) throws -> Void)?
     ) async throws -> PreparedRun {
         guard request.conversationID == nil || request.newConversationID == nil else {
             throw FloeError.validationFailed("Choose an existing or a new conversation identity, not both")
@@ -192,6 +241,15 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore {
                     sql: "SELECT * FROM conversations WHERE id = ?",
                     arguments: [conversationID.uuidString])
                 try expectedRow(db, row)
+            }
+            // ANDROID MIRROR ADDITION (goal-core code batch): the atomic
+            // intelligence commit runs ONLY after the existing-row digest
+            // CAS succeeded and BEFORE the first durable write of this
+            // launch, inside this same serialized transaction. Throwing
+            // here rolls back everything (nothing was written yet); the
+            // closure performs durable statements only — never network IO.
+            if let atomicIntelligence {
+                try atomicIntelligence(db)
             }
             let now = request.startedAt
             let conversation: ConversationRecord
@@ -457,6 +515,15 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore {
                 sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
                 arguments: [PersistenceCodec.encode(now), conversation.id.uuidString]
             )
+            guard let activationProof = try RunActivationIdentity.current(
+                db: db, conversationID: conversation.id) else {
+                throw FloeError.storageCorrupted("Launch activation owner disappeared")
+            }
+            let status = try JSONSerialization.data(withJSONObject: [
+                "state": "preparing",
+                "floeActivation": ["version": 1, "kind": request.messageRole, "proof": activationProof],
+            ], options: [.sortedKeys])
+            let statusJSON = String(decoding: status, as: UTF8.self)
             try db.execute(
                 sql: """
                     INSERT INTO run_events (id, run_id, sequence, kind, payload_json, created_at)
@@ -465,7 +532,7 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore {
                 arguments: [
                     UUID().uuidString,
                     run.id.uuidString,
-                    #"{"state":"preparing"}"#,
+                    statusJSON,
                     PersistenceCodec.encode(now)
                 ]
             )

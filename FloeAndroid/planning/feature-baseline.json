@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "artifact": "floe-android-feature-baseline",
-  "version": "g02.2026-10-19.1",
+  "version": "g02.2026-10-21.2",
   "kind": "operation-level-planning-baseline",
-  "status": "Operation planning baseline; 3 FND foundation operations component-verified for G01; 179 operations remain planned (including 10 additive Settings-domain G02 operations); G02 operation and fixture coverage reconciled; no G02 feature implemented or device-qualified.",
+  "status": "Operation scope baseline; 3 FND operations are G01 component-verified and 180 retain planned acceptance status, including 41 G02 operations. G02 has integrated production source and published Android alphas; those deliveries do not imply operation-level qualification. Current implementation, source-bound checks, device acceptance and releases are recorded separately in docs/FLOE_ANDROID_PROGRESS.zh-CN.md.",
   "createdAt": "2026-10-18",
   "sourcePlan": "docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md",
   "planSectionsCovered": [
@@ -687,6 +687,41 @@
           "status": "planned",
           "alignment": "built-in-equivalent",
           "notes": "Explicit G02 attachment lifecycle operation from plan P2.2/P2.3/P2.7; planning contract only, no Android implementation is claimed."
+        },
+        {
+          "id": "CHA-MANUAL-COMPACT",
+          "op": "Manually compact a durable conversation's context through the ORIGINAL cloud summarizer lane, preserving history and answering short/no-history honestly",
+          "ios": [
+            {
+              "path": "FloeAgent/FloeApp/Remote/ConversationCenter.swift",
+              "symbol": "requestManualCompaction"
+            },
+            {
+              "path": "FloeAgent/Sources/FloeAgentRuntime/ContextEngine.swift",
+              "symbol": "CompactionRequest"
+            }
+          ],
+          "iosState": "implemented",
+          "goal": "G02",
+          "verify": [
+            "G12",
+            "G13"
+          ],
+          "channel": [
+            "full",
+            "play"
+          ],
+          "input": "existing durable conversation (quiescent)",
+          "output": "bounded compaction record + honest shortHistory/noHistory no-op; original history preserved",
+          "assertions": [
+            "one per-conversation reservation participates in EVERY real run launch admission (no compact-while-running, no launch admitted past the reservation)",
+            "final history + live-launch proof and the summary INSERT commit atomically inside the ONE original SQLite writer transaction; a raced summary never persists",
+            "temporary conversations cannot reach the durable writer; cancellation/drain settles the real summarizer call (no detached network)",
+            "model resolution stays trusted (default-agent preferences + real catalog; a supplied modelID is validated, never assumed)"
+          ],
+          "status": "planned",
+          "alignment": "built-in-equivalent",
+          "scopeNotes": "goal-core code batch 2026-10-21 (job-7efd60bb51d14f02): native command/conversation.compact + original services wired in the candidate Core; the composer trigger (slash-palette row) and localized result line are the next App producer stage. No new table, schema stays v46."
         }
       ]
     },
@@ -6617,5 +6652,46 @@
     "frozenHistory": "baselineHistory (g01.2026-10-18.2 -> g02.2026-10-18.1) preserved unchanged; it records the G01 170-operation/24-fixture declaration and the prior 172-operation attachment reconciliation.",
     "g01Receipt": "Local/Private/android-g01-20261018/final-g01-receipt.json",
     "g01ReceiptPolicy": "Frozen G01 declaration preserved; its 170-operation/24-fixture counts are not rewritten."
+  },
+  "goalCoreRunControlAdditive": {
+    "version": "g02.2026-10-21.2",
+    "reconciledAt": "2026-10-21",
+    "status": "CANDIDATE ONLY — not live, not compiled, not executed, not device-qualified",
+    "authority": "MAIN_RUN_CONTROL_CLOSURE_DECISION_20261020.json (ledger clause: add ONE explicit manual compaction feature operation, contingent on actual current counts 182/40) — goal-core code batch job-7efd60bb51d14f02",
+    "reason": "G02 ordinary run-control closure batch: manual conversation.compact counted as ONE explicit operation (not a hidden assertion extension). plan.accept and goal.confirm EXTEND the existing CHA-PLAN-GOAL operation assertions (accepted-plan/goal controls steerable during and after a run) and introduce no new operation id, matching the decision's 'preserve all 84 prior matrix tuples... existing identities never renamed/deleted' rule. No child.create. No fixture added.",
+    "previousVersion": "g02.2026-10-19.1",
+    "previousDeclaredCounts": {
+      "families": 36,
+      "operations": 182,
+      "g02Operations": 40,
+      "workPackages": 85,
+      "fixtures": 33
+    },
+    "currentDeclaredCounts": {
+      "families": 36,
+      "operations": 183,
+      "g02Operations": 41,
+      "workPackages": 85,
+      "fixtures": 33
+    },
+    "additiveOperationIds": [
+      "CHA-MANUAL-COMPACT"
+    ],
+    "additiveOperations": [
+      {
+        "id": "CHA-MANUAL-COMPACT",
+        "family": "CHA",
+        "goal": "G02",
+        "status": "planned",
+        "workPackages": [
+          "P2.2",
+          "P2.3",
+          "P2.7"
+        ],
+        "fixture": null
+      }
+    ],
+    "additiveFixtureIds": [],
+    "additiveFixturePaths": []
   }
 }

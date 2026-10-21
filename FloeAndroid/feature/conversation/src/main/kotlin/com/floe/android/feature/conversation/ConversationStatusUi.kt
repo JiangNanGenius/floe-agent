@@ -146,7 +146,13 @@ fun ThreadIntelligenceSection(holder: ConversationFlowHolder, modifier: Modifier
     val state = holder.snapshot.value ?: return
     val plan = state.plan
     val goal = state.goal
-    if (plan == null && goal == null) return
+    // TRIMMING is not ABSENCE: a page under native pressure may carry no
+    // summary member while the availability members still prove a durable
+    // row EXISTS. Those rows render as honestly incomplete with the
+    // bounded detail read as the recovery path — never as "no plan/goal".
+    val planTrimmed = plan == null && state.planAvailabilityRaw == "trimmed"
+    val goalTrimmed = goal == null && state.goalAvailabilityRaw == "trimmed"
+    if (plan == null && goal == null && !planTrimmed && !goalTrimmed) return
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -228,6 +234,48 @@ fun ThreadIntelligenceSection(holder: ConversationFlowHolder, modifier: Modifier
                     prominent = true,
                     enabled = true,
                     onClick = { holder.confirmGoalCompletion() },
+                )
+            }
+            // REAL post-run review/continuation activity (run.snapshot
+            // `goalReview`): while review work is ACTIVE the surface keeps an
+            // explicit human Stop routed through the existing run.cancel at
+            // the exact review-owning run; while STOPPING it shows an honest
+            // settling line and no fake settled/alreadyRequested claim. The
+            // stopping→none flip (native registry) is the only settlement
+            // proof, so this never needs a local timer.
+            val activeReviewRun = state.goalReviewByRun.entries
+                .firstOrNull { it.value == "active" }?.key
+            val stoppingReviewRun = state.goalReviewByRun.entries
+                .firstOrNull { it.value == "stopping" }?.key
+            if (activeReviewRun != null) {
+                PlanAction(
+                    label = stringResource(R.string.goal_stop_review),
+                    prominent = false,
+                    enabled = true,
+                    onClick = { holder.requestGoalReviewStop(activeReviewRun) },
+                )
+            } else if (stoppingReviewRun != null) {
+                FloeText(
+                    stringResource(R.string.goal_review_stopping),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+        }
+        if (goalTrimmed || planTrimmed) {
+            FloeDivider()
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                FloeText(
+                    stringResource(R.string.intelligence_trimmed_note),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                    modifier = Modifier.weight(1f),
+                )
+                PlanAction(
+                    label = stringResource(R.string.intelligence_read_full),
+                    prominent = false,
+                    enabled = true,
+                    onClick = { holder.requestInspector(InspectorRouteUi.PROGRESS) },
                 )
             }
         }

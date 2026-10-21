@@ -277,21 +277,46 @@ class RuntimeHost internal constructor(
 
     // ------------------------------------------------------------ operations
 
+    /** One independently owned reader per logical page request. Provider,
+     * role and conversation reads must never supersede one another. */
+    internal fun readModelPage(
+        providerID: String?,
+        cursor: String?,
+        correlationTag: String = "mlist",
+        isCurrent: () -> Boolean = { true },
+        onOutcome: (HostOperationOutcome) -> Unit,
+    ) {
+        ModelPageReadController(this).readPage(
+            providerID, cursor, correlationTag, isCurrent, onOutcome)
+    }
+
 
     /**
      * Submit + track one canonical operation to its terminal. [onTerminal]
      * is invoked exactly once with the typed outcome; the correlation is
      * closed on every path. Failures are typed — never secrets, raw paths
      * or exception text.
+     *
+     * [onAccepted] (optional, default null = no behavior change for existing
+     * callers) fires exactly once with the REAL mailbox-issued
+     * `operationReceiptID` the moment the queue admits the envelope — before
+     * the effect stream opens. Long-running cancellable operations
+     * (personalization generate, memory organize) retain this receipt so an
+     * explicit user cancel can address the actual active operation by
+     * reusing the original correlation; a UI dismissal or request id is
+     * never presented as a domain receipt. Terminal-once delivery and
+     * effect ownership are unchanged.
      */
     internal fun trackOperation(
         request: HostCommandRequest,
         onFrame: (HostEffectFrame) -> Unit = { },
+        onAccepted: ((String) -> Unit)? = null,
         onTerminal: (HostOperationOutcome) -> Unit,
     ) {
         scope.launch(ioDispatcher) {
             when (val submitted = commandClient.submit(request)) {
                 is HostSubmitResult.Accepted -> {
+                    onAccepted?.invoke(submitted.operationReceiptID)
                     commandClient.openEffectStream(
                         operationReceiptID = submitted.operationReceiptID,
                         configurationScope = request.configurationScope ?: "system",

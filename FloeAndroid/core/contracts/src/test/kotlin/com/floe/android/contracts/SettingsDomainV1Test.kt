@@ -27,8 +27,27 @@ class SettingsDomainV1Test {
         SettingsDomainV1.validate(command, label, createIntent, revisionPresent, payload)
 
     @Test
-    fun matrixHas84TuplesAnd19Labels() {
-        assertEquals(84, BridgeV3CommandMatrix.ENTRIES.size)
+    fun matrixHas87TuplesAnd19Labels() {
+        // goal-core batch (2026-10-21): 84 -> 87 with the three additive
+        // run-control tuples (plan.accept / goal.confirm /
+        // conversation.compact). The 57 legacy + 27 settings tuples and all
+        // 19 labels are unchanged; there is NO child.create.
+        assertEquals(87, BridgeV3CommandMatrix.ENTRIES.size)
+        assertEquals(1, BridgeV3CommandMatrix.ENTRIES.count {
+            it.command == "plan.accept" && it.scope == BridgeV3Scope.Kind.LAUNCH &&
+                it.revisionRequired && !it.allowsCreateIntent
+        })
+        assertEquals(1, BridgeV3CommandMatrix.ENTRIES.count {
+            it.command == "goal.confirm" &&
+                it.scope == BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE &&
+                it.revisionRequired && !it.allowsCreateIntent
+        })
+        assertEquals(1, BridgeV3CommandMatrix.ENTRIES.count {
+            it.command == "conversation.compact" &&
+                it.scope == BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE &&
+                !it.revisionRequired
+        })
+        assertEquals(0, BridgeV3CommandMatrix.ENTRIES.count { it.command == "child.create" })
         assertEquals(19, BridgeProtocolV3.CONFIGURATION_SCOPES.size)
         assertEquals(SettingsDomainV1.LABELS.toSet(),
             BridgeProtocolV3.CONFIGURATION_SCOPES.takeLast(5).toSet())

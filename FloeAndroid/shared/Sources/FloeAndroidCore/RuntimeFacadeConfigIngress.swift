@@ -105,6 +105,14 @@ public struct ProviderSaveCandidate: Sendable, Equatable {
     /// Explicit create-intent marker (new provider). Edits bind the actual
     /// revision instead; RB2 never fabricates a resource version.
     public let createIntent: Bool
+    /// Large-profile alternative representation: the canonical frozen
+    /// reference `ms:v1:<32hex>.<64hex>` of a trusted-host staged model
+    /// set (RuntimeFacadeProviderModelSets). Mutually exclusive with
+    /// inline `selectedModels` — exactly one representation is parsed,
+    /// never both, never neither. The executor resolves it into typed
+    /// models BEFORE any effect; nothing downstream of prepare ever sees
+    /// the reference (the frozen draft/runner/bundle chain is unchanged).
+    public let modelSetRef: String?
 
     /// Closed wire keys. Anything else is refused BEFORE decoding
     /// (ConfigJSON.closed), so a smuggled field can never widen the draft.
@@ -112,8 +120,8 @@ public struct ProviderSaveCandidate: Sendable, Equatable {
         "id", "kind", "wireProtocol", "baseURL", "displayName", "presetID",
         "nonSecretHeaders", "isEnabled", "allowsPlainHTTP",
         "toolNameCompatibility", "syncEnabled", "selectedModels",
-        "managedCapabilities", "serviceRoleIsConversation", "defaultModelID",
-        "createIntent",
+        "modelSetRef", "managedCapabilities", "serviceRoleIsConversation",
+        "defaultModelID", "createIntent",
     ]
 
     static func parse(_ dictionary: [String: Any]) throws -> ProviderSaveCandidate {
@@ -121,9 +129,20 @@ public struct ProviderSaveCandidate: Sendable, Equatable {
                               allowed: allowedKeys,
                               required: ["id", "kind", "wireProtocol", "baseURL",
                                          "displayName", "syncEnabled",
-                                         "selectedModels", "managedCapabilities",
+                                         "managedCapabilities",
                                          "serviceRoleIsConversation"],
                               context: "candidate")
+        // Exactly ONE model representation (Main direction B): inline
+        // selectedModels XOR a staged modelSetRef. A mixed or missing form
+        // is a pre-effect typed refusal — never an ambiguity resolved by
+        // guessing, never a silent precedence rule.
+        let hasInline = dictionary["selectedModels"] != nil
+        let hasRef = dictionary["modelSetRef"] != nil
+        guard hasInline != hasRef else {
+            throw ConfigDomainError(code: .invalidEnvelope,
+                                    reason: hasInline ? "candidateModelFormMixed"
+                                                      : "candidateModelsMissing")
+        }
         guard let idString = dictionary["id"] as? String,
               let providerID = UUID(uuidString: idString) else {
             throw ConfigDomainError(code: .invalidEnvelope, reason: "candidate.id")
@@ -194,16 +213,30 @@ public struct ProviderSaveCandidate: Sendable, Equatable {
         guard let serviceRole = dictionary["serviceRoleIsConversation"] as? Bool else {
             throw ConfigDomainError(code: .invalidEnvelope, reason: "candidate.serviceRole")
         }
-        guard let modelsArray = dictionary["selectedModels"] as? [Any] else {
-            throw ConfigDomainError(code: .invalidEnvelope, reason: "candidate.selectedModels")
-        }
-        guard modelsArray.count <= 512 else {
-            throw ConfigDomainError(code: .payloadTooLarge, reason: "candidate.selectedModelsCount")
-        }
         var models: [ModelProfile] = []
-        models.reserveCapacity(modelsArray.count)
-        for element in modelsArray {
-            models.append(try ConfigModelSnapshot.decode(element, context: "candidate.model"))
+        var modelSetRef: String?
+        if hasInline {
+            guard let modelsArray = dictionary["selectedModels"] as? [Any] else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "candidate.selectedModels")
+            }
+            guard modelsArray.count <= 512 else {
+                throw ConfigDomainError(code: .payloadTooLarge,
+                                        reason: "candidate.selectedModelsCount")
+            }
+            models.reserveCapacity(modelsArray.count)
+            for element in modelsArray {
+                models.append(try ConfigModelSnapshot.decode(element, context: "candidate.model"))
+            }
+        } else {
+            // The frozen staged reference: exact canonical grammar only.
+            // Resolution happens in the executor BEFORE ownership/effects
+            // (binding/digest/epoch/route checks there, typed refusal
+            // here for a malformed token).
+            guard let raw = dictionary["modelSetRef"] as? String,
+                  ProviderModelSetRef.parse(raw) != nil else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "candidate.modelSetRef")
+            }
+            modelSetRef = raw
         }
         let capabilities = try ConfigJSON.decodeCanonical(ModelCapabilities.self,
                                                           from: dictionary["managedCapabilities"] as Any,
@@ -237,7 +270,36 @@ public struct ProviderSaveCandidate: Sendable, Equatable {
             managedCapabilities: capabilities,
             serviceRoleIsConversation: serviceRole,
             defaultModelID: defaultModelID,
-            createIntent: createIntent
+            createIntent: createIntent,
+            modelSetRef: modelSetRef
+        )
+    }
+
+    /// Staged-reference candidates become the EXACT same typed candidate
+    /// the inline path produces once the registry resolves the frozen set:
+    /// the resolved models replace the reference and every downstream
+    /// authority (ProviderSaveDraft.makeRequest, the runner phases, the
+    /// atomic bundle writer, CAS, cleanup, retention) continues UNCHANGED.
+    /// The reference itself never reaches the draft.
+    func withResolvedModels(_ models: [ModelProfile]) -> ProviderSaveCandidate {
+        ProviderSaveCandidate(
+            providerID: providerID,
+            kind: kind,
+            wireProtocol: wireProtocol,
+            baseURLString: baseURLString,
+            displayName: displayName,
+            presetID: presetID,
+            nonSecretHeaders: nonSecretHeaders,
+            isEnabled: isEnabled,
+            allowsPlainHTTP: allowsPlainHTTP,
+            toolNameCompatibility: toolNameCompatibility,
+            syncEnabled: syncEnabled,
+            selectedModels: models,
+            managedCapabilities: managedCapabilities,
+            serviceRoleIsConversation: serviceRoleIsConversation,
+            defaultModelID: defaultModelID,
+            createIntent: createIntent,
+            modelSetRef: nil
         )
     }
 
@@ -306,6 +368,14 @@ public enum ProviderSaveExecution: Sendable {
         /// admission stays recorded (vault fail-closed cap). Diagnostic
         /// only — never a secret; never retried by RB2.
         public var leaseAdmissionCloseFailed: Bool
+        /// Compact-metadata keep: true when the committed write was the
+        /// ORIGINAL provider-row enabled/disabled CAS ONLY (Main
+        /// MAIN_PROVIDER_COMPACT_METADATA_DECISION_20261021). Models,
+        /// presets, preferences and credential references are provably
+        /// untouched because no other column or row was written. The
+        /// persisted revision in `providerRevision` is the actual advanced
+        /// value, never an optimistic guess.
+        public var metadataOnly: Bool = false
     }
     case committed(Committed)
 
@@ -379,8 +449,17 @@ public enum ProviderSaveExecution: Sendable {
     /// Apply the post-scope lease-close outcome without duplicating the
     /// chain logic (the flag lives on every terminal shape). `didClose` is
     /// the TRUE result of `SaveIntentLease.close()`: release succeeded.
+    ///
+    /// Polarity repair (Main's provider-save-chain diagnostic finding): the
+    /// flag marks ONLY a REAL close failure. A successful release leaves the
+    /// terminal shape unchanged; the previous inversion stamped
+    /// `leaseAdmissionCloseFailed = true` exactly when close SUCCEEDED.
+    /// Nothing here retries the close, swallows a genuine failure, releases
+    /// an ACTIVE lease early or changes the physical cleanup semantics: a
+    /// failed close still keeps the bounded admission recorded and the
+    /// vault cap fail-closed, and the flag stays diagnostic-only.
     func applyingLeaseClose(_ didClose: Bool) -> ProviderSaveExecution {
-        guard didClose else { return self }
+        guard !didClose else { return self }
         switch self {
         case .committed(var value):
             value.leaseAdmissionCloseFailed = true
@@ -553,6 +632,193 @@ actor ProviderSaveExecutor: ProviderPendingReconciling {
                            clearSecret: true)
     }
 
+    // MARK: Compact existing-row enabled/disabled metadata (Main decision
+    // MAIN_PROVIDER_COMPACT_METADATA_DECISION_20261021)
+
+    /// The CLOSED existing-row KEEP metadata variant of the SAME
+    /// `config.provider.save` command: flips ONLY `is_enabled` (+ the
+    /// original update/advance revision semantics) on the ACTUAL persisted
+    /// provider row under the SAME per-provider `.save` ownership
+    /// reservation and the SAME Root-owned owned-work lease the ordinary
+    /// save chain takes. It never serializes model rows, never deserializes
+    /// them across JNI, never reads or writes any secret, and never opens
+    /// a second lock/DB/gateway path. Every other provider column
+    /// (endpoint/headers/preset-relevant fields/secret_ref account string/
+    /// region/flags/created_at) and every model row stays byte-identical:
+    /// the durable write is a narrow three-column CAS in the ONE original
+    /// writer transaction (ModelConfigurationStore mirror, same additive
+    /// discipline as MC-R1). A pending physical reconciliation is REJECTED
+    /// (`providerPendingReconciliation`), never bypassed. The reply is the
+    /// ACTUAL committed advanced revision, never an optimistic toggle.
+    func saveMetadataEnabled(providerID: UUID, isEnabled: Bool,
+                             envelopeRevision: ConfigRevision?) async -> ProviderSaveExecution {
+        func refusal(_ error: ConfigDomainError) -> ProviderSaveExecution {
+            .failed(.init(error: error, secretDisposition: nil,
+                          databaseRowWritten: false, phase: "binding",
+                          physicalSettlement: nil, physicalReceipt: nil,
+                          pendingReconciliation: false,
+                          leaseAdmissionCloseFailed: false))
+        }
+        // Exact resource + version required: a metadata write without a
+        // real CAS binding would be an optimistic toggle — refused.
+        guard let revision = envelopeRevision else {
+            return refusal(ConfigDomainError(code: .invalidEnvelope,
+                                             reason: "providerMetadataRevisionMissing"))
+        }
+        guard revision.resourceID == "provider.\(providerID.uuidString)" else {
+            return refusal(ConfigDomainError(code: .invalidEnvelope,
+                                             reason: "revisionResourceMismatch"))
+        }
+        guard let expectedBase = Int64(revision.version), expectedBase >= 0 else {
+            return refusal(ConfigDomainError(code: .invalidEnvelope,
+                                             reason: "providerMetadataRevisionValue"))
+        }
+        // SAME per-provider save ownership (never a parallel lock): a
+        // concurrent bundle save/cleanup on this provider conflicts; the
+        // durable pending owner stays authoritative and is reconciled
+        // through the real physical signal exactly like runCandidate.
+        var ticket: ProviderOperationTicket?
+        switch await ownership.beginOperation(providerID: providerID, kind: .save) {
+        case .attached(let attached):
+            ticket = attached
+        case .conflict:
+            return .failed(.init(error: ConfigDomainError(code: .duplicateInFlight,
+                                                          reason: "providerOperationActive"),
+                                 secretDisposition: nil,
+                                 databaseRowWritten: false, phase: "ownership",
+                                 physicalSettlement: nil, physicalReceipt: nil,
+                                 pendingReconciliation: false,
+                                 leaseAdmissionCloseFailed: false))
+        case .capacityUnavailable:
+            return .failed(.init(error: ConfigDomainError(
+                code: .mailboxSaturated, reason: "providerOperationCapacityUnavailable"),
+                                 secretDisposition: nil,
+                                 databaseRowWritten: false, phase: "ownership",
+                                 physicalSettlement: nil, physicalReceipt: nil,
+                                 pendingReconciliation: false,
+                                 leaseAdmissionCloseFailed: false))
+        case .pendingReconciliation:
+            _ = await reconcileProviderRecovery(providerID: providerID)
+            if case .attached(let attached) = await ownership.beginOperation(
+                providerID: providerID, kind: .save) {
+                ticket = attached
+            } else {
+                return .failed(.init(error: ConfigDomainError(
+                    code: .duplicateInFlight, reason: "providerPendingReconciliation"),
+                                     secretDisposition: nil,
+                                     databaseRowWritten: false, phase: "ownership",
+                                     physicalSettlement: nil, physicalReceipt: nil,
+                                     pendingReconciliation: true,
+                                     leaseAdmissionCloseFailed: false))
+            }
+        }
+        guard let ownedTicket = ticket else {
+            return .failed(.init(error: ConfigDomainError(code: .runtimeUnavailable,
+                                                          reason: "ownershipNotAttached"),
+                                 secretDisposition: nil,
+                                 databaseRowWritten: false, phase: "ownership",
+                                 physicalSettlement: nil, physicalReceipt: nil,
+                                 pendingReconciliation: false,
+                                 leaseAdmissionCloseFailed: false))
+        }
+        let ownedLease: ConfigOwnedWorkLease
+        switch ownedWork.begin(kind: .vaultMaintenance, ownerID: providerID.uuidString) {
+        case .failure(let rejection):
+            await ownership.endOperation(ownedTicket)
+            return .failed(.init(error: Self.ownedWorkAttachError(rejection),
+                                 secretDisposition: nil,
+                                 databaseRowWritten: false, phase: "ownedWorkAttach",
+                                 physicalSettlement: nil, physicalReceipt: nil,
+                                 pendingReconciliation: false,
+                                 leaseAdmissionCloseFailed: false))
+        case .success(let lease):
+            ownedLease = lease
+        }
+        // Act BEFORE releasing: every terminal path below settles the
+        // lease and the exact ticket. There is no secret effect anywhere
+        // on this path, so no physical-retention axis can exist; a DB
+        // refusal is provably zero-mutation (single writer transaction).
+        let execution = await runMetadata(providerID: providerID,
+                                          isEnabled: isEnabled,
+                                          expectedBase: expectedBase)
+        ownedWork.settle(ownedLease)
+        await ownership.endOperation(ownedTicket)
+        return execution
+    }
+
+    private func runMetadata(providerID: UUID, isEnabled: Bool,
+                             expectedBase: Int64) async -> ProviderSaveExecution {
+        func refusal(_ error: ConfigDomainError, phase: String) -> ProviderSaveExecution {
+            .failed(.init(error: error, secretDisposition: nil,
+                          databaseRowWritten: false, phase: phase,
+                          physicalSettlement: nil, physicalReceipt: nil,
+                          pendingReconciliation: false,
+                          leaseAdmissionCloseFailed: false))
+        }
+        let row: ProviderProfile?
+        do {
+            row = try await store.provider(id: providerID)
+        } catch {
+            return refusal(ConfigDomainError(code: .persistenceUnavailable,
+                                             reason: "providerRowQueryFailed"),
+                           phase: "binding")
+        }
+        guard let row else {
+            return refusal(ConfigDomainError(code: .notFound,
+                                             reason: "providerRowMissing"),
+                           phase: "binding")
+        }
+        // Re-check the CAS binding against the ACTUAL row immediately
+        // before the gated write (the durable transaction re-gates; this
+        // keeps the honest phase attribution).
+        guard row.syncRevision == expectedBase else {
+            return refusal(ConfigDomainError(code: .staleRevision,
+                                             reason: "providerMetadataEnvelopeRevision"),
+                           phase: "binding")
+        }
+        guard row.syncRevision < Int64.max else {
+            return refusal(ConfigDomainError(code: .staleRevision,
+                                             reason: "providerRevisionExhausted"),
+                           phase: "binding")
+        }
+        // Already at the requested state? The original service still
+        // advances revision/time on an accepted write; the App pre-checks
+        // the no-op, and a repeat here is an ordinary CAS-legal edit.
+        do {
+            let advanced = try await store.setProviderEnabled(
+                providerID: providerID,
+                enabled: isEnabled,
+                expectedSyncRevision: expectedBase)
+            return .committed(.init(providerID: providerID,
+                                    canonicalModels: [],
+                                    deletedModelIDs: [],
+                                    disabledModelIDs: [],
+                                    syncPending: false,
+                                    syncError: nil,
+                                    providerRevision: ConfigRevision.provider(
+                                        id: providerID, syncRevision: advanced),
+                                    // The metadata path never rewrites the
+                                    // preset sidecar: its persisted state is
+                                    // unchanged by definition, so reporting
+                                    // "no pending sidecar stage" is honest.
+                                    presetSidecarRecorded: true,
+                                    writeIntentFinalized: true,
+                                    leaseAdmissionCloseFailed: false,
+                                    metadataOnly: true))
+        } catch is ModelConfigurationRevisionConflict {
+            // The durable same-writer CAS refused: NOTHING was mutated
+            // (single transaction, gate before any change). Report the
+            // typed stale revision — never an optimistic success.
+            return refusal(ConfigDomainError(code: .staleRevision,
+                                             reason: "providerMetadataCAS.expected\(expectedBase)"),
+                           phase: "metadataCommit")
+        } catch {
+            return refusal(ConfigDomainError(code: .persistenceUnavailable,
+                                             reason: "providerMetadataWrite"),
+                           phase: "metadataCommit")
+        }
+    }
+
     // MARK: Shared chain
 
     /// `leaseSecret`/`leaseBaseRevision` are set ONLY on the Set path. The
@@ -605,11 +871,47 @@ actor ProviderSaveExecutor: ProviderPendingReconciling {
                                  pendingReconciliation: false,
                                  leaseAdmissionCloseFailed: false))
         }
+        // Large-profile staged reference: resolve the frozen immutable set
+        // into typed models BEFORE the ownership reservation and long
+        // before any DB/secret effect. Foreign/stale/expired/unsealed/
+        // tampered refs and binding divergence refuse typed here (no
+        // effect, no partial state); the resolved candidate then follows
+        // the EXACT original chain. The Set lease already froze the ref +
+        // digest inside the frozen candidate JSON, so the same token can
+        // never resolve different bytes (Main direction C).
+        var effective = parsed
+        do {
+            let stagedBase = leaseBaseRevision.map {
+                ConfigRevision(resourceID: $0.resourceID, version: $0.version)
+            } ?? envelopeRevision
+            if let models = try ProviderModelSetConsumer.resolveIfReferenced(
+                parsed,
+                context: .init(providerID: parsed.providerID,
+                               createIntent: parsed.createIntent,
+                               baseRevision: stagedBase,
+                               isDraftProbe: false)) {
+                effective = parsed.withResolvedModels(models)
+            }
+        } catch let error as ConfigDomainError {
+            return .failed(.init(error: error, secretDisposition: nil,
+                                 databaseRowWritten: false, phase: "binding",
+                                 physicalSettlement: nil, physicalReceipt: nil,
+                                 pendingReconciliation: false,
+                                 leaseAdmissionCloseFailed: false))
+        } catch {
+            return .failed(.init(error: ProviderModelSetConsumer.mapError(
+                error as? ProviderModelSetError ?? .stageUnavailable),
+                                 secretDisposition: nil,
+                                 databaseRowWritten: false, phase: "binding",
+                                 physicalSettlement: nil, physicalReceipt: nil,
+                                 pendingReconciliation: false,
+                                 leaseAdmissionCloseFailed: false))
+        }
         // MC-R4: exact-ticket begin; a durable pending owner gets ONE
         // bounded reconciliation attempt (individual physical truth only)
         // before the typed refusal.
         var ticket: ProviderOperationTicket?
-        switch await ownership.beginOperation(providerID: parsed.providerID,
+        switch await ownership.beginOperation(providerID: effective.providerID,
                                               kind: .save) {
         case .attached(let attached):
             ticket = attached
@@ -677,7 +979,7 @@ actor ProviderSaveExecutor: ProviderPendingReconciling {
                                  pendingReconciliation: false,
                                  leaseAdmissionCloseFailed: false))
         }
-        let execution = await runGuarded(parsed,
+        let execution = await runGuarded(effective,
                                          leaseSecret: leaseSecret,
                                          leaseBaseRevision: leaseBaseRevision,
                                          envelopeRevision: envelopeRevision,
@@ -887,8 +1189,14 @@ actor ProviderSaveExecutor: ProviderPendingReconciling {
             // compare-and-delete. A false return (should be impossible under
             // the held reservation) is reported honestly: the entry stays
             // and the drain's row-present branch never deletes a live
-            // reference.
-            if case .create = expectation, case .committed(var committedValue) = execution {
+            // reference. job-2e38 honesty fix: a NEW-provider CLEAR never
+            // recorded a `.secretWrite` entry at all (the enqueue is
+            // conditional on !clearSecret above), so dequeuing/finalizing
+            // is not applicable and the flag stays at its honest default
+            // instead of a spurious false that would imply an unfinalized
+            // live entry.
+            if case .create = expectation, !clearSecret,
+               case .committed(var committedValue) = execution {
                 let finalized = (try? await cleanup.dequeueMatching(
                     providerID: request.profile.id,
                     intent: .secretWrite)) ?? false

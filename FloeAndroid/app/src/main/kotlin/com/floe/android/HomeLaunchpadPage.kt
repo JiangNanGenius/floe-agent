@@ -44,9 +44,13 @@ import com.floe.android.design.FloeToolbar
 import com.floe.android.design.ComposerAvailability
 import com.floe.android.host.HomeSendToken
 import com.floe.android.host.RuntimeHost
+import com.floe.android.feature.conversation.ApprovalModeUi
+import com.floe.android.feature.conversation.FloeDraftAttachmentTray
+import com.floe.android.feature.providers.ReasoningEffortUi
 
 private enum class HomeDialog {
-    NONE, TEMP_CHAT, VOICE, ATTACH, REASONING, PROJECT, TARGET, PERMISSIONS, SEND_FAILED,
+    NONE, TEMP_CHAT, VOICE, ATTACH, ATTACH_REFUSED, REASONING, REASONING_FAILED,
+    PROJECT, TARGET, PERMISSIONS, SEND_FAILED,
 }
 
 /**
@@ -76,6 +80,33 @@ fun HomeLaunchpadPage(
     var dialog by remember { mutableStateOf(HomeDialog.NONE) }
     var agentModeKey by remember { mutableStateOf("agent") }
     var modeMenuOpen by remember { mutableStateOf(false) }
+    var permissionMenuOpen by remember { mutableStateOf(false) }
+    var reasoningMenuOpen by remember { mutableStateOf(false) }
+
+    // The REAL Home draft ownership surface (RootWorkspaceController): live
+    // staged rows, the human draft task-policy selection and the selected
+    // model's saved reasoning effort. Without a host these stay honestly
+    // absent (legacy dialogs), never fabricated.
+    val rootWorkspace = runtimeHost?.conversations?.rootWorkspace
+    val draftRows = if (rootWorkspace == null) {
+        emptyList()
+    } else {
+        val rowsState by rootWorkspace.draftAttachments.collectAsState()
+        rowsState
+    }
+    val draftProcessing = draftRows.any { it.isProcessing }
+    val draftApproval = if (rootWorkspace == null) {
+        null
+    } else {
+        val modeState by rootWorkspace.draftApprovalMode.collectAsState()
+        modeState
+    }
+    val savedReasoning = if (rootWorkspace == null) {
+        null
+    } else {
+        val effortState by rootWorkspace.reasoningEffort.collectAsState()
+        effortState
+    }
 
     // G02: real availability from the host projections. When the host is
     // absent the surface stays honestly gated exactly like G01.
@@ -218,6 +249,16 @@ fun HomeLaunchpadPage(
                 )
             }
         }
+        // The draft's REAL staged rows (native-staged lifecycle only): same
+        // chip presentation as the thread tray, with genuine remove/retry/
+        // cancel routed to the draft owner. Empty renders nothing — Home
+        // never grows a phantom attachment header.
+        FloeDraftAttachmentTray(
+            rows = draftRows,
+            onRemove = { id -> rootWorkspace?.removeDraftAttachment(id) },
+            onRetry = { id -> rootWorkspace?.retryDraftAttachment(id) },
+            onCancel = { id -> rootWorkspace?.removeDraftAttachment(id) },
+        )
         FloeComposer(
             value = field,
             onValueChange = { next ->
@@ -225,12 +266,24 @@ fun HomeLaunchpadPage(
                 HomeDraftTransfer.update(FloeFoundation.draftStore, next.text)
             },
             maxLines = if (compact) FloeLayout.ComposerMaxLinesCompact else FloeLayout.ComposerMaxLinesRegular,
-            availability = availability.copy(attachmentsProcessing = sending),
+            availability = availability.copy(attachmentsProcessing = sending || draftProcessing),
             placeholder = stringResource(R.string.composer_placeholder),
             attachDescription = stringResource(R.string.composer_attach),
             voiceDescription = stringResource(R.string.voice_input),
             sendDescription = stringResource(R.string.send),
-            onAttach = { dialog = HomeDialog.ATTACH },
+            onAttach = {
+                if (rootWorkspace != null) {
+                    // ONE explicit user tap: the REAL SAF picker request,
+                    // draft-owned staging, no durable conversation header
+                    // and no fabricated handles. A refusal is stated
+                    // honestly; a temporary session never reaches this.
+                    if (!rootWorkspace.requestHomeAttachments()) {
+                        dialog = HomeDialog.ATTACH_REFUSED
+                    }
+                } else {
+                    dialog = HomeDialog.ATTACH
+                }
+            },
             onVoice = { dialog = HomeDialog.VOICE },
             onSend = {
                 if (runtimeHost != null && !sending) {
@@ -286,11 +339,46 @@ fun HomeLaunchpadPage(
                         )
                     }
                 }
+                // Reasoning chip: the SELECTED configured model's REAL saved
+                // effort (never a fabricated "auto"); choosing an effort
+                // writes through the ORIGINAL full-snapshot model CAS and
+                // every surface re-reads the same projection. With no usable
+                // model the chip routes to provider setup instead of a
+                // dead no-op, and without a host it states the honest
+                // unavailability.
                 FloeComposerChip(
                     icon = FloeIcons.Gauge,
-                    text = stringResource(R.string.reasoning_auto),
-                    onClick = { dialog = HomeDialog.REASONING },
+                    text = if (rootWorkspace == null) {
+                        stringResource(R.string.reasoning_auto)
+                    } else {
+                        savedReasoning?.let {
+                            reasoningEffortLabel(it)
+                        } ?: stringResource(R.string.root_reasoning_unset)
+                    },
+                    onClick = {
+                        when {
+                            rootWorkspace == null -> dialog = HomeDialog.REASONING
+                            usableModelOptions.isEmpty() -> onOpenSettingsSection("PROVIDERS")
+                            else -> reasoningMenuOpen = true
+                        }
+                    },
                 )
+                FloeChipMenu(expanded = reasoningMenuOpen, onDismiss = { reasoningMenuOpen = false }) {
+                    ReasoningEffortUi.entries.forEach { effort ->
+                        CupertinoMenuEntry(
+                            title = reasoningEffortLabel(effort),
+                            selected = savedReasoning == effort,
+                            onClick = {
+                                reasoningMenuOpen = false
+                                val started = rootWorkspace?.updateSelectedModelReasoningEffort(effort) {
+                                    succeeded, _ ->
+                                    if (!succeeded) dialog = HomeDialog.REASONING_FAILED
+                                }
+                                if (started != true) dialog = HomeDialog.REASONING_FAILED
+                            },
+                        )
+                    }
+                }
                 FloeComposerChip(
                     icon = FloeIcons.Folder,
                     text = stringResource(R.string.project_none),
@@ -320,11 +408,35 @@ fun HomeLaunchpadPage(
                         )
                     }
                 }
+                // Home draft task policy: the ORIGINAL Ask / Auto-approve /
+                // Full-access surface, seeded from the real global default
+                // and carried as the optional run.start approvalMode for the
+                // FIRST launch only. An explicit human gesture is the ONLY
+                // writer; a temporary session never consumes this value.
                 FloeComposerChip(
                     icon = FloeIcons.ShieldCheck,
-                    text = stringResource(R.string.approval_ask),
-                    onClick = { dialog = HomeDialog.PERMISSIONS },
+                    text = draftApproval?.let { draftApprovalLabel(it) }
+                        ?: stringResource(R.string.approval_ask),
+                    onClick = {
+                        if (rootWorkspace != null) {
+                            permissionMenuOpen = true
+                        } else {
+                            dialog = HomeDialog.PERMISSIONS
+                        }
+                    },
                 )
+                FloeChipMenu(expanded = permissionMenuOpen, onDismiss = { permissionMenuOpen = false }) {
+                    ApprovalModeUi.entries.forEach { mode ->
+                        CupertinoMenuEntry(
+                            title = draftApprovalLabel(mode),
+                            selected = draftApproval == mode,
+                            onClick = {
+                                rootWorkspace?.selectDraftApprovalMode(mode)
+                                permissionMenuOpen = false
+                            },
+                        )
+                    }
+                }
             },
         )
     }
@@ -345,6 +457,18 @@ fun HomeLaunchpadPage(
         HomeDialog.ATTACH -> FloeInfoDialog(
             title = stringResource(R.string.composer_attach),
             message = stringResource(R.string.attach_unavailable),
+            confirmLabel = stringResource(R.string.done),
+            onDismiss = { dialog = HomeDialog.NONE },
+        )
+        HomeDialog.ATTACH_REFUSED -> FloeInfoDialog(
+            title = stringResource(R.string.composer_attach),
+            message = stringResource(R.string.root_attach_refused),
+            confirmLabel = stringResource(R.string.done),
+            onDismiss = { dialog = HomeDialog.NONE },
+        )
+        HomeDialog.REASONING_FAILED -> FloeInfoDialog(
+            title = stringResource(R.string.reasoning_effort),
+            message = stringResource(R.string.root_reasoning_failed),
             confirmLabel = stringResource(R.string.done),
             onDismiss = { dialog = HomeDialog.NONE },
         )
@@ -381,3 +505,28 @@ fun HomeLaunchpadPage(
         HomeDialog.NONE -> {}
     }
 }
+
+/** The provider editor's OWN vocabulary for the saved reasoning efforts
+ * (the same canonical labels the model editor uses; Home never invents a
+ * parallel naming). */
+@Composable
+private fun reasoningEffortLabel(effort: ReasoningEffortUi): String = stringResource(
+    when (effort) {
+        ReasoningEffortUi.AUTOMATIC -> com.floe.android.feature.providers.R.string.model_reasoning_automatic
+        ReasoningEffortUi.LOW -> com.floe.android.feature.providers.R.string.model_reasoning_low
+        ReasoningEffortUi.MEDIUM -> com.floe.android.feature.providers.R.string.model_reasoning_medium
+        ReasoningEffortUi.HIGH -> com.floe.android.feature.providers.R.string.model_reasoning_high
+        ReasoningEffortUi.MAXIMUM -> com.floe.android.feature.providers.R.string.model_reasoning_maximum
+    },
+)
+
+/** The original task-permission vocabulary shared with the thread
+ * composer's permissions chip. */
+@Composable
+private fun draftApprovalLabel(mode: ApprovalModeUi): String = stringResource(
+    when (mode) {
+        ApprovalModeUi.ASK -> com.floe.android.feature.conversation.R.string.permissions_ask
+        ApprovalModeUi.AUTOMATIC -> com.floe.android.feature.conversation.R.string.permissions_auto_approve
+        ApprovalModeUi.FULL_ACCESS -> com.floe.android.feature.conversation.R.string.permissions_full_access
+    },
+)

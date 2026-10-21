@@ -91,6 +91,58 @@ internal object NativeHostRouteAuthority : HostRouteAuthority {
     }
 }
 
+/**
+ * Trusted-host DRAFT probe/discovery seam (unsaved/changed provider draft).
+ * Production is the JNI bridge to the native seam; JVM fixtures bind a
+ * scripted double. This is NOT a V3 command: no command name, no payload
+ * vocabulary, no model/tool reachability.
+ */
+internal interface HostDraftProbe {
+    /** Returns the opaque `dp:v1:` handle, or null when refused pre-dispatch. */
+    fun submit(candidateJSON: String, secret: String?, routeToken: String): String?
+
+    /** "P" pending | "S" + settled JSON | "R" + typed refusal status. */
+    fun poll(handle: String, routeToken: String): String
+
+    /** Owner cancel; the real adapter work is cancelled natively. */
+    fun cancel(handle: String, routeToken: String)
+}
+
+internal object NativeHostDraftProbe : HostDraftProbe {
+    override fun submit(candidateJSON: String, secret: String?, routeToken: String): String? {
+        val candidateBytes = candidateJSON.encodeToByteArray()
+        val secretBytes = secret?.encodeToByteArray()
+        return try {
+            com.floe.android.bridge.ProviderDraftProbeNative.submitDraftProbe(
+                candidateBytes, secretBytes, routeToken)
+        } catch (t: Throwable) {
+            null
+        } finally {
+            candidateBytes.fill(0)
+            secretBytes?.fill(0)
+        }
+    }
+
+    override fun poll(handle: String, routeToken: String): String =
+        try {
+            com.floe.android.bridge.ProviderDraftProbeNative.pollDraftProbe(handle, routeToken)
+                ?: DRAFT_PROBE_REFUSED
+        } catch (t: Throwable) {
+            DRAFT_PROBE_REFUSED
+        }
+
+    override fun cancel(handle: String, routeToken: String) {
+        try {
+            com.floe.android.bridge.ProviderDraftProbeNative.cancelDraftProbe(handle, routeToken)
+        } catch (t: Throwable) {
+            // A failed cancel is a no-op against the exact-ownership rule;
+            // the route/epoch fence retires the slot anyway.
+        }
+    }
+
+    private const val DRAFT_PROBE_REFUSED = "R-105"
+}
+
 internal interface HostSecureIngressSubmitter {
     fun submit(intentCoreJSON: String, routeToken: String, value: ByteArray): String?
 }

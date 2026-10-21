@@ -673,13 +673,15 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
     }
 
     func testEveryMatrixCommandValidatesAndRoutesToItsHandlerKey() throws {
-        // The frozen rules: all 15 plan keys + event.poll exist and are
-        // computed with the live helper.
+        // The frozen rules: all 18 plan keys (15 original + the three
+        // goal-core batch controls) + event.poll exist and are computed with
+        // the live helper.
         RunDomainFacade.install(components: fixture.components(),
                                 registry: RuntimeDomainRegistry())
         let matrix = Dictionary(
             uniqueKeysWithValues: BridgeV3.commandRules
-                .filter { $0.scope == .taskExecution || $0.scope == .launch }
+                .filter { $0.scope == .taskExecution || $0.scope == .launch
+                            || $0.scope == .conversationLifecycle }
                 .map { (BridgeV3.handlerKey(scope: $0.scope, command: $0.command), $0) })
         for binding in RunDomainHandlerPlan.bindings {
             XCTAssertNotNil(matrix[binding.handlerKey],
@@ -687,7 +689,8 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
             XCTAssertEqual(binding.handlerKey,
                            BridgeV3.handlerKey(scope: binding.scope, command: binding.command))
         }
-        XCTAssertEqual(Set(RunDomainHandlerPlan.bindings.map(\.handlerKey)).count, 15)
+        // goal-core batch (2026-10-21): 15 -> 18 planned keys.
+        XCTAssertEqual(Set(RunDomainHandlerPlan.bindings.map(\.handlerKey)).count, 18)
         // event.poll stays SEPARATE (run cursor) from effect.poll.
         XCTAssertFalse(RunDomainHandlerPlan.bindings.contains { $0.command == "event.poll" },
                        "RB4 must not re-register the RB1 pump key")

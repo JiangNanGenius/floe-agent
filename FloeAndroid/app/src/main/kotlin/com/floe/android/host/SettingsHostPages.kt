@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host
 
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -34,10 +37,14 @@ import com.floe.android.design.FloeSearchField
 import com.floe.android.design.FloeSectionRow
 import com.floe.android.design.FloeSegmented
 import com.floe.android.design.FloeSettingsSectionCard
+import com.floe.android.design.FloeSheetPlacement
 import com.floe.android.design.FloeIcons
+import com.floe.android.design.FloeLayout
+import com.floe.android.design.FloePageSheet
 import com.floe.android.design.FloeStatusLine
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeValueRow
+import com.floe.android.design.IconGlyph
 
 /**
  * G02 Settings pages: native-style scoped editors for the surfaces the G01
@@ -53,6 +60,13 @@ object SettingsHostPages {
     fun DefaultsPage(settings: SettingsHostController) {
         val state by settings.state.collectAsState()
         val defaults = state.defaults
+        val roles by settings.roles.state.collectAsState()
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            // Idempotent: the host start already loads it when admitted;
+            // opening the page must also recover when admission raced the
+            // first composition.
+            settings.roles.refresh()
+        }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -144,6 +158,387 @@ object SettingsHostPages {
                 status = state.defaultsStatus,
                 onRetry = { settings.refreshDefaults() },
             )
+            ModelRolesCard(settings.roles)
+        }
+    }
+
+    // --------------------------------------------------------- model roles
+
+    /**
+     * R4 — the full original model-role preferences surface. Grouped like
+     * the iOS presenter: primary routes, assistance routes, then the media
+     * block (shared/separate mode + media slots + autonomous routing).
+     * Every secondary menu is the existing modal dialog framing; every
+     * value row states its honest inherit/unavailable state.
+     */
+    @Composable
+    private fun ModelRolesCard(roles: SettingsRoleModelController) {
+        val state by roles.state.collectAsState()
+        var pickerSlot by remember { mutableStateOf<SettingsRoleModelController.RoleSlot?>(null) }
+        FloeSettingsSectionCard(title = stringResource(R.string.settings_model_roles)) {
+            FloeSectionRow(title = {
+                Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    FloeText(
+                        stringResource(R.string.settings_model_roles_primary),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+            })
+            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.DEFAULT_AGENT) {
+                pickerSlot = SettingsRoleModelController.RoleSlot.DEFAULT_AGENT
+            }
+            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.CANVAS_AGENT) {
+                pickerSlot = SettingsRoleModelController.RoleSlot.CANVAS_AGENT
+            }
+            FloeSectionRow(title = {
+                Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    FloeText(
+                        stringResource(R.string.settings_model_roles_auxiliary),
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+            })
+            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.GENERAL_AUXILIARY_LLM) {
+                pickerSlot = SettingsRoleModelController.RoleSlot.GENERAL_AUXILIARY_LLM
+            }
+            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.VISION) {
+                pickerSlot = SettingsRoleModelController.RoleSlot.VISION
+            }
+            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.CANVAS_VISION) {
+                pickerSlot = SettingsRoleModelController.RoleSlot.CANVAS_VISION
+            }
+            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.APPROVAL) {
+                pickerSlot = SettingsRoleModelController.RoleSlot.APPROVAL
+            }
+            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.PACKAGE_REVIEW) {
+                pickerSlot = SettingsRoleModelController.RoleSlot.PACKAGE_REVIEW
+            }
+            FloeSectionRow(title = {
+                Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    FloeText(
+                        stringResource(R.string.settings_model_roles_media),
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+            })
+            val separate = state.auxiliaryImageMode ==
+                SettingsRoleModelController.MODE_SEPARATE
+            FloeSectionRow(
+                description = stringResource(R.string.settings_role_media_mode_footer),
+                title = {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        FloeText(
+                            stringResource(R.string.settings_role_media_mode),
+                            style = Floe.typography.body,
+                            color = Floe.colors.label,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        FloeSegmented(
+                            options = listOf(
+                                stringResource(R.string.settings_role_mode_shared),
+                                stringResource(R.string.settings_role_mode_separate),
+                            ),
+                            selectedIndex = if (separate) 1 else 0,
+                            onSelect = { index ->
+                                roles.setAuxiliaryMode(separate = index == 1)
+                            },
+                        )
+                    }
+                },
+            )
+            if (separate) {
+                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.IMAGE_GENERATION) {
+                    pickerSlot = SettingsRoleModelController.RoleSlot.IMAGE_GENERATION
+                }
+                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.IMAGE_EDITING) {
+                    pickerSlot = SettingsRoleModelController.RoleSlot.IMAGE_EDITING
+                }
+            } else {
+                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.SHARED_IMAGE) {
+                    pickerSlot = SettingsRoleModelController.RoleSlot.SHARED_IMAGE
+                }
+            }
+            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.DEFAULT_VIDEO) {
+                pickerSlot = SettingsRoleModelController.RoleSlot.DEFAULT_VIDEO
+            }
+            FloeSectionRow(title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FloeText(
+                        stringResource(R.string.settings_role_autonomous_routing),
+                        style = Floe.typography.body,
+                        color = Floe.colors.label,
+                        modifier = Modifier.weight(1f),
+                    )
+                    FloeInlineSwitch(
+                        checked = state.autonomousImageRouting,
+                        onCheckedChange = { checked ->
+                            roles.setAutonomousImageRouting(checked)
+                        },
+                        description = stringResource(R.string.settings_role_autonomous_routing),
+                    )
+                }
+            })
+            if (state.hasDraftChanges) {
+                Row(
+                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.settings_save),
+                        enabled = !state.saving,
+                        onClick = { roles.save() },
+                    )
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.cancel),
+                        enabled = !state.saving,
+                        onClick = { roles.discardDraft() },
+                    )
+                }
+            }
+            state.saveError?.let {
+                // Concise recovery copy; the typed code stays diagnostics-only.
+                FloeSectionRow(title = {
+                    StatusLine(stringResource(R.string.settings_role_save_failed))
+                })
+            }
+            state.error?.let {
+                FloeSectionRow(title = {
+                    StatusLine(stringResource(R.string.settings_role_load_failed))
+                })
+                FloeActionRow(
+                    label = stringResource(R.string.settings_retry),
+                    onClick = { roles.refresh() },
+                )
+            }
+        }
+        pickerSlot?.let { slot ->
+            RolePickerDialog(
+                roles = roles,
+                state = state,
+                slot = slot,
+                onDismiss = { pickerSlot = null },
+            )
+        }
+    }
+
+    @Composable
+    private fun io.github.robinpcrd.cupertino.section.SectionScope.RoleSlotRow(
+        state: SettingsRoleModelController.RoleModelState,
+        slot: SettingsRoleModelController.RoleSlot,
+        onOpen: () -> Unit,
+    ) {
+        val slotState = state.slotState(slot)
+        val inheritLabel = roleInheritLabel(slot)
+        val valueText = when (slotState.status) {
+            SettingsRoleModelController.SelectionStatus.EMPTY -> inheritLabel
+            SettingsRoleModelController.SelectionStatus.AVAILABLE ->
+                slotState.selectionLabel ?: inheritLabel
+            SettingsRoleModelController.SelectionStatus.UNAVAILABLE ->
+                stringResource(R.string.settings_role_selection_unavailable)
+        }
+        FloeValueRow(
+            title = roleSlotTitle(slot),
+            value = valueText,
+            onClick = onOpen,
+        )
+    }
+
+    @Composable
+    private fun roleSlotTitle(
+        slot: SettingsRoleModelController.RoleSlot,
+    ): String = stringResource(
+        when (slot) {
+            SettingsRoleModelController.RoleSlot.DEFAULT_AGENT ->
+                R.string.settings_role_default_agent
+            SettingsRoleModelController.RoleSlot.GENERAL_AUXILIARY_LLM ->
+                R.string.settings_role_general_auxiliary
+            SettingsRoleModelController.RoleSlot.CANVAS_AGENT ->
+                R.string.settings_role_canvas_agent
+            SettingsRoleModelController.RoleSlot.VISION ->
+                R.string.settings_role_vision
+            SettingsRoleModelController.RoleSlot.CANVAS_VISION ->
+                R.string.settings_role_canvas_vision
+            SettingsRoleModelController.RoleSlot.APPROVAL ->
+                R.string.settings_role_approval
+            SettingsRoleModelController.RoleSlot.PACKAGE_REVIEW ->
+                R.string.settings_role_package_review
+            SettingsRoleModelController.RoleSlot.SHARED_IMAGE ->
+                R.string.settings_role_shared_image
+            SettingsRoleModelController.RoleSlot.IMAGE_GENERATION ->
+                R.string.settings_role_image_generation
+            SettingsRoleModelController.RoleSlot.IMAGE_EDITING ->
+                R.string.settings_role_image_editing
+            SettingsRoleModelController.RoleSlot.DEFAULT_VIDEO ->
+                R.string.settings_role_default_video
+        },
+    )
+
+    /**
+     * The model picker secondary menu (existing Floe sheet framing — a
+     * centered rounded pane on wide windows, a bottom sheet on compact):
+     * the honest unavailable selection stays listed until the user replaces
+     * or clears it; the inherit/clear option restores the original default.
+     */
+    @Composable
+    private fun RolePickerDialog(
+        roles: SettingsRoleModelController,
+        state: SettingsRoleModelController.RoleModelState,
+        slot: SettingsRoleModelController.RoleSlot,
+        onDismiss: () -> Unit,
+    ) {
+        val choices = state.choices[slot] ?: emptyList()
+        val slotState = state.slotState(slot)
+        val inheritLabel = roleInheritLabel(slot)
+        val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+        val wide = configuration.screenWidthDp >= 700
+        FloePageSheet(
+            visible = true,
+            onDismiss = onDismiss,
+            widthFraction = if (wide) 0.56f else 1f,
+            heightFraction = if (wide) 0.66f else 0.72f,
+            placement = if (wide) {
+                FloeSheetPlacement.CENTER
+            } else {
+                FloeSheetPlacement.BOTTOM
+            },
+            topInset = if (wide) 0.dp else FloeLayout.SettingsSheetTopInset,
+        ) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FloeText(
+                        roleSlotTitle(slot),
+                        style = Floe.typography.title,
+                        color = Floe.colors.label,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f),
+                    )
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.cancel),
+                        onClick = onDismiss,
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                // Minimal large-catalog paging glue (Main large-profile read
+                // fidelity): a valid provider may legally carry up to 512
+                // models, so the picker must stay smooth on the supported
+                // tail instead of composing every row eagerly. Same rows,
+                // same order, same behavior — now lazily measured.
+                LazyColumn(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                ) {
+                    // Clear/inherit option (the original default behavior).
+                    item {
+                        PickerOptionRow(
+                            label = inheritLabel,
+                            selected = slotState.selection == null,
+                            onClick = {
+                                roles.select(slot, null)
+                                onDismiss()
+                            },
+                        )
+                    }
+                    // Honest unavailable selection: preserved, not replaced.
+                    if (slotState.status ==
+                        SettingsRoleModelController.SelectionStatus.UNAVAILABLE &&
+                        slotState.selection != null
+                    ) {
+                        item {
+                            PickerOptionRow(
+                                label = stringResource(
+                                    R.string.settings_role_selection_unavailable),
+                                selected = true,
+                                enabled = false,
+                                onClick = { },
+                            )
+                        }
+                    }
+                    if (choices.isEmpty()) {
+                        item {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .padding(horizontal = 4.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                StatusLine(stringResource(R.string.settings_role_no_choices))
+                            }
+                        }
+                    }
+                    items(
+                        count = choices.size,
+                        key = { index -> choices[index].modelId },
+                    ) { index ->
+                        val choice = choices[index]
+                        PickerOptionRow(
+                            label = "${choice.displayName} · ${choice.providerName}",
+                            selected = slotState.selection.equals(
+                                choice.modelId, ignoreCase = true),
+                            onClick = {
+                                roles.select(slot, choice.modelId)
+                                onDismiss()
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun roleInheritLabel(
+        slot: SettingsRoleModelController.RoleSlot,
+    ): String = when (slot) {
+        SettingsRoleModelController.RoleSlot.GENERAL_AUXILIARY_LLM ->
+            stringResource(R.string.settings_role_follow_main)
+        SettingsRoleModelController.RoleSlot.CANVAS_AGENT ->
+            stringResource(R.string.settings_role_inherit_default)
+        SettingsRoleModelController.RoleSlot.CANVAS_VISION ->
+            stringResource(R.string.settings_role_inherit_auxiliary)
+        SettingsRoleModelController.RoleSlot.PACKAGE_REVIEW ->
+            stringResource(R.string.settings_role_follow_auxiliary)
+        else -> stringResource(R.string.settings_role_not_configured)
+    }
+
+    @Composable
+    private fun PickerOptionRow(
+        label: String,
+        selected: Boolean,
+        onClick: () -> Unit,
+        enabled: Boolean = true,
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .clickable(enabled = enabled, onClick = onClick)
+                .padding(horizontal = 4.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FloeText(
+                label,
+                style = Floe.typography.body,
+                color = when {
+                    !enabled -> Floe.colors.tertiaryLabel
+                    selected -> Floe.colors.accent
+                    else -> Floe.colors.label
+                },
+                modifier = Modifier.weight(1f),
+                maxLines = 2,
+            )
+            if (selected) {
+                IconGlyph(FloeIcons.Checkmark, Floe.colors.accent, 18.dp)
+            }
         }
     }
 
@@ -269,6 +664,7 @@ object SettingsHostPages {
                         onClick = { settings.startOrganize(includeSemantic = false) {} },
                     )
                 } else {
+                    var confirmSuggestion by remember { mutableStateOf<String?>(null) }
                     FloeSectionRow(title = {
                         FloeText(
                             stringResource(
@@ -279,7 +675,28 @@ object SettingsHostPages {
                             color = Floe.colors.secondaryLabel,
                         )
                     })
+                    // Honest automatic-cleanup outcome from the proposal.
+                    organize.autoDelete?.let { autoDelete ->
+                        val autoDeleteLine = when (autoDelete.status) {
+                            "applied" -> stringResource(
+                                R.string.settings_organize_auto_deleted,
+                                organize.autoDeletedCount,
+                            )
+                            "staleRejected" ->
+                                stringResource(R.string.settings_organize_auto_delete_stale)
+                            else -> stringResource(R.string.settings_organize_auto_delete_none)
+                        }
+                        FloeSectionRow(title = { StatusLine(autoDeleteLine) })
+                    }
+                    if (organize.suggestions.isEmpty()) {
+                        FloeSectionRow(title = {
+                            StatusLine(stringResource(R.string.settings_organize_empty))
+                        })
+                    }
                     organize.suggestions.forEach { suggestion ->
+                        val affected = organize.entries.filter {
+                            it.id in suggestion.memoryIDs
+                        }
                         FloeSectionRow(
                             description = suggestion.reason,
                             title = {
@@ -295,12 +712,65 @@ object SettingsHostPages {
                                         color = Floe.colors.secondaryLabel,
                                         maxLines = 3,
                                     )
+                                    if (affected.isNotEmpty()) {
+                                        Spacer(Modifier.height(4.dp))
+                                        FloeText(
+                                            stringResource(
+                                                R.string.settings_organize_affected,
+                                                affected.size,
+                                            ),
+                                            style = Floe.typography.metadata,
+                                            color = Floe.colors.secondaryLabel,
+                                        )
+                                        affected.take(3).forEach { entry ->
+                                            FloeText(
+                                                entry.content,
+                                                style = Floe.typography.metadata,
+                                                color = Floe.colors.tertiaryLabel,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                    }
                                 }
+                            },
+                            trailing = {
+                                FloeCapsuleAction(
+                                    label = stringResource(R.string.settings_organize_apply),
+                                    enabled = !organize.applying && !organize.stale,
+                                    onClick = { confirmSuggestion = suggestion.id },
+                                )
                             },
                         )
                     }
                     if (organize.stale) {
-                        StatusLine(stringResource(R.string.settings_organize_stale))
+                        FloeSectionRow(title = {
+                            StatusLine(stringResource(R.string.settings_organize_stale))
+                        })
+                    }
+                    organize.applyError?.let {
+                        // Concise recovery copy; the typed code stays
+                        // diagnostics-only.
+                        FloeSectionRow(title = {
+                            StatusLine(stringResource(R.string.settings_organize_apply_failed))
+                        })
+                    }
+                    FloeActionRow(
+                        label = stringResource(R.string.settings_organize_cancel),
+                        enabled = !organize.applying,
+                        onClick = { settings.cancelOrganize {} },
+                    )
+                    confirmSuggestion?.let { suggestionID ->
+                        FloeConfirmDialog(
+                            title = stringResource(R.string.settings_organize_apply),
+                            message = stringResource(R.string.settings_organize_apply_message),
+                            confirmLabel = stringResource(R.string.settings_organize_apply),
+                            dismissLabel = stringResource(R.string.cancel),
+                            onConfirm = {
+                                confirmSuggestion = null
+                                settings.applyOrganizeSuggestion(suggestionID) {}
+                            },
+                            onDismiss = { confirmSuggestion = null },
+                        )
                     }
                 }
             }
@@ -435,6 +905,7 @@ object SettingsHostPages {
         val state by settings.state.collectAsState()
         val surface = state.personalization
         var draft by remember(surface.kind, surface.content) { mutableStateOf(surface.content) }
+        var confirmRollback by remember { mutableStateOf<Int?>(null) }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -508,6 +979,17 @@ object SettingsHostPages {
                         onClick = { settings.generatePersonalization(surface.kind) {} },
                         enabled = !surface.generating,
                     )
+                    if (surface.generating) {
+                        // Real cancel: only enabled once the operation was
+                        // ACCEPTED and its receipt captured — before that
+                        // there is nothing to cancel.
+                        FloeCapsuleAction(
+                            label = stringResource(
+                                R.string.settings_personalization_cancel_generate),
+                            enabled = surface.generateReceipt != null,
+                            onClick = { settings.cancelPersonalizationGenerate {} },
+                        )
+                    }
                 }
                 if (surface.generating) {
                     Row(
@@ -525,7 +1007,174 @@ object SettingsHostPages {
                     })
                 }
             }
+            FloeSettingsSectionCard(
+                title = stringResource(R.string.settings_personalization_history),
+            ) {
+                if (surface.revisions.isEmpty() && !surface.revisionsLoadingMore) {
+                    FloeSectionRow(title = {
+                        StatusLine(stringResource(R.string.settings_personalization_revision_empty))
+                    })
+                }
+                if (surface.revisionReadInFlight && surface.openRevision == null) {
+                    FloeSectionRow(title = {
+                        StatusLine(stringResource(
+                            R.string.settings_personalization_revision_loading))
+                    })
+                }
+                surface.revisions.forEach { meta ->
+                    FloeSectionRow(
+                        title = {
+                            Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    FloeText(
+                                        stringResource(
+                                            R.string.settings_personalization_revision,
+                                            meta.revision,
+                                        ),
+                                        style = Floe.typography.body,
+                                        color = Floe.colors.label,
+                                    )
+                                    if (meta.isActive) {
+                                        Spacer(Modifier.height(0.dp))
+                                        FloeText(
+                                            " · " + stringResource(
+                                                R.string.settings_personalization_revision_active),
+                                            style = Floe.typography.metadata,
+                                            color = Floe.colors.accent,
+                                        )
+                                    }
+                                }
+                                FloeText(
+                                    "${meta.source} · ${meta.createdAt}",
+                                    style = Floe.typography.metadata,
+                                    color = Floe.colors.secondaryLabel,
+                                    maxLines = 1,
+                                )
+                            }
+                        },
+                        trailing = {
+                            FloeCapsuleAction(
+                                label = stringResource(
+                                    R.string.settings_personalization_revision_view),
+                                enabled = !surface.revisionReadInFlight &&
+                                    !surface.rollingBack,
+                                onClick = {
+                                    settings.readPersonalizationRevision(
+                                        surface.kind, meta.revision)
+                                },
+                            )
+                            if (!meta.isActive) {
+                                FloeCapsuleAction(
+                                    label = stringResource(
+                                        R.string.settings_personalization_revision_restore),
+                                    enabled = !surface.revisionReadInFlight &&
+                                        !surface.rollingBack,
+                                    onClick = { confirmRollback = meta.revision },
+                                )
+                            }
+                        },
+                    )
+                }
+                surface.revisionsNextCursor?.let {
+                    FloeActionRow(
+                        label = stringResource(R.string.settings_personalization_load_more),
+                        enabled = !surface.revisionsLoadingMore,
+                        onClick = { settings.loadMoreRevisions(surface.kind) },
+                    )
+                }
+                surface.rollbackError?.let {
+                    // Concise recovery copy; the typed code stays
+                    // diagnostics-only.
+                    FloeSectionRow(title = {
+                        StatusLine(stringResource(R.string.settings_personalization_rollback_failed))
+                    })
+                }
+            }
             SettingsStatus(state.personalizationStatus, onRetry = { settings.refreshPersonalization() })
+        }
+        // One open revision read: a sheet fenced by the controller epoch
+        // (opening another revision/kind replaces it).
+        surface.openRevision?.let { revision ->
+            val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+            val wide = configuration.screenWidthDp >= 700
+            FloePageSheet(
+                visible = true,
+                onDismiss = { settings.closePersonalizationRevision() },
+                widthFraction = if (wide) 0.72f else 1f,
+                heightFraction = if (wide) 0.8f else 0.9f,
+                placement = if (wide) {
+                    FloeSheetPlacement.CENTER
+                } else {
+                    FloeSheetPlacement.BOTTOM
+                },
+                topInset = if (wide) 0.dp else FloeLayout.SettingsSheetTopInset,
+            ) {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FloeText(
+                            stringResource(
+                                R.string.settings_personalization_revision,
+                                revision.revision,
+                            ),
+                            style = Floe.typography.title,
+                            color = Floe.colors.label,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f),
+                        )
+                        FloeCapsuleAction(
+                            label = stringResource(
+                                R.string.settings_personalization_revision_close),
+                            onClick = { settings.closePersonalizationRevision() },
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        FloeText(
+                            revision.content,
+                            style = Floe.typography.body,
+                            color = Floe.colors.label,
+                        )
+                    }
+                }
+            }
+        }
+        surface.revisionReadError?.let {
+            // Concise recovery copy — the exact typed code stays in
+            // diagnostics and is never rendered as a user label.
+            FloeInfoDialog(
+                title = stringResource(R.string.settings_action_failed_title),
+                message = stringResource(R.string.settings_personalization_revision_failed),
+                confirmLabel = stringResource(R.string.settings_personalization_revision_close),
+                onDismiss = { settings.closePersonalizationRevision() },
+            )
+        }
+        confirmRollback?.let { target ->
+            FloeConfirmDialog(
+                title = stringResource(R.string.settings_personalization_revision_restore),
+                message = stringResource(
+                    R.string.settings_personalization_revision_restore_message,
+                    target,
+                ),
+                confirmLabel = stringResource(R.string.settings_personalization_revision_restore),
+                dismissLabel = stringResource(R.string.cancel),
+                onConfirm = {
+                    confirmRollback = null
+                    settings.rollbackPersonalization(surface.kind, target) {}
+                },
+                onDismiss = { confirmRollback = null },
+            )
         }
     }
 

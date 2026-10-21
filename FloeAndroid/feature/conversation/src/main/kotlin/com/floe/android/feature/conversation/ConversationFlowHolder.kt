@@ -473,6 +473,29 @@ class ConversationFlowHolder(
     /** ⇄ selectedModelID (the host projection remains the durable truth). */
     val selectedModelId: MutableState<String?> = mutableStateOf(null)
 
+    /**
+     * The Home launchpad's EXPLICIT draft-task approval mode for the FIRST
+     * fresh launch of this (brand-new) conversation only (⇄
+     * DraftTaskPermissionsSheet persisted atomically with the first launch).
+     * Set ONLY by the Home send path; a thread composer never owns one (the
+     * durable task-policy row + `run.policy.update` lane is the task truth
+     * there). Consumed exactly once at fresh-launch capture and NEVER applied
+     * to a temporary session.
+     */
+    var draftTaskApprovalMode: ApprovalModeUi? = null
+        private set
+
+    fun setDraftTaskApprovalMode(mode: ApprovalModeUi?) {
+        if (retired) return
+        draftTaskApprovalMode = mode
+    }
+
+    /** Typed, localized blocker lines from the LAST blocked
+     * [confirmGoalCompletion] settlement (never an inferred approval and
+     * never kept across a newer settlement; cleared when a new confirm
+     * starts). */
+    val goalConfirmBlockers: MutableState<List<String>?> = mutableStateOf(null)
+
     /** ⇄ agentMode with explicit per-turn Plan-choice pinning. */
     var agentMode: AgentExecutionModeUi by mutableStateOf(AgentExecutionModeUi.AGENT)
         private set
@@ -1003,6 +1026,12 @@ class ConversationFlowHolder(
         // Send-origin identity captured BEFORE the effect: a late result may
         // only mutate drafts while this exact incarnation is current.
         val originIncarnation = if (isTemporary) state.temporaryIncarnationId else null
+        // The Home draft-task policy applies ONLY to the first fresh launch of
+        // a brand-new ordinary conversation (⇄ persisted atomically with the
+        // first launch). A temporary session never carries it, and once the
+        // conversation owns durable runs the durable task-policy row +
+        // run.policy.update lane is the task truth — this field stays null.
+        val launchApprovalMode = if (!isTemporary && state.runs.isEmpty()) draftTaskApprovalMode else null
 
         if (state.isRunning) {
             // Queue/steer: the field keeps the draft until the submit lands;
@@ -1073,10 +1102,18 @@ class ConversationFlowHolder(
                 temporaryIncarnationId = originIncarnation,
                 launchGeneration = commit.launchGeneration,
                 providerId = model.providerId,
+                approvalMode = launchApprovalMode,
             ),
             onLaunchOutcome,
         )
         isConsumingDraft = false
+        if (started) {
+            // The draft choice was captured into THIS launch's request; the
+            // durable policy row (if the launch commits) or the restored
+            // draft (if it fails before admission) owns everything from
+            // here, so the holder never re-sends the same draft key.
+            draftTaskApprovalMode = null
+        }
         if (!started) {
             // Nothing began: put the complete original draft back unless the
             // user already owns a newer field generation.
@@ -1180,6 +1217,20 @@ class ConversationFlowHolder(
     fun cancel(): ConversationFlowResult {
         val runId = snapshot.value?.selectedRunId
             ?: return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
+        actionError = null
+        return if (host.cancelRun(session, runId)) ConversationFlowResult.Accepted
+        else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+    }
+
+    /** Explicit human Stop for LIVE post-run goal REVIEW/continuation work.
+     * Routes the EXISTING `run.cancel` at the EXACT review-owning run (the
+     * native control wires the review stop before its retired/terminal fast
+     * paths; unrelated or replacement runs are never touched). The ack is
+     * never a settled claim: the surface shows `stopping` until the SAME
+     * `run.snapshot` `goalReview` readback actually reaches `none`. */
+    fun requestGoalReviewStop(runId: String): ConversationFlowResult {
+        if (retired) return rejected(ConversationRejectedReason.NO_SESSION)
+        if (runId.isBlank()) return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         actionError = null
         return if (host.cancelRun(session, runId)) ConversationFlowResult.Accepted
         else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
@@ -1340,20 +1391,45 @@ class ConversationFlowHolder(
         }
         if (isAcceptingPlan || state.isRunning) return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
         if (state.needsProvider) return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        // The accept binds the EXACT durable plan members the user saw. A
+        // wire without the real digest/revision is an honest refusal — the
+        // App never sends a fabricated identity and never launches a second
+        // run behind the accept (plan.accept IS the one launch).
+        val planDigest = plan.digest ?: return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        val model = state.models.firstOrNull { it.modelId == selectedModelId.value && it.isUsable }
+            ?: return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         isAcceptingPlan = true
-        val selected = execution ?: plan.executionRecommendation ?: PlanRecommendationUi.NORMAL
-        val started = host.acceptPlan(session, plan.id, plan.revision, selected)
-        isAcceptingPlan = false
+        val started = host.acceptPlan(
+            session,
+            planId = plan.id,
+            planRevision = plan.revisionNumber,
+            planDigest = planDigest,
+            // null = keep the plan's OWN durable execution recommendation;
+            // the App never materializes a default into the payload.
+            execution = execution,
+            modelId = model.modelId,
+            providerId = model.providerId,
+        )
+        if (!started) isAcceptingPlan = false
         return if (started) ConversationFlowResult.Accepted
         else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+    }
+
+    /** Host echo for the settled plan accept (any terminal): releases the
+     * latch; the durable refresh/re-read owns the new projection. */
+    fun applyPlanAcceptSettled() {
+        if (retired) return
+        isAcceptingPlan = false
     }
 
     fun openGoalBuilder() { if (retired) return; showingGoalBuilder = true }
     fun dismissGoalBuilder() { showingGoalBuilder = false }
 
-    /** ⇄ createGoal(...): the HOST builds and persists the durable goal
-     * (default criterion copy is Swift-side); this UI only validates the
-     * objective and forwards the explicit conditions. */
+    /** ⇄ createGoal(...): the launch carries the structured fields as the
+     * approved `run.start` additive `goalDefinition`; the native C1 owns the
+     * durable goal row (default criterion copy is Swift-side). This UI only
+     * validates the objective and forwards the explicit conditions with the
+     * thread's ACTUAL selected model — never a first-usable substitution. */
     fun createGoal(
         objective: String,
         criteria: List<String>,
@@ -1366,6 +1442,8 @@ class ConversationFlowHolder(
         if (state.isRunning || state.needsProvider) {
             return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         }
+        val model = state.models.firstOrNull { it.modelId == selectedModelId.value && it.isUsable }
+            ?: return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         val started = host.createGoal(
             GoalCreateRequest(
                 conversationId = conversationId,
@@ -1374,6 +1452,8 @@ class ConversationFlowHolder(
                 criteria = criteria.filter { it.isNotBlank() },
                 blockingConditions = blockers.filter { it.isNotBlank() },
                 stoppingConditions = stops.filter { it.isNotBlank() },
+                modelId = model.modelId,
+                providerId = model.providerId,
             )
         )
         if (!started) return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
@@ -1382,12 +1462,41 @@ class ConversationFlowHolder(
     }
 
     /** ⇄ confirmGoalCompletion(): only a verifying goal offers it; the
-     * completion gate is the host's authority. */
+     * completion gate is the host's authority. The command itself is the
+     * explicit human gesture (no model/inferred approval exists anywhere on
+     * this path) and it binds the goal's ACTUAL server revision. */
     fun confirmGoalCompletion(): ConversationFlowResult {
         val goal = snapshot.value?.goal ?: return rejected(ConversationRejectedReason.NO_SESSION)
         if (goal.statusRaw != "verifying") return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
-        return if (host.confirmGoalCompletion(session, goal.id)) ConversationFlowResult.Accepted
+        val revisionVersion = goal.revisionVersion ?: return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        val revisionResource = goal.revisionResourceID ?: return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        if (goal.revision <= 0) return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        goalConfirmBlockers.value = null // a new explicit attempt owns fresh results
+        val started = host.confirmGoalCompletion(
+            session,
+            goalId = goal.id,
+            expectedRevision = goal.revision,
+            revisionResourceID = revisionResource,
+            revisionVersion = revisionVersion,
+        )
+        return if (started) ConversationFlowResult.Accepted
         else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+    }
+
+    /** Host echo: the last confirm settlement was BLOCKED/stale. [blockers]
+     * are the host-localized human lines for the REAL machine codes (an
+     * empty list means the typed refusal carried none). Nothing persisted —
+     * the durable projection re-read is the truth. */
+    fun applyGoalConfirmBlocked(blockers: List<String>) {
+        if (retired) return
+        goalConfirmBlockers.value = blockers
+    }
+
+    /** Host echo: a confirmed (or re-read) goal projection replaced the last
+     * blocked surface. */
+    fun clearGoalConfirmBlockers() {
+        if (retired) return
+        goalConfirmBlockers.value = null
     }
 
     /* ------------------------------ temporary chat ------------------------------ */
@@ -1529,10 +1638,17 @@ class ConversationFlowHolder(
 
     /* ------------------------------- misc surfaces ------------------------------- */
 
-    /** ⇄ requestManualCompaction (single in-flight latch). */
+    /** ⇄ requestManualCompaction (single in-flight latch). The thread's
+     * ACTUAL selected usable model is passed when one exists; otherwise the
+     * key stays absent and the native persisted default applies (never a
+     * first-usable substitution chosen by the App). */
     fun requestManualCompaction(): ConversationFlowResult {
         if (isCompacting) return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
-        return if (host.requestManualCompaction(session)) {
+        val state = snapshot.value
+        val selected = state?.models?.firstOrNull {
+            it.modelId == selectedModelId.value && it.isUsable
+        }?.modelId
+        return if (host.requestManualCompaction(session, selected)) {
             isCompacting = true
             ConversationFlowResult.Accepted
         } else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)

@@ -74,6 +74,26 @@ data class RunLaunchRequest(
      * `providerID` + `modelID` as UUIDs; the composer projection carries the
      * exact owning provider). */
     val providerId: String? = null,
+    /**
+     * The draft-task approval mode the user explicitly chose on the Home
+     * launchpad for the FIRST launch of this new conversation (⇄
+     * DraftTaskPermissionsSheet persisted atomically with the first launch).
+     * Null = no explicit draft choice: the key is omitted and the native
+     * ORIGINAL default (`.ask`) applies. Never set for a temporary launch
+     * (temporary chats bind no permission surface) and never re-sent once
+     * the conversation owns a durable task-policy row.
+     */
+    val approvalMode: ApprovalModeUi? = null,
+    /**
+     * The structured goal definition for an existing-thread goal-mode
+     * launch (⇄ approved `run.start` additive `goalDefinition` key).
+     * Non-null ONLY for an ordinary (non-temporary) GOAL launch produced by
+     * the thread GoalBuilder. Absent = the original generic goal path
+     * (native `ensureDurableGoal` mints the default goal). The App never
+     * writes a goal row directly and never flattens criteria into the goal
+     * text.
+     */
+    val goalDefinition: GoalDefinitionUi? = null,
 ) {
     /** The immutable correlation the host must echo back verbatim with this
      * launch's prepared/failed outcome. */
@@ -150,7 +170,10 @@ data class ApprovalGrantUi(
     val singleUse: Boolean,
 )
 
-/** ⇄ GoalBuilderSheet fields (one per line already split by the caller). */
+/** ⇄ GoalBuilderSheet fields (one per line already split by the caller).
+ * [modelId]/[providerId] are the thread's ACTUAL selected configured model
+ * identities; the host refuses a goal launch without them (never a
+ * first-usable substitution). */
 data class GoalCreateRequest(
     val conversationId: String,
     val sessionEpoch: Long,
@@ -158,11 +181,68 @@ data class GoalCreateRequest(
     val criteria: List<String>,
     val blockingConditions: List<String>,
     val stoppingConditions: List<String>,
+    val modelId: String? = null,
+    val providerId: String? = null,
 ) {
     override fun toString(): String =
         "GoalCreateRequest(conv=$conversationId, objectiveChars=${objective.length}, " +
             "criteria=${criteria.size})"
 }
+
+/**
+ * The structured goal definition carried by an existing-thread goal-mode
+ * `run.start` (approved additive `goalDefinition` key). Field bounds
+ * (objective ≤16384, ≤32 criteria ×2048, ≤16+16 conditions ×2048) are the
+ * NATIVE parser's; the App trims, drops empty entries and refuses an
+ * over-budget producer field typed BEFORE dispatch instead of letting the
+ * bridge truncate it. The empty-criteria default criterion is the native
+ * ORIGINAL rule — the App never composes it locally.
+ */
+data class GoalDefinitionUi(
+    val objective: String,
+    val criteria: List<String>,
+    val blockingConditions: List<String>,
+    val stoppingConditions: List<String>,
+) {
+    /** The native parser's closed bounds (UTF-8 BYTES, not chars). The host
+     * refuses an over-budget producer typed BEFORE dispatch; nothing is ever
+     * truncated on the way to the bridge. */
+    fun exceedsNativeBounds(): Boolean {
+        if (objective.trim().utf8Bytes() > MAX_OBJECTIVE_BYTES) return true
+        val c = criteria.map { it.trim() }.filter { it.isNotEmpty() }
+        if (c.size > MAX_CRITERIA || c.any { it.utf8Bytes() > MAX_ITEM_BYTES }) return true
+        val b = blockingConditions.map { it.trim() }.filter { it.isNotEmpty() }
+        if (b.size > MAX_CONDITIONS || b.any { it.utf8Bytes() > MAX_ITEM_BYTES }) return true
+        val s = stoppingConditions.map { it.trim() }.filter { it.isNotEmpty() }
+        if (s.size > MAX_CONDITIONS || s.any { it.utf8Bytes() > MAX_ITEM_BYTES }) return true
+        return false
+    }
+
+    /** Trimmed, empty-dropped arrays; null when empty (ABSENT key — the
+     * ORIGINAL native default-criterion rule stays Swift-side). */
+    fun boundedCriteria(): List<String>? =
+        criteria.map { it.trim() }.filter { it.isNotEmpty() }.takeIf { it.isNotEmpty() }
+
+    fun boundedBlockingConditions(): List<String>? =
+        blockingConditions.map { it.trim() }.filter { it.isNotEmpty() }.takeIf { it.isNotEmpty() }
+
+    fun boundedStoppingConditions(): List<String>? =
+        stoppingConditions.map { it.trim() }.filter { it.isNotEmpty() }.takeIf { it.isNotEmpty() }
+
+    /** Sensitive user content: masked like the goal text. */
+    override fun toString(): String =
+        "GoalDefinitionUi(objectiveChars=${objective.length}, criteria=${criteria.size}, " +
+            "blocking=${blockingConditions.size}, stopping=${stoppingConditions.size})"
+
+    companion object {
+        const val MAX_OBJECTIVE_BYTES = 16_384
+        const val MAX_ITEM_BYTES = 2_048
+        const val MAX_CRITERIA = 32
+        const val MAX_CONDITIONS = 16
+    }
+}
+
+private fun String.utf8Bytes(): Int = toByteArray(Charsets.UTF_8).size
 
 /** ⇄ ConversationCenter temporary keep/end identity pair. Both ids must match
  * the host's live session exactly; a replacement generation reusing the same
@@ -307,14 +387,46 @@ interface ConversationUiCallbacks {
 
     /* ------------------------------ plan / goal ------------------------------ */
 
-    /** ⇄ acceptLatestPlan(as:): accept binds the EXACT plan revision+digest. */
-    fun acceptPlan(session: ConversationSessionToken, planId: String, revision: Revision, execution: PlanRecommendationUi): Boolean
+    /**
+     * ⇄ acceptLatestPlan(as:) over the approved `plan.accept` command:
+     * [planRevision]+[planDigest] are the EXACT members of the durable plan
+     * the user saw (from the `conversation.get` plan projection — never a
+     * locally bumped number); [execution] is the user's explicit choice or
+     * null to keep the plan's own durable recommendation; [modelId]/
+     * [providerId] are the thread's ACTUAL selected model identities. The
+     * host binds the CURRENT conversation-row digest CAS and consumes the
+     * SAME prepared/started/terminal receipt flow as `run.start` — the plan
+     * accept IS the one launch (never a separate run.start).
+     */
+    fun acceptPlan(
+        session: ConversationSessionToken,
+        planId: String,
+        planRevision: Int,
+        planDigest: String,
+        execution: PlanRecommendationUi?,
+        modelId: String?,
+        providerId: String?,
+    ): Boolean
 
-    /** ⇄ createGoal(...): the host creates the durable goal + starts its run. */
+    /** ⇄ createGoal(...): the host starts the goal-mode run with the
+     * structured `goalDefinition` (the native C1 owns the durable goal row). */
     fun createGoal(request: GoalCreateRequest): Boolean
 
-    /** ⇄ confirmGoalCompletion() (host evaluates the completion gate). */
-    fun confirmGoalCompletion(session: ConversationSessionToken, goalId: String): Boolean
+    /**
+     * ⇄ confirmGoalCompletion() (host evaluates the completion gate). The
+     * trusted command itself is the explicit human action; [expectedRevision]
+     * + [revisionResourceID]/[revisionVersion] are the goal's ACTUAL server
+     * fields (envelope version echoes `revisionVersion` verbatim). A blocked
+     * or stale result never persists a confirmation — the host re-reads the
+     * durable truth and surfaces the typed blockers.
+     */
+    fun confirmGoalCompletion(
+        session: ConversationSessionToken,
+        goalId: String,
+        expectedRevision: Int,
+        revisionResourceID: String,
+        revisionVersion: String,
+    ): Boolean
 
     /* --------------------------- composer side effects ------------------------ */
 
@@ -336,8 +448,16 @@ interface ConversationUiCallbacks {
      * without any durable draft loss. */
     fun clearDraftAfterSend(session: ConversationSessionToken, sentText: String, sentAttachmentIds: List<String>)
 
-    /** ⇄ requestManualCompaction. */
-    fun requestManualCompaction(session: ConversationSessionToken): Boolean
+    /**
+     * ⇄ requestManualCompaction over the approved `conversation.compact`
+     * command (no revision — the core owns the reservation/quiescence
+     * guard). [modelId] is the thread's ACTUAL selected model or null, in
+     * which case the native side uses the persisted default (never a
+     * first-usable substitution). The reply is the REAL
+     * compacted/noHistory/shortHistory outcome; the host composes the
+     * localized status line from it.
+     */
+    fun requestManualCompaction(session: ConversationSessionToken, modelId: String?): Boolean
 
     /* ------------------------------ thread menu actions ---------------------- */
 

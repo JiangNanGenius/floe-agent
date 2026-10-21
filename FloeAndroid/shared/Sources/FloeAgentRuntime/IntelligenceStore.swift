@@ -1,1 +1,1991 @@
-../../../../FloeAgent/Sources/FloeAgentRuntime/IntelligenceStore.swift
+import Foundation
+import GRDB
+import FloeCore
+import FloePersistence
+
+public enum MemoryEntryStatus: String, Sendable, Codable, Hashable {
+    case pending, active, rejected, superseded
+}
+
+public struct MemoryEntry: Sendable, Codable, Hashable, Identifiable {
+    public var id: UUID
+    public var scope: MemoryScope
+    public var status: MemoryEntryStatus
+    public var content: String
+    public var confidence: Double
+    public var importance: Double
+    public var isPinned: Bool
+    public var sourceKind: MemoryCandidateOrigin
+    public var originConversationID: UUID?
+    public var originWorkspaceID: UUID?
+    public var factIdentity: MemoryFactIdentity?
+    public var expiresAt: Date?
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: UUID = UUID(), scope: MemoryScope, status: MemoryEntryStatus,
+        content: String, confidence: Double, importance: Double,
+        isPinned: Bool = false, sourceKind: MemoryCandidateOrigin,
+        originConversationID: UUID? = nil, originWorkspaceID: UUID? = nil,
+        factIdentity: MemoryFactIdentity? = nil,
+        expiresAt: Date? = nil, createdAt: Date = Date(), updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.scope = scope
+        self.status = status
+        self.content = String(content.prefix(4_096))
+        self.confidence = min(1, max(0, confidence))
+        self.importance = min(1, max(0, importance))
+        self.isPinned = isPinned
+        self.sourceKind = sourceKind
+        if case .task(let taskID) = scope {
+            self.originConversationID = originConversationID ?? taskID
+        } else {
+            self.originConversationID = originConversationID
+        }
+        if case .workspace(let workspaceID) = scope {
+            self.originWorkspaceID = originWorkspaceID ?? workspaceID
+        } else {
+            self.originWorkspaceID = originWorkspaceID
+        }
+        self.factIdentity = factIdentity?.isValid == true ? factIdentity : nil
+        self.expiresAt = expiresAt
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+public protocol PlanDraftStore: Sendable {
+    func savePlanRevision(_ plan: PlanDraft) async throws
+    func latestPlan(conversationID: UUID) async throws -> PlanDraft?
+    func planRevisions(conversationID: UUID) async throws -> [PlanDraft]
+}
+
+public protocol ConversationGoalStore: Sendable {
+    func saveGoal(_ goal: ConversationGoal) async throws
+    /// Atomically replaces an existing goal only when its durable revision
+    /// still matches the caller's snapshot. The stored revision becomes
+    /// `expectedRevision + 1` on success.
+    func saveGoalIfRevisionMatches(
+        _ goal: ConversationGoal,
+        expectedRevision: Int
+    ) async throws -> Bool
+    func goal(id: UUID) async throws -> ConversationGoal?
+    func goals(conversationID: UUID) async throws -> [ConversationGoal]
+}
+
+public protocol DurableMemoryStore: Sendable {
+    func saveMemory(_ entry: MemoryEntry, evidence: [MemoryEvidenceReference]) async throws
+    func memories(scope: MemoryScope, status: MemoryEntryStatus?) async throws -> [MemoryEntry]
+    func recall(query: String, workspaceID: UUID?, conversationID: UUID?, limit: Int) async throws -> [MemoryRecallItem]
+    func saveEmbedding(_ embedding: MemoryEmbedding) async throws
+    func embeddingNeedsRefresh(
+        memoryID: UUID, modality: MemoryEmbeddingModality,
+        modelIdentifier: String, modelRevision: String, contentDigest: String
+    ) async throws -> Bool
+    func hybridRecall(_ request: HybridMemoryRecallRequest) async throws -> [HybridMemoryRecallItem]
+    func deleteMemory(id: UUID, syncRevision: Int64) async throws
+    func memory(id: UUID) async throws -> MemoryEntry?
+    func memories(factIdentity: MemoryFactIdentity, scope: MemoryScope?) async throws -> [MemoryEntry]
+    func organizationPreview(limit: Int) async throws -> MemoryOrganizationProposal
+    func applyMaintenanceBatch(_ batch: MemoryMaintenanceBatch) async throws -> MemoryMaintenanceBatchResult
+    func listMemories(_ request: MemoryListRequest) async throws -> MemoryListPage
+}
+
+public extension DurableMemoryStore {
+    /// Compatibility fallback for lightweight stores used by extensions and
+    /// tests. Production SQLite storage overrides this with true SQL paging.
+    func listMemories(_ request: MemoryListRequest) async throws -> MemoryListPage {
+        let scopes: [MemoryScope] = request.scope.map { [$0] } ?? [.userProfile, .agentGlobal]
+        var values: [MemoryEntry] = []
+        for scope in scopes {
+            values += try await memories(scope: scope, status: request.status)
+        }
+        values = values.filter { entry in
+            if let id = request.originConversationID, entry.originConversationID != id { return false }
+            if let id = request.originWorkspaceID, entry.originWorkspaceID != id { return false }
+            if let fact = request.factIdentity, entry.factIdentity != fact { return false }
+            if let pinned = request.isPinned, entry.isPinned != pinned { return false }
+            return true
+        }.sorted {
+            if $0.isPinned != $1.isPinned { return $0.isPinned }
+            if $0.importance != $1.importance { return $0.importance > $1.importance }
+            return $0.updatedAt > $1.updatedAt
+        }
+        guard let offset = Int(request.cursor ?? "0"), offset >= 0 else {
+            throw FloeError.validationFailed("memory.list cursor is invalid")
+        }
+        let start = min(offset, values.count)
+        let end = min(start + request.limit, values.count)
+        return MemoryListPage(
+            entries: Array(values[start..<end]),
+            nextCursor: end < values.count ? String(end) : nil
+        )
+    }
+}
+
+/// One durable implementation for plans, goals, bounded memory and explicit
+/// cross-conversation history access. The runtime owns semantic types while
+/// the shared DatabaseManager preserves serialized writes and foreign keys.
+public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, DurableMemoryStore, ConversationHistoryReader {
+    private struct ConversationTimelineCursor: Codable {
+        var createdAt: String
+        var sequence: Int
+        var itemID: String
+        /// UTF-8 byte offset inside `itemID`'s content at which the next page
+        /// resumes. 0 means the next page starts strictly after this item.
+        /// Decoded cursors written before segmentation default to 0.
+        var contentOffset: Int = 0
+
+        init(createdAt: String, sequence: Int, itemID: String, contentOffset: Int = 0) {
+            self.createdAt = createdAt
+            self.sequence = sequence
+            self.itemID = itemID
+            self.contentOffset = max(0, contentOffset)
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            createdAt = try container.decode(String.self, forKey: .createdAt)
+            sequence = try container.decode(Int.self, forKey: .sequence)
+            itemID = try container.decode(String.self, forKey: .itemID)
+            contentOffset = try container.decodeIfPresent(Int.self, forKey: .contentOffset) ?? 0
+        }
+    }
+    private let database: DatabaseManager
+
+    public init(database: DatabaseManager) {
+        self.database = database
+    }
+
+    /// Rebuild compacted model context without deleting the original audit
+    /// timeline. Summary IDs are stable so later compactions can replace them.
+    public func applyingCompactions(_ messages: [ConversationMessage], conversationID: UUID) async throws -> [ConversationMessage] {
+        let rows = try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT c.id, c.source_message_ids_json, c.summary
+                FROM context_compactions c JOIN runs r ON r.id = c.run_id
+                WHERE r.conversation_id = ? AND c.summary LIKE '[Manual context snapshot]%' ORDER BY c.created_at, c.rowid
+                """, arguments: [conversationID.uuidString]).map { row -> [String: String] in
+                    ["id": row["id"], "source_message_ids_json": row["source_message_ids_json"], "summary": row["summary"]]
+                }
+        }
+        var result = messages
+        for row in rows {
+            let idText = row["id"] ?? ""
+            let sourceJSON = row["source_message_ids_json"] ?? "[]"
+            let summary = row["summary"] ?? ""
+            guard let id = UUID(uuidString: idText),
+                  let sources = try? JSONDecoder().decode([UUID].self, from: Data(sourceJSON.utf8)),
+                  !sources.isEmpty, !summary.isEmpty else { continue }
+            let replaced = Set(sources)
+            result.removeAll { replaced.contains($0.id) || $0.id == id }
+            result.insert(ConversationMessage(id: id, role: "system", content: summary), at: 0)
+        }
+        return result
+    }
+
+    public func saveCompaction(
+        runID: UUID,
+        record: ContextCompactionRecord,
+        summary: String
+    ) async throws {
+        guard summary.utf8.count <= 131_072 else {
+            throw FloeError.validationFailed("Compaction summary exceeds the durable record limit; history was not replaced")
+        }
+        try await database.writer { db in
+            try db.execute(sql: """
+                INSERT INTO context_compactions (
+                    id, run_id, source_message_ids_json, boundary_start_id,
+                    boundary_end_id, summary, source_digest, input_tokens,
+                    output_tokens, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    record.id.uuidString,
+                    runID.uuidString,
+                    try Self.json(record.sourceMessageIDs),
+                    record.sourceMessageIDs.first?.uuidString,
+                    record.sourceMessageIDs.last?.uuidString,
+                    summary,
+                    record.sourceDigest,
+                    record.beforeEstimatedTokens,
+                    record.afterEstimatedTokens,
+                    Self.date(record.createdAt)
+                ])
+        }
+    }
+
+    public func savePlanRevision(_ plan: PlanDraft) async throws {
+        let sections = try Self.json(plan.sections)
+        let assumptions = try Self.json(plan.assumptions)
+        let risks = try Self.json(plan.risks)
+        let criteria = try Self.json(plan.acceptanceCriteria)
+        let messages = try Self.json(plan.sourceMessageIDs)
+        let references = try Self.json(plan.sourceReferences)
+        try await database.writer { db in
+            try db.execute(sql: """
+                INSERT INTO plan_drafts (
+                    id, conversation_id, workspace_id, revision, status, title, summary,
+                    sections_json, assumptions_json, risks_json, criteria_json,
+                    source_message_ids_json, source_conversation_refs_json, digest,
+                    execution_recommendation, recommendation_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    plan.id.uuidString, plan.conversationID.uuidString, plan.workspaceID?.uuidString,
+                    plan.revision, plan.status.rawValue, plan.title, plan.summary, sections,
+                    assumptions, risks, criteria, messages, references, plan.digest,
+                    plan.executionRecommendation?.rawValue, plan.recommendationReason,
+                    Self.date(plan.createdAt), Self.date(plan.updatedAt)
+                ])
+        }
+    }
+
+    public func latestPlan(conversationID: UUID) async throws -> PlanDraft? {
+        try await database.reader { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT * FROM plan_drafts WHERE conversation_id = ?
+                ORDER BY revision DESC LIMIT 1
+                """, arguments: [conversationID.uuidString]) else { return nil }
+            return try Self.plan(row)
+        }
+    }
+
+    public func planRevisions(conversationID: UUID) async throws -> [PlanDraft] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM plan_drafts WHERE conversation_id = ? ORDER BY revision
+                """, arguments: [conversationID.uuidString]).map(Self.plan)
+        }
+    }
+
+    public func saveGoal(_ goal: ConversationGoal) async throws {
+        let criteria = try Self.json(goal.acceptanceCriteria)
+        let steps = try Self.json(goal.steps)
+        let evidence = try Self.json(goal.evidence)
+        let budgets = try Self.json(goal.budgets)
+        let progress = try Self.json(goal.progress)
+        let blockingConditions = try Self.json(goal.blockingConditions ?? [])
+        let stoppingConditions = try Self.json(goal.stoppingConditions ?? [])
+        try await database.writer { db in
+            try db.execute(sql: """
+                INSERT INTO conversation_goals (
+                    id, conversation_id, source_plan_id, source_plan_digest, objective,
+                    status, criteria_json, steps_json, evidence_json, budgets_json,
+                    progress_json, blocking_fingerprint, consecutive_blocked_cycles,
+                    blocking_conditions_json, stopping_conditions_json, revision,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    objective=excluded.objective, status=excluded.status,
+                    criteria_json=excluded.criteria_json, steps_json=excluded.steps_json,
+                    evidence_json=excluded.evidence_json, budgets_json=excluded.budgets_json,
+                    progress_json=excluded.progress_json,
+                    blocking_fingerprint=excluded.blocking_fingerprint,
+                    consecutive_blocked_cycles=excluded.consecutive_blocked_cycles,
+                    blocking_conditions_json=excluded.blocking_conditions_json,
+                    stopping_conditions_json=excluded.stopping_conditions_json,
+                    revision=excluded.revision,
+                    updated_at=excluded.updated_at
+                """, arguments: [
+                    goal.id.uuidString, goal.conversationID.uuidString, goal.sourcePlanID?.uuidString,
+                    goal.sourcePlanDigest, goal.objective, goal.status.rawValue, criteria, steps,
+                    evidence, budgets, progress, goal.progress.repeatedBlockerKey,
+                    goal.progress.repeatedBlockerCount, blockingConditions, stoppingConditions,
+                    goal.revision ?? 1, Self.date(goal.createdAt), Self.date(goal.updatedAt)
+                ])
+            try db.execute(sql: "DELETE FROM goal_criteria WHERE goal_id = ?", arguments: [goal.id.uuidString])
+            for (index, criterion) in goal.acceptanceCriteria.enumerated() {
+                try db.execute(sql: """
+                    INSERT INTO goal_criteria (id, goal_id, criterion_index, text, status, evidence_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [criterion.id.uuidString, goal.id.uuidString, index,
+                        criterion.text, criterion.isSatisfied ? "satisfied" : "pending",
+                        try Self.json(criterion.evidenceIDs), Self.date(goal.updatedAt)])
+            }
+            try db.execute(sql: "DELETE FROM goal_steps WHERE goal_id = ?", arguments: [goal.id.uuidString])
+            for (index, step) in goal.steps.enumerated() {
+                try db.execute(sql: """
+                    INSERT INTO goal_steps (id, goal_id, step_index, title, detail, status, evidence_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [step.id.uuidString, goal.id.uuidString, index, step.title,
+                        step.detail, step.status.rawValue, try Self.json(step.evidenceIDs), Self.date(goal.updatedAt)])
+            }
+        }
+    }
+
+    public func saveGoalIfRevisionMatches(
+        _ goal: ConversationGoal,
+        expectedRevision: Int
+    ) async throws -> Bool {
+        let criteria = try Self.json(goal.acceptanceCriteria)
+        let steps = try Self.json(goal.steps)
+        let evidence = try Self.json(goal.evidence)
+        let budgets = try Self.json(goal.budgets)
+        let progress = try Self.json(goal.progress)
+        let blockingConditions = try Self.json(goal.blockingConditions ?? [])
+        let stoppingConditions = try Self.json(goal.stoppingConditions ?? [])
+        return try await database.writer { db in
+            try db.execute(sql: """
+                UPDATE conversation_goals SET
+                    source_plan_id = ?, source_plan_digest = ?, objective = ?,
+                    status = ?, criteria_json = ?, steps_json = ?, evidence_json = ?,
+                    budgets_json = ?, progress_json = ?, blocking_fingerprint = ?,
+                    consecutive_blocked_cycles = ?, blocking_conditions_json = ?,
+                    stopping_conditions_json = ?, revision = ?, updated_at = ?
+                WHERE id = ? AND revision = ?
+                """, arguments: [
+                    goal.sourcePlanID?.uuidString, goal.sourcePlanDigest, goal.objective,
+                    goal.status.rawValue, criteria, steps, evidence, budgets, progress,
+                    goal.progress.repeatedBlockerKey, goal.progress.repeatedBlockerCount,
+                    blockingConditions, stoppingConditions, expectedRevision + 1,
+                    Self.date(goal.updatedAt), goal.id.uuidString, expectedRevision
+                ])
+            guard db.changesCount == 1 else { return false }
+            try db.execute(
+                sql: "DELETE FROM goal_criteria WHERE goal_id = ?",
+                arguments: [goal.id.uuidString]
+            )
+            for (index, criterion) in goal.acceptanceCriteria.enumerated() {
+                try db.execute(sql: """
+                    INSERT INTO goal_criteria (id, goal_id, criterion_index, text, status, evidence_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [
+                        criterion.id.uuidString, goal.id.uuidString, index,
+                        criterion.text, criterion.isSatisfied ? "satisfied" : "pending",
+                        try Self.json(criterion.evidenceIDs), Self.date(goal.updatedAt)
+                    ])
+            }
+            try db.execute(
+                sql: "DELETE FROM goal_steps WHERE goal_id = ?",
+                arguments: [goal.id.uuidString]
+            )
+            for (index, step) in goal.steps.enumerated() {
+                try db.execute(sql: """
+                    INSERT INTO goal_steps (id, goal_id, step_index, title, detail, status, evidence_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [
+                        step.id.uuidString, goal.id.uuidString, index, step.title,
+                        step.detail, step.status.rawValue, try Self.json(step.evidenceIDs),
+                        Self.date(goal.updatedAt)
+                    ])
+            }
+            return true
+        }
+    }
+
+    public func goal(id: UUID) async throws -> ConversationGoal? {
+        try await database.reader { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM conversation_goals WHERE id = ?", arguments: [id.uuidString]) else { return nil }
+            return try Self.goal(row)
+        }
+    }
+
+    public func goals(conversationID: UUID) async throws -> [ConversationGoal] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM conversation_goals WHERE conversation_id = ? ORDER BY updated_at DESC
+                """, arguments: [conversationID.uuidString]).map(Self.goal)
+        }
+    }
+
+    public func saveMemory(_ entry: MemoryEntry, evidence: [MemoryEvidenceReference]) async throws {
+        let (scope, workspaceID, conversationID) = Self.scope(entry.scope)
+        let normalized = entry.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { throw FloeError.validationFailed("Memory must not be empty") }
+        guard !Self.looksLikeSecret(normalized) else {
+            throw FloeError.validationFailed("Authentication material cannot be saved to memory")
+        }
+        let replacementRevision = Int64(Date().timeIntervalSince1970 * 1_000)
+        try await database.writer { db in
+            if let identity = entry.factIdentity {
+                let arguments: StatementArguments = [
+                    identity.subjectKey, identity.attributeKey, entry.id.uuidString, scope,
+                    workspaceID?.uuidString, workspaceID?.uuidString,
+                    conversationID?.uuidString, conversationID?.uuidString
+                ]
+                let superseded = try String.fetchAll(db, sql: """
+                    SELECT id FROM memory_entries
+                    WHERE subject_key = ? AND attribute_key = ? AND id <> ? AND scope = ?
+                      AND (workspace_id IS ? OR origin_workspace_id IS ?)
+                      AND (conversation_id IS ? OR origin_conversation_id IS ?)
+                    """, arguments: arguments)
+                let deletedAt = Self.date(Date())
+                for oldID in superseded {
+                    try db.execute(sql: "DELETE FROM memory_entries WHERE id = ?", arguments: [oldID])
+                    try db.execute(sql: """
+                        INSERT INTO memory_tombstones (memory_id, deleted_at, sync_revision)
+                        VALUES (?, ?, ?) ON CONFLICT(memory_id) DO UPDATE SET
+                            deleted_at=excluded.deleted_at,
+                            sync_revision=MAX(memory_tombstones.sync_revision, excluded.sync_revision)
+                        """, arguments: [oldID, deletedAt, replacementRevision])
+                }
+            }
+            try db.execute(sql: """
+                INSERT INTO memory_entries (
+                    id, scope, workspace_id, conversation_id, status, content, normalized_content,
+                    confidence, importance, is_pinned, source_kind, expires_at,
+                    origin_conversation_id, origin_workspace_id, subject_key, attribute_key,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET status=excluded.status, content=excluded.content,
+                    normalized_content=excluded.normalized_content, confidence=excluded.confidence,
+                    importance=excluded.importance, is_pinned=excluded.is_pinned,
+                    expires_at=excluded.expires_at,
+                    subject_key=excluded.subject_key, attribute_key=excluded.attribute_key,
+                    origin_conversation_id=COALESCE(memory_entries.origin_conversation_id, excluded.origin_conversation_id),
+                    origin_workspace_id=COALESCE(memory_entries.origin_workspace_id, excluded.origin_workspace_id),
+                    updated_at=excluded.updated_at
+                """, arguments: [entry.id.uuidString, scope, workspaceID?.uuidString,
+                    conversationID?.uuidString,
+                    entry.status.rawValue, entry.content, normalized, entry.confidence,
+                    entry.importance, entry.isPinned, entry.sourceKind.rawValue,
+                    entry.expiresAt.map(Self.date), entry.originConversationID?.uuidString,
+                    entry.originWorkspaceID?.uuidString, entry.factIdentity?.subjectKey,
+                    entry.factIdentity?.attributeKey, Self.date(entry.createdAt), Self.date(entry.updatedAt)])
+            try db.execute(sql: "DELETE FROM memory_evidence WHERE memory_id = ?", arguments: [entry.id.uuidString])
+            for reference in evidence {
+                try db.execute(sql: """
+                    INSERT INTO memory_evidence (
+                        id, memory_id, conversation_id, message_id, excerpt_digest, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """, arguments: [reference.id.uuidString, entry.id.uuidString,
+                        entry.originConversationID?.uuidString, reference.messageID.uuidString,
+                        Self.stableDigest(reference.excerpt), Self.date(entry.updatedAt)])
+            }
+        }
+    }
+
+    public func memory(id: UUID) async throws -> MemoryEntry? {
+        try await database.reader { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM memory_entries WHERE id = ?", arguments: [id.uuidString])
+                .map(Self.memory)
+        }
+    }
+
+    public func listMemories(_ request: MemoryListRequest) async throws -> MemoryListPage {
+        guard let offset = Int(request.cursor ?? "0"), offset >= 0 else {
+            throw FloeError.validationFailed("memory.list cursor is invalid")
+        }
+        return try await database.reader { db in
+            var filters: [String] = []
+            var arguments = StatementArguments()
+            if let scope = request.scope {
+                let (scopeName, workspaceID, conversationID) = Self.scope(scope)
+                filters.append("scope = ?")
+                arguments += [scopeName]
+                if let workspaceID {
+                    filters.append("(workspace_id = ? OR origin_workspace_id = ?)")
+                    arguments += [workspaceID.uuidString, workspaceID.uuidString]
+                }
+                if let conversationID {
+                    filters.append("(conversation_id = ? OR origin_conversation_id = ?)")
+                    arguments += [conversationID.uuidString, conversationID.uuidString]
+                }
+            }
+            if let status = request.status {
+                filters.append("status = ?")
+                arguments += [status.rawValue]
+            }
+            if let conversationID = request.originConversationID {
+                filters.append("origin_conversation_id = ?")
+                arguments += [conversationID.uuidString]
+            }
+            if let workspaceID = request.originWorkspaceID {
+                filters.append("origin_workspace_id = ?")
+                arguments += [workspaceID.uuidString]
+            }
+            if let fact = request.factIdentity {
+                filters.append("subject_key = ? AND attribute_key = ?")
+                arguments += [fact.subjectKey, fact.attributeKey]
+            }
+            if let isPinned = request.isPinned {
+                filters.append("is_pinned = ?")
+                arguments += [isPinned]
+            }
+            let whereClause = filters.isEmpty ? "" : "WHERE " + filters.joined(separator: " AND ")
+            arguments += [request.limit + 1, offset]
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT * FROM memory_entries
+                \(whereClause)
+                ORDER BY is_pinned DESC, importance DESC, updated_at DESC, id
+                LIMIT ? OFFSET ?
+                """, arguments: arguments)
+            let hasMore = rows.count > request.limit
+            let entries = try rows.prefix(request.limit).map(Self.memory)
+            return MemoryListPage(
+                entries: entries,
+                nextCursor: hasMore ? String(offset + request.limit) : nil
+            )
+        }
+    }
+
+    public func memories(factIdentity: MemoryFactIdentity, scope: MemoryScope? = nil) async throws -> [MemoryEntry] {
+        try await database.reader { db in
+            var sql = "SELECT * FROM memory_entries WHERE subject_key = ? AND attribute_key = ?"
+            var arguments: StatementArguments = [factIdentity.subjectKey, factIdentity.attributeKey]
+            if let scope {
+                let (scopeName, workspaceID, conversationID) = Self.scope(scope)
+                sql += " AND scope = ? AND (workspace_id IS ? OR origin_workspace_id IS ?)"
+                sql += " AND (conversation_id IS ? OR origin_conversation_id IS ?)"
+                arguments += [scopeName, workspaceID?.uuidString, workspaceID?.uuidString,
+                              conversationID?.uuidString, conversationID?.uuidString]
+            }
+            sql += " ORDER BY updated_at DESC"
+            return try Row.fetchAll(db, sql: sql, arguments: arguments).map(Self.memory)
+        }
+    }
+
+    public func organizationPreview(limit: Int = 10_000) async throws -> MemoryOrganizationProposal {
+        let entries = try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM memory_entries ORDER BY updated_at DESC LIMIT ?
+                """, arguments: [min(10_000, max(1, limit))]).map(Self.memory)
+        }
+        var suggestions: [MemoryOrganizationSuggestion] = []
+        let exactGroups = Dictionary(grouping: entries) {
+            $0.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        for group in exactGroups.values where group.count > 1 {
+            let ordered = group.sorted { $0.updatedAt > $1.updatedAt }
+            suggestions.append(MemoryOrganizationSuggestion(
+                kind: .exactDuplicate,
+                memoryIDs: ordered.map(\.id),
+                preferredMemoryID: ordered.first?.id,
+                reason: FloeL10n.l("runtime.intelligence_store.the_content_is_identical_cross_scope"),
+                canApplyAutomatically: Set(ordered.map(\.scope)).count == 1
+            ))
+        }
+        let factGroups = Dictionary(grouping: entries.filter { $0.factIdentity != nil }) {
+            $0.factIdentity!
+        }
+        for group in factGroups.values where group.count > 1 {
+            let ordered = group.sorted { $0.updatedAt > $1.updatedAt }
+            let staysWithinOneScope = Set(ordered.map(\.scope)).count == 1
+            suggestions.append(MemoryOrganizationSuggestion(
+                kind: .sameFactReplacement,
+                memoryIDs: ordered.map(\.id),
+                preferredMemoryID: ordered.first?.id,
+                reason: staysWithinOneScope
+                    ? FloeL10n.l("runtime.intelligence_store.a_fact_slot_in_the_same")
+                    : FloeL10n.l("runtime.intelligence_store.the_same_fact_slot_has_different"),
+                canApplyAutomatically: staysWithinOneScope
+            ))
+        }
+        for entry in entries where entry.expiresAt.map({ $0 <= Date() }) == true {
+            suggestions.append(MemoryOrganizationSuggestion(
+                kind: .expired, memoryIDs: [entry.id], reason: FloeL10n.l("runtime.intelligence_store.the_memory_has_passed_its_validity"),
+                canApplyAutomatically: false
+            ))
+        }
+        let referencedIDs = Set(suggestions.flatMap(\.memoryIDs))
+        return MemoryOrganizationProposal(
+            scannedCount: entries.count,
+            suggestions: suggestions,
+            entries: entries.filter { referencedIDs.contains($0.id) }
+                .map(MemoryOrganizationEntrySummary.init)
+        )
+    }
+
+    public func applyMaintenanceBatch(_ batch: MemoryMaintenanceBatch) async throws -> MemoryMaintenanceBatchResult {
+        try await database.writer { db in
+            if try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM memory_maintenance_batches WHERE id = ?)", arguments: [batch.id.uuidString]) == true {
+                return MemoryMaintenanceBatchResult(
+                    batchID: batch.id, appliedCount: 0, deletedCount: 0,
+                    replacedCount: 0, wasAlreadyApplied: true
+                )
+            }
+            var addressedIDs = Set<UUID>()
+            for operation in batch.operations {
+                let memoryID: UUID
+                switch operation {
+                case .delete(let id): memoryID = id
+                case .replace(let id, let entry):
+                    guard id == entry.id else {
+                        throw FloeError.validationFailed("Replacement must preserve the memory ID")
+                    }
+                    memoryID = id
+                }
+                guard addressedIDs.insert(memoryID).inserted else {
+                    throw FloeError.validationFailed("A maintenance batch cannot modify the same memory twice")
+                }
+                let exists = try Bool.fetchOne(
+                    db,
+                    sql: "SELECT EXISTS(SELECT 1 FROM memory_entries WHERE id = ?)",
+                    arguments: [memoryID.uuidString]
+                ) ?? false
+                guard exists else {
+                    throw FloeError.validationFailed("Memory \(memoryID.uuidString) no longer exists")
+                }
+            }
+            var deleted = 0
+            var replaced = 0
+            let deletedAt = Self.date(Date())
+            for operation in batch.operations {
+                switch operation {
+                case .delete(let memoryID):
+                    try Self.deleteMemory(memoryID, revision: batch.syncRevision, deletedAt: deletedAt, db: db)
+                    deleted += 1
+                case .replace(let memoryID, let entry):
+                    let normalized = entry.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    guard !normalized.isEmpty, !Self.looksLikeSecret(normalized) else {
+                        throw FloeError.validationFailed("Replacement memory is empty or contains authentication material")
+                    }
+                    try db.execute(sql: """
+                        UPDATE memory_entries SET content = ?, normalized_content = ?, status = ?,
+                            confidence = ?, importance = ?, is_pinned = ?, expires_at = ?,
+                            subject_key = ?, attribute_key = ?, updated_at = ? WHERE id = ?
+                        """, arguments: [entry.content, normalized, entry.status.rawValue,
+                            entry.confidence, entry.importance, entry.isPinned,
+                            entry.expiresAt.map(Self.date), entry.factIdentity?.subjectKey,
+                            entry.factIdentity?.attributeKey, Self.date(entry.updatedAt), memoryID.uuidString])
+                    guard db.changesCount == 1 else {
+                        throw FloeError.validationFailed("Memory \(memoryID.uuidString) no longer exists")
+                    }
+                    replaced += 1
+                }
+            }
+            try db.execute(sql: """
+                INSERT INTO memory_maintenance_batches (
+                    id, operation_count, deleted_count, replaced_count, sync_revision, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [batch.id.uuidString, batch.operations.count, deleted, replaced,
+                    batch.syncRevision, Self.date(Date())])
+            return MemoryMaintenanceBatchResult(
+                batchID: batch.id, appliedCount: batch.operations.count,
+                deletedCount: deleted, replacedCount: replaced
+            )
+        }
+    }
+
+    public func memories(scope: MemoryScope, status: MemoryEntryStatus? = nil) async throws -> [MemoryEntry] {
+        let (scopeName, workspaceID, conversationID) = Self.scope(scope)
+        return try await database.reader { db in
+            var sql = """
+                SELECT * FROM memory_entries
+                WHERE scope = ?
+                  AND (workspace_id IS ? OR origin_workspace_id IS ?)
+                  AND (conversation_id IS ? OR origin_conversation_id IS ?)
+                """
+            var arguments: StatementArguments = [
+                scopeName,
+                workspaceID?.uuidString, workspaceID?.uuidString,
+                conversationID?.uuidString, conversationID?.uuidString
+            ]
+            if let status { sql += " AND status = ?"; arguments += [status.rawValue] }
+            sql += " ORDER BY is_pinned DESC, importance DESC, updated_at DESC"
+            return try Row.fetchAll(db, sql: sql, arguments: arguments).map(Self.memory)
+        }
+    }
+
+    /// Detaches task-scoped memories before the conversation FK cascade while
+    /// retaining their original owner. They remain searchable, then age only
+    /// after their owner has actually been deleted.
+    public func preserveMemoriesBeforeConversationDeletion(
+        conversationID: UUID,
+        ownerLabel: String
+    ) async throws {
+        let now = Self.date(Date())
+        try await database.writer { db in
+            try db.execute(sql: """
+                UPDATE memory_entries SET
+                    origin_conversation_id = COALESCE(origin_conversation_id, conversation_id),
+                    origin_owner_label = COALESCE(origin_owner_label, ?),
+                    owner_deleted_at = COALESCE(owner_deleted_at, ?),
+                    conversation_id = NULL,
+                    retained_until = COALESCE(retained_until, ?)
+                WHERE conversation_id = ?
+                """, arguments: [String(ownerLabel.prefix(120)), now,
+                    Self.date(Date().addingTimeInterval(90 * 86_400)),
+                    conversationID.uuidString])
+        }
+    }
+
+    /// Workspace records have ON DELETE CASCADE in the published schema.
+    /// Detach memory first so deleting a project/private workspace preserves
+    /// ownership history instead of silently erasing durable memory.
+    public func preserveMemoriesBeforeWorkspaceDeletion(
+        workspaceID: UUID,
+        ownerLabel: String
+    ) async throws {
+        let now = Self.date(Date())
+        try await database.writer { db in
+            try db.execute(sql: """
+                UPDATE memory_entries SET
+                    origin_workspace_id = COALESCE(origin_workspace_id, workspace_id),
+                    origin_owner_label = COALESCE(origin_owner_label, ?),
+                    owner_deleted_at = COALESCE(owner_deleted_at, ?),
+                    workspace_id = NULL,
+                    retained_until = COALESCE(retained_until, ?)
+                WHERE workspace_id = ?
+                """, arguments: [String(ownerLabel.prefix(120)), now,
+                    Self.date(Date().addingTimeInterval(90 * 86_400)),
+                    workspaceID.uuidString])
+        }
+    }
+
+    public func recall(
+        query: String,
+        workspaceID: UUID?,
+        conversationID: UUID? = nil,
+        limit: Int = 6
+    ) async throws -> [MemoryRecallItem] {
+        let match = Self.ftsQuery(query)
+        guard !match.isEmpty else { return [] }
+        try await maintainMemoryLifecycle()
+        let recalled: [MemoryRecallItem] = try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT m.*, bm25(memory_fts) AS rank
+                FROM memory_fts JOIN memory_entries m ON m.rowid = memory_fts.rowid
+                WHERE memory_fts MATCH ? AND m.status = 'active'
+                  AND (
+                    m.scope IN ('user', 'agent', 'task')
+                    OR m.workspace_id = ?
+                    OR m.origin_workspace_id = ?
+                  )
+                  AND (m.expires_at IS NULL OR m.expires_at > ?)
+                  AND (
+                    m.owner_deleted_at IS NULL OR m.is_pinned = 1
+                    OR m.retained_until > ?
+                    OR m.owner_deleted_at > ?
+                  )
+                ORDER BY m.is_pinned DESC,
+                    CASE WHEN m.conversation_id = ? THEN 0
+                         WHEN m.owner_deleted_at IS NULL THEN 1 ELSE 2 END,
+                    rank, m.importance DESC LIMIT ?
+                """, arguments: [
+                    match, workspaceID?.uuidString, workspaceID?.uuidString,
+                    Self.date(Date()), Self.date(Date()),
+                    Self.date(Date().addingTimeInterval(-365 * 86_400)),
+                    conversationID?.uuidString, min(20, max(1, limit))
+                ])
+                .compactMap { row -> MemoryRecallItem? in
+                    guard let id = UUID(uuidString: row["id"]) else { return nil }
+                    let rank: Double = row["rank"]
+                    return MemoryRecallItem(id: id, content: row["content"], relevance: 1 / (1 + abs(rank)))
+                }
+        }
+        try await reinforceMemories(recalled.map(\.id))
+        return recalled
+    }
+
+    public func saveEmbedding(_ embedding: MemoryEmbedding) async throws {
+        guard embedding.isValid else {
+            throw FloeError.validationFailed("Embedding must contain finite values with a supported dimension")
+        }
+        guard !embedding.modelIdentifier.isEmpty, !embedding.modelRevision.isEmpty,
+              !embedding.contentDigest.isEmpty else {
+            throw FloeError.validationFailed("Embedding identity and content digest are required")
+        }
+        var values = embedding.values
+        let blob = values.withUnsafeMutableBytes { Data($0) }
+        try await database.writer { db in
+            let exists = try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM memory_entries WHERE id = ?)",
+                arguments: [embedding.memoryID.uuidString]) ?? false
+            guard exists else { throw FloeError.validationFailed("Embedding memory entry does not exist") }
+            try db.execute(sql: """
+                INSERT INTO memory_embeddings (
+                    memory_id, modality, model_identifier, model_revision,
+                    dimensions, vector_blob, content_digest, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(memory_id, modality, model_identifier, model_revision)
+                DO UPDATE SET dimensions=excluded.dimensions,
+                    vector_blob=excluded.vector_blob,
+                    content_digest=excluded.content_digest,
+                    created_at=excluded.created_at
+                """, arguments: [embedding.memoryID.uuidString, embedding.modality.rawValue,
+                    embedding.modelIdentifier, embedding.modelRevision, embedding.values.count,
+                    blob, embedding.contentDigest, Self.date(embedding.createdAt)])
+        }
+    }
+
+    public func embeddingNeedsRefresh(
+        memoryID: UUID,
+        modality: MemoryEmbeddingModality,
+        modelIdentifier: String,
+        modelRevision: String,
+        contentDigest: String
+    ) async throws -> Bool {
+        try await database.reader { db in
+            let stored: String? = try String.fetchOne(db, sql: """
+                SELECT content_digest FROM memory_embeddings
+                WHERE memory_id = ? AND modality = ? AND model_identifier = ?
+                  AND model_revision = ?
+                """, arguments: [memoryID.uuidString, modality.rawValue,
+                    modelIdentifier, modelRevision])
+            return stored != contentDigest
+        }
+    }
+
+    public func hybridRecall(_ request: HybridMemoryRecallRequest) async throws
+        -> [HybridMemoryRecallItem] {
+        try await maintainMemoryLifecycle()
+        let lexicalMatch = Self.ftsQuery(request.query)
+        let lexicalRows: [HybridRecallDatabaseRow]
+        if lexicalMatch.isEmpty {
+            lexicalRows = []
+        } else {
+            lexicalRows = try await database.reader { db in
+                try Row.fetchAll(db, sql: """
+                    SELECT m.id, m.content, m.importance, m.is_pinned, m.updated_at
+                    FROM memory_fts JOIN memory_entries m ON m.rowid = memory_fts.rowid
+                    WHERE memory_fts MATCH ? AND m.status = 'active'
+                      AND (m.scope IN ('user', 'agent', 'task')
+                           OR m.workspace_id = ? OR m.origin_workspace_id = ?)
+                      AND (m.expires_at IS NULL OR m.expires_at > ?)
+                      AND (m.owner_deleted_at IS NULL OR m.is_pinned = 1
+                           OR m.retained_until > ? OR m.owner_deleted_at > ?)
+                    ORDER BY CASE WHEN m.conversation_id = ? THEN 0
+                                  WHEN m.owner_deleted_at IS NULL THEN 1 ELSE 2 END,
+                             bm25(memory_fts), m.is_pinned DESC, m.importance DESC
+                    LIMIT 50
+                    """, arguments: [lexicalMatch, request.workspaceID?.uuidString,
+                        request.workspaceID?.uuidString, Self.date(Date()), Self.date(Date()),
+                        Self.date(Date().addingTimeInterval(-365 * 86_400)),
+                        request.conversationID?.uuidString])
+                    .compactMap(Self.hybridRow)
+            }
+        }
+
+        var semanticRows: [(HybridRecallDatabaseRow, Double)] = []
+        if let queryVector = request.queryEmbedding,
+           !queryVector.isEmpty, queryVector.count <= 4_096,
+           queryVector.allSatisfy(\.isFinite),
+           let modelIdentifier = request.modelIdentifier,
+           let modelRevision = request.modelRevision {
+            let rows: [(HybridRecallDatabaseRow, Data, Int)] = try await database.reader { db in
+                try Row.fetchAll(db, sql: """
+                    SELECT m.id, m.content, m.importance, m.is_pinned, m.updated_at,
+                           e.vector_blob, e.dimensions
+                    FROM memory_embeddings e
+                    JOIN memory_entries m ON m.id = e.memory_id
+                    WHERE e.modality = ? AND e.model_identifier = ?
+                      AND e.model_revision = ? AND e.dimensions = ?
+                      AND m.status = 'active'
+                      AND (m.scope IN ('user', 'agent', 'task')
+                           OR m.workspace_id = ? OR m.origin_workspace_id = ?)
+                      AND (m.expires_at IS NULL OR m.expires_at > ?)
+                      AND (m.owner_deleted_at IS NULL OR m.is_pinned = 1
+                           OR m.retained_until > ? OR m.owner_deleted_at > ?)
+                    LIMIT 2000
+                    """, arguments: [request.modality.rawValue, modelIdentifier, modelRevision,
+                        queryVector.count, request.workspaceID?.uuidString,
+                        request.workspaceID?.uuidString, Self.date(Date()), Self.date(Date()),
+                        Self.date(Date().addingTimeInterval(-365 * 86_400))])
+                    .compactMap { row in
+                        guard let candidate = Self.hybridRow(row) else { return nil }
+                        let blob: Data = row["vector_blob"]
+                        let dimensions: Int = row["dimensions"]
+                        return (candidate, blob, dimensions)
+                    }
+            }
+            semanticRows = rows.compactMap { row, blob, dimensions in
+                guard let values = Self.floatValues(blob, dimensions: dimensions),
+                      let similarity = MemoryVectorMath.cosineSimilarity(queryVector, values),
+                      similarity > 0 else { return nil }
+                return (row, similarity)
+            }.sorted { $0.1 > $1.1 }
+        }
+
+        var fused: [UUID: MemoryReciprocalRankFusion.Candidate] = [:]
+        for (offset, row) in lexicalRows.enumerated() {
+            fused[row.id] = MemoryReciprocalRankFusion.Candidate(id: row.id,
+                content: row.content, lexicalRank: offset + 1, importance: row.importance,
+                isPinned: row.isPinned, updatedAt: row.updatedAt)
+        }
+        for (offset, pair) in semanticRows.enumerated() {
+            let (row, similarity) = pair
+            var candidate = fused[row.id] ?? MemoryReciprocalRankFusion.Candidate(id: row.id,
+                content: row.content, importance: row.importance, isPinned: row.isPinned,
+                updatedAt: row.updatedAt)
+            candidate.semanticRank = offset + 1
+            candidate.semanticSimilarity = similarity
+            fused[row.id] = candidate
+        }
+        let results = MemoryReciprocalRankFusion.fuse(Array(fused.values), limit: request.limit)
+        try await reinforceMemories(results.map(\.id))
+        return results
+    }
+
+    /// Recall temporarily strengthens orphaned memories. Active task and
+    /// workspace memories are intentionally unlimited and never enter this
+    /// aging path; only memories whose owner was deleted are compacted.
+    private func reinforceMemories(_ ids: [UUID]) async throws {
+        guard !ids.isEmpty else { return }
+        let now = Date()
+        let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+        var mutableArguments = StatementArguments([
+            Self.date(now), Self.date(now.addingTimeInterval(90 * 86_400))
+        ])
+        for id in ids {
+            mutableArguments += [id.uuidString]
+        }
+        let arguments = mutableArguments
+        try await database.writer { db in
+            try db.execute(sql: """
+                UPDATE memory_entries SET
+                    last_recalled_at = ?, retained_until = ?,
+                    recall_count = recall_count + 1,
+                    importance = MIN(1.0, importance + 0.05)
+                WHERE id IN (\(placeholders))
+                """, arguments: arguments)
+        }
+    }
+
+    /// Forgetting curve for deleted owners: vectors are released after 180
+    /// days without reinforcement, and unpinned memories become search-only
+    /// superseded records after one year. Text is retained for audit and can
+    /// still be restored manually instead of being destructively erased.
+    public func maintainMemoryLifecycle(now: Date = Date()) async throws {
+        let vectorCutoff = Self.date(now.addingTimeInterval(-180 * 86_400))
+        let archiveCutoff = Self.date(now.addingTimeInterval(-365 * 86_400))
+        let nowText = Self.date(now)
+        try await database.writer { db in
+            try db.execute(sql: """
+                DELETE FROM memory_embeddings
+                WHERE memory_id IN (
+                    SELECT id FROM memory_entries
+                    WHERE owner_deleted_at IS NOT NULL AND is_pinned = 0
+                      AND owner_deleted_at < ?
+                      AND (retained_until IS NULL OR retained_until < ?)
+                )
+                """, arguments: [vectorCutoff, nowText])
+            try db.execute(sql: """
+                UPDATE memory_entries SET status = 'superseded'
+                WHERE owner_deleted_at IS NOT NULL AND is_pinned = 0
+                  AND owner_deleted_at < ?
+                  AND (retained_until IS NULL OR retained_until < ?)
+                  AND status = 'active'
+                """, arguments: [archiveCutoff, nowText])
+        }
+    }
+
+    public func deleteMemory(id: UUID, syncRevision: Int64) async throws {
+        try await deleteMemories(ids: [id], syncRevision: syncRevision)
+    }
+
+    public func deleteMemories(ids: Set<UUID>, syncRevision: Int64) async throws {
+        guard !ids.isEmpty else { return }
+        let deletedAt = Self.date(Date())
+        try await database.writer { db in
+            for id in ids {
+                try Self.deleteMemory(id, revision: syncRevision, deletedAt: deletedAt, db: db)
+            }
+        }
+    }
+
+    private static func deleteMemory(
+        _ id: UUID,
+        revision: Int64,
+        deletedAt: String,
+        db: Database
+    ) throws {
+        try db.execute(sql: "DELETE FROM memory_entries WHERE id = ?", arguments: [id.uuidString])
+        try db.execute(sql: """
+            INSERT INTO memory_tombstones (memory_id, deleted_at, sync_revision)
+            VALUES (?, ?, ?) ON CONFLICT(memory_id) DO UPDATE SET
+            deleted_at=CASE
+                WHEN excluded.sync_revision >= memory_tombstones.sync_revision THEN excluded.deleted_at
+                ELSE memory_tombstones.deleted_at
+            END,
+            sync_revision=MAX(memory_tombstones.sync_revision, excluded.sync_revision)
+            """, arguments: [id.uuidString, deletedAt, revision])
+    }
+
+    /// UI library search: one hit per conversation, with literal CJK/substring matching.
+    /// Does not share the agent's paged message-result limit or expose non-searchable tasks.
+    public func matchingConversationSnippets(_ query: String) async throws -> [UUID: String] {
+        let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return [:] }
+        let escaped = value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_")
+        return try await database.reader { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT m.conversation_id,
+                    substr(m.content, max(1, instr(lower(m.content), lower(?)) - 45), 180) AS excerpt
+                FROM messages m JOIN conversations c ON c.id=m.conversation_id
+                WHERE c.is_searchable=1 AND c.purpose='ordinary' AND m.content LIKE ? ESCAPE '\\'
+                GROUP BY m.conversation_id
+                """, arguments: [value, "%\(escaped)%"])
+            var matches: [UUID: String] = [:]
+            for row in rows {
+                if let id = UUID(uuidString: row["conversation_id"]) { matches[id] = row["excerpt"] }
+            }
+            return matches
+        }
+    }
+
+    public func search(_ request: ConversationSearchRequest) async throws -> [ConversationSearchHit] {
+        let match = Self.ftsQuery(request.query)
+        let trimmed = request.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !match.isEmpty || !trimmed.isEmpty else { return [] }
+        return try await database.reader { db in
+            // bm25()/snippet() are FTS5 auxiliary functions that are only valid
+            // while the FTS cursor is producing the row. Evaluating them in the
+            // ORDER BY of an aggregating (GROUP BY) query runs after that cursor
+            // context is gone and raises "unable to use function bm25 in the
+            // requested context". They live in the inner query instead; the
+            // `LIMIT -1` blocks SQLite subquery flattening, which would pull
+            // them back into the aggregate and re-trigger the same error.
+            var hits: [ConversationSearchHit] = []
+            if !match.isEmpty {
+                var innerFilters = ["message_fts MATCH ?"]
+                var arguments: StatementArguments = [match]
+                if let start = request.startDate { innerFilters.append("m.created_at >= ?"); arguments += [Self.date(start)] }
+                if let end = request.endDate { innerFilters.append("m.created_at <= ?"); arguments += [Self.date(end)] }
+                var outerFilters = ["c.is_searchable = 1", "c.purpose = 'ordinary'"]
+                if let workspaceID = request.workspaceID {
+                    outerFilters.append("wc.workspace_id = ?"); arguments += [workspaceID.uuidString]
+                }
+                arguments += [request.limit]
+                let rows = try Row.fetchAll(db, sql: """
+                    SELECT f.message_id, f.conversation_id, f.created_at,
+                           c.title, MIN(wc.workspace_id) AS workspace_id,
+                           f.snippet, MIN(f.rank) AS best_rank
+                    FROM (
+                        SELECT m.id AS message_id, m.conversation_id, m.created_at,
+                               bm25(message_fts) AS rank,
+                               snippet(message_fts, 0, '[', ']', '…', 24) AS snippet
+                        FROM message_fts
+                        JOIN messages m ON m.rowid = message_fts.rowid
+                        WHERE \(innerFilters.joined(separator: " AND "))
+                        LIMIT -1
+                    ) f
+                    JOIN conversations c ON c.id = f.conversation_id
+                    LEFT JOIN conversation_workspace_ownership wc ON wc.conversation_id = c.id
+                    WHERE \(outerFilters.joined(separator: " AND "))
+                    GROUP BY f.message_id
+                    ORDER BY best_rank, f.created_at DESC LIMIT ?
+                    """, arguments: arguments)
+                hits = rows.compactMap(Self.searchHit)
+            }
+            // unicode61 tokenizes a CJK run as one token, so a Chinese
+            // substring that is not a whole token can never MATCH. Titles are
+            // not in the FTS table at all. Fill the remaining allowance with
+            // literal, case-insensitive substring matches (content first,
+            // then titles), one per conversation the FTS pass did not hit.
+            if hits.count < request.limit, !trimmed.isEmpty {
+                let excluded = Set(hits.map(\.conversationID))
+                hits.append(contentsOf: try Self.substringHits(
+                    db: db,
+                    request: request,
+                    query: trimmed,
+                    excluding: excluded
+                ))
+            }
+            return Array(hits.prefix(request.limit))
+        }
+    }
+
+    /// Agent discovery listing: recent searchable ordinary tasks, newest
+    /// activity first. Separate from FTS so a query-free "what was I working
+    /// on" never depends on tokenizer behavior.
+    public func list(_ request: ConversationListRequest) async throws -> [ConversationListEntry] {
+        try await database.reader { db in
+            var filters = ["c.is_searchable = 1", "c.purpose = 'ordinary'"]
+            var arguments: StatementArguments = []
+            if let workspaceID = request.workspaceID {
+                filters.append("wc.workspace_id = ?"); arguments += [workspaceID.uuidString]
+            }
+            arguments += [request.limit]
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT c.id AS conversation_id, c.title, c.updated_at,
+                       MIN(wc.workspace_id) AS workspace_id
+                FROM conversations c
+                LEFT JOIN conversation_workspace_ownership wc ON wc.conversation_id = c.id
+                WHERE \(filters.joined(separator: " AND "))
+                GROUP BY c.id
+                ORDER BY c.updated_at DESC LIMIT ?
+                """, arguments: arguments)
+            return rows.compactMap { row -> ConversationListEntry? in
+                guard let id = UUID(uuidString: row["conversation_id"]) else { return nil }
+                return ConversationListEntry(
+                    conversationID: id,
+                    workspaceID: (row["workspace_id"] as String?).flatMap(UUID.init(uuidString:)),
+                    title: row["title"],
+                    updatedAt: Self.parseDate(row["updated_at"])
+                )
+            }
+        }
+    }
+
+    public func read(_ request: ConversationPageRequest) async throws -> ConversationHistoryPage {
+        let keysetCursor = try request.cursor.flatMap(Self.decodeTimelineCursor)
+        let legacyOffset: Int?
+        if let raw = request.cursor, !raw.hasPrefix("k1.") {
+            guard let value = Int(raw), value >= 0 else {
+                throw FloeError.validationFailed("conversation.read cursor is invalid")
+            }
+            legacyOffset = value
+        } else {
+            legacyOffset = nil
+        }
+        return try await database.reader { db in
+            guard try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ? AND purpose = 'ordinary')",
+                arguments: [request.conversationID.uuidString]
+            ) == true else {
+                throw FloeError.validationFailed("The requested task is unavailable to conversation history tools")
+            }
+            let timeline = """
+                WITH timeline AS (
+                    SELECT m.id AS item_id, m.run_id AS run_id, 'message' AS item_kind,
+                           m.role AS role, m.content AS content, m.created_at AS created_at,
+                           NULL AS sequence, -1 AS sort_sequence
+                    FROM messages m
+                    WHERE m.conversation_id = ?
+                    UNION ALL
+                    SELECT e.id AS item_id, e.run_id AS run_id, e.kind AS item_kind,
+                           NULL AS role, e.payload_json AS content, e.created_at AS created_at,
+                           e.sequence AS sequence, e.sequence AS sort_sequence
+                    FROM run_events e
+                    JOIN runs r ON r.id = e.run_id
+                    WHERE r.conversation_id = ?
+                )
+                """
+            let rows: [Row]
+            if let cursor = keysetCursor {
+                if cursor.contentOffset > 0, request.byteBudget != nil {
+                    // Intra-item continuation: include the cursor's own row so
+                    // its unread content remainder starts this page.
+                    rows = try Row.fetchAll(db, sql: timeline + """
+                        SELECT item_id, run_id, item_kind, role, content, created_at,
+                               sequence, sort_sequence
+                        FROM timeline
+                        WHERE created_at > ?
+                           OR (created_at = ? AND sort_sequence > ?)
+                           OR (created_at = ? AND sort_sequence = ? AND item_id >= ?)
+                        ORDER BY created_at, sort_sequence, item_id
+                        LIMIT ?
+                        """, arguments: [
+                            request.conversationID.uuidString,
+                            request.conversationID.uuidString,
+                            cursor.createdAt,
+                            cursor.createdAt, cursor.sequence,
+                            cursor.createdAt, cursor.sequence, cursor.itemID,
+                            request.limit + 1
+                        ])
+                } else {
+                    rows = try Row.fetchAll(db, sql: timeline + """
+                        SELECT item_id, run_id, item_kind, role, content, created_at,
+                               sequence, sort_sequence
+                        FROM timeline
+                        WHERE created_at > ?
+                           OR (created_at = ? AND sort_sequence > ?)
+                           OR (created_at = ? AND sort_sequence = ? AND item_id > ?)
+                        ORDER BY created_at, sort_sequence, item_id
+                        LIMIT ?
+                        """, arguments: [
+                            request.conversationID.uuidString,
+                            request.conversationID.uuidString,
+                            cursor.createdAt,
+                            cursor.createdAt, cursor.sequence,
+                            cursor.createdAt, cursor.sequence, cursor.itemID,
+                            request.limit + 1
+                        ])
+                }
+            } else {
+                rows = try Row.fetchAll(db, sql: timeline + """
+                    SELECT item_id, run_id, item_kind, role, content, created_at,
+                           sequence, sort_sequence
+                    FROM timeline
+                    ORDER BY created_at, sort_sequence, item_id
+                    LIMIT ? OFFSET ?
+                    """, arguments: [
+                        request.conversationID.uuidString,
+                        request.conversationID.uuidString,
+                        request.limit + 1,
+                        legacyOffset ?? 0
+                    ])
+            }
+            let hasExtraRow = rows.count > request.limit
+            let selectedRows = Array(rows.prefix(request.limit))
+            var items = try selectedRows.map(Self.historyItem)
+            var nextCursor: String?
+            if let byteBudget = request.byteBudget {
+                // Budget-true page walk: the cursor is generated from the last
+                // RETURNED row (whole item) or inside it (prefix segment), so
+                // the next page resumes at the first undelivered byte instead
+                // of skipping everything the budget dropped.
+                let resumeOffset: Int = {
+                    guard let cursor = keysetCursor, cursor.contentOffset > 0,
+                          let first: String = selectedRows.first?["item_id"],
+                          first == cursor.itemID else { return 0 }
+                    return cursor.contentOffset
+                }()
+                let page = ConversationEnvelope.paginate(
+                    items: items,
+                    startContentByteOffset: resumeOffset,
+                    limit: request.limit,
+                    byteBudget: byteBudget,
+                    hasMoreBeyond: hasExtraRow
+                )
+                items = page.delivered
+                switch page.continuation {
+                case .none:
+                    nextCursor = nil
+                case .afterDeliveredItems:
+                    if let last = selectedRows.prefix(page.delivered.count).last {
+                        nextCursor = try Self.encodeTimelineCursor(ConversationTimelineCursor(
+                            createdAt: last["created_at"],
+                            sequence: last["sort_sequence"],
+                            itemID: last["item_id"]
+                        ))
+                    }
+                case .insideDeliveredItem(let byteOffset):
+                    if let last = selectedRows.prefix(page.delivered.count).last {
+                        nextCursor = try Self.encodeTimelineCursor(ConversationTimelineCursor(
+                            createdAt: last["created_at"],
+                            sequence: last["sort_sequence"],
+                            itemID: last["item_id"],
+                            contentOffset: byteOffset
+                        ))
+                    }
+                }
+            } else {
+                nextCursor = if hasExtraRow, let last = selectedRows.last {
+                    try Self.encodeTimelineCursor(ConversationTimelineCursor(
+                        createdAt: last["created_at"],
+                        sequence: last["sort_sequence"],
+                        itemID: last["item_id"]
+                    ))
+                } else { nil }
+            }
+            return ConversationHistoryPage(
+                conversationID: request.conversationID,
+                items: items,
+                nextCursor: nextCursor
+            )
+        }
+    }
+
+    private static func encodeTimelineCursor(
+        _ cursor: ConversationTimelineCursor
+    ) throws -> String {
+        let data = try JSONEncoder().encode(cursor)
+        return "k1." + data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func decodeTimelineCursor(
+        _ raw: String
+    ) throws -> ConversationTimelineCursor? {
+        guard raw.hasPrefix("k1.") else { return nil }
+        var encoded = String(raw.dropFirst(3))
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        encoded += String(repeating: "=", count: (4 - encoded.count % 4) % 4)
+        guard let data = Data(base64Encoded: encoded),
+              let cursor = try? JSONDecoder().decode(
+                  ConversationTimelineCursor.self, from: data
+              ), !cursor.createdAt.isEmpty, !cursor.itemID.isEmpty else {
+            throw FloeError.validationFailed("conversation.read cursor is invalid")
+        }
+        return cursor
+    }
+
+    public func readMessages(ids: [UUID]) async throws -> [ConversationHistoryMessage] {
+        guard !ids.isEmpty else { return [] }
+        return try await database.reader { db in
+            try ids.compactMap { id in
+                try Row.fetchOne(db, sql: "SELECT id, role, content, created_at FROM messages WHERE id = ?", arguments: [id.uuidString])
+            }.map(Self.historyMessage)
+        }
+    }
+
+    private static func json<T: Encodable>(_ value: T) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(value), as: UTF8.self)
+    }
+
+    private static func decode<T: Decodable>(_ type: T.Type, _ value: String) throws -> T {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(type, from: Data(value.utf8))
+    }
+
+    private static func plan(_ row: Row) throws -> PlanDraft {
+        guard let id = UUID(uuidString: row["id"]), let conversationID = UUID(uuidString: row["conversation_id"]),
+              let status = PlanStatus(rawValue: row["status"]) else { throw FloeError.storageCorrupted("Invalid plan row") }
+        return try PlanDraft(id: id, conversationID: conversationID,
+            workspaceID: (row["workspace_id"] as String?).flatMap(UUID.init(uuidString:)), revision: row["revision"],
+            status: status, title: row["title"], summary: row["summary"],
+            sections: Self.decode([PlanSection].self, row["sections_json"]),
+            assumptions: Self.decode([PlanAssumption].self, row["assumptions_json"]),
+            risks: Self.decode([PlanRisk].self, row["risks_json"]),
+            acceptanceCriteria: Self.decode([PlanCriterion].self, row["criteria_json"]),
+            sourceMessageIDs: Self.decode([UUID].self, row["source_message_ids_json"]),
+            sourceReferences: Self.decode([PlanSourceReference].self, row["source_conversation_refs_json"]),
+            executionRecommendation: (row["execution_recommendation"] as String?)
+                .flatMap(PlanExecutionRecommendation.init(rawValue:)),
+            recommendationReason: row["recommendation_reason"],
+            digest: row["digest"], createdAt: Self.parseDate(row["created_at"]), updatedAt: Self.parseDate(row["updated_at"]))
+    }
+
+    private static func goal(_ row: Row) throws -> ConversationGoal {
+        guard let id = UUID(uuidString: row["id"]), let conversationID = UUID(uuidString: row["conversation_id"]),
+              let status = GoalStatus(rawValue: row["status"]) else { throw FloeError.storageCorrupted("Invalid goal row") }
+        return try ConversationGoal(id: id, conversationID: conversationID,
+            sourcePlanID: (row["source_plan_id"] as String?).flatMap(UUID.init(uuidString:)), sourcePlanDigest: row["source_plan_digest"],
+            objective: row["objective"],
+            blockingConditions: Self.decode([String].self, row["blocking_conditions_json"]),
+            stoppingConditions: Self.decode([String].self, row["stopping_conditions_json"]),
+            revision: row["revision"],
+            acceptanceCriteria: Self.decode([GoalCriterion].self, row["criteria_json"]),
+            steps: Self.decode([GoalStep].self, row["steps_json"]), evidence: Self.decode([GoalEvidence].self, row["evidence_json"]),
+            status: status, budgets: Self.decode(GoalBudgets.self, row["budgets_json"]), progress: Self.decode(GoalProgress.self, row["progress_json"]),
+            createdAt: Self.parseDate(row["created_at"]), updatedAt: Self.parseDate(row["updated_at"]))
+    }
+
+    private static func memory(_ row: Row) throws -> MemoryEntry {
+        guard let id = UUID(uuidString: row["id"]), let status = MemoryEntryStatus(rawValue: row["status"]),
+              let source = MemoryCandidateOrigin(rawValue: row["source_kind"]) else { throw FloeError.storageCorrupted("Invalid memory row") }
+        let scopeName: String = row["scope"]
+        let workspace: String? = row["workspace_id"]
+        let conversation: String? = row["conversation_id"]
+        let originWorkspace: String? = row["origin_workspace_id"]
+        let originConversation: String? = row["origin_conversation_id"]
+        let scope: MemoryScope
+        if scopeName == "workspace", let owner = workspace ?? originWorkspace,
+           let id = UUID(uuidString: owner) {
+            scope = .workspace(id)
+        } else if scopeName == "task", let owner = conversation ?? originConversation,
+                  let id = UUID(uuidString: owner) {
+            scope = .task(id)
+        } else {
+            scope = scopeName == "user" ? .userProfile : .agentGlobal
+        }
+        let expires: String? = row["expires_at"]
+        let subjectKey: String? = row["subject_key"]
+        let attributeKey: String? = row["attribute_key"]
+        let factIdentity = subjectKey.flatMap { subject in
+            attributeKey.map { MemoryFactIdentity(subjectKey: subject, attributeKey: $0) }
+        }
+        return MemoryEntry(id: id, scope: scope, status: status, content: row["content"], confidence: row["confidence"],
+            importance: row["importance"], isPinned: row["is_pinned"], sourceKind: source,
+            originConversationID: originConversation.flatMap(UUID.init(uuidString:)),
+            originWorkspaceID: originWorkspace.flatMap(UUID.init(uuidString:)),
+            factIdentity: factIdentity,
+            expiresAt: expires.map(Self.parseDate), createdAt: Self.parseDate(row["created_at"]), updatedAt: Self.parseDate(row["updated_at"]))
+    }
+
+    private static func scope(_ scope: MemoryScope) -> (String, UUID?, UUID?) {
+        switch scope {
+        case .userProfile: ("user", nil, nil)
+        case .agentGlobal: ("agent", nil, nil)
+        case .workspace(let id): ("workspace", id, nil)
+        case .task(let id): ("task", nil, id)
+        }
+    }
+
+    private static func searchHit(_ row: Row) -> ConversationSearchHit? {
+        guard let conversationID = UUID(uuidString: row["conversation_id"]), let messageID = UUID(uuidString: row["message_id"]) else { return nil }
+        return ConversationSearchHit(conversationID: conversationID, messageID: messageID,
+            workspaceID: (row["workspace_id"] as String?).flatMap(UUID.init(uuidString:)), conversationTitle: row["title"],
+            snippet: row["snippet"], createdAt: parseDate(row["created_at"]))
+    }
+
+    private static func historyMessage(_ row: Row) throws -> ConversationHistoryMessage {
+        guard let id = UUID(uuidString: row["id"]) else { throw FloeError.storageCorrupted("Invalid message row") }
+        return ConversationHistoryMessage(id: id, role: row["role"], content: row["content"], createdAt: parseDate(row["created_at"]))
+    }
+
+    private static func historyItem(_ row: Row) throws -> ConversationHistoryItem {
+        guard let id = UUID(uuidString: row["item_id"]),
+              let kind = ConversationHistoryItemKind(rawValue: row["item_kind"])
+        else { throw FloeError.storageCorrupted("Invalid conversation history item") }
+        return ConversationHistoryItem(
+            id: id,
+            runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:)),
+            kind: kind,
+            role: row["role"],
+            content: row["content"],
+            createdAt: parseDate(row["created_at"]),
+            sequence: row["sequence"]
+        )
+    }
+
+    private static func hybridRow(_ row: Row) -> HybridRecallDatabaseRow? {
+        guard let id = UUID(uuidString: row["id"]) else { return nil }
+        return HybridRecallDatabaseRow(id: id, content: row["content"],
+            importance: row["importance"], isPinned: row["is_pinned"],
+            updatedAt: parseDate(row["updated_at"]))
+    }
+
+    private static func floatValues(_ data: Data, dimensions: Int) -> [Float]? {
+        guard dimensions > 0, dimensions <= 4_096,
+              data.count == dimensions * MemoryLayout<Float>.stride else { return nil }
+        return data.withUnsafeBytes { bytes in
+            Array(bytes.bindMemory(to: Float.self))
+        }
+    }
+
+    private static func ftsQuery(_ value: String) -> String {
+        value.split(whereSeparator: \.isWhitespace).prefix(16)
+            .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }.joined(separator: " AND ")
+    }
+
+    /// Literal substring fallback for CJK and title matching. Each query
+    /// carries exactly one aggregate (MAX created_at) so SQLite's bare-column
+    /// rule pins the message id and snippet to the latest in-range row per
+    /// conversation. Workspace ids are bulk-loaded afterwards to keep that
+    /// rule intact. Same visibility, date and workspace filters as the FTS
+    /// pass; conversations already returned by FTS are excluded in SQL so
+    /// they cannot consume the LIMIT.
+    private static func substringHits(
+        db: Database,
+        request: ConversationSearchRequest,
+        query: String,
+        excluding: Set<UUID>
+    ) throws -> [ConversationSearchHit] {
+        let escaped = query.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+        let like = "%\(escaped)%"
+        let excludedIDs = excluding.map(\.uuidString).sorted()
+        let exclusionClause = excludedIDs.isEmpty
+            ? ""
+            : " AND c.id NOT IN (\(excludedIDs.map { _ in "?" }.joined(separator: ",")))"
+        let workspaceClause = request.workspaceID == nil
+            ? ""
+            : " AND EXISTS(SELECT 1 FROM conversation_workspace_ownership wc WHERE wc.conversation_id = c.id AND wc.workspace_id = ?)"
+
+        // Content matches: latest in-range matching message per conversation.
+        // instr() needs the raw query; LIKE needs the escaped %pattern%.
+        var contentSQL = """
+            SELECT m.id AS message_id, m.conversation_id, MAX(m.created_at) AS created_at,
+                   c.title,
+                   substr(m.content, max(1, instr(lower(m.content), lower(?)) - 45), 180) AS snippet
+            FROM messages m
+            JOIN conversations c ON c.id = m.conversation_id
+            WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'
+              AND m.content LIKE ? ESCAPE '\\'
+            """
+        var contentArguments: StatementArguments = [query, like]
+        if let workspaceID = request.workspaceID {
+            contentSQL += workspaceClause
+            contentArguments += [workspaceID.uuidString]
+        }
+        if let start = request.startDate {
+            contentSQL += " AND m.created_at >= ?"
+            contentArguments += [Self.date(start)]
+        }
+        if let end = request.endDate {
+            contentSQL += " AND m.created_at <= ?"
+            contentArguments += [Self.date(end)]
+        }
+        contentSQL += exclusionClause
+        contentArguments += StatementArguments(excludedIDs)
+        contentSQL += " GROUP BY m.conversation_id ORDER BY created_at DESC LIMIT ?"
+        contentArguments += [request.limit]
+
+        struct Partial {
+            var conversationID: UUID
+            var messageID: UUID
+            var title: String
+            var snippet: String
+            var createdAt: Date
+        }
+        var partials: [Partial] = []
+        var seen = excluding
+        for row in try Row.fetchAll(db, sql: contentSQL, arguments: contentArguments) {
+            guard let conversationID = UUID(uuidString: row["conversation_id"]),
+                  let messageID = UUID(uuidString: row["message_id"]),
+                  seen.insert(conversationID).inserted else { continue }
+            partials.append(Partial(
+                conversationID: conversationID,
+                messageID: messageID,
+                title: row["title"],
+                snippet: row["snippet"],
+                createdAt: parseDate(row["created_at"])
+            ))
+        }
+
+        // Title-only matches, anchored to the latest in-range message.
+        if partials.count < request.limit {
+            var titleSQL = """
+                SELECT c.id AS conversation_id, c.title, c.updated_at,
+                       MAX(m.created_at) AS message_created_at, m.id AS message_id
+                FROM conversations c
+                JOIN messages m ON m.conversation_id = c.id
+                WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'
+                  AND c.title LIKE ? ESCAPE '\\'
+                """
+            var titleArguments: StatementArguments = [like]
+            if let workspaceID = request.workspaceID {
+                titleSQL += workspaceClause
+                titleArguments += [workspaceID.uuidString]
+            }
+            if let start = request.startDate {
+                titleSQL += " AND m.created_at >= ?"
+                titleArguments += [Self.date(start)]
+            }
+            if let end = request.endDate {
+                titleSQL += " AND m.created_at <= ?"
+                titleArguments += [Self.date(end)]
+            }
+            titleSQL += exclusionClause
+            titleArguments += StatementArguments(excludedIDs)
+            titleSQL += " GROUP BY c.id ORDER BY c.updated_at DESC LIMIT ?"
+            titleArguments += [request.limit]
+            for row in try Row.fetchAll(db, sql: titleSQL, arguments: titleArguments) {
+                guard let conversationID = UUID(uuidString: row["conversation_id"]),
+                      let messageID = UUID(uuidString: row["message_id"]),
+                      seen.insert(conversationID).inserted else { continue }
+                let title: String = row["title"]
+                let createdAt: String = row["message_created_at"] ?? row["updated_at"]
+                partials.append(Partial(
+                    conversationID: conversationID,
+                    messageID: messageID,
+                    title: title,
+                    snippet: "[title match] \(title)",
+                    createdAt: parseDate(createdAt)
+                ))
+                if partials.count >= request.limit { break }
+            }
+        }
+
+        let workspaces = try Self.workspaceIDs(db: db, conversationIDs: partials.map(\.conversationID))
+        return partials.prefix(request.limit).map {
+            ConversationSearchHit(
+                conversationID: $0.conversationID,
+                messageID: $0.messageID,
+                workspaceID: workspaces[$0.conversationID],
+                conversationTitle: $0.title,
+                snippet: $0.snippet,
+                createdAt: $0.createdAt
+            )
+        }
+    }
+
+    private static func workspaceIDs(db: Database, conversationIDs: [UUID]) throws -> [UUID: UUID] {
+        guard !conversationIDs.isEmpty else { return [:] }
+        let ids = conversationIDs.map(\.uuidString)
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT conversation_id, MIN(workspace_id) AS workspace_id
+            FROM conversation_workspace_ownership
+            WHERE conversation_id IN (\(ids.map { _ in "?" }.joined(separator: ",")))
+            GROUP BY conversation_id
+            """, arguments: StatementArguments(ids))
+        var output: [UUID: UUID] = [:]
+        for row in rows {
+            guard let conversationID = UUID(uuidString: row["conversation_id"]),
+                  let workspace: String = row["workspace_id"],
+                  let workspaceID = UUID(uuidString: workspace) else { continue }
+            output[conversationID] = workspaceID
+        }
+        return output
+    }
+
+    private static func date(_ value: Date) -> String { ISO8601DateFormatter().string(from: value) }
+    private static func parseDate(_ value: String) -> Date {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) ?? .distantPast
+    }
+    private static func looksLikeSecret(_ value: String) -> Bool {
+        [
+            "api_key=", "apikey=", "authorization: bearer", "-----begin private key",
+            "password:", "password=", "access_token", "refresh_token"
+        ].contains { value.contains($0) }
+    }
+    private static func stableDigest(_ value: String) -> String {
+        // Evidence text itself is intentionally not persisted here. This is
+        // a stable non-secret identifier; cryptographic package digests live
+        // in FloeSkills/FloeSecurity.
+        String(value.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { ($0 ^ UInt64($1)) &* 1_099_511_628_211 }, radix: 16)
+    }
+}
+
+private struct HybridRecallDatabaseRow: Sendable {
+    var id: UUID
+    var content: String
+    var importance: Double
+    var isPinned: Bool
+    var updatedAt: Date
+}
+
+// =====================================================================
+// ANDROID MIRROR ADDITIONS (goal-core code batch, job-7efd60bb51d14f02,
+// 2026-10-21). Everything ABOVE this marker is byte-identical to the
+// frozen upstream
+// FloeAgent/Sources/FloeAgentRuntime/IntelligenceStore.swift
+// (upstream SHA-256 at mirror time:
+// ce8febbfc7ea31c8d6d769ceb172ee42aaadd79a219ec0c4660491282acca1b5).
+// This file was converted from a per-file symlink to a regular reviewed
+// mirror so the C1 atomic launch commit (plan.accept accepted-plan +
+// optional goal, structured goalDefinition, and the manual
+// conversation.compact durable commit) can run its ORIGINAL statements
+// inside the SAME single writer transaction as the run/message/launch
+// insert. The original actor methods above are UNTOUCHED: every existing
+// caller keeps the exact original semantics, one DatabaseManager, schema
+// v46, no new table. The twins below reproduce the original SQL verbatim
+// (same columns, same codec helpers `Self.json`/`Self.date`, same
+// conflict/CAS behaviour) against a caller-provided `Database` handle.
+// All types in this section are new and additive.
+// =====================================================================
+
+/// Closed machine refusal vocabulary for the in-transaction atomic
+/// intelligence commits. Never path, SQL, payload text or secret material;
+/// the run domain maps these into the EXISTING typed error namespace.
+public enum IntelligenceAtomicCommitRefusal: String, Error, Sendable, Equatable {
+    case planMissing            // no latest plan row in the writer
+    case planStale              // latest != the exact revision the human saw
+    case planNotReady           // status/isDecisionComplete no longer prove
+    case planRevisionTaken      // (id, revision) append-only conflict
+    case goalIdentityTaken      // goal INSERT collided with an existing row
+    case compactionHistoryChanged  // durable messages moved during the summary
+    case compactionRunActive       // a live-state launch holds this conversation
+    case compactionRunMissing      // the compaction record FK has no home
+    case compactionSummaryTooLarge
+}
+
+extension SQLiteIntelligenceStore {
+    // MARK: In-transaction reads (same statements, writer side)
+
+    /// Latest plan for the conversation INSIDE the caller's transaction
+    /// (identical SQL to `latestPlan(conversationID:)` above).
+    public nonisolated static func latestPlanInTransaction(conversationID: UUID, db: Database) throws -> PlanDraft? {
+        guard let row = try Row.fetchOne(db, sql: """
+            SELECT * FROM plan_drafts WHERE conversation_id = ?
+            ORDER BY revision DESC LIMIT 1
+            """, arguments: [conversationID.uuidString]) else { return nil }
+        return try Self.plan(row)
+    }
+
+    // MARK: In-transaction writes (statement twins of the actor methods)
+
+    /// The exact `savePlanRevision` INSERT (plain append keyed by
+    /// (id, revision): a duplicate revision throws on conflict — the
+    /// natural CAS the original documents).
+    public nonisolated static func commitPlanRevisionInTransaction(_ plan: PlanDraft, db: Database) throws {
+        let sections = try Self.json(plan.sections)
+        let assumptions = try Self.json(plan.assumptions)
+        let risks = try Self.json(plan.risks)
+        let criteria = try Self.json(plan.acceptanceCriteria)
+        let messages = try Self.json(plan.sourceMessageIDs)
+        let references = try Self.json(plan.sourceReferences)
+        do {
+            try db.execute(sql: """
+                INSERT INTO plan_drafts (
+                    id, conversation_id, workspace_id, revision, status, title, summary,
+                    sections_json, assumptions_json, risks_json, criteria_json,
+                    source_message_ids_json, source_conversation_refs_json, digest,
+                    execution_recommendation, recommendation_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    plan.id.uuidString, plan.conversationID.uuidString, plan.workspaceID?.uuidString,
+                    plan.revision, plan.status.rawValue, plan.title, plan.summary, sections,
+                    assumptions, risks, criteria, messages, references, plan.digest,
+                    plan.executionRecommendation?.rawValue, plan.recommendationReason,
+                    Self.date(plan.createdAt), Self.date(plan.updatedAt)
+                ])
+        } catch {
+            throw IntelligenceAtomicCommitRefusal.planRevisionTaken
+        }
+    }
+
+    /// The exact `saveGoal` statement set (goal row + criteria + steps).
+    /// Fresh identities INSERT; a colliding identity is refused instead of
+    /// silently overwriting an existing row through the original upsert
+    /// (creation sites must never mutate a durable goal they did not mint).
+    public nonisolated static func commitGoalInTransaction(_ goal: ConversationGoal, db: Database) throws {
+        let existing = try Row.fetchOne(db,
+            sql: "SELECT id FROM conversation_goals WHERE id = ?",
+            arguments: [goal.id.uuidString])
+        guard existing == nil else {
+            throw IntelligenceAtomicCommitRefusal.goalIdentityTaken
+        }
+        let criteria = try Self.json(goal.acceptanceCriteria)
+        let steps = try Self.json(goal.steps)
+        let evidence = try Self.json(goal.evidence)
+        let budgets = try Self.json(goal.budgets)
+        let progress = try Self.json(goal.progress)
+        let blockingConditions = try Self.json(goal.blockingConditions ?? [])
+        let stoppingConditions = try Self.json(goal.stoppingConditions ?? [])
+        try db.execute(sql: """
+            INSERT INTO conversation_goals (
+                id, conversation_id, source_plan_id, source_plan_digest, objective,
+                status, criteria_json, steps_json, evidence_json, budgets_json,
+                progress_json, blocking_fingerprint, consecutive_blocked_cycles,
+                blocking_conditions_json, stopping_conditions_json, revision,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                objective=excluded.objective, status=excluded.status,
+                criteria_json=excluded.criteria_json, steps_json=excluded.steps_json,
+                evidence_json=excluded.evidence_json, budgets_json=excluded.budgets_json,
+                progress_json=excluded.progress_json,
+                blocking_fingerprint=excluded.blocking_fingerprint,
+                consecutive_blocked_cycles=excluded.consecutive_blocked_cycles,
+                blocking_conditions_json=excluded.blocking_conditions_json,
+                stopping_conditions_json=excluded.stopping_conditions_json,
+                revision=excluded.revision,
+                updated_at=excluded.updated_at
+            """, arguments: [
+                goal.id.uuidString, goal.conversationID.uuidString, goal.sourcePlanID?.uuidString,
+                goal.sourcePlanDigest, goal.objective, goal.status.rawValue, criteria, steps,
+                evidence, budgets, progress, goal.progress.repeatedBlockerKey,
+                goal.progress.repeatedBlockerCount, blockingConditions, stoppingConditions,
+                goal.revision ?? 1, Self.date(goal.createdAt), Self.date(goal.updatedAt)
+            ])
+        try db.execute(sql: "DELETE FROM goal_criteria WHERE goal_id = ?", arguments: [goal.id.uuidString])
+        for (index, criterion) in goal.acceptanceCriteria.enumerated() {
+            try db.execute(sql: """
+                INSERT INTO goal_criteria (id, goal_id, criterion_index, text, status, evidence_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [criterion.id.uuidString, goal.id.uuidString, index,
+                    criterion.text, criterion.isSatisfied ? "satisfied" : "pending",
+                    try Self.json(criterion.evidenceIDs), Self.date(goal.updatedAt)])
+        }
+        try db.execute(sql: "DELETE FROM goal_steps WHERE goal_id = ?", arguments: [goal.id.uuidString])
+        for (index, step) in goal.steps.enumerated() {
+            try db.execute(sql: """
+                INSERT INTO goal_steps (id, goal_id, step_index, title, detail, status, evidence_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [step.id.uuidString, goal.id.uuidString, index, step.title,
+                    step.detail, step.status.rawValue, try Self.json(step.evidenceIDs), Self.date(goal.updatedAt)])
+        }
+    }
+
+    // MARK: Manual compaction in-transaction commit
+
+    /// Deterministic ordered fingerprint over the conversation's durable
+    /// message timeline: every (id, role, content) row in insertion order.
+    /// The manual compaction lane snapshots this BEFORE the (possibly
+    /// networked) summarizer call and re-proves it INSIDE the writer
+    /// transaction together with the launch quiescence assertion, closing
+    /// the history-write and run.prepare windows the original guard chain
+    /// only proves at the actor boundary.
+    public nonisolated static func messageTimelineFingerprint(conversationID: UUID, db: Database) throws -> String {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, role, content FROM messages
+            WHERE conversation_id = ?
+            ORDER BY created_at, rowid
+            """, arguments: [conversationID.uuidString])
+        var material = "floe.compaction-timeline.v1\n"
+        for row in rows {
+            let idText: String = row["id"]
+            let role: String = row["role"]
+            let content: String = row["content"]
+            material += idText + "\u{1F}" + role + "\u{1F}" + content + "\u{1E}\n"
+        }
+        return FloeDigest.sha256Hex(Data(material.utf8))
+    }
+
+    /// States whose durable row means a LIVE launch owns this conversation.
+    /// Deliberately EXCLUDES `interrupted` (a parked dead-generation marker
+    /// with no live producer — the original lane tolerated it) and every
+    /// terminal state. Closed vocabulary; the run domain asserts the same
+    /// set in memory.
+    nonisolated public static let liveLaunchStates: [String] = [
+        "preparing", "streamingModel", "waitingApproval", "executingTool",
+        "compacting", "paused", "verifying", "cancelling",
+    ]
+
+    /// The exact `saveCompaction` INSERT, admitted only after the SAME
+    /// transaction proves: (a) the anchor run exists and belongs to the
+    /// conversation, (b) no live-state launch holds the conversation, and
+    /// (c) the durable message timeline is unchanged since the summary was
+    /// computed. Any failed assertion throws
+    /// `IntelligenceAtomicCommitRefusal` and rolls the WHOLE writer
+    /// transaction back — a stale or raced summary never persists, and no
+    /// partial record survives. No network is possible inside this
+    /// transaction (the summarizer already completed).
+    public nonisolated static func commitManualCompactionInTransaction(
+        runID: UUID,
+        conversationID: UUID,
+        record: ContextCompactionRecord,
+        summary: String,
+        expectedTimelineFingerprint: String,
+        db: Database
+    ) throws {
+        guard summary.utf8.count <= 131_072 else {
+            throw IntelligenceAtomicCommitRefusal.compactionSummaryTooLarge
+        }
+        let anchorRunID: String? = try String.fetchOne(db, sql: """
+            SELECT id FROM runs WHERE id = ? AND conversation_id = ?
+            """, arguments: [runID.uuidString, conversationID.uuidString])
+        guard anchorRunID != nil else {
+            throw IntelligenceAtomicCommitRefusal.compactionRunMissing
+        }
+        let placeholders = liveLaunchStates.map { _ in "?" }.joined(separator: ", ")
+        let live = try Bool.fetchOne(db, sql: """
+            SELECT EXISTS(SELECT 1 FROM runs WHERE conversation_id = ?
+                          AND state IN (\(placeholders)))
+            """, arguments: StatementArguments([conversationID.uuidString] + liveLaunchStates)) == true
+        guard !live else {
+            throw IntelligenceAtomicCommitRefusal.compactionRunActive
+        }
+        let current = try Self.messageTimelineFingerprint(conversationID: conversationID, db: db)
+        guard current == expectedTimelineFingerprint else {
+            throw IntelligenceAtomicCommitRefusal.compactionHistoryChanged
+        }
+        try db.execute(sql: """
+            INSERT INTO context_compactions (
+                id, run_id, source_message_ids_json, boundary_start_id,
+                boundary_end_id, summary, source_digest, input_tokens,
+                output_tokens, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [
+                record.id.uuidString,
+                runID.uuidString,
+                try Self.json(record.sourceMessageIDs),
+                record.sourceMessageIDs.first?.uuidString,
+                record.sourceMessageIDs.last?.uuidString,
+                summary,
+                record.sourceDigest,
+                record.beforeEstimatedTokens,
+                record.afterEstimatedTokens,
+                Self.date(record.createdAt)
+            ])
+    }
+
+    // MARK: Actor surface for the pre-transaction snapshots the run domain
+    // reads through the ORIGINAL store (no direct DatabaseManager access
+    // leaves this file; these are async actor methods over the SAME
+    // DatabaseManager).
+
+    /// Timeline fingerprint for the manual compaction pre-snapshot (reader
+    /// side; the writer transaction re-proves it).
+    public func messageTimelineFingerprint(conversationID: UUID) async throws -> String {
+        try await database.reader { db in
+            try Self.messageTimelineFingerprint(conversationID: conversationID, db: db)
+        }
+    }
+
+    /// In-transaction launch commit for a structured goalDefinition:
+    /// commits the goal identity row set only while the SAME writer
+    /// transaction commits run + user message + launch. The caller mints
+    /// the goal identity before the first await; a colliding identity
+    /// refuses (never overwrites), which the launch rolls back whole.
+    public nonisolated static func commitStructuredGoalAtLaunch(
+        _ goal: ConversationGoal, db: Database
+    ) throws {
+        // The goal must not already be durable: this INSERT belongs to a
+        // NEW launch; replayed identities prove via the conflict, not via
+        // the process-local maps.
+        try commitGoalInTransaction(goal, db: db)
+    }
+}
+
+// MARK: Manual compaction actor entry point (goal-core batch; appended by
+// the same reviewed mirror note above — purely additive).
+
+extension SQLiteIntelligenceStore {
+    /// The durable manual-compaction commit through the ONE serialized
+    /// writer: identical INSERT to `saveCompaction` above, additionally
+    /// proven IN THE TRANSACTION by the caller's timeline fingerprint, the
+    /// anchor-run ownership and the no-live-launch assertion (see
+    /// `commitManualCompactionInTransaction`). This is the only entry point
+    /// the manual compaction lane uses; a raced writer rolls back whole with
+    /// a closed typed refusal and no partial record survives. No network is
+    /// possible inside this transaction (the summarizer call completed at
+    /// the actor boundary beforehand, exactly like the original step order).
+    public func commitManualCompaction(
+        runID: UUID,
+        conversationID: UUID,
+        record: ContextCompactionRecord,
+        summary: String,
+        expectedTimelineFingerprint: String
+    ) async throws {
+        try await database.writer { db in
+            try Self.commitManualCompactionInTransaction(
+                runID: runID,
+                conversationID: conversationID,
+                record: record,
+                summary: summary,
+                expectedTimelineFingerprint: expectedTimelineFingerprint,
+                db: db)
+        }
+    }
+}
+
+// MARK: Post-run activation-proven goal commit (goal-core stop/late-callback
+// batch, 2026-10-21; purely additive, same mirror note as above).
+
+extension SQLiteIntelligenceStore {
+    /// The original C1/status-event consistency seam; identity is derived
+    /// only from user starts and trusted resume markers, never the clock.
+    public func conversationActivationIdentity(conversationID: UUID) async throws -> String? {
+        try await database.reader { db in
+            try RunActivationIdentity.current(db: db, conversationID: conversationID)
+        }
+    }
+
+    public func frozenRunActivationIdentity(runID: UUID, conversationID: UUID) async throws -> String? {
+        try await database.reader { db in
+            try RunActivationIdentity.frozen(db: db, runID: runID, conversationID: conversationID)
+        }
+    }
+
+    /// Original goal revision CAS plus the exact committed activation
+    /// proof in ONE writer transaction. No timestamp is an identity.
+    public func saveGoalIfCurrent(
+        _ goal: ConversationGoal,
+        expectedRevision: Int,
+        conversationID: UUID,
+        expectedActivationIdentity: String
+    ) async throws -> Bool {
+        let criteria = try Self.json(goal.acceptanceCriteria)
+        let steps = try Self.json(goal.steps)
+        let evidence = try Self.json(goal.evidence)
+        let budgets = try Self.json(goal.budgets)
+        let progress = try Self.json(goal.progress)
+        let blockingConditions = try Self.json(goal.blockingConditions ?? [])
+        let stoppingConditions = try Self.json(goal.stoppingConditions ?? [])
+        return try await database.writer { db in
+            guard try RunActivationIdentity.current(db: db, conversationID: conversationID)
+                == expectedActivationIdentity else { return false }
+            try db.execute(sql: """
+                UPDATE conversation_goals SET
+                    source_plan_id = ?, source_plan_digest = ?, objective = ?,
+                    status = ?, criteria_json = ?, steps_json = ?, evidence_json = ?,
+                    budgets_json = ?, progress_json = ?, blocking_fingerprint = ?,
+                    consecutive_blocked_cycles = ?, blocking_conditions_json = ?,
+                    stopping_conditions_json = ?, revision = ?, updated_at = ?
+                WHERE id = ? AND revision = ?
+                """, arguments: [
+                    goal.sourcePlanID?.uuidString, goal.sourcePlanDigest, goal.objective,
+                    goal.status.rawValue, criteria, steps, evidence, budgets, progress,
+                    goal.progress.repeatedBlockerKey, goal.progress.repeatedBlockerCount,
+                    blockingConditions, stoppingConditions, expectedRevision + 1,
+                    Self.date(goal.updatedAt), goal.id.uuidString, expectedRevision
+                ])
+            guard db.changesCount == 1 else { return false }
+            try db.execute(
+                sql: "DELETE FROM goal_criteria WHERE goal_id = ?",
+                arguments: [goal.id.uuidString]
+            )
+            for (index, criterion) in goal.acceptanceCriteria.enumerated() {
+                try db.execute(sql: """
+                    INSERT INTO goal_criteria (id, goal_id, criterion_index, text, status, evidence_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [
+                        criterion.id.uuidString, goal.id.uuidString, index,
+                        criterion.text, criterion.isSatisfied ? "satisfied" : "pending",
+                        try Self.json(criterion.evidenceIDs), Self.date(goal.updatedAt)
+                    ])
+            }
+            try db.execute(
+                sql: "DELETE FROM goal_steps WHERE goal_id = ?",
+                arguments: [goal.id.uuidString]
+            )
+            for (index, step) in goal.steps.enumerated() {
+                try db.execute(sql: """
+                    INSERT INTO goal_steps (id, goal_id, step_index, title, detail, status, evidence_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [step.id.uuidString, goal.id.uuidString, index, step.title,
+                        step.detail, step.status.rawValue, try Self.json(step.evidenceIDs),
+                        Self.date(goal.updatedAt)
+                    ])
+            }
+            return true
+        }
+    }
+}

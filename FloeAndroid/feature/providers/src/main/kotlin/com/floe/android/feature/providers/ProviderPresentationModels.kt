@@ -325,6 +325,18 @@ data class PromptOfferUi(
  *    wire id, never a saved id);
  *  - [remoteModelID]: the wire identifier.
  */
+/** Immutable model facts carried with this exact draft row. Pricing and
+ * surface JSON come from the canonical saved projection; model edits record
+ * reviewed capability bits using the original policy. No execution authority. */
+data class ModelSavedMetadataUi(
+    val pricingJSON: String? = null,
+    val useSurfacesJSON: String? = null,
+    val explicitCapabilitiesJSON: String? = null,
+    val explicitCapabilitiesRaw: Int? = null,
+    val capabilitiesRaw: Int? = null,
+    val reasoningEffortRaw: String? = null,
+)
+
 data class ModelDraftRowUi(
     val draftModelId: String,
     val savedModelId: String?,
@@ -346,6 +358,7 @@ data class ModelDraftRowUi(
     val selectedForSave: Boolean = false,
     /** Media descriptor facts (image/video roles), host-projected rows. */
     val mediaFacts: List<LabelledFactUi> = emptyList(),
+    val savedMetadata: ModelSavedMetadataUi? = null,
 )
 
 /** Read-only "label: value" row (media capability summary). */

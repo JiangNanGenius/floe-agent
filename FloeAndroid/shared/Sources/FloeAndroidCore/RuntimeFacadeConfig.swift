@@ -305,6 +305,39 @@ public actor ModelConfigurationFacade {
         await ownership.activeOperationCount()
     }
 
+    /// Bounded ADDITIVE OUTPUT projection (Main decision
+    /// MAIN_CONFIG_READ_PAGING_DECISION_20261021): one page document
+    /// `{"rows":[…],"nextCursor":"<index>|null","hasMore":bool}` built from
+    /// the ORIGINAL `ConfigPageComposer` result. The cursor representation,
+    /// ownership and non-advancing behaviour are the composer's (decimal item
+    /// index into the read snapshot); command names, envelope, scopes,
+    /// budgets and row DTOs are unchanged. Carriers pass OBJECT pages through
+    /// untouched, and older readers keep consuming the unchanged `rows` key.
+    private static func projectPage(_ composed: ConfigPageComposer.Composed) throws -> Data {
+        let rows = (try? JSONSerialization.jsonObject(with: composed.data)) ?? [Any]()
+        var object: [String: Any] = ["rows": rows, "hasMore": composed.hasMore]
+        object["nextCursor"] = composed.nextCursor as Any
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    /// Parses the closed OPTIONAL continuation member of the three config
+    /// read payloads. Exact format only: a decimal item index (the composer's
+    /// own representation). Absent = first page; malformed/foreign/
+    /// negative-coerced values refuse typed and NEVER fall back to page 1.
+    nonisolated static func pageCursor(from payload: [String: Any]?) throws -> Int? {
+        guard let raw = payload?["cursor"] else { return nil }
+        guard let string = raw as? String else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "cursorFormat")
+        }
+        guard !string.isEmpty, string.count <= 9,
+              string.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+              !(string.count > 1 && string.hasPrefix("0")),
+              let value = Int(string), value >= 0 else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "cursorFormat")
+        }
+        return value
+    }
+
     // MARK: - config.providers.list
 
     /// Read binding EXACTLY `ModelConfigurationStore.providers()` (contract
@@ -318,10 +351,24 @@ public actor ModelConfigurationFacade {
         } catch {
             throw ConfigDomainError(code: .persistenceUnavailable, reason: "providersQuery")
         }
-        let objects = providers.map { $0.configSummary().jsonObject() }
-        return try ConfigPageComposer.compose(objects,
-                                              cursor: cursor,
-                                              itemBudget: ConfigPageBudget.maximumPageItemsBytes).data
+        // The persisted catalog preset identity lives in the ORIGINAL preset
+        // sidecar (written by the original save from the frozen request's
+        // profile.presetID). ONE bounded read, joined by provider id against
+        // live rows, so the projection carries the REAL persisted mapping —
+        // never a guess from the first model/role.
+        let presetIDs: [UUID: String]
+        do {
+            presetIDs = try await presetSidecar.presetIDsByProvider()
+        } catch {
+            throw ConfigDomainError(code: .persistenceUnavailable,
+                                    reason: "presetJoinFailed")
+        }
+        let objects = providers.map {
+            $0.configSummary(presetID: presetIDs[$0.id]).jsonObject()
+        }
+        return try Self.projectPage(ConfigPageComposer.compose(objects,
+                                                               cursor: cursor,
+                                                               itemBudget: ConfigPageBudget.maximumPageItemsBytes))
     }
 
     // MARK: - config.models.list
@@ -332,7 +379,23 @@ public actor ModelConfigurationFacade {
     /// snapshot hash (id/displayName/remoteModelID stay distinct; remote
     /// network calls elsewhere use remoteModelID only — the ORIGINAL
     /// adapters already do this, e.g. ModelDiscovery request paths).
-    public func listModels(providerID: UUID? = nil, cursor: Int? = nil) async throws -> Data {
+    ///
+    /// ADDITIVE OPT-IN (job-7d4d4e41017f4391, gap
+    /// MAIN_MODEL_SINGLE_ROW_READ_BUDGET_GAP_20261021.json): a closed
+    /// `modelRead` member (parsed/whitelisted at the actual binding
+    /// boundary) additionally lets ONE legally-saved oversized original row
+    /// — the exact row the legacy composer refuses with `itemDoesNotFitPage`
+    /// — stream as deterministic, byte-exact chunks of its canonical page
+    /// bytes on this SAME command. `modelRead == nil` (every legacy call)
+    /// keeps the byte-identical legacy behavior including that refusal;
+    /// normal opted-in pages that contain no oversized row are IDENTICAL
+    /// pages. No payload/page/frame budget is raised, no second store or
+    /// registry exists, and full pricing precision / useSurfaces /
+    /// nil-or-zero capabilities / reasoning / unknown fields / the native
+    /// CAS revision survive byte-exactly inside the carrier.
+    public func listModels(providerID: UUID? = nil,
+                           cursor: Int? = nil,
+                           modelRead: ConfigModelReadRequest? = nil) async throws -> Data {
         let models: [ModelProfile]
         do {
             models = try await store.models(providerID: providerID)
@@ -347,9 +410,118 @@ public actor ModelConfigurationFacade {
                                   "version": try ConfigModelSnapshot.digest(model)]
             objects.append(object)
         }
-        return try ConfigPageComposer.compose(objects,
-                                              cursor: cursor,
-                                              itemBudget: ConfigPageBudget.maximumPageItemsBytes).data
+        switch modelRead {
+        case .continuation(let modelID, let digest, let offset):
+            // Continuation rides the SAME provider filter and the SAME
+            // row-index payload cursor (existing semantics; the GLOBAL
+            // envelope cursor is not reinterpreted).
+            guard let index = cursor else {
+                throw ConfigDomainError(code: .invalidEnvelope,
+                                        reason: "modelReadCursorRequired")
+            }
+            return try Self.modelReadDetailPage(objects: objects,
+                                                index: index,
+                                                providerID: providerID,
+                                                offset: offset,
+                                                identity: (modelID, digest))
+        case .begin:
+            // The chunk path fires ONLY under the exact legacy throw
+            // condition: the first unreturned row ALONE exceeds the page
+            // item budget. Everything else composes the unchanged page.
+            let start = cursor ?? 0
+            if start >= 0, start < objects.count,
+               let canonical = ConfigJSON.canonicalData(objects[start]),
+               canonical.count + 2 > ConfigPageBudget.maximumPageItemsBytes {
+                return try Self.modelReadDetailPage(objects: objects,
+                                                    index: start,
+                                                    providerID: providerID,
+                                                    offset: 0,
+                                                    identity: nil)
+            }
+        case nil:
+            break
+        }
+        return try Self.projectPage(ConfigPageComposer.compose(objects,
+                                                               cursor: cursor,
+                                                               itemBudget: ConfigPageBudget.maximumPageItemsBytes))
+    }
+
+    // MARK: config.models.list full-row detail chunk page
+
+    /// Builds ONE deterministic chunk page for the original row at `index`.
+    /// The store was just re-read through the ORIGINAL binding, so the
+    /// carrier bytes are the CURRENT canonical page bytes for that row;
+    /// the optional `identity` (id + opaque read digest supplied by an
+    /// upgraded reader) must match BEFORE any chunk text is produced.
+    /// A changed/deleted/reordered row is a typed `staleRevision` refusal
+    /// — never a mixed snapshot, never a silent effect.
+    private static func modelReadDetailPage(objects: [[String: Any]],
+                                            index: Int,
+                                            providerID: UUID?,
+                                            offset: Int,
+                                            identity: (modelID: UUID,
+                                                        digest: String)?) throws -> Data {
+        guard index >= 0, index < objects.count else {
+            throw ConfigDomainError(code: .staleRevision, reason: "modelReadRowMissing")
+        }
+        let object = objects[index]
+        guard let rowID = object["id"] as? String,
+              UUID(uuidString: rowID) != nil else {
+            throw ConfigDomainError(code: .persistenceUnavailable, reason: "modelReadRowShape")
+        }
+        if let identity {
+            guard UUID(uuidString: rowID) == identity.modelID else {
+                throw ConfigDomainError(code: .staleRevision, reason: "modelReadRowIdentity")
+            }
+        }
+        if let providerID {
+            guard let rowProvider = object["providerID"] as? String,
+                  UUID(uuidString: rowProvider) == providerID else {
+                throw ConfigDomainError(code: .staleRevision, reason: "modelReadRowProvider")
+            }
+        }
+        let detail = try ConfigModelRowReader.detail(of: object)
+        if let identity {
+            // Same-read consistency (the digest protects consistency, not
+            // permission): the CURRENT canonical bytes must hash equal to
+            // the digest the reader is continuing under.
+            guard detail.readDigest == identity.digest else {
+                throw ConfigDomainError(code: .staleRevision, reason: "modelReadRowChanged")
+            }
+            try ConfigModelRowReader.validateChainOffset(detail, rowID: rowID, offset: offset)
+        } else {
+            guard offset == 0 else {
+                throw ConfigDomainError(code: .invalidEnvelope,
+                                        reason: "modelReadOffsetRequiresIdentity")
+            }
+        }
+        let chunk = try ConfigModelRowReader.chunk(detail, rowID: rowID, at: offset)
+        guard let markerData = ConfigJSON.canonicalData(
+            chunk.marker(rowID: rowID, digest: detail.readDigest)) else {
+            throw ConfigDomainError(code: .persistenceUnavailable,
+                                    reason: "modelReadMarkerEncode")
+        }
+        var body = Data()
+        body.append(0x5B) // "["
+        body.append(markerData)
+        body.append(0x5D) // "]"
+        precondition(body.count <= ConfigPageBudget.maximumPageItemsBytes,
+                     "model-read chunk exceeded the existing page item budget")
+        let nextCursor: String?
+        let hasMore: Bool
+        if chunk.next != nil {
+            // Truthful logical row cursor: the numeric continuation to the
+            // NEXT row advances ONLY after this row is fully reconstructed.
+            nextCursor = String(index)
+            hasMore = true
+        } else {
+            let advance = index + 1
+            nextCursor = advance < objects.count ? String(advance) : nil
+            hasMore = advance < objects.count
+        }
+        return try Self.projectPage(ConfigPageComposer.Composed(data: body,
+                                                                nextCursor: nextCursor,
+                                                                hasMore: hasMore))
     }
 
     // MARK: - config.provider.save (Set/Keep/Clear)
@@ -397,6 +569,24 @@ public actor ModelConfigurationFacade {
                                   envelopeRevision: ConfigRevision?) async -> ProviderSaveExecution {
         await saveExecutor.saveClear(candidateJSON: candidateJSON,
                                      envelopeRevision: envelopeRevision)
+    }
+
+    /// Compact existing-row KEEP metadata variant of the SAME command
+    /// (Main MAIN_PROVIDER_COMPACT_METADATA_DECISION_20261021): flips ONLY
+    /// the persisted provider row's enabled flag under the SAME per-provider
+    /// save ownership + Root-owned lease + durable writer CAS. It never
+    /// serializes/rewrites model rows, never performs a secret read or
+    /// write, and never touches the preset sidecar, preferences or the
+    /// cleanup ledger. The reply carries the ACTUAL committed advanced
+    /// revision; a pending physical reconciliation is rejected, not bypassed.
+    public func saveProviderMetadataEnabled(providerID: UUID,
+                                            isEnabled: Bool,
+                                            envelopeRevision: ConfigRevision?) async
+        -> ProviderSaveExecution
+    {
+        await saveExecutor.saveMetadataEnabled(providerID: providerID,
+                                               isEnabled: isEnabled,
+                                               envelopeRevision: envelopeRevision)
     }
 
     // MARK: - config.provider.delete
@@ -752,6 +942,115 @@ public actor ModelConfigurationFacade {
         }
     }
 
+    // MARK: - Trusted-host DRAFT probe/discovery (no persisted provider)
+
+    /// Probe/discover an UNSAVED or CHANGED editor draft through the
+    /// ORIGINAL provider adapter — the required parity behavior from
+    /// MAIN_CONFIG_DRAFT_PROBE_PARITY_DECISION (never auto-save, never a
+    /// shadow provider, never testing the old stored profile about a changed
+    /// draft).
+    ///
+    /// Inputs are the EXACT closed `ProviderSaveCandidate` the editor would
+    /// commit (frozen from RAM at the human editor action by the App's own
+    /// save-candidate builder, so protocol/auth/model mapping can never
+    /// diverge from a real save) plus the bounded ephemeral credential typed
+    /// in that same editor session. The candidate is mapped through the SAME
+    /// ORIGINAL `ProviderSaveDraft.makeRequest()` builder used by the save
+    /// chain, then dispatched through the SAME `dispatchProbe` gate
+    /// (transport admission → original adapter testConnection/listModels →
+    /// redacted typed errors). Nothing is persisted: no provider/model row,
+    /// no vault intent, no credential-store write, no preset sidecar.
+    ///
+    /// Single-flight shares the SAME per-provider probe set as the saved
+    /// probe, so a draft probe and a saved probe for one provider can never
+    /// race. Cancellation is caller-driven (the host seam owns the Task) and
+    /// a cancelled dispatch settles as the typed cancellation, never a fake
+    /// success.
+    public func probeDraftCandidate(_ candidateJSON: Data,
+                                    secret: Data?) async throws -> ConfigProbeOutcome {
+        guard !candidateJSON.isEmpty else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "emptyCandidate")
+        }
+        guard candidateJSON.count <= SecretSaveIntentLimits.maximumIntentJSONBytes else {
+            throw ConfigDomainError(code: .payloadTooLarge, reason: "candidateTooLarge")
+        }
+        let parsed: ProviderSaveCandidate
+        do {
+            parsed = try ProviderSaveCandidate.parse(ConfigJSON.object(from: candidateJSON))
+        } catch let error as ConfigDomainError {
+            throw error
+        } catch {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "candidateParse")
+        }
+        // A staged large-profile draft candidate BORROWS the same frozen
+        // immutable set: provider/epoch/route/seal/digest are re-checked
+        // exactly like a save, but the probe never consumes the stage and
+        // never reaches any DB/secret effect (probe is read-only; the CAS
+        // axes only bind an actual save later). Malformed/stale/foreign/
+        // unsealed/tampered refs refuse BEFORE any dispatch.
+        let candidate: ProviderSaveCandidate
+        do {
+            if let models = try ProviderModelSetConsumer.resolveIfReferenced(
+                parsed,
+                context: .init(providerID: parsed.providerID,
+                               createIntent: parsed.createIntent,
+                               baseRevision: nil,
+                               isDraftProbe: true)) {
+                candidate = parsed.withResolvedModels(models)
+            } else {
+                candidate = parsed
+            }
+        } catch let error as ConfigDomainError {
+            throw error
+        }
+        guard !probesInFlight.contains(candidate.providerID) else {
+            throw ConfigDomainError(code: .duplicateInFlight, reason: "probeInFlight")
+        }
+        probesInFlight.insert(candidate.providerID)
+        defer { probesInFlight.remove(candidate.providerID) }
+
+        var entered = ""
+        if let secret, !secret.isEmpty {
+            guard secret.count <= SecretSaveIntentLimits.maximumSecretBytes else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "secretTooLarge")
+            }
+            guard let text = String(data: secret, encoding: .utf8),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "secretNotBoundedText")
+            }
+            entered = text
+        }
+        // No persisted row participates: the draft's own connection fields are
+        // the probe target (existingSecretRef stays nil so no stored key can
+        // silently stand in for the entered/absent draft key).
+        let draft = candidate.makeDraft(existingRow: nil,
+                                        enteredAPIKey: entered,
+                                        dropExistingSecret: true)
+        let request: ProviderSaveRequest
+        switch draft.makeRequest() {
+        case .success(let value):
+            request = value
+        case .failure(let report):
+            let issue = report.issues.first.map { String(describing: $0.problem) } ?? "unknown"
+            throw ConfigDomainError(code: .invalidEnvelope,
+                                    reason: "draftValidation.\(issue)")
+        }
+        let profile = request.profile
+        let credentials: ProviderCredentials
+        if profile.secretRef != nil {
+            credentials = ProviderCredentials(apiKey: entered)
+        } else if ProviderConfigurationValidation.ProviderConnectionIdentity
+            .authStyle(for: profile.kind) == "none" {
+            // Same rule as the saved probe: an explicit supported no-auth
+            // style is the ONLY anonymous path.
+            credentials = ProviderCredentials(apiKey: nil)
+        } else {
+            throw ConfigDomainError(code: .credentialUnavailable,
+                                    reason: "secretMissing")
+        }
+        return try await dispatchProbe(profile: profile, credentials: credentials)
+    }
+
     // MARK: - config.catalog.search
 
     /// Bounded search over the injected, decoder-validated catalog with the
@@ -788,7 +1087,7 @@ public actor ModelConfigurationFacade {
         let composed = try ConfigPageComposer.compose(objects,
                                                       cursor: cursor,
                                                       itemBudget: ConfigPageBudget.maximumPageItemsBytes)
-        return composed.data
+        return try Self.projectPage(composed)
     }
 
     /// Accepts the closed filter wire strings from the ORIGINAL enum

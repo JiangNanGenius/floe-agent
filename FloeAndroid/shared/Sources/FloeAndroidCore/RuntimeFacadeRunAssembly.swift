@@ -386,7 +386,7 @@ extension FacadeRunDomain {
         // stays the ACTUAL resolved truth: G02 resolves NO Linux guest, so it
         // is false; the ORIGINAL runtime child-binding guard still runs from
         // the bound id (AgentRuntime.swift:3336-3351).
-        let configuration = Self.runtimeConfiguration(
+        var configuration = Self.runtimeConfiguration(
             conversationID: conversationID,
             provider: launch.provider,
             model: launch.model,
@@ -395,6 +395,13 @@ extension FacadeRunDomain {
             toolsEnabled: toolsEnabled,
             temporary: temporary,
             environmentID: environmentID)
+        if !temporary, let checklist = bundle.taskChecklist {
+            // Same original provider used by iOS. Temporary runs never
+            // receive a durable checklist or inherit one from the owner.
+            configuration.planChecklistProvider = {
+                try? await checklist.latest(conversationID: conversationID)
+            }
+        }
         // The ORIGINAL executor over the run-scoped registry; availability
         // and descriptor authority stay the registry's truth.
         let executor = CatalogToolExecutor(runners: components.registry)

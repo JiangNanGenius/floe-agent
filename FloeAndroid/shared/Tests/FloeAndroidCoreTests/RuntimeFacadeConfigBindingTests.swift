@@ -99,7 +99,9 @@ final class RuntimeFacadeConfigBindingTests: XCTestCase {
                                            envelope: [:])
         let object = try decode(response)
         XCTAssertEqual(object["state"] as? String, "completed")
-        let value = try XCTUnwrap(object["value"] as? [[String: Any]])
+        // Authorized page projection: {"rows":[…],nextCursor,hasMore}.
+        let pageObject = try XCTUnwrap(object["value"] as? [String: Any])
+        let value = try XCTUnwrap(pageObject["rows"] as? [[String: Any]])
         XCTAssertEqual(value.count, 1)
         let text = String(decoding: response, as: UTF8.self)
         XCTAssertFalse(text.contains("provider.11111111"),

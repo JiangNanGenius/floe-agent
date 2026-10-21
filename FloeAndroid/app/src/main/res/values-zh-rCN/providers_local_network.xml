@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="providers_local_network_denied">未获准访问本地网络。允许访问后，请重试。</string>
+    <string name="providers_local_network_settings">请在系统设置中允许访问本地网络，然后重试。</string>
+</resources>

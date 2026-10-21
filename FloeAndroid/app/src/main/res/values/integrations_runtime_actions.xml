@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  G02 Integrations runtime actions (Skills/MCP + folder staging + Android 17
+  local-network guidance). Bilingual user-facing copy for the host-owned
+  surfaces of the integrations domain: tool-source readiness rows, genuine
+  SAF folder-staging outcomes, paging honesty and the local-network
+  permission status. Internal wire names, opaque handles and typed native
+  codes stay in diagnostics and are never rendered as ordinary labels.
+-->
+<resources>
+    <!-- Paging honesty -->
+    <string name="integrations_paging_truncated">Some entries exceed the display limit. Pull to refresh.</string>
+
+    <!-- Tool sources (capability.tools.list projection, S12) -->
+    <string name="integrations_source_native_tools">Built-in tools</string>
+    <string name="integrations_source_mcp">MCP tools</string>
+    <string name="integrations_source_ready_count">%1$d ready</string>
+    <string name="integrations_source_blocked_count">%1$d unavailable</string>
+    <string name="integrations_tools_unavailable">Not usable right now</string>
+    <string name="integrations_tools_environment_pending">Needs the Linux environment (arriving in a later release)</string>
+    <string name="integrations_tools_needs_configuration">Needs setup before use</string>
+
+    <!-- Skills folder staging (S11) -->
+    <string name="integrations_folder_unavailable">Folder import isn\'t available right now</string>
+    <string name="integrations_folder_root_unreadable">Can\'t read the selected folder</string>
+    <string name="integrations_folder_tree_unreadable">Can\'t read the contents of this folder</string>
+    <string name="integrations_folder_too_many_files">This folder has too many files (up to 256)</string>
+    <string name="integrations_folder_file_too_large">A file is too large (up to 2 MiB each)</string>
+    <string name="integrations_folder_package_too_large">This folder is too large (up to 8 MiB in total)</string>
+    <string name="integrations_folder_too_deep">This folder is nested too deeply</string>
+    <string name="integrations_folder_unsafe_name">A file or folder name isn\'t allowed here</string>
+    <string name="integrations_folder_duplicate_path">Duplicate file names were found</string>
+    <string name="integrations_folder_source_unreadable">Can\'t read one of the files</string>
+    <string name="integrations_folder_empty">This folder is empty</string>
+    <string name="integrations_folder_stale_generation">The session changed; pick the folder again</string>
+    <string name="integrations_stage_refused">Couldn\'t prepare this folder</string>
+    <string name="integrations_stage_saturated">Another import is already in progress</string>
+    <string name="integrations_storage_full">Not enough storage to stage this folder</string>
+    <string name="integrations_folder_verify_failed">Couldn\'t verify the staged folder; try again</string>
+    <string name="integrations_local_network_denied">Local network access was denied. Allow it to connect, then try again.</string>
+    <string name="integrations_local_network_settings">Allow local network access in system Settings, then try again.</string>
+</resources>

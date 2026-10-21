@@ -11,6 +11,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -162,6 +166,14 @@ private fun TaskCenterDestination(
         FloeTaskCenterPage(showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
         return
     }
+    // The Task Center surface owns its REAL sub-view switch: the default
+    // list, the archive sheet and the management (selection/bulk) view all
+    // render the SAME produced history wire through the destination
+    // component; back returns to the list. No phantom destination, no empty
+    // callback.
+    var historyMode by remember {
+        mutableStateOf(com.floe.android.feature.conversation.HistoryDestinationMode.LIST)
+    }
     Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
         FloeDetailToolbar(
             title = stringResource(R.string.task_center),
@@ -172,11 +184,18 @@ private fun TaskCenterDestination(
         )
         FloeConversationHistoryDestination(
             holder = runtimeHost.conversations.historyHolder,
-            mode = com.floe.android.feature.conversation.HistoryDestinationMode.LIST,
+            mode = historyMode,
             modifier = Modifier.fillMaxSize(),
-            onBack = null,
-            onOpenArchive = { },
-            onOpenManagement = { },
+            onBack = if (historyMode ==
+                com.floe.android.feature.conversation.HistoryDestinationMode.LIST
+            ) null else { { historyMode =
+                com.floe.android.feature.conversation.HistoryDestinationMode.LIST } },
+            onOpenArchive = {
+                historyMode = com.floe.android.feature.conversation.HistoryDestinationMode.ARCHIVE
+            },
+            onOpenManagement = {
+                historyMode = com.floe.android.feature.conversation.HistoryDestinationMode.MANAGE
+            },
         )
     }
 }

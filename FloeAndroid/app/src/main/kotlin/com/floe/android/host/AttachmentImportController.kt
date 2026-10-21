@@ -47,18 +47,60 @@ import kotlinx.serialization.json.JsonPrimitive
  *    READ|WRITE request. The per-file bound mirrors the native
  *    128 MiB cap (the native side enforces its own caps regardless).
  *
+ * Root ownership (this batch): a picker request is issued for EITHER an
+ * existing conversation session OR the client-RAM Home draft (a real
+ * `conversationId = null` compose route — the bridge documents it as the
+ * new-conversation composer: a valid host route exists before any run, and
+ * NO durable empty conversation is ever created just to open the picker or
+ * stage files before C1). The delivered result carries the EXACT ISSUED
+ * REQUEST; two picker requests on the same conversation (or the same Home
+ * generation) have different incarnations, so a late OLD result can never
+ * clear another request/draft, navigate an old task, create a header row or
+ * mutate a replacement Home. Draft-owned staged rows flow to
+ * `RootWorkspaceController` (which the Home first send hands to the created
+ * holder under the one-writer C1); conversation-owned rows keep the existing
+ * holder projection path.
+ *
  * The staged bytes are consumed by the run owner through the ORIGINAL atomic
  * `RunLaunchStore.prepare`; arrival never auto-sends.
  */
 class AttachmentImportController internal constructor(
     private val host: RuntimeHost,
 ) {
-    /** Picker presentation requests (host → composition glue). The launcher
-     *  identity is immutable: [incarnation] invalidates stale results. */
+    /**
+     * Picker presentation requests (host → composition glue). The launcher
+     * identity is immutable: [incarnation] invalidates stale results, and
+     * the root half ([session] XOR [draftNonce]) states exactly WHOSE
+     * ownership the pick belongs to. A draft pick carries the client Home
+     * draft nonce + the service-owned Home generation it was issued on;
+     * neither is a persisted task id.
+     */
     data class PickerRequest(
-        val session: ConversationSessionToken,
+        val session: ConversationSessionToken?,
         val incarnation: Long,
-    )
+        val draftNonce: String? = null,
+        val draftHomeGeneration: Long = -1L,
+    ) {
+        init {
+            require((session == null) == (draftNonce != null)) {
+                "a picker request is owned by exactly one root (session XOR draft)"
+            }
+        }
+
+        val isDraftOwned: Boolean get() = draftNonce != null
+    }
+
+    /** The immutable ownership descriptor for ONE staging route (a settled
+     * pick or its retry). Exactly one half is set: a conversation session
+     * with its exact epoch, or the client Home draft nonce with the
+     * service-owned Home generation the pick was issued on. */
+    private class StageOwner(
+        val session: ConversationSessionToken?,
+        val draftNonce: String?,
+        val draftHomeGeneration: Long,
+    ) {
+        val isDraftOwned: Boolean get() = session == null && draftNonce != null
+    }
 
     /** The native producer byte channel — the ONE seam tests inject. */
     internal interface StagingChannel {
@@ -109,10 +151,23 @@ class AttachmentImportController internal constructor(
 
     private val launcherIncarnation = AtomicLong(0)
 
-    /** RAM-only session staging bookkeeping (never persisted). Keyed by the
-     *  NATIVE staging id — the host never mints attachment identities. */
+    /** Opaque per-host-generation launch namespace for the composition
+     *  picker lane (MAIN_ANDROID_PLATFORM_LAUNCH_OWNERSHIP_20261021). The
+     *  picker glue persists `namespace:incarnation` for the ONE picker it
+     *  launched and only dispatches a callback whose saved namespace still
+     *  matches THIS generation — a counter reset after process death can
+     *  then never bind a restored pre-death callback to a new request.
+     *  Carries no URI, secret, user content or permission state. */
+    internal val launchNamespace: String = PlatformLaunchOwnership.mintNamespace()
+
+    /** RAM-only ownership bookkeeping (never persisted). Keyed by the
+     *  NATIVE staging id — the host never mints attachment identities.
+     *  [draftNonce] non-null (with [session] null) marks a Home-draft-owned
+     *  row: staged before C1, handed to the launch by RootWorkspaceController. */
     private data class StagingEntry(
-        val session: ConversationSessionToken,
+        val session: ConversationSessionToken?,
+        val draftNonce: String?,
+        val draftHomeGeneration: Long,
         val sourceUri: Uri?,
         val staged: StagedAttachmentUi,
         val routeReceipt: String,
@@ -128,6 +183,11 @@ class AttachmentImportController internal constructor(
          *  the native side enforces its own caps regardless. */
         const val MAX_STAGING_BYTES = 128L * 1024 * 1024
         private const val CHUNK_BYTES = 64 * 1024
+
+        /** Presentation owner marker for a Home-draft staged row. This is a
+         *  CLIENT RAM nonce (never a persisted/DB task identity): the first
+         *  send replaces it with the real conversation ownership. */
+        const val DRAFT_OWNER_PREFIX = "home-draft:"
     }
 
     internal fun start() {}
@@ -144,7 +204,28 @@ class AttachmentImportController internal constructor(
         if (!admitted()) return
         // Capture the immutable launch owner: any result not matching THIS
         // incarnation is a stale/foreign result and is dropped without IO.
-        pickerRequestFlow.value = PickerRequest(session, launcherIncarnation.incrementAndGet())
+        pickerRequestFlow.value = PickerRequest(
+            session = session,
+            incarnation = launcherIncarnation.incrementAndGet(),
+        )
+    }
+
+    /** Home-draft pick: issued for the CURRENT service-owned Home generation
+     * under the caller-provided client RAM nonce. The compose route is
+     * `conversationId = null` — no durable row is created (⇄ bridge: "a
+     * valid host route exists before any run; no fabricated conversation").
+     * Returns false (nothing started) when staging is not admitted or the
+     * draft surface identity is missing; the caller shows an honest state. */
+    fun requestDraftPicker(draftNonce: String, draftHomeGeneration: Long): Boolean {
+        if (!admitted()) return false
+        if (draftNonce.isBlank() || draftHomeGeneration < 0L) return false
+        pickerRequestFlow.value = PickerRequest(
+            session = null,
+            incarnation = launcherIncarnation.incrementAndGet(),
+            draftNonce = draftNonce,
+            draftHomeGeneration = draftHomeGeneration,
+        )
+        return true
     }
 
     fun cancelPicker() {
@@ -153,22 +234,38 @@ class AttachmentImportController internal constructor(
         pickerRequestFlow.value = null
     }
 
-    /** Composition glue delivers the platform picker result here. A result
-     *  for a superseded launcher (navigation/newer request) is dropped. */
-    fun onPickerResult(session: ConversationSessionToken, uri: Uri) {
-        val pending = pickerRequestFlow.value
-        // Exact-owner validation: same session AND the still-current launcher
-        // incarnation. A newer requestPicker or cancelPicker already bumped
-        // the incarnation, so a late oldA result never touches newB.
-        if (pending == null || pending.session != session) return
+    /**
+     * Composition glue delivers the platform picker result here WITH THE
+     * EXACT ISSUED REQUEST (never a re-read of a replacement request at
+     * result time). A result for a superseded launcher — newer request,
+     * cancel, or a replacement Home generation — is dropped without IO,
+     * binding or any state write; it never clears the CURRENT request or
+     * draft either. A null uri settles only the still-current issued
+     * request's own cancel.
+     */
+    fun onPickerResult(request: PickerRequest, uri: Uri?) {
+        val pending = pickerRequestFlow.value ?: return
+        // Exact-owner validation: the CURRENT request must be identical to
+        // the ISSUED one — same root (session epoch OR draft nonce +
+        // generation) AND the same launcher incarnation. Two picks on the
+        // SAME conversation have different incarnations, so a late result
+        // for oldA can never attach to newB (the original result-time
+        // re-read defect this closes).
+        if (pending != request) return
         launcherIncarnation.incrementAndGet()
         pickerRequestFlow.value = null
+        if (uri == null) return // the user cancelled THIS request: nothing staged
         if (!admitted()) return
         // The staged row appears only via onAttachmentStaged after the native
         // stage terminal accepts (the presentation row is host-added; there is
         // deliberately no pre-stage row, so no progress event is emitted here).
         host.scope.launch(host.ioDispatcher) {
-            when (val result = stageThroughNativeProducer(session, uri)) {
+            val owner = StageOwner(
+                session = request.session,
+                draftNonce = request.draftNonce,
+                draftHomeGeneration = request.draftHomeGeneration,
+            )
+            when (val result = stageThroughNativeProducer(owner, uri)) {
                 // Ready publishes only on the native stage terminal; a failed
                 // import before any host-added row has no row to update (the
                 // presentation row is host-added exclusively by
@@ -187,7 +284,7 @@ class AttachmentImportController internal constructor(
     }
 
     private suspend fun stageThroughNativeProducer(
-        session: ConversationSessionToken,
+        owner: StageOwner,
         uri: Uri,
     ): StageResult = withContext(Dispatchers.IO) {
         val context: Context = host.appContext
@@ -213,12 +310,30 @@ class AttachmentImportController internal constructor(
         var routeReceipt: String? = null
         var ingressReceipt: String? = null
         try {
-            routeReceipt = channel.routeOpen(
-                conversationId = session.conversationId,
-                incarnation = session.sessionEpoch,
-                draftRevision = 0L,
-                isTemporary = false,
-            )
+            // Root ownership on the trusted route: conversation rows bind
+            // their exact session epoch; a Home draft binds the client
+            // Home-generation counter as the incarnation with NO conversation
+            // id (the native descriptor projects the honest "new" owner).
+            // Temporary sessions are refused by the CALLING platform layer
+            // (the thread composer never offers attach while temporary, and
+            // the native side double-refuses -304).
+            routeReceipt = if (owner.isDraftOwned) {
+                channel.routeOpen(
+                    conversationId = null,
+                    incarnation = owner.draftHomeGeneration,
+                    draftRevision = 0L,
+                    isTemporary = false,
+                )
+            } else {
+                val session = owner.session
+                    ?: return@withContext StageResult.Failed("stage_refused")
+                channel.routeOpen(
+                    conversationId = session.conversationId,
+                    incarnation = session.sessionEpoch,
+                    draftRevision = 0L,
+                    isTemporary = false,
+                )
+            }
             val begin = channel.begin(routeReceipt, null)
             val tokens = begin.split(" ")
             if (tokens.size != 2) return@withContext StageResult.Failed("stage_refused")
@@ -261,6 +376,8 @@ class AttachmentImportController internal constructor(
             }
 
             val sha256 = digest.digest().joinToString("") { "%02x".format(it) }
+            val ownerMarker = owner.session?.conversationId
+                ?: "$DRAFT_OWNER_PREFIX${owner.draftNonce}"
             val staged = StagedAttachmentUi(
                 id = stagingId,
                 displayName = displayName,
@@ -268,12 +385,20 @@ class AttachmentImportController internal constructor(
                 kind = kindFor(mimeType),
                 byteCount = total,
                 sha256 = sha256,
-                ownerConversationId = session.conversationId,
+                ownerConversationId = ownerMarker,
                 import = AttachmentImportUi.InProgress(null),
             )
             entries[stagingId] = StagingEntry(
-                session, uri, staged, routeReceipt, ingressReceipt, null)
-            submitStage(session, stagingId, ingressReceipt, staged)
+                session = owner.session,
+                draftNonce = owner.draftNonce,
+                draftHomeGeneration = owner.draftHomeGeneration,
+                sourceUri = uri,
+                staged = staged,
+                routeReceipt = routeReceipt,
+                ingressReceipt = ingressReceipt,
+                stagingHandle = null,
+            )
+            submitStage(owner.session, owner.draftNonce, stagingId, ingressReceipt, staged)
             StageResult.Staged(stagingId)
         } catch (cancel: CancellationException) {
             ingressReceipt?.let { runCatching { channel.abort(it) } }
@@ -310,7 +435,8 @@ class AttachmentImportController internal constructor(
      *  command. `Ready` is published ONLY when the effect terminal accepts;
      *  a refused/failed/delayed operation stays pending/failed. */
     private fun submitStage(
-        session: ConversationSessionToken,
+        session: ConversationSessionToken?,
+        draftNonce: String?,
         stagingId: String,
         ingressReceipt: String,
         staged: StagedAttachmentUi,
@@ -329,16 +455,19 @@ class AttachmentImportController internal constructor(
                     val handle = (outcome.value as? JsonObject)
                         ?.get("stagingHandle")
                         ?.let { (it as? JsonPrimitive)?.content }
+                    val ready = staged.copy(import = AttachmentImportUi.Ready)
                     entries[stagingId]?.let { entry ->
-                        entries[stagingId] = entry.copy(stagingHandle = handle)
+                        entries[stagingId] = entry.copy(
+                            stagingHandle = handle,
+                            staged = ready,
+                        )
                     }
-                    host.conversations.onAttachmentStaged(
-                        session, staged.copy(import = AttachmentImportUi.Ready))
+                    publishStaged(session, draftNonce, ready)
                 }
                 else -> {
                     entries.remove(stagingId)
-                    host.conversations.onAttachmentProgress(
-                        session, stagingId,
+                    publishProgress(
+                        session, draftNonce, stagingId,
                         AttachmentImportUi.Failed(
                             when (outcome) {
                                 is HostOperationOutcome.Rejected -> outcome.code
@@ -351,27 +480,83 @@ class AttachmentImportController internal constructor(
         }
     }
 
+    private fun publishStaged(
+        session: ConversationSessionToken?,
+        draftNonce: String?,
+        staged: StagedAttachmentUi,
+    ) {
+        if (session != null) {
+            host.conversations.onAttachmentStaged(session, staged)
+        } else if (draftNonce != null) {
+            host.conversations.rootWorkspace.onDraftAttachmentStaged(draftNonce, staged)
+        }
+    }
+
+    private fun publishProgress(
+        session: ConversationSessionToken?,
+        draftNonce: String?,
+        stagingId: String,
+        import: AttachmentImportUi,
+    ) {
+        if (session != null) {
+            host.conversations.onAttachmentProgress(session, stagingId, import)
+        } else if (draftNonce != null) {
+            host.conversations.rootWorkspace.onDraftAttachmentProgress(draftNonce, stagingId, import)
+        }
+    }
+
     // -------------------------------------------------------------- controls
 
-    fun retry(session: ConversationSessionToken, stagingId: String): Boolean {
+    fun retry(session: ConversationSessionToken, stagingId: String): Boolean =
+        retryInternal(session, null, stagingId)
+
+    /** Retry a draft-owned failed row from the SAME recoverable source
+     *  receipt (the entry keeps the picked URI; the staged bytes for any
+     *  earlier attempt were aborted/typed-failed, so this re-issues the
+     *  real copy+stage under the ENTRY's actual ownership — exact session
+     *  epoch / draft nonce + Home generation, never a synthesized identity). */
+    fun retryDraft(draftNonce: String, stagingId: String): Boolean =
+        retryInternal(null, draftNonce, stagingId)
+
+    private fun retryInternal(
+        session: ConversationSessionToken?,
+        draftNonce: String?,
+        stagingId: String,
+    ): Boolean {
         val entry = entries[stagingId] ?: return false
+        if (entry.session != session || entry.draftNonce != draftNonce) return false
         val uri = entry.sourceUri ?: return false
-        host.conversations.onAttachmentProgress(
-            session, stagingId, AttachmentImportUi.InProgress(null))
+        publishProgress(session, draftNonce, stagingId, AttachmentImportUi.InProgress(null))
         host.scope.launch(host.ioDispatcher) {
             entries.remove(stagingId)
+            val owner = StageOwner(
+                session = session,
+                draftNonce = draftNonce,
+                draftHomeGeneration = entry.draftHomeGeneration,
+            )
             // The row for stagingId may still exist (retry): surface failure.
-            when (val result = stageThroughNativeProducer(session, uri)) {
+            when (val result = stageThroughNativeProducer(owner, uri)) {
                 is StageResult.Staged -> Unit
-                is StageResult.Failed -> host.conversations.onAttachmentProgress(
-                    session, stagingId, AttachmentImportUi.Failed(result.reason))
+                is StageResult.Failed -> publishProgress(
+                    session, draftNonce, stagingId, AttachmentImportUi.Failed(result.reason))
             }
         }
         return true
     }
 
-    fun cancel(session: ConversationSessionToken, stagingId: String): Boolean {
+    fun cancel(session: ConversationSessionToken, stagingId: String): Boolean =
+        cancelInternal(session, null, stagingId)
+
+    fun cancelDraft(draftNonce: String, stagingId: String): Boolean =
+        cancelInternal(null, draftNonce, stagingId)
+
+    private fun cancelInternal(
+        session: ConversationSessionToken?,
+        draftNonce: String?,
+        stagingId: String,
+    ): Boolean {
         val entry = entries[stagingId] ?: return false
+        if (entry.session != session || entry.draftNonce != draftNonce) return false
         entries.remove(stagingId)
         runCatching { channel.abort(entry.ingressReceipt) }
         host.trackOperation(
@@ -388,6 +573,18 @@ class AttachmentImportController internal constructor(
     }
 
     fun discard(session: ConversationSessionToken, stagingId: String) {
+        val entry = entries[stagingId] ?: return
+        if (entry.session != session || entry.draftNonce != null) return
+        discardEntry(stagingId)
+    }
+
+    fun discardDraft(draftNonce: String, stagingId: String) {
+        val entry = entries[stagingId] ?: return
+        if (entry.draftNonce != draftNonce || entry.session != null) return
+        discardEntry(stagingId)
+    }
+
+    private fun discardEntry(stagingId: String) {
         val entry = entries[stagingId] ?: return
         entries.remove(stagingId)
         val handle = entry.stagingHandle
@@ -406,10 +603,37 @@ class AttachmentImportController internal constructor(
         entry.sourceUri?.let { releaseScopedRead(context = host.appContext, uri = it) }
     }
 
+    /** Drain EVERY draft-owned row for [draftNonce] (an actual navigation /
+     *  Home replacement, or host teardown): live copies are cancelled+aborted,
+     *  Ready staged handles are discarded, and the source grants released.
+     *  Conversation-owned rows are never touched. Called by
+     *  RootWorkspaceController AFTER it has cleared its own presentation
+     *  mirror, so the cleanup is real and ordered, not a UI guess. */
+    internal fun drainDraft(draftNonce: String) {
+        val ids = entries.entries
+            .filter { it.value.draftNonce == draftNonce }
+            .map { it.key }
+        for (id in ids) {
+            val entry = entries[id] ?: continue
+            if (entry.stagingHandle != null) {
+                discardDraft(draftNonce, id)
+            } else {
+                cancelDraft(draftNonce, id)
+            }
+        }
+    }
+
+    /** The native staging handle minted for a Ready draft row (never a
+     *  host-fabricated token). Absent/null means the row is not sendable. */
+    internal fun draftHandle(stagingId: String): String? =
+        entries[stagingId]?.takeIf { it.draftNonce != null }?.stagingHandle
+
     /** Commit staged attachments to a conversation (pre-run lease handoff). */
     fun commit(session: ConversationSessionToken, stagingIds: List<String>): Boolean {
         if (stagingIds.isEmpty()) return true
-        val handles = stagingIds.mapNotNull { entries[it]?.stagingHandle }
+        val handles = stagingIds.mapNotNull {
+            entries[it]?.takeIf { e -> e.session == session }?.stagingHandle
+        }
         if (handles.isEmpty()) return false
         val revision = host.conversations.entryFor(session.conversationId)
             ?.builder?.conversationRevision?.let { HostRevision(it.resourceID, it.version) }

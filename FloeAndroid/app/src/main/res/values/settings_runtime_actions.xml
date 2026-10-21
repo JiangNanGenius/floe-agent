@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  G02 Settings runtime actions (R4/R6/R7 batch 2026-10-21).
+  Bilingual user-facing copy for the model-role preferences surface, the
+  organizer review actions and the personalization revision history /
+  generate-cancel actions. Internal wire names, handles and typed error codes
+  stay in diagnostics and are never rendered as labels.
+-->
+<resources>
+    <!-- Model role preferences (R4) -->
+    <string name="settings_model_roles">Model Routing</string>
+    <string name="settings_model_roles_primary">Primary</string>
+    <string name="settings_model_roles_auxiliary">Assistance</string>
+    <string name="settings_model_roles_media">Media</string>
+    <string name="settings_role_default_agent">Default Agent Model</string>
+    <string name="settings_role_general_auxiliary">General Auxiliary Model</string>
+    <string name="settings_role_canvas_agent">Canvas Assistant Model</string>
+    <string name="settings_role_vision">Vision Model</string>
+    <string name="settings_role_canvas_vision">Canvas Vision Model</string>
+    <string name="settings_role_approval">Approval Model</string>
+    <string name="settings_role_package_review">Package Review Model</string>
+    <string name="settings_role_shared_image">Shared Image Model</string>
+    <string name="settings_role_image_generation">Image Generation Model</string>
+    <string name="settings_role_image_editing">Image Editing Model</string>
+    <string name="settings_role_default_video">Default Video Model</string>
+    <string name="settings_role_follow_main">Follow the main chat model</string>
+    <string name="settings_role_inherit_default">Inherit the default agent</string>
+    <string name="settings_role_inherit_auxiliary">Inherit the auxiliary vision model</string>
+    <string name="settings_role_not_configured">Not configured</string>
+    <string name="settings_role_follow_auxiliary">Follow the general auxiliary model</string>
+    <string name="settings_role_selection_unavailable">The selected model is unavailable. Choose another.</string>
+    <string name="settings_role_choose_model">Choose Model</string>
+    <string name="settings_role_no_choices">No usable models for this role.</string>
+    <string name="settings_role_autonomous_routing">Let the model choose image routing</string>
+    <string name="settings_role_autonomous_routing_footer">Lets the model choose between the configured media models per request.</string>
+    <string name="settings_role_mode_shared">Shared</string>
+    <string name="settings_role_mode_separate">Separate</string>
+    <string name="settings_role_media_mode">Media model mode</string>
+    <string name="settings_role_media_mode_footer">One shared model for generation and editing, or a separate model for each.</string>
+    <string name="settings_role_save_failed">Couldn\'t save model routing. Your changes are kept — try again.</string>
+    <string name="settings_role_load_failed">Couldn\'t load model routing. Try again.</string>
+
+    <!-- Memory organize review actions (R7) -->
+    <string name="settings_organize_review_title">Organize Suggestions</string>
+    <string name="settings_organize_auto_deleted">Automatic cleanup already applied (%1$d removed).</string>
+    <string name="settings_organize_auto_delete_none">No automatic cleanup was applied.</string>
+    <string name="settings_organize_auto_delete_stale">Automatic cleanup was skipped because some entries changed.</string>
+    <string name="settings_organize_apply">Apply</string>
+    <string name="settings_organize_cancel">Cancel Organize</string>
+    <string name="settings_organize_apply_message">Apply this suggestion? The listed memories will be merged or deleted. This cannot be undone.</string>
+    <string name="settings_organize_apply_failed">Couldn\'t apply the suggestion. Run organize and try again.</string>
+    <string name="settings_organize_empty">No suggestions. Your memories are already tidy.</string>
+    <string name="settings_organize_affected">%1$d memories affected</string>
+
+    <!-- Personalization history / generate cancel (R7) -->
+    <string name="settings_personalization_history">Revision History</string>
+    <string name="settings_personalization_revision">Revision %1$d</string>
+    <string name="settings_personalization_revision_active">Active</string>
+    <string name="settings_personalization_revision_view">View</string>
+    <string name="settings_personalization_revision_restore">Restore</string>
+    <string name="settings_personalization_revision_restore_message">Restore revision %1$d? The current content stays in the history and the restored copy becomes active.</string>
+    <string name="settings_personalization_revision_empty">No revisions yet.</string>
+    <string name="settings_personalization_cancel_generate">Cancel Generate</string>
+    <string name="settings_personalization_revision_loading">Loading revision…</string>
+    <string name="settings_personalization_revision_close">Close</string>
+    <string name="settings_personalization_load_more">Load More</string>
+    <string name="settings_personalization_rollback_failed">Couldn\'t restore this revision. Try again.</string>
+    <string name="settings_personalization_revision_failed">Couldn\'t load this revision. Try again.</string>
+</resources>

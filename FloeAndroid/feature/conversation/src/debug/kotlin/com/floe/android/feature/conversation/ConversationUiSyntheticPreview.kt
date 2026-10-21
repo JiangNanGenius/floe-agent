@@ -292,14 +292,17 @@ private class SyntheticConversationHost(
     override fun cancelAttachmentImport(session: ConversationSessionToken, attachmentId: String) = true
     override fun discardStagedAttachment(session: ConversationSessionToken, attachmentId: String) = Unit
     override fun openMessageAttachment(session: ConversationSessionToken, request: AttachmentOpenRequest) = true
-    override fun acceptPlan(session: ConversationSessionToken, planId: String, revision: Revision, execution: PlanRecommendationUi) = true
+    override fun acceptPlan(session: ConversationSessionToken, planId: String,
+        planRevision: Int, planDigest: String, execution: PlanRecommendationUi?,
+        modelId: String?, providerId: String?) = true
     override fun createGoal(request: GoalCreateRequest) = true
-    override fun confirmGoalCompletion(session: ConversationSessionToken, goalId: String) = true
+    override fun confirmGoalCompletion(session: ConversationSessionToken, goalId: String,
+        expectedRevision: Int, revisionResourceID: String, revisionVersion: String) = true
     override fun selectModel(session: ConversationSessionToken, modelId: String) = true
     override fun setRunningInputMode(session: ConversationSessionToken, mode: RunningInputModeUi) = true
     override fun saveDraft(session: ConversationSessionToken, text: String, attachmentIds: List<String>, caretIndex: Int?, selectionLength: Int?) = Unit
     override fun clearDraftAfterSend(session: ConversationSessionToken, sentText: String, sentAttachmentIds: List<String>) = Unit
-    override fun requestManualCompaction(session: ConversationSessionToken) = true
+    override fun requestManualCompaction(session: ConversationSessionToken, modelId: String?) = true
     override fun exportStructuredConversation(session: ConversationSessionToken) = true
     override fun shareConversationText(session: ConversationSessionToken, asMarkdown: Boolean) = true
     override fun refreshMediaJobs(session: ConversationSessionToken) = true

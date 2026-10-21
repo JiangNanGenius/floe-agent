@@ -424,6 +424,18 @@ enum RunSnapshotWireBuilder {
             fields["goals"] = .null
         }
 
+        // post-run stop wiring (Main review 2026-10-21): bounded REAL
+        // post-run work activity for THIS run — "none" (no live review work:
+        // never dispatched or already settled), "active" (the goal review/
+        // continuation owns live leased work), "stopping" (an explicit user
+        // run.cancel revoked the admission; the actual Task/transport is
+        // unwinding and the registry lease is still held). The App keeps
+        // Stop available during review and shows "stopping" until THIS
+        // field flips to "none" at real settlement — an inactive goal
+        // status is never a fake stopped proof. Actor-owned lifecycle truth
+        // only; the durable rows are the content authority.
+        fields["goalReview"] = .string(await domain.goalReviewActivity(runID: record.id))
+
         // Children from the bundle's own child graph (nil for temporary:
         // the original DelegateTool keeps children in-memory; the snapshot
         // honestly reports the empty durable graph).

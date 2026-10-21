@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host
 
+import com.floe.android.feature.conversation.ApprovalModeUi
+import com.floe.android.feature.conversation.GoalDefinitionUi
 import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
 import com.floe.android.feature.conversation.AgentExecutionModeUi
@@ -24,7 +26,10 @@ import com.floe.android.feature.conversation.InspectorRouteUi
 import com.floe.android.feature.conversation.LaunchCorrelation
 import com.floe.android.feature.conversation.MarkdownBlockUi
 import com.floe.android.feature.conversation.MessagePageCursorUi
+import com.floe.android.feature.conversation.MessageRoleUi
+import com.floe.android.feature.conversation.MessageUi
 import com.floe.android.feature.conversation.ModelOptionUi
+import com.floe.android.feature.conversation.PlanGoalDetailStateUi
 import com.floe.android.feature.conversation.PlanRecommendationUi
 import com.floe.android.contracts.Revision
 import com.floe.android.feature.conversation.RunningInputModeUi
@@ -87,6 +92,22 @@ class ConversationHostController internal constructor(
 
     /** Shell navigation requests (host → shell, observed by composition). */
     val navigationRequest = MutableStateFlow<SidebarSelection?>(null)
+    /**
+     * The SCOPED same-id Keep promotion-adoption signal (Main's late-Keep
+     * ownership decision). `trackOperation` runs on the root-wide command
+     * client with no per-holder ownership filtering, so a committed Keep
+     * terminal can arrive after the origin holder was released/rebound or
+     * the user genuinely navigated away. Instead of a generic
+     * navigationRequest (which the serial shell collector could route an
+     * old kept id AND fence-end a NEW current temporary), the same-id
+     * promotion publishes this exact-identity signal; the shell persists
+     * the durable saved selection ONLY while the exact origin surface is
+     * still the visible one, and drops it otherwise. A late committed
+     * result still refreshes durable history (the genuine rows survive),
+     * but never navigates, mutates a replacement holder or ends a new
+     * session.
+     */
+    val keptPromotion = MutableStateFlow<KeptPromotion?>(null)
 
     /** Inspector presentation requests (host → shell). */
     val inspectorRequest = MutableStateFlow<Pair<InspectorRouteUi, String>?>(null)
@@ -150,7 +171,26 @@ class ConversationHostController internal constructor(
     private var defaultAgentModelId: String? = null
 
     private val modelRefreshInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val modelRefreshPending = java.util.concurrent.atomic.AtomicBoolean(false)
     private val goalLaunchGenerations = AtomicLong(0)
+
+    /** One in-flight `plan.accept` per conversation (conversationId → true).
+     * A second tap while a receipt owns the conversation is refused locally;
+     * a lost ack is settled by the native durable (id,revision) proofs, never
+     * by an automatic App-side replay. */
+    private val planAcceptInFlight = ConcurrentHashMap<String, Boolean>()
+
+    /**
+     * Root/workspace surface owner: Home draft attachments (client-ram
+     * ownership through the FIRST launch — no durable row exists before
+     * C1), the draft-task approval choice seeded from the global default,
+     * and the selected model's reasoning-effort producer. Process-scoped
+     * like every controller here: rotation/background/recreation reuse it;
+     * an actual navigation/New Task invalidates the owned draft.
+     */
+    val rootWorkspace: RootWorkspaceController by lazy { RootWorkspaceController(host) }
+
+    private var readinessObservation: kotlinx.coroutines.Job? = null
     private var providersObservation: kotlinx.coroutines.Job? = null
     private var lastProviderListSignature: String? = null
     private var modelsReadOnce = false
@@ -174,6 +214,29 @@ class ConversationHostController internal constructor(
         if (host.readiness.value.conversationDomainAdmitted) {
             refreshHistory()
         }
+        // The sidebar/history projection must also arrive when the domain
+        // becomes admitted AFTER host start (the first host start can run
+        // before the native readiness flips): one monotonic transition
+        // triggers exactly one refresh, and no parallel readiness mechanism
+        // is introduced.
+        if (readinessObservation == null) {
+            readinessObservation = host.scope.launch(host.ioDispatcher) {
+                var previousConversationAdmitted =
+                    host.readiness.value.conversationDomainAdmitted
+                host.readiness.collect { readiness ->
+                    if (readiness.conversationDomainAdmitted &&
+                        !previousConversationAdmitted
+                    ) {
+                        refreshHistory()
+                    }
+                    previousConversationAdmitted = readiness.conversationDomainAdmitted
+                }
+            }
+        }
+        // Root-owned draft attachments survive view reconstruction because
+        // the owner lives on the Application host; stop() drains what the
+        // host itself tears down (root retirement).
+        rootWorkspace.start()
         // Provider list → model projection, in both directions: the rows are
         // the join's provider side, and any real save/delete/disable refreshes
         // the models page too (the user's newly saved model must appear).
@@ -211,6 +274,11 @@ class ConversationHostController internal constructor(
         terminalReconciled.clear()
         providersObservation?.cancel()
         providersObservation = null
+        readinessObservation?.cancel()
+        readinessObservation = null
+        // Host teardown: drain any draft-owned native staging before the
+        // owner record goes away (root retirement, not navigation).
+        rootWorkspace.stop()
     }
 
     private fun client() = host.commandClient
@@ -234,47 +302,226 @@ class ConversationHostController internal constructor(
      */
     internal fun refreshModels() {
         if (!host.readiness.value.providerConfigurationAdmitted) return
-        if (!modelRefreshInFlight.compareAndSet(false, true)) return
-        host.trackOperation(
-            HostCommandRequest(
-                command = "config.models.list",
-                scope = HostScope.ApplicationConfiguration("models"),
-                stateful = false,
-                correlationID = client().correlationID("mlist"),
-            ),
+        if (!modelRefreshInFlight.compareAndSet(false, true)) {
+            // Provider rows may arrive while the first empty sweep still
+            // reads preferences. Preserve that real refresh request.
+            modelRefreshPending.set(true)
+            return
+        }
+        // Generation/Root fence: a newer refresh (or a root retirement)
+        // invalidates every in-flight page of the previous chain; nothing it
+        // delivers may publish a partial cache.
+        val generation = modelsRefreshGeneration.incrementAndGet()
+        val rootEpoch = host.nativeRootEpoch()
+        startModelSweep(generation, rootEpoch)
+    }
+
+    /**
+     * Provider-filtered INCREMENTAL model read (the completed provider-lane
+     * pattern Main handed to this scope): instead of one global
+     * `config.models.list` chain whose fixed accumulation could reject a
+     * supported large profile (512 byte-dense rows per provider), the sweep
+     * walks every KNOWN provider one at a time through the ACTUAL
+     * provider-filtered continuation (closed payload `{providerID, cursor}`
+     * + the composer cursor):
+     *  * per provider: the PROVED supported bound (512 rows — the exact
+     *    native profile limit; MORE means persisted data outside the
+     *    supported contract → typed refusal, never truncation);
+     *  * per provider chain: the progress-checked page bound DERIVED from
+     *    the supported 512-row ceiling (byte-dense pages may carry a single
+     *    legal row, so 8 was too strict and refused supported profiles);
+     *  * overall accumulation: a fixed readable ceiling (8 providers' worth
+     *    of supported profiles), explicit bound error on overflow — never
+     *    unbounded growth, never a partial-cache publication;
+     *  * disabled providers ARE read (unlike the role-candidate sweep): the
+     *    full canonical rows remain the provider editor's seed data and the
+     *    composer join independently filters usability.
+     * A mid-chain refusal keeps the LAST REAL projection (and the existing
+     * single-flight release) exactly as the previous global chain did.
+     */
+    private fun startModelSweep(generation: Long, rootEpoch: Long?) {
+        val providerIds = LinkedHashSet<String>()
+        host.providers.destination.value.list.let { lists ->
+            (lists.conversationProviders + lists.imageProviders + lists.videoProviders)
+                .forEach { providerIds.add(it.providerId.uppercase()) }
+        }
+        val targets = providerIds.sorted()
+        if (targets.isEmpty()) {
+            // No provider rows yet: publish the honest empty join (the
+            // previous global read delivered an empty page here as well).
+            finishModelSweep(generation, rootEpoch, ArrayList())
+            return
+        }
+        accumulateModelSweep(generation, rootEpoch, targets, 0, ArrayList())
+    }
+
+    private fun accumulateModelSweep(
+        generation: Long,
+        rootEpoch: Long?,
+        targets: List<String>,
+        index: Int,
+        accumulated: ArrayList<JsonElement>,
+    ) {
+        if (!modelsSweepCurrent(generation, rootEpoch)) {
+            releaseModelRefresh(generation)
+            return
+        }
+        if (index >= targets.size) {
+            finishModelSweep(generation, rootEpoch, accumulated)
+            return
+        }
+        if (accumulated.size >= maxModelRows) {
+            modelsReadAttempted = true
+            releaseModelRefresh(generation)
+            return
+        }
+        fetchProviderModelsPage(
+            generation, rootEpoch, targets, index,
+            cursor = null, pages = 0, providerRows = 0, accumulated,
+        )
+    }
+
+    private fun fetchProviderModelsPage(
+        generation: Long,
+        rootEpoch: Long?,
+        targets: List<String>,
+        index: Int,
+        cursor: String?,
+        pages: Int,
+        providerRows: Int,
+        accumulated: ArrayList<JsonElement>,
+    ) {
+        host.readModelPage(
+            providerID = targets[index], cursor = cursor, correlationTag = "mlist",
+            isCurrent = { modelsSweepCurrent(generation, rootEpoch) },
         ) { modelsOutcome ->
             modelsReadAttempted = true
+            if (!modelsSweepCurrent(generation, rootEpoch)) {
+                releaseModelRefresh(generation)
+                return@readModelPage
+            }
             if (modelsOutcome !is HostOperationOutcome.Completed) {
-                modelRefreshInFlight.set(false)
-                publishModelProjection()
-                return@trackOperation
+                // Typed refusal / failure of ONE provider page: the whole
+                // refresh aborts (no partial cache); the last real
+                // projection stays published.
+                releaseModelRefresh(generation)
+                return@readModelPage
             }
-            val rows = modelsOutcome.value?.let { ProviderWire.decodeModelRows(it) }
+            val value = modelsOutcome.value
+            val rows = value?.let { ProviderWire.pageRows(it) }
             if (rows == null) {
-                modelRefreshInFlight.set(false)
-                return@trackOperation
+                releaseModelRefresh(generation)
+                return@readModelPage
             }
-            cachedModelRows = rows
-            modelsReadOnce = true
-            publishModelProjection()
-            host.trackOperation(
-                HostCommandRequest(
-                    command = "config.preferences.get",
-                    scope = HostScope.ApplicationConfiguration("preferences"),
-                    stateful = false,
-                    correlationID = client().correlationID("prefget"),
-                ),
-            ) { prefOutcome ->
-                if (prefOutcome is HostOperationOutcome.Completed) {
-                    ProviderWire.decodeDefaultAgentModel(prefOutcome.value)?.let {
-                        defaultAgentModelId = it
-                    }
+            if (providerRows + rows.size > maxProviderModelRows) {
+                // Persisted rows beyond the supported per-provider profile
+                // bound: honest refusal, never truncation to fit.
+                releaseModelRefresh(generation)
+                return@readModelPage
+            }
+            accumulated.addAll(rows)
+            val meta = ProviderWire.pageMeta(value)
+            if (meta?.hasMore == true) {
+                val next = meta.nextCursor
+                val nextIndex = next?.toLongOrNull()
+                val previousIndex = cursor?.toLongOrNull()
+                val progressed = nextIndex != null && nextIndex >= 0 &&
+                    (cursor == null || (previousIndex != null && nextIndex > previousIndex))
+                if (!progressed || pages + 1 >= maxModelPages ||
+                    accumulated.size >= maxModelRows
+                ) {
+                    releaseModelRefresh(generation)
+                    return@readModelPage
                 }
-                publishModelProjection()
-                modelRefreshInFlight.set(false)
+                fetchProviderModelsPage(
+                    generation, rootEpoch, targets, index,
+                    next, pages + 1, providerRows + rows.size, accumulated,
+                )
+                return@readModelPage
             }
+            accumulateModelSweep(generation, rootEpoch, targets, index + 1, accumulated)
         }
     }
+
+    /** True while THIS sweep still owns the read: same generation, same
+     * native root, and the provider row set has not been wholesale-replaced
+     * mid-chain (a provider added/removed during the sweep retries through
+     * the providers-observation collector afterwards). */
+    private fun modelsSweepCurrent(generation: Long, rootEpoch: Long?): Boolean =
+        modelsRefreshGeneration.get() == generation &&
+            host.nativeRootEpoch() == rootEpoch &&
+            host.readiness.value.providerConfigurationAdmitted
+
+    private fun finishModelSweep(
+        generation: Long,
+        rootEpoch: Long?,
+        accumulated: ArrayList<JsonElement>,
+    ) {
+        if (!modelsSweepCurrent(generation, rootEpoch)) {
+            releaseModelRefresh(generation)
+            return
+        }
+        val decoded = ProviderWire.decodeModelRows(
+            JsonObject(mapOf("rows" to JsonArray(accumulated.toList()))))
+        if (decoded == null) {
+            releaseModelRefresh(generation)
+            return
+        }
+        cachedModelRows = decoded
+        modelsReadOnce = true
+        publishModelProjection()
+        host.trackOperation(
+            HostCommandRequest(
+                command = "config.preferences.get",
+                scope = HostScope.ApplicationConfiguration("preferences"),
+                stateful = false,
+                correlationID = client().correlationID("prefget"),
+            ),
+        ) { prefOutcome ->
+            if (!modelsSweepCurrent(generation, rootEpoch)) {
+                releaseModelRefresh(generation)
+                return@trackOperation
+            }
+            if (prefOutcome is HostOperationOutcome.Completed) {
+                ProviderWire.decodeDefaultAgentModel(prefOutcome.value)?.let {
+                    defaultAgentModelId = it
+                }
+            }
+            if (modelsSweepCurrent(generation, rootEpoch)) {
+                publishModelProjection()
+            }
+            releaseModelRefresh(generation)
+        }
+    }
+
+    private fun releaseModelRefresh(generation: Long) {
+        if (modelsRefreshGeneration.get() != generation) return
+        modelRefreshInFlight.set(false)
+        if (modelRefreshPending.getAndSet(false) &&
+            host.readiness.value.providerConfigurationAdmitted) {
+            refreshModels()
+        }
+    }
+
+    private val modelsRefreshGeneration = AtomicLong(0)
+
+    /** The PROVED native per-provider profile bound (a supported profile may
+     * carry at most this many model rows; more is outside the contract). */
+    private val maxProviderModelRows = 512
+
+    /** The model-chain page guard DERIVED from the supported row ceiling.
+     * The native composer caps a page at BOTH 49152 item bytes AND 200
+     * items, but 200 is an UPPER bound, not a guaranteed page size: one
+     * legal ~30KiB row fills a page by itself. A full supported 512-row
+     * profile can therefore legitimately need up to 512 single-row pages,
+     * so the guard equals the supported per-provider row ceiling. Strict
+     * numeric cursor progress, the per-provider row bound and the fixed
+     * 4096-row overall accumulator (all-or-nothing publication) stay
+     * unchanged and make any longer chain impossible. This raises NO
+     * native envelope/page/row limit — it only stops refusing legal
+     * byte-dense supported profiles at the eighth page. */
+    private val maxModelPages = maxProviderModelRows
+    private val maxModelRows = 4_096
 
     /**
      * Joins the real model rows, the configured provider rows and the saved
@@ -413,6 +660,10 @@ class ConversationHostController internal constructor(
     fun entryFor(conversationId: String): ConversationFlowHolderEntry? = holders[conversationId]
 
     fun releaseHolder(conversationId: String) {
+        // Ownership transfer happens BEFORE the map removal: every in-flight
+        // detail chain for this conversation is fenced off first, so a late
+        // native callback can never publish into another owner's surface.
+        invalidatePlanGoalDetails(conversationId)
         holders.remove(conversationId)?.let { entry ->
             eventPumps.values.filter { it.runID in entry.builder.runIds() }
                 .forEach { it.close() }
@@ -802,13 +1053,131 @@ class ConversationHostController internal constructor(
             onSettled(false)
             return
         }
+        // A run that just closed displayed a live assistant tail means the
+        // native service committed its final assistant message BEFORE the
+        // terminal marker (the original ordering rule). A committed page that
+        // lacks that row is therefore a lagging read, not the truth.
+        val expectedAssistantRow =
+            entry.holder.snapshot.value?.liveAssistantText?.isNotEmpty() == true
         entry.builder.closeLiveTail(runID)
         entry.holder.applyHostSnapshot(entry.builder.build())
-        if (!conversationAdmitted()) {
+        settleCommittedRows(
+            entry = entry,
+            runID = runID,
+            expectAssistantRow = expectedAssistantRow,
+            attempt = 0,
+            onSettled = onSettled,
+        )
+    }
+
+    /**
+     * Bounded settlement of ONE committed turn against the ORIGINAL page
+     * authority. The close boundary is a real durable commit, so an EMPTY
+     * page (or a transient read failure) there is provably not the settled
+     * truth: the very first turn of a brand-new conversation reproduced the
+     * exact failure where that read raced the native commit, was accepted as
+     * final, and the thread stayed at the pre-launch empty page until
+     * navigation re-read it. Each retry is re-fenced AFTER the await on the
+     * holder identity, the session epoch, the selected run and the trusted
+     * stream generation, so a retired holder, a rebound thread or a newer
+     * selected run never receives a late page. The attempt budget is finite
+     * and no assistant text is ever fabricated: only real page rows publish.
+     */
+    private fun settleCommittedRows(
+        entry: ConversationFlowHolderEntry,
+        runID: String,
+        expectAssistantRow: Boolean,
+        attempt: Int,
+        onSettled: (Boolean) -> Unit,
+    ) {
+        val conversationId = entry.holder.session.conversationId
+        val sessionEpoch = entry.holder.session.sessionEpoch
+        val generation = currentRunStreamGeneration(conversationId, runID)
+        if (!settlementOwned(entry, conversationId, sessionEpoch, runID, generation)) {
             onSettled(false)
             return
         }
-        loadMessagePage(entry.holder.session, entry, onSettled = onSettled)
+        loadMessagePage(
+            entry.holder.session,
+            entry,
+            requireRun = CommittedPageFence(runID, generation),
+        ) { applied, rows ->
+            val owned = settlementOwned(
+                entry, conversationId, sessionEpoch, runID, generation,
+            )
+            val assistantPresent = !expectAssistantRow ||
+                rows.any { it.role == MessageRoleUi.ASSISTANT && it.runId == runID }
+            if (applied && rows.isNotEmpty() && assistantPresent && owned) {
+                onSettled(true)
+                return@loadMessagePage
+            }
+            val nextAttempt = attempt + 1
+            if (!owned || nextAttempt >= COMMITTED_ROW_SETTLEMENT_ATTEMPTS) {
+                // Unsettled: the terminal key is NOT marked reconciled, so a
+                // later legitimate terminal/explicit read may settle it.
+                onSettled(false)
+                return@loadMessagePage
+            }
+            host.scope.launch(host.ioDispatcher) {
+                delay(COMMITTED_ROW_SETTLEMENT_BASE_MILLIS * nextAttempt)
+                if (!settlementOwned(
+                        entry, conversationId, sessionEpoch, runID, generation,
+                    )
+                ) {
+                    onSettled(false)
+                    return@launch
+                }
+                settleCommittedRows(
+                    entry = entry,
+                    runID = runID,
+                    expectAssistantRow = expectAssistantRow,
+                    attempt = nextAttempt,
+                    onSettled = onSettled,
+                )
+            }
+        }
+    }
+
+    /** True while this exact surface still owns [runID] at [sessionEpoch]. */
+    private fun settlementOwned(
+        entry: ConversationFlowHolderEntry,
+        conversationId: String,
+        sessionEpoch: Long,
+        runID: String,
+        streamGeneration: Long,
+    ): Boolean =
+        conversationAdmitted() &&
+            !entry.holder.retired &&
+            ownCurrentEntry(entry, conversationId, sessionEpoch) &&
+            entry.builder.selectedRunId == runID &&
+            currentRunStreamGeneration(conversationId, runID) == streamGeneration
+
+    /**
+     * The REAL launch commit (`prepared`) is a durable boundary: the launch
+     * transaction wrote the user turn (and may already have committed the
+     * assistant turn on a fast run). Reading the committed page ONCE here is a
+     * page read from the original authority — never an optimistic local row —
+     * so the first turn of a brand-new conversation appears immediately while
+     * the run is still streaming. A failure is harmless: the terminal close
+     * settlement above remains the durable authority.
+     */
+    private fun refreshCommittedRowsAfterLaunch(
+        entry: ConversationFlowHolderEntry,
+        runID: String,
+    ) {
+        if (!conversationAdmitted() || entry.holder.retired) return
+        val conversationId = entry.holder.session.conversationId
+        val sessionEpoch = entry.holder.session.sessionEpoch
+        if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return
+        if (entry.builder.selectedRunId != runID) return
+        loadMessagePage(
+            entry.holder.session,
+            entry,
+            requireRun = CommittedPageFence(
+                runID = runID,
+                streamGeneration = currentRunStreamGeneration(conversationId, runID),
+            ),
+        )
     }
 
     private fun terminalKey(
@@ -875,8 +1244,14 @@ class ConversationHostController internal constructor(
         session: ConversationSessionToken,
         entry: ConversationFlowHolderEntry,
         before: MessagePageCursorUi? = null,
-        onSettled: ((Boolean) -> Unit)? = null,
+        requireRun: CommittedPageFence? = null,
+        onSettled: ((applied: Boolean, rows: List<MessageUi>) -> Unit)? = null,
     ) {
+        // Latest-window reads carry a monotonic request identity so an older
+        // response that completes late is dropped WHOLE. Earlier-history
+        // pages are append continuations and keep their own semantics.
+        val latest = before == null
+        val issuedSeq = if (latest) entry.nextLatestPageReadSeq() else 0L
         val members = mutableMapOf<String, JsonElement>(
             "limit" to JsonPrimitive(20),
         )
@@ -887,7 +1262,7 @@ class ConversationHostController internal constructor(
             // the wrong position.
             val opaque = ConversationWire.encodeOpaqueMessageCursor(before)
             if (opaque == null) {
-                onSettled?.invoke(false)
+                onSettled?.invoke(false, emptyList())
                 return
             }
             members["before"] = JsonPrimitive(opaque)
@@ -902,25 +1277,52 @@ class ConversationHostController internal constructor(
             ),
         ) { outcome ->
             var applied = false
+            var rows: List<MessageUi> = emptyList()
             if (outcome is HostOperationOutcome.Completed) {
                 val page = outcome.value?.let { ConversationWire.decodeMessagePage(it) }
-                if (page != null &&
-                    ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)
-                ) {
-                    entry.builder.applyMessagePage(page, earlier = before != null)
-                    entry.builder.earlierCursor = page.earlierCursor
-                    entry.builder.hasEarlierMessages = page.hasEarlier
-                    entry.holder.applyHostSnapshot(entry.builder.build())
-                    applied = true
-                    // Oversize rows carry an owned handle instead of an
-                    // incomplete inline prefix. Fetch the FULL content
-                    // through the SAME content.read contract (temporary
-                    // handles are re-authorized by the session incarnation
-                    // core-side); never guess or truncate locally.
-                    fetchOversizeContent(outcome.value, entry, session)
+                if (page != null) {
+                    // EVERY mutation (rows, earlier cursor, published state,
+                    // content-handle fetch) happens only after admission:
+                    // holder/session ownership, the exact closed run + stream
+                    // incarnation for a settlement read, and newest-issued
+                    // ordering for a latest-window read. Nothing is touched
+                    // by a stale/foreign reply.
+                    val admitted = entry.withAdmittedMessagePage(
+                        latest = latest,
+                        issuedSeq = issuedSeq,
+                        check = {
+                            !entry.holder.retired &&
+                                ownCurrentEntry(
+                                    entry, session.conversationId, session.sessionEpoch,
+                                ) &&
+                                (requireRun == null ||
+                                    (entry.builder.selectedRunId == requireRun.runID &&
+                                        currentRunStreamGeneration(
+                                            session.conversationId, requireRun.runID,
+                                        ) == requireRun.streamGeneration))
+                        },
+                    ) {
+                        entry.builder.applyMessagePage(page, earlier = before != null)
+                        entry.builder.earlierCursor = page.earlierCursor
+                        entry.builder.hasEarlierMessages = page.hasEarlier
+                        entry.holder.applyHostSnapshot(entry.builder.build())
+                    }
+                    if (admitted) {
+                        applied = true
+                        rows = page.rows.filter {
+                            it.role == MessageRoleUi.USER ||
+                                it.role == MessageRoleUi.ASSISTANT
+                        }
+                        // Oversize rows carry an owned handle instead of an
+                        // incomplete inline prefix. Fetch the FULL content
+                        // through the SAME content.read contract (temporary
+                        // handles are re-authorized by the session incarnation
+                        // core-side); never guess or truncate locally.
+                        fetchOversizeContent(outcome.value, entry, session)
+                    }
                 }
             }
-            onSettled?.invoke(applied)
+            onSettled?.invoke(applied, rows)
         }
     }
 
@@ -1135,12 +1537,44 @@ class ConversationHostController internal constructor(
             }
             current.builder.applySession(reply)
             current.holder.applyHostSnapshot(current.builder.build())
-            launchRun(
-                request, current, correlation,
-                current.builder.conversationRevision?.let {
-                    HostRevision(it.resourceID, it.version)
+            // THE single run.start LAN producer seam (thread composer send,
+            // the Home first send and the structured goal launch all travel
+            // here). The broker dispatches public/API<=36 endpoints
+            // synchronously with no prompt; an explicit local hop settles
+            // THIS correlation through onDenied (the held launch commit
+            // restores the draft and staged attachments exactly like any
+            // typed pre-admission refusal) and the durable run.start is
+            // never created behind a denied grant.
+            val providerId = request.providerId?.takeIf { it.isNotBlank() }
+            val revision = current.builder.conversationRevision?.let {
+                HostRevision(it.resourceID, it.version)
+            }
+            fun dispatch() = launchRun(request, current, correlation, revision)
+            if (providerId == null) {
+                // Without a real provider identity launchRun refuses typed
+                // (model_unavailable); there is nothing to gate.
+                dispatch()
+                return@trackOperation
+            }
+            val started = host.providers.withLocalNetworkForProvider(
+                providerID = providerId,
+                isCurrent = {
+                    holders[request.conversationId] === current &&
+                        current.holder.session.sessionEpoch == request.sessionEpoch &&
+                        !current.holder.retired
                 },
-            )
+                onDenied = { code ->
+                    settleLaunchFailure(
+                        current, correlation,
+                        host.providers.localNetworkDeniedCopy(code),
+                    )
+                },
+            ) { dispatch() }
+            if (!started) {
+                // The helper could not start the action (row vanished /
+                // superseded): settle as a typed pre-admission failure.
+                settleLaunchFailure(current, correlation, "provider_unavailable")
+            }
         }
     }
 
@@ -1187,6 +1621,13 @@ class ConversationHostController internal constructor(
             // Launch committed a real run row: refresh its authoritative CAS
             // snapshot so cancel/steer are immediately available.
             refreshRunSnapshot(entry, prepared.runID)
+            // The SAME atomic launch transaction committed the real user turn
+            // (and, on a fast run, possibly the assistant turn). Reading the
+            // committed page here is the original authority — never an
+            // optimistic local row — and it is what makes the first turn of a
+            // BRAND-NEW conversation visible immediately instead of waiting
+            // for the close boundary to settle.
+            refreshCommittedRowsAfterLaunch(entry, prepared.runID)
         }
         host.trackOperation(
             request = HostCommandRequest(
@@ -1966,41 +2407,250 @@ class ConversationHostController internal constructor(
         return true
     }
 
+    /**
+     * `plan.accept` (approved goal-core-code-batch-20261021 contract): ONE
+     * user action over the EXISTING command matrix — scope launch, owning
+     * conversation taskID, NO runID, NO createIntent, conversation-row
+     * digest CAS identical to `run.start` (fresh read at action time,
+     * owner/epoch fenced across the await). The accept IS the one launch:
+     * the SAME prepared/started/terminal receipt flow is consumed here and
+     * the App never dispatches a second run.start behind it. Duplicate
+     * clicks, lost acks and retries are settled by the native durable
+     * proofs; the App keeps one in-flight accept per conversation.
+     */
     override fun acceptPlan(
         session: ConversationSessionToken,
         planId: String,
-        revision: Revision,
-        execution: PlanRecommendationUi,
+        planRevision: Int,
+        planDigest: String,
+        execution: PlanRecommendationUi?,
+        modelId: String?,
+        providerId: String?,
     ): Boolean {
-        // The frozen v3 matrix has no plan-accept command; plan-mode runs
-        // launch with mode=plan and the recommendation is part of the run
-        // policy. Honest unavailability — never a fabricated command.
-        return false
+        if (!admitted()) return false
+        val entry = holders[session.conversationId] ?: return false
+        if (planId.isBlank() || planDigest.isBlank() || planRevision < 1 ||
+            modelId.isNullOrBlank() || providerId.isNullOrBlank()
+        ) {
+            return false
+        }
+        if (planAcceptInFlight.putIfAbsent(session.conversationId, true) != null) {
+            return false // one accept at a time per conversation (UI latch mirrors this)
+        }
+        // LAN boundary (Main's LIVE producer helper — the permission logic
+        // stays in the broker): a public/local-out-of-scope endpoint
+        // dispatches synchronously with no prompt; an explicit local hop on
+        // API 37 settles the accept through onDenied WITHOUT ever creating
+        // the durable launch effect. The helper fences its own callback on
+        // the caller `isCurrent` (holder ownership + session epoch), which
+        // survives rotation/background/lock and fails on real retirement or
+        // replacement; a second call can never double-dispatch the accept.
+        val started = host.providers.withLocalNetworkForProvider(
+            providerID = providerId,
+            isCurrent = {
+                ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)
+            },
+            onDenied = { code ->
+                settlePlanAccept(
+                    entry, session, accepted = false,
+                    code = host.providers.localNetworkDeniedCopy(code),
+                )
+            },
+        ) {
+            acceptPlanWithFreshRevision(
+                entry, session, planId, planRevision, planDigest, execution, modelId, providerId,
+            )
+        }
+        if (!started) {
+            // Refused to start (no row / already superseded): release the
+            // latch and return false; nothing was dispatched.
+            planAcceptInFlight.remove(session.conversationId)
+        }
+        return started
+    }
+
+    private fun acceptPlanWithFreshRevision(
+        entry: ConversationFlowHolderEntry,
+        session: ConversationSessionToken,
+        planId: String,
+        planRevision: Int,
+        planDigest: String,
+        execution: PlanRecommendationUi?,
+        modelId: String,
+        providerId: String,
+    ) {
+        host.trackOperation(
+            HostCommandRequest(
+                command = "conversation.get",
+                scope = HostScope.ConversationLifecycle(session.conversationId),
+                stateful = false,
+                correlationID = client().correlationID("cget-plan"),
+            ),
+        ) { outcome ->
+            if (outcome !is HostOperationOutcome.Completed) {
+                settlePlanAccept(entry, session, accepted = false, code = "revision_unavailable")
+                return@trackOperation
+            }
+            val reply = outcome.value?.let { ConversationWire.decodeSessionReply(it) }
+            val row = reply?.revision
+            val current = holders[session.conversationId]
+            if (row == null || current == null || current !== entry ||
+                current.holder.session.conversationId != session.conversationId ||
+                current.holder.session.sessionEpoch != session.sessionEpoch ||
+                current.holder.retired
+            ) {
+                settlePlanAccept(entry, session, accepted = false, code = "revision_unavailable")
+                return@trackOperation
+            }
+            current.builder.applySession(reply)
+            current.holder.applyHostSnapshot(current.builder.build())
+            val members = mutableMapOf<String, JsonElement>(
+                "planID" to JsonPrimitive(planId),
+                "planRevision" to JsonPrimitive(planRevision),
+                "planDigest" to JsonPrimitive(planDigest),
+                "providerID" to JsonPrimitive(providerId),
+                "modelID" to JsonPrimitive(modelId),
+            )
+            // Absent key = the plan's OWN durable execution recommendation
+            // (never a locally materialized default).
+            execution?.let { members["execution"] = JsonPrimitive(it.swiftRaw) }
+            val acceptedRunID = java.util.concurrent.atomic.AtomicReference<String?>(null)
+            host.trackOperation(
+                request = HostCommandRequest(
+                    command = "plan.accept",
+                    scope = HostScope.LaunchExisting(session.conversationId),
+                    stateful = true,
+                    correlationID = client().correlationID("planaccept"),
+                    revision = HostRevision(row.resourceID, row.version),
+                    payload = JsonObject(members),
+                ),
+                onFrame = { frame ->
+                    // The accept's launch travels the SAME prepared/started
+                    // effect receipt as run.start (never a second launch).
+                    if (frame.kind == "prepared") {
+                        ConversationWire.preparedFromEffect(frame.detail)?.let { prepared ->
+                            if (acceptedRunID.compareAndSet(null, prepared.runID)) {
+                                applyPlanAcceptPrepared(current, prepared)
+                            }
+                        }
+                    }
+                },
+            ) { outcome2 ->
+                when (outcome2) {
+                    is HostOperationOutcome.Completed -> {
+                        val page = outcome2.value as? JsonObject
+                        val accepted = (page?.get("accepted") as? JsonPrimitive)?.booleanOrNull
+                        val runID = (page?.get("runID") as? JsonPrimitive)?.contentOrNull
+                        if (accepted == true && runID != null &&
+                            acceptedRunID.compareAndSet(null, runID)
+                        ) {
+                            // Forward-compatible value reply (the actual
+                            // producer carries identities in the effect).
+                            applyPlanAcceptPrepared(
+                                current,
+                                ConversationWire.Prepared(
+                                    conversationID = session.conversationId,
+                                    runID = runID,
+                                    resourceID = ConversationWire.runResourceID(runID),
+                                    version = "",
+                                ),
+                            )
+                        }
+                        settlePlanAccept(
+                            entry = current,
+                            session = session,
+                            accepted = acceptedRunID.get() != null,
+                            code = if (acceptedRunID.get() == null) "reply_malformed" else null,
+                        )
+                    }
+                    is HostOperationOutcome.Rejected ->
+                        settlePlanAccept(entry, session, accepted = false, code = outcome2.code)
+                    is HostOperationOutcome.Failed ->
+                        settlePlanAccept(entry, session, accepted = false, code = outcome2.code)
+                    HostOperationOutcome.Cancelled ->
+                        settlePlanAccept(entry, session, accepted = false, code = "cancelled")
+                    HostOperationOutcome.Superseded ->
+                        settlePlanAccept(entry, session, accepted = false, code = "superseded")
+                }
+            }
+        }
+    }
+
+    /** Apply the plan accept's prepared identity: the new run joins THIS
+     * conversation's thread exactly like an ordinary launch (open pump,
+     * refresh history). The composer draft is NOT touched — the accept's
+     * prompt is composed host-side from the durable accepted row. */
+    private fun applyPlanAcceptPrepared(
+        entry: ConversationFlowHolderEntry,
+        prepared: ConversationWire.Prepared,
+    ) {
+        entry.builder.applyPrepared(prepared)
+        entry.holder.applyHostSnapshot(entry.builder.build())
+        openRunEventStream(entry.holder.session, entry, prepared.runID)
+        refreshHistorySoon()
+        refreshRunSnapshot(entry, prepared.runID)
+    }
+
+    /** One settled accept (accepted OR typed refusal): release the latch,
+     * re-read the durable plan/thread, and surface refusals without ever
+     * auto-replaying the unknown outcome. */
+    private fun settlePlanAccept(
+        entry: ConversationFlowHolderEntry,
+        session: ConversationSessionToken,
+        accepted: Boolean,
+        code: String?,
+    ) {
+        planAcceptInFlight.remove(session.conversationId)
+        // Ownership fence: a late settlement for a replaced holder touches
+        // nothing beyond the durable re-read (the row is real either way).
+        val current = holders[session.conversationId]
+        if (current != null && current === entry && !entry.holder.retired &&
+            current.holder.session.sessionEpoch == session.sessionEpoch
+        ) {
+            // The UI in-flight latch is released on the REAL settlement only
+            // for the still-owned holder; a replaced holder's card follows
+            // its own fresh projection.
+            entry.holder.applyPlanAcceptSettled()
+            if (!accepted && code != null) {
+                // Callers pass either a stable machine code (surfaced in the
+                // thread's typed error channel) or an already-localized
+                // producer sentence (LAN denial copy from the broker helper).
+                surfaceError(entry, code)
+            }
+            loadThreadInternal(current.holder.session)
+        }
+        refreshHistorySoon()
     }
 
     /**
-     * Goal creation is a REAL goal-mode launch on the conversation
-     * (`run.start` with `mode:"goal"`): the objective and the evidence-backed
-     * criteria travel in the goal text, and the native goal writer/verifier
-     * path owns the durable goal record. Never a silent no-op.
+     * Structured goal creation over the EXISTING ordinary `run.start`
+     * (approved additive `goalDefinition` key): the objective stays the run's
+     * own goal text (never flattened with criteria), and the separate
+     * objective/criteria/blocking/stopping fields travel as closed nested
+     * members. The native C1 writes the durable ConversationGoal atomically
+     * with the launch (ORIGINAL GoalCriterion defaults are Swift-side; the
+     * App never writes a goal row directly and never composes the default
+     * criterion). The model is the thread's ACTUAL selected configured
+     * provider/model — the old first-usable substitution is removed.
      */
     override fun createGoal(request: GoalCreateRequest): Boolean {
         if (!admitted()) return false
         val entry = holders[request.conversationId] ?: return false
-        val goalText = buildString {
-            append(request.objective.trim())
-            fun section(title: String, items: List<String>) {
-                val values = items.map { it.trim() }.filter { it.isNotEmpty() }
-                if (values.isEmpty()) return
-                append("\n\n").append(title).append("\n")
-                values.forEach { append("- ").append(it).append("\n") }
-            }
-            section("Criteria", request.criteria)
-            section("Blocking conditions", request.blockingConditions)
-            section("Stopping conditions", request.stoppingConditions)
-        }
-        if (goalText.isBlank()) return false
-        val model = currentModels().models.firstOrNull { it.isUsable } ?: return false
+        val objective = request.objective.trim()
+        if (objective.isEmpty()) return false
+        val modelId = request.modelId?.takeIf { it.isNotBlank() } ?: return false
+        val providerId = request.providerId?.takeIf { it.isNotBlank() } ?: return false
+        // The projection remains the usability authority (enabled row +
+        // enabled configured provider): a goal launch never bypasses it.
+        val selected = currentModels().models.firstOrNull {
+            it.modelId.equals(modelId, ignoreCase = true) && it.isUsable
+        } ?: return false
+        val definition = GoalDefinitionUi(
+            objective = objective,
+            criteria = request.criteria,
+            blockingConditions = request.blockingConditions,
+            stoppingConditions = request.stoppingConditions,
+        )
         val session = ConversationSessionToken(
             request.conversationId, entry.holder.session.sessionEpoch)
         val correlation = LaunchCorrelation(
@@ -2009,32 +2659,140 @@ class ConversationHostController internal constructor(
             launchGeneration = goalLaunchGenerations.incrementAndGet(),
             temporaryIncarnationId = null,
         )
+        if (definition.exceedsNativeBounds()) {
+            // Typed refusal BEFORE any durable effect: over-budget producer
+            // fields are never truncated on the way to the bridge.
+            surfaceError(entry, "goalDefinitionTooLarge")
+            return false
+        }
         launchCorrelations[correlation.launchGeneration.toString()] = correlation
         val launch = RunLaunchRequest(
             conversationId = request.conversationId,
             sessionEpoch = session.sessionEpoch,
-            goalText = goalText,
+            goalText = objective,
             attachments = emptyList(),
             executionMode = AgentExecutionModeUi.GOAL,
-            modelId = model.modelId,
+            modelId = selected.modelId,
             workspaceId = null,
             temporaryIncarnationId = null,
             launchGeneration = correlation.launchGeneration,
-            providerId = model.providerId,
+            providerId = selected.providerId,
+            goalDefinition = definition,
         )
-        // Same action-time fresh row read as the ordinary send path: the goal
-        // launch reuses the SAME `run.start` conversationProof CAS, so a cached
-        // conversation revision would be equally stale after any prior commit.
+        // The LAN boundary for every actual run.start (including this goal
+        // launch) is the ONE producer wrap inside
+        // [launchWithFreshConversationRevision]; wrapping the create/C1 flow
+        // twice would double-own one human gesture, so the goal path relies
+        // on that single seam.
+        // Same action-time fresh row read as the ordinary send path: the
+        // goal launch reuses the SAME `run.start` conversationProof CAS.
         launchWithFreshConversationRevision(launch, entry, correlation)
         return true
     }
 
+    /**
+     * `goal.confirm` (approved contract): scope conversationLifecycle, the
+     * OWNING conversation, no runID (works after terminal — the original
+     * confirm semantics), envelope revision `goal.<goalID>` /
+     * `revisionVersion` VERBATIM from the durable projection and the payload
+     * `expectedGoalRevision` equal to it. The trusted command itself is the
+     * explicit human action — no model/inferred approval boolean exists.
+     * A blocked result persists NOTHING (real blockers surfaced localized);
+     * a stale refusal re-reads the durable truth and never auto-replays.
+     */
     override fun confirmGoalCompletion(
         session: ConversationSessionToken,
         goalId: String,
+        expectedRevision: Int,
+        revisionResourceID: String,
+        revisionVersion: String,
     ): Boolean {
-        // No dedicated wire command in the frozen matrix; honest false.
-        return false
+        if (!conversationAdmitted()) return false
+        val entry = holders[session.conversationId] ?: return false
+        if (goalId.isBlank() || expectedRevision < 1 ||
+            revisionResourceID.isBlank() || revisionVersion.isBlank()
+        ) {
+            return false
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "goal.confirm",
+                scope = HostScope.ConversationLifecycle(session.conversationId),
+                stateful = true,
+                correlationID = client().correlationID("gconfirm"),
+                revision = HostRevision(revisionResourceID, revisionVersion),
+                payload = JsonObject(
+                    mapOf(
+                        "goalID" to JsonPrimitive(goalId),
+                        "expectedGoalRevision" to JsonPrimitive(expectedRevision),
+                    ),
+                ),
+            ),
+        ) { outcome ->
+            // Ownership fence across the await: a late settlement may only
+            // mutate THIS exact holder; the durable row is real either way.
+            val current = holders[session.conversationId]
+            val owned = current != null && current === entry &&
+                !entry.holder.retired &&
+                entry.holder.session.sessionEpoch == session.sessionEpoch
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val page = outcome.value as? JsonObject
+                    val confirmed = (page?.get("confirmed") as? JsonPrimitive)?.booleanOrNull
+                    if (owned) {
+                        if (confirmed == false) {
+                            val codes = (page?.get("blockers") as? JsonArray).orEmpty()
+                                .mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                            entry.holder.applyGoalConfirmBlocked(
+                                codes.map { localizeGoalBlocker(it) },
+                            )
+                        } else {
+                            // confirmed:true (or a shape without the member —
+                            // then the durable re-read is the authority): a
+                            // newer settlement owns a fresh surface.
+                            entry.holder.clearGoalConfirmBlockers()
+                        }
+                        loadThreadInternal(entry.holder.session)
+                    }
+                }
+                is HostOperationOutcome.Rejected -> {
+                    if (owned) {
+                        surfaceError(entry, "goalConfirm_${outcome.code}")
+                        // Stale/non-verifying: re-read the durable truth so
+                        // the next explicit attempt binds the CURRENT revision.
+                        loadThreadInternal(entry.holder.session)
+                    }
+                }
+                is HostOperationOutcome.Failed -> {
+                    if (owned) surfaceError(entry, "goalConfirm_${outcome.code}")
+                }
+                HostOperationOutcome.Cancelled,
+                HostOperationOutcome.Superseded -> Unit
+            }
+        }
+        return true
+    }
+
+    /** Localize one native blocker machine code into a natural human line;
+     * the raw code (and its id suffix) stays only in diagnostic detail. */
+    private fun localizeGoalBlocker(code: String): String {
+        val family = code.substringBefore(':')
+        val res = when (family) {
+            "wrongGoal" -> com.floe.android.R.string.goal_blocker_wrong_goal
+            "goalAlreadyTerminal" -> com.floe.android.R.string.goal_blocker_already_terminal
+            "incompleteStep" -> com.floe.android.R.string.goal_blocker_incomplete_step
+            "unsatisfiedCriterion" -> com.floe.android.R.string.goal_blocker_unsatisfied_criterion
+            "missingEvidence", "unknownEvidence" ->
+                com.floe.android.R.string.goal_blocker_missing_evidence
+            "userConfirmationRequired" ->
+                com.floe.android.R.string.goal_blocker_user_confirmation
+            "reviewRejected" -> com.floe.android.R.string.goal_blocker_review_rejected
+            "failedChecks", "unresolvedErrors" ->
+                com.floe.android.R.string.goal_blocker_failed_checks
+            else -> com.floe.android.R.string.goal_blocker_generic
+        }
+        return runCatching { host.appContext.getString(res) }
+            .getOrElse { code } // host-unit fallback: honest raw, never empty
     }
 
     // -------------------------------------------------------------- paging
@@ -2248,9 +3006,202 @@ class ConversationHostController internal constructor(
         // Holder-invoked only from a matching applyLaunchPrepared echo.
     }
 
-    override fun requestManualCompaction(session: ConversationSessionToken): Boolean {
-        // No compaction command exists in the frozen matrix; honest false.
-        return false
+    /**
+     * `conversation.compact` (approved contract): scope conversationLifecycle,
+     * the durable OWNING conversation, NO runID/createIntent/revision (the
+     * core owns the single shared per-conversation reservation and every
+     * real launch admission participates in it — the App never bypasses or
+     * re-implements that guard, and a live-run conversation answers with the
+     * REAL typed refusal). [modelId] is the thread's actual selected model or
+     * null (native persisted default; never first-usable). The reply is the
+     * REAL compacted/noHistory/shortHistory outcome; the App composes the
+     * localized status line from its actual members — no localized strings
+     * cross the bridge and truthful no-ops preserve full history.
+     */
+    override fun requestManualCompaction(
+        session: ConversationSessionToken,
+        modelId: String?,
+    ): Boolean {
+        if (!conversationAdmitted()) return false
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.builder.isTemporary) return false // honest: temp compacts nothing
+        val payload = modelId?.takeIf { it.isNotBlank() }?.let {
+            JsonObject(mapOf("modelID" to JsonPrimitive(it)))
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "conversation.compact",
+                scope = HostScope.ConversationLifecycle(session.conversationId),
+                stateful = false,
+                correlationID = client().correlationID("ccompact"),
+                payload = payload,
+            ),
+        ) { outcome ->
+            val current = holders[session.conversationId]
+            val owned = current != null && current === entry &&
+                !entry.holder.retired &&
+                entry.holder.session.sessionEpoch == session.sessionEpoch
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    if (owned) {
+                        val page = outcome.value as? JsonObject
+                        entry.builder.applyCompactionStatus(
+                            composeCompactionStatus(page) ?: entry.builder.compactionStatus,
+                        )
+                        entry.holder.applyCompactionSettled()
+                        entry.holder.applyHostSnapshot(entry.builder.build())
+                        // The durable history changed (or a truthful no-op
+                        // proved it did not): re-read the rows either way.
+                        loadThreadInternal(entry.holder.session)
+                    }
+                }
+                is HostOperationOutcome.Rejected -> {
+                    if (owned) {
+                        entry.holder.applyCompactionSettled()
+                        surfaceError(entry, "compact_${outcome.code}")
+                    }
+                }
+                is HostOperationOutcome.Failed -> {
+                    if (owned) {
+                        entry.holder.applyCompactionSettled()
+                        surfaceError(entry, "compact_${outcome.code}")
+                    }
+                }
+                HostOperationOutcome.Cancelled -> {
+                    if (owned) entry.holder.applyCompactionSettled()
+                }
+                HostOperationOutcome.Superseded -> Unit
+            }
+        }
+        return true
+    }
+
+    /** The localized status line for one settled compact (REAL members
+     * only): compacted → token delta with the actual counts; noHistory /
+     * shortHistory → the truthful no-op line (nothing was written). */
+    private fun composeCompactionStatus(page: JsonObject?): String? {
+        val compacted = (page?.get("compacted") as? JsonPrimitive)?.booleanOrNull ?: return null
+        val reason = (page["reason"] as? JsonPrimitive)?.contentOrNull
+        val res = if (compacted) {
+            com.floe.android.R.string.compaction_did_compact
+        } else when (reason) {
+            "shortHistory" -> com.floe.android.R.string.compaction_short_history
+            else -> com.floe.android.R.string.compaction_no_history
+        }
+        val base = runCatching { host.appContext.getString(res) }.getOrNull() ?: return null
+        if (!compacted) return base
+        val before = (page["beforeTokens"] as? JsonPrimitive)?.longOrNull
+        val after = (page["afterTokens"] as? JsonPrimitive)?.longOrNull
+        return if (before != null && after != null) {
+            runCatching {
+                host.appContext.getString(
+                    com.floe.android.R.string.compaction_did_compact_tokens,
+                    before, after,
+                )
+            }.getOrDefault(base)
+        } else {
+            base
+        }
+    }
+
+    /**
+     * The live-run permissions affordance producer (⇄ ConversationCenter
+     * taskPolicy + `run.policy.update`): updates the persisted TaskPolicy
+     * row under its REAL CAS version (the snapshot `policyRevision`, never
+     * a timestamp guess or locally bumped value) and echoes the actual
+     * `appliedToLiveRun` result. Only a human action on the permissions
+     * surface reaches this; imported/model content has no route. Without a
+     * proven revision the update REFUSES (the caller re-reads first) — a
+     * stale or unknown result is never auto-replayed.
+     */
+    fun updateTaskApprovalMode(
+        session: ConversationSessionToken,
+        mode: ApprovalModeUi,
+        onSettled: ((accepted: Boolean, code: String?, appliedToLiveRun: Boolean) -> Unit)? = null,
+    ): Boolean {
+        if (!admitted()) return false
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.builder.isTemporary) {
+            // A RAM-only temporary session owns NO durable policy row; the
+            // snapshot reports an honest null revision and there is nothing
+            // to update (never a durable fallback read for a temp id).
+            onSettled?.invoke(false, "temporaryPolicyNotDurable", false)
+            return false
+        }
+        val runID = entry.builder.selectedRunId
+        val revision = entry.builder.policyRevision
+        if (revision == null || runID == null) {
+            // No proven CAS identity: refuse and re-read the authoritative
+            // snapshot instead of sending a fabricated version.
+            if (runID != null) refreshRunSnapshot(entry, runID)
+            onSettled?.invoke(false, "policyRevisionUnavailable", false)
+            return false
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "run.policy.update",
+                scope = HostScope.TaskExecution(session.conversationId, runID),
+                stateful = true,
+                correlationID = client().correlationID("rpolupd"),
+                revision = HostRevision(revision.resourceID, revision.version),
+                payload = JsonObject(
+                    mapOf(
+                        // ORIGINAL closed vocabulary from the actual parser
+                        // (ask/automatic/fullAccess) — never raw guesses.
+                        "approvalMode" to JsonPrimitive(mode.swiftRaw),
+                        "expectedPolicyVersion" to JsonPrimitive(revision.version),
+                        // NO ceiling/flag members are composed here: the
+                        // existing TaskPolicy ceilings stay untouched (a
+                        // missing optional member keeps the persisted value).
+                    ),
+                ),
+            ),
+        ) { outcome ->
+            val current = holders[session.conversationId]
+            val owned = current != null && current === entry &&
+                !entry.holder.retired &&
+                entry.holder.session.sessionEpoch == session.sessionEpoch
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val applied = outcome.detail["appliedToLiveRun"] == "true"
+                    val newVersion = outcome.detail["policyVersion"]
+                    if (owned) {
+                        entry.builder.applyPolicyUpdateSettled(mode, newVersion)
+                        entry.holder.applyHostSnapshot(entry.builder.build())
+                        // Re-read the authoritative snapshot so subsequent
+                        // CAS uses the durable truth (the reply's version is
+                        // already adopted; this proves, it does not assume).
+                        refreshRunSnapshot(entry, runID)
+                    }
+                    onSettled?.invoke(true, null, applied)
+                }
+                is HostOperationOutcome.Rejected -> {
+                    if (owned) {
+                        entry.builder.invalidatePolicyRevision()
+                        entry.holder.applyHostSnapshot(entry.builder.build())
+                        surfaceError(entry, "policy_${outcome.code}")
+                        refreshRunSnapshot(entry, runID)
+                    }
+                    // A stale refusal is surfaced, never silently replayed.
+                    onSettled?.invoke(false, outcome.code, false)
+                }
+                is HostOperationOutcome.Failed -> {
+                    if (owned) surfaceError(entry, "policy_${outcome.code}")
+                    onSettled?.invoke(false, outcome.code, false)
+                }
+                HostOperationOutcome.Cancelled -> onSettled?.invoke(false, "cancelled", false)
+                HostOperationOutcome.Superseded -> onSettled?.invoke(false, "superseded", false)
+            }
+        }
+        return true
+    }
+
+    /** Refresh the durable child graph for the CURRENTLY selected run
+     * (inspector entry point; reuses the existing `child.list` producer). */
+    fun refreshChildGraph(session: ConversationSessionToken) {
+        val entry = holders[session.conversationId] ?: return
+        val runID = entry.builder.selectedRunId ?: return
+        loadChildRuns(entry, runID)
     }
 
     // ------------------------------------------------------------ thread menu
@@ -2349,11 +3300,80 @@ class ConversationHostController internal constructor(
                 is HostOperationOutcome.Completed -> {
                     val conversationID = (outcome.value as? JsonObject)
                         ?.let { (it["conversationID"] as? JsonPrimitive)?.contentOrNull }
-                    activeTemporary.remove(ref.conversationId)
-                    holder?.applyTemporaryKeepOutcome(ref, TemporaryKeepOutcomeUi.Promoted)
-                    conversationID?.let { newID ->
-                        // Atomic Keep remaps only the returned real identity.
-                        navigationRequest.value = SidebarSelection.Conversation(newID)
+                    // Exact-VALUE retirement (never bare-id): a stale or
+                    // late terminal for a replaced tuple cannot evict the
+                    // replacement's registration.
+                    // A malformed committed receipt must remain retryable:
+                    // retain this exact registration until a real durable
+                    // identity arrives. Removing it now would make the next
+                    // alreadyCommitted receipt fail the ownership fence.
+                    val stillMine = if (conversationID == null) {
+                        activeTemporary[ref.conversationId] == ref
+                    } else {
+                        activeTemporary.remove(ref.conversationId, ref)
+                    }
+                    // UI ownership fence: this closure runs on the
+                    // root-wide command client, so projection adoption,
+                    // refresh, failure surfacing and any route effect are
+                    // honored ONLY for the EXACT origin holder/ref that
+                    // issued this Keep. A late committed result still
+                    // refreshes durable history (the genuine rows survive);
+                    // it never mutates a replacement holder, navigates an
+                    // old id or lets the shell fence-end a new session.
+                    val originOwned = holder != null && stillMine &&
+                        holder.session.conversationId == ref.conversationId &&
+                        holder.session.sessionEpoch == ref.sessionEpoch
+                    if (conversationID == null) {
+                        if (originOwned) {
+                            // The receipt certifies a committed Keep but
+                            // carries no durable identity to adopt — a
+                            // wire-contract violation, never a promotion
+                            // the App may assume. Surface an honest typed
+                            // failure (a retry reaches the real
+                            // alreadyCommitted receipt) instead of leaving
+                            // the bound Keep waiting forever in Saving.
+                            holder?.applyTemporaryKeepOutcome(
+                                ref, TemporaryKeepOutcomeUi.Failed("keepIdentityMissing"))
+                        }
+                    } else if (originOwned && entry != null &&
+                        conversationID == ref.conversationId
+                    ) {
+                        // Same-id atomic promotion (the REAL Core
+                        // committed/alreadyCommitted receipt shape): adopt
+                        // the ordinary durable projection for THIS exact
+                        // bound kept identity BEFORE acknowledging UI
+                        // promotion. The holder's promoted guard observes
+                        // the projection — previously no path ever flipped
+                        // it, so a durably committed Keep looked like a
+                        // silent no-op with a stale Temporary header.
+                        entry.builder.isTemporary = false
+                        entry.builder.temporaryIncarnationId = null
+                        entry.builder.promotedConversationId = conversationID
+                        entry.holder.applyHostSnapshot(entry.builder.build())
+                        entry.holder.applyTemporaryKeepOutcome(
+                            ref, TemporaryKeepOutcomeUi.Promoted)
+                        // Refresh the thread from the durable row the
+                        // commit just created (real title/runs/rows via
+                        // the same ordinary load path a history reopen
+                        // uses). A read failure stays honest: the
+                        // projection keeps the receipt-adopted truth and
+                        // a later reload reconciles.
+                        loadThreadInternal(entry.holder.session)
+                        // Scoped adoption signal INSTEAD of generic
+                        // navigation: persisting the durable saved
+                        // selection is the shell's decision, only while
+                        // this exact origin surface is still current.
+                        keptPromotion.value = KeptPromotion(
+                            originRef = ref,
+                            durableConversationId = conversationID,
+                        )
+                    } else if (originOwned) {
+                        // Different-id remap receipt (not the current
+                        // native shape): the generic navigation stays,
+                        // but only for this exact still-live origin.
+                        holder?.applyTemporaryKeepOutcome(
+                            ref, TemporaryKeepOutcomeUi.Promoted)
+                        navigationRequest.value = SidebarSelection.Conversation(conversationID)
                     }
                     refreshHistorySoon()
                 }
@@ -2459,6 +3479,195 @@ class ConversationHostController internal constructor(
             }
         }
         return true
+    }
+
+    // --------------------------------------- bounded plan/goal detail read
+
+    /** The closed detail chunk preference (the native default; the FINAL
+     * serialized page still fits the frozen 49152 page inside the 65536
+     * frame by native measured shrinkage — nothing here widens any budget). */
+    private val detailMaxChunkBytes = 32_768
+
+    /** Fixed accumulation ceiling for the canonical durable row. A row
+     * beyond this is honestly refused (typed) — never a partial publish,
+     * never an endless follow. */
+    private val detailMaxTotalBytes = 1_048_576L
+
+    private val detailStates =
+        ConcurrentHashMap<String, MutableStateFlow<PlanGoalDetailStateUi>>()
+    private val detailGenerations = ConcurrentHashMap<String, AtomicLong>()
+
+    /** The detail-read state for one conversation row kind ("goal"/"plan").
+     * Reads are EXPLICIT (task inspection opening / user retry): no timers,
+     * no background resurrection, all-or-nothing publication. */
+    fun planGoalDetailState(conversationId: String, kind: String): StateFlow<PlanGoalDetailStateUi> =
+        detailStates.getOrPut("$conversationId:$kind") {
+            MutableStateFlow(PlanGoalDetailStateUi.Idle)
+        }
+
+    /** Start ONE bounded `conversation.get.detail` canonical-row read over
+     * the EXISTING command (closed additive member; a reply without the
+     * member is the SAME honest absence). The first page resolves the
+     * CURRENT durable plan / latest goal (terminal fallback carries its
+     * real status label) or the LATEST original checklist row over the
+     * shared store (ordinary only — temporary has no checklist producer).
+     * Continuations follow ONLY native `nextOffset` with the exact id +
+     * previous-page digest, prove byte-boundary continuity client-side,
+     * and assemble raw UTF-8 until the full row is proven complete; a
+     * mid-chain refusal keeps the last state and reports the typed code —
+     * a trimmed summary is never republished as a full row. */
+    fun requestPlanGoalDetail(session: ConversationSessionToken, kind: String): Boolean {
+        if (!conversationAdmitted()) return false
+        if (kind != "goal" && kind != "plan" && kind != "checklist") return false
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.isTemporary) return false // a RAM-only session has no durable row
+        val flow = detailStates.getOrPut("${session.conversationId}:$kind") {
+            MutableStateFlow(PlanGoalDetailStateUi.Idle)
+        }
+        val generation = detailGenerations
+            .getOrPut("${session.conversationId}:$kind") { AtomicLong(0) }.incrementAndGet()
+        flow.value = PlanGoalDetailStateUi.Loading
+        readDetailPage(
+            conversationId = session.conversationId,
+            entry = entry,
+            kind = kind,
+            generation = generation,
+            rootEpoch = host.nativeRootEpoch(),
+            flow = flow,
+            id = null,
+            offset = 0L,
+            digest = null,
+            assembled = ConversationDetailAssembler(kind, detailMaxTotalBytes),
+        )
+        return true
+    }
+
+    /** Ownership fence: a releasing/retired conversation invalidates every
+     * in-flight detail chain; a late callback can then never publish into
+     * another owner's surface. */
+    internal fun invalidatePlanGoalDetails(conversationId: String) {
+        detailGenerations["$conversationId:goal"]?.incrementAndGet()
+        detailGenerations["$conversationId:plan"]?.incrementAndGet()
+        detailGenerations["$conversationId:checklist"]?.incrementAndGet()
+    }
+
+    private fun readDetailPage(
+        conversationId: String,
+        entry: ConversationFlowHolderEntry,
+        kind: String,
+        generation: Long,
+        rootEpoch: Long?,
+        flow: MutableStateFlow<PlanGoalDetailStateUi>,
+        id: String?,
+        offset: Long,
+        digest: String?,
+        assembled: ConversationDetailAssembler,
+    ) {
+        fun current(): Boolean =
+            detailGenerations["$conversationId:$kind"]?.get() == generation &&
+                holders[conversationId] === entry &&
+                host.nativeRootEpoch() == rootEpoch
+        val detailMembers = buildMap<String, JsonElement> {
+            put("kind", JsonPrimitive(kind))
+            if (offset > 0L) {
+                id?.let { put("id", JsonPrimitive(it)) }
+                put("offset", JsonPrimitive(offset))
+                digest?.let { put("digest", JsonPrimitive(it)) }
+            }
+            put("maxBytes", JsonPrimitive(detailMaxChunkBytes))
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "conversation.get",
+                scope = HostScope.ConversationLifecycle(conversationId),
+                stateful = false,
+                correlationID = client().correlationID("cgetdetail"),
+                payload = JsonObject(mapOf("detail" to JsonObject(detailMembers))),
+            ),
+        ) { outcome ->
+            if (!current()) return@trackOperation
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val page = outcome.value?.let { ConversationWire.decodeDetailPage(it) }
+                    if (page == null) {
+                        val value = outcome.value as? JsonObject
+                        flow.value = if (value != null && !value.containsKey("detail")) {
+                            PlanGoalDetailStateUi.Absent
+                        } else {
+                            PlanGoalDetailStateUi.Failed("detailRowUnreadable")
+                        }
+                        return@trackOperation
+                    }
+                    when (val result = assembled.accept(page)) {
+                        is ConversationDetailAssembler.Result.Failed -> {
+                            flow.value = PlanGoalDetailStateUi.Failed(result.code)
+                        }
+                        is ConversationDetailAssembler.Result.Complete -> {
+                            publishAssembledDetail(flow, page, result.content)
+                        }
+                        ConversationDetailAssembler.Result.Continue -> {
+                            readDetailPage(
+                                conversationId = conversationId,
+                                entry = entry,
+                                kind = kind,
+                                generation = generation,
+                                rootEpoch = rootEpoch,
+                                flow = flow,
+                                id = page.id,
+                                offset = page.nextOffset,
+                                digest = page.digest,
+                                assembled = assembled,
+                            )
+                        }
+                    }
+                }
+                // The checklist answers a foreign/missing run or an absent
+                // store with the typed `notFound` REFUSAL (its documented
+                // absence form); goal/plan answer with a reply WITHOUT the
+                // member. Both are honest ABSENCE — never an error state —
+                // while any other typed code (staleRevision, envelope
+                // refusals) stays a real failure with the code surfaced.
+                is HostOperationOutcome.Rejected -> flow.value =
+                    if (outcome.code == "notFound" && kind == "checklist") {
+                        PlanGoalDetailStateUi.Absent
+                    } else {
+                        PlanGoalDetailStateUi.Failed(outcome.code)
+                    }
+                is HostOperationOutcome.Failed ->
+                    flow.value = PlanGoalDetailStateUi.Failed(outcome.code)
+                HostOperationOutcome.Cancelled, HostOperationOutcome.Superseded -> Unit
+            }
+        }
+    }
+
+    private fun publishAssembledDetail(
+        flow: MutableStateFlow<PlanGoalDetailStateUi>,
+        finalPage: ConversationWire.DetailPage,
+        assembled: String,
+    ) {
+        val root = runCatching {
+            kotlinx.serialization.json.Json.parseToJsonElement(assembled.toString()) as? JsonObject
+        }.getOrNull()
+        if (root == null || (finalPage.kind != "checklist" &&
+                (root["id"] as? JsonPrimitive)?.contentOrNull != finalPage.id)) {
+            flow.value = PlanGoalDetailStateUi.Failed("detailRowUnreadable")
+            return
+        }
+        flow.value = when (finalPage.kind) {
+            "goal" -> ConversationWire.decodeGoalDetailRow(root)
+                ?.let(PlanGoalDetailStateUi::GoalReady)
+                ?: PlanGoalDetailStateUi.Failed("detailRowUnreadable")
+            "plan" -> ConversationWire.decodePlanDetailRow(root)
+                ?.let(PlanGoalDetailStateUi::PlanReady)
+                ?: PlanGoalDetailStateUi.Failed("detailRowUnreadable")
+            else -> ConversationWire.decodeChecklistDetailRow(
+                root,
+                pageRunID = finalPage.id,
+                pageRevision = finalPage.revision,
+                pageStatusRaw = finalPage.statusRaw,
+            )?.let(PlanGoalDetailStateUi::ChecklistReady)
+                ?: PlanGoalDetailStateUi.Failed("detailRowUnreadable")
+        }
     }
 
     // ---------------------------------------------------------------- history
@@ -2840,14 +4049,80 @@ class ConversationHostController internal constructor(
     ): Boolean = false
 }
 
+/**
+ * The exact-identity payload of a same-id committed Keep (see
+ * [ConversationHostController.keptPromotion]). The shell consumes it to
+ * persist the durable saved selection ONLY while the origin surface is
+ * still current; anything else is dropped (never routed).
+ */
+data class KeptPromotion(
+    val originRef: TemporarySessionRef,
+    val durableConversationId: String,
+)
+
 /** Holder + projection bookkeeping for one conversation surface. */
+/**
+ * The exact closed-run identity a COMMITTED-ROW settlement page must still
+ * own at admission time: the same run is selected and its trusted local
+ * stream incarnation is unchanged. A page received for any other state is
+ * dropped before it can touch rows, the earlier cursor or the published
+ * state.
+ */
+internal data class CommittedPageFence(
+    val runID: String,
+    val streamGeneration: Long,
+)
+
 class ConversationFlowHolderEntry internal constructor(
     val holder: com.floe.android.feature.conversation.ConversationFlowHolder,
     val sessionEpoch: Long,
     val isTemporary: Boolean,
     val incarnationId: String?,
     val builder: ThreadProjectionBuilder,
-)
+) {
+    /**
+     * Monotonic identity of LATEST-WINDOW (`before == null`) message-page
+     * reads issued for this surface, and the newest one actually applied.
+     * A response may mutate the builder ONLY when it still owns this
+     * entry/session AND it is the newest latest-window read issued for it;
+     * an older request that completes late (for example the initial
+     * activate read that captured the pre-launch empty page and returns
+     * after the launch/terminal page already settled) is dropped WHOLE —
+     * no rows, no cursor, no content-handle fetch. Earlier-history
+     * (`before != null`) pages keep their own append semantics.
+     */
+    private var latestPageReadSeq: Long = 0L
+    private var latestPageAppliedSeq: Long = 0L
+    private val pageAdmissionLock = Any()
+
+    fun nextLatestPageReadSeq(): Long = synchronized(pageAdmissionLock) {
+        latestPageReadSeq += 1
+        latestPageReadSeq
+    }
+
+    /**
+     * Runs [apply] ONLY when [check] (owner/run/stream fences) holds and, for
+     * a latest-window page, [issuedSeq] is newer than every latest page
+     * already applied. The check, the freshness reservation and the
+     * projection mutation happen under ONE lock, so an older request that
+     * completes late can never publish before/after a newer page
+     * out of order.
+     */
+    fun withAdmittedMessagePage(
+        latest: Boolean,
+        issuedSeq: Long,
+        check: () -> Boolean,
+        apply: () -> Unit,
+    ): Boolean = synchronized(pageAdmissionLock) {
+        if (!check()) return false
+        if (latest) {
+            if (issuedSeq <= latestPageAppliedSeq) return false
+            latestPageAppliedSeq = issuedSeq
+        }
+        apply()
+        true
+    }
+}
 
 /**
  * Per-run live-hint coalescing state: at most one authoritative
@@ -2888,3 +4163,13 @@ private class BoundedKeySet(private val capacity: Int) {
 
 /** Terminal-reconciliation identity window (bounded, evicted FIFO). */
 private const val TERMINAL_RECONCILE_CAPACITY = 256
+
+/**
+ * Committed-row settlement budget per terminal boundary. The first read is
+ * immediate; the remaining attempts back off linearly (120/240/360 ms) so a
+ * page that raced the native commit (or a transient read failure) still
+ * settles on the SAME screen. Finite by design — no polling loop, and an
+ * unsettled boundary is left unmarked so a later explicit read can settle it.
+ */
+private const val COMMITTED_ROW_SETTLEMENT_ATTEMPTS = 4
+private const val COMMITTED_ROW_SETTLEMENT_BASE_MILLIS = 120L

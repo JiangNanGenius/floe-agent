@@ -179,21 +179,19 @@ internal class ConversationFixtureHost(
 
     /* ------------------------------ plan & goal ------------------------------ */
 
-    override fun acceptPlan(
-        session: ConversationSessionToken,
-        planId: String,
-        revision: Revision,
-        execution: PlanRecommendationUi,
-    ): Boolean {
-        record("acceptPlan", session, planId, revision, execution); return true
+    override fun acceptPlan(session: ConversationSessionToken, planId: String,
+        planRevision: Int, planDigest: String, execution: PlanRecommendationUi?,
+        modelId: String?, providerId: String?): Boolean {
+        record("acceptPlan", session, planId, planRevision, planDigest, execution, modelId, providerId); return true
     }
 
     override fun createGoal(request: GoalCreateRequest): Boolean {
         record("createGoal", request); return true
     }
 
-    override fun confirmGoalCompletion(session: ConversationSessionToken, goalId: String): Boolean {
-        record("confirmGoalCompletion", session, goalId); return true
+    override fun confirmGoalCompletion(session: ConversationSessionToken, goalId: String,
+        expectedRevision: Int, revisionResourceID: String, revisionVersion: String): Boolean {
+        record("confirmGoalCompletion", session, goalId, expectedRevision, revisionResourceID, revisionVersion); return true
     }
 
     /* ------------------------------- composer -------------------------------- */
@@ -220,8 +218,8 @@ internal class ConversationFixtureHost(
         record("clearDraftAfterSend", session, sentText, sentAttachmentIds)
     }
 
-    override fun requestManualCompaction(session: ConversationSessionToken): Boolean {
-        record("requestManualCompaction", session); return true
+    override fun requestManualCompaction(session: ConversationSessionToken, modelId: String?): Boolean {
+        record("requestManualCompaction", session, modelId); return true
     }
 
     /* ------------------------------ thread menu ------------------------------- */

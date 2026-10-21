@@ -520,6 +520,37 @@ public actor ProviderPresetSidecar {
         }
     }
 
+    /// The CURRENT provider -> preset map joined against LIVE provider rows
+    /// inside ONE original reader transaction (the same stale-entry filter as
+    /// `configuredPresetIDs`). This sidecar is the PERSISTED source of a
+    /// provider's catalog preset identity: the `providers` table has no
+    /// preset column, and the ORIGINAL save records the frozen request's
+    /// `profile.presetID` here. Corrupt bytes degrade to "no presets" for
+    /// READS only (never a rewrite).
+    func presetIDsByProvider() async throws -> [UUID: String] {
+        let key = Self.key
+        return try await database.reader { db in
+            let raw = try Row.fetchOne(
+                db,
+                sql: "SELECT value_json FROM app_settings WHERE key = ?",
+                arguments: [key]
+            )
+            let map = Self.decodeMap(raw?["value_json"] as String?)
+            guard !map.isEmpty else { return [:] }
+            var live: [UUID: String] = [:]
+            for (providerID, preset) in map {
+                guard let id = UUID(uuidString: providerID) else { continue }
+                let exists = try Bool.fetchOne(
+                    db,
+                    sql: "SELECT EXISTS(SELECT 1 FROM providers WHERE id = ?)",
+                    arguments: [providerID]
+                ) ?? false
+                if exists { live[id] = preset }
+            }
+            return live
+        }
+    }
+
     private enum SidecarStatus {
         case absent
         case valid([String: String])

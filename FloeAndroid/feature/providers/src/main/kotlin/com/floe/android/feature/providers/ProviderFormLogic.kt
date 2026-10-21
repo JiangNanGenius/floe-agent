@@ -151,8 +151,27 @@ object ProviderFormLogic {
     ): Pair<List<ModelDraftRowUi>, String?> {
         val index = models.indexOfFirst { it.draftModelId == edited.draftModelId }
         if (index < 0) return models to defaultModelDraftId
+        val previous = models[index]
+        val editable = listOf(ModelCapabilityUi.VISION, ModelCapabilityUi.TOOLS,
+            ModelCapabilityUi.IMAGE_GENERATION, ModelCapabilityUi.IMAGE_EDITING,
+            ModelCapabilityUi.VIDEO_GENERATION).fold(0) { bits, item -> bits or item.swiftBit }
+        fun bits(row: ModelDraftRowUi) = row.capabilities.fold(0) { value, item -> value or item.swiftBit }
+        val changed = (bits(previous) xor bits(edited)) and editable
+        val old = previous.savedMetadata
+        val metadata = if (old != null || changed != 0) {
+            val base = old ?: ModelSavedMetadataUi(reasoningEffortRaw = previous.reasoningEffort.swiftRaw)
+            val represented = ModelCapabilityUi.entries.fold(0) { value, item -> value or item.swiftBit }
+            val owned = (base.explicitCapabilitiesRaw ?: 0) or changed
+            base.copy(
+                capabilitiesRaw = bits(edited) or ((base.capabilitiesRaw ?: 0) and represented.inv()),
+                explicitCapabilitiesRaw = if (changed != 0) owned else base.explicitCapabilitiesRaw,
+                explicitCapabilitiesJSON = if (changed != 0) owned.toString() else base.explicitCapabilitiesJSON,
+            )
+        } else null
         val next = models.toMutableList()
-        next[index] = edited
+        // Noneditable metadata belongs to the exact original row, even if
+        // an editor callback reconstructs the editable values without it.
+        next[index] = edited.copy(savedMetadata = metadata)
         var nextDefault = defaultModelDraftId
         if (edited.hiddenFromPrimaryPicker && defaultModelDraftId == edited.draftModelId) {
             nextDefault = null

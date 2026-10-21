@@ -697,18 +697,26 @@ class HostLaunchAndFenceTest {
         assertTrue(host.home.applyHostNavigation(published!!, { true }) { applied = it })
         assertEquals(published, applied)
         // Explicit Keep promotes the SAME hosted id to an ordinary
-        // conversation (real Core receipt shape).
+        // conversation (real Core receipt shape). The same-id promotion is
+        // the SCOPED adoption signal, NOT a generic navigationRequest: the
+        // shell persists the durable saved selection only while the exact
+        // origin surface is still current (Main late-Keep ownership fence),
+        // and the projection adopts the receipt-returned identity.
         val ref = host.conversations.activeTemporarySession()!!
         exchange.epoch = ref.nativeRootEpoch
         assertTrue(host.conversations.keepTemporaryChat(ref))
         assertTrue(
             awaitUntil {
-                host.conversations.navigationRequest.value ==
-                    SidebarSelection.Conversation("tc1")
+                host.conversations.keptPromotion.value?.durableConversationId == "tc1"
             },
         )
+        assertEquals(ref, host.conversations.keptPromotion.value?.originRef)
+        assertNull(host.conversations.navigationRequest.value)
+        val keptEntry = host.conversations.entryFor("tc1")!!
+        assertFalse(keptEntry.holder.snapshot.value!!.isTemporary)
+        assertEquals("tc1", keptEntry.holder.snapshot.value!!.promotedConversationId)
         assertEquals(1, exchange.keepRequests)
-        host.conversations.navigationRequest.value = null
+        host.conversations.keptPromotion.value = null
         var kept: SidebarSelection? = null
         assertTrue(
             host.home.applyHostNavigation(

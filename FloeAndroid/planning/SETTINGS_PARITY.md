@@ -203,11 +203,19 @@ operations, all goal **G02** and status **planned**:
 | `SET-HISTORY-CLEAR` | `privacy.summary.get`, `privacy.history.clear` | P2.7 | `privacy/identity-streams.json` |
 | `SET-MODELCFG-CLEAR` | `privacy.modelConfiguration.clear` | P2.7 | `privacy/identity-streams.json` |
 
-Candidate counts are 182 operations / 40 G02 / 33 synthetic fixtures / 36
-families / 85 work packages. The live tree remains 172 / 30 / 26 / 36 / 85 until
+Candidate counts were 182 operations / 40 G02 / 33 synthetic fixtures / 36
+families / 85 work packages; the goal-core code batch (2026-10-21) appends
+ONE explicit operation (`CHA-MANUAL-COMPACT`, G02) and THREE additive bridge
+tuples (`plan.accept`, `goal.confirm`, `conversation.compact`), giving
+183 / 41 / 33 / 36 / 85 with the matrix at 87 tuples / 85 distinct commands
+(57 legacy + 27 settings + 3 run-control; no `child.create`; mailbox bounds
+unchanged). The live tree remains 172 / 30 / 26 / 36 / 85 until
 Main publishes and integrates the candidate. Adding a vocabulary/wire entry does
-not create a handler, store, capability or runtime behavior: every new command
-still terminates at the typed `runtimeUnavailable` seam in this source. The P1–P8
+not create a handler, store, capability or runtime behavior: a command without
+an installed real domain still terminates at the typed `runtimeUnavailable`
+seam in this source (the three new tuples have REAL candidate handler sources
+in the run domain after the goal-core batch, but nothing is compiled,
+installed, executed or device-qualified by source alone). The P1–P8
 facade packages and the serialized qualifier must implement and verify the real
 original-DB behavior before any row above moves beyond `planned`.
 

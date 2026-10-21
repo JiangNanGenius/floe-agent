@@ -171,6 +171,12 @@ public final class G02HostRouteContextProvider: ConfigRouteContextProviding, Ski
         guard live.route.token == token else { return true }
         binding = nil
         discardLiveIntentsLocked(route: live.route)
+        // Editor close also owns its DRAFT probe work: cancel the real
+        // adapter calls and retire the slots (late polls answer typed
+        // routeUnavailable; the App's identity fence already ignores late
+        // publications).
+        G02HostDraftProbeRegistry.shared.cancelAll(routeToken: live.route.token)
+        ProviderModelSetRegistry.shared.cancelAll(routeToken: live.route.token)
         return true
     }
 
@@ -183,11 +189,35 @@ public final class G02HostRouteContextProvider: ConfigRouteContextProviding, Ski
         guard let live = binding, live.rootEpoch == epoch else { return }
         binding = nil
         discardLiveIntentsLocked(route: live.route)
+        // Root retirement sweeps this epoch's DRAFT probe work as well: the
+        // owned adapter tasks are cancelled (real network cancellation) and
+        // their slots retired, so no late callback can be read as current.
+        G02HostDraftProbeRegistry.shared.cancelAll(routeToken: live.route.token)
+        ProviderModelSetRegistry.shared.cancelAll(routeToken: live.route.token)
+        ProviderModelSetRegistry.shared.cancelAll(rootEpoch: epoch)
     }
 
     private func discardLiveIntentsLocked(route: RouteBinding) {
         _ = SecretSaveIntentVault.shared.discardLiveSlots(routeToken: route.token,
                                                           routeGeneration: route.generation)
+    }
+
+    /// Trusted-host DRAFT probe assertion (no vault slot): answers the live
+    /// binding ONLY when this exact token is the current admitted PROVIDER
+    /// editor route and its Root epoch is still the accepted live epoch. The
+    /// draft-probe registry calls this before any dispatch; it never mints
+    /// authority itself. Lock order: caller takes NO probe-registry lock
+    /// across this call (route → probe only).
+    func assertLiveProviderRoute(token: String) -> G02HostRouteBinding? {
+        guard G02HostRouteContextProvider.isCanonicalRouteToken(token) else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let epoch = acceptedEpochLocked(), let live = binding,
+              live.rootEpoch == epoch, live.route.token == token,
+              live.editorKind == "provider" else {
+            return nil
+        }
+        return live
     }
 
     public func currentRoute() -> RouteBinding? {

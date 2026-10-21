@@ -505,6 +505,40 @@ private fun StagedAttachmentTray(holder: ConversationFlowHolder) {
     }
 }
 
+/**
+ * Home DRAFT attachment tray: the SAME real lifecycle chip presentation as
+ * the thread composer (progress/cancel/retry/remove, actual name/MIME/size
+ * projection), driven by the draft-owner's rows (RootWorkspaceController)
+ * through explicit callbacks. It never renders a row the staging service
+ * did not actually produce, and an empty list renders nothing (no phantom
+ * header on Home).
+ */
+@Composable
+fun FloeDraftAttachmentTray(
+    rows: List<StagedAttachmentUi>,
+    onRemove: (String) -> Unit,
+    onRetry: (String) -> Unit,
+    onCancel: (String) -> Unit,
+) {
+    if (rows.isEmpty()) return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        rows.forEach { attachment ->
+            StagedAttachmentChip(
+                attachment = attachment,
+                onRemove = { onRemove(attachment.id) },
+                onRetry = { onRetry(attachment.id) },
+                onCancel = { onCancel(attachment.id) },
+            )
+        }
+    }
+}
+
 @Composable
 private fun StagedAttachmentChip(
     attachment: StagedAttachmentUi,

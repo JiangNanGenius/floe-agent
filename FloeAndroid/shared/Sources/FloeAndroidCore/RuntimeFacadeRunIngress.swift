@@ -296,6 +296,9 @@ public struct RunPersistenceBundle: Sendable {
     /// temporary sessions carry nil by the RAM-only contract. Main binds the
     /// real store at bootstrap composition through the SAME bundle seam.
     public var discovery: SQLiteConversationDiscoveryStore?
+    /// Original ordinary-task progress on the same database; never a
+    /// temporary fallback and never Goal authority.
+    public var taskChecklist: TaskChecklistStore?
     public init(identity: RunExecutionIdentity,
                 conversations: any ConversationStore,
                 runs: any RunStore,
@@ -303,7 +306,8 @@ public struct RunPersistenceBundle: Sendable {
                 launches: any RunLaunchStore,
                 childRuns: (any ChildRunStoring)?,
                 intelligence: SQLiteIntelligenceStore?,
-                discovery: SQLiteConversationDiscoveryStore? = nil) {
+                discovery: SQLiteConversationDiscoveryStore? = nil,
+                taskChecklist: TaskChecklistStore? = nil) {
         self.identity = identity
         self.conversations = conversations
         self.runs = runs
@@ -312,6 +316,7 @@ public struct RunPersistenceBundle: Sendable {
         self.childRuns = childRuns
         self.intelligence = intelligence
         self.discovery = discovery
+        self.taskChecklist = taskChecklist
     }
 }
 
@@ -513,6 +518,41 @@ public actor RunModelAssembly {
               model.isEnabled else { return nil }
         let caps = effectiveCapabilities(of: model)
         return caps.contains(.vision) && caps.contains(.text) ? model : nil
+    }
+
+    /// goal-core batch (additive): the trusted model resolution for the
+    /// manual `conversation.compact` lane, mirroring the ORIGINAL
+    /// `ConversationCenter.providerAndModel(modelID:)` role. A
+    /// caller-supplied modelID is VALIDATED against the real catalog
+    /// (enabled model + enabled owning provider); an invalid explicit
+    /// identity refuses typed (never silently assumed, never silently
+    /// swapped). With no explicit id, the persisted default-agent
+    /// preference is used — the same selected-model authority the composer
+    /// chip drives; never first-usable. No resolvable default is the
+    /// original no-model state: nil (the caller then keeps the
+    /// deterministic hybrid engine, exactly like the original fallback).
+    public func resolvePreferred(modelID: UUID?) async throws -> ResolvedPair? {
+        guard let modelID else {
+            let preferences = try await configurationStore.preferences()
+            guard let defaultID = preferences.defaultAgentModelID,
+                  let model = try await configurationStore.model(id: defaultID),
+                  model.isEnabled,
+                  let provider = try await configurationStore.provider(id: model.providerID),
+                  provider.isEnabled else {
+                return nil
+            }
+            return ResolvedPair(provider: provider, model: model, approvalCredentials: nil)
+        }
+        guard let model = try await configurationStore.model(id: modelID) else {
+            throw RunDomainError(.needsConfiguration, .modelDisabled)
+        }
+        guard model.isEnabled,
+              let provider = try await configurationStore.provider(id: model.providerID),
+              provider.isEnabled else {
+            throw RunDomainError(.needsConfiguration,
+                                 model.isEnabled ? .providerDisabled : .modelDisabled)
+        }
+        return ResolvedPair(provider: provider, model: model, approvalCredentials: nil)
     }
 
     /// Builds the ORIGINAL approval policy for the persisted task policy.

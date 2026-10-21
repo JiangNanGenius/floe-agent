@@ -150,7 +150,9 @@ final class RuntimeFacadeConfigStoreTests: XCTestCase {
         }
         let facade = makeFacade()
         let page = try await facade.listProviders()
-        let objects = try XCTUnwrap(JSONSerialization.jsonObject(with: page) as? [[String: Any]])
+        let objects = try XCTUnwrap(
+            (try JSONSerialization.jsonObject(with: page) as? [String: Any])?["rows"]
+                as? [[String: Any]])
         XCTAssertEqual(objects.count, kinds.count)
         let listedKinds = Set(objects.compactMap { $0["kind"] as? String })
         XCTAssertEqual(listedKinds, Set(kinds.map { $0.0.rawValue }),
@@ -384,7 +386,9 @@ final class RuntimeFacadeConfigStoreTests: XCTestCase {
         let store = ModelConfigurationStore(database: database)
         let before = try await store.providers().count
         let page = try await facade.catalogSearch(query: "fixture", filter: .available)
-        let objects = try XCTUnwrap(JSONSerialization.jsonObject(with: page) as? [[String: Any]])
+        let objects = try XCTUnwrap(
+            (try JSONSerialization.jsonObject(with: page) as? [String: Any])?["rows"]
+                as? [[String: Any]])
         XCTAssertFalse(objects.isEmpty)
         // Hidden presets (static model's hiddenPresetIDs) are NEVER returned.
         let ids = Set(objects.compactMap { $0["presetID"] as? String })
@@ -399,7 +403,8 @@ final class RuntimeFacadeConfigStoreTests: XCTestCase {
     func testConfiguredPresetIDsComeFromRealStoreJoin() async throws {
         let facade = makeFacade()
         let page = try await facade.catalogSearch(query: "fixture", filter: .configured)
-        XCTAssertEqual((try JSONSerialization.jsonObject(with: page) as? [Any])?.count ?? 0, 0,
+        XCTAssertEqual(((try JSONSerialization.jsonObject(with: page) as? [String: Any])?["rows"]
+                        as? [Any])?.count ?? 0, 0,
                        "nothing configured initially")
         // Persist a provider WITH preset identity through the bundle path.
         let store = ModelConfigurationStore(database: database)
@@ -417,7 +422,8 @@ final class RuntimeFacadeConfigStoreTests: XCTestCase {
         // direct store.saveProviderBundle. Without a save through the facade
         // the join is empty — proving reads come from the real store, not a
         // RAM assumption.
-        XCTAssertEqual((try JSONSerialization.jsonObject(with: configuredPage) as? [Any])?.count ?? 0, 0)
+        XCTAssertEqual(((try JSONSerialization.jsonObject(with: configuredPage) as? [String: Any])?["rows"]
+                        as? [Any])?.count ?? 0, 0)
     }
 
     // MARK: - Web-search backend

@@ -84,9 +84,12 @@ class McpEditorSlot internal constructor(val identity: McpEditorIdentity) {
     var lastConsumedSaveFailureSequence: Long = 0L
         private set
 
-    /** ⇄ revision observed at seed time; the save carries it as baseRevision
-     * so a changed saved config is an explicit host-side conflict. */
-    var baseRevision: Long? = null
+    /** ⇄ the REAL resource+digest revision pair observed at seed time; the
+     * save carries it as baseRevision (envelope CAS + the frozen Set-lease
+     * baseRevision) so a changed saved config is an explicit host-side
+     * conflict. Null ONLY for a new identity, whose creation save must ride
+     * the Set lease with the domain's "0" absent-row marker. */
+    var baseRevision: McpServerRevisionUi? = null
         private set
 
     fun openWith(newSeed: McpEditorSeedUi, initial: McpDraftSnapshot) {

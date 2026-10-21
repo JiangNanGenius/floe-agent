@@ -120,6 +120,7 @@ class RuntimeBootstrapCoordinatorTest {
         scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined),
         ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.Unconfined,
         corpusInstaller: RuntimeSecurityCorpusInstaller? = null,
+        catalogFreezer: RuntimeProviderCatalogFreezer? = null,
         diagnostics: (String) -> Unit = {},
     ): RuntimeBootstrapCoordinator = RuntimeBootstrapCoordinator(
         native = native,
@@ -132,6 +133,7 @@ class RuntimeBootstrapCoordinatorTest {
         timings = timings,
         diagnostics = diagnostics,
         corpusInstaller = corpusInstaller,
+        catalogFreezer = catalogFreezer,
     )
 
     // MARK: - Structured response builders
@@ -325,6 +327,72 @@ class RuntimeBootstrapCoordinatorTest {
         // refusal because nothing was frozen. No synthetic/permissive gate.
         assertEquals(RuntimeBootstrapCapability.OwnedStoreReady, subject.capability.value)
         assertTrue(diagnostics.contains("security_corpus_freeze_-423"))
+        assertEquals(listOf("load", "start:1", "status"), native.events.toList())
+    }
+
+    @Test
+    fun testTrustedCatalogFreezeRunsInTheSamePreStartBlock() = runBlocking {
+        val native = FakeNative()
+        val exchange = FakeExchange()
+        exchange.enqueue { request -> gatewayResponse(request.requestId()) }
+        exchange.enqueue(effectPageResponder("", sequence = 0))
+        exchange.enqueue(effectPageResponder(acceptedEffectJson(), sequence = 1))
+        val gateway = MutableStateFlow<SecretGatewayCapability>(SecretGatewayCapability.Ready)
+        val subject = coordinator(
+            native, exchange, gateway,
+            corpusInstaller = RuntimeSecurityCorpusInstaller { native.events.add("corpus"); 0 },
+            catalogFreezer = RuntimeProviderCatalogFreezer { native.events.add("catalog"); 1 },
+        )
+        subject.bootstrap()
+        assertEquals(RuntimeBootstrapCapability.OwnedStoreReady, subject.capability.value)
+        // The trusted official catalog is frozen BEFORE the Root start (the
+        // ordinary install reads those exact bytes); idempotent status 1 is
+        // an accepted success and is never diagnosed.
+        assertEquals(listOf("corpus", "catalog", "load", "start:1", "status"),
+            native.events.toList())
+    }
+
+    @Test
+    fun testCatalogFreezeRefusalIsDiagnosedAndBootstrapContinues() = runBlocking {
+        val native = FakeNative()
+        val exchange = FakeExchange()
+        exchange.enqueue { request -> gatewayResponse(request.requestId()) }
+        exchange.enqueue(effectPageResponder("", sequence = 0))
+        exchange.enqueue(effectPageResponder(acceptedEffectJson(), sequence = 1))
+        val gateway = MutableStateFlow<SecretGatewayCapability>(SecretGatewayCapability.Ready)
+        val diagnostics = CopyOnWriteArrayList<String>()
+        val subject = coordinator(
+            native, exchange, gateway,
+            catalogFreezer = RuntimeProviderCatalogFreezer { -433 },
+            diagnostics = { diagnostics.add(it) },
+        )
+        subject.bootstrap()
+        assertEquals(RuntimeBootstrapCapability.OwnedStoreReady, subject.capability.value)
+        // Not frozen -> catalog commands keep their typed catalogNotInjected
+        // refusal; the lifecycle is never fabricated or aborted.
+        assertTrue(diagnostics.contains("provider_catalog_freeze_-433"))
+        assertEquals(listOf("load", "start:1", "status"), native.events.toList())
+    }
+
+    @Test
+    fun testCatalogFreezerFailureIsDiagnosedWithoutAbortingBootstrap() = runBlocking {
+        val native = FakeNative()
+        val exchange = FakeExchange()
+        exchange.enqueue { request -> gatewayResponse(request.requestId()) }
+        exchange.enqueue(effectPageResponder("", sequence = 0))
+        exchange.enqueue(effectPageResponder(acceptedEffectJson(), sequence = 1))
+        val gateway = MutableStateFlow<SecretGatewayCapability>(SecretGatewayCapability.Ready)
+        val diagnostics = CopyOnWriteArrayList<String>()
+        val subject = coordinator(
+            native, exchange, gateway,
+            catalogFreezer = RuntimeProviderCatalogFreezer {
+                throw IllegalStateException("asset missing")
+            },
+            diagnostics = { diagnostics.add(it) },
+        )
+        subject.bootstrap()
+        assertEquals(RuntimeBootstrapCapability.OwnedStoreReady, subject.capability.value)
+        assertTrue(diagnostics.contains("provider_catalog_unavailable"))
         assertEquals(listOf("load", "start:1", "status"), native.events.toList())
     }
 

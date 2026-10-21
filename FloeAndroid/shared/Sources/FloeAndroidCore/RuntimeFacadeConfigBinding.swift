@@ -124,6 +124,10 @@ public actor ModelConfigurationCommandRouter {
             self.cursor = cursor
         }
 
+        /// Retained for documentation only: the frozen V3 validator refuses
+        /// the envelope `cursor` role on `command.submit` (run-event poll
+        /// only), so config read paging NEVER uses it — the authorized
+        /// payload continuation (`pageCursor`) is the sole seam.
         var cursorIndex: Int? {
             guard let cursor else { return nil }
             guard let value = Int(cursor), value >= 0 else {
@@ -178,13 +182,39 @@ public actor ModelConfigurationCommandRouter {
             let value: Data
             switch op {
             case .providersList:
-                value = try await facade.listProviders(cursor: view.cursorIndex)
+                // Closed read payload: optional host snapshot operation plus
+                // the single OPTIONAL bounded continuation cursor (Main
+                // MAIN_CONFIG_READ_PAGING_DECISION_20261021). First-page
+                // payloads stay valid; the envelope cursor role is unchanged
+                // (run-event only) and the facade re-checks the original
+                // composer bounds.
+                var providersCursor: Int?
+                if let payload = view.payload {
+                    try ConfigJSON.closed(payload,
+                                          allowed: ["operation", "cursor"],
+                                          context: "providersList")
+                    providersCursor = try ModelConfigurationFacade.pageCursor(from: payload)
+                }
+                value = try await facade.listProviders(cursor: providersCursor)
                 return Self.completed(value)
             case .modelsList:
                 var providerID: UUID?
+                var modelsCursor: Int?
+                var modelRead: ConfigModelReadRequest?
                 if let payload = view.payload {
+                    // ADDITIVE closed opt-in member `modelRead` (job-
+                    // 7d4d4e41017f4391): `modelRead:{}` starts an original
+                    // full-row detail read and
+                    // `modelRead:{id,digest,offset}` continues it on the
+                    // SAME provider filter and row-index cursor. Without it
+                    // the page grammar and behavior are EXACTLY the legacy
+                    // ones (including the bounded `itemDoesNotFitPage`
+                    // refusal); no new command tuple, no scope change, no
+                    // envelope-cursor reinterpretation. A malformed or
+                    // unknown-member modelRead refuses typed and is NEVER
+                    // silently downgraded to a legacy page.
                     try ConfigJSON.closed(payload,
-                                          allowed: ["providerID"],
+                                          allowed: ["providerID", "cursor", "modelRead"],
                                           context: "modelsList")
                     if let raw = payload["providerID"] as? String {
                         guard let parsed = UUID(uuidString: raw) else {
@@ -193,9 +223,12 @@ public actor ModelConfigurationCommandRouter {
                         }
                         providerID = parsed
                     }
+                    modelsCursor = try ModelConfigurationFacade.pageCursor(from: payload)
+                    modelRead = try ConfigModelReadPayload.parse(payload["modelRead"])
                 }
                 value = try await facade.listModels(providerID: providerID,
-                                                    cursor: view.cursorIndex)
+                                                    cursor: modelsCursor,
+                                                    modelRead: modelRead)
                 return Self.completed(value)
             case .catalogSearch:
                 guard let payload = view.payload,
@@ -203,13 +236,14 @@ public actor ModelConfigurationCommandRouter {
                     throw ConfigDomainError(code: .invalidEnvelope, reason: "catalogQueryMissing")
                 }
                 try ConfigJSON.closed(payload,
-                                      allowed: ["query", "filter"],
+                                      allowed: ["query", "filter", "cursor"],
                                       required: ["query"],
                                       context: "catalogSearch")
                 let filter = try ModelConfigurationFacade.catalogFilter(from: payload["filter"] as? String)
+                let catalogCursor = try ModelConfigurationFacade.pageCursor(from: payload)
                 value = try await facade.catalogSearch(query: query,
                                                        filter: filter,
-                                                       cursor: view.cursorIndex)
+                                                       cursor: catalogCursor)
                 return Self.completed(value)
             case .preferencesGet:
                 let reply = try await facade.getPreferences()
@@ -310,15 +344,22 @@ public actor ModelConfigurationCommandRouter {
 
     // MARK: provider.save closed request forms
 
-    /// Set / Keep / Clear — one command name, three forms, all bound to the
+    /// Set / Keep / Clear — one command name, three full forms — PLUS the
+    /// CLOSED existing-row KEEP metadata variant (Main decision
+    /// MAIN_PROVIDER_COMPACT_METADATA_DECISION_20261021), all bound to the
     /// ACTUAL ingress semantics (file 5). The form is decided ONLY from the
     /// closed payload shape:
-    ///   set:   {"secretIntent":"set","ingressToken":"int:v1:<32hex>"}
-    ///   keep:  {"secretIntent":"keep","candidate":{...}}
-    ///   clear: {"secretIntent":"clear","candidate":{...}}
+    ///   set:      {"secretIntent":"set","ingressToken":"int:v1:<32hex>"}
+    ///   keep:     {"secretIntent":"keep","candidate":{...}}
+    ///   keep-meta:{"secretIntent":"keep","metadata":{"id":<uuid>,"isEnabled":<bool>}}
+    ///   clear:    {"secretIntent":"clear","candidate":{...}}
     /// Raw candidate/secret JSON is refused by ConfigJSON's credential-name
     /// scan; the Set candidate body NEVER appears in the envelope (it lives
-    /// only in the one-shot lease).
+    /// only in the one-shot lease). `metadata` is mutually exclusive with
+    /// candidate/ingressToken and valid ONLY under `keep`: any mixed form
+    /// refuses BEFORE any effect. Large profiles reach the full-fidelity
+    /// edit through the closed `modelSetRef` INSIDE the candidate (staged
+    /// trusted-host set; exactly one of selectedModels/modelSetRef there).
     private func handleProviderSave(_ view: EnvelopeView) async -> Data {
         guard let payload = view.payload else {
             return Self.rejected(ConfigDomainError(code: .invalidEnvelope,
@@ -331,27 +372,48 @@ public actor ModelConfigurationCommandRouter {
             // unknown-field refusal. (camelCase is folded by the scanner.)
             try ConfigJSON.assertNoCredentialNames(payload)
             try ConfigJSON.closed(payload,
-                                  allowed: ["secretIntent", "ingressToken", "candidate"],
+                                  allowed: ["secretIntent", "ingressToken", "candidate",
+                                            "metadata"],
                                   required: ["secretIntent"],
                                   context: "providerSave")
             guard let intent = payload["secretIntent"] as? String else {
                 throw ConfigDomainError(code: .invalidEnvelope, reason: "providerSaveIntentShape")
             }
+            let hasMetadata = payload["metadata"] != nil
             switch intent {
             case "set":
                 guard let token = payload["ingressToken"] as? String,
-                      payload["candidate"] == nil else {
+                      payload["candidate"] == nil, !hasMetadata else {
                     throw ConfigDomainError(code: .invalidEnvelope, reason: "providerSaveSetInputs")
                 }
                 let execution = await facade.saveProviderSet(ingressToken: token,
                                                              envelopeRevision: view.revision)
                 return Self.project(execution)
             case "keep":
+                if hasMetadata {
+                    // Mixed forms refuse PRE-EFFECT, before any ownership,
+                    // DB or vault step.
+                    guard payload["candidate"] == nil,
+                          payload["ingressToken"] == nil else {
+                        throw ConfigDomainError(code: .invalidEnvelope,
+                                                reason: "providerSaveMixedForm")
+                    }
+                    let metadata = try requireMetadata(payload)
+                    let execution = await facade.saveProviderMetadataEnabled(
+                        providerID: metadata.providerID,
+                        isEnabled: metadata.isEnabled,
+                        envelopeRevision: view.revision)
+                    return Self.project(execution)
+                }
                 let candidate = try requireCandidate(payload)
                 let execution = await facade.saveProviderKeep(candidateJSON: candidate,
                                                               envelopeRevision: view.revision)
                 return Self.project(execution)
             case "clear":
+                guard !hasMetadata else {
+                    throw ConfigDomainError(code: .invalidEnvelope,
+                                            reason: "providerSaveMixedForm")
+                }
                 let candidate = try requireCandidate(payload)
                 let execution = await facade.saveProviderClear(candidateJSON: candidate,
                                                                envelopeRevision: view.revision)
@@ -365,6 +427,29 @@ public actor ModelConfigurationCommandRouter {
             return Self.rejected(ConfigDomainError(code: .invalidEnvelope,
                                                    reason: "providerSaveUnreadable"))
         }
+    }
+
+    /// The closed metadata variant: exactly `{id,isEnabled}` with a real
+    /// UUID string and an explicit JSON boolean. No generic record patch,
+    /// no extra field, no coerced shape (Main approvedBoundary).
+    private func requireMetadata(_ payload: [String: Any]) throws
+        -> (providerID: UUID, isEnabled: Bool)
+    {
+        guard let metadataObject = payload["metadata"] as? [String: Any] else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "providerSaveMetadataShape")
+        }
+        try ConfigJSON.closed(metadataObject,
+                              allowed: ["id", "isEnabled"],
+                              required: ["id", "isEnabled"],
+                              context: "providerSaveMetadata")
+        guard let raw = metadataObject["id"] as? String,
+              let providerID = UUID(uuidString: raw) else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "providerSaveMetadataID")
+        }
+        guard let isEnabled = metadataObject["isEnabled"] as? Bool else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "providerSaveMetadataFlag")
+        }
+        return (providerID, isEnabled)
     }
 
     private func requireCandidate(_ payload: [String: Any]) throws -> Data {
@@ -382,10 +467,31 @@ public actor ModelConfigurationCommandRouter {
         return data
     }
 
+    /// Frame budget for the committed VALUE document (Main's 2026-10-21
+    /// full-fidelity output review). The ACTUAL effect-item ceiling is
+    /// `RuntimeEffectItem.Limits.maximumItemEncodedBytes = 47_616`
+    /// (FacadeEffectPump.swift:275 = 49_152 page - 1_536), and the mailbox
+    /// converts an item that cannot fit into
+    /// `failed(frameBudgetExceeded)` (FacadeCommandMailbox.swift:728-741) —
+    /// which would FALSELY report an already-committed, readback-verified
+    /// large save. This router does not own the item wrapper or the
+    /// consumer-side escaping, so it bounds the completed VALUE object at
+    /// 47_616 - 1_536 = 46_080 bytes of max(wire, canonical) serialized
+    /// UTF-8. NO frame/page/payload budget changes: only the projection
+    /// shape adapts (full list when it fits; otherwise an explicit bounded
+    /// summary whose models live behind the existing authoritative
+    /// `config.models.list` readback).
+    static let maximumCommittedValueBytes = 46_080
+
     /// Terminal projection of the save execution. NEVER presents queue
     /// acceptance as saved state; `committed` carries ONLY post-readback
     /// canonical models + the honest sync flags; failures keep the recorded
     /// C0/C1 disposition so later lanes/UI can explain retry truthfully.
+    /// A large commit is projected as an EXPLICIT summary (counts + the
+    /// actual persisted revision + all settlement flags) rather than an
+    /// oversized item the transport would have to refuse — Main's rule: a
+    /// projection problem must never masquerade as a DB rollback or a lost
+    /// terminal.
     static func project(_ execution: ProviderSaveExecution) -> Data {
         switch execution {
         case .committed(let committed):
@@ -399,6 +505,12 @@ public actor ModelConfigurationCommandRouter {
                 "canonicalModels": models,
                 "deletedModelIDs": committed.deletedModelIDs.map { $0.uuidString },
                 "disabledModelIDs": committed.disabledModelIDs.map { $0.uuidString },
+                // Explicit totals in EVERY committed shape (Main: expose
+                // counts, never silently truncate; small saves keep the
+                // full legacy arrays alongside).
+                "canonicalModelCount": models.count,
+                "deletedModelCount": committed.deletedModelIDs.count,
+                "disabledModelCount": committed.disabledModelIDs.count,
                 "syncPending": committed.syncPending,
                 // MC-R1: the ACTUAL PERSISTED (advanced) provider revision.
                 "revision": ["resourceID": committed.providerRevision.resourceID,
@@ -411,7 +523,47 @@ public actor ModelConfigurationCommandRouter {
             // syncError stays an explicit JSON null when absent (never a
             // phantom string on ordinary local saves).
             object["syncError"] = committed.syncError ?? NSNull()
-            return completedValue(object)
+            if committed.metadataOnly {
+                // Compact existing-row metadata commit (the models arrays
+                // are legitimately empty here: NOTHING model-side was
+                // written). Additive marker only; legacy consumers read
+                // the same revision/flags.
+                object["metadataOnly"] = true
+            }
+            let fullWire = FacadeFrameBudget.serializedBytes(object)
+            let fullCanonical = FacadeFrameBudget.canonicalSerializedBytes(object) ?? fullWire
+            if max(fullWire, fullCanonical) <= maximumCommittedValueBytes {
+                return completedValue(object)
+            }
+            // Bounded, truthful summary for a proven-committed large
+            // result: every settlement/ownership flag survives; the model
+            // identity sets are reported as COUNTS with an explicit
+            // projection marker and empty inline arrays. The authoritative
+            // rows are already durable (the runner reached `committed`
+            // only after the ORIGINAL readback passed), and both editors
+            // re-read them through the existing bounded
+            // `config.models.list` continuation — no new command, no
+            // invented offset, no silent drop.
+            var summary: [String: Any] = [
+                "state": "committed",
+                "projection": "summary",
+                "providerID": committed.providerID.uuidString,
+                "canonicalModels": [Any](),
+                "deletedModelIDs": [Any](),
+                "disabledModelIDs": [Any](),
+                "canonicalModelCount": models.count,
+                "deletedModelCount": committed.deletedModelIDs.count,
+                "disabledModelCount": committed.disabledModelIDs.count,
+                "syncPending": committed.syncPending,
+                "revision": ["resourceID": committed.providerRevision.resourceID,
+                             "version": committed.providerRevision.version],
+                "leaseAdmissionCloseFailed": committed.leaseAdmissionCloseFailed,
+                "presetSidecarRecorded": committed.presetSidecarRecorded,
+                "writeIntentFinalized": committed.writeIntentFinalized,
+            ]
+            summary["syncError"] = committed.syncError ?? NSNull()
+            if committed.metadataOnly { summary["metadataOnly"] = true }
+            return completedValue(summary)
         case .failed(let failed):
             var object: [String: Any] = [
                 "errorCode": failed.error.code.rawValue,

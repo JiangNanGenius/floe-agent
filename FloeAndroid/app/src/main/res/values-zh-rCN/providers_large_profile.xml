@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  大型服务商配置保存文案（job-2e38 批次，2026-10-21）。
+  启用/停用现在通过紧凑的既有行元数据保留路径完成（有效 512 模型配置不再受字节上限拒绝）；
+  这两条仅覆盖可信宿主模型集暂存路径的诚实、可操作失败。英文原文见
+  values/providers_large_profile.xml。
+-->
+<resources>
+    <string name="providers_staging_unavailable">无法准备好这个服务商的模型列表以进行保存，请重试。</string>
+    <string name="providers_save_details_too_large">这个服务商的名称或请求头过大，无法保存。请缩短后重试。</string>
+</resources>

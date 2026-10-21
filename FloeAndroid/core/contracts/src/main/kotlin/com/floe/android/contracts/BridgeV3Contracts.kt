@@ -273,6 +273,18 @@ object BridgeV3CommandMatrix {
         rule("privacy.summary.get", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "privacy"),
         rule("privacy.history.clear", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "privacy", revision = true),
         rule("privacy.modelConfiguration.clear", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "privacy", revision = true),
+
+        // goal-core code batch (2026-10-21, job-7efd60bb51d14f02): the three
+        // additive run-control tuples, APPEND-ONLY and byte-aligned with the
+        // Swift `BridgeV3.commandRules` and the golden matrix. plan.accept
+        // rides LAUNCH with the existing-conversation digest CAS; goal.confirm
+        // is a conversationLifecycle identity+revision confirm (NO run role —
+        // the original confirm works after the run is terminal);
+        // conversation.compact is a durable-history operation guarded
+        // core-side by quiescence + the atomic writer proof. No child.create.
+        rule("plan.accept", BridgeV3Scope.Kind.LAUNCH, revision = true),
+        rule("goal.confirm", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE, revision = true),
+        rule("conversation.compact", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
     )
 
     fun entry(command: String, scope: BridgeV3Scope.Kind): BridgeV3CommandRule? =

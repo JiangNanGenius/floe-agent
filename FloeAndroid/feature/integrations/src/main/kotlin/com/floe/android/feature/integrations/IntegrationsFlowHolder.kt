@@ -635,6 +635,18 @@ class IntegrationsFlowHolder(
         }
     }
 
+    /**
+     * The ONE explicit local-network permission/recovery action
+     * (Android 17 / API 37). The module only forwards the user's tap on
+     * the HOST-projected guidance row; the platform dialog/settings page,
+     * the state read-back and the chained (captured) retry all stay host-
+     * owned, so the seam gains no permission authority of its own — a
+     * refusal here means nothing started.
+     */
+    fun localNetworkGuidanceAction(): IntegrationsFlowResult =
+        if (host.localNetworkGuidanceAction()) IntegrationsFlowResult.Accepted
+        else rejected(RejectedReason.HOST_UNAVAILABLE)
+
     /** Rendering latch: "Cancelling…" while the host still projects the SAME
      * connecting generation. Any other state clears it. */
     fun isMcpRefreshCancelling(row: McpServerRowUi): Boolean {

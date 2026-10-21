@@ -287,6 +287,10 @@ data class PlanUi(
     /** Revision+digest identity: an accept binds to the EXACT revision the
      * user saw (host authority validates on accept; never fabricate one). */
     val revision: Revision,
+    /** The durable plan's ACTUAL `digest` string from the `conversation.get`
+     * plan projection (≤128). Null = not supplied by the wire: the accept
+     * action then refuses honestly instead of sending a fabricated digest. */
+    val digest: String? = null,
 ) {
     companion object {
         /** ⇄ PlanStatus awaitingInput || ready — the active-plan window. */
@@ -295,7 +299,9 @@ data class PlanUi(
     }
 }
 
-/** ⇄ ConversationGoal subset for the status strip. */
+/** ⇄ ConversationGoal subset for the status strip (additive goal-mode fields
+ * default to "not supplied"; the confirmation affordance requires the REAL
+ * revision identity members from the `conversation.get` goal projection). */
 data class GoalUi(
     val id: String,
     val objective: String,
@@ -303,7 +309,154 @@ data class GoalUi(
     val statusRaw: String,
     val stepsCompleted: Int,
     val stepsTotal: Int,
+    /** Latest non-terminal goal's durable revision + its CAS identity,
+     * verbatim from the wire (`revisionVersion` is the envelope version the
+     * `goal.confirm` command must echo). Null = no proven identity. */
+    val revision: Int = 0,
+    val revisionResourceID: String? = null,
+    val revisionVersion: String? = null,
+    val criteriaTotal: Int = 0,
+    val criteriaSatisfied: Int = 0,
+    val criteriaAwaitingUserConfirmation: Int = 0,
+    val cycleCount: Int = 0,
+    val modelCallCount: Int = 0,
+    val totalIterationCount: Int = 0,
 )
+
+/**
+ * The ORIGINAL durable goal row, reconstructed ONLY from the bounded
+ * `conversation.get.detail` canonical-JSON read (exact UTF-8 byte offsets,
+ * digest/revision proven across pages). The summary NEVER substitutes for
+ * it: criteria/steps/evidence/blockers/budget text exists only here. No
+ * checklist field exists on the goal by contract (the original
+ * TaskChecklistStore read is a separate Main-owned lane; nothing here may
+ * fake it).
+ */
+data class GoalCriterionRowUi(
+    val id: String,
+    val text: String,
+    val isSatisfied: Boolean,
+    val evidenceIDs: List<String>,
+    val requiresUserConfirmation: Boolean,
+)
+
+data class GoalStepRowUi(
+    val id: String,
+    val title: String,
+    val detail: String,
+    /** ⇄ GoalStepStatus rawValue ("pending"/"inProgress"/"completed"/
+     * "failed"/"skipped"). */
+    val statusRaw: String,
+    val order: Int,
+)
+
+data class GoalEvidenceRowUi(
+    val id: String,
+    /** ⇄ GoalEvidence.Kind rawValue. */
+    val kindRaw: String,
+    val reference: String,
+    val summary: String,
+    val fingerprint: String?,
+)
+
+data class GoalDetailUi(
+    val id: String,
+    val objective: String,
+    val statusRaw: String,
+    val revision: Int?,
+    val sourcePlanID: String?,
+    val sourcePlanDigest: String?,
+    val criteria: List<GoalCriterionRowUi>,
+    val steps: List<GoalStepRowUi>,
+    val evidence: List<GoalEvidenceRowUi>,
+    /** Explicit null = member absent from the durable row; empty list =
+     * genuinely empty (the two render differently, never conflated). */
+    val blockingConditions: List<String>?,
+    val stoppingConditions: List<String>?,
+    val maxCycles: Int?,
+    val maxModelCalls: Int?,
+    val cycleCount: Int,
+    val modelCallCount: Int,
+    val totalIterationCount: Int,
+)
+
+/** The ORIGINAL durable plan row (same detail read, `kind:"plan"`). */
+data class PlanSectionRowUi(
+    val id: String,
+    val title: String,
+    val body: String,
+    val order: Int,
+)
+
+data class PlanAssumptionRowUi(
+    val id: String,
+    val text: String,
+    val isAccepted: Boolean,
+)
+
+data class PlanRiskRowUi(
+    val id: String,
+    val text: String,
+    val mitigation: String?,
+    /** ⇄ PlanRisk.Severity rawValue. */
+    val severityRaw: String,
+)
+
+data class PlanCriterionRowUi(
+    val id: String,
+    val text: String,
+    val verification: String,
+)
+
+data class PlanDetailUi(
+    val id: String,
+    val revision: Int,
+    /** ⇄ PlanStatus rawValue. */
+    val statusRaw: String,
+    val title: String,
+    val summary: String,
+    val sections: List<PlanSectionRowUi>,
+    val assumptions: List<PlanAssumptionRowUi>,
+    val risks: List<PlanRiskRowUi>,
+    val criteria: List<PlanCriterionRowUi>,
+    val digest: String?,
+)
+
+/** The bounded detail-read state for one conversation row (goal or plan).
+ * All-or-nothing: READY carries ONLY a fully accumulated + digest-proven
+ * canonical row; any mid-chain refusal keeps the LAST state visible and
+ * reports typed failure honestly (never a partial row). */
+/**
+ * The ORIGINAL durable task-checklist row (`TaskChecklistStore`) read over
+ * the SAME `conversation.get.detail` wire with `kind:"checklist"`. Its
+ * step evidence is MODEL-AUTHORED progress material: `finished` means every
+ * step settled (completed OR cancelled) and NEVER proves Goal
+ * confirmation/completion; cancelled steps stay distinct from completed
+ * ones. Ordinary sessions only — the temporary ceiling has no checklist
+ * producer by contract.
+ */
+data class ChecklistDetailUi(
+    /** The reply identity: the ACTUAL checklist.runID. */
+    val runID: String,
+    val revision: Int,
+    val title: String,
+    /** Reply-level status: "finished" (all steps settled, including
+     * cancelled) or "inProgress". */
+    val statusRaw: String,
+    val steps: List<ChecklistStepUi>,
+)
+
+sealed interface PlanGoalDetailStateUi {
+    data object Idle : PlanGoalDetailStateUi
+    data object Loading : PlanGoalDetailStateUi
+    /** The durable row genuinely is not there (native absence reply or the
+     * checklist `notFound` typed refusal — never presented as an error). */
+    data object Absent : PlanGoalDetailStateUi
+    data class Failed(val code: String) : PlanGoalDetailStateUi
+    data class GoalReady(val row: GoalDetailUi) : PlanGoalDetailStateUi
+    data class PlanReady(val row: PlanDetailUi) : PlanGoalDetailStateUi
+    data class ChecklistReady(val row: ChecklistDetailUi) : PlanGoalDetailStateUi
+}
 
 /** ⇄ TaskChecklist step statuses. */
 enum class ChecklistStepStatusUi(val swiftRaw: String) {
@@ -667,6 +820,30 @@ data class ThreadUiState(
     /** ⇄ skill-capability availability surfaced in chat selectors
      * (enabled+configured+usable; admin pages are a later package). */
     val capabilityChips: List<CapabilityChipUi>,
+    /** The proven durable task-policy CAS pair (`taskPolicy.<uuid>` /
+     * `updatedAt`) read ONLY from an actual `conversation.get` taskPolicy
+     * row or `run.snapshot` `policyRevision`. Null = no proven revision:
+     * a policy update refuses instead of sending a fabricated version. */
+    val taskPolicyRevision: Revision? = null,
+    /** Native raw vocabulary of the persisted row (absent = unknown; NEVER
+     * a guessed default — the display shows the raw machine value only in
+     * diagnostics, an honest pending line otherwise). */
+    val taskRecoveryPolicyRaw: String? = null,
+    val taskNotificationPolicyRaw: String? = null,
+    /** `conversation.get` availability vocabulary
+     * ("projected"/"trimmed"/"absent"), verbatim from the reply. TRIMMING
+     * is never conflated with ABSENCE: a trimmed page shows its counts as
+     * honestly incomplete and offers the bounded detail read; an absent
+     * page shows nothing. Null = a legacy reply without the members. */
+    val planAvailabilityRaw: String? = null,
+    val goalAvailabilityRaw: String? = null,
+    /** Per-run post-run goal-REVIEW/continuation registry activity from the
+     * authoritative `run.snapshot` (`none`/`active`/`stopping`). This is
+     * the REAL activity readback: an inactive goal STATUS is not a stopped
+     * proof, `alreadyRequested` is not a settled proof, and flipping to
+     * `none` is the only settlement proof. Runs the native reply omits
+     * simply have no entry (never assumed active or settled). */
+    val goalReviewByRun: Map<String, String> = emptyMap(),
 )
 
 /** ⇄ ImportantFileShortcut (host-projected working set; this module never

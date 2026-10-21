@@ -319,4 +319,10 @@
     <string name="composer_editor_replace_too_large">This replacement is too large to apply at once.</string>
     <string name="composer_editor_match_case">Match Case</string>
     <string name="composer_editor_whole_word">Whole Word</string>
+    <string name="goal_stop_review">Stop review</string>
+    <string name="goal_review_stopping">Stopping review…</string>
+    <string name="intelligence_trimmed_note">Some details were left out to fit the page.</string>
+    <string name="intelligence_read_full">Read full details</string>
+    <string name="menu_compact_now">Compact conversation</string>
+    <string name="menu_compacting">Compacting…</string>
 </resources>

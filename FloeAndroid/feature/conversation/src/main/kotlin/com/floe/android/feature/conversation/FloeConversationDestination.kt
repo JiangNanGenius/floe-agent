@@ -266,6 +266,19 @@ private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) 
                             selected = false,
                             onClick = { menuExpanded = false; holder.openGoalBuilder() },
                         )
+                        // The approved manual compaction control: ONE
+                        // explicit human gesture over `conversation.compact`
+                        // with the ACTUAL selected usable model (absent key
+                        // = native persisted default). The real status line
+                        // below the composer carries progress; the in-flight
+                        // latch refuses a second request.
+                        CupertinoMenuEntry(
+                            title = stringResource(
+                                if (holder.isCompacting) R.string.menu_compacting else R.string.menu_compact_now
+                            ),
+                            selected = false,
+                            onClick = { menuExpanded = false; holder.requestManualCompaction() },
+                        )
                         CupertinoMenuEntry(
                             title = stringResource(if (holder.exportInFlight) R.string.menu_exporting else R.string.menu_export_structured),
                             selected = false,

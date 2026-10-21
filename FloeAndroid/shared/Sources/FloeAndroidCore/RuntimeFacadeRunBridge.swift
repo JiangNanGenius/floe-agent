@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // RB-4 RunDomain — v3 binder + processor composition for the 15
-/// command.submit keys of the frozen run/child/event matrix (private source
+/// command.submit keys of the frozen run/child/event matrix PLUS the three
+/// additive goal-core controls (plan.accept / goal.confirm /
+/// conversation.compact, 2026-10-21 batch — 18 keys total; private source
 // candidate; NOT compiled, NOT executed, NOT registered).
 //
 // This is the RUN-DOMAIN-owned installation surface only. It never edits
@@ -46,8 +48,9 @@ public enum RunDomainFacade {
 
     // MARK: - Install (trusted host bootstrap glue)
 
-    /// Registers EXACTLY the 15 run-domain binder keys + processors over
-    /// the reviewed generation components. The host glue (Main integration)
+    /// Registers EXACTLY the run-domain binder keys + processors (15
+    /// original + the 3 additive goal-core controls, 2026-10-21) over the
+    /// reviewed generation components. The host glue (Main integration)
     /// calls this after `RuntimeFacadeBridge.install(for:)` and only when
     /// every non-optional component dependency is real; unregistered
     /// optional ports stay typed-unavailable inside the domain, never a
@@ -218,6 +221,15 @@ public enum RunDomainFacade {
                 reply = await domain.childList(envelope: envelope)
             case "child.entries":
                 reply = await domain.childEntries(envelope: envelope)
+            // goal-core code batch (2026-10-21): the three additive controls
+            // routed through the SAME mailbox/typed-result discipline.
+            case "plan.accept":
+                reply = await domain.planAccept(envelope: envelope, receipt: job.receipt,
+                                                correlation: job.correlationID)
+            case "goal.confirm":
+                reply = await domain.goalConfirm(envelope: envelope)
+            case "conversation.compact":
+                reply = await domain.conversationCompact(envelope: envelope)
             default:
                 // Defense in depth: nothing else routes here.
                 reply = RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
@@ -252,5 +264,13 @@ extension FacadeRunDomain {
                 await service.cancel()
             }
         }
+        // goal-core batch: the in-process goal review/continuation lane is
+        // real owned work — retirement FENCES new dispatch, CANCELS the
+        // actual Tasks (their network calls unwind cooperatively) and the
+        // reviewed drain still waits the exact lease to real handler return
+        // (never a detach-on-cancel false drain). Late settle callbacks for
+        // retired generations mutate nothing (reservation + epoch + durable
+        // re-reads are the guards).
+        cancelGoalReviewTasks()
     }
 }

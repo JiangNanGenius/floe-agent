@@ -563,6 +563,21 @@ public struct ConfigProviderSummary: Sendable {
     public let updatedAt: String
     public let syncRevision: Int64
     public let secret: ConfigProviderSecretStatus
+    /// BOUNDED ADDITIVE SECRET-FREE PROJECTION (Main authorization
+    /// 2026-10-20, MAIN_PROVIDER_CONFIGURATION_COMPLETION_REQUIRED): the
+    /// persisted catalog preset identity (`ProviderProfile.presetID`,
+    /// nil = manual/legacy) and the ORIGINAL vetted non-secret header map
+    /// (`ProviderProfile.nonSecretHeaders`). Both already live inside the
+    /// persisted profile JSON written by the ORIGINAL store; the previous
+    /// projection dropped them, so an existing-provider editor could not be
+    /// reconstructed losslessly and a Keep save from that editor silently
+    /// cleared them. They are NOT secrets: the save boundary already refuses
+    /// credential-named headers (ConfigJSON.assertNoCredentialMapKeys +
+    /// ProviderConfigurationValidation.forbiddenHeaderNames), and `secret{}`
+    /// below still carries presence + opaque reference only. The frozen
+    /// command/envelope/vault INPUT grammar is unchanged.
+    public let presetID: String?
+    public let nonSecretHeaders: [String: String]
 
     public func jsonObject() -> [String: Any] {
         [
@@ -583,6 +598,10 @@ public struct ConfigProviderSummary: Sendable {
                 "opaqueReference": secret.opaqueReference as Any,
                 "synchronizable": secret.synchronizable,
             ] as [String: Any],
+            // Additive (unknown to older readers, ignored by them; the App
+            // reader consumes them for exact editor/Keep reconstruction).
+            "presetID": presetID as Any,
+            "nonSecretHeaders": nonSecretHeaders as [String: String],
         ]
     }
 }
@@ -595,7 +614,11 @@ extension ProviderProfile {
     /// display-only and never a CAS token. `syncRevision` is the ACTUAL
     /// persisted value (after MC-R1 it advances on every gated edit, so a
     /// stale editor's token is durably detectable).
-    public func configSummary() -> ConfigProviderSummary {
+    /// `overridePresetID` carries the PERSISTED catalog preset from the
+    /// ORIGINAL preset sidecar (the providers table has no preset column and
+    /// `ProviderProfile.presetID` does not round-trip through the store);
+    /// when nil the profile's own value is used (in-memory projections).
+    public func configSummary(presetID overridePresetID: String? = nil) -> ConfigProviderSummary {
         ConfigProviderSummary(
             id: id,
             kind: kind,
@@ -609,7 +632,10 @@ extension ProviderProfile {
             createdAt: ConfigTimestampCodec.encode(createdAt),
             updatedAt: ConfigTimestampCodec.encode(updatedAt),
             syncRevision: syncRevision,
-            secret: ConfigProviderSecretStatus(reference: secretRef) ?? .none
+            secret: ConfigProviderSecretStatus(reference: secretRef) ?? .none,
+            // Secret-free persisted metadata (see ConfigProviderSummary).
+            presetID: overridePresetID ?? presetID,
+            nonSecretHeaders: nonSecretHeaders
         )
     }
 }

@@ -36,6 +36,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -64,8 +65,10 @@ import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
 import com.floe.android.feature.providers.FloeProviderSettingsDestination
 import com.floe.android.host.AttachmentPickerEffect
+import com.floe.android.host.LocalNetworkPermissionEffect
 import com.floe.android.host.RuntimeHost
 import com.floe.android.host.RuntimeHostProvider
+import com.floe.android.host.SkillsFolderPickerEffect
 import com.floe.android.host.rememberRuntimeHost
 import kotlinx.coroutines.launch
 
@@ -109,8 +112,37 @@ private fun FloeShellContent(
     onThemeModeChange: (FloeThemeMode) -> Unit,
     runtimeHost: RuntimeHost?,
 ) {
+    // G02 selection persistence contract: the SAVED key carries ONLY
+    // durable/ordinary selections. A live temporary surface is RAM truth
+    // owned by the application-scoped runtime host — it survives rotation/
+    // background/recreation because the host does, and it is gone with the
+    // process. A fresh process therefore restores Home or the last durable
+    // conversation and never reinterprets a lost temporary id as a blank
+    // ordinary chat; a genuinely Kept conversation persists through its
+    // remapped durable id and reopens ordinary (same-id).
     var selectionKey by rememberSaveable { mutableStateOf(SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK).key) }
-    var selection: SidebarSelection by mutableStateOf(selectionFromKey(selectionKey))
+    // The live visible surface. REMEMBERED: the previous non-remembered
+    // state object was recreated by every recomposition, which forced the
+    // navigation collector to re-derive the visible selection from the
+    // persisted key. Recreation re-initializes from the live RAM temporary
+    // (when one exists) or the durable persisted key.
+    val liveTemporaryIdAtRestore =
+        runtimeHost?.conversations?.activeTemporarySession()?.conversationId
+    var selection: SidebarSelection by remember {
+        mutableStateOf(restoredShellSelection(selectionKey, liveTemporaryIdAtRestore))
+    }
+
+    /** The one visible-selection write for every commit path: the live
+     * surface always updates; the persisted key follows ONLY for durable/
+     * ordinary targets, so a live temporary id never reaches saved state. */
+    fun commitVisibleSelection(next: SidebarSelection) {
+        selection = next
+        val liveTemporaryId =
+            runtimeHost?.conversations?.activeTemporarySession()?.conversationId
+        if (!isLiveTemporarySelection(next, liveTemporaryId)) {
+            selectionKey = next.key
+        }
+    }
     var settingsVisible by rememberSaveable { mutableStateOf(false) }
     var settingsSectionKey by rememberSaveable { mutableStateOf("") }
     var previewVisible by rememberSaveable { mutableStateOf(false) }
@@ -120,9 +152,15 @@ private fun FloeShellContent(
     val scope = androidx.compose.runtime.rememberCoroutineScope()
 
     // G02 host presentation effects: navigation / inspector / permissions /
-    // attachment picker. Observed here so composables stay observe-only.
+    // attachment picker / Skills folder picker / API 37 local-network
+    // permission dialog. Observed here so composables stay observe-only.
+    // The three platform launch lanes mount EXACTLY once each, under this
+    // same non-null RuntimeHost block; shell navigation and the temporary
+    // Keep promotion below are untouched by them.
     if (runtimeHost != null) {
         AttachmentPickerEffect(runtimeHost)
+        SkillsFolderPickerEffect(runtimeHost)
+        LocalNetworkPermissionEffect(runtimeHost)
         LaunchedEffect(runtimeHost) {
             // ONE serial consumer for host navigation. Collecting (instead of
             // keying a LaunchedEffect on the value) means clearing the
@@ -143,7 +181,11 @@ private fun FloeShellContent(
                         waitForAdmission = {
                             val currentTemporary =
                                 runtimeHost.conversations.activeTemporarySession()
-                            val visibleSelection = selectionFromKey(selectionKey)
+                            // The REMEMBERED live surface is the visible
+                            // selection (it tracks temporary truth that the
+                            // durable-only persisted key intentionally
+                            // does not carry).
+                            val visibleSelection = selection
                             val leavingConversation =
                                 visibleSelection is SidebarSelection.Conversation &&
                                     requested.key != visibleSelection.key
@@ -156,12 +198,40 @@ private fun FloeShellContent(
                             }
                         },
                         commit = { next ->
-                            selection = next
-                            selectionKey = next.key
+                            commitVisibleSelection(next)
                             drawerOpen = false
                             inspectorRoute = null
                         },
                     )
+                }
+            }
+        }
+        LaunchedEffect(runtimeHost) {
+            // ONE serial consumer for the scoped same-id Keep promotion.
+            // The committed terminal can arrive LATE (root-wide client, no
+            // per-holder filtering in trackOperation), so the durable kept
+            // selection reaches this shell ONLY while the EXACT origin
+            // surface is still current. A stale adoption is dropped: no
+            // old-id navigation, no fence-end of a new temporary session
+            // that now owns the surface. Rotation/background reconstruction
+            // of the same still-live origin re-adopts it as current first,
+            // so the genuine keep-stays-where-you-was path remains valid.
+            runtimeHost.conversations.keptPromotion.collect { promotion ->
+                if (promotion != null) {
+                    runtimeHost.conversations.keptPromotion.value = null
+                    val originEntry = runtimeHost.conversations
+                        .entryFor(promotion.originRef.conversationId)
+                    if (keptPromotionAppliesToVisibleOrigin(
+                            visible = selection,
+                            visibleConversationEpoch =
+                                originEntry?.holder?.session?.sessionEpoch,
+                            origin = promotion.originRef,
+                        )
+                    ) {
+                        commitVisibleSelection(
+                            SidebarSelection.Conversation(promotion.durableConversationId),
+                        )
+                    }
                 }
             }
         }
@@ -173,6 +243,12 @@ private fun FloeShellContent(
                     InspectorRoute(content = mapInspectorContent(content), conversationId = conversationId),
                 )
             }
+        }
+        // Sidebar chat rows read the SAME produced history wire as the Task
+        // Center; one scoped load when the shell binds the host (run-event
+        // settlement already refreshes through the host's own collector).
+        LaunchedEffect(runtimeHost) {
+            runtimeHost.conversations.reloadHistory()
         }
         val permissionsConversation by runtimeHost.conversations.permissionsRequest.collectAsState()
         LaunchedEffect(permissionsConversation) {
@@ -207,9 +283,12 @@ private fun FloeShellContent(
         // > drawer > base navigation. The base handler only engages when it
         // has a real navigation action, so at New Task root with nothing
         // open, system back delegates to the platform normally.
+        // Back engages from any non-Home visible surface — including a live
+        // temporary one, whose id never reaches the persisted key; the
+        // decision therefore reads the live selection, not the saved key.
         val baseNavCanRun = !persistentSidebar && route == null && !drawerOpen &&
             !settingsVisible && !previewVisible &&
-            selectionKey != SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK).key
+            selection.key != SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK).key
         BackHandler(enabled = baseNavCanRun) {
             // System Back at a conversation surface IS an actual navigation
             // to New Task: when a temporary session owns the surface it
@@ -226,16 +305,15 @@ private fun FloeShellContent(
                     if (runtimeHost.conversations.tempFence.awaitAdmission(ref)) {
                         runtimeHost.home.onNavigation(
                             SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK))
-                        selection =
-                            SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
-                        selectionKey = selection.key
+                        commitVisibleSelection(
+                            SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK))
                     }
                 }
             } else {
                 runtimeHost?.home?.onNavigation(
                     SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK))
-                selection = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
-                selectionKey = selection.key
+                commitVisibleSelection(
+                    SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK))
             }
         }
         BackHandler(enabled = drawerOpen) { drawerOpen = false }
@@ -266,8 +344,7 @@ private fun FloeShellContent(
                         val admitted = runtimeHost.conversations.tempFence.awaitAdmission(ref)
                         if (admitted) {
                             runtimeHost?.home?.onNavigation(target)
-                            selection = target
-                            selectionKey = target.key
+                            commitVisibleSelection(target)
                             drawerOpen = false
                             inspectorRoute = null
                         }
@@ -275,8 +352,7 @@ private fun FloeShellContent(
                 }
                 else -> {
                     runtimeHost?.home?.onNavigation(target)
-                    selection = target
-                    selectionKey = target.key
+                    commitVisibleSelection(target)
                     drawerOpen = false
                     // Ordinary navigation (iOS semantics): leaving the visible
                     // conversation surface ends temporary chat; rotation,
@@ -304,6 +380,7 @@ private fun FloeShellContent(
                 onCollapseRequested = if (twoColumn && !inDrawer) {
                     { sidebarCollapsed = true }
                 } else null,
+                runtimeHost = runtimeHost,
             )
         }
 
@@ -351,7 +428,7 @@ private fun FloeShellContent(
                                     .width(FloeLayout.InspectorIdealWidth)
                                     .fillMaxHeight(),
                             ) {
-                                FloeInspectorPane(route = route, onDismiss = { inspectorRoute = null })
+                                FloeInspectorPane(route = route, onDismiss = { inspectorRoute = null }, runtimeHost = runtimeHost)
                             }
                         }
                     }
@@ -406,7 +483,7 @@ private fun FloeShellContent(
                         .widthIn(max = overlayMaxWidthDp)
                         .fillMaxHeight()
                         .background(Floe.colors.readingSurface),
-                ) { FloeInspectorPane(route = route, onDismiss = { inspectorRoute = null }) }
+                ) { FloeInspectorPane(route = route, onDismiss = { inspectorRoute = null }, runtimeHost = runtimeHost) }
             }
         }
 
@@ -469,6 +546,49 @@ internal fun selectionFromKey(key: String): SidebarSelection = when {
     key.startsWith("c:") -> SidebarSelection.Conversation(key.removePrefix("c:"))
     else -> SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
 }
+
+/**
+ * The shell's restore decision (see the G02 selection persistence
+ * contract at the top of [FloeShellContent]): the persisted key carries
+ * ONLY durable/ordinary selections, while a live temporary surface is
+ * RAM truth owned by the application-scoped runtime host. A recreation
+ * re-adopts the live temporary when one exists (rotation/background/lock
+ * keep the RAM session); a fresh process after true process death has no
+ * RAM temporary, so it restores exactly what the durable persisted key
+ * says — Home or a genuinely saved conversation — never a lost temporary
+ * id reinterpreted as a blank ordinary chat.
+ */
+internal fun restoredShellSelection(
+    savedKey: String,
+    liveTemporaryConversationId: String?,
+): SidebarSelection = liveTemporaryConversationId
+    ?.let { SidebarSelection.Conversation(it) }
+    ?: selectionFromKey(savedKey)
+
+/** True when [next] is the conversation currently backed by the live RAM
+ * temporary session. Such a selection must never reach saved state. */
+internal fun isLiveTemporarySelection(
+    next: SidebarSelection,
+    liveTemporaryConversationId: String?,
+): Boolean = next is SidebarSelection.Conversation &&
+    liveTemporaryConversationId != null &&
+    next.conversationId == liveTemporaryConversationId
+
+/**
+ * Whether a same-id Keep promotion may persist the durable saved
+ * selection: ONLY while the visible surface is still the exact origin
+ * conversation AND the registry still holds that same session epoch.
+ * A visible-surface change (leave/new task), a replacement registration
+ * under the same logical id (rebind/late reuse), or an absent entry all
+ * drop the adoption — the genuine durable rows stay in history instead.
+ */
+internal fun keptPromotionAppliesToVisibleOrigin(
+    visible: SidebarSelection,
+    visibleConversationEpoch: Long?,
+    origin: com.floe.android.feature.conversation.TemporarySessionRef,
+): Boolean = visible is SidebarSelection.Conversation &&
+    visible.conversationId == origin.conversationId &&
+    visibleConversationEpoch == origin.sessionEpoch
 
 internal fun encodeInspectorRoute(route: InspectorRoute): String =
     "${route.content.name}|${route.conversationId ?: ""}"

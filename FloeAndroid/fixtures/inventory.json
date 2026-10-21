@@ -1,7 +1,7 @@
 {
   "artifact": "floe-android-g02-synthetic-fixtures",
   "baselineRef": "FloeAndroid/planning/feature-baseline.json",
-  "baselineVersion": "g02.2026-10-19.1",
+  "baselineVersion": "g02.2026-10-21.2",
   "determinismNote": "stdlib entries are byte-reproducible; mp4 entries require the pinned ffmpeg version — see README.md",
   "entries": [
     {

@@ -674,6 +674,10 @@ public actor SkillsDomain {
         _ = try requireBinding()
         let rows = try await store.all()
         let start = try Self.cursorIndex(cursor, count: rows.count)
+        // F-S6 projection truth: which ids have a REAL upgrade journal the
+        // rollback path could legitimately find (bounded directory scan of
+        // the ORIGINAL .upgrade-history layout; contents never leak).
+        let rollbackIDs = Self.completedUpgradeJournalSkillIDs(installationRoot: installationRoot)
         var objects: [[String: Any]] = []
         var bytes = 0
         var index = start
@@ -695,6 +699,7 @@ public actor SkillsDomain {
                 "official": OfficialSkillHub.skillIDs.contains(row.id),
                 "bundledSeedSuppressed": try await store.wasBundledSkillRemoved(id: row.id),
                 "description": descriptionText,
+                "rollbackAvailable": rollbackIDs.contains(row.id),
             ]
             let candidate = try Self.canonicalData(object)
             let overhead = objects.isEmpty ? 2 : 1
@@ -1288,6 +1293,25 @@ public actor SkillsDomain {
     /// ORIGINAL canonical digest over the copied bytes and only then issues
     /// the opaque wire token. NOTHING installs on arrival; the token expires
     /// at its announced TTL (≤30 min) and with the root generation.
+    /// RB7 trusted-host seam (S11 folder staging): allocate ONE owned
+    /// scratch directory under this domain's OWN staging root for the host
+    /// to copy a user-picked tree into. Binding-fenced like every entry
+    /// point; returns only the URL to the trusted host module (the path
+    /// NEVER crosses the wire — the host adapter is same-module Swift
+    /// called by the JNI TU, and the only value that later reaches the
+    /// Java side is the opaque `stg:v1:` token from `registerStagedFolder`
+    /// over this exact directory). This is the ONLY way a host lane gets a
+    /// staging location: there is no model-callable filesystem backdoor.
+    public func hostCreateStagingDirectory(namespace: String) throws -> URL {
+        _ = try requireBinding()
+        guard namespace == "host-folder" else {
+            // Closed namespace for this seam; anything else is a shape
+            // refusal (no free-form directory naming).
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "hostStageNamespace")
+        }
+        return try makeStagingDirectory(namespace: namespace)
+    }
+
     public func registerStagedFolder(directory: URL,
                                      receipt: SkillsFolderStagingReceipt,
                                      now: Date = Date()) throws -> String {
@@ -2160,6 +2184,29 @@ public actor SkillsDomain {
         // deterministic derivation (requireManifest: false); snapshots of
         // such packages must restore identically.
         _ = try SkillPackageValidator().validate(packageAt: directory, requireManifest: false)
+    }
+
+    /// The ORIGINAL `.upgrade-history` journal existence scan (same
+    /// directory + decode rules `upgradeRollback` itself applies, minus
+    /// the id filter): which skill ids have a recoverable transaction the
+    /// rollback path can legitimately find. Powers the honest
+    /// `rollbackAvailable` snapshot projection; journal contents never
+    /// cross any reply.
+    static func completedUpgradeJournalSkillIDs(installationRoot: URL,
+                                                fileManager: FileManager = .default)
+        -> Set<String> {
+        let historyRoot = installationRoot.appendingPathComponent(".upgrade-history")
+        let names = (try? fileManager.contentsOfDirectory(atPath: historyRoot.path)) ?? []
+        var ids: Set<String> = []
+        for name in names where !name.hasPrefix("interrupted-") {
+            let url = historyRoot.appendingPathComponent(name)
+                .appendingPathComponent("transaction.json")
+            guard let data = try? Data(floeContentsOf: url, options: [.mappedIfSafe]),
+                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let journal = SkillUpgradeJournal.decode(object) else { continue }
+            ids.insert(journal.oldSkill.id)
+        }
+        return ids
     }
 
     static func collectDirectoryFiles(_ directory: URL, fileManager: FileManager = .default)

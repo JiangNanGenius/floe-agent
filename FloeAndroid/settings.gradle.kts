@@ -20,4 +20,5 @@ include(":feature:conversation")
 // qualification stage registers it, generates its lock and runs its tests.
 // No App dependency or route added).
 include(":feature:integrations")
-
+// G02 model-role presentation policy; effects remain in the App host.
+include(":feature:settings")

@@ -3,6 +3,7 @@ package com.floe.android.host
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -34,8 +35,27 @@ import kotlinx.serialization.json.longOrNull
 class SettingsHostController internal constructor(
     private val host: RuntimeHost,
 ) {
+    /**
+     * R4 — the full original role-slot preferences surface (all
+     * ModelSelectionPreferences roles + capability-filtered choices +
+     * lossless CAS saves). Owned here so the existing settings pages reach
+     * it without any new shell wiring; the launchpad's existing
+     * default-agent projection ([PreferencesSurface]) is unchanged.
+     */
+    val roles = SettingsRoleModelController(host)
+
     private val stateFlow = MutableStateFlow(SettingsHostState())
     val state: StateFlow<SettingsHostState> = stateFlow
+
+    /**
+     * Monotonic personalization fence: kind switches, refresh, revision
+     * reads, rollback and generate terminals each advance it. Every async
+     * personalization callback captures the epoch at dispatch and applies
+     * ONLY when the epoch is unchanged, so a late read/save/generate
+     * result can never overwrite a newer document, another kind or a
+     * replacement sheet.
+     */
+    private val personalizationEpoch = java.util.concurrent.atomic.AtomicLong(0)
 
     /** In-flight flags per surface (loading/error/retry truth). */
     data class SurfaceStatus(
@@ -87,6 +107,13 @@ class SettingsHostController internal constructor(
         val revision: String,
     )
 
+    /**
+     * One ORIGINAL `MemorySearchItem` (SettingsDomainV1): the live `current`
+     * row (null when the row vanished between recall and the fresh page
+     * read) plus the contract's single truthful change signal `deleted`.
+     * There is NO producer "projected" snapshot; `changedDuringSearch` is
+     * therefore exactly `deleted` — never a fabricated comparison.
+     */
     data class MemorySearchItemProjection(
         val id: String,
         val current: MemoryEntryProjection?,
@@ -101,12 +128,40 @@ class SettingsHostController internal constructor(
         val revision: String,
     )
 
+    /**
+     * The organize proposal surface. [entries] are the proposal's paged
+     * entry summaries (real current content) joined by id, so a review card
+     * shows what a suggestion actually changes instead of a generic
+     * checkbox. [startCorrelation]/[startReceipt] address the REAL accepted
+     * start operation for `memory.organize.cancel` — never a UI-derived id.
+     */
     data class OrganizeSurface(
         val proposalHandle: String,
         val scannedCount: Int,
         val suggestions: List<OrganizeSuggestionProjection>,
+        val entries: List<OrganizeEntryProjection> = emptyList(),
         val stale: Boolean,
+        val staleIDs: List<String> = emptyList(),
         val proposalID: String = "",
+        val autoDelete: OrganizeAutoDeleteProjection? = null,
+        val autoDeletedCount: Int = 0,
+        val applying: Boolean = false,
+        val applyError: String? = null,
+        val startCorrelation: String? = null,
+        val startReceipt: String? = null,
+    )
+
+    data class OrganizeAutoDeleteProjection(
+        val status: String,
+        val batchID: String?,
+    )
+
+    data class OrganizeEntryProjection(
+        val id: String,
+        val scopeKind: String,
+        val status: String,
+        val content: String,
+        val updatedAt: String,
     )
 
     data class OrganizeSuggestionProjection(
@@ -114,8 +169,19 @@ class SettingsHostController internal constructor(
         val kind: String,
         val reason: String,
         val canApplyAutomatically: Boolean,
+        val memoryIDs: List<String> = emptyList(),
+        val preferredMemoryID: String? = null,
     )
 
+    /**
+     * Personalization document surface plus the REAL revision history page
+     * (`revisionsMeta` from `personalization.get`, continued through
+     * `revisionsNextCursor`) and the one open revision read. A revision row
+     * is the original `PersonalizationRevisionMeta` — id/revision/source/
+     * active flag/timestamp/size/digest; no App-side history store exists.
+     * [generateCorrelation]/[generateReceipt] address the REAL accepted
+     * generate operation for `personalization.generate.cancel`.
+     */
     data class PersonalizationSurface(
         val kind: String = "soul",
         val activeRevision: Int? = null,
@@ -126,6 +192,38 @@ class SettingsHostController internal constructor(
         val revisionToken: String = "",
         val generating: Boolean = false,
         val generateError: String? = null,
+        val generateCorrelation: String? = null,
+        val generateReceipt: String? = null,
+        val revisions: List<RevisionMetaProjection> = emptyList(),
+        val revisionsNextCursor: String? = null,
+        val revisionsLoadingMore: Boolean = false,
+        val openRevision: RevisionReadProjection? = null,
+        val revisionReadInFlight: Boolean = false,
+        val revisionReadError: String? = null,
+        val rollingBack: Boolean = false,
+        val rollbackError: String? = null,
+    )
+
+    data class RevisionMetaProjection(
+        val id: String,
+        val revision: Int,
+        val source: String,
+        val isActive: Boolean,
+        val createdAt: String,
+        val contentBytes: Int,
+        val contentDigest: String,
+    )
+
+    /** Result of one `personalization.revision.read` (bounded content). */
+    data class RevisionReadProjection(
+        val kind: String,
+        val revision: Int,
+        val source: String,
+        val isActive: Boolean,
+        val createdAt: String,
+        val contentBytes: Int,
+        val content: String,
+        val digest: String,
     )
 
     data class UsageSurface(
@@ -215,6 +313,11 @@ class SettingsHostController internal constructor(
         if (!host.readiness.value.storeReady) return
         refreshDefaults()
         refreshPreferences()
+        if (host.readiness.value.providerConfigurationAdmitted) {
+            // Role choices need the real provider/model rows; load the full
+            // role surface alongside the existing default-agent projection.
+            roles.refresh()
+        }
         if (host.readiness.value.settingsDomainsAdmitted.isNotEmpty()) {
             refreshMemory()
             refreshPersonalization()
@@ -570,12 +673,17 @@ class SettingsHostController internal constructor(
             onOutcome("unavailable")
             return
         }
+        // The start owns ONE correlation for its whole lifetime: the accepted
+        // operation receipt (captured via onAccepted) plus this correlation
+        // address the REAL operation for memory.organize.cancel — the
+        // mailbox re-issues the same receipt for the same correlation.
+        val correlation = client().correlationID("morg")
         host.trackOperation(
             HostCommandRequest(
                 command = "memory.organize.start",
                 scope = HostScope.ApplicationConfiguration("memory"),
                 stateful = true,
-                correlationID = client().correlationID("morg"),
+                correlationID = correlation,
                 createIntent = true,
                 payload = JsonObject(
                     mapOf(
@@ -584,6 +692,17 @@ class SettingsHostController internal constructor(
                     ),
                 ),
             ),
+            onAccepted = { receipt ->
+                update { state ->
+                    state.memory.organize?.let { organize ->
+                        state.copy(
+                            memory = state.memory.copy(
+                                organize = organize.copy(startReceipt = receipt),
+                            ),
+                        )
+                    } ?: state
+                }
+            },
         ) { outcome ->
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
@@ -597,7 +716,11 @@ class SettingsHostController internal constructor(
                                         proposalHandle = handle,
                                         scannedCount = root.long("scannedCount")?.toInt() ?: 0,
                                         suggestions = emptyList(),
-                                        stale = false,
+                                        stale = root.bool("proposalStale") ?: false,
+                                        autoDeletedCount = root.long("autoDeletedCount")
+                                            ?.toInt() ?: 0,
+                                        startCorrelation = correlation,
+                                        startReceipt = it.memory.organize?.startReceipt,
                                     ),
                                 ),
                             )
@@ -615,8 +738,28 @@ class SettingsHostController internal constructor(
         }
     }
 
+    /**
+     * Reads the proposal page (and, via the returned `nextCursor`, every
+     * remaining bounded page) so suggestions AND the entry summaries they
+     * reference are complete before review. Late pages for a REPLACED
+     * proposal handle are dropped (a newer startOrganize owns the surface).
+     */
     fun readOrganizeProposal(handle: String, cursor: String?) {
         if (!admitted("settings.memory")) return
+        readOrganizeProposalPage(handle, cursor, pages = 0,
+            accumulatedSuggestions = ArrayList(), accumulatedEntries = ArrayList())
+    }
+
+    private fun readOrganizeProposalPage(
+        handle: String,
+        cursor: String?,
+        pages: Int,
+        accumulatedSuggestions: MutableList<OrganizeSuggestionProjection>,
+        accumulatedEntries: MutableList<OrganizeEntryProjection>,
+    ) {
+        // Hard page bound: the proposal is budget-paged by the producer;
+        // a malformed cursor can never loop the host forever.
+        if (pages >= 64) return
         val payload = buildMap<String, JsonElement> {
             put("handle", JsonPrimitive(handle))
             cursor?.let { put("cursor", JsonPrimitive(it)) }
@@ -630,68 +773,472 @@ class SettingsHostController internal constructor(
                 payload = JsonObject(payload),
             ),
         ) { outcome ->
-            if (outcome is HostOperationOutcome.Completed) {
-                val root = outcome.value as? JsonObject
-                update {
-                    it.copy(
-                        memory = it.memory.copy(
-                            organize = OrganizeSurface(
-                                proposalHandle = handle,
-                                scannedCount = root?.long("scannedCount")?.toInt() ?: 0,
-                                suggestions = (root?.get("suggestions") as? JsonArray)
-                                    ?.mapNotNull { s -> decodeSuggestion(s as? JsonObject) }
-                                    ?: emptyList(),
-                                stale = root?.bool("stale") ?: false,
-                                proposalID = root?.string("proposalID") ?: "",
-                            ),
+            if (outcome !is HostOperationOutcome.Completed) return@trackOperation
+            val root = outcome.value as? JsonObject ?: return@trackOperation
+            val current = stateFlow.value.memory.organize
+            // Fence: a newer organize (different handle) owns the surface.
+            if (current == null || current.proposalHandle != handle) return@trackOperation
+            (root.get("suggestions") as? JsonArray)
+                ?.mapNotNullTo(accumulatedSuggestions) { decodeSuggestion(it as? JsonObject) }
+            (root.get("entries") as? JsonArray)
+                ?.mapNotNullTo(accumulatedEntries) { decodeOrganizeEntry(it as? JsonObject) }
+            val next = root.string("nextCursor")
+            if (next != null) {
+                readOrganizeProposalPage(handle, next, pages + 1,
+                    accumulatedSuggestions, accumulatedEntries)
+                return@trackOperation
+            }
+            val autoDelete = root.obj("autoDelete")?.let { a ->
+                OrganizeAutoDeleteProjection(
+                    status = a.string("status") ?: "none",
+                    batchID = a.string("batchID"),
+                )
+            }
+            update {
+                it.copy(
+                    memory = it.memory.copy(
+                        organize = current.copy(
+                            scannedCount = root.long("scannedCount")?.toInt()
+                                ?: current.scannedCount,
+                            suggestions = accumulatedSuggestions.toList(),
+                            entries = accumulatedEntries.toList(),
+                            stale = root.bool("stale") ?: false,
+                            staleIDs = (root.get("staleIDs") as? JsonArray)
+                                ?.mapNotNull { s -> (s as? JsonPrimitive)?.contentOrNull }
+                                ?: emptyList(),
+                            proposalID = root.string("proposalID") ?: "",
+                            autoDelete = autoDelete,
                         ),
-                    )
+                    ),
+                )
+            }
+        }
+    }
+
+    /**
+     * Applies ONE proposal suggestion through the original batch ledger:
+     * `{handle, suggestionID, batchID, syncRevision}` where batchID is a
+     * fresh client-proposed ledger identity per attempt and syncRevision is
+     * the tombstone ordering value (the original semantic: wall-clock
+     * millis, NEVER a CAS precondition). The native transaction re-checks
+     * every referenced row digest against the generation snapshot and
+     * refuses with zero mutation on stale/missing — a typed failure here
+     * never retries destructively; the user reruns organize instead.
+     */
+    fun applyOrganizeSuggestion(suggestionID: String, onOutcome: (String?) -> Unit) {
+        val organize = stateFlow.value.memory.organize
+        if (!admitted("settings.memory")) {
+            onOutcome("unavailable")
+            return
+        }
+        if (organize == null || organize.stale || organize.proposalHandle.isBlank()) {
+            onOutcome(if (organize?.stale == true) "staleProposal" else "noProposal")
+            return
+        }
+        val handle = organize.proposalHandle
+        val fencedHandle = handle
+        update {
+            it.copy(memory = it.memory.copy(
+                organize = it.memory.organize?.copy(applying = true, applyError = null),
+            ))
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "memory.organize.apply",
+                scope = HostScope.ApplicationConfiguration("memory"),
+                stateful = true,
+                correlationID = client().correlationID("mapply"),
+                createIntent = true,
+                payload = JsonObject(
+                    mapOf(
+                        "handle" to JsonPrimitive(handle),
+                        "suggestionID" to JsonPrimitive(suggestionID),
+                        "batchID" to JsonPrimitive(java.util.UUID.randomUUID().toString()),
+                        "syncRevision" to JsonPrimitive(System.currentTimeMillis()),
+                    ),
+                ),
+            ),
+        ) { outcome ->
+            // Fence: a replaced proposal owns the surface now.
+            val current = stateFlow.value.memory.organize
+            if (current == null || current.proposalHandle != fencedHandle) {
+                onOutcome("superseded")
+                return@trackOperation
+            }
+            update {
+                it.copy(memory = it.memory.copy(
+                    organize = it.memory.organize?.copy(applying = false),
+                ))
+            }
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    // The ledger answered (applied | alreadyApplied); the
+                    // entries the suggestion deleted are gone — re-read both
+                    // surfaces truthfully.
+                    refreshMemory()
+                    readOrganizeProposal(fencedHandle, null)
+                    onOutcome(null)
                 }
+                is HostOperationOutcome.Rejected -> {
+                    update {
+                        it.copy(memory = it.memory.copy(
+                            organize = it.memory.organize?.copy(applyError = outcome.code),
+                        ))
+                    }
+                    onOutcome(outcome.code)
+                }
+                is HostOperationOutcome.Failed -> {
+                    update {
+                        it.copy(memory = it.memory.copy(
+                            organize = it.memory.organize?.copy(applyError = outcome.code),
+                        ))
+                    }
+                    onOutcome(outcome.code)
+                }
+                else -> onOutcome("cancelled")
+            }
+        }
+    }
+
+    /**
+     * Cancels the REAL accepted organize operation. The cancel envelope
+     * reuses the START correlation: while the operation is still queued or
+     * active, the mailbox re-issues the SAME operation receipt the facade's
+     * cancel window is keyed on, so the native cancel marks the actual
+     * operation (a fresh correlation would mint a new receipt and cancel
+     * nothing). The cancel is submitted WITHOUT its own effect stream — the
+     * START operation's own stream owns the terminal and reports the REAL
+     * canceled{phase}/completed{phase} outcome. If the queue admission
+     * returns a DIFFERENT receipt, the operation already settled and there
+     * is nothing to cancel — an honest typed answer, never a fake success.
+     */
+    fun cancelOrganize(onOutcome: (String?) -> Unit) {
+        val organize = stateFlow.value.memory.organize
+        if (!admitted("settings.memory")) {
+            onOutcome("unavailable")
+            return
+        }
+        val correlation = organize?.startCorrelation
+        val receipt = organize?.startReceipt
+        if (organize == null || correlation == null || receipt == null) {
+            onOutcome("noActiveOrganize")
+            return
+        }
+        host.scope.launch(host.ioDispatcher) {
+            when (val submitted = client().submit(
+                HostCommandRequest(
+                    command = "memory.organize.cancel",
+                    scope = HostScope.ApplicationConfiguration("memory"),
+                    stateful = false,
+                    correlationID = correlation,
+                ),
+            )) {
+                is HostSubmitResult.Accepted -> {
+                    if (submitted.operationReceiptID == receipt) {
+                        // The cancel reached the real operation; its terminal
+                        // (delivered on this operation's own stream) owns
+                        // the cancelled/finished state.
+                        onOutcome(null)
+                    } else {
+                        onOutcome("noActiveOrganize")
+                    }
+                }
+                is HostSubmitResult.Rejected -> onOutcome(submitted.reason)
+                HostSubmitResult.Superseded -> onOutcome("superseded")
             }
         }
     }
 
     // ------------------------------------------------------- personalization
 
-    fun refreshPersonalization(kind: String = "soul") {
+    /**
+     * Reads the personalization document and the REAL revision history page
+     * (`revisionsMeta` + `revisionsNextCursor`). With [revisionsCursor] the
+     * history page is APPENDED to the current surface (the cursor is the
+     * original bounded continuation from the previous reply); without it
+     * the surface is replaced. Results are fenced by kind + epoch so a late
+     * page can never overwrite a newer document or another kind.
+     */
+    fun refreshPersonalization(
+        kind: String = "soul",
+        revisionsCursor: String? = null,
+    ) {
         if (!admitted("settings.personalization")) return
-        update { it.copy(personalizationStatus = SurfaceStatus(loading = true)) }
+        val append = revisionsCursor != null
+        val epoch = personalizationEpoch.incrementAndGet()
+        if (!append) {
+            update { it.copy(personalizationStatus = SurfaceStatus(loading = true)) }
+        } else {
+            update {
+                it.copy(personalization = it.personalization.copy(revisionsLoadingMore = true))
+            }
+        }
+        val payload = buildMap<String, JsonElement> {
+            put("kind", JsonPrimitive(kind))
+            revisionsCursor?.let { put("revisionsCursor", JsonPrimitive(it)) }
+        }
         host.trackOperation(
             HostCommandRequest(
                 command = "personalization.get",
                 scope = HostScope.ApplicationConfiguration("personalization"),
                 stateful = false,
                 correlationID = client().correlationID("pget"),
-                payload = JsonObject(mapOf("kind" to JsonPrimitive(kind))),
+                payload = JsonObject(payload),
             ),
         ) { outcome ->
+            if (personalizationEpoch.get() != epoch) return@trackOperation
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
                     val root = outcome.value as? JsonObject
-                    update {
-                        it.copy(
-                            personalizationStatus = SurfaceStatus(),
-                            personalization = PersonalizationSurface(
+                    val active = root?.obj("active")
+                    val historyPage = (root?.get("revisionsMeta") as? JsonArray)
+                        ?.mapNotNull { decodeRevisionMeta(it as? JsonObject) }
+                        ?: emptyList()
+                    val nextCursor = root?.string("revisionsNextCursor")
+                    update { state ->
+                        val base = if (append &&
+                            state.personalization.kind == kind
+                        ) {
+                            state.personalization.copy(
+                                revisions = state.personalization.revisions + historyPage,
+                                revisionsNextCursor = nextCursor,
+                                revisionsLoadingMore = false,
+                            )
+                        } else {
+                            PersonalizationSurface(
                                 kind = kind,
                                 activeRevision = root?.long("latestRevision")?.toInt(),
-                                content = root?.obj("active")?.string("content") ?: "",
-                                contentHandle = root?.obj("active")?.obj("contentHandle")
+                                content = active?.string("content") ?: "",
+                                contentHandle = active?.obj("contentHandle")
                                     ?.string("handle"),
                                 automaticUpdatesEnabled = root?.obj("cursor")
                                     ?.bool("automaticUpdatesEnabled") ?: false,
                                 latestRevision = root?.long("latestRevision")?.toInt() ?: 0,
                                 revisionToken = root?.string("revisionToken") ?: "",
-                            ),
+                                revisions = historyPage,
+                                revisionsNextCursor = nextCursor,
+                            )
+                        }
+                        state.copy(
+                            personalizationStatus = SurfaceStatus(),
+                            personalization = base,
                         )
                     }
                 }
                 is HostOperationOutcome.Rejected -> update {
-                    it.copy(personalizationStatus = SurfaceStatus(error = outcome.code))
+                    if (append) {
+                        it.copy(personalization = it.personalization.copy(
+                            revisionsLoadingMore = false))
+                    } else {
+                        it.copy(personalizationStatus = SurfaceStatus(error = outcome.code))
+                    }
                 }
                 is HostOperationOutcome.Failed -> update {
-                    it.copy(personalizationStatus = SurfaceStatus(error = outcome.code))
+                    if (append) {
+                        it.copy(personalization = it.personalization.copy(
+                            revisionsLoadingMore = false))
+                    } else {
+                        it.copy(personalizationStatus = SurfaceStatus(error = outcome.code))
+                    }
                 }
                 else -> Unit
+            }
+        }
+    }
+
+    /** Loads the next bounded history page when the surface owns one. */
+    fun loadMoreRevisions(kind: String) {
+        val surface = stateFlow.value.personalization
+        val cursor = surface.revisionsNextCursor ?: return
+        if (surface.revisionsLoadingMore) return
+        refreshPersonalization(kind, revisionsCursor = cursor)
+    }
+
+    private fun decodeRevisionMeta(obj: JsonObject?): RevisionMetaProjection? {
+        obj ?: return null
+        val revision = obj.long("revision")?.toInt() ?: return null
+        return RevisionMetaProjection(
+            id = obj.string("id") ?: return null,
+            revision = revision,
+            source = obj.string("source") ?: "manual",
+            isActive = obj.bool("isActive") ?: false,
+            createdAt = obj.string("createdAt") ?: "",
+            contentBytes = obj.long("contentBytes")?.toInt() ?: 0,
+            contentDigest = obj.string("contentDigest") ?: "",
+        )
+    }
+
+    /**
+     * Reads ONE historical revision through the original
+     * `personalization.revision.read` (`{kind, revision}` → document with
+     * inline content XOR an owned content handle; a handle pages through
+     * the existing bounded `content.read` loop). The result is fenced by
+     * kind + revision + epoch: opening another revision, switching kind or
+     * a newer refresh discards a late answer.
+     */
+    fun readPersonalizationRevision(kind: String, revision: Int) {
+        if (!admitted("settings.personalization")) return
+        val epoch = personalizationEpoch.incrementAndGet()
+        update {
+            it.copy(personalization = it.personalization.copy(
+                openRevision = null,
+                revisionReadInFlight = true,
+                revisionReadError = null,
+            ))
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "personalization.revision.read",
+                scope = HostScope.ApplicationConfiguration("personalization"),
+                stateful = false,
+                correlationID = client().correlationID("prevread"),
+                payload = JsonObject(
+                    mapOf(
+                        "kind" to JsonPrimitive(kind),
+                        "revision" to JsonPrimitive(revision),
+                    ),
+                ),
+            ),
+        ) { outcome ->
+            if (personalizationEpoch.get() != epoch) return@trackOperation
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val doc = (outcome.value as? JsonObject)?.obj("document")
+                    if (doc == null) {
+                        update {
+                            it.copy(personalization = it.personalization.copy(
+                                revisionReadInFlight = false,
+                                revisionReadError = "revisionMalformed",
+                            ))
+                        }
+                        return@trackOperation
+                    }
+                    val docRevision = doc.long("revision")?.toInt() ?: revision
+                    val inline = doc.string("content")
+                    val handle = doc.obj("contentHandle")?.string("handle")
+                    val meta = RevisionReadProjection(
+                        kind = kind,
+                        revision = docRevision,
+                        source = doc.string("source") ?: "manual",
+                        isActive = doc.bool("isActive") ?: false,
+                        createdAt = doc.string("createdAt") ?: "",
+                        contentBytes = doc.long("contentBytes")?.toInt() ?: 0,
+                        content = "",
+                        digest = doc.string("contentDigest") ?: "",
+                    )
+                    fun applyContent(content: String?, error: String?) {
+                        if (personalizationEpoch.get() != epoch) return
+                        update {
+                            it.copy(personalization = it.personalization.copy(
+                                revisionReadInFlight = false,
+                                openRevision = if (content != null) {
+                                    meta.copy(content = content)
+                                } else {
+                                    null
+                                },
+                                revisionReadError = error,
+                            ))
+                        }
+                    }
+                    when {
+                        inline != null -> applyContent(inline, null)
+                        handle != null -> readPersonalizationContent(
+                            handle, 0, CONTENT_PAGE_BYTES,
+                        ) { content, _ -> applyContent(content, if (content == null) "revisionReadFailed" else null) }
+                        else -> applyContent(null, "revisionEmpty")
+                    }
+                }
+                is HostOperationOutcome.Rejected -> update {
+                    it.copy(personalization = it.personalization.copy(
+                        revisionReadInFlight = false,
+                        revisionReadError = outcome.code,
+                    ))
+                }
+                is HostOperationOutcome.Failed -> update {
+                    it.copy(personalization = it.personalization.copy(
+                        revisionReadInFlight = false,
+                        revisionReadError = outcome.code,
+                    ))
+                }
+                else -> Unit
+            }
+        }
+    }
+
+    /** Closes the open revision read (dismissal never mutates anything). */
+    fun closePersonalizationRevision() {
+        personalizationEpoch.incrementAndGet()
+        update {
+            it.copy(personalization = it.personalization.copy(
+                openRevision = null,
+                revisionReadError = null,
+            ))
+        }
+    }
+
+    /**
+     * Rolls the active document back to ONE existing target revision: the
+     * original append-only, non-destructive path (`personalization.rollback`
+     * + active-slot CAS under `personalization.<kind>`). A stale token is a
+     * typed refusal; the history list refreshes from the real reply.
+     */
+    fun rollbackPersonalization(
+        kind: String,
+        targetRevision: Int,
+        onOutcome: (String?) -> Unit,
+    ) {
+        if (!admitted("settings.personalization")) {
+            onOutcome("unavailable")
+            return
+        }
+        val token = stateFlow.value.personalization.revisionToken
+        if (token.isBlank()) {
+            onOutcome("noActiveDocument")
+            return
+        }
+        update {
+            it.copy(personalization = it.personalization.copy(
+                rollingBack = true, rollbackError = null))
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "personalization.rollback",
+                scope = HostScope.ApplicationConfiguration("personalization"),
+                stateful = true,
+                correlationID = client().correlationID("prollback"),
+                revision = HostRevision("personalization.$kind", token),
+                payload = JsonObject(
+                    mapOf(
+                        "kind" to JsonPrimitive(kind),
+                        "targetRevision" to JsonPrimitive(targetRevision),
+                    ),
+                ),
+            ),
+        ) { outcome ->
+            update {
+                it.copy(personalization = it.personalization.copy(rollingBack = false))
+            }
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    personalizationEpoch.incrementAndGet()
+                    refreshPersonalization(kind)
+                    onOutcome(null)
+                }
+                is HostOperationOutcome.Rejected -> {
+                    update {
+                        it.copy(personalization = it.personalization.copy(
+                            rollbackError = outcome.code))
+                    }
+                    onOutcome(outcome.code)
+                }
+                is HostOperationOutcome.Failed -> {
+                    update {
+                        it.copy(personalization = it.personalization.copy(
+                            rollbackError = outcome.code))
+                    }
+                    onOutcome(outcome.code)
+                }
+                else -> onOutcome("cancelled")
             }
         }
     }
@@ -760,25 +1307,62 @@ class SettingsHostController internal constructor(
         }
     }
 
+    /**
+     * Starts ONE personalization generation. The operation owns ONE
+     * correlation for its whole lifetime; the accepted receipt is captured
+     * via [RuntimeHost.trackOperation]'s onAccepted so an explicit user
+     * cancel can address the REAL operation (`personalization.generate.cancel`
+     * reuses the correlation → the mailbox re-issues the same receipt the
+     * facade's cancel window is keyed on). A terminal of a SUPERSEDED
+     * generation (a newer generate owns the surface) is dropped, never
+     * clearing the new operation's state.
+     */
     fun generatePersonalization(kind: String, onOutcome: (String?) -> Unit) {
         if (!admitted("settings.personalization")) {
             onOutcome("unavailable")
             return
         }
-        update { it.copy(personalization = it.personalization.copy(generating = true)) }
+        val correlation = client().correlationID("pgen")
+        update {
+            it.copy(personalization = it.personalization.copy(
+                generating = true,
+                generateError = null,
+                generateCorrelation = correlation,
+                generateReceipt = null,
+            ))
+        }
         host.trackOperation(
             HostCommandRequest(
                 command = "personalization.generate",
                 scope = HostScope.ApplicationConfiguration("personalization"),
                 stateful = true,
-                correlationID = client().correlationID("pgen"),
+                correlationID = correlation,
                 createIntent = true,
                 payload = JsonObject(mapOf("kind" to JsonPrimitive(kind))),
             ),
+            onAccepted = { receipt ->
+                update { state ->
+                    val p = state.personalization
+                    if (p.generateCorrelation == correlation) {
+                        state.copy(personalization = p.copy(generateReceipt = receipt))
+                    } else {
+                        state
+                    }
+                }
+            },
         ) { outcome ->
-            update { it.copy(personalization = it.personalization.copy(generating = false)) }
+            val current = stateFlow.value.personalization
+            if (current.generateCorrelation != correlation) return@trackOperation
+            update {
+                it.copy(personalization = it.personalization.copy(
+                    generating = false,
+                    generateCorrelation = null,
+                    generateReceipt = null,
+                ))
+            }
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
+                    personalizationEpoch.incrementAndGet()
                     refreshPersonalization(kind)
                     onOutcome(null)
                 }
@@ -795,6 +1379,52 @@ class SettingsHostController internal constructor(
                     onOutcome(outcome.code)
                 }
                 else -> onOutcome("cancelled")
+            }
+        }
+    }
+
+    /**
+     * Cancels the REAL accepted generation: requires the accepted receipt
+     * (the cancel control stays hidden until onAccepted fired) and reuses
+     * the generation correlation so the mailbox re-issues the SAME receipt
+     * the facade's cancel window is keyed on. Submitted WITHOUT its own
+     * effect stream — the GENERATE operation's own stream owns the terminal
+     * and reports the REAL canceled{phase}/committed outcome; a different
+     * receipt at admission means the operation already settled (honest
+     * typed answer, never a dismissal-claimed cancellation).
+     */
+    fun cancelPersonalizationGenerate(onOutcome: (String?) -> Unit) {
+        val surface = stateFlow.value.personalization
+        if (!admitted("settings.personalization")) {
+            onOutcome("unavailable")
+            return
+        }
+        val correlation = surface.generateCorrelation
+        val receipt = surface.generateReceipt
+        if (!surface.generating || correlation == null || receipt == null) {
+            // No accepted operation yet (or the terminal already arrived):
+            // there is nothing real to cancel.
+            onOutcome("noActiveGeneration")
+            return
+        }
+        host.scope.launch(host.ioDispatcher) {
+            when (val submitted = client().submit(
+                HostCommandRequest(
+                    command = "personalization.generate.cancel",
+                    scope = HostScope.ApplicationConfiguration("personalization"),
+                    stateful = false,
+                    correlationID = correlation,
+                ),
+            )) {
+                is HostSubmitResult.Accepted -> {
+                    if (submitted.operationReceiptID == receipt) {
+                        onOutcome(null)
+                    } else {
+                        onOutcome("noActiveGeneration")
+                    }
+                }
+                is HostSubmitResult.Rejected -> onOutcome(submitted.reason)
+                HostSubmitResult.Superseded -> onOutcome("superseded")
             }
         }
     }
@@ -1305,17 +1935,31 @@ class SettingsHostController internal constructor(
         )
     }
 
+    /**
+     * ORIGINAL `MemorySearchItem` decode (R6): the contract carries
+     * `current` (the live row or EXPLICIT null when it vanished between
+     * recall and the fresh read) and `deleted`. The previous reader
+     * invented a `projected` snapshot and compared revisions — the producer
+     * never emits it, so `changedDuringSearch` was always false and a
+     * deleted row was silently back-filled with fabricated content. The
+     * only honest change signal is `deleted`; `current` stays null.
+     */
     private fun decodeSearchItem(obj: JsonObject?): MemorySearchItemProjection? {
         obj ?: return null
-        val current = decodeMemoryEntry(obj.obj("current"))
-        val projectedEntry = obj.obj("projected")?.let { decodeMemoryEntry(it) }
-        val changed = current != null && projectedEntry != null &&
-            current.revision != projectedEntry.revision
+        val currentElement = obj["current"]
+        val current = if (currentElement == null ||
+            currentElement is kotlinx.serialization.json.JsonNull
+        ) {
+            null
+        } else {
+            decodeMemoryEntry(currentElement as? JsonObject)
+        }
+        val deleted = obj.bool("deleted") ?: false
         return MemorySearchItemProjection(
             id = obj.string("id") ?: return null,
-            current = current ?: projectedEntry,
-            deleted = obj.bool("deleted") ?: false,
-            changedDuringSearch = changed,
+            current = current,
+            deleted = deleted,
+            changedDuringSearch = deleted,
         )
     }
 
@@ -1336,6 +1980,21 @@ class SettingsHostController internal constructor(
             kind = obj.string("kind") ?: "possibleDuplicate",
             reason = obj.string("reason") ?: "",
             canApplyAutomatically = obj.bool("canApplyAutomatically") ?: false,
+            memoryIDs = (obj.get("memoryIDs") as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                ?: emptyList(),
+            preferredMemoryID = obj.string("preferredMemoryID"),
+        )
+    }
+
+    private fun decodeOrganizeEntry(obj: JsonObject?): OrganizeEntryProjection? {
+        obj ?: return null
+        return OrganizeEntryProjection(
+            id = obj.string("id") ?: return null,
+            scopeKind = obj.obj("scope")?.string("kind") ?: "user",
+            status = obj.string("status") ?: "active",
+            content = obj.string("content") ?: "",
+            updatedAt = obj.string("updatedAt") ?: "",
         )
     }
 
@@ -1355,4 +2014,9 @@ class SettingsHostController internal constructor(
 
     private fun JsonObject.string(section: String, key: String): String? =
         obj(section)?.string(key)
+
+    private companion object {
+        /** Bounded chunk for owned-content reads (revision/handle bodies). */
+        const val CONTENT_PAGE_BYTES = 16 * 1024
+    }
 }

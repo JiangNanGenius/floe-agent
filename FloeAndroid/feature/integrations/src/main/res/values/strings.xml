@@ -165,5 +165,11 @@
     <string name="mcp_credential_in_url">Credentials must be stored securely, not embedded in the endpoint URL.</string>
     <string name="mcp_insecure_blocked_hint">Plain HTTP is disabled. Enable it only for a trusted local server.</string>
     <string name="mcp_header_name_invalid">Invalid request header name.</string>
+    <!-- Android 17 (API 37) local-network permission guidance (host-projected; the
+         module never decides availability). Separate from any auth error copy. -->
+    <string name="mcp_local_network_grant">Allow local network access</string>
+    <string name="mcp_local_network_grant_detail">Reaching this local server needs local network access on this device. Public internet servers are unaffected.</string>
+    <string name="mcp_local_network_recovery">Open network settings</string>
+    <string name="mcp_local_network_recovery_detail">Local network access is blocked until allowed in system settings. Public internet servers keep working.</string>
 
 </resources>

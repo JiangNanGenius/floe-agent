@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Large-provider full-fidelity save copy (job-2e38 batch, 2026-10-21).
+  Enabled/disable for existing rows now flows through the compact
+  existing-row metadata keep (works for valid 512-model profiles with no
+  byte-bound refusal); these strings cover the honest, actionable
+  failures of the trusted-host model-set staging path only. Simplified
+  Chinese values are aligned in values-zh-rCN/providers_large_profile.xml.
+-->
+<resources>
+    <string name="providers_staging_unavailable">Couldn\'t prepare this provider\'s model list for saving. Try again.</string>
+    <string name="providers_save_details_too_large">This provider\'s name or headers are too large to save. Shorten them and try again.</string>
+</resources>

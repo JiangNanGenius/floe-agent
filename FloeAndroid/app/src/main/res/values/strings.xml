@@ -256,7 +256,10 @@
     <string name="websearch_kind_custom">Custom</string>
     <string name="providers_load_failed">Couldn\'t load your providers. Try again.</string>
     <string name="providers_probe_requires_save">Save this provider first, then test the connection or discover models.</string>
+    <string name="providers_probe_unavailable">Couldn\'t start the connection test. Try again.</string>
     <string name="providers_custom_endpoint">Custom endpoint</string>
+    <string name="providers_toggle_failed">Couldn\'t update this provider. It stayed unchanged — try again.</string>
+    <string name="providers_toggle_too_large">This provider\'s full configuration is too large to change here. Open it to edit and save.</string>
     <string name="run_state_running">Running</string>
     <string name="run_state_completed">Completed</string>
     <string name="run_state_failed">Failed</string>
@@ -264,4 +267,17 @@
     <string name="run_state_interrupted">Interrupted</string>
     <string name="run_state_cancelling">Cancelling</string>
     <string name="run_state_idle">Idle</string>
+    <string name="goal_blocker_wrong_goal">This evidence belongs to another goal.</string>
+    <string name="goal_blocker_already_terminal">This goal has already ended.</string>
+    <string name="goal_blocker_incomplete_step">Some steps are still unfinished.</string>
+    <string name="goal_blocker_unsatisfied_criterion">Some completion requirements are not met.</string>
+    <string name="goal_blocker_missing_evidence">More evidence is needed.</string>
+    <string name="goal_blocker_user_confirmation">Your confirmation is needed.</string>
+    <string name="goal_blocker_review_rejected">The evidence did not pass review.</string>
+    <string name="goal_blocker_failed_checks">Some checks still need attention.</string>
+    <string name="goal_blocker_generic">This goal cannot be completed yet.</string>
+    <string name="compaction_did_compact">Conversation condensed.</string>
+    <string name="compaction_short_history">This conversation is already short enough.</string>
+    <string name="compaction_no_history">No conversation history to condense.</string>
+    <string name="compaction_did_compact_tokens">Conversation condensed: %1$d → %2$d tokens.</string>
 </resources>

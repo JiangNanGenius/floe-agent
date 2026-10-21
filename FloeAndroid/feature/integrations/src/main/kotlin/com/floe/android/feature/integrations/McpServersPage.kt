@@ -114,6 +114,51 @@ fun McpServersPage(
         mcp.errorMessage?.let {
             IntegrationIssueLine(it, modifier = Modifier.testTag("mcp.errorMessage"))
         }
+
+        // Android 17 local-network guidance (host-projected ONLY; the
+        // module never decides, never caches and never auto-taps). One
+        // explicit user action goes back through the host seam.
+        mcp.localNetworkGuidance?.let { guidance ->
+            val recovery =
+                guidance.kind == LocalNetworkGuidanceKindUi.RECOVERY
+            FloeSettingsSectionCard(title = null) {
+                FloeSectionRow(
+                    onClick = { holder.localNetworkGuidanceAction() },
+                    title = {
+                        Column {
+                            FloeText(
+                                stringResource(
+                                    if (recovery) R.string.mcp_local_network_recovery
+                                    else R.string.mcp_local_network_grant),
+                                style = Floe.typography.body,
+                                color = Floe.colors.label,
+                            )
+                            FloeText(
+                                stringResource(
+                                    if (recovery) R.string.mcp_local_network_recovery_detail
+                                    else R.string.mcp_local_network_grant_detail),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            guidance.serverLabel?.let { label ->
+                                FloeText(
+                                    label,
+                                    style = Floe.typography.metadata,
+                                    color = Floe.colors.secondaryLabel,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    },
+                    modifier = Modifier.testTag(
+                        if (recovery) "mcp.localNetwork.recovery" else "mcp.localNetwork.grant",
+                    ),
+                )
+            }
+        }
         Spacer(Modifier.height(16.dp))
     }
 

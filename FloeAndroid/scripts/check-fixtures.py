@@ -4,7 +4,7 @@
 
 Verifies, without writing anything:
   1. Fixture integrity: every inventory.json entry exists with matching
-     SHA-256 and byte count; the artifact/version metadata and 26-entry count
+     SHA-256 and byte count; the artifact/version metadata and 33-entry count
      match this revision; no fixture file is absent from the inventory.
   2. Expected basic structures: per-format structural probes must satisfy the
      recorded expectations (DOCX/XLSX/PPTX parts and content, PDF/xref,
@@ -26,7 +26,13 @@ Verifies, without writing anything:
      CHA-ATTACH-* operations were appended with planned initial records, the
      two fixtures map both ways, the wire-identity assertions stay under the
      original PRV-CONFIG-VALIDATE, and the plan still carries the attachment
-     authority (P2.2/G02/17.5).
+     authority (P2.2/G02/17.5). On top of that frozen history, the settings
+     record stays byte-frozen at its 182/40/33 declaration and the NEW
+     goalCoreRunControlAdditive record must prove exactly ONE added planned
+     operation (CHA-MANUAL-COMPACT), ZERO added fixtures (33 actual inventory
+     entries, correcting the incoming 35 proposal error), and the unchanged
+     historical validations run on the exact prior 182-operation projection
+     with only the approved goal-core addition removed.
 
 Operation statuses use the plan's six-state vocabulary (planned,
 implementing, component_verified, app_verified, samsung_verified, delivered).
@@ -63,15 +69,45 @@ BASELINE = ROOT / "FloeAndroid" / "planning" / "feature-baseline.json"
 WORK_PACKAGES = ROOT / "FloeAndroid" / "planning" / "work-packages.json"
 PLAN = ROOT / "docs" / "FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md"
 
-# Current reconciled G02 baseline. The original G01 IDs are frozen by digest in
-# the baseline's baselineHistory and re-checked below.
-EXPECTED_OPERATION_COUNT = 182
-EXPECTED_G02_OPERATION_COUNT = 40
-EXPECTED_FAMILY_COUNT = 36
-EXPECTED_WORK_PACKAGE_COUNT = 85
-EXPECTED_FIXTURE_COUNT = 33
-EXPECTED_BASELINE_VERSION = "g02.2026-10-19.1"
+
+def _load_goal_core_contract():
+    """Load the sibling standalone contract module robustly.
+
+    Works when this file is executed directly and when a test imports it via
+    importlib (plain `import goal_core_contract` would then miss the path).
+    """
+    try:
+        import goal_core_contract  # type: ignore
+        return goal_core_contract
+    except ImportError:
+        import importlib.util
+        path = Path(__file__).resolve().parent / "goal_core_contract.py"
+        spec = importlib.util.spec_from_file_location("goal_core_contract",
+                                                      path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
+
+G = _load_goal_core_contract()
+
+# Current reconciled G02 baseline: the frozen Settings-domain ledger plus the
+# one approved goal-core planned operation. The original G01 IDs and the prior
+# 172/182 reconciliations are frozen by digest in the baseline's
+# baselineHistory / settingsDomainAdditive records and re-checked below on the
+# exact prior projection (approved goal-core additions removed only).
+EXPECTED_OPERATION_COUNT = G.EXPECTED_OPERATIONS        # 183
+EXPECTED_G02_OPERATION_COUNT = G.EXPECTED_G02_OPERATIONS  # 41
+EXPECTED_FAMILY_COUNT = G.EXPECTED_FAMILIES             # 36
+EXPECTED_WORK_PACKAGE_COUNT = G.EXPECTED_PACKAGES       # 85
+EXPECTED_FIXTURE_COUNT = G.EXPECTED_FIXTURES            # 33, unchanged
+EXPECTED_BASELINE_VERSION = G.BASELINE_VERSION_CURRENT  # g02.2026-10-21.2
+# The fixture SET itself did not change with the goal-core batch: no fixture
+# was added, regenerated or rewritten, so the fixture version stays pinned to
+# the Settings-domain revision that last changed fixture content.
 EXPECTED_FIXTURE_VERSION = "g02.2026-10-19.1"
+HISTORICAL_SETTINGS_VERSION = G.BASELINE_VERSION_PREVIOUS  # g02.2026-10-19.1
 # The prior reconciled G02 baseline (172 operations / 30 G02 / 26 fixtures).
 PRIOR_172_OPERATION_ID_DIGEST = (
     "9c176375513bec3a3fd98ce35796d4c251ce61a24cc334d66027084cd9fd5252")
@@ -1431,7 +1467,9 @@ def check_baseline_history(data, ops, inv):
              % (len(family_ids), EXPECTED_FAMILY_COUNT))
 
     additive_set = set(ATTACHMENT_OPERATION_IDS)
-    original_current_digest = digest_ids(set(ids) - additive_set - set(SET_OPERATION_IDS))
+    original_current_digest = digest_ids(set(ids) - additive_set
+                                         - set(SET_OPERATION_IDS)
+                                         - {G.GOALCORE_OPERATION_ID})
     if original_current_digest != ORIGINAL_OPERATION_ID_DIGEST:
         fail("original operation IDs changed: digest %s != frozen %s"
              % (original_current_digest, ORIGINAL_OPERATION_ID_DIGEST))
@@ -1472,9 +1510,9 @@ def check_baseline_history(data, ops, inv):
     if not isinstance(add, dict):
         fail("feature baseline has no settingsDomainAdditive record")
         return
-    if add.get("version") != EXPECTED_BASELINE_VERSION:
-        fail("settingsDomainAdditive.version is %r, expected %r"
-             % (add.get("version"), EXPECTED_BASELINE_VERSION))
+    if add.get("version") != HISTORICAL_SETTINGS_VERSION:
+        fail("settingsDomainAdditive.version is %r, expected the frozen "
+             "historical %r" % (add.get("version"), HISTORICAL_SETTINGS_VERSION))
     if add.get("previousVersion") != "g02.2026-10-18.1":
         fail("settingsDomainAdditive.previousVersion changed")
     if add.get("contractSHA256") != \
@@ -1522,80 +1560,134 @@ def check_baseline_history(data, ops, inv):
     if add.get("additiveFixtureIds") != expected_fixture_ids:
         fail("settingsDomainAdditive.additiveFixtureIds changed")
 
-    if len(ids) == EXPECTED_OPERATION_COUNT:
-        prior_ids = [oid for oid in ids if oid not in set(SET_OPERATION_IDS)]
-        if len(prior_ids) != 172:
-            fail("prior operation set is %d, expected 172" % len(prior_ids))
-        prior_ops = [ops[oid] for oid in prior_ids]
-        prior_goal_digest = digest_lines(
-            ["%s:%s" % (op["id"], op["goal"]) for op in prior_ops])
-        prior_status_digest = digest_lines(
-            ["%s:%s" % (op["id"], op["status"]) for op in prior_ops])
-        if digest_ids(prior_ids) != PRIOR_172_OPERATION_ID_DIGEST:
-            fail("prior 172 operation IDs changed: digest %s != frozen %s"
-                 % (digest_ids(prior_ids), PRIOR_172_OPERATION_ID_DIGEST))
-        if prior_goal_digest != PRIOR_172_OPERATION_GOAL_DIGEST:
-            fail("prior 172 operation goals changed: digest %s != frozen %s"
-                 % (prior_goal_digest, PRIOR_172_OPERATION_GOAL_DIGEST))
-        if prior_status_digest != PRIOR_172_OPERATION_STATUS_DIGEST:
-            fail("prior 172 operation statuses changed: digest %s != frozen %s"
-                 % (prior_status_digest, PRIOR_172_OPERATION_STATUS_DIGEST))
-        if add.get("previousOperationIdDigest") != PRIOR_172_OPERATION_ID_DIGEST:
-            fail("settingsDomainAdditive.previousOperationIdDigest changed")
-        if add.get("previousOperationGoalDigest") != PRIOR_172_OPERATION_GOAL_DIGEST:
-            fail("settingsDomainAdditive.previousOperationGoalDigest changed")
-        if add.get("previousOperationStatusDigest") != \
-                PRIOR_172_OPERATION_STATUS_DIGEST:
-            fail("settingsDomainAdditive.previousOperationStatusDigest changed")
-        family_goal_digest = digest_lines(
-            ["%s:%s" % (fam["id"], fam["androidOwnerGoal"])
-             for fam in data["families"]])
-        if family_goal_digest != PRIOR_172_FAMILY_GOAL_DIGEST:
-            fail("family owner goals changed: digest %s != frozen %s"
-                 % (family_goal_digest, PRIOR_172_FAMILY_GOAL_DIGEST))
-        if add.get("previousFamilyGoalDigest") != PRIOR_172_FAMILY_GOAL_DIGEST:
-            fail("settingsDomainAdditive.previousFamilyGoalDigest changed")
-        package_goal_digest = digest_lines(
-            ["%s:%s" % (item["id"], item["implementationGoal"])
-             for item in ledger["packages"]])
-        package_status_digest = digest_lines(
-            ["%s:%s" % (item["id"], item["status"])
-             for item in ledger["packages"]])
-        if package_goal_digest != PRIOR_172_WORK_PACKAGE_GOAL_DIGEST:
-            fail("work-package goals changed: digest %s != frozen %s"
-                 % (package_goal_digest, PRIOR_172_WORK_PACKAGE_GOAL_DIGEST))
-        if package_status_digest != PRIOR_172_WORK_PACKAGE_STATUS_DIGEST:
-            fail("work-package statuses changed: digest %s != frozen %s"
-                 % (package_status_digest, PRIOR_172_WORK_PACKAGE_STATUS_DIGEST))
-        if add.get("previousWorkPackageGoalDigest") != \
-                PRIOR_172_WORK_PACKAGE_GOAL_DIGEST:
-            fail("settingsDomainAdditive.previousWorkPackageGoalDigest changed")
-        if add.get("previousWorkPackageStatusDigest") != \
-                PRIOR_172_WORK_PACKAGE_STATUS_DIGEST:
-            fail("settingsDomainAdditive.previousWorkPackageStatusDigest changed")
-        new_ids = [oid for oid in ids if oid in set(SET_OPERATION_IDS)]
-        if digest_ids(new_ids) != ADDITIVE_10_OPERATION_ID_DIGEST:
-            fail("additive operation IDs changed: digest %s != frozen %s"
-                 % (digest_ids(new_ids), ADDITIVE_10_OPERATION_ID_DIGEST))
-        new_status_digest = digest_lines(
-            ["%s:%s" % (oid, ops[oid]["status"]) for oid in SET_OPERATION_IDS])
-        if new_status_digest != ADDITIVE_10_OPERATION_STATUS_DIGEST:
-            fail("additive statuses changed: digest %s != frozen %s"
-                 % (new_status_digest, ADDITIVE_10_OPERATION_STATUS_DIGEST))
-        if add.get("additiveOperationIdDigest") != \
-                ADDITIVE_10_OPERATION_ID_DIGEST:
-            fail("settingsDomainAdditive.additiveOperationIdDigest changed")
-        if add.get("additiveOperationStatusDigest") != \
-                ADDITIVE_10_OPERATION_STATUS_DIGEST:
-            fail("settingsDomainAdditive.additiveOperationStatusDigest changed")
+    # The unchanged historical validation runs on the exact prior 182-operation
+    # ledger: the live ID set minus the frozen Settings-domain addition and
+    # minus ONLY the approved goal-core operation. It executes regardless of
+    # the live count, so a changed count can never skip the frozen identity,
+    # goal, status, family and work-package proofs.
+    prior_ids = [oid for oid in ids if oid not in set(SET_OPERATION_IDS)
+                 and oid != G.GOALCORE_OPERATION_ID]
+    if len(prior_ids) != 172:
+        fail("prior operation set is %d, expected 172" % len(prior_ids))
+    prior_ops = [ops[oid] for oid in prior_ids]
+    prior_goal_digest = digest_lines(
+        ["%s:%s" % (op["id"], op["goal"]) for op in prior_ops])
+    prior_status_digest = digest_lines(
+        ["%s:%s" % (op["id"], op["status"]) for op in prior_ops])
+    if digest_ids(prior_ids) != PRIOR_172_OPERATION_ID_DIGEST:
+        fail("prior 172 operation IDs changed: digest %s != frozen %s"
+             % (digest_ids(prior_ids), PRIOR_172_OPERATION_ID_DIGEST))
+    if prior_goal_digest != PRIOR_172_OPERATION_GOAL_DIGEST:
+        fail("prior 172 operation goals changed: digest %s != frozen %s"
+             % (prior_goal_digest, PRIOR_172_OPERATION_GOAL_DIGEST))
+    if prior_status_digest != PRIOR_172_OPERATION_STATUS_DIGEST:
+        fail("prior 172 operation statuses changed: digest %s != frozen %s"
+             % (prior_status_digest, PRIOR_172_OPERATION_STATUS_DIGEST))
+    if add.get("previousOperationIdDigest") != PRIOR_172_OPERATION_ID_DIGEST:
+        fail("settingsDomainAdditive.previousOperationIdDigest changed")
+    if add.get("previousOperationGoalDigest") != PRIOR_172_OPERATION_GOAL_DIGEST:
+        fail("settingsDomainAdditive.previousOperationGoalDigest changed")
+    if add.get("previousOperationStatusDigest") != \
+            PRIOR_172_OPERATION_STATUS_DIGEST:
+        fail("settingsDomainAdditive.previousOperationStatusDigest changed")
+    family_goal_digest = digest_lines(
+        ["%s:%s" % (fam["id"], fam["androidOwnerGoal"])
+         for fam in data["families"]])
+    if family_goal_digest != PRIOR_172_FAMILY_GOAL_DIGEST:
+        fail("family owner goals changed: digest %s != frozen %s"
+             % (family_goal_digest, PRIOR_172_FAMILY_GOAL_DIGEST))
+    if add.get("previousFamilyGoalDigest") != PRIOR_172_FAMILY_GOAL_DIGEST:
+        fail("settingsDomainAdditive.previousFamilyGoalDigest changed")
+    package_goal_digest = digest_lines(
+        ["%s:%s" % (item["id"], item["implementationGoal"])
+         for item in ledger["packages"]])
+    package_status_digest = digest_lines(
+        ["%s:%s" % (item["id"], item["status"])
+         for item in ledger["packages"]])
+    if package_goal_digest != PRIOR_172_WORK_PACKAGE_GOAL_DIGEST:
+        fail("work-package goals changed: digest %s != frozen %s"
+             % (package_goal_digest, PRIOR_172_WORK_PACKAGE_GOAL_DIGEST))
+    if package_status_digest != PRIOR_172_WORK_PACKAGE_STATUS_DIGEST:
+        fail("work-package statuses changed: digest %s != frozen %s"
+             % (package_status_digest, PRIOR_172_WORK_PACKAGE_STATUS_DIGEST))
+    if add.get("previousWorkPackageGoalDigest") != \
+            PRIOR_172_WORK_PACKAGE_GOAL_DIGEST:
+        fail("settingsDomainAdditive.previousWorkPackageGoalDigest changed")
+    if add.get("previousWorkPackageStatusDigest") != \
+            PRIOR_172_WORK_PACKAGE_STATUS_DIGEST:
+        fail("settingsDomainAdditive.previousWorkPackageStatusDigest changed")
+    new_ids = [oid for oid in ids if oid in set(SET_OPERATION_IDS)]
+    if digest_ids(new_ids) != ADDITIVE_10_OPERATION_ID_DIGEST:
+        fail("additive operation IDs changed: digest %s != frozen %s"
+             % (digest_ids(new_ids), ADDITIVE_10_OPERATION_ID_DIGEST))
+    new_status_digest = digest_lines(
+        ["%s:%s" % (oid, ops.get(oid, {}).get("status"))
+         for oid in SET_OPERATION_IDS])
+    if new_status_digest != ADDITIVE_10_OPERATION_STATUS_DIGEST:
+        fail("additive statuses changed: digest %s != frozen %s"
+             % (new_status_digest, ADDITIVE_10_OPERATION_STATUS_DIGEST))
+    if add.get("additiveOperationIdDigest") != \
+            ADDITIVE_10_OPERATION_ID_DIGEST:
+        fail("settingsDomainAdditive.additiveOperationIdDigest changed")
+    if add.get("additiveOperationStatusDigest") != \
+            ADDITIVE_10_OPERATION_STATUS_DIGEST:
+        fail("settingsDomainAdditive.additiveOperationStatusDigest changed")
+
+    # ---- New goal-core run-control record --------------------------------
+    # Independently prove the ONE planned operation and ZERO fixtures against
+    # the approved delta and the actual live numbers (the incoming record's
+    # 35-fixture claim was a proposal error; the real inventory is 33).
+    goalcore_failures = G.validate_goalcore_record(
+        data.get("goalCoreRunControlAdditive"), ops,
+        0 if inv is None else len(inv.get("entries", [])), g02)
+    for message in goalcore_failures:
+        fail("goalCoreRunControlAdditive: %s" % message)
+    record = data.get("goalCoreRunControlAdditive")
+    if isinstance(record, dict):
+        cha_family = next((fam for fam in data.get("families", [])
+                           if fam.get("id") == "CHA"), None)
+        if cha_family is not None:
+            family_wps = set(cha_family.get("workPackages", []))
+            for wp in G.GOALCORE_OPERATION_WORK_PACKAGES:
+                if wp not in family_wps:
+                    fail("goal-core work package %s is not in the CHA family "
+                         "mapping" % wp)
+        goalcore_ids = [oid for oid in ids if oid == G.GOALCORE_OPERATION_ID]
+        if digest_ids(goalcore_ids) != G.GOALCORE_OPERATION_ID_DIGEST:
+            fail("goal-core operation ID digest differs from the approved one")
 
     if inv is not None:
         if len(inv.get("entries", [])) != EXPECTED_FIXTURE_COUNT:
             fail("inventory fixture count differs from %d"
                  % EXPECTED_FIXTURE_COUNT)
+        # Actual header must match the new baseline...
         if inv.get("baselineVersion") != data.get("version"):
             fail("inventory baselineVersion %r != baseline version %r"
                  % (inv.get("baselineVersion"), data.get("version")))
+        # ...while the historical Settings-era inventory consistency check
+        # runs on the SAME entries with only the header projected back to the
+        # frozen Settings-era baseline version: that record declared exactly
+        # 33 fixtures at g02.2026-10-19.1, the live inventory still has
+        # exactly those 33 entries (per-entry SHA-256/byte integrity is
+        # proven in check_inventory, no regeneration or SHA rewrite), and the
+        # fixtureVersion is unchanged, so the goal-core batch added zero
+        # fixtures. If the projected historical header ever stops matching
+        # the frozen Settings-era fixture declaration, this fails.
+        historical_fixture_claim = \
+            add.get("currentDeclaredCounts", {}).get("fixtures")
+        projected_inv = dict(inv)
+        projected_inv["baselineVersion"] = HISTORICAL_SETTINGS_VERSION
+        if projected_inv["baselineVersion"] != add.get("version"):
+            fail("projected inventory header does not match the frozen "
+                 "settingsDomainAdditive.version %r" % add.get("version"))
+        if len(inv.get("entries", [])) != historical_fixture_claim:
+            fail("Settings-era declared fixture count %r no longer equals the "
+                 "live inventory size %d"
+                 % (historical_fixture_claim, len(inv.get("entries", []))))
+        if inv.get("fixtureVersion") != HISTORICAL_SETTINGS_VERSION:
+            fail("inventory fixtureVersion %r no longer matches the frozen "
+                 "Settings-era fixture content version"
+                 % inv.get("fixtureVersion"))
 
 
 def check_settings_operations(data, ops, inv):
@@ -1726,10 +1818,12 @@ def check_attachment_operations(data, ops, inv):
         return
     cha_ids = [op.get("id") for op in cha.get("operations", [])]
     expected_cha_ids = list(ORIGINAL_CHA_OPERATION_IDS) + \
-        list(ATTACHMENT_OPERATION_IDS)
+        list(ATTACHMENT_OPERATION_IDS) + [G.GOALCORE_OPERATION_ID]
     if cha_ids != expected_cha_ids:
-        fail("CHA operations are %r, expected original six followed by %r"
-             % (cha_ids, list(ATTACHMENT_OPERATION_IDS)))
+        fail("CHA operations are %r, expected original six followed by %r "
+             "then the approved goal-core operation %r"
+             % (cha_ids, list(ATTACHMENT_OPERATION_IDS),
+                G.GOALCORE_OPERATION_ID))
     ledger_ids = set()
     try:
         ledger = json.loads(WORK_PACKAGES.read_text(encoding="utf-8"))
@@ -1788,6 +1882,37 @@ def check_attachment_operations(data, ops, inv):
             if entry is None or oid not in entry.get("operations", []):
                 fail("%s: fixture %s does not reference the operation"
                      % (oid, ATTACHMENT_FIXTURES[oid][0]))
+
+    # ---- Approved goal-core manual compaction operation -------------------
+    compact = ops.get(G.GOALCORE_OPERATION_ID)
+    if compact is None:
+        fail("required goal-core operation missing: %s"
+             % G.GOALCORE_OPERATION_ID)
+    else:
+        if compact.get("goal") != "G02":
+            fail("%s: goal must be G02" % G.GOALCORE_OPERATION_ID)
+        if compact.get("status") != "planned":
+            fail("%s: goal-core operation status must be planned"
+                 % G.GOALCORE_OPERATION_ID)
+        if compact.get("channel") != ["full", "play"]:
+            fail("%s: channel must be full+play" % G.GOALCORE_OPERATION_ID)
+        if compact.get("verify") != ["G12", "G13"]:
+            fail("%s: verify goals must be G12+G13" % G.GOALCORE_OPERATION_ID)
+        if compact.get("alignment") != "built-in-equivalent":
+            fail("%s: unexpected alignment %r"
+                 % (G.GOALCORE_OPERATION_ID, compact.get("alignment")))
+        if compact.get("iosState") != "implemented":
+            fail("%s: iosState must stay implemented"
+                 % G.GOALCORE_OPERATION_ID)
+        for wp in G.GOALCORE_OPERATION_WORK_PACKAGES:
+            if wp not in cha.get("workPackages", []):
+                fail("%s: goal-core work package %s not in the CHA family"
+                     % (G.GOALCORE_OPERATION_ID, wp))
+        joined = " ".join(compact.get("assertions", [])).lower()
+        for token in ("reservation", "writer transaction"):
+            if token not in joined:
+                fail("%s: assertions lack required token %r"
+                     % (G.GOALCORE_OPERATION_ID, token))
 
     if "PRV-IDENTITY-WIRE-SPLIT-AND" in ops:
         fail("a new model-identity operation was added; the wire split must "

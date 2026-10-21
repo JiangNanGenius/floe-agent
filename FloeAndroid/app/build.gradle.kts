@@ -54,8 +54,8 @@ android {
         applicationId = "com.floe.agent"
         minSdk = 28
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.1.0-alpha.2"
+        versionCode = 3
+        versionName = "0.1.0-alpha.3"
         ndk { abiFilters += "arm64-v8a" }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -82,6 +82,7 @@ dependencies {
     implementation(project(":feature:conversation"))
     implementation(project(":feature:integrations"))
     implementation(project(":feature:providers"))
+    implementation(project(":feature:settings"))
     implementation(libs.androidx.core)
     implementation(libs.androidx.activity.compose)
     // Explicit pin: the dispatcher relies on CoroutineStart.UNDISPATCHED

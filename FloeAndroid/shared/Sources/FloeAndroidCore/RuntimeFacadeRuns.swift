@@ -224,6 +224,12 @@ public struct RunDomainComponents: Sendable {
     /// Run-scoped tool registry. `.shared` in production; isolated
     /// instances in tests so registrations never leak across cases.
     public var registry: ToolRunnerRegistry
+    /// goal-core batch (additive, default nil): the ORIGINAL shared
+    /// `app_settings` store, read ONLY for the `agent.semanticContextCompaction`
+    /// key by the manual `conversation.compact` lane (original default TRUE;
+    /// unbound/unreadable keeps the original default — never a fabricated
+    /// off-switch or a parallel settings source).
+    public var settings: (any SettingsStore)?
 
     public init(context: RunIngressContext,
                 durable: RunPersistenceBundle,
@@ -244,7 +250,8 @@ public struct RunDomainComponents: Sendable {
                     (@Sendable () async throws -> LivePersonalizationSnapshot)?,
                 adapterFactoryOverride:
                     (@Sendable (ProviderProfile) -> any ProviderAdapter)? = nil,
-                registry: ToolRunnerRegistry = .shared) {
+                registry: ToolRunnerRegistry = .shared,
+                settings: (any SettingsStore)? = nil) {
         self.context = context
         self.durable = durable
         self.checkpoints = checkpoints
@@ -263,6 +270,7 @@ public struct RunDomainComponents: Sendable {
         self.personalizationProvider = personalizationProvider
         self.adapterFactoryOverride = adapterFactoryOverride
         self.registry = registry
+        self.settings = settings
     }
 }
 
@@ -473,7 +481,58 @@ public actor FacadeRunDomain {
     // Short-lived ordinary wire admission, not a service-lifetime lock.
     // A second start is allowed once the first start returns, even while
     // its service is still live (the original parallel-run contract).
-    private var ordinaryWireAdmissions: Set<UUID> = []
+    // goal-core batch: internal (was private) so the same-actor control
+    // lanes (`plan.accept` admission, `goal.confirm` / `conversation.compact`
+    // quiescence proofs) can observe it; nothing widens its mutation sites.
+    internal var ordinaryWireAdmissions: Set<UUID> = []
+
+    // MARK: goal-core batch state (2026-10-21, job-7efd60bb51d14f02)
+
+    /// ONE shared per-conversation manual-compaction reservation, mirrored
+    /// from the ORIGINAL `ConversationCenter.compactingConversations` and
+    /// participating in EVERY real run launch admission (`start(query:)`
+    /// step 1 + the step-6 pre-commit re-check): a launch never commits past
+    /// an in-flight compaction and a compaction never starts against a
+    /// quiescent-but-launching thread. Actor-synchronous insert/remove at
+    /// the guarded boundaries; the durable writer transaction re-proves the
+    /// live-launch + timeline assertions on commit.
+    internal var compactingConversations: Set<UUID> = []
+    /// Ordinary goal-mode runs THIS generation handed off — the dispatch
+    /// gate for the original post-run evidence review/continuation lane
+    /// (temporary/chat/plan runs never enter; pruned at retirement).
+    internal var goalModeRuns: Set<UUID> = []
+    /// The RUN-FROZEN provider/model assembly per handed-off ordinary run.
+    /// The post-run review + continuation use THIS identity — never a
+    /// silently later default/config. Cleared at real retirement
+    /// (process-bounded, matching the original in-memory lifecycle; durable
+    /// goals survive and the user re-launches instead of an auto-resume —
+    /// original restart semantics preserved).
+    internal var frozenRoutes: [UUID: RunModelAssembly.ResolvedPair] = [:]
+    /// The ORIGINAL single-flight map for the post-run lane
+    /// (`goalContinuationReservations`, ConversationCenter:1085): one live
+    /// review/continuation per goal identity in this generation. A late or
+    /// parallel settle cannot double-commit or double-launch; the durable
+    /// re-read + CAS back the proof.
+    internal var goalContinuationReservations: [UUID: GoalContinuationReservation] = [:]
+    /// Real owned review/maintenance Task handles keyed by conversation
+    /// (delete drain + root retirement reach them; dropped exactly at real
+    /// handler return).
+    internal var goalReviewTasks: [UUID: [UUID: Task<Void, Never>]] = [:]
+    /// Exact `.conversation`-kind registry leases for the goal-review lane
+    /// (receipt-keyed per conversation, like `feedLeases` for P8; the drain
+    /// waits these to real completion — no detach-on-cancel false quiescence).
+    internal var goalReviewLeases: [UUID: [String: RuntimeOwnedWorkToken]] = [:]
+    /// post-run stop wiring (Main review 2026-10-21): exact work handle per
+    /// COMPLETED run whose review is live, so the existing `run.cancel`
+    /// reaches it after the service lifetime retired (the review is a
+    /// separate conversation-owned Task).
+    internal var goalReviewWorkByRun: [UUID: GoalReviewWorkHandle] = [:]
+    /// Synchronously-set invalidation permits: once the user's explicit
+    /// Stop marks a review run, the lane refuses at every post-await
+    /// boundary (CAS + continuation admission + the continuation launch's
+    /// own step-1/step-6 fence re-checks) instead of racing the Stop.
+    /// Cleared only at REAL review settlement.
+    internal var goalReviewStops: Set<UUID> = []
 
     public let epoch: UInt64
     internal let components: RunDomainComponents
@@ -781,12 +840,19 @@ public actor FacadeRunDomain {
     /// prohibit multiple live services on an already established task.
     static func verifyExistingLaunchRow(db: Database, row: Row?,
                                         conversationID: UUID,
-                                        expectedRevision: String) throws {
+                                        expectedRevision: String,
+                                        expectedActivationProof: String? = nil) throws {
         guard let row, (row["purpose"] as String?) == "ordinary" else {
             throw RunDomainError(.notFound, .conversationMissing)
         }
         guard ConversationRowRevision.digest(of: row) == expectedRevision else {
             throw RunDomainError(.staleRevision, .revisionMismatch)
+        }
+        if let expectedActivationProof {
+            guard try RunActivationIdentity.current(db: db, conversationID: conversationID)
+                == expectedActivationProof else {
+                throw RunDomainError(.staleRevision, .revisionMismatch)
+            }
         }
     }
 
@@ -795,12 +861,45 @@ public actor FacadeRunDomain {
     /// The single launch pipeline. `conversationTitle` is used only by the
     /// create-intent path (run.startTask). `bundleOverride` is the RB5
     /// temporary seam; the wire handlers never pass it.
+    /// goal-core batch internal threading (defaults preserve EVERY existing
+    /// launch call site byte-for-byte):
+    /// * `messageRole` — the ORIGINAL `RunLaunchStore` role vocabulary
+    ///   (`user` | `goalContinuation`). Only the trusted in-process goal
+    ///   continuation task passes `goalContinuation`; wire handlers never
+    ///   accept a role from the envelope (the launch grammar is unchanged).
+    /// * `atomicIntelligence` — the C1 post-digest-CAS commit hook
+    ///   (`plan.accept` accepted plan + optional goal; structured
+    ///   `goalDefinition` goal row). Requires the ordinary bundle, an
+    ///   existing conversation with the digest CAS, and the durable
+    ///   `AtomicIntelligenceRunLaunchStore`; anything else refuses BEFORE any
+    ///   effect (no knowingly non-atomic approximation, temporary launches
+    ///   structurally cannot carry durable intelligence).
+    /// * `capturedLaunch` — the RUN-FROZEN assembly pair for the in-process
+    ///   goal continuation. The frozen identity is used as-is (never a
+    ///   silently re-resolved later default/config); every durable
+    ///   is_enabled/FK proof still re-runs inside the original prepare.
+    /// * `continuationStopPermit` — ONLY the in-process goal continuation
+    ///   passes its parent completed run id: the user's explicit Stop for
+    ///   that parent (post-run stop wiring) sets a synchronous stop permit
+    ///   that revokes the continuation admission. The pipeline re-checks the
+    ///   permit at the step-1 fence admission AND at the step-6 FINAL
+    ///   pre-prepare boundary, so a Stop that lands while the continuation
+    ///   was between awaits refuses before any durable effect; a Stop that
+    ///   lands AFTER the prepare committed simply loses the race honestly
+    ///   (the continuation is then a real same-activation run — never
+    ///   silently killed, and its parent's completed history is never
+    ///   rewritten). Wire handlers never pass this parameter.
     public func start(query: RunStartQuery,
                       conversationTitle: String = "",
                       receipt: String?,
                       conversationID: UUID?,
                       bundleOverride: RunPersistenceBundle? = nil,
-                      expectedConversationRevision: String? = nil) async
+                      expectedConversationRevision: String? = nil,
+                      messageRole: String = "user",
+                      atomicIntelligence: (@Sendable (Database) throws -> Void)? = nil,
+                      capturedLaunch: RunModelAssembly.ResolvedPair? = nil,
+                      continuationStopPermit: UUID? = nil,
+                      expectedActivationProof: String? = nil) async
         -> RunDomainReply {
         let bundle = bundleOverride ?? durable
         let isCreateIntent = conversationID == nil
@@ -833,6 +932,31 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
         }
 
+        // goal-core batch (2026-10-21): a structured `goalDefinition` on an
+        // ORDINARY goal-mode `run.start` mints its durable goal identity
+        // EXACTLY ONCE here, before the first await, and commits through the
+        // SAME C1 writer transaction as run/message/launch (below). A replay
+        // cannot duplicate it: the launch's conversation-row digest CAS plus
+        // the store-side identity conflict are durable proofs (never a
+        // process-only idempotency table).
+        let intelligenceCommit: (@Sendable (Database) throws -> Void)?
+        if let definition = query.goalDefinition {
+            let goal = Self.structuredGoal(conversationID: effectiveConversation,
+                                           definition: definition)
+            intelligenceCommit = { db in
+                do {
+                    try SQLiteIntelligenceStore.commitStructuredGoalAtLaunch(goal, db: db)
+                } catch let refusal as IntelligenceAtomicCommitRefusal {
+                    // Closed typed landing (the whole transaction rolls
+                    // back; a colliding fresh identity is an internal
+                    // invariant, never a silent overwrite).
+                    throw Self.mapAtomicRefusal(refusal)
+                }
+            }
+        } else {
+            intelligenceCommit = atomicIntelligence
+        }
+
         // 1. Guard/fence admission + C0 cancel check (per-conversation
         //    delete guard AND the operation-owned global admission fence).
         do {
@@ -840,6 +964,42 @@ public actor FacadeRunDomain {
                 throw RunDomainError(.sessionFenced, .deletingGuarded)
             }
             if !isCreateIntent { try requireNoGuard(conversationID: effectiveConversation) }
+            // ONE shared conversation reservation participates in EVERY real
+            // launch admission: a manual compaction in flight for this
+            // conversation refuses the launch before any effect (and the
+            // durable writer re-proves the reciprocal window at compaction
+            // commit).
+            if !isCreateIntent, compactingConversations.contains(effectiveConversation) {
+                throw RunDomainError(.invalidState, .conversationActive)
+            }
+            // goal-core stop wiring: a continuation admitted under a parent
+            // permit refuses synchronously once the user's explicit Stop
+            // revoked it (no durable effect, no lease left behind).
+            if let permit = continuationStopPermit, goalReviewStops.contains(permit) {
+                throw RunDomainError(.sessionFenced, .continuationStopped)
+            }
+            // Internal role vocabulary: the ONLY non-default role is the
+            // trusted in-process goal continuation; the wire never supplies
+            // a role (grammar unchanged) and a create-intent launch is never
+            // a continuation.
+            if messageRole != "user" {
+                guard messageRole == "goalContinuation", !isCreateIntent else {
+                    throw RunDomainError(.invalidState, .payloadInvalid)
+                }
+            }
+            // Atomic intelligence commits are structurally ordinary-only and
+            // require the durable digest CAS + the capability-providing
+            // store. Anything else refuses BEFORE the first durable effect
+            // — never a knowingly non-atomic approximation.
+            if intelligenceCommit != nil {
+                guard bundle.identity == .ordinary, !isCreateIntent,
+                      expectedConversationRevision != nil else {
+                    throw RunDomainError(.invalidState, .payloadInvalid)
+                }
+                guard bundle.launches is AtomicIntelligenceRunLaunchStore else {
+                    throw RunDomainError(.capabilityNotUsable, .intelligenceStoreUnbound)
+                }
+            }
         } catch let error as RunDomainError {
             return refuseLaunch(runID: runID, error: error)
         } catch {
@@ -908,8 +1068,19 @@ public actor FacadeRunDomain {
             if bundle.identity == .ordinary, components.credentialNormalizer == nil {
                 throw RunDomainError(.needsConfiguration, .normalizerUnbound)
             }
-            launch = try await assembly.resolveSelected(providerID: query.providerID,
-                                                        modelID: query.modelID)
+            if let frozen = capturedLaunch {
+                // goal-core batch: the in-process goal continuation carries
+                // the RUN-FROZEN assembly pair — the same provider/model/
+                // adapter identity the parent launch admitted. Nothing is
+                // re-resolved from later defaults/config; the durable
+                // is_enabled + FK proofs still re-run inside the original
+                // prepare transaction, so a genuinely lost route refuses
+                // honestly instead of silently swapping models.
+                launch = frozen
+            } else {
+                launch = try await assembly.resolveSelected(providerID: query.providerID,
+                                                            modelID: query.modelID)
+            }
             admissionPhase = .credentialResolution
             switch await ingress.resolve(provider: launch.provider) {
             case .resolved, .explicitNoAuth: break
@@ -1040,10 +1211,28 @@ public actor FacadeRunDomain {
         //    delete/steer interleave honestly). A refusal here releases the
         //    staged leases: the launch never happened, so nothing may keep
         //    an exclusive claim — while the staged bytes stay untouched.
+        //    The shared manual-compaction reservation is re-proved at this
+        //    last pre-prepare boundary too (the durable writer assertion at
+        //    the compaction commit closes whatever window a flip between the
+        //    two actor steps would otherwise leave).
         if shouldAbortBeforeEffects(runID) || !fenceIsValid(launchToken) {
             await releaseReservations(leases)
             return refuseLaunch(runID: runID,
                                 error: RunDomainError(.sessionFenced, .deletingGuarded))
+        }
+        if !isCreateIntent, compactingConversations.contains(effectiveConversation) {
+            await releaseReservations(leases)
+            return refuseLaunch(runID: runID,
+                                error: RunDomainError(.invalidState, .conversationActive))
+        }
+        // Continuation stop-permit: the FINAL synchronous pre-prepare
+        // boundary. An explicit user Stop for the parent completed run
+        // revoked this continuation's admission; refuse HERE (no durable
+        // effect) rather than racing the user's Stop into a new cycle.
+        if let permit = continuationStopPermit, goalReviewStops.contains(permit) {
+            await releaseReservations(leases)
+            return refuseLaunch(runID: runID,
+                                error: RunDomainError(.sessionFenced, .continuationStopped))
         }
 
         // 7. The ORIGINAL atomic launch commit against the RUN'S OWN bundle
@@ -1075,7 +1264,11 @@ public actor FacadeRunDomain {
             attachments: leases.map(\.ref),
             conversationMode: query.mode.rawValue,
             initialPolicy: query.policy,
-            messageRole: "user",
+            // goal-core batch: the ORIGINAL frozen role vocabulary
+            // (user | goalContinuation — validated by the store itself).
+            // Wire handlers keep the default "user"; only the trusted
+            // in-process goal continuation passes "goalContinuation".
+            messageRole: messageRole,
             providerID: launch.provider.id,
             modelID: launch.model.id,
             providerName: launch.provider.displayName,
@@ -1087,14 +1280,32 @@ public actor FacadeRunDomain {
         do {
             if bundle.identity == .ordinary, !isCreateIntent,
                let expectedConversationRevision {
-                guard let validating = bundle.launches as? any ExistingConversationRunLaunchStore else {
-                    throw RunDomainError(.persistenceUnavailable, .storeReadFailed)
+                if let intelligenceCommit {
+                    // C1 atomic intelligence commit: the accepted plan (+
+                    // optional goal) / structured goal row commits inside
+                    // the SAME original writer transaction, after the
+                    // row-digest CAS and before the first durable write.
+                    // A throw rolls the WHOLE launch back (provable C0).
+                    guard let atomic = bundle.launches as? any AtomicIntelligenceRunLaunchStore else {
+                        throw RunDomainError(.capabilityNotUsable, .intelligenceStoreUnbound)
+                    }
+                    prepared = try await atomic.prepare(request, expectedRow: { db, row in
+                        try Self.verifyExistingLaunchRow(
+                            db: db, row: row, conversationID: effectiveConversation,
+                            expectedRevision: expectedConversationRevision,
+                            expectedActivationProof: expectedActivationProof)
+                    }, atomicIntelligence: intelligenceCommit)
+                } else {
+                    guard let validating = bundle.launches as? any ExistingConversationRunLaunchStore else {
+                        throw RunDomainError(.persistenceUnavailable, .storeReadFailed)
+                    }
+                    prepared = try await validating.prepare(request, expectedRow: { db, row in
+                        try Self.verifyExistingLaunchRow(
+                            db: db, row: row, conversationID: effectiveConversation,
+                            expectedRevision: expectedConversationRevision,
+                            expectedActivationProof: expectedActivationProof)
+                    })
                 }
-                prepared = try await validating.prepare(request, expectedRow: { db, row in
-                    try Self.verifyExistingLaunchRow(
-                        db: db, row: row, conversationID: effectiveConversation,
-                        expectedRevision: expectedConversationRevision)
-                })
             } else {
                 // New identity and temporary RAM launches preserve the
                 // original preparation protocol and lifetime exactly.
@@ -1135,6 +1346,14 @@ public actor FacadeRunDomain {
                 ])
         }
         register(current)
+        // goal-core batch: freeze the RUN identity for the original post-run
+        // goal review/continuation lane (ordinary goal-mode launches only;
+        // temporary and chat/plan runs never register, so they can never
+        // enter). Both maps clear at real retirement.
+        if bundle.identity == .ordinary, query.mode == .goal {
+            goalModeRuns.insert(prepared.run.id)
+            frozenRoutes[prepared.run.id] = launch
+        }
 
         // Intelligence hook #1: PERSISTED ORDINARY user-message commit,
         // once per real commit, only for ordinary identity. The feed is
@@ -1447,10 +1666,38 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionAbsent)))
         }
+        // post-run stop wiring (Main review 2026-10-21): for an ordinary
+        // COMPLETED goal-mode run, the ORIGINAL post-run review/continuation
+        // lane is REAL owned work that outlives the service retirement as a
+        // separate conversation-leased Task. The existing `run.cancel` —
+        // AFTER the authoritative durable record/owner/state/revision proof
+        // above and BEFORE the retired/terminal fast paths — reaches that
+        // exact work: invalidates the continuation admission synchronously
+        // (stop permit + reservation removal), cancels the actual Task
+        // (transport unwinds cooperatively) and keeps the registry lease
+        // attached until the handler REALLY returns (drain semantics
+        // unchanged; no detach-on-cancel false quiescence). The completed
+        // run's durable history is never rewritten as cancelled and no
+        // unrelated or replacement run is touched — invalidating this review
+        // cannot fence or kill a newer user activation (which is addressed
+        // only through its own run identity).
+        if owners[query.runID] == nil,
+           requestGoalReviewStop(runID: query.runID, conversationID: query.conversationID) {
+            // Honest ACK: STOPPING, never "settled"/"alreadyRequested" while
+            // the review can still act. The `run.snapshot` goalReview field
+            // reads back the real settlement (stopping -> none only after
+            // the actual owner returned).
+            return RunDomainReply(.mutationAccepted(detail: [
+                "cancel": "reviewStopping",
+                "resourceID": RunWireRevision.runResourceID(query.runID),
+            ]))
+        }
         if owners[query.runID] == nil, retiredRunSet.contains(query.runID) {
             // THIS domain retired this run in the current generation: the
             // cancel was already requested and settled; answering honestly
             // (never a fake re-owning, never a runMissing for known work).
+            // A goal review that REALLY settled already cleared its work
+            // handle, so this path only answers after actual settlement.
             return RunDomainReply(.mutationAccepted(detail: ["cancel": "alreadyRequested"]))
         }
         if Self.terminalRunStates.contains(record.state), owners[query.runID] == nil {
@@ -1541,6 +1788,32 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(RunDomainError(.duplicateInFlight,
                                                            .launchAlreadyInFlight)))
         }
+        // C0 admission owner (start parity, Main review 2026-10-21): the
+        // exact `.run` token and the scoped launch fence attach BEFORE the
+        // first admission await, and the owner stays `.admitting` (never
+        // `.prepared`) until the REAL atomic resume commit below. A Stop that
+        // lands anywhere in admission is therefore classified `pendingC0`
+        // (synchronous cancelRequested), and every later stage re-proves this
+        // EXACT identity — no absent-owner force unwrap and no late handoff.
+        let launchToken = issueFence(query.conversationID)
+        switch RuntimeOwnedWorkRegistry.shared.attach(epoch: epoch, kind: .run,
+                                                      ownerID: query.runID.uuidString) {
+        case .attached(let token):
+            var ownership = RunOwnership(conversationID: query.conversationID,
+                                         runID: query.runID, epoch: epoch,
+                                         identity: .ordinary,
+                                         launchToken: launchToken, bundle: durable)
+            ownership.commandReceipt = receipt
+            ownership.phase = .admitting
+            ownership.ownedTokens[RuntimeOwnedWorkKind.run.rawValue] = token
+            register(ownership)
+            recordDrainEvidence(conversationID: query.conversationID, token: token)
+        case .rejected:
+            return RunDomainReply(.rejected(RunDomainError(.sessionFenced,
+                                                           .generationRetired)))
+        case .invalidIdentity:
+            return RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
+        }
         let record: RunRecord
         do {
             record = try await durableRecord(query.runID, conversationID: query.conversationID)
@@ -1551,10 +1824,11 @@ public actor FacadeRunDomain {
                 resourceID: RunWireRevision.runResourceID(query.runID),
                 version: record.state)
         } catch let error as RunDomainError {
-            return RunDomainReply(.rejected(error))
+            return refuseLaunch(runID: query.runID, error: error)
         } catch {
-            return RunDomainReply(.rejected(RunDomainError(.persistenceUnavailable,
-                                                           .storeReadFailed)))
+            return refuseLaunch(runID: query.runID,
+                                error: RunDomainError(.persistenceUnavailable,
+                                                      .storeReadFailed))
         }
         guard Self.activeRunStates.contains(record.state)
                 || record.state == "failed" || record.state == "interrupted"
@@ -1562,21 +1836,24 @@ public actor FacadeRunDomain {
             // completed is FINAL; retrying success would fabricate a new
             // answer turn on a closed thread. checkpointed is the ORIGINAL
             // recoverable resume source (cancel/pause park), never final.
-            return RunDomainReply(.rejected(RunDomainError(.invalidState, .runNotRetryable)))
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.invalidState, .runNotRetryable))
         }
         // A parked awaiting-dependency run is NOT finished; refuse Continue
         // exactly like the native guard (its resumption belongs to the job
         // callback path, out of G02 facade scope).
         if await isAwaitingDependency(record: record) {
-            return RunDomainReply(.rejected(RunDomainError(.invalidState, .runAwaitingDependency)))
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.invalidState,
+                                                      .runAwaitingDependency))
         }
         do {
             try requireNoGuard(conversationID: record.conversationID)
         } catch let error as RunDomainError {
-            return RunDomainReply(.rejected(error))
-        }
-        catch {
-            return RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
+            return refuseLaunch(runID: record.id, error: error)
+        } catch {
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.internalError, .internal))
         }
         // Preserve native retry identity: the ORIGINAL durable provider/
         // model row first; missing identity columns are a typed refusal
@@ -1588,10 +1865,11 @@ public actor FacadeRunDomain {
             }
             launch = try await assembly.resolveSelected(providerID: providerID, modelID: modelID)
         } catch let error as RunDomainError {
-            return RunDomainReply(.rejected(error))
+            return refuseLaunch(runID: record.id, error: error)
         } catch {
-            return RunDomainReply(.rejected(RunDomainError(.needsConfiguration,
-                                                           .providerDisabled)))
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.needsConfiguration,
+                                                      .providerDisabled))
         }
         // Checkpoint identity check FIRST (native :6270-6295): foreign or
         // unreadable checkpoint files are IGNORED (bounded warning class)
@@ -1605,32 +1883,15 @@ public actor FacadeRunDomain {
         } else {
             checkpoint = nil
         }
-        switch RuntimeOwnedWorkRegistry.shared.attach(epoch: epoch, kind: .run,
-                                                      ownerID: record.id.uuidString) {
-        case .attached(let token):
-            var ownership = RunOwnership(conversationID: record.conversationID,
-                                         runID: record.id, epoch: epoch,
-                                         identity: .ordinary,
-                                         launchToken: issueFence(record.conversationID),
-                                         bundle: durable)
-            ownership.commandReceipt = receipt
-            ownership.phase = .prepared
-            ownership.ownedTokens[RuntimeOwnedWorkKind.run.rawValue] = token
-            register(ownership)
-            recordDrainEvidence(conversationID: record.conversationID, token: token)
-            // A delete/retirement guard that appeared during admission must
-            // stop this resume BEFORE any service handoff (no late owner).
-            if retirementFenced || globalFence != nil
-                || deleteGuards[record.conversationID] != nil {
-                await retire(runID: record.id, terminalSucceeded: false,
-                             feedTerminal: false)
-                return RunDomainReply(.rejected(
-                    RunDomainError(.sessionFenced, .deletingGuarded)))
-            }
-        case .rejected:
-            return RunDomainReply(.rejected(RunDomainError(.sessionFenced, .generationRetired)))
-        case .invalidIdentity:
-            return RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
+        // Post-await admission re-proof (C0, start parity): the exact owner
+        // must still be THIS admission, the user must not have stopped it,
+        // and the generation/global/delete fences must still admit.
+        if retirementFenced || globalFence != nil
+            || deleteGuards[record.conversationID] != nil
+            || !fenceIsValid(launchToken)
+            || (owners[record.id]?.cancelRequested ?? true) {
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.sessionFenced, .deletingGuarded))
         }
         // A resume is a REAL new dispatch: the same admission truths as a
         // launch (corpus gate, transport qualification, vault normalizer)
@@ -1650,10 +1911,14 @@ public actor FacadeRunDomain {
                 throw RunDomainError(.transportUnavailable, .transportNotQualified)
             }
         } catch let error as RunDomainError {
-            return RunDomainReply(.rejected(error))
+            // Main review 2026-10-21: a gate refusal after the owner attach
+            // must release its EXACT owner/token (the old catch returned with
+            // the registry lease still attached).
+            return refuseLaunch(runID: record.id, error: error)
         } catch {
-            return RunDomainReply(.rejected(RunDomainError(
-                .persistenceUnavailable, .storeReadFailed)))
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.persistenceUnavailable,
+                                                      .storeReadFailed))
         }
         let history: [ConversationMessage]
         do {
@@ -1662,16 +1927,15 @@ public actor FacadeRunDomain {
                 excludingRun: record.id,
                 bundle: durable)
         } catch let error as RunDomainError {
-            await retire(runID: record.id, terminalSucceeded: false, feedTerminal: false)
-            return RunDomainReply(.rejected(error))
+            return refuseLaunch(runID: record.id, error: error)
         } catch {
-            await retire(runID: record.id, terminalSucceeded: false, feedTerminal: false)
-            return RunDomainReply(.rejected(RunDomainError(.persistenceUnavailable,
-                                                           .storeReadFailed)))
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.persistenceUnavailable,
+                                                      .storeReadFailed))
         }
         guard let mode = ConversationMode(rawValue: record.conversationMode ?? "chat") else {
-            await retire(runID: record.id, terminalSucceeded: false, feedTerminal: false)
-            return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.invalidState, .payloadInvalid))
         }
         let service: ConversationRunService
         do {
@@ -1686,29 +1950,108 @@ public actor FacadeRunDomain {
                 // original launch's admission was not durable state).
                 environmentID: nil)
         } catch let error as RunDomainError {
-            await markCommittedLaunchAbandoned(runID: record.id,
-                                               reason: "serviceAssemblyFailed",
-                                               bundle: durable)
-            await retire(runID: record.id, terminalSucceeded: false, feedTerminal: false)
-            return RunDomainReply(.rejected(error))
+            // C0: nothing durable was committed for this resume yet (the
+            // failed/checkpointed row is untouched), so the exact owner is
+            // released without inventing a failure state.
+            return refuseLaunch(runID: record.id, error: error)
         } catch {
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.persistenceUnavailable,
+                                                      .storeWriteFailed))
+        }
+        // C0 FINAL re-proof immediately before the atomic commit: still the
+        // EXACT admission owner, no Stop, and every fence admits. Anything
+        // else refuses with provable no durable effect.
+        guard let preCommit = owners[record.id],
+              preCommit.launchToken == launchToken,
+              preCommit.epoch == epoch,
+              !preCommit.cancelRequested,
+              !retirementFenced,
+              globalFence == nil,
+              deleteGuards[record.conversationID] == nil,
+              fenceIsValid(launchToken) else {
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.sessionFenced, .deletingGuarded))
+        }
+        // C1 — the ONE committed resume admission (goal-core batch, Main
+        // review 2026-10-21). The narrow Android RunStore mirror re-proves
+        // this run's durable conversation identity AND expected state inside
+        // the writer, COMMITS the original `preparing` transition, then
+        // writes the NATIVE `userResume` status marker whose own event id
+        // enters the ORIGINAL activation fold (insert marker -> compute
+        // proof -> update that marker). A foreign/advanced row returns nil
+        // and writes NOTHING; nothing is inferred from untrusted content, no
+        // synthetic user message is written and the completed run stays
+        // NONRESUMABLE (the state guard above still refuses it).
+        do {
+            guard let resumable = durable.runs as? any ResumeActivationRunStore else {
+                throw RunDomainError(.capabilityNotUsable, .intelligenceStoreUnbound)
+            }
+            guard try await resumable.beginUserResume(
+                runID: record.id,
+                conversationID: record.conversationID,
+                expectedState: record.state) != nil else {
+                throw RunDomainError(.staleRevision, .revisionMismatch)
+            }
+        } catch let error as RunDomainError {
+            return refuseLaunch(runID: record.id, error: error)
+        } catch {
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.persistenceUnavailable,
+                                                      .storeWriteFailed))
+        }
+        // C1 landed. Re-prove that the owner is STILL this exact admission
+        // before touching anything: if a cancel/retire or a newer resume
+        // replaced it while the writer awaited, this admission owns nothing
+        // and must never mark, abandon or hand off a service.
+        guard var committedOwnership = owners[record.id],
+              committedOwnership.launchToken == launchToken,
+              committedOwnership.epoch == epoch else {
+            return RunDomainReply(.rejected(RunDomainError(.sessionFenced,
+                                                           .deletingGuarded)))
+        }
+        // C1 cancel/fence window (start parity): a Stop or a root/global/
+        // delete fence that landed while the commit was in flight fails the
+        // committed resume truthfully. This runs while the owner is still
+        // `.admitting`, so no replacement resume can exist for the SAME run
+        // id (retry requires `owners[runID] == nil`); the original
+        // `markCommittedLaunchAbandoned` state CAS therefore cannot clobber a
+        // newer admission of the same identity.
+        if committedOwnership.cancelRequested || !fenceIsValid(launchToken)
+            || retirementFenced || globalFence != nil
+            || deleteGuards[record.conversationID] != nil {
             await markCommittedLaunchAbandoned(runID: record.id,
-                                               reason: "serviceAssemblyFailed",
+                                               reason: "cancelledDuringResume",
                                                bundle: durable)
             await retire(runID: record.id, terminalSucceeded: false, feedTerminal: false)
-            return RunDomainReply(.rejected(RunDomainError(.persistenceUnavailable,
-                                                           .storeWriteFailed)))
+            return RunDomainReply(.rejected(RunDomainError(.sessionFenced,
+                                                           .deletingGuarded)))
+        }
+        // Handoff in ONE actor step (no await between the prepared flip and
+        // the live-service publication), so a Stop can no longer observe a
+        // half-prepared resume owner.
+        committedOwnership.phase = .prepared
+        register(committedOwnership)
+        // EXACT parity with a fresh ordinary goal-mode launch (`start`):
+        // freeze the ACTUAL admitted durable provider/model/adapter pair and
+        // register the postrun lane, so a resumed Goal really reaches the
+        // original evidenceReview / completion / budgets / continuation
+        // lifecycle with the SAME route the run was admitted with (never a
+        // first-usable/default/late reroute). Temporary sessions never take
+        // this branch (their retry is the RAM-only path above).
+        if mode == .goal {
+            goalModeRuns.insert(record.id)
+            frozenRoutes[record.id] = launch
         }
         // Retry re-owns the SAME run id: the live registry must answer
         // cancel/steer/policy/snapshot for it exactly like a fresh launch.
         liveServices[record.id] = service
-        var handed = owners[record.id]!
-        handed.phase = .handedOff
-        handed.startedEffectEmitted = components.effects.append(
+        committedOwnership.phase = .handedOff
+        committedOwnership.startedEffectEmitted = components.effects.append(
             receipt: receipt, kind: .started,
             detail: ["runID": record.id.uuidString,
                      "resumed": checkpoint != nil ? "checkpoint" : "history"])
-        register(handed)
+        register(committedOwnership)
         ownedLaunchTasks(preparedRunID: record.id, service: service,
                          goal: record.goal, resumeFrom: checkpoint)
         return RunDomainReply(.mutationAccepted(detail: [
@@ -3107,6 +3450,26 @@ public actor FacadeRunDomain {
                     temporaryAtStart: false, frozenTemporaryRun: false,
                     ordinarySurface: true, succeeded: terminalSucceeded)))
         }
+        // goal-core batch: the ORIGINAL post-run goal lane dispatches ONLY
+        // from the REAL completed terminal of an ordinary goal-mode run
+        // (exact-settle sites pass feedTerminal && terminalSucceeded; the
+        // abandoned-launch and non-completed paths never do). Temporary runs
+        // never registered and cannot enter. The frozen identity and the
+        // registration clear at this real retirement — the in-process lane
+        // dies with the generation exactly like the original; recovery
+        // stays user-launched goal mode / checkpoint resume (no startup or
+        // timer resurrection, no WorkManager).
+        if ownership.identity == .ordinary {
+            if feedTerminal, terminalSucceeded, goalModeRuns.contains(runID),
+               let route = frozenRoutes[runID], !retirementFenced {
+                dispatchGoalReview(runID: runID,
+                                   conversationID: ownership.conversationID,
+                                   frozen: route,
+                                   bundle: ownership.bundle)
+            }
+            goalModeRuns.remove(runID)
+            frozenRoutes[runID] = nil
+        }
     }
 
     /// Launch-call failure landing after the durable commit: the blocking
@@ -3132,8 +3495,13 @@ public actor FacadeRunDomain {
     /// The acquire/release pair lives in RuntimeFacadeRunAssembly.swift
     /// (RUN-S3 repair: lease acquired before the dispatching await, held
     /// by a real owned maintenance Task until the handler returns).
+    /// goal-core batch: the post-run goal review lane leases the SAME kind
+    /// of exact `.conversation` tokens (separate map, same drain gate) — a
+    /// conversation delete therefore waits an in-flight review/continuation
+    /// to its REAL completion too, never a detach-on-cancel false quiescence.
     func feedLeaseCount(conversationID: UUID) -> Int {
-        feedLeases[conversationID]?.count ?? 0
+        (feedLeases[conversationID]?.count ?? 0)
+            + (goalReviewLeases[conversationID]?.count ?? 0)
     }
 
     /// Feed leases that THIS drain watched through to real handler return.
@@ -3459,12 +3827,44 @@ public actor FacadeRunDomain {
         ]
     }
 
+    /// Bounded UTF-8 text prefix.
+    ///
+    /// BODY CORRECTION (goal-core batch 2026-10-21, Main-integrity review):
+    /// the previous loop stripped trailing continuation bytes but KEPT an
+    /// orphan lead byte, and `String(decoding:as:UTF8.self)` then inserted
+    /// U+FFFD (counterexamples: `boundText("中中", 3)` yielded a single
+    /// 0xE4 byte, and `boundText("aa中中", 3)` returned aa+lead = 5 UTF-8
+    /// bytes, exceeding the promise). A Swift String's utf8 is ALWAYS valid
+    /// UTF-8, so a lead byte determines its sequence width exactly; this
+    /// walks full sequences and stops before one that does not fully fit.
+    /// Result is a genuinely valid UTF-8 prefix of at most `maxBytes` bytes
+    /// (zero boundary => ""), byte-identical to the old behavior for pure
+    /// ASCII within budget. Frame/page budgets measured by
+    /// `FacadeFrameBudget.serializedBytes` are unaffected (replacement
+    /// characters only ever made the old output LARGER).
     static func boundText(_ value: String, _ maxBytes: Int) -> String {
         let bytes = Array(value.utf8)
+        guard maxBytes > 0 else { return "" }
         guard bytes.count > maxBytes else { return value }
-        var length = maxBytes
-        while length > 0, (bytes[length - 1] & 0xC0) == 0x80 { length -= 1 }
-        return String(decoding: bytes.prefix(length), as: UTF8.self)
+        var kept = 0
+        var index = 0
+        while index < bytes.count {
+            let lead = bytes[index]
+            let width: Int
+            switch lead {
+            case 0x00...0x7F: width = 1
+            case 0xC0...0xDF: width = 2
+            case 0xE0...0xEF: width = 3
+            case 0xF0...0xF4: width = 4
+            // Impossible inside a valid Swift String's UTF-8; a defensive
+            // 1-byte step keeps the walk terminating.
+            default: width = 1
+            }
+            guard kept + width <= maxBytes else { break }
+            kept += width
+            index += width
+        }
+        return String(decoding: bytes.prefix(kept), as: UTF8.self)
     }
 
     static func jsonString(_ object: [String: String]) -> String {

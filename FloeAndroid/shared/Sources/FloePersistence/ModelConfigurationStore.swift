@@ -9,7 +9,12 @@
 // Per that rule + MAIN_SOURCE_REVIEW_20261019.json
 // allowedNarrowStoreExtension, this overlay mirror carries ONLY the MC-R1
 // additive expected-state overloads/defaulted parameters (same-writer CAS for
-// saveProviderBundle/deleteProvider) plus the typed conflict error. All
+// saveProviderBundle/deleteProvider) plus the typed conflict error, AND the
+// job-2e38 narrow additive `setProviderEnabled` provider-row metadata CAS
+// (Main MAIN_PROVIDER_COMPACT_METADATA_DECISION_20261021: enabled toggle
+// equivalence to the original provider-row-only write; every other column
+// and every models row provably unwritten). A future rebase must carry both
+// additive deltas and re-verify the same upstream pin. All
 // existing callers keep EXACT original behavior: `expectedSyncRevision ==
 // nil` reproduces the upstream byte-for-byte decision path; the original
 // codec, FK/stale-model selection, merge rules, schema (46) and preferences/
@@ -395,6 +400,71 @@ public actor ModelConfigurationStore {
     public func deleteModel(id: UUID) async throws {
         try await database.writer { db in
             try db.execute(sql: "DELETE FROM models WHERE id = ?", arguments: [id.uuidString])
+        }
+    }
+
+    /// COMPACT existing-row enabled/disabled metadata write (Main decision
+    /// MAIN_PROVIDER_COMPACT_METADATA_DECISION_20261021; original iOS
+    /// precedent ProviderListViewModel.setEnabled → provider row only,
+    /// models and credential state untouched). This is the SAME narrow
+    /// additive discipline as the MC-R1 expected-state CAS: it gates on the
+    /// ACTUAL persisted `sync_revision` inside the ONE serialized writer
+    /// transaction, flips ONLY `is_enabled`, advances `updated_at` and the
+    /// revision by exactly one (the Main-settled provider-edit revision
+    /// rule every other Android provider write follows), then verifies the
+    /// persisted pair in the SAME transaction. Every other column — base
+    /// URL, protocol, display name, region, secret reference account/sync
+    /// flags, headers JSON, plain-http/tool-name flags, created_at — and
+    /// every models row are provably not written. A stale expectation
+    /// throws the typed conflict and mutates NOTHING; Int64.max is refused
+    /// before any change (never a wraparound).
+    @discardableResult
+    public func setProviderEnabled(providerID: UUID, enabled: Bool,
+                                   expectedSyncRevision: Int64) async throws -> Int64 {
+        guard expectedSyncRevision < Int64.max else {
+            throw ModelConfigurationRevisionConflict(domain: "providerMetadata",
+                                                     expected: expectedSyncRevision,
+                                                     observed: expectedSyncRevision)
+        }
+        let advanced = expectedSyncRevision + 1
+        return try await database.writer { db in
+            let persisted = try Int64.fetchOne(
+                db,
+                sql: "SELECT sync_revision FROM providers WHERE id = ?",
+                arguments: [providerID.uuidString]
+            )
+            guard persisted == expectedSyncRevision else {
+                throw ModelConfigurationRevisionConflict(domain: "providerMetadata",
+                                                         expected: expectedSyncRevision,
+                                                         observed: persisted)
+            }
+            try db.execute(
+                sql: """
+                    UPDATE providers
+                       SET is_enabled = ?, updated_at = ?, sync_revision = ?
+                     WHERE id = ? AND sync_revision = ?
+                    """,
+                arguments: [enabled, ConfigurationCodec.encode(Date()), advanced,
+                            providerID.uuidString, expectedSyncRevision]
+            )
+            guard db.changesCount == 1 else {
+                throw ModelConfigurationRevisionConflict(domain: "providerMetadata",
+                                                         expected: expectedSyncRevision,
+                                                         observed: nil)
+            }
+            // In-transaction readback of EXACTLY the two intended axes.
+            guard let check = try Row.fetchOne(
+                db,
+                sql: "SELECT is_enabled, sync_revision FROM providers WHERE id = ?",
+                arguments: [providerID.uuidString]
+            ), let storedEnabled: Bool = check["is_enabled"],
+              let storedRevision: Int64 = check["sync_revision"],
+              storedEnabled == enabled, storedRevision == advanced else {
+                throw ModelConfigurationRevisionConflict(domain: "providerMetadata",
+                                                         expected: advanced,
+                                                         observed: nil)
+            }
+            return advanced
         }
     }
 

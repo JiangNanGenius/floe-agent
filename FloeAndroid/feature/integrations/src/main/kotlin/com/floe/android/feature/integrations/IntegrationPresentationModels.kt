@@ -230,11 +230,18 @@ data class SkillInstalledRowUi(
     val modelOverrideNote: String? = null,
     val permissions: List<SkillPermissionRowUi> = emptyList(),
     val runActivity: SkillRunActivityUi = SkillRunActivityUi.None,
-    /** ⇄ SkillsCenter.availableVersion(for:): newer signed-catalog version. */
+    /** ⇄ SkillsCenter.availableVersion(for:): newer signed-catalog version,
+     * projected from the ACTUAL catalog entry for this installed id when its
+     * version differs (never a null-hardcoded "always latest"). */
     val updateAvailableVersion: String? = null,
     val sourceKind: SkillSourceKindUi,
     /** ⇄ DomainSkillLibrary exposed == false handling surfaced for the user. */
     val isBundledReadOnlyGuide: Boolean = false,
+    /** ⇄ the REAL upgrade-journal existence for this skill id (snapshot's
+     * `rollbackAvailable`): a completed/rolled-back transaction exists, so
+     * `upgrade.rollback` can legitimately find it. False until a journal
+     * really exists — the affordance is never fabricated. */
+    val rollbackAvailable: Boolean = false,
     /** Non-null only while a host service is staging this skill's install. */
     val installStage: SkillInstallStageUi? = null,
 )
@@ -384,7 +391,13 @@ data class SkillUpgradeUi(
 )
 
 data class UpgradeEffectUi(
-    /** Echoes the module's dispatch token for the apply/rollback call. */
+    /** Echoes the module's dispatch token for the apply/rollback call.
+     * Presentation identity ONLY: the host maps this monotonic Long to the
+     * REAL staged review it holds internally (native `eff:v1:` review token
+     * + current row digest CAS); the native review token itself never
+     * enters the UI and this Long is never sent as one. The native
+     * optional string effectToken echo carries the same dispatch value so
+     * a late terminal can only land on this exact sheet incarnation. */
     val effectToken: Long,
     val outcome: UpgradeOutcomeUi,
 )
@@ -462,6 +475,31 @@ sealed interface McpConnectionStateUi {
     data class Failed(val message: String) : McpConnectionStateUi
 }
 
+/**
+ * ⇄ the row's REAL revision pair `{"resourceID": "mcp.<uuid>", "version":
+ * <sha256 digest>}` (RuntimeFacadeMCPService.list). The version is an OPAQUE
+ * SHA-256 digest of the persisted configuration — never a counter, never a
+ * Long coercion, never a zero/default. Every stateful MCP mutation echoes the
+ * pair verbatim so the domain CAS can compare it against the CURRENT row;
+ * a changed saved config is then an explicit typed staleRevision, never a
+ * blind overwrite.
+ */
+data class McpServerRevisionUi(
+    /** ⇄ revision.resourceID — the domain-minted resource identity. */
+    val resourceID: String,
+    /** ⇄ revision.version — the actual opaque config digest. */
+    val version: String,
+) {
+    init {
+        require(resourceID.isNotBlank() && version.isNotBlank()) {
+            "revision identity must be the real pair; blanks are never forwarded"
+        }
+    }
+
+    /** Redacted display: the digest is a bounded machine identifier. */
+    override fun toString(): String = "McpServerRevisionUi(resourceID=$resourceID)"
+}
+
 /** ⇄ MCPDiscoveredTool + the editor's per-tool enable state. */
 data class McpToolRowUi(
     val remoteName: String,
@@ -482,17 +520,55 @@ data class McpServerRowUi(
     val endpointDisplay: String,
     val enabled: Boolean,
     val allowInCanvas: Boolean,
+    /** ⇄ the row's saved allowInsecureHTTP flag (the editor must re-seed
+     * the REAL saved value, never re-derive it from the auth mode). */
+    val allowInsecureHttp: Boolean = false,
     val authentication: McpAuthenticationUi,
+    /** ⇄ the row's saved credential header name (customHeader mode). */
+    val credentialHeaderName: String? = null,
+    /** ⇄ the row's saved timeoutSeconds. */
+    val timeoutSeconds: Int? = null,
     /** ⇄ center.hasStoredCredential: a Boolean flag only; the raw secret is
-     * never returned in any projection, ever. */
+     * never returned in any projection, ever. Decoded from the REAL row key
+     * `credential.state` (configured ⇒ stored; every other state is honestly
+     * not-stored and the mutation surface stays typed). */
     val credentialStored: Boolean,
+    /** ⇄ credential.required — the auth mode needs a resolvable secret. */
+    val credentialRequired: Boolean = false,
     val state: McpConnectionStateUi,
     /** Discovered tools for the live session; null until a real discovery
      * succeeded. Never a fabricated count. */
     val tools: List<McpToolRowUi>?,
-    /** ⇄ MCPServerConfiguration Hashable equality per persist round: host-
-     * issued config revision used to fence late events on edits. */
-    val revision: Long,
+    /** ⇄ the row's REAL `revision {resourceID, version=<opaque digest>}`
+     * pair — the actual CAS identity every stateful mutation must echo.
+     * NEVER a Long coercion and NEVER a fabricated "0"/default revision. */
+    val revision: McpServerRevisionUi,
+    /** ⇄ the row's saved disabledRemoteToolNames (sorted names): the per-tool
+     * enable set an edit/save round trip must PRESERVE, never reset. */
+    val disabledRemoteToolNames: List<String> = emptyList(),
+)
+
+/**
+ * ⇄ MAIN_ANDROID37_LAN_PERMISSION_DECISION_20261021: the host-projected
+ * local-network permission guidance for the MCP surface (Android 17 /
+ * API 37 ACCESS_LOCAL_NETWORK). The HOST owns the real platform state and
+ * the single explicit action; the module only renders the projected kind
+ * with its own localized copy and dispatches the tap back to the host.
+ * Absent = nothing is shown (public cloud and API<37 never see this).
+ * A denied LAN permission is structurally distinct from a credential/auth
+ * failure and never substitutes for one.
+ */
+enum class LocalNetworkGuidanceKindUi {
+    /** The platform dialog can still be requested. */
+    REQUEST,
+    /** The dialog is no longer offerable; recovery goes through settings. */
+    RECOVERY,
+}
+
+data class LocalNetworkGuidanceUi(
+    val kind: LocalNetworkGuidanceKindUi,
+    /** Display label of the captured blocked endpoint (host-redacted). */
+    val serverLabel: String?,
 )
 
 /** ⇄ MCPServersView list state. */
@@ -501,6 +577,9 @@ data class McpServersUiState(
     val servers: List<McpServerRowUi>,
     /** ⇄ center.errorMessage (host-localized, redacted). */
     val errorMessage: String?,
+    /** ⇄ the host's REAL local-network permission read at the latest
+     * action boundary; null while nothing blocks a local hop. */
+    val localNetworkGuidance: LocalNetworkGuidanceUi? = null,
 ) {
     val isEmpty: Boolean get() = servers.isEmpty()
 }
@@ -522,10 +601,12 @@ data class McpEditorSeedUi(
     val transport: McpTransportUi,
     /** ⇄ center.toolsByServerID[serverId]: the live tool list. */
     val tools: List<McpToolRowUi>,
-    /** Saved row revision when editing (null for a NEW server); the editor
-     * save carries it as baseRevision so a changed saved config is an
-     * explicit revision conflict the host rejects, never a blind overwrite. */
-    val savedRevision: Long? = null,
+    /** Saved row revision when editing (null for a NEW server): the REAL
+     * resource+digest pair observed at seed time. The editor save carries it
+     * as baseRevision (envelope CAS AND the frozen Set-lease baseRevision)
+     * so a changed saved config is an explicit revision conflict the host
+     * rejects, never a blind overwrite. */
+    val savedRevision: McpServerRevisionUi? = null,
     /** Honest availability of the host's network/save bridge. */
     val networkActionsAvailable: Boolean,
     val networkActionsUnavailableReason: String?,
@@ -588,9 +669,11 @@ data class McpSaveRequest(
     val draft: McpDraftSnapshot,
     val credentialIntent: CredentialDraftIntent,
     val credentialDraft: String?,
-    /** ⇄ revision observed at seed time; a save onto a changed saved config
-     * is a revision conflict the host must reject explicitly. */
-    val baseRevision: Long?,
+    /** ⇄ the REAL `revision {resourceID, version}` pair observed at seed
+     * time (null only for a NEW identity whose save is the frozen Set
+     * lease). A save onto a changed saved config is a revision conflict the
+     * host must reject explicitly — never a coerced or defaulted version. */
+    val baseRevision: McpServerRevisionUi?,
 ) {
     /** Explicit redaction: never prints the credential draft. */
     override fun toString(): String =
@@ -601,9 +684,25 @@ data class McpSaveRequest(
             "intent=$credentialIntent)"
 }
 
-/** ⇄ upsert outcome: success (host committed + registered) or error string. */
+/**
+ * ⇄ upsert outcome: success (host committed + registered) or typed failure.
+ * [newRevision] is the COMMIT reply's real `revision.version` — the opaque
+ * digest of the newly persisted row (never a counter, never a re-used old
+ * value; the follow-up list projection re-reads the same digest).
+ */
 sealed interface McpSaveOutcomeUi {
-    data class Succeeded(val newServerId: String, val newRevision: Long) : McpSaveOutcomeUi
+    /**
+     * [newRevision] is the COMMIT reply's real `revision.version` digest.
+     * Null only for the honest deferred-settlement reply shape
+     * (`state:"committed"` + `pendingPhysicalSettlement`) where the row
+     * persisted but the platform physical lifetime has not echoed a new
+     * revision yet — the next list projection re-reads the actual digest.
+     * Never a fabricated or stale substitute value.
+     */
+    data class Succeeded(
+        val newServerId: String,
+        val newRevision: String?,
+    ) : McpSaveOutcomeUi
     data class Failed(val message: String) : McpSaveOutcomeUi
 }
 

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Root Home/history/task-inspection copy (Simplified Chinese). Pairs with
+     values/root_workspace_actions.xml. -->
+<resources>
+    <!-- Home draft controls -->
+    <string name="root_reasoning_unset">未设置思考深度</string>
+    <string name="root_attach_refused">当前无法暂存文件：运行时暂存服务不可用，本草稿未附加任何内容。</string>
+    <string name="root_reasoning_failed">无法保存思考深度。所选模型仍保持其当前保存的值。</string>
+
+    <!-- Detail reads (task inspection) -->
+    <string name="root_detail_read_full">读取完整详情</string>
+    <string name="root_detail_retry">重试</string>
+    <string name="root_detail_loading">正在读取…</string>
+    <string name="root_detail_absent">尚无保存内容。</string>
+    <string name="root_detail_failed">无法读取完整详情。（%1$s）</string>
+
+    <!-- Plan detail -->
+    <string name="root_plan_sections">章节</string>
+    <string name="root_plan_assumptions">前提假设</string>
+    <string name="root_plan_risks">风险</string>
+    <string name="root_plan_criteria">成功标准</string>
+    <string name="root_plan_digest">计划摘要 %1$s</string>
+    <string name="root_plan_accepted">已接受</string>
+
+    <!-- Goal detail -->
+    <string name="root_goal_criteria">验收标准</string>
+    <string name="root_goal_steps">步骤</string>
+    <string name="root_goal_evidence">证据</string>
+    <string name="root_goal_blocking">阻塞条件</string>
+    <string name="root_goal_stopping">终止条件</string>
+    <string name="root_goal_progress">循环 %1$d · 模型调用 %2$d · 迭代 %3$d</string>
+    <string name="root_goal_limits">上限：循环 %1$s · 调用 %2$s</string>
+    <string name="root_goal_needs_confirm">等待你的确认</string>
+    <string name="root_goal_satisfied">已满足</string>
+
+    <!-- Task checklist (model-authored progress) -->
+    <string name="root_checklist_title">任务清单</string>
+    <string name="root_checklist_note">这是任务自身记录的进度；清单完成不代表目标已确认或已完成。</string>
+    <string name="root_checklist_counts">已完成 %1$d · 已取消 %2$d · 进行中 %3$d · 待办 %4$d</string>
+
+    <!-- Post-run review activity -->
+    <string name="root_review_stop">停止复核</string>
+    <string name="root_review_stopping">正在停止复核…</string>
+
+    <!-- Children -->
+    <string name="root_children_summary">%1$d 个委派任务</string>
+    <string name="root_children_open">打开委派任务</string>
+    <string name="root_children_empty">此运行没有委派任务。</string>
+
+    <!-- Live task permissions -->
+    <string name="root_perm_update_live">已更新，并应用于当前运行。</string>
+    <string name="root_perm_update_next">已更新，将应用于下一次运行；当前运行保持原有冻结策略。</string>
+    <string name="root_perm_update_failed">权限修改被拒绝。（%1$s）</string>
+    <string name="root_perm_no_revision">尚未读取到已保存的任务策略。请重新载入任务后重试。</string>
+    <string name="root_perm_temp">临时会话没有已保存的任务权限。</string>
+    <string name="root_perm_recovery">恢复：%1$s</string>
+    <string name="root_perm_notification">通知：%1$s</string>
+    <string name="step_pending">待办</string>
+    <string name="step_in_progress">进行中</string>
+    <string name="step_completed">已完成</string>
+    <string name="step_blocked">已阻塞</string>
+    <string name="step_cancelled">已取消</string>
+</resources>

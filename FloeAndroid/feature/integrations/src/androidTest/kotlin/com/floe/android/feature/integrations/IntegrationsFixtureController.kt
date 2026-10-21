@@ -468,7 +468,11 @@ class IntegrationsFixtureController : IntegrationUiCallbacks {
     }
 
     /** Scripted host success for a SPECIFIC identity (stale-epoch fencing). */
-    fun emitSaveSucceededFor(identity: McpEditorIdentity, newServerId: String, newRevision: Long) {
+    fun emitSaveSucceededFor(
+        identity: McpEditorIdentity,
+        newServerId: String,
+        newRevision: String?,
+    ) {
         editorSaveInFlight = false
         editorSaveError = null
         editorSaveOutcome = McpSaveOutcomeUi.Succeeded(newServerId, newRevision)
@@ -585,6 +589,15 @@ class IntegrationsFixtureController : IntegrationUiCallbacks {
 
     private fun McpEditorSeedUi.connectionStateForFixture(): McpConnectionStateUi =
         if (serverId == null) McpConnectionStateUi.Inactive else McpConnectionStateUi.Inactive
+
+    val localNetworkActionTaps = mutableListOf<Unit>()
+    var localNetworkActionResult = true
+
+    override fun localNetworkGuidanceAction(): Boolean {
+        localNetworkActionTaps += Unit
+        return localNetworkActionResult
+    }
+
 }
 
 /* ------------------------------ state helpers ------------------------------ */
@@ -826,7 +839,13 @@ internal fun syntheticMcpList(): McpServersUiState = McpServersUiState(
                 syntheticTool("synthetic_tool", "Synthetic Tool"),
                 syntheticTool("synthetic_tool_two", "Synthetic Tool Two", enabled = false),
             ),
-            revision = 3,
+            revision = McpServerRevisionUi(
+
+                "mcp.6F7B2A1C-3D4E-5F60-7182-93A4B5C6D7E3",
+
+                "synthetic-mcp-digest-3",
+
+            ),
         ),
         McpServerRowUi(
             serverId = "synthetic-server-connecting",
@@ -838,7 +857,13 @@ internal fun syntheticMcpList(): McpServersUiState = McpServersUiState(
             credentialStored = false,
             state = McpConnectionStateUi.Connecting(generation = 5),
             tools = null,
-            revision = 1,
+            revision = McpServerRevisionUi(
+
+                "mcp.6F7B2A1C-3D4E-5F60-7182-93A4B5C6D7E1",
+
+                "synthetic-mcp-digest-1",
+
+            ),
         ),
         McpServerRowUi(
             serverId = "synthetic-server-failed",
@@ -850,7 +875,13 @@ internal fun syntheticMcpList(): McpServersUiState = McpServersUiState(
             credentialStored = false,
             state = McpConnectionStateUi.Failed("Synthetic failure for layout review"),
             tools = null,
-            revision = 1,
+            revision = McpServerRevisionUi(
+
+                "mcp.6F7B2A1C-3D4E-5F60-7182-93A4B5C6D7E1",
+
+                "synthetic-mcp-digest-1",
+
+            ),
         ),
         McpServerRowUi(
             serverId = "synthetic-server-disabled",
@@ -862,7 +893,13 @@ internal fun syntheticMcpList(): McpServersUiState = McpServersUiState(
             credentialStored = false,
             state = McpConnectionStateUi.Inactive,
             tools = null,
-            revision = 2,
+            revision = McpServerRevisionUi(
+
+                "mcp.6F7B2A1C-3D4E-5F60-7182-93A4B5C6D7E2",
+
+                "synthetic-mcp-digest-2",
+
+            ),
         ),
     ),
     errorMessage = null,
@@ -879,7 +916,9 @@ internal fun syntheticNewSeed(serverId: String?): McpEditorSeedUi = McpEditorSee
     credentialHeaderName = "Authorization",
     credentialStored = serverId != null,
     timeoutSeconds = 30,
-    savedRevision = if (serverId == null) null else 3,
+    savedRevision = if (serverId == null) null else McpServerRevisionUi(
+        "mcp.6F7B2A1C-3D4E-5F60-7182-93A4B5C6D7E3", "synthetic-mcp-digest-3",
+    ),
     transport = McpTransportUi.StreamableHttp,
     tools = if (serverId == null) emptyList() else listOf(
         syntheticTool("synthetic_tool", "Synthetic Tool"),

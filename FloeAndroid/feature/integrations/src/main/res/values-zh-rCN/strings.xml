@@ -156,5 +156,9 @@
     <string name="mcp_credential_in_url">凭据必须安全保存，不要写入端点地址。</string>
     <string name="mcp_insecure_blocked_hint">纯 HTTP 已禁用；仅可信本地服务器才应开启。</string>
     <string name="mcp_header_name_invalid">请求头名称无效。</string>
+    <string name="mcp_local_network_grant">允许本地网络访问</string>
+    <string name="mcp_local_network_grant_detail">连接此本地服务器需要本机的本地网络访问权限。公网服务器不受影响。</string>
+    <string name="mcp_local_network_recovery">打开网络设置</string>
+    <string name="mcp_local_network_recovery_detail">需在系统设置中允许后才能访问本地网络。公网服务器仍可正常使用。</string>
 
 </resources>

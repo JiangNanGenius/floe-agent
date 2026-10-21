@@ -889,7 +889,10 @@ final class RuntimeFacadeConfigIngressTests: XCTestCase {
             ownedWorkRegistry: AlwaysAttachOwnedWorkPort())
         // Catalog "configured" is empty before any real save.
         let before = try await facade.catalogSearch(query: "fixture", filter: .configured)
-        XCTAssertEqual((try JSONSerialization.jsonObject(with: before) as? [Any])?.count ?? 0, 0)
+        // Authorized page projection: {"rows":[…],nextCursor,hasMore}.
+        let beforeObject = try XCTUnwrap(JSONSerialization.jsonObject(with: before) as? [String: Any])
+        let beforeRows = try XCTUnwrap(beforeObject["rows"] as? [Any])
+        XCTAssertTrue(beforeRows.isEmpty, "configured must start empty")
         let candidate = try makeCandidateJSON(createIntent: true,
                                               presetID: "fixture-openai")
         let token = try submitSetIntent(candidate: candidate, secret: syntheticSecret,
@@ -900,7 +903,8 @@ final class RuntimeFacadeConfigIngressTests: XCTestCase {
             return XCTFail("preset save must commit")
         }
         let configured = try await facade.catalogSearch(query: "fixture", filter: .configured)
-        let objects = try XCTUnwrap(JSONSerialization.jsonObject(with: configured) as? [[String: Any]])
+        let configuredObject = try XCTUnwrap(JSONSerialization.jsonObject(with: configured) as? [String: Any])
+        let objects = try XCTUnwrap(configuredObject["rows"] as? [[String: Any]])
         XCTAssertEqual(objects.count, 1)
         XCTAssertEqual(objects.first?["presetID"] as? String, "fixture-openai",
                        "configured comes from the durable sidecar joined to LIVE rows")
@@ -910,7 +914,9 @@ final class RuntimeFacadeConfigIngressTests: XCTestCase {
         _ = try await facade.deleteProvider(
             revision: ConfigRevision.provider(id: providerID, syncRevision: row.syncRevision))
         let after = try await facade.catalogSearch(query: "fixture", filter: .configured)
-        XCTAssertEqual((try JSONSerialization.jsonObject(with: after) as? [Any])?.count ?? 0, 0)
+        let afterObject = try XCTUnwrap(JSONSerialization.jsonObject(with: after) as? [String: Any])
+        let afterRows = try XCTUnwrap(afterObject["rows"] as? [Any])
+        XCTAssertTrue(afterRows.isEmpty, "dangling configured entries are removed")
     }
 
     // MARK: - 9. Wire hygiene

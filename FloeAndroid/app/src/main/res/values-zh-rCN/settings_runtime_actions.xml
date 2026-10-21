@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  G02 设置运行时操作文案（R4/R6/R7 批次 2026-10-21）。
+  模型角色偏好、整理建议操作与个性化修订历史的双语用户文案。
+  内部 wire 名称、句柄与类型化错误代码仅用于诊断，不会显示为标签。
+-->
+<resources>
+    <!-- 模型角色偏好（R4） -->
+    <string name="settings_model_roles">模型路由</string>
+    <string name="settings_model_roles_primary">主力</string>
+    <string name="settings_model_roles_auxiliary">辅助</string>
+    <string name="settings_model_roles_media">媒体</string>
+    <string name="settings_role_default_agent">默认 Agent 模型</string>
+    <string name="settings_role_general_auxiliary">通用辅助模型</string>
+    <string name="settings_role_canvas_agent">画布助手模型</string>
+    <string name="settings_role_vision">视觉模型</string>
+    <string name="settings_role_canvas_vision">画布视觉模型</string>
+    <string name="settings_role_approval">审批模型</string>
+    <string name="settings_role_package_review">包审查模型</string>
+    <string name="settings_role_shared_image">共享图像模型</string>
+    <string name="settings_role_image_generation">图像生成模型</string>
+    <string name="settings_role_image_editing">图像编辑模型</string>
+    <string name="settings_role_default_video">默认视频模型</string>
+    <string name="settings_role_follow_main">跟随主聊天模型</string>
+    <string name="settings_role_inherit_default">继承默认 Agent</string>
+    <string name="settings_role_inherit_auxiliary">继承辅助视觉模型</string>
+    <string name="settings_role_not_configured">未配置</string>
+    <string name="settings_role_follow_auxiliary">跟随通用辅助模型</string>
+    <string name="settings_role_selection_unavailable">所选模型不可用，请重新选择。</string>
+    <string name="settings_role_choose_model">选择模型</string>
+    <string name="settings_role_no_choices">没有可用于此角色的模型。</string>
+    <string name="settings_role_autonomous_routing">允许模型自行选择图像路由</string>
+    <string name="settings_role_autonomous_routing_footer">允许模型在每次请求时从已配置的媒体模型中自行选择。</string>
+    <string name="settings_role_mode_shared">共享</string>
+    <string name="settings_role_mode_separate">分开</string>
+    <string name="settings_role_media_mode">媒体模型模式</string>
+    <string name="settings_role_media_mode_footer">生成与编辑共用同一个模型，或为两者分别选择模型。</string>
+    <string name="settings_role_save_failed">无法保存模型路由。更改已保留，请重试。</string>
+    <string name="settings_role_load_failed">无法加载模型路由，请重试。</string>
+
+    <!-- 记忆整理建议操作（R7） -->
+    <string name="settings_organize_review_title">整理建议</string>
+    <string name="settings_organize_auto_deleted">已自动清理（删除 %1$d 条）。</string>
+    <string name="settings_organize_auto_delete_none">未执行自动清理。</string>
+    <string name="settings_organize_auto_delete_stale">部分记忆已变化，自动清理已跳过。</string>
+    <string name="settings_organize_apply">应用</string>
+    <string name="settings_organize_cancel">取消整理</string>
+    <string name="settings_organize_apply_message">应用此建议？列出的记忆将被合并或删除，且无法撤销。</string>
+    <string name="settings_organize_apply_failed">无法应用该建议，请重新运行整理后再试。</string>
+    <string name="settings_organize_empty">没有建议，记忆已经很整洁。</string>
+    <string name="settings_organize_affected">涉及 %1$d 条记忆</string>
+
+    <!-- 个性化历史 / 生成取消（R7） -->
+    <string name="settings_personalization_history">修订历史</string>
+    <string name="settings_personalization_revision">修订 %1$d</string>
+    <string name="settings_personalization_revision_active">当前</string>
+    <string name="settings_personalization_revision_view">查看</string>
+    <string name="settings_personalization_revision_restore">恢复</string>
+    <string name="settings_personalization_revision_restore_message">恢复修订 %1$d？当前内容会保留在历史中，恢复的副本将成为当前版本。</string>
+    <string name="settings_personalization_revision_empty">暂无修订。</string>
+    <string name="settings_personalization_cancel_generate">取消生成</string>
+    <string name="settings_personalization_revision_loading">正在加载修订…</string>
+    <string name="settings_personalization_revision_close">关闭</string>
+    <string name="settings_personalization_load_more">加载更多</string>
+    <string name="settings_personalization_rollback_failed">无法恢复该修订，请重试。</string>
+    <string name="settings_personalization_revision_failed">无法加载该修订，请重试。</string>
+</resources>

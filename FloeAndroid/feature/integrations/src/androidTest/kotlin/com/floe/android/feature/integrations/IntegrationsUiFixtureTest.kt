@@ -712,7 +712,7 @@ class IntegrationsUiFixtureTest {
             controller.emitSaveSucceededFor(
                 identity = identityA,
                 newServerId = "synthetic-ready",
-                newRevision = 4,
+                newRevision = "synthetic-commit-digest-4",
             )
         }
         composeRule.onNodeWithTag("mcp.editorPage").assertIsDisplayed()
@@ -720,7 +720,8 @@ class IntegrationsUiFixtureTest {
         capture("16-stale-epoch-waiting")
         // The CURRENT identity finalizes normally.
         onUi {
-            controller.emitSaveSucceededFor(identityB, newServerId = "synthetic-ready", newRevision = 5)
+            controller.emitSaveSucceededFor(identityB, newServerId = "synthetic-ready",
+                newRevision = "synthetic-commit-digest-5")
         }
         waitUntilGone("mcp.editorPage")
     }

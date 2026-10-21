@@ -2,6 +2,7 @@
 package com.floe.android
 
 import android.content.Context
+import com.floe.android.bridge.ProviderCatalogNative
 import com.floe.android.bridge.RuntimeCoreNative
 import com.floe.android.bridge.RuntimeNativeException
 import com.floe.android.bridge.SecurityCorpusNative
@@ -99,6 +100,22 @@ internal fun interface RuntimeSecurityCorpusInstaller {
 }
 
 /**
+ * Trusted official provider-catalog handoff. The App reads the packaged,
+ * reviewed `provider/ProviderCatalog.json` asset (an exact copy of the
+ * original iOS trusted resource) and freezes its bytes into the native Root
+ * BEFORE the Root start; the ordinary bootstrap install then injects them
+ * into the ORIGINAL provider domain (`ModelConfigurationFacade` catalog slot,
+ * original `ProviderCatalogIndex` decoder). Returns the native typed status
+ * (0 ok / 1 idempotent / negative typed refusal); the document's bytes never
+ * enter this interface, a log or a command. A null/refused freeze leaves
+ * catalog commands at their honest typed `catalogNotInjected` refusal and
+ * never fabricates an official catalog.
+ */
+internal fun interface RuntimeProviderCatalogFreezer {
+    fun freezeCatalog(): Int
+}
+
+/**
  * Production adapter. Its initialization does not touch
  * [RuntimeCoreNative]; the object class-init (and therefore
  * System.loadLibrary) runs only on the first off-main method call — the
@@ -159,6 +176,12 @@ class RuntimeBootstrapCoordinator internal constructor(
      * the lifecycle itself (the run gate then refuses corpusAbsent, honestly).
      */
     private val corpusInstaller: RuntimeSecurityCorpusInstaller? = null,
+    /**
+     * Trusted official-catalog freezer. Production supplies the packaged
+     * asset read + native freeze; null keeps component-test behavior (the
+     * provider catalog then truthfully answers `catalogNotInjected`).
+     */
+    private val catalogFreezer: RuntimeProviderCatalogFreezer? = null,
     private val capabilityState: MutableStateFlow<RuntimeBootstrapCapability> =
         MutableStateFlow(RuntimeBootstrapCapability.Idle),
     private val admissionState: MutableStateFlow<RuntimeDomainAdmission> =
@@ -276,6 +299,24 @@ class RuntimeBootstrapCoordinator internal constructor(
                             diagnostics("security_corpus_unavailable")
                         } else if (status != 0 && status != 1) {
                             diagnostics("security_corpus_freeze_$status")
+                        }
+                    }
+                    // Official provider catalog, same pre-start trusted host
+                    // shape: freeze the packaged reviewed document so the
+                    // ordinary install injects its EXACT bytes. A refusal is
+                    // diagnosed and leaves the catalog absent (the provider
+                    // domain keeps its typed catalogNotInjected refusal);
+                    // bootstrap itself is never fabricated or aborted here.
+                    catalogFreezer?.let { freezer ->
+                        val status = try {
+                            freezer.freezeCatalog()
+                        } catch (t: Throwable) {
+                            null
+                        }
+                        if (status == null) {
+                            diagnostics("provider_catalog_unavailable")
+                        } else if (status != 0 && status != 1) {
+                            diagnostics("provider_catalog_freeze_$status")
                         }
                     }
                     native.ensureLoaded()
@@ -913,6 +954,9 @@ class RuntimeBootstrapCoordinator internal constructor(
                 corpusInstaller = RuntimeSecurityCorpusInstaller {
                     installBundledSecurityCorpus(appContext)
                 },
+                catalogFreezer = RuntimeProviderCatalogFreezer {
+                    installBundledProviderCatalog(appContext)
+                },
                 capabilityState = capabilityState,
             )
         }
@@ -920,6 +964,16 @@ class RuntimeBootstrapCoordinator internal constructor(
         /** Packaged trusted corpus asset (merged from :core:swiftbridge). */
         private const val SECURITY_CORPUS_ASSET =
             "security/catastrophic-patterns.json"
+
+        /**
+         * Packaged trusted OFFICIAL provider catalog (merged from
+         * :core:swiftbridge; an exact byte copy of the original iOS trusted
+         * resource FloeAgent/FloeApp/Resources/ProviderCatalog.json, whose
+         * embedded `source` block records the models.dev document digest,
+         * fetchedAt, MIT license and URL).
+         */
+        private const val PROVIDER_CATALOG_ASSET =
+            "provider/ProviderCatalog.json"
 
         /** Mirrors the original loader bound; oversize is refused here too. */
         private const val MAX_CORPUS_BYTES = 1_048_576
@@ -945,6 +999,33 @@ class RuntimeBootstrapCoordinator internal constructor(
                 buffer.toByteArray()
             }
             return SecurityCorpusNative.securityCorpusFreeze(bytes)
+        }
+
+        /** Mirrors ProviderCatalogIndex.maximumDocumentBytes (2 MiB). */
+        private const val MAX_CATALOG_BYTES = 2 * 1024 * 1024
+        private const val CATALOG_OVERSIZED = -432
+
+        /**
+         * Read the trusted official catalog asset with the ORIGINAL document
+         * byte bound and freeze it through the native original-decoder
+         * validation. No path, digest or document content is logged or
+         * returned beyond the typed status.
+         */
+        private fun installBundledProviderCatalog(context: Context): Int {
+            val bytes = context.assets.open(PROVIDER_CATALOG_ASSET).use { stream ->
+                val buffer = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(64 * 1024)
+                var total = 0
+                while (true) {
+                    val read = stream.read(chunk)
+                    if (read <= 0) break
+                    total += read
+                    if (total > MAX_CATALOG_BYTES) return CATALOG_OVERSIZED
+                    buffer.write(chunk, 0, read)
+                }
+                buffer.toByteArray()
+            }
+            return ProviderCatalogNative.providerCatalogFreeze(bytes)
         }
     }
 }

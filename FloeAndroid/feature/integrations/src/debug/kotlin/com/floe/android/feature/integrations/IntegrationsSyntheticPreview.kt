@@ -158,7 +158,10 @@ private fun syntheticMcp(): McpServersUiState = McpServersUiState(
                     destructiveHint = false,
                 ),
             ),
-            revision = 1,
+            revision = McpServerRevisionUi(
+                "mcp.6F7B2A1C-3D4E-5F60-7182-93A4B5C6D7E8",
+                "synthetic-digest",
+            ),
         ),
         McpServerRowUi(
             serverId = "synthetic-server-failed",
@@ -170,7 +173,10 @@ private fun syntheticMcp(): McpServersUiState = McpServersUiState(
             credentialStored = false,
             state = McpConnectionStateUi.Failed("Synthetic failure for layout review"),
             tools = null,
-            revision = 1,
+            revision = McpServerRevisionUi(
+                "mcp.6F7B2A1C-3D4E-5F60-7182-93A4B5C6D7E8",
+                "synthetic-digest",
+            ),
         ),
     ),
     errorMessage = null,
@@ -207,6 +213,8 @@ private object NoopHost : IntegrationUiCallbacks {
     override fun setMcpToolEnabled(serverId: String, remoteName: String, enabled: Boolean): Boolean = false
     override fun refreshMcpServer(serverId: String): Boolean = false
     override fun cancelMcpRefresh(serverId: String, generation: Long): Boolean = false
+
+    override fun localNetworkGuidanceAction(): Boolean = false
 }
 
 /** Separate synthetic MCP-list preview (debug only). */

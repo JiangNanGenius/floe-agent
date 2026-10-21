@@ -417,14 +417,38 @@ class ConversationOrdinaryPathTest {
         host.onDomainAvailability("conversationDomain", true, emptyList())
         host.onDomainAvailability("runDomain", true, emptyList())
         host.onDomainAvailability("temporaryDomain", true, emptyList())
+        // The provider page is a REAL asynchronous read, while the model
+        // join reads the provider rows synchronously. This host is created
+        // by the test (FloeApplication is the production `start()` owner),
+        // so the test owns that ordering explicitly: await the actual
+        // provider projection, then ask for the model read, then await the
+        // actual model projection. A fixed wait here raced both reads and
+        // could leave the projection honestly empty forever (no
+        // providers→models observer exists on an unstarted host).
         host.providers.refreshProviders()
+        assertTrue(
+            "the real provider page must project before the model join " +
+                "(commands=${commandsSummary(exchange)})",
+            awaitCondition {
+                host.providers.destination.value.list.conversationProviders.isNotEmpty()
+            },
+        )
+        // Provider rows are now present, so this refresh deterministically
+        // issues the REAL per-provider `config.models.list` chain. Any
+        // earlier in-flight empty sweep is superseded by the controller's
+        // pending re-run against the same present rows.
         host.conversations.refreshModels()
+        assertTrue(
+            "the real model projection must load the configured model " +
+                "(options=${host.conversations.modelOptions()} " +
+                "loaded=${host.conversations.modelProjectionFlow.value.loaded} " +
+                "commands=${commandsSummary(exchange)})",
+            awaitCondition {
+                val projection = host.conversations.modelProjectionFlow.value
+                projection.loaded && projection.models.any { it.modelId == modelId }
+            },
+        )
         host.conversations.refreshHistory()
-        // Bounded wait for the real projection round-trips.
-        val deadline = System.nanoTime() + 2_000_000_000L
-        while (host.conversations.modelOptions().isEmpty() && System.nanoTime() < deadline) {
-            delay(10)
-        }
         return host
     }
 
@@ -851,17 +875,49 @@ class ConversationOrdinaryPathTest {
                     criteria = listOf("send works", "cancel works"),
                     blockingConditions = listOf("no provider"),
                     stoppingConditions = listOf("verified"),
+                    // The thread's ACTUAL selected configured identities: the
+                    // host has refused a goal launch without them since E5
+                    // (never a first-usable substitution).
+                    modelId = modelId,
+                    providerId = providerId,
                 ),
             ),
         )
         assertTrue(awaitCondition { exchange.commandsOf("run.start").isNotEmpty() })
         val payload = exchange.commandsOf("run.start").first()["payload"]!!.jsonObject
         assertEquals("goal", payload["mode"]!!.jsonPrimitive.content)
+        // The objective IS the run's goal text; the structured definition
+        // travels separately (never flattened into it).
         val goal = payload["goal"]!!.jsonPrimitive.content
-        assertTrue(goal.contains("Ship the ordinary chat path"))
-        assertTrue(goal.contains("send works"))
+        assertEquals("Ship the ordinary chat path", goal)
         assertEquals(modelId, payload["modelID"]!!.jsonPrimitive.content)
         assertEquals(providerId, payload["providerID"]!!.jsonPrimitive.content)
+        val definition = payload["goalDefinition"]!!.jsonObject
+        assertEquals(
+            "Ship the ordinary chat path",
+            definition["objective"]!!.jsonPrimitive.content,
+        )
+        assertEquals(
+            listOf("send works", "cancel works"),
+            (definition["criteria"] as JsonArray).map { it.jsonPrimitive.content },
+        )
+        assertEquals(
+            listOf("no provider"),
+            (definition["blockingConditions"] as JsonArray).map { it.jsonPrimitive.content },
+        )
+        assertEquals(
+            listOf("verified"),
+            (definition["stoppingConditions"] as JsonArray).map { it.jsonPrimitive.content },
+        )
+        // Closed producer grammar for a structured goal launch: exactly the
+        // members this launch legitimately carries (no workspaceID,
+        // temporaryIncarnation, chat-only tool ceiling or invented keys).
+        assertEquals(
+            setOf(
+                "goal", "mode", "providerID", "modelID", "stagedAttachments", "goalDefinition",
+            ),
+            payload.keys,
+        )
         host.stop()
     }
 

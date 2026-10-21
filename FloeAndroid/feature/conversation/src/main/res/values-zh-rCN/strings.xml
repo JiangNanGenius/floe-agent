@@ -317,4 +317,10 @@
     <string name="composer_editor_replace_too_large">替换内容过大，无法一次应用。</string>
     <string name="composer_editor_match_case">区分大小写</string>
     <string name="composer_editor_whole_word">全字匹配</string>
+    <string name="goal_stop_review">停止复核</string>
+    <string name="goal_review_stopping">正在停止复核…</string>
+    <string name="intelligence_trimmed_note">为适配页面大小，部分详情未包含在内。</string>
+    <string name="intelligence_read_full">读取完整详情</string>
+    <string name="menu_compact_now">压缩当前对话</string>
+    <string name="menu_compacting">正在压缩…</string>
 </resources>

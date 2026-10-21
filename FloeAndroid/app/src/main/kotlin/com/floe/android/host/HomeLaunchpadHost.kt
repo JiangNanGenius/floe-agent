@@ -176,6 +176,9 @@ class HomeLaunchpadHost internal constructor(
      */
     fun invalidatePendingStart(reason: String) {
         var retireRef: TemporarySessionRef? = null
+        // Set under the lock when this invalidation advances the Home epoch;
+        // read after the block to drain the departed Home's draft ownership.
+        var newHomeGeneration: Long? = null
         synchronized(stateLock) {
             val pending = pendingSend
             pendingSend = null
@@ -211,6 +214,7 @@ class HomeLaunchpadHost internal constructor(
             homeGenerationState.value = homeGenerationValue
             sendingValue = false
             sendingState.value = false
+            newHomeGeneration = homeGenerationValue
             // `reason` documents the caller contract (navigation/New Task).
         }
         retireRef?.let { ref ->
@@ -218,6 +222,13 @@ class HomeLaunchpadHost internal constructor(
             // acknowledgement and never a replacement session under another id.
             host.conversations.retireLateTemporarySession(ref)
             host.conversations.releaseHolder(ref.conversationId)
+        }
+        // ACTUAL navigation (never rotation/background/lock): the outgoing
+        // Home draft loses ownership. Unkept temp content never entered
+        // durable history; the draft's own staged attachments are drained
+        // for real and a fresh nonce begins for the replacement Home.
+        newHomeGeneration?.let { generation ->
+            host.conversations.rootWorkspace.onHomeReplaced(generation)
         }
     }
 
@@ -277,28 +288,39 @@ class HomeLaunchpadHost internal constructor(
             }
             return false
         }
-        if (!commitNavigation(claim)) return false
+        val committedHomeGeneration = commitNavigation(claim) ?: return false
         commit(target)
         if (claim is HomeNavigationClaim.Unowned) {
             // Any OTHER host route leaves the Home: pending Home sends are
             // canceled exactly like an ordinary sidebar transition.
             invalidatePendingStart("navigation")
+        } else if (committedHomeGeneration > 0L) {
+            // The send's OWN committed route leaves the originating Home too:
+            // the rows that were never handed off (still copying/staged/failed)
+            // belong to a surface that is gone and drain for real. The
+            // handed-off rows were already consumed by the created holder;
+            // a zero generation means this commit did not move the Home
+            // epoch (the replacement already owns the draft) and drains nothing.
+            host.conversations.rootWorkspace.onHomeReplaced(committedHomeGeneration)
         }
         return true
     }
 
-    /** FINAL commit check + one-shot consumption (no suspension here). */
-    private fun commitNavigation(claim: HomeNavigationClaim): Boolean =
+    /** FINAL commit check + one-shot consumption (no suspension here).
+     * Returns null when an owned claim lost its validity; otherwise the NEW
+     * Home generation this commit advanced the surface to, or `0L` when the
+     * commit left the epoch untouched (nothing further to drain). */
+    private fun commitNavigation(claim: HomeNavigationClaim): Long? =
         synchronized(stateLock) {
             when (claim) {
-                HomeNavigationClaim.Unowned -> true
+                HomeNavigationClaim.Unowned -> 0L
                 is HomeNavigationClaim.Owned -> {
                     val owned = ownedNavigation
                     if (owned == null ||
                         owned.navigationID != claim.navigationID ||
                         !isCurrentRequestLocked(owned.token)
                     ) {
-                        false
+                        null
                     } else {
                         ownedNavigation = null
                         pendingSend = null
@@ -309,8 +331,10 @@ class HomeLaunchpadHost internal constructor(
                         if (homeGenerationValue == owned.token.homeGeneration) {
                             homeGenerationValue += 1
                             homeGenerationState.value = homeGenerationValue
+                            homeGenerationValue
+                        } else {
+                            0L
                         }
-                        true
                     }
                 }
             }
@@ -320,6 +344,12 @@ class HomeLaunchpadHost internal constructor(
 
     internal fun start() {
         refresh()
+        // The fresh Home draft starts from the ORIGINAL global default
+        // (never a carried-over per-draft choice from a departed Home), and
+        // the reasoning chip shows the SELECTED model's real saved value
+        // (null stays honestly absent, never a fabricated "auto").
+        host.conversations.rootWorkspace.seedDraftApprovalFromGlobalDefault()
+        host.conversations.rootWorkspace.refreshSelectedModelReasoning()
         if (projectionJob == null) {
             projectionJob = host.scope.launch(host.ioDispatcher) {
                 host.conversations.modelProjectionFlow.collect { projection ->
@@ -355,6 +385,8 @@ class HomeLaunchpadHost internal constructor(
             ?: usable.firstOrNull()
         if (effective?.modelId != current) {
             selectedModelIdState.value = effective?.modelId
+            // The reasoning chip follows the SELECTED row's real saved value.
+            host.conversations.rootWorkspace.refreshSelectedModelReasoning()
         }
         modelLabelState.value = effective?.displayName
         availabilityState.value = ComposerAvailability(
@@ -375,6 +407,7 @@ class HomeLaunchpadHost internal constructor(
         } ?: return false
         selectedModelIdState.value = usable.modelId
         modelLabelState.value = usable.displayName
+        host.conversations.rootWorkspace.refreshSelectedModelReasoning()
         return host.conversations.selectDefaultModel(usable.modelId)
     }
 
@@ -416,24 +449,34 @@ class HomeLaunchpadHost internal constructor(
             }
             sendingState.value = true
             val modelID = selectedModelIdState.value
-            val started = host.conversations.startTemporarySession(
-                draft = text,
-                preferredModelID = modelID,
-                onStarted = { ref ->
-                    admitTemporaryStart(
-                        token = token,
-                        ref = ref,
-                        text = text,
-                        mode = mode,
-                        modelID = modelID,
-                        onAdmitted = onAdmitted,
-                        onFailure = onFailure,
-                    )
-                },
-                onFailure = { reason ->
-                    settleTemporaryFailure(token, reason, onFailure)
-                },
-            )
+            // TEMPORARY CEILING UNCHANGED: a temporary session stages no
+            // attachments, carries no draft approval mode and its native
+            // tool path stays the frozen public-web ceiling. The LAN
+            // producer wrap guards the real temp.start dispatch for an
+            // explicit local-hop provider; refusal settles THIS token and
+            // preserves the Home draft (no navigation, no start).
+            val providerId = providerIdFor(modelID)
+            val started = if (providerId == null) {
+                dispatchTemporaryStart(token, text, mode, modelID, onAdmitted, onFailure)
+            } else {
+                host.providers.withLocalNetworkForProvider(
+                    providerID = providerId,
+                    isCurrent = {
+                        synchronized(stateLock) {
+                            pendingSend?.token == token && isCurrentLocked(token)
+                        }
+                    },
+                    onDenied = { code ->
+                        settleTemporaryFailure(
+                            token,
+                            host.providers.localNetworkDeniedCopy(code),
+                            onFailure,
+                        )
+                    },
+                ) {
+                    dispatchTemporaryStart(token, text, mode, modelID, onAdmitted, onFailure)
+                }
+            }
             if (!started) {
                 settleTemporaryFailure(token, "temporary_unavailable", onFailure)
             }
@@ -444,34 +487,123 @@ class HomeLaunchpadHost internal constructor(
         sendingState.value = true
         val modelID = selectedModelIdState.value
         val title = text.lines().firstOrNull()?.take(80) ?: text.take(80)
-        val created = host.conversations.createConversationForLaunch(
-            title = title,
-            onCreated = { conversationID ->
-                val holder = host.conversations.holderFor(
-                    conversationID,
-                    isTemporary = false,
-                    incarnationId = null,
-                    initialDraft = ComposerDraftSeedUi(
-                        text = text,
-                        attachments = emptyList(),
-                        caretIndex = null,
-                        selectionLength = null,
-                    ),
-                )
-                holder.selectAgentMode(parseMode(mode))
-                host.conversations.navigationRequest.value =
-                    SidebarSelection.Conversation(conversationID)
-                launchWhenModelReady(holder, modelID) { reason ->
+        // ONE-WRITER C1 HANDOFF: the Home draft's READY attachment rows
+        // (native-staged only — never a fabricated handle) leave the draft
+        // list NOW and are owned by the created holder/launch about to be
+        // seeded with them. A create failure before the holder exists
+        // restores them; a committed launch consumes them natively.
+        val (draftNonce, draftGeneration) =
+            host.conversations.rootWorkspace.currentDraftOwner()
+        val handoffAttachments = host.conversations.rootWorkspace.takeSendableForLaunch()
+        // Home draft-task policy: the explicit human selection travels as
+        // the optional run.start approvalMode for the FIRST launch only
+        // (native persists it atomically with the launch; recovery and
+        // notification keep their existing defaults).
+        val draftApproval = host.conversations.rootWorkspace.draftApprovalMode.value
+        // LAN boundary for the ordinary first send: the durable header is
+        // created ONLY after an explicit local-hop provider has a granted
+        // (or ungated) launch; refusal settles with the text and hands the
+        // attachment rows back to the draft.
+        val providerId = providerIdFor(modelID)
+        fun proceedWithCreate() {
+            val created = host.conversations.createConversationForLaunch(
+                title = title,
+                onCreated = { conversationID ->
+                    val holder = host.conversations.holderFor(
+                        conversationID,
+                        isTemporary = false,
+                        incarnationId = null,
+                        initialDraft = ComposerDraftSeedUi(
+                            text = text,
+                            attachments = handoffAttachments,
+                            caretIndex = null,
+                            selectionLength = null,
+                        ),
+                    )
+                    holder.selectAgentMode(parseMode(mode))
+                    holder.setDraftTaskApprovalMode(draftApproval)
+                    host.conversations.rootWorkspace.clearHandedOff(draftNonce)
+                    host.conversations.navigationRequest.value =
+                        SidebarSelection.Conversation(conversationID)
+                    launchWhenModelReady(holder, modelID) { reason ->
+                        settleOrdinarySend(reason, onFailure)
+                    }
+                },
+                onFailure = { reason ->
+                    // The conversation was NEVER created (or creation
+                    // refused): the staged rows return to the same Home
+                    // draft (receipts stay recoverable on failure).
+                    host.conversations.rootWorkspace.restoreHandedOff(draftNonce)
                     settleOrdinarySend(reason, onFailure)
-                }
+                },
+            )
+            if (!created) {
+                host.conversations.rootWorkspace.restoreHandedOff(draftNonce)
+                settleOrdinarySend("conversation_unavailable", onFailure)
+            }
+        }
+        if (providerId == null) {
+            // No selected model: proceed and let the existing honest
+            // launch path settle its typed failure (draft restored, rows
+            // returned) — there is nothing to gate.
+            proceedWithCreate()
+            return
+        }
+        val gated = host.providers.withLocalNetworkForProvider(
+            providerID = providerId,
+            isCurrent = { synchronized(stateLock) { sendingValue } },
+            onDenied = { code ->
+                host.conversations.rootWorkspace.restoreHandedOff(draftNonce)
+                settleOrdinarySend(
+                    host.providers.localNetworkDeniedCopy(code),
+                    onFailure,
+                )
+            },
+        ) { proceedWithCreate() }
+        if (!gated) {
+            host.conversations.rootWorkspace.restoreHandedOff(draftNonce)
+            settleOrdinarySend("provider_unavailable", onFailure)
+        }
+    }
+
+    /** The temp.start dispatch, factored so the LAN producer gate can wrap
+     * exactly one attempt (never a second start after a real accept). */
+    private fun dispatchTemporaryStart(
+        token: HomeSendToken,
+        text: String,
+        mode: String,
+        modelID: String?,
+        onAdmitted: ((HomeSendToken, Boolean) -> Unit)?,
+        onFailure: (String) -> Unit,
+    ): Boolean {
+        return host.conversations.startTemporarySession(
+            draft = text,
+            preferredModelID = modelID,
+            onStarted = { ref ->
+                admitTemporaryStart(
+                    token = token,
+                    ref = ref,
+                    text = text,
+                    mode = mode,
+                    modelID = modelID,
+                    onAdmitted = onAdmitted,
+                    onFailure = onFailure,
+                )
             },
             onFailure = { reason ->
-                settleOrdinarySend(reason, onFailure)
+                settleTemporaryFailure(token, reason, onFailure)
             },
         )
-        if (!created) {
-            settleOrdinarySend("conversation_unavailable", onFailure)
-        }
+    }
+
+    /** The REAL provider of the currently selected model row (the same
+     * F1 projection the send will use); null when nothing usable is
+     * selected. Never a guessed id. */
+    private fun providerIdFor(modelID: String?): String? {
+        if (modelID.isNullOrBlank()) return null
+        return host.conversations.modelOptions().firstOrNull {
+            it.modelId.equals(modelID, ignoreCase = true) && it.isUsable
+        }?.providerId
     }
 
     private fun beginTemporarySend(originHomeGeneration: Long, text: String): HomeSendToken? =

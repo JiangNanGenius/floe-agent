@@ -247,6 +247,7 @@ class HomeLaunchpadHostTest {
 
     private suspend fun readyHost(script: Script, exchange: Exchange): RuntimeHost {
         val host = host(script, exchange)
+        host.conversations.start() // Install the real provider/model observation before store readiness.
         host.onBootstrapCapability(com.floe.android.RuntimeBootstrapCapability.OwnedStoreReady)
         host.onDomainAvailability("providerConfigurationDomain", true, emptyList())
         host.onDomainAvailability("conversationDomain", true, emptyList())

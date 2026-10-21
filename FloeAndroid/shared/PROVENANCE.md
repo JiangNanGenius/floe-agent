@@ -20,7 +20,7 @@ iOS sources and `FloeAgent/Package.swift` are NOT edited by this overlay.
 | FloeTools | 25 | 23 links + `MCPRemoteToolSource.swift`, `NetworkDestinationPolicy.swift` copies |
 | FloeSkills | 22 | all links |
 | FloePersistence | 71 | original links plus reviewed `ConversationStore.swift`, `RunLaunchStore.swift`, `ConversationPromoter.swift` and the frozen byte-identical v46 `DatabaseManager.swift` mirrors; same 46-migration chain, no second store |
-| FloeAgentRuntime | 40 | all links (ConversationRunService/FloeAgentRuntime actor/HarnessEventChannel authority) |
+| FloeAgentRuntime | 40 | links + the documented Android-owned regulars (`AgentRuntime.swift`, `SubagentRunner.swift`, `ToolWorkflowGuidance.swift`; from the goal-core batch also the narrow reviewed `IntelligenceStore.swift` mirror with an additive-only in-transaction block — see the dated sections below; ConversationRunService/FloeAgentRuntime actor/HarnessEventChannel authority unchanged) |
 | FloeAndroidWebTools | 5 | 3 links (`WebRetrievalModels.swift`, `Tools/WebFetchTool.swift`, `Tools/WebSearchTool.swift`) + 2 narrow mirrors (`HTTPRequestService.swift`, `WebSearchService.swift`) — see D1 section |
 
 The former `FloeSharedModels` target (G01 duplicate compile of
@@ -394,3 +394,227 @@ main moves to v47 (`V47ShortcutInbox`, NOT included on Android); no Swift
 logic, schema or migration changed. A later coordinated portable migration is
 documented separately (shared/ANDROID_PERSISTENCE_BASELINE.md is a Main-owned
 future note), never by silently repointing to newer upstream bytes.
+
+### goal-core code batch (2026-10-21, job-7efd60bb51d14f02 — SOURCE ONLY, NOT compiled/tested)
+
+Additive native run-control batch (plan.accept / goal.confirm /
+conversation.compact, structured `goalDefinition` on ordinary `run.start`,
+and the original post-run goal evidence-review/gate/CAS/continuation lane).
+Ledger deltas (accepted by MAIN_RUN_CONTROL_CLOSURE_DECISION_20261020.json):
+bridge matrix 84→87 tuples / 82→85 distinct commands (three appended
+tuples, no rename/delete, mailbox 64/16/64KiB unchanged, no `child.create`);
+feature baseline 182→183 operations / 40→41 G02 (ONE explicit
+`CHA-MANUAL-COMPACT` operation, append-only; 36 families / 85 work packages
+unchanged); `RunDomainError.Reason` gained exactly ONE additive closed case
+`conversationActive`; `RunStartQuery.allowedKeys` gained exactly ONE
+optional additive key `goalDefinition` (goal mode only, create-intent
+refuses).
+
+Module deltas in this overlay:
+
+1. `Sources/FloeAgentRuntime/IntelligenceStore.swift` — the overlay SYMLINK
+   was replaced with a regular reviewed mirror. Upstream bytes are
+   PRESERVED VERBATIM (upstream SHA-256 at mirror time
+   `ce8febbfc7ea31c8d6d769ceb172ee42aaadd79a219ec0c4660491282acca1b5`; the
+   mirror's first 1611 lines diff clean against upstream). Everything added
+   is a documented suffix block only: closed typed
+   `IntelligenceAtomicCommitRefusal`, statement twins that run INSIDE a
+   caller-provided writer `Database` (`latestPlanInTransaction`,
+   `commitPlanRevisionInTransaction`, `commitGoalInTransaction`,
+   `commitStructuredGoalAtLaunch`, `commitManualCompactionInTransaction`,
+   `messageTimelineFingerprint`) plus two actor entry points
+   (`messageTimelineFingerprint(conversationID:)`,
+   `commitManualCompaction(...)`). All existing actor methods/callers above
+   the marker are byte-equal to the original; no schema change; ONE
+   DatabaseManager; no new table.
+2. `Sources/FloePersistence/RunLaunchStore.swift` — reviewed Android mirror
+   (already regular): SECOND documented delta only — additive
+   `AtomicIntelligenceRunLaunchStore` protocol + `prepare(_, expectedRow:,
+   atomicIntelligence:)` overload executing the trusted commit hook AFTER
+   the existing-row digest CAS and BEFORE the first durable write of the
+   SAME transaction. Original `RunLaunchRequest`/`PreparedRun` fields, the
+   first-mirror `activatesEmptyOrdinaryHeader` behavior and every existing
+   signature/caller are unchanged (the private helper only gains a
+   nil-defaulted parameter).
+3. `Sources/FloeAndroidCore` — two new Android-owned regular sources:
+   `RuntimeFacadeRunControls.swift` (the three wire handlers + structured
+   goal factory + canonical prompt + compaction engine selection) and
+   `RuntimeFacadeGoalContinuation.swift` (original post-run lane; real
+   `.conversation` owned leases + single flight + CAS + in-process
+   continuation via the SAME pipeline with the frozen role vocabulary).
+   Narrow additive edits: `BridgeEnvelopeV3.swift` (three appended
+   `CommandRule` tuples), `RuntimeFacadeRuns.swift` (launch-pipeline
+   internal threading: optional `messageRole` default `"user"`, optional
+   `atomicIntelligence` hook (ordinary + digest-CAS paths only), optional
+   `capturedLaunch` frozen pair; ONE shared `compactingConversations`
+   reservation checked at step 1 AND the step-6 pre-commit re-check;
+   goal-mode/frozen-route registration + retire dispatch/cleanup; `Run
+   DomainComponents.settings` additive nil-defaulted original settings
+   store binding), `RuntimeFacadeRunModels.swift` (`conversationActive`
+   reason; goal/plan revision identities; `StructuredGoalDefinition`;
+   `PlanAcceptQuery`/`GoalConfirmQuery`/`ConversationCompactQuery`; three
+   handler-plan bindings), `RuntimeFacadeRunBridge.swift` (three processor
+   cases + retirement Task cancel), `RuntimeFacadeRunIngress.swift`
+   (`RunModelAssembly.resolvePreferred` for the compaction lane),
+   `G02DomainServices.swift` (bind `cluster.settingsStore`),
+   `RuntimeFacadeConversations.swift` (additive `plan`/`goal` durable
+   read-projection fields on `conversation.get`, nil-honest, trimmed first
+   under page pressure; `checklist` stays OMITTED).
+4. Tests (authored, deferred): `BridgeEnvelopeV3Tests` /
+   `RunDomainHandlerPlan` counts synced 84→87 / 15→18;
+   `GoalCoreRunControlTests.swift` added (real store/handler/lane paths,
+   no mirrored constants as proof). The Kotlin
+   `SettingsDomainV1Test` matrix case synced 84→87.
+
+`Sources/FloePersistence/DatabaseManager.swift` stays the frozen byte-
+identical v46 mirror (verified this batch:
+`5ab9f9893f5297b5554b2afd5bbd42fbe6677151bc57accf7e0dd4085676c971`).
+Overlay link total moves 257→256 (the IntelligenceStore link became a
+regular mirror). The iOS `FloeAgent` tree was NOT written through any link.
+
+Out-of-scope follow-ups Main must apply when composing (NOT edited here):
+`scripts/check-settings-domain.py` / `scripts/tests/test_settings_domain_checks.py`
+pin 84 entries and the old test literals; `scripts/check-fixtures.py` pins
+182/40 operation counts. These constants belong to the same approved
+additive ledger (87/85 tuples; 183/41 operations) and must be raised by the
+integration owner, never silently bypassed.
+
+### goal-core code batch — additive rounds 2/3 (2026-10-21, SAME job-7efd60bb51d14f02 — SOURCE ONLY, NOT compiled/tested)
+
+Review-accepted follow-up rounds on the SAME candidate files above, per the
+Main steers recorded under `Local/Private/android-g02-20261018/goal-core-code-batch-20261021/`
+(MAIN_UTF8_BOUND_CORRECTION_STEER / MAIN_APP_API_ADMISSION_AND_DETAIL_READ_DECISION /
+MAIN_POSTRUN_STOP_SOURCE_REVIEW / MAIN_ACTIVATION_SUPERSESSION_STEER).
+The three action-command wire contracts (`plan.accept` / `goal.confirm` /
+`conversation.compact`) and the structured-`goalDefinition` `run.start`
+payload declared in API_READY stay byte-stable; every delta below is a
+body-only correction, an additive read member on an EXISTING command, or
+internal control wiring. Ledger counts stay 87/85/183/41 (no new tuples).
+
+1. UTF-8 prefix BODY correction: `ConversationTextBound.bound`
+   (`RuntimeFacadeConversations.swift`) and `FacadeRunDomain.boundText`
+   (`RuntimeFacadeRuns.swift`) now walk WHOLE UTF-8 sequences (lead byte
+   determines width 1–4) and stop before a sequence that does not fully
+   fit. Result is a genuinely valid UTF-8 prefix of at most `maxBytes`
+   bytes with zero U+FFFD and correct zero-boundary behavior; the Main
+   counterexamples `("中中",3)=="中"` and `("aa中中",3)=="aa"` hold.
+   JSON/frame/page budgets are unaffected (measured after the fix; the old
+   replacement chars only made output LARGER). No payload contract change.
+2. Additive bounded DETAIL read on the EXISTING `conversation.get` (no new
+   command tuple/label/store/table/schema; absent `detail` keeps the legacy
+   reply byte-identical; a malformed `detail` is a typed envelope refusal
+   BEFORE any read): closed request grammar `detail{kind goal|plan,
+   id?, offset?(raw UTF-8 bytes), digest?, maxBytes?(1...32768, default
+   32768)}` (continuation requires id+digest; mixed legacy arguments
+   refused); paged canonical-JSON (sorted-keys, deterministic) delivery of
+   the REAL durable `PlanDraft`/`ConversationGoal` rows with exact
+   `kind/id/status/revision/digest/encoding/offset/nextOffset/totalBytes/
+   truncated/content` plus the action-proof identities
+   `revisionResourceID/revisionVersion` (goal `goal.<id>/rev:<n>`) and
+   `planDigest`/`isDecisionComplete` (plan). First page without `id`
+   resolves the current durable plan / latest NON-terminal goal, falling
+   back to the latest TERMINAL goal so a completed goal stays inspectable
+   (labelled by real status, never faked active). Every continuation
+   re-resolves the owning durable row, proves digest/revision and the
+   current owner/epoch/delete fences inside the read (stale content is a
+   typed refusal; foreign/nonexistent identities reuse the SAME absence
+   response). The FINAL serialized page (with real JSON escaping) is
+   measured to fit the frozen 49152 page inside the 65536 frame via
+   `FacadeFrameBudget.serializedBytes` shrinkage — never String.count.
+   Additive `planAvailability`/`goalAvailability` flags explicitly
+   distinguish summary TRIMMING from true ABSENCE. The ORIGINAL task
+   checklist stays a SEPARATE service: the documented gap handed to Main
+   (`TaskChecklistStore.latest(conversationID:/runID:)` →
+   `TaskChecklist{conversationID,runID,revision,title,steps[{id,title,
+   status,pending|inProgress|completed|blocked|cancelled,evidence[]}],
+   updatedAt}`; `ConversationGoal` has NO checks field; the store is the
+   already-linked shared authority; not waived, no parallel model, no new
+   write, no arbitrary content/file handle API).
+3. Real explicit Stop for the post-run review/continuation lane, wired
+   through the EXISTING `run.cancel` only after the authoritative durable
+   record/owner/state/revision proof and BEFORE the retired/terminal fast
+   paths: `requestGoalReviewStop(runID:conversationID:)` synchronously
+   (no await before the revoke) inserts the stop permit and removes the
+   goal's continuation admission reservation for the EXACT completed run,
+   then cancels the actual conversation-leased Task (transport unwinds
+   cooperatively); the `.conversation` `RuntimeOwnedWork` lease stays
+   attached until the handler REALLY returns (drain semantics unchanged;
+   the existing retirement/privacy drain still waits it). Cancel acks
+   `reviewStopping` honestly — never a fake settled/`alreadyRequested`
+   while the review can still act, never a completed-history rewrite,
+   never touching an unrelated or replacement run. `evaluateAndContinueGoal`
+   gained stop/cancellation guards at stream entry, after the review
+   await (a cancelled stream yields the ORIGINAL empty verdict and the
+   caller then REFUSES), before the goal CAS, and at the final
+   pre-`prepare`/launch boundary; the in-process continuation launch
+   carries the additive default-nil `continuationStopPermit` through the
+   SAME `start` pipeline and refuses at admission AND pre-prepare if the
+   user's Stop won (a won C1 settles as the real same-activation run —
+   no lossy bypass).
+4. Activation SUPERSESSION fence (no timestamps anywhere in the proof):
+   the review captures the real conversation-row activation
+   stamp/digest via the mirror's additive `conversationRowStamp` actor
+   entry, re-proves liveness before launch selection, and the durable goal
+   commit now runs in ONE writer transaction via
+   `saveGoalIfCurrent(goal,expectedRevision:conversationID:
+   expectedConversationStamp:)` — so an OLD delayed review cannot
+   re-order/mutate or auto-launch its old objective/frozen route after a
+   NEWER explicit user goal/run C1 committed in the same conversation/root
+   epoch; the existing `LaunchEpochFence` launch-fence primitive carries
+   the liveness proof. Cancelling/invalidating an old review never fences
+   or kills the newer user activation. Explicit user resume stays the
+   original goal start/checkpoint path; no startup/background
+   resurrection.
+5. `RunDomainError.Reason` is now cumulative +2 additive closed cases over
+   upstream: `conversationActive` (round 1) and `continuationStopped`
+   (round 2/3; `.sessionFenced` code). No other vocabulary change.
+6. `run.snapshot` gained ONE additive bounded read member `goalReview`
+   (`none|active|stopping`, from the real work/stop registry via
+   `goalReviewActivity(runID:)`) so the App can keep Stop available during
+   review and show stopping until the REAL settlement; an inactive goal
+   status is explicitly not a stopped proof. Page/frame budgets re-measured
+   with the field present; all existing snapshot members unchanged.
+7. Mirror integrity re-verified this round: the `IntelligenceStore.swift`
+   regular mirror's first 1611 lines are STILL byte-identical to frozen
+   upstream `ce8febbf…a1b5`; the additive tail now also carries the two
+   extra actor entry points `conversationRowStamp(conversationID:)` and
+   `saveGoalIfCurrent(…)` next to the round-1 `messageTimelineFingerprint`
+   / `commitManualCompaction`. The iOS `FloeAgent` tree remains untouched
+   (`git status` clean for it; nothing was written through any symlink).
+8. Tests (authored, DEFERRED — not compiled/run): new
+   `GoalCoreDetailReadTests.swift` (UTF-8 prefix helpers incl. the Main
+   counterexamples, 2/3/4-byte cuts, exact/zero boundaries, cross-helper
+   agreement; closed detail grammar and mixed-argument refusals; canonical
+   reassembly + identity proof; stale-digest/foreign/mid-byte-boundary
+   refusals; plan action-identity + availability flags; measured
+   page-fit/progress loop) and `GoalCoreRunControlTests.swift` additions
+   (stop-during-live-review lease-held-until-real-drain with no late
+   writes; delayed review cannot mutate or launch after a newer user
+   activation via the controlled barrier; stop scoping refuses
+   foreign/replacement/new-generation targets; `reviewStopping` ack +
+   snapshot readback follows real settlement).
+
+
+## Alpha3 native freeze (2026-10-21)
+
+The Android RunStore and IntelligenceStore are reviewed regular mirrors with
+additive goal/resume behavior over the original v46 stores. Explicit resume
+commits the original preparing state transition and native activation marker
+in one writer transaction; cancellation and retirement recheck the exact run
+owner before handing off. No Android database migration was added.
+
+ConversationRunService.swift is now an exact-byte regular mirror of the
+source used by this Android batch (SHA-256
+`8dcb6ce34a18155438daad664c6ee2d691fd04dcbe6d9916d6bdad03a5d307f2`).
+The relative link previously resolved to a different body on current iOS main;
+this mirror preserves Android build provenance without changing that iOS file.
+The remaining 254 relative source links retain their original authority.
+This normalization changes file ownership only, not the compiled behavior.
+Future upstream adoption requires an explicit diff and relevant checks.
+
+The current ARM64 Android release core was crosslinked with Swift 6.4.1,
+API 28 as the compatibility floor and 16 KiB ELF load alignment. Its runtime
+closure contains 19 libraries; the ten SDK libraries outside that closure are
+excluded from staging. Native compilation and static packaging evidence are
+separate from App/device acceptance. Original symbols and canonical versus
+packaged hashes are retained with the private exact-source artifacts.

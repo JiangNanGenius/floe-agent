@@ -25,6 +25,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class IntegrationsFlowHolderTest {
+    private companion object {
+        /** The REAL opaque revision pair shape (resourceID + digest), like
+         *  the Core row emits — never a counter. */
+        val SEED_REVISION = McpServerRevisionUi(
+            "mcp.6F7B2A1C-3D4E-5F60-7182-93A4B5C6D7E8",
+            "rev-1",
+        )
+    }
+
 
     /* --------------------------------- fakes --------------------------------- */
 
@@ -57,6 +66,8 @@ class IntegrationsFlowHolderTest {
         val cancelledRefreshes = mutableListOf<Pair<String, Long>>()
         val refreshes = mutableListOf<String>()
         var seed: McpEditorSeedUi? = null
+        val localNetworkActions = mutableListOf<Unit>()
+        var localNetworkActionAccepted = true
 
         override fun load() { loadCount++ }
         override fun closeAll() { closeAllCount++ }
@@ -141,6 +152,10 @@ class IntegrationsFlowHolderTest {
             cancelledRefreshes += serverId to generation
             return true
         }
+        override fun localNetworkGuidanceAction(): Boolean {
+            localNetworkActions += Unit
+            return localNetworkActionAccepted
+        }
     }
 
     private fun seed(serverId: String? = "server-1"): McpEditorSeedUi = McpEditorSeedUi(
@@ -158,7 +173,7 @@ class IntegrationsFlowHolderTest {
         tools = emptyList(),
         networkActionsAvailable = true,
         networkActionsUnavailableReason = null,
-        savedRevision = 1L,
+        savedRevision = SEED_REVISION,
     )
 
     private fun installedRow(activity: SkillRunActivityUi = SkillRunActivityUi.None) = SkillInstalledRowUi(
@@ -452,7 +467,7 @@ class IntegrationsFlowHolderTest {
         val request = host.saveRequests.single()
         assertEquals(CredentialDraftIntent.KEEP_EXISTING, request.credentialIntent)
         assertNull(request.credentialDraft)
-        assertEquals(1L, request.baseRevision)
+        assertEquals(SEED_REVISION, request.baseRevision)
     }
 
     @Test
@@ -788,7 +803,7 @@ class IntegrationsFlowHolderTest {
             credentialStored = false,
             state = McpConnectionStateUi.Connecting(5),
             tools = null,
-            revision = 1,
+            revision = McpServerRevisionUi("mcp.6F7B2A1C-3D4E-5F60-7182-93A4B5C6D7E8", "rev-1"),
         )
         assertEquals(IntegrationsFlowResult.Accepted, holder.cancelMcpRefresh(row))
         assertEquals(listOf("server-1" to 5L), host.cancelledRefreshes)
@@ -858,4 +873,24 @@ class IntegrationsFlowHolderTest {
         assertEquals(1, holder.navigation.depth)
         assertNull(holder.currentMcpEditorIdentity())
     }
+
+    @Test
+    fun `local network guidance forwards the single explicit action`() {
+        // Android 17 LAN permission: the module only forwards the user's
+        // tap on the HOST-projected guidance row; a host refusal means
+        // nothing started and is reported honestly. No module-side
+        // permission state exists or is cached.
+        val host = FakeHost()
+        val holder = IntegrationsFlowHolder(host)
+        assertEquals(IntegrationsFlowResult.Accepted, holder.localNetworkGuidanceAction())
+        assertEquals(1, host.localNetworkActions.size)
+
+        val refusing = FakeHost().apply { localNetworkActionAccepted = false }
+        val refusingHolder = IntegrationsFlowHolder(refusing)
+        val result = refusingHolder.localNetworkGuidanceAction()
+        assertTrue(result is IntegrationsFlowResult.Rejected)
+        assertEquals(RejectedReason.HOST_UNAVAILABLE,
+            (result as IntegrationsFlowResult.Rejected).reason)
+    }
+
 }

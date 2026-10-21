@@ -29,7 +29,9 @@ class IntegrationsDraftStoreTest {
         serverId: String? = "server-1",
         endpoint: String = "https://host/mcp",
         stored: Boolean = true,
-        revision: Long? = 4L,
+        revision: McpServerRevisionUi? = McpServerRevisionUi(
+            "mcp.6F7B2A1C-3D4E-5F60-7182-93A4B5C6D7E8", "digest-4",
+        ),
     ) = McpEditorSeedUi(
         serverId = serverId,
         displayName = "Saved Server",
@@ -71,7 +73,12 @@ class IntegrationsDraftStoreTest {
         assertEquals("Saved Server", slot.snapshot.value.displayName)
         assertEquals("https://host:443", slot.currentOriginToken)
         assertEquals(setOf("write"), slot.snapshot.value.disabledRemoteToolNames)
-        assertEquals(4L, slot.baseRevision)
+        assertEquals(
+            McpServerRevisionUi(
+                "mcp.6F7B2A1C-3D4E-5F60-7182-93A4B5C6D7E8", "digest-4",
+            ),
+            slot.baseRevision,
+        )
         assertTrue(store.accepts(slot.identity))
     }
 

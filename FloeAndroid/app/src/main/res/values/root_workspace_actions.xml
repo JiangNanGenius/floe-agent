@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Root Home/history/task-inspection copy (English). Bilingual partner:
+     values-zh-rCN/root_workspace_actions.xml. Internal wire codes stay in
+     explicitly opened diagnostics only. -->
+<resources>
+    <!-- Home draft controls -->
+    <string name="root_reasoning_unset">Reasoning not set</string>
+    <string name="root_attach_refused">Files cannot be staged right now. The runtime staging service is unavailable; nothing was attached to this draft.</string>
+    <string name="root_reasoning_failed">Reasoning effort could not be saved. The selected model keeps its current saved value.</string>
+
+    <!-- Detail reads (task inspection) -->
+    <string name="root_detail_read_full">Read full details</string>
+    <string name="root_detail_retry">Try again</string>
+    <string name="root_detail_loading">Reading…</string>
+    <string name="root_detail_absent">Nothing stored yet.</string>
+    <string name="root_detail_failed">The full details could not be read. (%1$s)</string>
+
+    <!-- Plan detail -->
+    <string name="root_plan_sections">Sections</string>
+    <string name="root_plan_assumptions">Assumptions</string>
+    <string name="root_plan_risks">Risks</string>
+    <string name="root_plan_criteria">Success criteria</string>
+    <string name="root_plan_digest">Plan digest %1$s</string>
+    <string name="root_plan_accepted">Accepted</string>
+
+    <!-- Goal detail -->
+    <string name="root_goal_criteria">Acceptance criteria</string>
+    <string name="root_goal_steps">Steps</string>
+    <string name="root_goal_evidence">Evidence</string>
+    <string name="root_goal_blocking">Blocking conditions</string>
+    <string name="root_goal_stopping">Stopping conditions</string>
+    <string name="root_goal_progress">Cycles %1$d · model calls %2$d · iterations %3$d</string>
+    <string name="root_goal_limits">Limits: cycles %1$s · calls %2$s</string>
+    <string name="root_goal_needs_confirm">Waiting for your confirmation</string>
+    <string name="root_goal_satisfied">Satisfied</string>
+
+    <!-- Task checklist (model-authored progress) -->
+    <string name="root_checklist_title">Task checklist</string>
+    <string name="root_checklist_note">Progress recorded by the task itself. Finishing does not confirm or complete the goal.</string>
+    <string name="root_checklist_counts">Completed %1$d · cancelled %2$d · in progress %3$d · pending %4$d</string>
+
+    <!-- Post-run review activity -->
+    <string name="root_review_stop">Stop review</string>
+    <string name="root_review_stopping">Stopping review…</string>
+
+    <!-- Children -->
+    <string name="root_children_summary">%1$d delegated tasks</string>
+    <string name="root_children_open">Open delegated tasks</string>
+    <string name="root_children_empty">No delegated tasks for this run.</string>
+
+    <!-- Live task permissions -->
+    <string name="root_perm_update_live">Updated and applied to the current run.</string>
+    <string name="root_perm_update_next">Updated. It applies to the next run; the current run keeps its frozen policy.</string>
+    <string name="root_perm_update_failed">The permission change was refused. (%1$s)</string>
+    <string name="root_perm_no_revision">The saved task policy could not be read yet. Reload the task and try again.</string>
+    <string name="root_perm_temp">Temporary sessions have no saved task permissions.</string>
+    <string name="root_perm_recovery">Recovery: %1$s</string>
+    <string name="root_perm_notification">Notifications: %1$s</string>
+    <string name="step_pending">To do</string>
+    <string name="step_in_progress">In progress</string>
+    <string name="step_completed">Completed</string>
+    <string name="step_blocked">Blocked</string>
+    <string name="step_cancelled">Cancelled</string>
+</resources>

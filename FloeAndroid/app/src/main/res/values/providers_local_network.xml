@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="providers_local_network_denied">Local network access was denied. Allow it to connect, then try again.</string>
+    <string name="providers_local_network_settings">Allow local network access in system Settings, then try again.</string>
+</resources>
