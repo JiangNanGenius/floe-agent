@@ -136,7 +136,8 @@ public struct OfficeOutputSnapshot: Equatable, Sendable {
             let shared = (try? SharedStringTable.load(from: package, limit: xmlLimit)) ?? []
             let stylesXML = (try? package.xml(path: "xl/styles.xml", limit: xmlLimit)) ?? ""
             let formatCodesByStyleIndex = OfficeXMLScan.cellFormatCodes(stylesXML: stylesXML)
-            let members = package.paths.filter {
+            let orderedIdentities = try? OfficeExplicitTargets.worksheetIdentities(package)
+            let members = orderedIdentities?.map(\.member) ?? package.paths.filter {
                 $0.hasPrefix("xl/worksheets/sheet") && $0.hasSuffix(".xml") && !$0.contains("/_rels/")
             }.sorted(by: OfficeXMLScan.entryOrder)
             let workbookXML = (try? package.xml(path: "xl/workbook.xml", limit: xmlLimit)) ?? ""
@@ -144,8 +145,9 @@ public struct OfficeOutputSnapshot: Equatable, Sendable {
             for (index, member) in members.enumerated() {
                 guard let xml = try? package.xml(path: member, limit: xmlLimit) else { continue }
                 snapshot.sheetNames.append(member)
-                let declaredName = declaredSheets.first(where: { $0.index == index + 1 })?.name
+                let declaredName = orderedIdentities?.first(where: { $0.member == member })?.name
                     ?? declaredSheets.first(where: { $0.member == member })?.name
+                    ?? declaredSheets.first(where: { $0.index == index + 1 })?.name
                 let sheetName = declaredName ?? "Sheet\(index + 1)"
                 snapshot.sheetNameByMember[member] = sheetName
                 snapshot.sheetNamesInOrder.append(sheetName)
@@ -235,6 +237,8 @@ public enum OfficeOutputExpectation: Equatable, Sendable {
     public static func forCommand(_ command: OfficeEngineCommand,
                                   before: OfficeOutputSnapshot?) -> [OfficeOutputExpectation] {
         switch command {
+        case .explicit:
+            return [] // Verified against exact persisted targets by the ordered automatic executor.
         case .wordStyle(let name):
             return [.wordParagraphStyle(styleName: name)]
         case .wordBulletList:

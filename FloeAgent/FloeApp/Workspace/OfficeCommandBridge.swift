@@ -147,6 +147,9 @@ enum OfficeCommandBridge {    struct DispatchOutcome {
     static func requestJSON(_ commands: [OfficeEngineCommand]) throws -> String {
         var commandObjects: [[String: Any]] = []
         for command in commands {
+            if case .explicit(let exact) = command, exact.format != .xlsx {
+                throw OfficeCommandBridgeError.dispatchFailed("exact-target-needs-authorized-package-preparation")
+            }
             var steps: [[String: Any]] = []
             for step in command.plan.steps {
                 switch step {

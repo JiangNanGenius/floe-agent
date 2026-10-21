@@ -518,6 +518,7 @@
 		97D3E78758C847D8E6B7F1BB /* RARArchiveService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98F7FF2A3CFA32D12C9C5B83 /* RARArchiveService.swift */; };
 		9824D92A13F91772E2E6E598 /* OCCT-Native-SOURCE-OFFER.txt in Resources */ = {isa = PBXBuildFile; fileRef = 3C047CF24A5E871901E23B80 /* OCCT-Native-SOURCE-OFFER.txt */; };
 		98771C1D2B7854551FC6CF12 /* LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 683E46C1B1B3A13DAD237577 /* LICENSE.txt */; };
+		98877EBD8DADE3ACA158D43C /* LinuxSoftRestartTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3EB8F799548AC5D70A47CBB /* LinuxSoftRestartTests.swift */; };
 		9904F64FD66490B7BF15EBD8 /* StorageSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F9EEB3D7C567223FAD5E68B /* StorageSnapshotTests.swift */; };
 		99117BD7AE54BEE174A136A6 /* LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = F46D5826AEE338748D4614B5 /* LICENSE.txt */; };
 		995D25B499E614487F8B8A6B /* asset-hashes.json in Resources */ = {isa = PBXBuildFile; fileRef = 219DC989EE905E606BAC846B /* asset-hashes.json */; };
@@ -639,6 +640,7 @@
 		BAC40F36B84D72BE2F191CD1 /* VolcengineSearchSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2A973A1792C0F7A8E5C16A4 /* VolcengineSearchSettings.swift */; };
 		BAFCFD696F2EA6A8D174FBBD /* M0DiagnosticsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 397DA23AB1A49D66682CE2D2 /* M0DiagnosticsModel.swift */; };
 		BB1F08B00AA2C16A6A2961B0 /* DeferredConfigSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D76098720E39A035D58387 /* DeferredConfigSyncTests.swift */; };
+		BB330D6C6DA150BECE8F5B30 /* OfficeSymbolBulletTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0897CF3726B13C0AE8AA2D /* OfficeSymbolBulletTests.swift */; };
 		BBCD95E5326B5CA6A87828CB /* SourceHanSerifTC-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = 2902E04AAB19FB81585D5348 /* SourceHanSerifTC-Regular.otf */; };
 		BBDDB8AF6699F17D99D910BA /* ModelEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ED88DC18A9D3D6ABA16DE7E /* ModelEditorView.swift */; };
 		BC0396AA62344AA301555007 /* PDFium.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 276A4BD225189F342404A19B /* PDFium.xcframework */; };
@@ -698,6 +700,7 @@
 		C82EE9A6396C642A1E0D0F17 /* OfficeBridgeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C8DC34EA8FFD317063D3E /* OfficeBridgeStateTests.swift */; };
 		C8642D655F440D23A8FEEC5E /* OfficePDFExportOptionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 998494E587B989F9BC3A8FF1 /* OfficePDFExportOptionsView.swift */; };
 		C87A716B9A54B29B695F1F66 /* HostKeyTrustSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52EAF0302B89FA6FFFD6A697 /* HostKeyTrustSheet.swift */; };
+		C8D214E3185789605E4FFA0E /* OfficeExplicitTargetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F5C49173898846F800FC412 /* OfficeExplicitTargetTests.swift */; };
 		C8EB11021CF07BD709D09AA5 /* VoiceInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DCEDA85D7E0A5B195344E38 /* VoiceInput.swift */; };
 		C917D3CABAE4AB1EBC15A055 /* SubagentCoordinationRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB409D791FDDE2D5DFCFE631 /* SubagentCoordinationRegressionTests.swift */; };
 		C93CA320F6CD197A7C04CCDA /* OfficeRealEngineQualificationFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95F9427A76B0BB74A8F59384 /* OfficeRealEngineQualificationFixture.swift */; };
@@ -724,6 +727,7 @@
 		D06F62CD9DD612F1C02E17DB /* DesignHostAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D623A2E4F95A4E4FD1002B /* DesignHostAdapters.swift */; };
 		D09463CD596AE25D352C2694 /* floe_cad_engine_bg.wasm in Resources */ = {isa = PBXBuildFile; fileRef = E8071DDEA7363F13232D4607 /* floe_cad_engine_bg.wasm */; };
 		D0CC6ED08DC66F48F8D677B1 /* OfficePDFExportAcceptanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C23E193FD73AEBCCB322875 /* OfficePDFExportAcceptanceTests.swift */; };
+		D0CDD881C4931F1DB5358E7B /* OfficeEmbeddedWorkbookPreservationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3E52F7718CFE57A0FDF8DC3 /* OfficeEmbeddedWorkbookPreservationTests.swift */; };
 		D0DD07743CFFCA813816A5F4 /* MLXSwiftLM-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 40243BE3DE24934A7915FF5A /* MLXSwiftLM-LICENSE.txt */; };
 		D10D86DCB27628502FAEAB55 /* TaskBulkManagementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9027C00BA41093FFD8EAD44B /* TaskBulkManagementTests.swift */; };
 		D110F879A203E5F554677EC9 /* SystemAlarmTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34E36CA6626336279B885AD8 /* SystemAlarmTool.swift */; };
@@ -747,6 +751,7 @@
 		D726802E186D86AE6DE707BA /* NotesTextLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB89286479C930C2ED16EFF6 /* NotesTextLayout.swift */; };
 		D75EF5BED6075C184EC0EC41 /* DocumentConversionTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BB114D01B97A798547225F0 /* DocumentConversionTool.swift */; };
 		D821D94A29C4A49454005E51 /* TemporaryChatPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05CEFB24CE4284340628308 /* TemporaryChatPolicyTests.swift */; };
+		D849FDA94206664E61B87612 /* OfficeExplicitTargetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 975239D3718648035AB343A6 /* OfficeExplicitTargetTests.swift */; };
 		D940A535577FE25640F5F5E5 /* InlinePDFReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D138AAA4EB06E0A19CE9B5 /* InlinePDFReader.swift */; };
 		D95C0A0F7B2967CF25B4DDE0 /* NotesEngineeringView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F564E49046005F6AEEB1EF /* NotesEngineeringView.swift */; };
 		D9D375EBAF7B557AFFF82242 /* SystemAlarmModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B4AF5616CE37490C02D51DA /* SystemAlarmModels.swift */; };
@@ -849,6 +854,7 @@
 		F7016BFF6AA10B86497D07B9 /* IDEMarkdownOutline.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0E5356A0696EE2140EA6BF /* IDEMarkdownOutline.swift */; };
 		F79F049B384634F2252D4E93 /* NotesWorkbookCoverPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = D09D1D7EBA945F93585FEBA7 /* NotesWorkbookCoverPlan.swift */; };
 		F7EC2A52762CA2D11A8314CF /* sample-editable.dwg in Resources */ = {isa = PBXBuildFile; fileRef = 56C3151E5CD8D8C409DED25E /* sample-editable.dwg */; };
+		F8078CFA90A10B7EB8F6F13B /* OfficeFormulaVerificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C1A6D917BA65A388363433F /* OfficeFormulaVerificationTests.swift */; };
 		F816B41B98C52BA7617C14AE /* SarasaMonoSC-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C46194B406D4285387C07EDF /* SarasaMonoSC-Bold.ttf */; };
 		F8DBE0266A9870E3784913D7 /* CreativeAssetIngestionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4C045D240779DF5FC64D438 /* CreativeAssetIngestionTests.swift */; };
 		F97E858A6A5915882FA5E428 /* RemoteSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F4320C0FA1D4880122D9B3B /* RemoteSettingsView.swift */; };
@@ -1106,6 +1112,7 @@
 		2902E04AAB19FB81585D5348 /* SourceHanSerifTC-Regular.otf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SourceHanSerifTC-Regular.otf"; sourceTree = "<group>"; };
 		293AE960803DF52F2523348D /* dashD.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dashD.xcframework; path = Frameworks/dashD.xcframework; sourceTree = "<group>"; };
 		2A0156F84BD5669B8A565170 /* MindMapTopicInspector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MindMapTopicInspector.swift; sourceTree = "<group>"; };
+		2A0897CF3726B13C0AE8AA2D /* OfficeSymbolBulletTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeSymbolBulletTests.swift; sourceTree = "<group>"; };
 		2A365498AB2C78FBB236AC50 /* SarasaMonoSC-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SarasaMonoSC-Regular.ttf"; sourceTree = "<group>"; };
 		2A47BCB0437209C40EB081C3 /* SharedDocumentsExportAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedDocumentsExportAdapter.swift; sourceTree = "<group>"; };
 		2A584E0DC8FB3226A9FB3E98 /* LinuxGuestPythonFastProvisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxGuestPythonFastProvisionTests.swift; sourceTree = "<group>"; };
@@ -1182,6 +1189,7 @@
 		3BAA7AD6EAE3979E983C9E76 /* FloeShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FloeShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		3C047CF24A5E871901E23B80 /* OCCT-Native-SOURCE-OFFER.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "OCCT-Native-SOURCE-OFFER.txt"; sourceTree = "<group>"; };
 		3C0E5940DD8BE562FA25E8D7 /* AppearanceSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearanceSettingsSection.swift; sourceTree = "<group>"; };
+		3C1A6D917BA65A388363433F /* OfficeFormulaVerificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeFormulaVerificationTests.swift; sourceTree = "<group>"; };
 		3C3DE6D53DFE54B4B7E54569 /* T6ConfirmationDeliveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = T6ConfirmationDeliveryTests.swift; sourceTree = "<group>"; };
 		3C7580892B7768592E15A45D /* gerber-to-svg.min.js.LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "gerber-to-svg.min.js.LICENSE.txt"; sourceTree = "<group>"; };
 		3C8A30D0D7D561C3E9BE4EC0 /* AppleCapabilitiesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleCapabilitiesSettingsView.swift; sourceTree = "<group>"; };
@@ -1343,6 +1351,7 @@
 		6E788D879DCEB044587CF121 /* GeneralSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsView.swift; sourceTree = "<group>"; };
 		6E8DB22FA6955816E3CE6EDB /* MiSans-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "MiSans-Regular.ttf"; sourceTree = "<group>"; };
 		6EEF506FED59D5168EC099F2 /* provenance.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = provenance.json; sourceTree = "<group>"; };
+		6F5C49173898846F800FC412 /* OfficeExplicitTargetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeExplicitTargetTests.swift; sourceTree = "<group>"; };
 		7028424E4280A9AAD6AEF229 /* NotesCustomCoverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesCustomCoverTests.swift; sourceTree = "<group>"; };
 		703BE45E358D57D074DC5538 /* dashA.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dashA.xcframework; path = Frameworks/dashA.xcframework; sourceTree = "<group>"; };
 		708D6B2D7B29C76527311E41 /* EnvironmentManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvironmentManagerView.swift; sourceTree = "<group>"; };
@@ -1475,6 +1484,7 @@
 		96BF3F9C76C1DF1B6DFAED3A /* CadWebEngineSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CadWebEngineSession.swift; sourceTree = "<group>"; };
 		96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeAgentApp.swift; sourceTree = "<group>"; };
 		9745D7DF54A6CC20E16EAE57 /* WorkbenchVideoPanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchVideoPanels.swift; sourceTree = "<group>"; };
+		975239D3718648035AB343A6 /* OfficeExplicitTargetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeExplicitTargetTests.swift; sourceTree = "<group>"; };
 		978DF213A4B6846B18407DF9 /* LICENSE */ = {isa = PBXFileReference; path = LICENSE; sourceTree = "<group>"; };
 		97B9B3602FD264F0C21CE627 /* UsageStatisticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageStatisticsView.swift; sourceTree = "<group>"; };
 		97C9B6D82F2F337A76498E1D /* CreativeDestinationTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreativeDestinationTools.swift; sourceTree = "<group>"; };
@@ -1581,6 +1591,7 @@
 		B2F5FA6182890371A5AD9ABA /* dash.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dash.xcframework; path = Frameworks/dash.xcframework; sourceTree = "<group>"; };
 		B3135923FB83C439E60E432C /* ToolCallCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolCallCardView.swift; sourceTree = "<group>"; };
 		B3519B564E1B18924B091215 /* NOTICE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = NOTICE.txt; sourceTree = "<group>"; };
+		B3E52F7718CFE57A0FDF8DC3 /* OfficeEmbeddedWorkbookPreservationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeEmbeddedWorkbookPreservationTests.swift; sourceTree = "<group>"; };
 		B411EDF873B55072F23B97F0 /* FileInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileInspectorView.swift; sourceTree = "<group>"; };
 		B52255258EA1EE476256544E /* DocumentExportServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentExportServiceTests.swift; sourceTree = "<group>"; };
 		B536F4DA6282AE9A983C8498 /* RemoteImageUnavailableView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageUnavailableView.swift; sourceTree = "<group>"; };
@@ -1627,6 +1638,7 @@
 		C2CECD9691D4C7A3351E309A /* SourceHanSerifTC-Bold.otf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SourceHanSerifTC-Bold.otf"; sourceTree = "<group>"; };
 		C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLaunchpadViewModel.swift; sourceTree = "<group>"; };
 		C3B5DCFF23896E21948B55DE /* third-party-inventory.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "third-party-inventory.json"; sourceTree = "<group>"; };
+		C3EB8F799548AC5D70A47CBB /* LinuxSoftRestartTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxSoftRestartTests.swift; sourceTree = "<group>"; };
 		C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListViewModel.swift; sourceTree = "<group>"; };
 		C46194B406D4285387C07EDF /* SarasaMonoSC-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SarasaMonoSC-Bold.ttf"; sourceTree = "<group>"; };
 		C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionCenter.swift; sourceTree = "<group>"; };
@@ -2394,6 +2406,7 @@
 				711344CF6BAFAEDA8F6EF212 /* OfficeDocumentConversionAppQualificationTests.swift */,
 				537B99D492711ED2A524DA40 /* OfficeDocumentRegionToolTests.swift */,
 				03667B0F672BB8254A12AAD8 /* OfficeEditEntryAckTests.swift */,
+				975239D3718648035AB343A6 /* OfficeExplicitTargetTests.swift */,
 				907B0499451557B6FC4C0631 /* OfficeExportHostContractTests.swift */,
 				8922230F3ADC0EA6D317B9B4 /* OfficeHighlighterAlphaTests.swift */,
 				1D8ECDB432AE3838660A94DD /* OfficeKeyboardLayoutTests.swift */,
@@ -2405,6 +2418,7 @@
 				8322CCB70E67B346EB2C77D7 /* OfficePDFExportServiceTests.swift */,
 				86170DEFDF34F4E46569FBF7 /* OfficePresentationOpeningTests.swift */,
 				1D7142BCE7885AECB1430A26 /* OfficeSelectedObjectSaveTests.swift */,
+				2A0897CF3726B13C0AE8AA2D /* OfficeSymbolBulletTests.swift */,
 				2CB02CACBA3CCB3E8E8A8311 /* OfficeWorkbookCellCreationTests.swift */,
 				2D301C9E553B01FBCAFE3F98 /* PersonalToolPaginationTests.swift */,
 				0F5362F9CDAEE9FF1E699C22 /* PiPAudioBackendAppTests.swift */,
@@ -2637,7 +2651,10 @@
 				B9D075DF79A74BDC388FCE00 /* OfficeAutomaticApplyToolTests.swift */,
 				287C982A843843F175964825 /* OfficeAutomaticExecutionTests.swift */,
 				983635694D8C934A352A11F0 /* OfficeEditToolContractTests.swift */,
+				B3E52F7718CFE57A0FDF8DC3 /* OfficeEmbeddedWorkbookPreservationTests.swift */,
 				AAE80E6FED1C07627719F097 /* OfficeEngineCommandTests.swift */,
+				6F5C49173898846F800FC412 /* OfficeExplicitTargetTests.swift */,
+				3C1A6D917BA65A388363433F /* OfficeFormulaVerificationTests.swift */,
 			);
 			path = FloeDocumentsTests;
 			sourceTree = "<group>";
@@ -3635,6 +3652,7 @@
 				539F31408E05AE89AC0A3FA5 /* LinuxGuestBackendTests.swift */,
 				7E9DE1B1F43C125C8CFCDDDE /* LinuxGuestConsoleSinkTests.swift */,
 				2A584E0DC8FB3226A9FB3E98 /* LinuxGuestPythonFastProvisionTests.swift */,
+				C3EB8F799548AC5D70A47CBB /* LinuxSoftRestartTests.swift */,
 				DAA464C5AB08130B407B2DE3 /* MailBodyPagingTests.swift */,
 				8B04D7DD1035E02FD30F6A99 /* MailMutationJournalTests.swift */,
 				3195240E7F98D70A42B085B3 /* NativeJobPolicyTests.swift */,
@@ -4786,6 +4804,7 @@
 				C5CB4AFD633CF0A3AA9032D2 /* LinuxGuestBackendTests.swift in Sources */,
 				C123AF9288872B54F842F1D8 /* LinuxGuestConsoleSinkTests.swift in Sources */,
 				1AD2CFB82DA3486476563058 /* LinuxGuestPythonFastProvisionTests.swift in Sources */,
+				98877EBD8DADE3ACA158D43C /* LinuxSoftRestartTests.swift in Sources */,
 				33925755A2B1566952B6B292 /* LiveAutomaticReasoningEffortQualificationTests.swift in Sources */,
 				975D47F8A5F29CD5FFEC2B90 /* LiveOfficeAssistantQualificationTests.swift in Sources */,
 				F59D4EF18D8FC2418821FE90 /* LocalLinuxStaticServiceRealVMTests.swift in Sources */,
@@ -4828,8 +4847,12 @@
 				51E246BAF1FC416B068AE89A /* OfficeDocumentRegionToolTests.swift in Sources */,
 				DE2C5D4018784A2043FEE1E1 /* OfficeEditEntryAckTests.swift in Sources */,
 				15113C0F821E574CDAE3EF1F /* OfficeEditToolContractTests.swift in Sources */,
+				D0CDD881C4931F1DB5358E7B /* OfficeEmbeddedWorkbookPreservationTests.swift in Sources */,
 				BFE0B02EB2A65CA8C247C088 /* OfficeEngineCommandTests.swift in Sources */,
+				D849FDA94206664E61B87612 /* OfficeExplicitTargetTests.swift in Sources */,
+				C8D214E3185789605E4FFA0E /* OfficeExplicitTargetTests.swift in Sources */,
 				1A2C681F98A0FAE7C7540C52 /* OfficeExportHostContractTests.swift in Sources */,
+				F8078CFA90A10B7EB8F6F13B /* OfficeFormulaVerificationTests.swift in Sources */,
 				D28961F49BE3287163E86498 /* OfficeGeneratedPreviewTests.swift in Sources */,
 				903BDDC67643842F74CC8AB7 /* OfficeHighlighterAlphaTests.swift in Sources */,
 				5ABAD1E63BCE6301B30A2925 /* OfficeKeyboardLayoutTests.swift in Sources */,
@@ -4841,6 +4864,7 @@
 				4F97FC66D77C1DF8AA8B88C1 /* OfficePDFExportServiceTests.swift in Sources */,
 				5A30E1D4F62F7C8D84B39A5D /* OfficePresentationOpeningTests.swift in Sources */,
 				181C028D7604E273FBB5B794 /* OfficeSelectedObjectSaveTests.swift in Sources */,
+				BB330D6C6DA150BECE8F5B30 /* OfficeSymbolBulletTests.swift in Sources */,
 				2FC75E225513C8820C96CEB0 /* OfficeWorkbookCellCreationTests.swift in Sources */,
 				E71BE9B97FA13949E2682E98 /* OrdinaryDocumentActionProfileTests.swift in Sources */,
 				B6F675C24C4FF8F63CF5E47C /* PersonalToolPaginationTests.swift in Sources */,

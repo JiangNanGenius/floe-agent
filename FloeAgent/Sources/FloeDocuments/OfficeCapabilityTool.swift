@@ -28,7 +28,7 @@ public enum OfficeCapabilityTool {
         let verified = "verified", engine = "engine", unavailable = "unavailable"
 
         func engineOps(_ format: OfficeDocumentFormat) -> [Op] {
-            OfficeEngineCommandCatalog.engineCommands(format).map { command in
+            let live = OfficeEngineCommandCatalog.engineCommands(format).map { command in
                 let dispatch = command.plan.steps.map { step -> String in
                     switch step {
                     case .uno(let name, _): return name
@@ -42,6 +42,11 @@ public enum OfficeCapabilityTool {
                           detail: "\(dispatch); saved-package verified after flush"
                               + (enginePresent ? "" : " (engine not present in this build)"))
             }
+            let exact = OfficeExplicitCommand.argumentSchemas(format).map { schema in
+                Op(name: schema.id, tier: enginePresent ? engine : unavailable, path: "authorized-copy-package-and-native",
+                   detail: "read.exactTargets identity + immutable source digest; ordered isolated-copy preparation/dispatch, native save and engine reopen, exact persisted target verification; finite supported shapes" + (enginePresent ? "" : " (engine not present in this build)"))
+            }
+            return live + exact
         }
 
         /// apply-without-grant copy execution through the service-owned

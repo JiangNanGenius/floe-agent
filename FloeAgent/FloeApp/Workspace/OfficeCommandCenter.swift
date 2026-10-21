@@ -402,6 +402,32 @@ actor OfficeCommandCenter: OfficeCommandHost {
         for command in commands where command.format != resolved.format {
             throw OfficeEngineCommandError.unsupportedFormat(command.id, resolved.format.rawValue)
         }
+        // Exact-target batches belong to the saved-package automatic-copy
+        // path. They never invent a visible editor or a selection fingerprint.
+        // Non-selection commands (e.g. recalculate) may be mixed in order.
+        if commands.contains(where: { if case .explicit = $0 { return true }; return false }) {
+            guard !commands.contains(where: \.requiresSelectionFingerprint) else {
+                throw FloeError.validationFailed("An exact-target copy cannot include a live-selection command")
+            }
+            let current = try OfficeOutputSnapshot.capture(url: resolved.url)
+            guard current.sha256.lowercased() == baseSHA256.lowercased() else { throw OfficeDocumentError.revisionConflict }
+            for command in commands {
+                if case .explicit(let exact) = command {
+                    try OfficeExplicitTargets.validate(exact, sourceURL: resolved.url, baseSHA256: baseSHA256)
+                }
+            }
+            if let visible = try await liveSession(resolved, access: access) {
+                let status = try await visible.liveEngineStatus()
+                guard !status.unsavedChanges else { throw FloeError.validationFailed("Save the document before proposing an exact edited copy") }
+            }
+            let proposal = OfficeCommandProposal(documentID: resolved.relativePath,
+                format: resolved.format.rawValue, baseSHA256: baseSHA256.lowercased(),
+                summary: summary, commandsJSON: commandsJSON,
+                expectations: OfficeCommandCodec.expectations(commands), selectionFingerprint: nil,
+                targetSummary: commands.map(\.targetSummary).joined(separator: "; "))
+            proposalAccess[proposal.id] = access
+            return proposal
+        }
         let session = try await requireLiveSession(resolved, access: access)
         guard let binding = await session.proposalReviewBinding else { throw FloeError.unauthorized }
         let live = try await session.liveEngineStatus()
@@ -445,7 +471,8 @@ actor OfficeCommandCenter: OfficeCommandHost {
     }
 
     func storeProposal(_ proposal: OfficeCommandProposal) async throws {
-        guard proposalAccess[proposal.id] != nil, proposalBindings[proposal.id] != nil else {
+        let exact = try OfficeCommandCodec.decode(proposal.commandsJSON).contains { if case .explicit = $0 { return true }; return false }
+        guard proposalAccess[proposal.id] != nil, exact || proposalBindings[proposal.id] != nil else {
             throw FloeError.unauthorized
         }
         proposals[proposal.id] = proposal
@@ -485,6 +512,9 @@ actor OfficeCommandCenter: OfficeCommandHost {
     func apply(proposal: OfficeCommandProposal, grantID: String, requestID: String,
                access: OfficeCommandAccess) async throws -> OfficeCommandReceipt {
         let resolved = try resolve(documentID: proposal.documentID, access: access)
+        guard !(try OfficeCommandCodec.decode(proposal.commandsJSON)).contains(where: { if case .explicit = $0 { return true }; return false }) else {
+            throw FloeError.validationFailed("Exact-target proposals require the authorized edited-copy path")
+        }
         return try await withDocumentGate(resolved.key) {
             let payload = proposal.baseSHA256 + "|" + proposal.commandsJSON
             let key = replayKey(action: "apply", access: access, documentID: resolved.relativePath,

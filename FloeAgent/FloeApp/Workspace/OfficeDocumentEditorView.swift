@@ -871,6 +871,12 @@ final class OfficeFileSession: ObservableObject {
         // The shipped host is pinned separately. A selector capability check keeps old hosts
         // functional until the newly compiled host is qualified, without rewriting its headers.
         let output = try await Self.exportNativeDocument(controller: controller, format: format)
+        if format == "pptx", let workspace, let session,
+           session.originalURL.pathExtension.lowercased() == "pptx" {
+            // The engine owns workingURL while open. Preserve workbook styling
+            // only in this completed, independent export snapshot.
+            try await workspace.preserveChartWorkbookFormatting(in: output, for: session)
+        }
         if format == "pdf" {
             guard let pdf = CGPDFDocument(output as CFURL), pdf.numberOfPages > 0 else { throw CocoaError(.fileReadCorruptFile) }
         } else if ["docx", "pptx", "xlsx"].contains(format) {
