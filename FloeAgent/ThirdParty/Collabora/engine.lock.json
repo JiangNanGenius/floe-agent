@@ -832,6 +832,14 @@
                 "source/engine/workdir/UnpackedTarball/frozen/include"
               ]
             }
+          },
+          "fontcache.o": {
+            "sourceFile": "engine/vcl/source/font/fontcache.cxx",
+            "originalSHA256": "562127cce91fab9e118dc77904f1022ca3cc255e5924dd9e4ea1ac014489bb3b",
+            "patchedSHA256": "1a3ae74fb2f00fbfd853b01eca067e53bc3fa878fd5237425aa2d904e34e3293",
+            "patch": "patches/ios-symbol-font-recoding.patch",
+            "patchSHA256": "b84b546a2f557e1d1d42e196c4d4f6c35ea4d3512ec4a0b52e99fba3ab5f919c",
+            "originalMemberSHA256": "d094e02b3b3241bdfa80b393d0589f8b0a8afcfd54fe104f537b393bd2ac8930"
           }
         }
       },
@@ -947,6 +955,14 @@
             "patch": "patches/ios-jsdialog-treeview-utf8.patch",
             "patchSHA256": "5fec4d222117c416d149d20aa708f37ddff2e5dafd0c4a6f249106aaef4baa50",
             "originalMemberSHA256": "81303f145f2137395d9e1835a056a221be2c8bebef70ff225a58f0a8f7999fc1"
+          },
+          "fontcache.o": {
+            "sourceFile": "engine/vcl/source/font/fontcache.cxx",
+            "originalSHA256": "562127cce91fab9e118dc77904f1022ca3cc255e5924dd9e4ea1ac014489bb3b",
+            "patchedSHA256": "1a3ae74fb2f00fbfd853b01eca067e53bc3fa878fd5237425aa2d904e34e3293",
+            "patch": "patches/ios-symbol-font-recoding.patch",
+            "patchSHA256": "b84b546a2f557e1d1d42e196c4d4f6c35ea4d3512ec4a0b52e99fba3ab5f919c",
+            "originalMemberSHA256": "059ce43559b514f06c67b22ba00eb6f68245879861c90d103e025d2a7b32d69e"
           }
         }
       }

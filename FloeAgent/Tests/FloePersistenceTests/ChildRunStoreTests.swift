@@ -3,8 +3,8 @@
 //
 // Covers: the v49 table provisioning (including coexistence with the v48
 // alarm schema), checkpoint save/load round trips through the shared bounded
-// payload codec, whole-document bounding (oversized values stay legal JSON
-// with an explicit marker), and every lease/CAS transition — finished-child
+// payload codec, exact-state bounding (oversized checkpoints are refused
+// without clipping identity or intent), and every lease/CAS transition — finished-child
 // refusal, single-resumer convergence, expired-lease re-acquire after a
 // crash, launch reconciliation of stale leases, and cancel restoring the
 // honest interrupted state.

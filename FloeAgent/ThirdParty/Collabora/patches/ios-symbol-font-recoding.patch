@@ -1,0 +1,11 @@
+--- a/engine/vcl/source/font/fontcache.cxx
++++ b/engine/vcl/source/font/fontcache.cxx
+@@ -162,7 +162,7 @@
+                 pFontInstance->mpConversion = ConvertChar::GetRecodeData( aFontSelData.maTargetName, aFontSelData.maSearchName );
+         }
+ 
+-#ifdef MACOSX
++#if defined(MACOSX) || defined(IOS)
+         //It might be better to dig out the font version of the target font
+         //to see if it's a modern re-coded apple symbol font in case that
+         //font shows up on a different platform
