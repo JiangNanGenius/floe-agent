@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -102,13 +103,19 @@ fun FloePageSheet(
     ) {
         Dialog(
             onDismissRequest = onDismiss,
-            properties = DialogProperties(usePlatformDefaultWidth = false),
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
         ) {
             BackHandler(onBack = onDismiss)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.28f)),
+                    .background(Color.Black.copy(alpha = 0.28f))
+                    // safeDrawing includes the IME. Size the sheet inside
+                    // that space so editable dialogs keep actions reachable.
+                    .safeDrawingPadding(),
                 contentAlignment = when (resolvedPlacement) {
                     FloeSheetPlacement.CENTER -> Alignment.Center
                     FloeSheetPlacement.BOTTOM -> Alignment.BottomCenter
