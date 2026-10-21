@@ -738,7 +738,7 @@ enum DocumentExportService {
                         "usePrintArea 只接受工作表名称或序号，不能搭配单元格区域或 sheets 选择。",
                         "usePrintArea accepts only a sheet name or index, never a cell range or sheets."))
                 }
-                let resolved = try Self.resolveWorkbookSheetName(
+                let resolved = try await Self.resolveWorkbookSheetName(
                     scope: request.scope, staged: staged, stagedSHA: stagedSHA)
                 plan.scope = .sheetWithPrintArea(name: resolved)
             } else if let index = request.scope.sheetIndex {
