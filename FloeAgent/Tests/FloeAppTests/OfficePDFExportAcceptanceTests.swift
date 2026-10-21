@@ -295,6 +295,101 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         }
     }
 
+    func testSavedCoverRejectsMismatchedResourceAndCancellationThenRecovers() async throws {
+        let (source, sha, root) = try input()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive }))
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        let environment = AppEnvironment.preview()
+        window.rootViewController = UIHostingController(rootView: NavigationStack {
+            OfficeDocumentEditorView(relativePath: "provided.xlsx", session: session,
+                                     onSaved: nil, requestsEditingOnAppear: false)
+                .environmentObject(environment)
+        })
+        window.windowLevel = .normal + 1
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+        do {
+            await session.open(source)
+            try await wait("actual Office document ready") { session.documentActionsReady && session.canAct }
+            let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await wait("actual Office tiles painted") {
+                let facts = OfficeFileSession.hostRenderDiagnostics(native)
+                return facts["stage"] == "visible-render" && facts["docLoaded"] == "1"
+                    && ((Int(facts["decodedTiles"] ?? "") ?? 0) > 0 || facts["vectorRendering"] == "1")
+            }
+            let working = native.workingFileURL
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: working), sha)
+            let exports = working.deletingLastPathComponent().appendingPathComponent("exports", isDirectory: true)
+            func coverEntries() throws -> Set<String> {
+                guard FileManager.default.fileExists(atPath: exports.path) else { return [] }
+                return Set(try FileManager.default.contentsOfDirectory(atPath: exports.path)
+                    .filter { $0.hasPrefix("cover-") })
+            }
+            let before = try coverEntries()
+            // Correct-looking resource identity with wrong bytes must fail
+            // before opening a converter, without leaving a job or PDF.
+            let wrong = root.appendingPathComponent(sha)
+            try Data("different saved bytes".utf8).write(to: wrong)
+            do {
+                _ = try await session.exportCommittedCoverPDF(expectedSHA256: sha, savedSourceURL: wrong)
+                XCTFail("A mismatched saved resource must not produce a cover")
+            } catch {
+                XCTAssertEqual((error as NSError).domain, NSCocoaErrorDomain)
+                XCTAssertEqual((error as NSError).code, CocoaError.fileReadCorruptFile.rawValue)
+            }
+            XCTAssertTrue(session.canAct)
+            XCTAssertFalse(session.coverExportInFlight)
+            XCTAssertEqual(try coverEntries(), before)
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha)
+
+            // Cancellation happens before the child gets the MainActor: no
+            // time-based race and no unnecessary input/operation claim.
+            let cancelled = Task { @MainActor in
+                do {
+                    let unexpected = try await session.exportCommittedCoverPDF(
+                        expectedSHA256: sha, savedSourceURL: source)
+                    try? FileManager.default.removeItem(at: unexpected)
+                    XCTFail("A cancelled cover must not produce an artifact")
+                } catch is CancellationError { }
+                catch { XCTFail("Expected cancellation, received: \(error)") }
+            }
+            cancelled.cancel()
+            await cancelled.value
+            XCTAssertTrue(session.canAct)
+            XCTAssertFalse(session.coverExportInFlight)
+            XCTAssertEqual(try coverEntries(), before)
+
+            // A real retry must acquire the released claim and produce a
+            // renderable PDF, leaving only its caller-owned output file.
+            let pdf = try await session.exportCommittedCoverPDF(expectedSHA256: sha, savedSourceURL: source)
+            XCTAssertGreaterThan(try Data(contentsOf: pdf).count, 4_096)
+            let preview = try OfficeSavedCoverRenderer.firstPageData(at: pdf)
+            XCTAssertNotNil(UIImage(data: preview))
+            XCTAssertEqual(try coverEntries(), before.union([pdf.lastPathComponent]))
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha)
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: working), sha)
+            XCTAssertTrue(session.canAct)
+            XCTAssertFalse(session.coverExportInFlight)
+            attach(pdf, "saved-cover-after-refusal-and-cancellation.pdf")
+            try FileManager.default.removeItem(at: pdf)
+            XCTAssertEqual(try coverEntries(), before)
+            let quarantined = await OfficeAutomaticExecutionGate.shared.isQuarantined
+            XCTAssertFalse(quarantined)
+            await session.release()
+            try FileManager.default.removeItem(at: root)
+        } catch {
+            await session.release()
+            if !(await OfficeAutomaticExecutionGate.shared.isQuarantined) {
+                try? FileManager.default.removeItem(at: root)
+            }
+            throw error
+        }
+    }
+
     func testAssistantExportToolReturnsActualPDFAndVisibleFileCard() async throws {
         let (source, sha, root) = try input()
         let workspace = root.appendingPathComponent("workspace", isDirectory: true)

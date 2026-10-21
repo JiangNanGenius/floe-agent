@@ -1065,6 +1065,7 @@ final class OfficeFileSession: ObservableObject {
     /// check the working copy and engine before and after. Do not re-save:
     /// another serialization could change the package being identified.
     func exportCommittedCoverPDF(expectedSHA256: String, savedSourceURL: URL? = nil) async throws -> URL {
+        try Task.checkCancellation()
         guard exportFormats.contains("pdf"), let controller,
               let workingURL = session?.workingURL, beginExternalRefresh(resigningFirstResponder: false) else {
             throw CocoaError(.featureUnsupported)
