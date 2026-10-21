@@ -4,7 +4,7 @@
 
 ## 交付 / Delivery
 
-- [内部 TestFlight](https://github.com/JiangNanGenius/floe-agent/actions/runs/39552556058)成功。Apple 回读为 `VALID`、未过期、现有 `Floe QA`／`IN_BETA_TESTING`；中英文测试说明已核对，**内部可安装**。The existing internal group can install this build.
+- [内部 TestFlight](https://github.com/JiangNanGenius/floe-agent/actions/runs/39552556058)成功。Apple 回读为 `VALID`、未过期、现有 `Floe QA`／`IN_BETA_TESTING`；中英文测试说明已核对，**内部可安装**。[独立 GET-only 回查](https://github.com/JiangNanGenius/floe-agent/actions/runs/39555317655)另确认 `APP_STORE_ELIGIBLE`／`READY_FOR_BETA_SUBMISSION`、issues 为空、尚无外审记录。The existing internal group can install this build.
 - [稳定最新版 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.42)仅含规范无签名 IPA、校验文件和精简来源文件。[同一次发布流程](https://github.com/JiangNanGenius/floe-agent/actions/runs/39552615636)已完成来源证明、发布回读及 awaited Feather。Independent readback verifies the real arm64 iphoneos executable, tag/source, remote bytes, attestation, latest pointer and live feed.
 - IPA SHA-256: `bb69c39319d6d1eff2068c4f490045c70c4b636cb6d5c9cfd0e39cce5ce25f31`；大小 / bytes: `801552098`。Feather 版本、build、源码、大小、摘要和下载地址与该资产完全一致。The unsigned IPA requires the user's own signing.
 - **公开 TestFlight 尚未提交。** 恢复网页认证后向现有 `publictest1` 提交一次并独立回读；不能把内部可安装写成外部已开放。275 正式提交和已有 281／282 申请均未改动。External submission remains pending; no production App Store publication is authorized.
