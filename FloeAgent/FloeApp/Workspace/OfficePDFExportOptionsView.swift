@@ -423,15 +423,15 @@ struct OfficePDFExportOptionsView: View {
                     if let artifact = preview.artifact {
                         // The number below is measured from the actual
                         // generated PDF, never estimated from the viewport.
-                        Text(t("上次预览共 \(artifact.pageCount) 页；页码按预览 PDF 校验。",
-                               "Last preview has \(artifact.pageCount) pages; the page selection is validated against the preview PDF."))
+                        Text(t("上次预览：\(artifact.pageCount) 页",
+                               "Last preview: \(artifact.pageCount) pages"))
                             .font(.footnote).foregroundStyle(.secondary)
                             .accessibilityIdentifier("office.pdf.measuredPages")
                     }
                     if preview.isReady,
                        preview.isStale(currentChoices: choices) {
-                        Text(t("设置已修改，最终操作已暂停，请重新生成预览。",
-                               "Settings changed. Final actions are paused until a new preview is generated."))
+                        Text(t("设置已修改，请重新生成预览。",
+                               "Settings changed. Generate a new preview."))
                             .font(.footnote).foregroundStyle(.orange)
                             .accessibilityIdentifier("office.pdf.stale")
                     }

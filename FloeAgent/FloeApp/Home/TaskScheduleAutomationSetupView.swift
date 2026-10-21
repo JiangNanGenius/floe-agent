@@ -13,7 +13,7 @@
 // template file, the sheet also offers a REAL import handoff: the system
 // shows its own "Add Shortcut" confirmation for the signed file. Opening or
 // handing off is recorded as evidence with distinct states; an installed
-// automation is never claimed, and the manual path above stays available.
+// automation is never claimed, and the manual path stays available.
 // An actual handoff — or the user's explicit confirmation, import or manual
 // — durably (re)starts SILENT monitoring for this plan, so that a later
 // permanent delete or terminal one-shot run can surface exactly one honest
@@ -211,14 +211,6 @@ struct TaskScheduleAutomationSetupView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section(setupText(zh: "计划", en: "Plan")) {
-                    LabeledContent(setupText(zh: "名称", en: "Name"), value: schedule.title)
-                    LabeledContent(setupText(zh: "周期", en: "Cadence"), value: cadenceText)
-                    if let planTimeText {
-                        LabeledContent(setupText(zh: "计划时间", en: "Plan time"), value: planTimeText)
-                    }
-                    LabeledContent(setupText(zh: "时区", en: "Time zone"), value: timezoneName)
-                }
                 if !schedule.isEnabled {
                     Section {
                         Label(setupText(zh: "此计划已停用。先在主页启用后，自动化才能运行它。",
@@ -227,44 +219,7 @@ struct TaskScheduleAutomationSetupView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                if schedule.cadence == .afterSuccess || schedule.cadence == .interval {
-                    Section {
-                        Text(limitationText ?? "")
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Section(setupText(zh: "设置步骤", en: "Set up")) {
-                        if !triggerTimeText.isEmpty {
-                            LabeledContent(setupText(zh: "建议触发时间", en: "Suggested trigger time"),
-                                           value: triggerTimeText)
-                        }
-                        if showsTimezoneMismatch {
-                            Text(timezoneMismatchText)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                        if showsImport {
-                            Text(setupText(
-                                zh: "导入下方快捷指令，选择计划「\(schedule.title)」。",
-                                en: "Import the shortcut below and choose “\(schedule.title)”."))
-                            Text(setupText(
-                                zh: "新建「特定时间」自动化，运行该快捷指令；\(repeatInstruction)。",
-                                en: "Create a Specific Time automation for that shortcut; \(repeatInstruction)."))
-                            Text(enableStepText)
-                            DisclosureGroup(setupText(zh: "手动设置", en: "Manual setup")) {
-                                manualSetupSteps
-                            }
-                        } else {
-                            manualSetupSteps
-                        }
-                    }
-                    if let limitationText {
-                        Section {
-                            Text(limitationText)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                if schedule.cadence == .once || schedule.cadence == .daily || schedule.cadence == .weekly {
                     Section(setupText(zh: "快捷指令", en: "Shortcut")) {
                         if showsImport {
                             Button {
@@ -300,6 +255,53 @@ struct TaskScheduleAutomationSetupView: View {
                             en: "Floe cannot detect system automations; this records only your confirmation."))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                    }
+                }
+                Section(setupText(zh: "计划", en: "Plan")) {
+                    LabeledContent(setupText(zh: "名称", en: "Name"), value: schedule.title)
+                    LabeledContent(setupText(zh: "周期", en: "Cadence"), value: cadenceText)
+                    if let planTimeText {
+                        LabeledContent(setupText(zh: "计划时间", en: "Plan time"), value: planTimeText)
+                    }
+                    LabeledContent(setupText(zh: "时区", en: "Time zone"), value: timezoneName)
+                }
+                if schedule.cadence == .afterSuccess || schedule.cadence == .interval {
+                    Section {
+                        Text(limitationText ?? "")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Section(setupText(zh: "设置步骤", en: "Set up")) {
+                        if !triggerTimeText.isEmpty {
+                            LabeledContent(setupText(zh: "建议触发时间", en: "Suggested trigger time"),
+                                           value: triggerTimeText)
+                        }
+                        if showsTimezoneMismatch {
+                            Text(timezoneMismatchText)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        if showsImport {
+                            Text(setupText(
+                                zh: "导入快捷指令，选择计划「\(schedule.title)」。",
+                                en: "Import the shortcut and choose “\(schedule.title)”."))
+                            Text(setupText(
+                                zh: "新建「特定时间」自动化，运行该快捷指令；\(repeatInstruction)。",
+                                en: "Create a Specific Time automation for that shortcut; \(repeatInstruction)."))
+                            Text(enableStepText)
+                            DisclosureGroup(setupText(zh: "手动设置", en: "Manual setup")) {
+                                manualSetupSteps
+                            }
+                        } else {
+                            manualSetupSteps
+                        }
+                    }
+                    if let limitationText {
+                        Section {
+                            Text(limitationText)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
