@@ -39,6 +39,7 @@
 | [Build 256 stability work](releases/repairs/FLOE_256_STABILITY.md) | 候选修复：Linux 配置恢复、按任务选性能、本地终端和 Office 自由绘制；非发布记录 |
 | [Office／Pencil S1 本地验收](releases/repairs/FLOE_OFFICE_PENCIL_S1_20261020.md) | 本轮原生组件及完整 App：三格式笔点与边界共 12 项通过；281 交付状态单独记录 |
 | [Office 当前页面与实时笔迹](releases/repairs/FLOE_OFFICE_ASSISTANT_LIVE_INK_20261021.md) | 当前笔迹进入实际助手请求、同一手记写入求和保存，以及带侧栏／动画的普通与画笔实时缩放；[282 已交付](releases/testflight/BUILD_282_LOCAL_VERIFICATION.md)并清理 |
+| [283 内测及无签名交付](releases/testflight/BUILD_283_LOCAL_VERIFICATION.md) | Office 保存／区域／导出、荧光笔、PDF／打印与文件结果；内部、稳定 Release／Feather、源码及清理已核对，公开送审单列跟进 |
 | [282 内测及无签名交付](releases/testflight/BUILD_282_LOCAL_VERIFICATION.md) | 不可变源码、本地归档、独立 Apple 可安装、稳定 Release／Feather 与清理记录 |
 | [Shortcuts 精确运行与文本 S3-C](releases/repairs/FLOE_SHORTCUTS_S3C_20261021.md) | 原 137 项通过保留，13 项 Intent 与 3 项实际修复／保存证明补验通过；文件和定时接续 D／S4 |
 | [Office 连续双指缩放源码实现](releases/repairs/FLOE_OFFICE_LIVE_PINCH_SOURCE_20261019.md) | 连续缩放源码、组件及分模式验收历史；剩余 S1 问题分别跟踪 |
@@ -72,7 +73,7 @@
 
 ## 发布档案（只追加、不回改）
 
-逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。当前阶段内测为 1.7.37（278），已确认 Apple `VALID`、未过期且现有 Floe QA 可安装（[发布说明](releases/notes/RELEASE_NOTES_1.7.37_BUILD_278.md)、[本地核验与交付记录](releases/testflight/BUILD_278_LOCAL_VERIFICATION.md)）。真实 UIKit 画笔缩放仍在修复。此前版本与正式审核保留各自历史记录，不以本次内测状态覆盖。
+逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。当前内测为 1.7.42（283），已确认 Apple `VALID`、未过期且现有 Floe QA 可安装；稳定无签名 Release 与同次 Feather 已交付（[发布说明](releases/notes/RELEASE_NOTES_1.7.42_BUILD_283.md)、[核验与交付记录](releases/testflight/BUILD_283_LOCAL_VERIFICATION.md)）。283 公开送审尚待完成，S4 真实定时接续调查。此前版本与正式审核保留各自历史记录，不以当前内测状态覆盖。
 
 ## 历史研究（结论以现行代码为准）
 

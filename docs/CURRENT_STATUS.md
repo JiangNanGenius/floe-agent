@@ -3,9 +3,16 @@
 
 文档更新时间 / Document updated: 2026-10-21. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
-当前剩余交付顺序为 **283 归档／渠道交付／清理 → S4 真实定时 → S5＋S6 → S7 按执行链分组**。283 的实现和定向本地验收已完成：源码 `137ea88c` 在默认产品配置下实际通过 7 项，包含原表格两笔荧光笔、已有底色、缩放后续写、助手真实 PDF／文件卡片、打印入口及 PDF 范围／版面。原表格两笔颜色误差均为 0，各阶段网格保留率均为 100%；原文件未变。设备架构组件已本地编译、匹配符号已核验，规范存储与安装检查通过；最终锁定变化仅为组件来源记录。此前 28 项手记冲突、13 项搜索设置、无标题编辑、空闲保存、区域查看和文件结果等证据保留，不重跑。283 尚未归档、上传或交付；真实 Pencil 手感和实体打印仍由真机反馈确认。详见[当前计划](FLOE_IOS_CLOSURE_PLAN_20261018.zh-CN.md)。
+当前剩余产品顺序为 **S4 真实定时 → S5＋S6 → S7 按执行链分组**。283 的功能验收、内部可安装、稳定无签名 Release／同次 Feather、main 回读及任务清理均已完成，移入交付记录；公开 TestFlight 的一次送审仍单列跟进，尚未提交。不重复已通过的 Office／手记／文件结果检查。[当前计划](FLOE_IOS_CLOSURE_PLAN_20261018.zh-CN.md)。
 
-Build 283 implementation and focused local qualification are complete; archive, distribution and cleanup remain. At `137ea88c`, seven actual App/native cases pass with the product default configuration: the supplied workbook, colored cells, Calc pinch and continued writing, the complete assistant PDF/file-card route, native Print options and actual PDF scope/layout. Both workbook strokes match the selected color exactly and retain 100% of the predefined grid; the original file is unchanged. The device component and matching symbols are verified, with canonical storage and installation checks passing. The final lock change records that component only. Earlier Notes, search, edit, autosave, region and run-file checks are retained. Build 283 is not yet archived, uploaded or distributed. Physical Pencil feel and printer output remain device acceptance.
+Remaining product work proceeds through S4, S5+S6 and grouped S7 work. Build 283's source qualification, internal availability, stable unsigned Release/awaited Feather, main integration and cleanup are complete. Its external TestFlight submission is tracked separately and is not yet submitted.
+
+## 1.7.42（283）内部可安装，无签名包已交付；公开送审待完成 / Internal and unsigned available; external submission pending
+
+- Office 自动保存、助手区域查看／真实导出、PDF／打印设置、Excel 荧光笔及手记冲突修复、S3-D 文件结果和联网内容来源已集成。本地实际 7 项最终相关用例全部通过；原表格颜色误差 0、网格保留率 100%，此前定向证据保留。
+- [内部上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/39552556058)成功，Apple `VALID`、未过期，现有 Floe QA／`IN_BETA_TESTING`。**内部可安装**。[稳定最新版 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.42)及[同次 Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/39552615636)独立回读通过，IPA SHA-256 `bb69c39319d6d1eff2068c4f490045c70c4b636cb6d5c9cfd0e39cce5ce25f31`。
+- `v1.7.42` 固定至 `c0d56124`；在用户授权下只补两份说明修正标签，App 树与本地归档源码 `e4d778c7` 一致，没有重建。源码合入 main，任务分支、私有传输草稿、一次性编译和展开副本已清理。**283 尚未公开送审**；275 正式提交与已有 281／282 申请保持不变。
+- Physical Pencil feel and printer output remain device checks. The unsigned IPA requires signing; internal availability does not imply external approval. [283 交付与边界 / Delivery and limits](releases/testflight/BUILD_283_LOCAL_VERIFICATION.md)。
 
 ## 1.7.41（282）内部可安装，公测已送审，无签名包已交付 / Internal available; external review pending; unsigned delivered
 
