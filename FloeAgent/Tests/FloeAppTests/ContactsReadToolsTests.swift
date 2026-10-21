@@ -433,16 +433,13 @@ final class FakeContactsDirectory: ContactsDirectoryProviding, @unchecked Sendab
     var isAvailable: Bool { true }
 
     func requestAccess(cancellation: CancellationToken) async throws -> ContactsReadAuthorization {
-        lock.lock()
-        _requestCount += 1
-        let outcome = _requestOutcome
-        let error = _requestError
-        lock.unlock()
+        let (outcome, error) = lock.withLock {
+            _requestCount += 1
+            return (_requestOutcome, _requestError)
+        }
         if cancellation.isCancelled { throw ContactsReadError.cancelled }
         if let error { throw error }
-        lock.lock()
-        _authorization = outcome
-        lock.unlock()
+        lock.withLock { _authorization = outcome }
         return outcome
     }
 
@@ -452,14 +449,11 @@ final class FakeContactsDirectory: ContactsDirectoryProviding, @unchecked Sendab
         maxScan: Int,
         cancellation: CancellationToken
     ) async throws -> ContactsReadScan {
-        lock.lock()
-        _scanCount += 1
-        _lastQuery = query
-        let error = _scanError
-        let records = _records
-        let truncated = _scanTruncated
-        let authorization = _authorization
-        lock.unlock()
+        let (error, records, truncated, authorization) = lock.withLock {
+            _scanCount += 1
+            _lastQuery = query
+            return (_scanError, _records, _scanTruncated, _authorization)
+        }
         if cancellation.isCancelled { throw ContactsReadError.cancelled }
         if let error { throw error }
         return ContactsReadScan(

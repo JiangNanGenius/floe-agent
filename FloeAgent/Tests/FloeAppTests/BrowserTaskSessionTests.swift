@@ -692,8 +692,8 @@ struct BrowserTaskSessionTests {
         #expect(restored.sessionID != first.sessionID)
         #expect(restored.generation > first.generation)
         #expect(restored.generation > fencedGeneration)
-        let context = context(for: owner)
-        let listed = try await run(registry, "browser.tabs", "{}", as: context)
+        let restoredContext = context(for: owner)
+        let listed = try await run(registry, "browser.tabs", "{}", as: restoredContext)
         #expect(listed.contains("\"status\":\"ok\""), Comment(rawValue: listed))
 
         // A second release, then reactivation through runtime admission of a

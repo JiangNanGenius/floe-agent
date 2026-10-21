@@ -188,7 +188,7 @@ struct ChildRunStoreTests {
         try await store.saveCheckpoint(updated)
         #expect(try #require(await store.checkpoint(childRunID: childID)).iterationsUsed == 3)
         try await store.deleteCheckpoint(childRunID: childID)
-        #expect(await store.checkpoint(childRunID: childID) == nil)
+        #expect(try await store.checkpoint(childRunID: childID) == nil)
     }
 
     // MARK: - Lease / CAS transitions

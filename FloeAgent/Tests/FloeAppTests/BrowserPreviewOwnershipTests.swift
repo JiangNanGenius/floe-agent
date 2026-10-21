@@ -66,9 +66,9 @@ struct BrowserPreviewOwnershipTests {
     ) -> ToolContext {
         ToolContext(
             runID: UUID(),
+            workspaceRootURL: workspaceRoot,
             cancellation: token,
             conversationID: owner,
-            workspaceRootURL: workspaceRoot,
             temporaryReadOnly: temporary
         )
     }
@@ -285,8 +285,8 @@ struct BrowserPreviewOwnershipTests {
         // nil owner: no fallback to the visible browser.
         let anonymous = ToolContext(
             runID: UUID(),
-            cancellation: CancellationToken(),
-            workspaceRootURL: workspace
+            workspaceRootURL: workspace,
+            cancellation: CancellationToken()
         )
         await #expect(throws: (any Error).self) {
             _ = try await run(registry, "preview.start", "{}", as: anonymous)
