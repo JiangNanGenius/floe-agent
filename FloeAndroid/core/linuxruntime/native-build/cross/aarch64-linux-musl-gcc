@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""zig cc cross wrapper for aarch64-linux-musl (reviewed, portable).
+
+Normal invocations forward to `zig cc -target aarch64-linux-musl` (static
+musl linking by default; zig 0.14.1 from the pinned tarball).
+
+Loader-style links pass -Wl,-Ttext=ADDR (GNU ld syntax) which zig's -Wl
+whitelist rejects, so those are routed to the pinned NDK's ld.lld directly
+(freestanding, no libc; lld infers ELF aarch64 from the objects).
+
+Paths come only from the environment set by build-bootstrap.sh:
+  FLOE_LINUXRUNTIME_ZIG  -> zig binary
+  FLOE_LINUXRUNTIME_LLD  -> NDK ld.lld binary
+No repository or private-scratch paths are embedded.
+"""
+import os
+import subprocess
+import sys
+
+ZIG = os.environ.get("FLOE_LINUXRUNTIME_ZIG") or "zig"
+LLD = os.environ.get("FLOE_LINUXRUNTIME_LLD")
+if not LLD:
+    sys.exit("FLOE_LINUXRUNTIME_LLD not set (run via build-bootstrap.sh)")
+
+args = sys.argv[1:]
+
+has_ttext = any(a.startswith("-Wl,") and "-Ttext=" in a for a in args)
+if has_ttext:
+    lld_args = []
+    skip_next = False
+    for i, a in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if a in ("-static", "-nostdlib", "-fPIC", "-ffreestanding", "-pie"):
+            continue
+        if a == "-o":
+            lld_args += ["-o", args[i + 1]]
+            skip_next = True
+            continue
+        if a.startswith("-Wl,"):
+            for part in a[4:].split(","):
+                if not part:
+                    continue
+                if part.startswith("-Ttext="):
+                    lld_args.append("--section-start=.text=" + part[len("-Ttext="):])
+                else:
+                    lld_args.append(part)
+            continue
+        if a.endswith(".o") or a.endswith(".a"):
+            lld_args.append(a)
+        # compiler-only flags (-g/-O/-W/-I/-D/-M...) are dropped
+    lld_args = [x for x in lld_args if x not in ("-Wl,",)]
+    sys.exit(subprocess.call([LLD] + lld_args))
+
+sys.exit(subprocess.call([ZIG, "cc", "-target", "aarch64-linux-musl"] + args))

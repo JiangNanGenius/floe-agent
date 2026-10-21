@@ -1,0 +1,10 @@
+--- a/src/tracee/event.c
++++ b/src/tracee/event.c
+@@ -516,6 +516,7 @@
+ 		case SIGTRAP: {
+ 			const unsigned long default_ptrace_options = (
+ 				PTRACE_O_TRACESYSGOOD	|
++				PTRACE_O_EXITKILL	|
+ 				PTRACE_O_TRACEFORK	|
+ 				PTRACE_O_TRACEVFORK	|
+ 				PTRACE_O_TRACEVFORKDONE	|

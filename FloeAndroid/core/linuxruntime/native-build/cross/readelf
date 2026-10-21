@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""readelf facade for PRoot's loader-info.c rule.
+
+The Termux-fork GNUmakefile generates loader/loader-info.c with a bare,
+unprefixed `readelf -s loader/loader | awk -f loader/loader-info.awk`.
+macOS has no GNU readelf on PATH, so the producer puts this directory on
+PATH (cross-bin first) and this facade answers, forwarding to the pinned
+NDK llvm-readobj with the same argv shape used by the verified internal
+qualification build (loader-info.c reproduces byte-exactly through this
+path; loader-info.awk's field semantics depend on readobj's output, not
+on llvm-readelf's).
+"""
+import os
+import sys
+
+RO = os.environ.get("FLOE_LINUXRUNTIME_READOBJ")
+if not RO:
+    sys.exit("FLOE_LINUXRUNTIME_READOBJ not set (run via build-bootstrap.sh)")
+os.execv(RO, ["llvm-readelf"] + sys.argv[1:])

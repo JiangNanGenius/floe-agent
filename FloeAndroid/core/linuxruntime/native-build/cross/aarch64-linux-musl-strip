@@ -1,0 +1,11 @@
+#!/bin/sh
+# Env-wired strip via llvm-objcopy --strip-all, matching the qualification
+# build behavior (writes <file>.stripped then moves it over <file>).
+set -eu
+OBJCOPY="${FLOE_LINUXRUNTIME_OBJCOPY:?run via build-bootstrap.sh}"
+for f in "$@"; do
+  case "$f" in
+    -*) continue ;;  # tolerate option args
+    *) "$OBJCOPY" --strip-all "$f" "$f.stripped" && mv "$f.stripped" "$f" ;;
+  esac
+done

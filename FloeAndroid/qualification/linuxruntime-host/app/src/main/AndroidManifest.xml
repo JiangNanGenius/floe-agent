@@ -1,0 +1,24 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Executable payload extraction (extractNativeLibs) is enabled via
+         packagingOptions.jniLibs.useLegacyPackaging in build.gradle.kts
+         (AGP 9 requirement): the platform extracts libfloeprobe.so/libproot.so
+         to real files under the app native library directory, the only
+         app-adjacent location a targetSdk>=29 app may execve() from. -->
+    <application
+        android:label="Floe LinuxRuntime Qual"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <activity
+            android:name="com.floe.linuxruntime.host.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+    <!-- Deliberately zero permissions: the transport forks owned local
+         children only. No INTERNET, no storage, no LAN. -->
+</manifest>

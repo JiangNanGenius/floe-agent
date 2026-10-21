@@ -1,0 +1,8 @@
+#!/bin/sh
+# Fake GNU-ld probe shim: PRoot's GNUmakefile tests
+# `${LD} --build-id=none --version` to decide whether to pass
+# --build-id=none to the loader link. Answer truthfully-compatible:
+# the loader link is routed to NDK ld.lld by the gcc wrapper, which
+# does accept --build-id=none.
+echo "GNU ld (Floe cross shim; loader links route to ld.lld) 2.40"
+exit 0

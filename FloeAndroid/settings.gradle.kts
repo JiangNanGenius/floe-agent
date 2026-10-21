@@ -7,6 +7,9 @@ dependencyResolutionManagement {
 }
 rootProject.name = "FloeAndroid"
 include(":app", ":core:contracts", ":core:credentials", ":core:designsystem", ":core:swiftbridge")
+// G03 launch transport; capability admission waits for resolved environment
+// ownership and actual backend qualification. No App/tool registration here.
+include(":core:linuxruntime")
 include(":feature:phonecontrol", ":feature:rootsystem")
 // G02 provider/model presentation flow (source-only stage; no App dependency
 // yet). Registered last, after its build file exists; the next Gradle stage

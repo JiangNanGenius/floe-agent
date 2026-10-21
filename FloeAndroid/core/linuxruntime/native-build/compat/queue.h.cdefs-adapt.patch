@@ -1,0 +1,29 @@
+Derived-from header adaptation for musl cross builds.
+
+Original: sys/queue.h as shipped in Android NDK 30.0.16248370
+  toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/sys/queue.h
+  sha256 09ee5ac8c68c0498a4f8ce93a5d0e989959f5d43a3fbe28f7b42fa1381828c8f
+  byte-identical to AOSP bionic libc/include/sys/queue.h at tag
+  android-16.0.0_r1 (also identical to the file the parent qualification
+  build had staged unused as talloc-install/include/sys_queue_bionic.h).
+License: BSD-3-Clause (Regents of the University of California), full
+  notice preserved in the adapted file. No Apple/APSL text involved.
+
+Adaptation (single line): zig's bundled musl does not provide
+<sys/cdefs.h>, and this header uses no cdefs macros — but does use NULL,
+provided by <stddef.h>. Replace the cdefs include accordingly.
+
+--- a/sys/queue.h	(NDK 30.0.16248370 sysroot)
++++ b/compat/queue.h	(reviewed vendored input)
+@@ -32,7 +32,7 @@
+ #ifndef	_SYS_QUEUE_H_
+ #define	_SYS_QUEUE_H_
+ 
+-#include <sys/cdefs.h>
++#include <stddef.h>
+ 
+ /*
+  * This file defines five types of data structures: singly-linked lists,
+
+Adapted result sha256:
+  2f17fe601093b9f3733045442213603973e906a255de87926a0022927a0f79c9

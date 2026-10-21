@@ -61,6 +61,19 @@ let package = Package(
             "FloeCore", "FloeModels", "FloeTransport",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
+        // G03-R1 environment authority (job-d15dbb99ae374286): the ORIGINAL
+        // FloeEnvironments module, ported per the FloeAndroidWebTools
+        // provenance pattern — nine per-file relative links reuse the iOS
+        // authority byte-for-byte; `ContainerRecord`, `EnvironmentRoots` and
+        // `EnvironmentRegistry` are narrow documented Android mirrors (see
+        // PROVENANCE.md G03-R1 section); `LinuxExecutionLeaseDescriptor.swift`
+        // is Android-owned. Depends on FloeCore+FloeTools only, exactly like
+        // FloeAgent/Package.swift. NO alternate registry/executor, NO routing
+        // registration here: Main's composition wires ToolEnvironmentRouting
+        // and supplies the explicit trusted root + selected backend.
+        .target(name: "FloeEnvironments", dependencies: [
+            "FloeCore", "FloeTools",
+        ], swiftSettings: strictSettings),
         // D1 minimal web.search/web.fetch closure (Main decisions
         // 2026-10-18; runtime-facade-contract D1/RB-6): exactly the five
         // ORIGINAL FloeExecution files — WebFetchTool, WebSearchTool,
@@ -130,6 +143,12 @@ let package = Package(
             // qualified original tools/service link before the facade
             // registers them (dependency only; NO service registration here).
             "FloeAndroidWebTools",
+            // G03-R1 environment authority: links the original registry/
+            // coordinator/lease authority into the product .so (dependency
+            // only; NO ToolEnvironmentRouting registration, NO backend
+            // selection — trusted composition supplies root+backend and the
+            // linuxruntime lane consumes the lease descriptor).
+            "FloeEnvironments",
             // G02 transport startup admission: the REAL production
             // `StreamingTransport.makeSession` factory initialization fact is
             // evaluated inside the composition before the immutable RunContext
@@ -154,6 +173,9 @@ let package = Package(
             // session constructions above run against the same loopback
             // fixtures; original tool/service semantics are tested directly.
             "FloeAndroidWebTools",
+            // G03-R1 ownership/rejection suites for the ported environment
+            // authority and the lease descriptor (authored, host-runnable).
+            "FloeEnvironments",
         ], swiftSettings: strictSettings)
     ]
 )

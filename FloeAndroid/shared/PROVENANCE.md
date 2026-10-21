@@ -14,7 +14,7 @@ iOS sources and `FloeAgent/Package.swift` are NOT edited by this overlay.
 | Module | Files | Form |
 | --- | --- | --- |
 | FloeCore | 75 | 69 links + 6 narrow patch copies (see below) |
-| FloeModels | 8 | all links |
+| FloeModels | 9 | 8 links + byte-identical original `RunOutputFile.swift` snapshot at `ee1816ae41fd6d74826696f02ffeb3ebcc1f0965` |
 | FloeProviders | 24 | 23 links + `ProviderAdapter.swift` copy |
 | FloeSecurity | 13 → 12 | 12 links + `Resources/catastrophic-patterns.json` copy; **`KeychainStore.swift` excluded entirely** |
 | FloeTools | 25 | 23 links + `MCPRemoteToolSource.swift`, `NetworkDestinationPolicy.swift` copies |
@@ -22,6 +22,7 @@ iOS sources and `FloeAgent/Package.swift` are NOT edited by this overlay.
 | FloePersistence | 71 | original links plus reviewed `ConversationStore.swift`, `RunLaunchStore.swift`, `ConversationPromoter.swift` and the frozen byte-identical v46 `DatabaseManager.swift` mirrors; same 46-migration chain, no second store |
 | FloeAgentRuntime | 40 | links + the documented Android-owned regulars (`AgentRuntime.swift`, `SubagentRunner.swift`, `ToolWorkflowGuidance.swift`; from the goal-core batch also the narrow reviewed `IntelligenceStore.swift` mirror with an additive-only in-transaction block — see the dated sections below; ConversationRunService/FloeAgentRuntime actor/HarnessEventChannel authority unchanged) |
 | FloeAndroidWebTools | 5 | 3 links (`WebRetrievalModels.swift`, `Tools/WebFetchTool.swift`, `Tools/WebSearchTool.swift`) + 2 narrow mirrors (`HTTPRequestService.swift`, `WebSearchService.swift`) — see D1 section |
+| FloeEnvironments | 13 | 9 links + 3 narrow mirrors (`ContainerRecord.swift`, `EnvironmentRoots.swift`, `EnvironmentRegistry.swift`) + 1 Android-owned regular (`LinuxExecutionLeaseDescriptor.swift`) — see G03-R1 section |
 
 The former `FloeSharedModels` target (G01 duplicate compile of
 `FloeModels/TaskPolicy.swift`) was REMOVED: `Bridge.swift` now imports the
@@ -176,6 +177,87 @@ production cleartext; tests use only synthetic loopback fixtures plus the
 ORIGINAL internal test seams (`validateDestination` injection, package
 resolver seam) — production destination policy was not weakened.
 
+## G03-R1 environment authority — `FloeEnvironments` (2026-10-22, job-d15dbb99ae374286)
+
+G03-R1 Android port of the EXISTING `FloeAgent/Sources/FloeEnvironments`
+authority — NOT a second Kotlin/Swift registry and NOT an executor. Depends on
+FloeCore+FloeTools only, exactly like `FloeAgent/Package.swift`. Main owns
+architecture/isolation; the FloeAndroid/core/linuxruntime lane
+(job-32b3d5dded1d4e70) owns the backend launch transport that later consumes
+the approved lease descriptor.
+
+**Nine per-file links** reuse the original authority byte-for-byte:
+`ContainerCAS.swift`, `ContainerLifecycle.swift`, `ContainerPromote.swift`,
+`EnvironmentExecutionCoordinator.swift` (the lease authority: workspace-hash
+owner check, layer-stack derivation, lease cancellation tracking,
+stopAndWait), `EnvironmentFileTransaction.swift`, `FloeEnvCommand.swift`,
+`LayerPackageControl.swift`, `LayerPackageDatabase.swift`, `LayerStack.swift`.
+All are portable Foundation+FloeCore(+FloeTools) code; the only platform hook
+(`clonefile`) is already `#if canImport(Darwin)`-guarded in the originals, so
+non-Darwin falls back to plain copies unchanged.
+
+**Three narrow mirrors**, every delta `#if os(Android)`-split with the Apple
+branch byte-equal to the original:
+
+1. `ContainerRecord.swift` — ONE additive enum case
+   `EnvironmentExecutionBackend.linuxPRoot`: the Android/Linux
+   resolved-execution candidate consumed by the backend launch transport.
+   Per Main decision (`Local/Private/android-g03-20261022/r1/
+   ARCHITECTURE_DECISIONS.json` `proot-isolation`) it is a COMPATIBILITY
+   CANDIDATE, NOT a security boundary (same-UID PRoot is not an app sandbox);
+   it is never a default and never advertised as an executable capability
+   merely because a record exists. The additive case keeps every persisted
+   registry decode-compatible.
+2. `EnvironmentRoots.swift` — Android has NO implicit root fallback at all:
+   the default `init()` fail-closes (preconditionFailure directing to
+   `makeTrusted`), and a non-nil `init(rootURL:)` is validated with the same
+   rules as `makeTrusted` (malformed input traps instead of silently owning
+   an unintended location). Adds `makeTrusted(rootURL:) throws`, the
+   validated trusted-composition entry point (absolute, normalized,
+   app-private directory only). `shared`/defaulted `roots:` parameters stay
+   source-compatible but trap if evaluated on Android without an explicit
+   root.
+3. `EnvironmentRegistry.swift` — on Android the three `.linuxVM` iOS-TinyEMU
+   DEFAULTS are removed (`defaultExecutionBackend` init parameter,
+   `createPinnedEnvironment`, `registerOfficialTemplate`): the trusted
+   composition must supply the backend explicitly, so neither TinyEMU nor
+   `.native` host execution can be silently selected. `ensureProjectContainer`/
+   `ensureSessionContainer` still honor an explicit per-record choice and
+   otherwise use the composition-supplied registry default; the legacy
+   nil→default migration is unchanged and stays recoverable.
+
+**One Android-owned regular**, `LinuxExecutionLeaseDescriptor.swift`: the
+narrow Swift-side routing input handed to the backend launch transport.
+Both entry points acquire through the ORIGINAL
+`EnvironmentExecutionCoordinator.acquire` (all authority decisions stay
+there), then add the Android ownership gates and package the snapshot:
+explicit-backend refusal (`.native`/`.linuxVM` rejected), the session
+conversation gate (pre-acquire on the addressed record AND re-checked on the
+resolved record after prepare/acquire, so a nil or foreign conversation can
+never select a session environment), record/backend cross-check (no silent
+retargeting), and identity survival (runID, conversationID, workspaceID+root,
+environmentID, projectContainerID, ordered layer stack, validated
+HOME/TMPDIR/variables). Lease ownership discipline (Main review 2026-10-22):
+`acquireHolder` is the ONLY launchable path — its holder keeps the lease
+until the transport confirms the owned process ACTUALLY quiesced, and
+`release()` before quiescence is a typed refusal (a cancellation request is
+not termination). `resolveMetadata` is metadata-only and hands the lease
+back BEFORE returning; its bare descriptor is never launch authority.
+Exactly one code path finishes any acquired lease (the acquiring entry point
+on failure, the holder on release) — no helper finishes, no double finish.
+
+Truthful scope: the descriptor contains only validated existing lease/record
+roots/identities and the ordered layer stack (session > project > template >
+shared > base). The stack is LOOKUP ORDER, not a kernel overlayfs or process
+sandbox; the merged apt rootfs and PRoot mount mechanics belong to the
+backend lane and are NOT claimed here. No second persistent DB, no pretend
+backend lifecycle, no host/language aliases — later model code runs resolved
+Linux `exec.shell` only. NO `ToolEnvironmentRouting` registration in this
+target: Main's composition wires routing and supplies the trusted root +
+selected backend. Host-runnable ownership/rejection suites:
+`Tests/FloeAndroidCoreTests/EnvironmentOwnershipTests.swift` (authored, not
+executed by the authoring job).
+
 ## What is and is not claimed
 
 COMPILED (host macOS, this package): the whole graph above incl. GRDB +
@@ -184,6 +266,11 @@ NOT yet compiled here for android28 at delivery time: the actual product
 `libFloeAndroidCore.so` (native build stays serialized; see HANDOFF.md).
 Host tests prove schema/bridge/store semantics ONLY — no device runtime,
 streaming cadence, Keystore, WAL kill/restart or UI claim.
+G03-R1 ADDITION (2026-10-22): the `FloeEnvironments` target + lease
+descriptor above are source-ready but NOT yet compiled (object compilation
+and the ownership suites run in Main's integrated batch; the descriptor's
+Android-only backend-gate branches are compile-checked on the android28
+cross build).
 
 ## G02 model configuration publication + host qualification (2026-10-19, job-059dc09dd7bd48f1)
 
@@ -642,3 +729,30 @@ exact queue binding after a real file effect. The original `pendingLocalCleanup`
 `finishLocalCleanup(workspaceID:)`, `deleteWorkspace`, schema, V36 trigger and
 queue are byte-unchanged. No new migration or parallel ownership registry was
 introduced.
+Main qualification, 2026-10-22: the focused `EnvironmentOwnershipTests`
+suite passed all 20 tests after correcting five actor-property assertions
+in the test source (the original compiler failure was retained). The
+`FloeEnvironments` target then produced all 13 ARM64 object files with
+Swift 6.4.1, `aarch64-unknown-linux-android28`, six jobs and the pinned Android
+SDK. This is actual object compilation, not typecheck-only evidence. The
+nine linked original files were checked against the integration source.
+This verifies the environment component; it does not prove the future
+App/JNI lease-to-process bridge, merged rootfs, service or tool routing.
+
+G03-R1 integration source check: the occupied iOS checkout predates main's
+`ToolExecutionOutput.outputFiles` and `ArtifactNamespace.runOutputs`
+additions. Main's shared Tool contracts require the original
+`FloeModels/RunOutputFile.swift`, which the older Android per-file source
+list omitted. Its byte-identical source at
+`ee1816ae41fd6d74826696f02ffeb3ebcc1f0965` is included as an explicit
+snapshot, preserving the occupied iOS checkout. Qualification materializes
+original linked inputs from the actual public base, retaining only the
+existing documented Android overlays; this avoids mistaking the older
+local iOS branch for the published integration source. The same source
+form must be used for the next full shared-core build.
+The integration component was then compiled with the explicit OSS Swift
+6.4.1 compiler and matching Android SDK against the actual public-base
+originals, including that missing model. All 13 environment object files
+were produced for `aarch64-unknown-linux-android28`; this was not a full
+App rebuild and did not repeat the device cohort. Initial minimal-host
+resource setup and accidental system-compiler failures were retained.
