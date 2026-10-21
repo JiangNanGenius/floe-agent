@@ -60,7 +60,6 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: FloeApp
-      - path: FloeWidgets/FloeSystemAlarmControlIntents.swift
         excludes:
           - Resources/Capabilities
           - Resources/Audio
@@ -77,6 +76,7 @@ targets:
           # PrivacyInfo.xcprivacy from here; they must never also land in the
           # app bundle (one manifest per bundle root).
           - Resources/PrivacyManifests
+      - path: FloeWidgets/FloeSystemAlarmControlIntents.swift
       - path: FloeApp/Resources/Capabilities
         type: folder
         buildPhase: resources
