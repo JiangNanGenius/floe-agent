@@ -16,19 +16,22 @@ import FloeCore
 import FloePersistence
 import AlarmKit
 
-/// Real AlarmKit-backed manager. All access to the SDK's non-Sendable
-/// singleton stays on the main actor; only our Sendable snapshots escape.
+/// Main-actor entry points for the native alarm service. The SDK owns its
+/// nonisolated singleton and asynchronous work; only our value snapshots
+/// cross the app's service boundary.
 @MainActor
 final class AlarmKitNativeManager: SystemAlarmNativeManaging {
-    // Resolve the native singleton only inside this isolated facade. Creating
-    // the facade itself is safe from synchronous discovery/registration code.
+    // No SDK object is stored or exposed as app actor-owned state. Resolve
+    // AlarmManager.shared at each SDK entry point, as its public API expects;
+    // sending a self.manager alias to its nonisolated async methods would
+    // incorrectly transfer a reference from the main actor. This facade's
+    // own entry points and the observation task remain main-actor isolated.
     nonisolated init() {}
-    private var manager: AlarmManager { AlarmManager.shared }
 
     nonisolated var isAvailable: Bool { true }
 
     var authorization: SystemAlarmAuthorization {
-        switch manager.authorizationState {
+        switch AlarmManager.shared.authorizationState {
         case .notDetermined: return .notDetermined
         case .denied: return .denied
         case .authorized: return .authorized
@@ -37,7 +40,7 @@ final class AlarmKitNativeManager: SystemAlarmNativeManaging {
     }
 
     func requestAuthorization() async throws -> SystemAlarmAuthorization {
-        let state = try await manager.requestAuthorization()
+        let state = try await AlarmManager.shared.requestAuthorization()
         switch state {
         case .notDetermined: return .notDetermined
         case .denied: return .denied
@@ -47,7 +50,7 @@ final class AlarmKitNativeManager: SystemAlarmNativeManaging {
     }
 
     func alarms() async throws -> [SystemAlarmNativeSnapshot] {
-        try manager.alarms.map {
+        try AlarmManager.shared.alarms.map {
             SystemAlarmNativeSnapshot(id: $0.id, state: Self.describe($0.state))
         }
     }
@@ -55,7 +58,7 @@ final class AlarmKitNativeManager: SystemAlarmNativeManaging {
     var alarmUpdates: AsyncStream<[SystemAlarmNativeSnapshot]> {
         AsyncStream { continuation in
             let task = Task {
-                for await alarms in self.manager.alarmUpdates {
+                for await alarms in AlarmManager.shared.alarmUpdates {
                     let snapshots = alarms.map {
                         SystemAlarmNativeSnapshot(id: $0.id, state: Self.describe($0.state))
                     }
@@ -122,14 +125,14 @@ final class AlarmKitNativeManager: SystemAlarmNativeManaging {
             }
             configuration = .alarm(schedule: schedule, attributes: attributes)
         }
-        let alarm = try await manager.schedule(id: id, configuration: configuration)
+        let alarm = try await AlarmManager.shared.schedule(id: id, configuration: configuration)
         return SystemAlarmNativeSnapshot(id: alarm.id, state: Self.describe(alarm.state))
     }
 
     func cancel(id: UUID) async throws {
         // AlarmKit's cancel is synchronous-throwing; address only the exact
         // app-owned id. A foreign id surfaces a native error, never adoption.
-        try manager.cancel(id: id)
+        try AlarmManager.shared.cancel(id: id)
     }
 
     private static func describe(_ state: Alarm.State) -> String {
