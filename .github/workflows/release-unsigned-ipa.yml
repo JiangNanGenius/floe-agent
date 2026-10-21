@@ -1482,6 +1482,9 @@ jobs:
 
       - name: Sign, verify, package, and upload to TestFlight
         env:
+          APPLE_SHARE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_SHARE_PROVISIONING_PROFILE_BASE64 }}
+          APPLE_WIDGETS_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_WIDGETS_PROVISIONING_PROFILE_BASE64 }}
+          APPLE_FILEPROVIDER_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_FILEPROVIDER_PROVISIONING_PROFILE_BASE64 }}
           ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
@@ -1507,9 +1510,8 @@ jobs:
                   codesign --force --sign "$SIGN_IDENTITY" --generate-entitlement-der "$CODE_PATH"
                 done
           fi
-          codesign --force --sign "$SIGN_IDENTITY" \
-            --entitlements "$RUNNER_TEMP/FloeScreenShare.entitlements" \
-            --generate-entitlement-der "$APPEX_PATH"
+          python3 scripts/sign_app_store_extensions.py \
+            --app "$APP_PATH" --profiles-dir "$RUNNER_TEMP" --source-root .
           codesign --force --sign "$SIGN_IDENTITY" \
             --entitlements "$RUNNER_TEMP/Floe.entitlements" \
             --generate-entitlement-der "$APP_PATH"
