@@ -39,18 +39,7 @@
 		<integer>431817727</integer>
 	</dict>
 	<key>WFWorkflowImportQuestions</key>
-	<array>
-		<dict>
-			<key>ActionIndex</key>
-			<integer>0</integer>
-			<key>Category</key>
-			<string>Parameter</string>
-			<key>ParameterKey</key>
-			<string>schedule</string>
-			<key>Text</key>
-			<string>选择 Floe 计划 / Choose a Floe plan</string>
-		</dict>
-	</array>
+	<array/>
 	<key>WFWorkflowInputContentItemClasses</key>
 	<array>
 		<string>WFAppContentItem</string>
