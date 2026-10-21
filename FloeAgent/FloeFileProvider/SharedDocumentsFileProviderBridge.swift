@@ -18,11 +18,16 @@
 //   never reported as success, and a failure leaves the prior committed
 //   bytes/name/versions untouched.
 // * Base versions are decoded against the real SDK contract:
-//   `beforeFirstSyncComponent` on both components means "never synced" and
-//   the mutation applies against the committed CAS base (any concurrent
-//   writer still fails closed via versionConflict). Anything else that is
-//   not one of our `c<n>.m<n>` tokens is malformed and fails closed — a
-//   corrupt version can never grant a blind overwrite.
+//   `beforeFirstSyncComponent` means disk and provider were never known in
+//   sync for that component. Both components never-synced applies the
+//   mutation against the committed CAS base (any concurrent writer still
+//   fails closed via versionConflict). Exactly one never-synced component —
+//   the documented partial base the system hands to modifyItem/deleteItem
+//   when the item returned by createItem differs from the template and the
+//   disk change (e.g. the consumer's lastUsedDate touch) predates any
+//   provider version — validates its counter side against the committed
+//   base and otherwise applies the same way. Anything else is malformed
+//   and fails closed: a corrupt version can never grant a blind overwrite.
 // * Cancellation is checked at every staged chunk, at commit admission and
 //   inside the committing SQL transaction; a pre-commit cancel preserves the
 //   prior bytes/version, a post-commit reality is reported as committed
@@ -100,10 +105,31 @@ enum SharedDocumentsBridgeError: Error {
     case collision(existing: SharedDocumentsItem)
     /// A delete was rejected because the committed versions moved on.
     case rejectedDeletion(existing: SharedDocumentsItem)
-    /// The system's base version was neither `beforeFirstSyncComponent` nor
-    /// our complete canonical counter pair. Failing closed: the mutation is
-    /// refused rather than applied against an unknown base.
+    /// The system's base version was neither `beforeFirstSyncComponent`
+    /// (in whole or in exactly one documented partial component) nor our
+    /// canonical counter tokens. Failing closed: the mutation is refused
+    /// rather than applied against an unknown base.
     case malformedBaseVersion
+}
+
+/// One decoded component of a partial base version.
+enum SharedDocumentsBaseComponent: Sendable, Equatable {
+    /// `NSFileProviderItemVersion.beforeFirstSyncComponent`: the system
+    /// never had a provider version for this component. It grants no CAS
+    /// bypass — the mutation still applies against the committed base.
+    case neverSynced
+    /// One of our canonical counter tokens naming one component version.
+    case counter(Int)
+}
+
+/// The SDK-documented partial base version
+/// (`NSFileProviderReplicatedExtension.h`: "The `baseVersion` might
+/// contain one or both component set to
+/// `+[NSFileProviderItemVersion beforeFirstSyncComponent]`"). Exactly one
+/// side is never-synced; the other side decoded to a canonical counter.
+struct SharedDocumentsPartialBaseVersion: Sendable, Equatable {
+    var content: SharedDocumentsBaseComponent
+    var metadata: SharedDocumentsBaseComponent
 }
 
 /// SDK-accurate reading of the base version handed back by the system.
@@ -116,7 +142,14 @@ enum SharedDocumentsBaseVersion: Sendable, Equatable {
     /// Both independent counters (or equal canonical legacy joint tokens)
     /// carry the exact committed CAS base.
     case exact(SharedDocumentsExpectedVersions)
-    /// Not before-first-sync and not ours: corrupt or foreign data.
+    /// Exactly one component is the SDK `beforeFirstSyncComponent` and the
+    /// other decoded to one of our counters. The counter side must still
+    /// name the committed version (stale disk reconciles or fails closed);
+    /// the never-synced side grants no authority beyond applying against
+    /// the committed CAS base, exactly like `.beforeFirstSync`.
+    case partial(SharedDocumentsPartialBaseVersion)
+    /// Not before-first-sync (whole or documented partial) and not ours:
+    /// corrupt or foreign data.
     case malformed
 }
 
@@ -368,6 +401,38 @@ final class SharedDocumentsFileProviderBridge: Sendable {
                     shouldFetchContent: base.content != current.contentVersion
                 )
             }
+        case .partial(let partial):
+            // Component-wise CAS: a decoded counter must still name the
+            // committed version; the never-synced side grants no authority
+            // and no proof, so the mutation applies against the committed
+            // base exactly like `.beforeFirstSync`.
+            let contentClaim: Bool
+            switch partial.content {
+            case .neverSynced: contentClaim = true
+            case .counter(let value): contentClaim = value == current.contentVersion
+            }
+            let metadataClaim: Bool
+            switch partial.metadata {
+            case .neverSynced: metadataClaim = true
+            case .counter(let value): metadataClaim = value == current.metadataVersion
+            }
+            if !contentClaim || !metadataClaim {
+                // The counter side proved the disk copy is stale: the same
+                // closed reconciliation as an exact stale base.
+                if options.contains(.failOnConflict) {
+                    throw SharedDocumentsBridgeError.collision(existing: current)
+                }
+                let shouldFetch: Bool
+                switch partial.content {
+                case .counter(let value): shouldFetch = value != current.contentVersion
+                case .neverSynced: shouldFetch = true // never verified against committed bytes
+                }
+                return ModifyOutcome(
+                    item: SharedDocumentsFileProviderItem(item: current),
+                    stillPending: pending,
+                    shouldFetchContent: shouldFetch
+                )
+            }
         }
 
         var working = current
@@ -491,6 +556,25 @@ final class SharedDocumentsFileProviderBridge: Sendable {
             ) {
                 throw SharedDocumentsBridgeError.rejectedDeletion(existing: current)
             }
+        case .partial(let partial):
+            // The documented partial create-replay base: a never-synced side
+            // grants nothing beyond deleting by identity against the
+            // committed CAS base, but a counter side that does not name the
+            // committed version means the disk copy holds edits we have
+            // never seen — the same rejection as an exact stale base.
+            let contentOK: Bool
+            switch partial.content {
+            case .neverSynced: contentOK = true
+            case .counter(let value): contentOK = value == current.contentVersion
+            }
+            let metadataOK: Bool
+            switch partial.metadata {
+            case .neverSynced: metadataOK = true
+            case .counter(let value): metadataOK = value == current.metadataVersion
+            }
+            if !contentOK || !metadataOK {
+                throw SharedDocumentsBridgeError.rejectedDeletion(existing: current)
+            }
         }
         let result = try await store.commitDelete(
             id: id,
@@ -581,15 +665,41 @@ final class SharedDocumentsFileProviderBridge: Sendable {
     /// beforeFirstSync (verified against the real
     /// `NSFileProviderItemVersion.beforeFirstSyncComponent` header contract)
     /// is distinct from malformed: the former applies against the committed
-    /// CAS base, the latter fails closed.
+    /// CAS base, the latter fails closed. One never-synced component paired
+    /// with our counter token is the documented partial create-replay base
+    /// (`NSFileProviderReplicatedExtension.h` conflict-resolution section,
+    /// observed live as the post-create lastUsedDate modifyItem replay);
+    /// its counter side is still validated against the committed base.
     static func decodeBaseVersion(_ version: NSFileProviderItemVersion) -> SharedDocumentsBaseVersion {
         let beforeFirstSync = NSFileProviderItemVersion.beforeFirstSyncComponent
-        if version.contentVersion == beforeFirstSync, version.metadataVersion == beforeFirstSync {
+        let contentNeverSynced = version.contentVersion == beforeFirstSync
+        let metadataNeverSynced = version.metadataVersion == beforeFirstSync
+        if contentNeverSynced, metadataNeverSynced {
             return .beforeFirstSync
         }
-        // A partial before-first-sync marker cannot grant a revision bypass.
-        guard version.contentVersion != beforeFirstSync,
-              version.metadataVersion != beforeFirstSync else { return .malformed }
+        if contentNeverSynced || metadataNeverSynced {
+            // Documented partial base: the never-synced side grants nothing,
+            // the counter side must still be one of our canonical tokens or
+            // the whole base is corrupt. Never accepts arbitrary zero-like
+            // text — only the exact SDK component constant.
+            let content: SharedDocumentsBaseComponent
+            if contentNeverSynced {
+                content = .neverSynced
+            } else if let value = decodeCounterComponent(version.contentVersion, prefix: "c") {
+                content = .counter(value)
+            } else {
+                return .malformed
+            }
+            let metadata: SharedDocumentsBaseComponent
+            if metadataNeverSynced {
+                metadata = .neverSynced
+            } else if let value = decodeCounterComponent(version.metadataVersion, prefix: "m") {
+                metadata = .counter(value)
+            } else {
+                return .malformed
+            }
+            return .partial(SharedDocumentsPartialBaseVersion(content: content, metadata: metadata))
+        }
         if let content = decodeCounterComponent(version.contentVersion, prefix: "c"),
            let metadata = decodeCounterComponent(version.metadataVersion, prefix: "m") {
             return .exact(SharedDocumentsExpectedVersions(content: content, metadata: metadata))

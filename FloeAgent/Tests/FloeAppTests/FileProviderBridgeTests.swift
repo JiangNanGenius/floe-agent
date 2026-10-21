@@ -14,7 +14,11 @@
 // * modify: rename/move, content replace, combined rename+content in ONE
 //   atomic commit, base-version reconcile, failOnConflict
 // * base versions: beforeFirstSync (real SDK header contract) applies
-//   against the committed CAS base; malformed/garbage fails closed
+//   against the committed CAS base; the documented PARTIAL
+//   before-first-sync base (observed live 2026-10-22 as the post-create
+//   lastUsedDate modifyItem replay — refusing it produced the Files
+//   "Upload Error") validates its counter side against the committed base
+//   and applies the same way; malformed/garbage fails closed
 // * delete: tombstone publish, non-empty folder, unknown-item success,
 //   stale-base rejection, malformed-base refusal
 // * fetchContents: leased immutable version+byte pairing, digest
@@ -683,8 +687,31 @@ struct FileProviderBridgeClosureTests {
             #expect(SharedDocumentsFileProviderBridge.decodeBaseVersion(NSFileProviderItemVersion(contentVersion: Data(content.utf8), metadataVersion: Data(metadata.utf8))) == .malformed)
         }
         let special = NSFileProviderItemVersion.beforeFirstSyncComponent
-        #expect(SharedDocumentsFileProviderBridge.decodeBaseVersion(NSFileProviderItemVersion(contentVersion: special, metadataVersion: published.metadataVersion)) == .malformed)
-        #expect(SharedDocumentsFileProviderBridge.decodeBaseVersion(NSFileProviderItemVersion(contentVersion: published.contentVersion, metadataVersion: special)) == .malformed)
+        // SDK correction (live 2026-10-22 Upload Error): a base version may
+        // carry ONE OR BOTH components set to beforeFirstSyncComponent
+        // (NSFileProviderReplicatedExtension.h conflict-resolution section;
+        // NSFileProviderItem.h beforeFirstSyncComponent doc: the createItem
+        // template replay). A partial marker is therefore NOT malformed; the
+        // counter side must still decode to one of our canonical tokens.
+        #expect(
+            SharedDocumentsFileProviderBridge.decodeBaseVersion(
+                NSFileProviderItemVersion(contentVersion: special, metadataVersion: published.metadataVersion)
+            ) == .partial(SharedDocumentsPartialBaseVersion(content: .neverSynced, metadata: .counter(1)))
+        )
+        #expect(
+            SharedDocumentsFileProviderBridge.decodeBaseVersion(
+                NSFileProviderItemVersion(contentVersion: published.contentVersion, metadataVersion: special)
+            ) == .partial(SharedDocumentsPartialBaseVersion(content: .counter(1), metadata: .neverSynced))
+        )
+        // Never-synced grants nothing to garbage bytes: a partial marker
+        // paired with a non-canonical counter side (including arbitrary
+        // zero-like text such as the "zero/m1" display seen in fileproviderd
+        // logs) stays malformed and fails closed.
+        #expect(SharedDocumentsFileProviderBridge.decodeBaseVersion(NSFileProviderItemVersion(contentVersion: special, metadataVersion: Data("garbage".utf8))) == .malformed)
+        #expect(SharedDocumentsFileProviderBridge.decodeBaseVersion(NSFileProviderItemVersion(contentVersion: Data("zero/m1".utf8), metadataVersion: special)) == .malformed)
+        #expect(SharedDocumentsFileProviderBridge.decodeBaseVersion(NSFileProviderItemVersion(contentVersion: special, metadataVersion: Data("c1.m1".utf8))) == .malformed)
+        // Both components beforeFirstSync keeps its existing whole-base shape.
+        #expect(SharedDocumentsFileProviderBridge.decodeBaseVersion(NSFileProviderItemVersion(contentVersion: special, metadataVersion: special)) == .beforeFirstSync)
         // Check over-limit input at the parser boundary, without constructing
         // a framework object that itself forbids components above 128 bytes.
         #expect(SharedDocumentsFileProviderBridge.decodeVersionComponent(Data(("c" + String(repeating: "1", count: 128) + ".m1").utf8)) == nil)
@@ -960,6 +987,276 @@ struct FileProviderBridgeClosureTests {
         let deleteSignals = Array(recorder.snapshot().dropFirst(createSignals.count))
         #expect(deleteSignals.contains(.item(SharedDocumentsIdentity.rootItemID)))
         #expect(deleteSignals.contains(.workingSet))
+    }
+}
+
+// MARK: - Create-replay partial base version (live FileProvider defect closure)
+
+/// Replicates the exact callback shape captured in
+/// common-app/system-entry-ui-03/fileprovider-runtime-01.log on 2026-10-22
+/// 05:15:31: after createItem committed the shared PDF (content c1 /
+/// metadata m1), fileproviderd propagated the consumer's disk
+/// lastUsedDate touch as modifyItem(changedFields: [.lastUsedDate]) with a
+/// base version carrying our content counter and ONE beforeFirstSync
+/// component (the "sver:zero/m1 cver:c1" line). The old decoder classified
+/// that documented partial as malformed and threw, which Files surfaced as
+/// "Upload Error" over a fully-committed file.
+@Suite("FileProvider create-replay partial base version")
+struct FileProviderCreateReplayPartialBaseTests {
+    @Test("observed lastUsedDate replay: partial never-synced metadata base applies without any store commit")
+    func lastUsedDateReplayAppliesWithoutCommit() async throws {
+        let root = makeBridgeRoot()
+        let (bridge, store) = try makeBridge(at: root)
+        defer { Task { try? await store.close(); try? FileManager.default.removeItem(at: root) } }
+        let created = try await bridge.create(
+            basedOn: TemplateItem(filename: "Example Domain.pdf", type: .pdf),
+            fields: [.filename, .parentItemIdentifier, .contents],
+            contents: try makeSourceFile(Data("52617-byte PDF stand-in".utf8)),
+            options: [],
+            cancellation: SharedDocumentsBridgeCancellation(),
+            progress: nil
+        )
+        let item = try #require(created.item)
+        let stored = try await store.item(id: item.itemIdentifier.rawValue)
+        #expect(stored.contentVersion == 1)
+        #expect(stored.metadataVersion == 1)
+        let published = try templateVersions(stored)
+        let replayBase = NSFileProviderItemVersion(
+            contentVersion: published.contentVersion, // "c1": names the committed content
+            metadataVersion: NSFileProviderItemVersion.beforeFirstSyncComponent // the touch predates any provider version
+        )
+        let outcome = try await bridge.modify(
+            TemplateItem(filename: "Example Domain.pdf", parent: .rootContainer, identifier: item.itemIdentifier),
+            baseVersion: replayBase,
+            changedFields: [.lastUsedDate],
+            contents: nil,
+            options: [],
+            cancellation: SharedDocumentsBridgeCancellation(),
+            progress: nil
+        )
+        // Honest answer: the committed truth, byte-identical. The store does
+        // not own lastUsedDate (SDK: "must not be shared between users"),
+        // nothing is committed, and the field is reported pending; because
+        // stillPending equals the requested fields, the system marks the
+        // field unsupported and stops re-sending it (documented behavior,
+        // NSFileProviderReplicatedExtension.h modifyItem section).
+        let final = try #require(outcome.item)
+        #expect(final.item == stored)
+        #expect(final.item.contentVersion == 1)
+        #expect(final.item.metadataVersion == 1)
+        #expect(final.itemVersion.contentVersion == published.contentVersion)
+        #expect(outcome.stillPending == [.lastUsedDate])
+        #expect(outcome.shouldFetchContent == false)
+        #expect(try await store.item(id: item.itemIdentifier.rawValue) == stored)
+    }
+
+    @Test("partial base applies a real rename while honestly reporting lastUsedDate pending")
+    func partialBaseMixedRenameApplies() async throws {
+        let root = makeBridgeRoot()
+        let (bridge, store) = try makeBridge(at: root)
+        defer { Task { try? await store.close(); try? FileManager.default.removeItem(at: root) } }
+        let created = try await bridge.create(
+            basedOn: TemplateItem(filename: "fresh.txt"),
+            fields: [.filename, .parentItemIdentifier, .contents],
+            contents: try makeSourceFile(Data("one".utf8)),
+            options: [],
+            cancellation: SharedDocumentsBridgeCancellation(),
+            progress: nil
+        )
+        let item = try #require(created.item)
+        let stored = try await store.item(id: item.itemIdentifier.rawValue)
+        let published = try templateVersions(stored)
+        let base = NSFileProviderItemVersion(
+            contentVersion: published.contentVersion,
+            metadataVersion: NSFileProviderItemVersion.beforeFirstSyncComponent
+        )
+        let outcome = try await bridge.modify(
+            TemplateItem(filename: "renamed.txt", parent: .rootContainer, identifier: item.itemIdentifier),
+            baseVersion: base,
+            changedFields: [.filename, .lastUsedDate],
+            contents: nil,
+            options: [],
+            cancellation: SharedDocumentsBridgeCancellation(),
+            progress: nil
+        )
+        let final = try #require(outcome.item)
+        #expect(final.filename == "renamed.txt")
+        #expect(final.item.contentVersion == 1) // content untouched
+        #expect(final.item.metadataVersion == 2) // the real metadata change committed exactly once
+        #expect(outcome.stillPending == [.lastUsedDate])
+        #expect(outcome.shouldFetchContent == false)
+        let committed = try await store.item(id: item.itemIdentifier.rawValue)
+        #expect(committed.name == "renamed.txt")
+        #expect(committed.contentVersion == 1)
+        #expect(committed.metadataVersion == 2)
+    }
+
+    @Test("partial base with a stale counter side reconciles to the committed truth; failOnConflict throws")
+    func partialStaleCounterReconciles() async throws {
+        let root = makeBridgeRoot()
+        let (bridge, store) = try makeBridge(at: root)
+        defer { Task { try? await store.close(); try? FileManager.default.removeItem(at: root) } }
+        let created = try await bridge.create(
+            basedOn: TemplateItem(filename: "stale-partial.txt"),
+            fields: [.filename, .parentItemIdentifier, .contents],
+            contents: try makeSourceFile(Data("committed".utf8)),
+            options: [],
+            cancellation: SharedDocumentsBridgeCancellation(),
+            progress: nil
+        )
+        let item = try #require(created.item)
+        // Retain the real published base, then commit a newer version.
+        let published = try templateVersions(item.item)
+        let newerStage = try await store.stageContentFromURL(
+            try makeSourceFile(Data("newer committed bytes".utf8)), cancellation: nil, progress: nil)
+        let newer = try await store.commitReplace(id: item.item.id, stage: newerStage, expected: item.item.versions)
+        // Partial base: counter side is stale, metadata side never synced.
+        // The never-synced side must NOT bypass the stale counter.
+        let stalePartial = NSFileProviderItemVersion(
+            contentVersion: published.contentVersion, // now stale (c1 vs committed c2)
+            metadataVersion: NSFileProviderItemVersion.beforeFirstSyncComponent
+        )
+        let outcome = try await bridge.modify(
+            TemplateItem(filename: "stale-partial.txt", parent: .rootContainer, identifier: item.itemIdentifier),
+            baseVersion: stalePartial,
+            changedFields: [.lastUsedDate],
+            contents: nil,
+            options: [],
+            cancellation: SharedDocumentsBridgeCancellation(),
+            progress: nil
+        )
+        #expect(outcome.item?.item == newer)
+        #expect(outcome.shouldFetchContent)
+        #expect(try await store.item(id: item.item.id) == newer)
+        await #expect(throws: SharedDocumentsBridgeError.self) {
+            _ = try await bridge.modify(
+                TemplateItem(filename: "stale-partial.txt", parent: .rootContainer, identifier: item.itemIdentifier),
+                baseVersion: stalePartial,
+                changedFields: [.lastUsedDate],
+                contents: nil,
+                options: [.failOnConflict],
+                cancellation: SharedDocumentsBridgeCancellation(),
+                progress: nil
+            )
+        }
+    }
+
+    @Test("partial base with never-synced content applies a content write against the committed CAS base")
+    func partialContentNeverSyncedAppliesReplace() async throws {
+        let root = makeBridgeRoot()
+        let (bridge, store) = try makeBridge(at: root)
+        defer { Task { try? await store.close(); try? FileManager.default.removeItem(at: root) } }
+        let created = try await bridge.create(
+            basedOn: TemplateItem(filename: "content-replay.txt"),
+            fields: [.filename, .parentItemIdentifier, .contents],
+            contents: try makeSourceFile(Data("one".utf8)),
+            options: [],
+            cancellation: SharedDocumentsBridgeCancellation(),
+            progress: nil
+        )
+        let item = try #require(created.item)
+        let stored = try await store.item(id: item.itemIdentifier.rawValue)
+        let published = try templateVersions(stored)
+        let base = NSFileProviderItemVersion(
+            contentVersion: NSFileProviderItemVersion.beforeFirstSyncComponent,
+            metadataVersion: published.metadataVersion
+        )
+        let outcome = try await bridge.modify(
+            TemplateItem(filename: "content-replay.txt", parent: .rootContainer, identifier: item.itemIdentifier),
+            baseVersion: base,
+            changedFields: [.contents],
+            contents: try makeSourceFile(Data("two".utf8)),
+            options: [],
+            cancellation: SharedDocumentsBridgeCancellation(),
+            progress: nil
+        )
+        let final = try #require(outcome.item)
+        #expect(final.item.contentVersion == 2)
+        #expect(final.item.byteCount == 3)
+        // Stale counter side with never-synced content still fails closed:
+        // rename first (m1 -> m2), then replay content against m1.
+        _ = try await store.commitMetadata(
+            id: item.item.id, newName: "moved-name.txt", newParentID: nil, expected: final.item.versions
+        )
+        let staleBase = NSFileProviderItemVersion(
+            contentVersion: NSFileProviderItemVersion.beforeFirstSyncComponent,
+            metadataVersion: published.metadataVersion // now stale (m1 vs committed m2)
+        )
+        let reconciled = try await bridge.modify(
+            TemplateItem(filename: "moved-name.txt", parent: .rootContainer, identifier: item.itemIdentifier),
+            baseVersion: staleBase,
+            changedFields: [.contents],
+            contents: try makeSourceFile(Data("three".utf8)),
+            options: [],
+            cancellation: SharedDocumentsBridgeCancellation(),
+            progress: nil
+        )
+        let committed = try await store.item(id: item.item.id)
+        #expect(reconciled.item?.item == committed)
+        // Content never verified against committed bytes: honest re-fetch.
+        #expect(reconciled.shouldFetchContent)
+        #expect(committed.byteCount == 3) // "three" was never accepted
+    }
+
+    @Test("partial base delete: counter-matching side deletes by identity; stale counter side is rejected")
+    func partialBaseDelete() async throws {
+        let root = makeBridgeRoot()
+        let (bridge, store) = try makeBridge(at: root)
+        defer { Task { try? await store.close(); try? FileManager.default.removeItem(at: root) } }
+        let created = try await bridge.create(
+            basedOn: TemplateItem(filename: "gone-partial.txt"),
+            fields: [.filename, .parentItemIdentifier, .contents],
+            contents: try makeSourceFile(Data("bye".utf8)),
+            options: [],
+            cancellation: SharedDocumentsBridgeCancellation(),
+            progress: nil
+        )
+        let item = try #require(created.item)
+        let published = try templateVersions(item.item)
+        let matchingPartial = NSFileProviderItemVersion(
+            contentVersion: published.contentVersion, // names committed c1
+            metadataVersion: NSFileProviderItemVersion.beforeFirstSyncComponent
+        )
+        let outcome = try await bridge.delete(
+            identifier: item.itemIdentifier,
+            baseVersion: matchingPartial,
+            options: [],
+            cancellation: SharedDocumentsBridgeCancellation()
+        )
+        #expect(outcome.deletedIDs == [item.itemIdentifier.rawValue])
+        // A stale counter side on the partial base cannot authorize a delete.
+        let other = try await bridge.create(
+            basedOn: TemplateItem(filename: "guarded-partial.txt"),
+            fields: [.filename, .parentItemIdentifier, .contents],
+            contents: try makeSourceFile(Data("stay".utf8)),
+            options: [],
+            cancellation: SharedDocumentsBridgeCancellation(),
+            progress: nil
+        )
+        let otherItem = try #require(other.item)
+        let stage = try await store.stageContentFromURL(
+            try makeSourceFile(Data("edited".utf8)), cancellation: nil, progress: nil)
+        let newer = try await store.commitReplace(id: otherItem.item.id, stage: stage, expected: otherItem.item.versions)
+        let stalePartial = NSFileProviderItemVersion(
+            contentVersion: published.contentVersion, // c1 while committed is c2
+            metadataVersion: NSFileProviderItemVersion.beforeFirstSyncComponent
+        )
+        do {
+            _ = try await bridge.delete(
+                identifier: otherItem.itemIdentifier,
+                baseVersion: stalePartial,
+                options: [],
+                cancellation: SharedDocumentsBridgeCancellation()
+            )
+            Issue.record("stale partial counter side unexpectedly authorized a delete")
+        } catch let error as SharedDocumentsBridgeError {
+            guard case .rejectedDeletion(let existing) = error else {
+                Issue.record("unexpected bridge error \(error)")
+                return
+            }
+            #expect(existing == newer)
+        }
+        #expect(try await store.item(id: otherItem.item.id) == newer)
     }
 }
 #endif
