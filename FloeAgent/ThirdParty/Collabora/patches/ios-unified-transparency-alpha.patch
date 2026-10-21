@@ -1,6 +1,8 @@
+diff --git a/engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx b/engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx
+index 3a66e3e..9e37e4f 100644
 --- a/engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx
 +++ b/engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx
-@@ -55,8 +55,10 @@
+@@ -55,8 +55,10 @@ private:
      struct Entry
      {
          VclPtr<VirtualDevice> buf;
@@ -12,7 +14,7 @@
          {
          }
      };
-@@ -80,7 +82,8 @@
+@@ -80,7 +82,8 @@ public:
      VDevBuffer();
      virtual ~VDevBuffer() override;
  
@@ -22,7 +24,7 @@
      void free(VirtualDevice& rDevice);
  
      // Timer virtuals
-@@ -140,7 +143,8 @@
+@@ -140,7 +143,8 @@ bool VDevBuffer::isSizeSuitable(const VclPtr<VirtualDevice>& device, const Size&
  }
  
  // [-loplugin:scopedvclptr]
@@ -32,7 +34,7 @@
  {
      std::unique_lock aGuard(m_aMutex);
      VclPtr<VirtualDevice> pRetval;
-@@ -148,7 +152,11 @@
+@@ -148,7 +152,11 @@ VclPtr<VirtualDevice> VDevBuffer::alloc(OutputDevice& rOutDev, const Size& rSize
      sal_Int32 nBits = rOutDev.GetBitCount();
  
      bool bOkay(false);
@@ -45,7 +47,7 @@
      {
          auto aFound(maFreeBuffers.end());
  
-@@ -156,7 +164,7 @@
+@@ -156,7 +164,7 @@ VclPtr<VirtualDevice> VDevBuffer::alloc(OutputDevice& rOutDev, const Size& rSize
          {
              assert(a->buf && "Empty pointer in VDevBuffer (!)");
  
@@ -54,7 +56,7 @@
              {
                  // candidate is valid due to bit depth
                  if (aFound != maFreeBuffers.end())
-@@ -237,9 +245,20 @@
+@@ -237,9 +245,20 @@ VclPtr<VirtualDevice> VDevBuffer::alloc(OutputDevice& rOutDev, const Size& rSize
      // no success yet, create new buffer
      if (!pRetval)
      {
@@ -77,7 +79,7 @@
      }
      else
      {
-@@ -249,7 +268,7 @@
+@@ -249,7 +268,7 @@ VclPtr<VirtualDevice> VDevBuffer::alloc(OutputDevice& rOutDev, const Size& rSize
      }
  
      // remember allocated buffer
@@ -86,7 +88,7 @@
  
      return pRetval;
  }
-@@ -264,12 +283,23 @@
+@@ -264,12 +283,23 @@ void VDevBuffer::free(VirtualDevice& rDevice)
                  "OOps, non-registered buffer freed (!)");
      if (aUsedFound != maUsedBuffers.end())
      {
@@ -115,12 +117,10 @@
  }
  
  void VDevBuffer::Invoke()
-@@ -283,6 +313,31 @@
-         aLastOne.buf.disposeAndClear();
-         maFreeBuffers.pop_back();
+@@ -285,6 +315,31 @@ void VDevBuffer::Invoke()
      }
-+}
-+
+ }
+ 
 +// A device whose pixels can be transparent must be treated as an isolated
 +// group. The iOS tile and slideshow targets carry real RGBA pixels but report
 +// HasAlpha() == false (they are foreign-context devices created as
@@ -144,10 +144,12 @@
 +    (void)rOutDev;
 +    return false;
 +#endif
- }
- 
++}
++
  #ifdef SPEED_COMPARE
-@@ -401,7 +456,9 @@
+ void doSpeedCompare(double fTrans, const Bitmap& rContent, const tools::Rectangle& rDestPixel,
+                     OutputDevice& rOutDev)
+@@ -401,7 +456,9 @@ impBufferDevice::impBufferDevice(OutputDevice& rOutDev, const tools::Rectangle&
      if (!isVisible())
          return;
  
@@ -158,7 +160,7 @@
  
      // #i93485# assert when copying from window to VDev is used
      SAL_WARN_IF(
-@@ -409,12 +466,16 @@
+@@ -409,12 +466,16 @@ impBufferDevice::impBufferDevice(OutputDevice& rOutDev, const tools::Rectangle&
          "impBufferDevice render helper: Copying from Window to VDev, this should be avoided (!)");
  
      // initialize buffer by blitting content of source to prepare for
@@ -181,7 +183,7 @@
  
      MapMode aNewMapMode(mrOutDev.GetMapMode());
  
-@@ -448,6 +509,7 @@
+@@ -448,6 +509,7 @@ void impBufferDevice::paint(double fTrans)
      if (!isVisible())
          return;
  
@@ -189,7 +191,7 @@
      const Point aEmptyPoint;
      const Size aSizePixel(maDestPixel.GetSize());
      const bool bWasEnabledDst(mrOutDev.IsMapModeEnabled());
-@@ -488,25 +550,45 @@
+@@ -488,25 +550,45 @@ void impBufferDevice::paint(double fTrans)
  #endif
  
          Bitmap aContent(mpContent->GetBitmap(aEmptyPoint, aSizePixel));
@@ -244,7 +246,7 @@
              // For the case we have a unified transparency value there is a former
              // and new method to paint that which can be used. To decide on measurements,
              // I added 'doSpeedCompare' above which can be activated by defining
-@@ -556,10 +638,24 @@
+@@ -556,10 +638,24 @@ void impBufferDevice::paint(double fTrans)
                  mrOutDev.DrawBitmap(maDestPixel.TopLeft(), Bitmap(aContent, aAlphaMask));
              }
          }
@@ -270,13 +272,37 @@
      }
  
      mrOutDev.SetRasterOp(aOrigRasterOp);
+diff --git a/engine/vcl/ios/salios.cxx b/engine/vcl/ios/salios.cxx
+index 8f407f6..2ab1185 100644
 --- a/engine/vcl/ios/salios.cxx
 +++ b/engine/vcl/ios/salios.cxx
-@@ -138,6 +138,56 @@
-     mrShared.applyXorContext();
+@@ -71,6 +71,22 @@ bool QuartzSalBitmap::Create(CGLayerHolder const & rLayerHolder, int nBitmapBits
+     // initialize drawing context
+     CreateContext();
+ 
++    if (maGraphicContext.isSet())
++    {
++        // The readback context buffer is heap-allocated and left
++        // uninitialized by CreateContext(); CGContextDrawLayerAtPoint blends
++        // the layer over those undefined bytes using source-over. Without an
++        // explicit transparent start the returned bitmap would carry stale
++        // garbage pixels (observed on iOS as random speckles, white gaps and
++        // corrupted channels in the settled highlighter group buffer). Zero
++        // the backing store so the blend result is exactly the layer's own
++        // premultiplied content.
++        void* pReadbackData = CGBitmapContextGetData(maGraphicContext.get());
++        if (pReadbackData)
++            memset(pReadbackData, 0,
++                   CGBitmapContextGetBytesPerRow(maGraphicContext.get()) * mnHeight);
++    }
++
+     // copy layer content into the bitmap buffer
+     const CGPoint aSrcPoint = { static_cast<CGFloat>(-nX), static_cast<CGFloat>(-nY) };
+     if (maGraphicContext.isSet()) // remove warning
+@@ -139,6 +155,56 @@ void AquaGraphicsBackend::copyBits(const SalTwoRect& rPosAry, SalGraphics *pSrcG
      if (!bSameGraphics)
          pSrcShared->applyXorContext();
-+
+ 
 +    // Foreign bitmap render targets keep an auxiliary layer which is not their pixel source.
 +    // Limit this experiment to the observed top-left bitmap -> internal layer copy.
 +    if (!bSameGraphics && pSrcShared->mbVirDev && pSrcShared->mnBitmapDepth == 0
@@ -326,10 +352,11 @@
 +            }
 +        }
 +    }
- 
++
      SAL_WARN_IF (!pSrcShared->maLayer.isSet(), "vcl.quartz",
                   "AquaSalGraphics::copyBits() from non-layered graphics this=" << this);
-@@ -508,7 +558,7 @@
+ 
+@@ -508,7 +574,7 @@ void AquaSalVirtualDevice::Destroy()
      }
  }
  
@@ -338,7 +365,7 @@
  {
      SAL_INFO( "vcl.virdev", "AquaSalVirtualDevice::SetSize() this=" << this <<
                " (" << nDX << "x" << nDY << ") mbForeignContext=" << (mbForeignContext ? "YES" : "NO"));
-@@ -556,7 +606,13 @@
+@@ -556,7 +622,13 @@ bool AquaSalVirtualDevice::SetSize( tools::Long nDX, tools::Long nDY, bool /*bAl
  
              const int nBytesPerRow = (mnBitmapDepth * nDX) / 8;
              void* pRawData = std::malloc( nBytesPerRow * nDY );
@@ -353,7 +380,7 @@
              maBitmapContext.set(CGBitmapContextCreate(pRawData, nDX, nDY, 8, nBytesPerRow,
                                                        GetSalData()->mxRGBSpace, nFlags));
              xCGContextHolder = maBitmapContext;
-@@ -565,9 +621,27 @@
+@@ -565,9 +637,27 @@ bool AquaSalVirtualDevice::SetSize( tools::Long nDX, tools::Long nDY, bool /*bAl
  
      SAL_WARN_IF(!xCGContextHolder.isSet(), "vcl.quartz", "No context");
  

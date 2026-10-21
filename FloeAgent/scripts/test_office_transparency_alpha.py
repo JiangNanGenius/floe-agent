@@ -219,6 +219,28 @@ def salios_source_proof():
     return 'SetSize honors bAlphaMaskTransparent; opaque default preserved'
 
 
+@check('salios patched source: layer readback starts from a transparent buffer')
+def salios_readback_proof():
+    lifecycle = _lifecycle()
+    lock = _load_lock()
+    spec = lifecycle.contract(lock, 'IOS')['additionalMembers']['salios.o']
+    text = _staged_patched(ARGS.engine_source, spec).decode()
+    # The CGLayer readback must blend over a zero-initialized context buffer:
+    # CreateContext() leaves the heap buffer undefined and
+    # CGContextDrawLayerAtPoint uses source-over, so without this the returned
+    # bitmap carries stale garbage pixels (iOS speckles/white gaps defect).
+    assert 'pReadbackData' in text
+    assert 'CGBitmapContextGetData(maGraphicContext.get())' in text
+    assert 'CGBitmapContextGetBytesPerRow(maGraphicContext.get()) * mnHeight' in text
+    create_fn = text.index(
+        'bool QuartzSalBitmap::Create(CGLayerHolder const & rLayerHolder')
+    draw_pos = text.index('CGContextDrawLayerAtPoint(maGraphicContext.get(), aSrcPoint',
+                          create_fn)
+    zero_pos = text.index('memset(pReadbackData, 0,', create_fn)
+    assert zero_pos < draw_pos, 'readback buffer must be zeroed before DrawLayerAtPoint'
+    return 'layer readback zero-init precedes DrawLayerAtPoint'
+
+
 @check('drawinglayer patched source: isolated group, own-alpha multiply, legacy intact')
 def drawinglayer_source_proof():
     lifecycle = _lifecycle()
@@ -333,7 +355,8 @@ def syntax_checks():
     return 'both members translate clean' + (f' (warnings: {"; ".join(notes)})' if notes else '')
 
 
-SOURCE_CHECKS = {patch_applies, salios_source_proof, drawinglayer_source_proof,
+SOURCE_CHECKS = {patch_applies, salios_source_proof, salios_readback_proof,
+                 drawinglayer_source_proof,
                  sibling_header_present}
 
 

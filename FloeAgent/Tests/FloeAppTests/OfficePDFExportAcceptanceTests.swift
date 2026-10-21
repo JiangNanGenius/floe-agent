@@ -209,9 +209,9 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             })
             window.windowLevel = .normal + 1
             window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
             try await Task.sleep(for: .seconds(2))
             attachWindow(window, "assistant-export-file-card-app-window")
-            window.isHidden = true; window.rootViewController = nil; previous?.makeKey()
             await NotesRepository.shared.setStoreOverride(nil)
             if let ownedRunDirectory { try FileManager.default.removeItem(at: ownedRunDirectory) }
             try FileManager.default.removeItem(at: root)
