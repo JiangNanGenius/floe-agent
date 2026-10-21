@@ -368,6 +368,8 @@ final class OfficeFileSession: ObservableObject {
     /// Read ONLY by the export refusal breadcrumbs so a later refusal can say
     /// which prepare generation it compares against. Never gates anything.
     private var lastExportPrepareFence: PassiveExitFence?
+    private let pdfPreparation = OfficePDFPreparationCoordinator<OfficePDFExportPreparation>()
+
     /// True when this mounted editable session has a Notes autosave owner:
     /// explicit saves then run the serialized flush -> draft -> Notes CAS
     /// promotion transaction instead of only flushing the engine copy.
@@ -727,7 +729,45 @@ final class OfficeFileSession: ObservableObject {
     /// read and the frozen byte copy both happen under the one claimed
     /// reservation, released exactly once at return — including on a refusal or
     /// a cancellation.
-    func preparePDFExport() async throws -> OfficePDFExportPreparation {
+    func preparePDFExport(cancellation: CancellationToken? = nil) async throws -> OfficePDFExportPreparation {
+        let fence = capturePassiveExitFence()
+        return try await pdfPreparation.run(request: cancellation,
+            isCurrent: { [weak self] in self?.passiveExitFenceIsCurrent(fence) == true },
+            producer: { [weak self] in
+                guard let self else { throw CancellationError() }
+                // A visible modal can land while a previously admitted cover
+                // or save still owns the editor. Wait for admission, without
+                // starting/retrying a save or accepting a replacement owner.
+                if let cancellation {
+                    let deadline = ContinuousClock.now.advanced(by: .seconds(20))
+                    var recordedWait = false
+                    while self.phase == .ready, !self.canAct {
+                        try Task.checkCancellation()
+                        if cancellation.isCancelled { throw CancellationError() }
+                        guard self.passiveExitFenceIsCurrent(fence) else {
+                            throw OfficePDFExportScreenError.sourceChanged
+                        }
+                        guard ContinuousClock.now < deadline else {
+                            throw OfficePDFExportScreenError.sessionBusy
+                        }
+                        if !recordedWait {
+                            self.recordStage("export.prepare.waiting")
+                            recordedWait = true
+                        }
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    if recordedWait { self.recordStage("export.prepare.admitted") }
+                }
+                return try await self.performPDFExportPreparation()
+            },
+            observe: { [weak self] event in self?.recordStage("export.prepare." + event) })
+    }
+
+    func cancelPDFExportPreparation(cancellation: CancellationToken? = nil) {
+        pdfPreparation.cancel(request: cancellation)
+    }
+
+    private func performPDFExportPreparation() async throws -> OfficePDFExportPreparation {
         try Task.checkCancellation()
         guard canAct, documentActionsReady, let controller, let currentSession = session else {
             throw FloeError.validationFailed(OfficeInkText.t("文档尚未就绪，请稍后重试。", "The document is not ready. Try again shortly."))
@@ -2772,6 +2812,7 @@ final class OfficeFileSession: ObservableObject {
 
     /// View removal never deletes an unsettled edit or pretends it was saved.
     func release() async {
+        cancelPDFExportPreparation()
         // Terminal from here on: a queued/replayed intent must never re-open
         // a working copy on this session.
         released = true
@@ -3919,7 +3960,7 @@ struct OfficeDocumentEditorView: View {
     @State private var confirmingClose = false
     @State private var comparingVersions = false
     @State private var convertedExport: OfficeConvertedExport?
-    @State private var pdfExportPurpose: OfficePDFExportPurpose?
+    @State private var pdfExportRequest: OfficePDFExportRequest?
     @State private var export: DocumentExportSnapshot?
     @State private var savedCopyNotice = false
     @State private var exportSucceeded = false
@@ -4049,16 +4090,24 @@ struct OfficeDocumentEditorView: View {
                 }
             }
             .sheet(item: $convertedExport) { OfficeConvertedExportShareSheet(url: $0.url) }
-            .sheet(item: $pdfExportPurpose) { purpose in
-                OfficePDFExportOptionsView(purpose: purpose,
-                    prepare: { try await session.preparePDFExport() },
+            .sheet(item: Binding(
+                get: { pdfExportRequest },
+                set: { next in
+                    if let previous = pdfExportRequest, previous.id != next?.id {
+                        previous.cancellation.cancel()
+                        session.cancelPDFExportPreparation(cancellation: previous.cancellation)
+                    }
+                    pdfExportRequest = next
+                })) { request in
+                OfficePDFExportOptionsView(purpose: request.purpose,
+                    prepare: { try await session.preparePDFExport(cancellation: request.cancellation) },
                     export: { prepared, choices, cancellation in
                         try await session.exportConfiguredPDF(prepared, choices: choices, cancellation: cancellation)
                     })
             }
             .onChange(of: session.printRequestGeneration) { _, _ in
-                guard pdfExportPurpose == nil else { return }
-                pdfExportPurpose = .printDocument
+                guard pdfExportRequest == nil else { return }
+                pdfExportRequest = .init(purpose: .printDocument)
             }
             .sheet(isPresented: $comparingVersions) { OfficeConflictReviewView(session: session) }
             .sheet(isPresented: $choosingWorkspaceAttachment) {
@@ -4263,7 +4312,7 @@ struct OfficeDocumentEditorView: View {
                     ForEach(session.exportFormats, id: \.self) { format in
                         Button(format.uppercased()) {
                             if format == "pdf" {
-                                pdfExportPurpose = .export
+                                pdfExportRequest = .init(purpose: .export)
                                 return
                             }
                             Task {
@@ -4276,7 +4325,7 @@ struct OfficeDocumentEditorView: View {
             }
             if session.exportFormats.contains("pdf") {
                 Button(OfficeInkText.t("打印…", "Print…"), systemImage: "printer") {
-                    pdfExportPurpose = .printDocument
+                    pdfExportRequest = .init(purpose: .printDocument)
                 }
                 .accessibilityIdentifier("office.editor.print")
             }

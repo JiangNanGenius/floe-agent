@@ -535,4 +535,123 @@ struct OfficePDFExportServiceTests {
         #expect(try OfficePDFPageRange(pages: []).validated(pageCount: 4) == [1, 2, 3, 4])
     }
 }
+
+@MainActor
+private final class PDFPreparationTestSignal {
+    private var resolved = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        if resolved { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func resolve() {
+        resolved = true
+        let pending = waiters; waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+}
+
+@MainActor
+private final class PDFPreparationTestState {
+    var produced = 0
+    var current = true
+}
+
+@Suite("FloeApp.OfficePDFPreparationCoordinator")
+@MainActor
+struct OfficePDFPreparationCoordinatorTests {
+    @Test func remountedConsumerJoinsOneProducerAndCancelsLocally() async throws {
+        let coordinator = OfficePDFPreparationCoordinator<String>()
+        let request = CancellationToken()
+        let started = PDFPreparationTestSignal(), release = PDFPreparationTestSignal()
+        let joined = PDFPreparationTestSignal()
+        let state = PDFPreparationTestState()
+        let producer: @MainActor () async throws -> String = {
+            state.produced += 1; started.resolve()
+            await release.wait()
+            return "verified-copy"
+        }
+        let first = Task { @MainActor in
+            try await coordinator.run(request: request, isCurrent: { state.current }, producer: producer)
+        }
+        await started.wait()
+        let second = Task { @MainActor in
+            try await coordinator.run(request: request, isCurrent: { state.current }, producer: producer,
+                                      observe: { if $0 == "joined" { joined.resolve() } })
+        }
+        await joined.wait()
+        first.cancel()
+        release.resolve()
+        switch await first.result {
+        case .failure(let error): #expect(error is CancellationError)
+        case .success: Issue.record("Cancelled consumer published a preparation")
+        }
+        let result = try await second.value
+        #expect(result == "verified-copy")
+        #expect(state.produced == 1)
+        let fresh = try await coordinator.run(request: CancellationToken(), isCurrent: { true }, producer: {
+            state.produced += 1; return "new-intent"
+        })
+        #expect(fresh == "new-intent")
+        #expect(state.produced == 2)
+    }
+
+    @Test func modalCancellationCannotCancelTheNextModal() async throws {
+        let coordinator = OfficePDFPreparationCoordinator<String>()
+        let oldRequest = CancellationToken(), nextRequest = CancellationToken()
+        let started = PDFPreparationTestSignal(), release = PDFPreparationTestSignal()
+        let old = Task { @MainActor in
+            try await coordinator.run(request: oldRequest, isCurrent: { true }, producer: {
+                started.resolve(); await release.wait(); return "old"
+            })
+        }
+        await started.wait()
+        oldRequest.cancel(); coordinator.cancel(request: oldRequest)
+        release.resolve()
+        switch await old.result {
+        case .failure(let error): #expect(error is CancellationError)
+        case .success: Issue.record("Cancelled modal published a preparation")
+        }
+        let nextStarted = PDFPreparationTestSignal(), nextRelease = PDFPreparationTestSignal()
+        let next = Task { @MainActor in
+            try await coordinator.run(request: nextRequest, isCurrent: { true }, producer: {
+                nextStarted.resolve(); await nextRelease.wait(); return "next"
+            })
+        }
+        await nextStarted.wait()
+        coordinator.cancel(request: oldRequest)
+        nextRelease.resolve()
+        let result = try await next.value
+        #expect(result == "next")
+    }
+
+    @Test func replacedOwnerCannotPublishOrRebaseThePreparation() async throws {
+        let coordinator = OfficePDFPreparationCoordinator<String>()
+        let state = PDFPreparationTestState()
+        let started = PDFPreparationTestSignal(), release = PDFPreparationTestSignal()
+        let operation = Task { @MainActor in
+            try await coordinator.run(request: CancellationToken(), isCurrent: { state.current }, producer: {
+                state.produced += 1; started.resolve(); await release.wait(); return "old-owner"
+            })
+        }
+        await started.wait()
+        state.current = false; release.resolve()
+        switch await operation.result {
+        case .failure(let error):
+            guard let screenError = error as? OfficePDFExportScreenError else {
+                Issue.record("Expected source change, received \(error)"); return
+            }
+            if case .sourceChanged = screenError { } else { Issue.record("Owner replacement was relabelled busy") }
+        case .success: Issue.record("Replaced owner published a preparation")
+        }
+        do {
+            _ = try await coordinator.run(request: CancellationToken(), isCurrent: { state.current }, producer: {
+                state.produced += 1; return "silently-rebased"
+            })
+            Issue.record("Invalid owner was silently rebased")
+        } catch { #expect(error is OfficePDFExportScreenError) }
+        #expect(state.produced == 1)
+    }
+}
+
 #endif

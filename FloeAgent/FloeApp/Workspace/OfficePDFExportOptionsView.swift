@@ -15,6 +15,14 @@ enum OfficePDFExportPurpose: String, Identifiable {
     var id: String { rawValue }
 }
 
+/// One modal intent survives SwiftUI task remounts. Ending the actual
+/// presentation cancels its work; a transient child-view disappearance does not.
+struct OfficePDFExportRequest: Identifiable {
+    let id = UUID()
+    let purpose: OfficePDFExportPurpose
+    let cancellation = CancellationToken()
+}
+
 enum OfficePDFExportScreenError: Error, LocalizedError {
     case sourceChanged
     /// The mounted session is held by another in-flight operation right now.
@@ -29,6 +37,79 @@ enum OfficePDFExportScreenError: Error, LocalizedError {
         case .sessionBusy:
             return OfficeInkText.t("文档正忙，请稍后重试。", "The document is busy. Try again shortly.")
         }
+    }
+}
+
+/// A modal owns one producer. SwiftUI consumers may be cancelled/remounted
+/// without cancelling that producer or starting a second save/copy.
+@MainActor
+final class OfficePDFPreparationCoordinator<Value> {
+    @MainActor
+    private final class Flight {
+        let request: CancellationToken?
+        let isCurrent: @MainActor () -> Bool
+        var task: Task<Void, Never>?
+        var result: Result<Value, Error>?
+        init(request: CancellationToken?, isCurrent: @escaping @MainActor () -> Bool) {
+            self.request = request; self.isCurrent = isCurrent
+        }
+    }
+    private var active: Flight?
+
+    func run(request: CancellationToken?,
+             isCurrent: @escaping @MainActor () -> Bool,
+             producer: @escaping @MainActor () async throws -> Value,
+             observe: @escaping @MainActor (String) -> Void = { _ in }) async throws -> Value {
+        try Task.checkCancellation()
+        if request?.isCancelled == true { throw CancellationError() }
+        // A different modal waits for the previous producer to release first.
+        if let previous = active, previous.request !== request {
+            await previous.task?.value
+            try Task.checkCancellation()
+            if request?.isCancelled == true { throw CancellationError() }
+            guard isCurrent() else { throw OfficePDFExportScreenError.sourceChanged }
+        }
+        let flight: Flight
+        if let existing = active {
+            guard existing.request === request, existing.isCurrent(), isCurrent() else {
+                throw OfficePDFExportScreenError.sessionBusy
+            }
+            flight = existing
+            observe("joined")
+        } else {
+            guard isCurrent() else { throw OfficePDFExportScreenError.sourceChanged }
+            flight = Flight(request: request, isCurrent: isCurrent)
+            active = flight
+            observe("started")
+            flight.task = Task { @MainActor [weak self] in
+                guard let self else { flight.result = .failure(CancellationError()); return }
+                defer {
+                    if self.active === flight { self.active = nil }
+                    observe("settled")
+                }
+                do {
+                    try Task.checkCancellation()
+                    if request?.isCancelled == true { throw CancellationError() }
+                    let value = try await producer()
+                    try Task.checkCancellation()
+                    if request?.isCancelled == true { throw CancellationError() }
+                    guard flight.isCurrent() else { throw OfficePDFExportScreenError.sourceChanged }
+                    flight.result = .success(value)
+                } catch { flight.result = .failure(error) }
+            }
+        }
+        await flight.task?.value
+        try Task.checkCancellation()
+        if request?.isCancelled == true { throw CancellationError() }
+        guard isCurrent() else { throw OfficePDFExportScreenError.sourceChanged }
+        guard let result = flight.result else { throw CancellationError() }
+        return try result.get()
+    }
+
+    func cancel(request: CancellationToken? = nil) {
+        guard let active else { return }
+        if let request, active.request !== request { return }
+        active.task?.cancel()
     }
 }
 
