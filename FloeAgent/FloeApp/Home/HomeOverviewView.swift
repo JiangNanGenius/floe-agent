@@ -9,6 +9,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import AppIntents
 import FloeCore
 import FloeModels
 import FloePersistence
@@ -25,6 +26,7 @@ struct HomeOverviewView: View {
     @State private var automationSetupSchedule: TaskScheduleRecord?
     @State private var historySchedule: TaskScheduleRecord?
     @State private var historyOccurrences: [TaskScheduleOccurrence] = []
+    @State private var cleanupReminders: [TaskScheduleCleanupReminder] = []
     @State private var pendingOccurrenceScheduleIDs: Set<UUID> = []
     @State private var batchStartingConversation: ConversationRecord?
     @State private var archivedTasks: [ConversationRecord] = []
@@ -75,6 +77,36 @@ struct HomeOverviewView: View {
                 Section("home.home_overview_view.completed") {
                     ForEach(completedTasks) { conversation in
                         overviewRow(conversation, showsState: true)
+                    }
+                }
+            }
+            // Retired-schedule cleanup reminders: full list, every row
+            // actionable (no hidden preview cap). They record that the USER
+            // should remove the matching system automation; Floe cannot
+            // detect or delete it. Rows exist only for plans whose actual
+            // Shortcut handoff/confirmation was monitored (or that a stale
+            // automation still fires for), survive deletion and relaunch,
+            // and dedupe per schedule at the store level.
+            if !cleanupReminders.isEmpty {
+                Section(scheduleText(zh: "待清理的系统自动化", en: "Automation cleanup")) {
+                    ForEach(cleanupReminders) { reminder in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(cleanupReasonCopy(reminder))
+                                .font(.subheadline)
+                            HStack(spacing: 12) {
+                                ShortcutsLink { }
+                                Button(scheduleText(zh: "已移除", en: "Removed")) {
+                                    Task { await resolveCleanup(reminder.id, removed: true) }
+                                }
+                                Button(scheduleText(zh: "忽略", en: "Dismiss")) {
+                                    Task { await resolveCleanup(reminder.id, removed: false) }
+                                }
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget,
+                               alignment: .leading)
+                        .accessibilityElement(children: .contain)
                     }
                 }
             }
@@ -268,7 +300,10 @@ struct HomeOverviewView: View {
             }
         }
         .sheet(item: $automationSetupSchedule) { record in
-            TaskScheduleAutomationSetupView(schedule: record)
+            TaskScheduleAutomationSetupView(
+                schedule: record,
+                cleanupStore: TaskScheduleCleanupReminderStore(
+                    database: viewModel.environment.database))
         }
         .sheet(item: $historySchedule) { schedule in
             NavigationStack {
@@ -360,6 +395,42 @@ struct HomeOverviewView: View {
         FloeL10n.isChinese ? zh : en
     }
 
+    /// One short, actionable bilingual line per retired schedule — the plan's
+    /// own name, no IDs, and honest about what Floe can and cannot know.
+    /// Conditional wording by necessity: no API detects the system side.
+    private func cleanupReasonCopy(_ reminder: TaskScheduleCleanupReminder) -> String {
+        switch reminder.reason {
+        case .deleted:
+            scheduleText(
+                zh: "已删除「\(reminder.title)」。你为它设置过系统自动化，请在快捷指令中删除对应自动化。",
+                en: "“\(reminder.title)” was deleted. You had set up a system automation for it — remove that automation in Shortcuts.")
+        case .onceConsumed:
+            scheduleText(
+                zh: "一次性计划「\(reminder.title)」已运行结束，不会再运行。请在快捷指令中删除对应自动化。",
+                en: "The one-time plan “\(reminder.title)” has finished running and will not fire again. Remove its automation in Shortcuts.")
+        case .staleTrigger:
+            scheduleText(
+                zh: "「\(reminder.title)」的系统自动化仍在触发已不存在的计划。请在快捷指令中删除它。",
+                en: "“\(reminder.title)” still fires an automation for a plan that no longer exists. Remove it in Shortcuts.")
+        case nil:
+            scheduleText(
+                zh: "「\(reminder.title)」可能仍有对应的系统自动化。请在快捷指令中检查并删除。",
+                en: "A system automation for “\(reminder.title)” may still exist. Check and remove it in Shortcuts.")
+        }
+    }
+
+    private func resolveCleanup(_ id: UUID, removed: Bool) async {
+        let store = TaskScheduleCleanupReminderStore(database: viewModel.environment.database)
+        // User-side marks only: neither branch touches schedules, occurrences
+        // or the system. Neither claims Floe detected an automation removal.
+        if removed {
+            try? await store.markRemoved(id: id)
+        } else {
+            try? await store.dismiss(id: id)
+        }
+        cleanupReminders = (try? await store.openReminders()) ?? []
+    }
+
     private func occurrenceStateLabel(_ state: TaskScheduleOccurrenceState) -> String {
         switch state {
         case .pending: scheduleText(zh: "待执行", en: "Pending")
@@ -376,6 +447,13 @@ struct HomeOverviewView: View {
         await viewModel.load()
         let store = SQLiteTaskScheduleStore(database: viewModel.environment.database)
         schedules = (try? await store.schedules()) ?? []
+        let reminderStore = TaskScheduleCleanupReminderStore(
+            database: viewModel.environment.database)
+        // Load/foreground safety net: monitoring rows whose retirement write
+        // was lost (crash, failed auxiliary write) open now; then read the
+        // full open list. Neither step can touch schedule lifecycle.
+        try? await reminderStore.reconcileMonitoring()
+        cleanupReminders = (try? await reminderStore.openReminders()) ?? []
         let pending = (try? await store.pendingOccurrences(limit: 200)) ?? []
         pendingOccurrenceScheduleIDs = Set(pending.map(\.scheduleID))
         archivedTasks = ((try? await viewModel.environment.conversationStore

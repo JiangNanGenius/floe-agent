@@ -7,6 +7,20 @@
 // and returns the SAME typed exact-run reference the Start/Status/Wait/Text/
 // Files/Cancel actions accept — never a separate unbound Start(prompt), a
 // random manual instance, or a success string that hides a store failure.
+//
+// The picked-entity route is the ONLY identity route, on purpose: a shared
+// signed template personalizes this action through the system's own import
+// QUESTION on the same `Schedule` entity parameter (measured in the iPadOS
+// 27 automation editor), so the recipient always names the concrete plan.
+// A name/title text route could silently re-point an old imported trigger
+// at a different same-title plan after the original was deleted or renamed
+// — never a stable identity substitute.
+//
+// When the action fires for a schedule the durable store can no longer
+// find, the deleted refusal is unchanged AND best-effort durable cleanup
+// evidence is recorded under the ORIGINAL stable UUID for the still-
+// lingering system automation. Reminders cannot start, arm or re-enable
+// anything.
 
 #if canImport(AppIntents)
 import AppIntents
@@ -177,6 +191,14 @@ struct RunScheduledTaskIntent: AppIntent {
     /// settings or environment is touched while set. Compiled out of
     /// Release.
     @TaskLocal static var debugRoute: (@MainActor (UUID) async throws -> SelectedScheduleReceipt)?
+
+    /// Task-scoped environment injection for hosted stale-trigger-evidence
+    /// tests (same shape as `TaskScheduleEntityQuery.debugEnvironment`).
+    /// Compiled out of Release. When UNSET, the deleted-schedule path
+    /// performs NO recording and no environment access at all — exactly
+    /// today's behavior, so existing hosted failure-copy tests keep their
+    /// zero side effects and no fixture ever initializes an environment.
+    @TaskLocal static var debugEnvironment: AppEnvironment?
     #endif
 
     static var parameterSummary: some ParameterSummary {
@@ -205,6 +227,29 @@ struct RunScheduledTaskIntent: AppIntent {
                 scheduleID: scheduleID, environment: environment)
             #endif
         } catch let failure as SelectedScheduleFailure {
+            if case .scheduleDeleted = failure {
+                // Best-effort durable cleanup evidence for the still-firing
+                // automation, keyed by the ORIGINAL stable UUID with the
+                // picked entity's captured title. ANY failure here is
+                // swallowed — the original typed refusal is always what the
+                // user sees, and recording can never start or change a
+                // schedule. A DEBUG hosted test that injected no
+                // environment skips recording entirely (no environment
+                // access), exactly like today.
+                #if DEBUG
+                if let debugEnvironment = Self.debugEnvironment {
+                    try? await TaskScheduleCleanupReminderStore(
+                        database: debugEnvironment.database
+                    ).recordStaleTrigger(
+                        scheduleID: scheduleID, title: schedule.title, at: Date())
+                }
+                #else
+                try? await TaskScheduleCleanupReminderStore(
+                    database: environment.database
+                ).recordStaleTrigger(
+                    scheduleID: scheduleID, title: schedule.title, at: Date())
+                #endif
+            }
             throw failure.actionError
         }
         // The receipt was already proven against the occurrence ledger (or
