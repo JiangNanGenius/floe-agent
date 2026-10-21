@@ -18,6 +18,7 @@
 //   are present rather than silently dropping the rest.
 
 import UIKit
+import SwiftUI
 import ImageIO
 import UniformTypeIdentifiers
 import FloeCore
