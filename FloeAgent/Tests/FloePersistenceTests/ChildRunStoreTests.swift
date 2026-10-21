@@ -176,17 +176,25 @@ struct ChildRunStoreTests {
         try await store.saveCheckpoint(checkpoint)
         let loaded = try #require(await store.checkpoint(childRunID: childID))
         #expect(loaded == checkpoint)
-        // A plain save does NOT create a live lease: the very next acquire
-        // succeeds immediately.
-        #expect(try await store.acquireResume(
-            childRunID: childID, owner: UUID(), resumingParentRunID: UUID(),
-            leaseExpiresAt: Date().addingTimeInterval(60)
-        ))
-        // Upsert replaces the payload.
+        // An unleased upsert replaces the payload without granting a lease.
         var updated = checkpoint
         updated.iterationsUsed = 3
         try await store.saveCheckpoint(updated)
         #expect(try #require(await store.checkpoint(childRunID: childID)).iterationsUsed == 3)
+        // A plain save does NOT create a live lease: the very next acquire
+        // succeeds immediately, still bound to the exact updated checkpoint.
+        let owner = UUID()
+        #expect(try await store.acquireResume(
+            childRunID: childID, owner: owner, resumingParentRunID: UUID(),
+            leaseExpiresAt: Date().addingTimeInterval(60), expectedCheckpoint: updated
+        ))
+        // Once acquired, a payload-only writer has no authority to overwrite
+        // the continuation. Preserve that production guard and its payload.
+        await #expect(throws: (any Error).self) {
+            try await store.saveCheckpoint(checkpoint)
+        }
+        #expect(try await store.checkpoint(childRunID: childID) == updated)
+        try await store.cancelResume(childRunID: childID, owner: owner)
         try await store.deleteCheckpoint(childRunID: childID)
         #expect(try await store.checkpoint(childRunID: childID) == nil)
     }

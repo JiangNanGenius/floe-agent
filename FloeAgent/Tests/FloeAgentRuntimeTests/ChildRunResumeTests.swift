@@ -51,6 +51,10 @@ struct ChildRunResumeTests {
         private var leaseOwner: UUID?
         private var leaseExpiresAt: Date?
         private var resumeParent: UUID?
+        // One deterministic concurrent-admission fixture: both callers read
+        // the same interrupted snapshot before either can reach lease CAS.
+        private var gatedChildID: UUID?
+        private var firstChildReader: CheckedContinuation<Void, Never>?
         /// Number of successful checkpoint saves before saves start throwing.
         var failCheckpointSaveAfter: Int?
         private var checkpointSaveCount = 0
@@ -89,7 +93,21 @@ struct ChildRunResumeTests {
             checkpoints[id] = nil
         }
 
-        func child(id: UUID) async throws -> ChildRunRecord? { records[id] }
+        func gateTwoChildReads(id: UUID) { gatedChildID = id }
+
+        func child(id: UUID) async throws -> ChildRunRecord? {
+            let snapshot = records[id]
+            if gatedChildID == id {
+                if let firstChildReader {
+                    self.firstChildReader = nil
+                    gatedChildID = nil
+                    firstChildReader.resume()
+                } else {
+                    await withCheckedContinuation { firstChildReader = $0 }
+                }
+            }
+            return snapshot
+        }
 
         func children(parentRunID: UUID) async throws -> [ChildRunRecord] {
             records.values.filter { $0.parentRunID == parentRunID }
@@ -591,19 +609,30 @@ struct ChildRunResumeTests {
         )
 
         let service = ChildResumeService(store: store)
-        // Concurrent begins: exactly one wins the lease.
-        let first = try await service.begin(
-            childID: childID,
-            currentParentRunID: UUID(),
-            currentParentConversationID: conversationID
-        )
-        await #expect(throws: ChildResumeError.leaseHeldByOther) {
-            _ = try await service.begin(
-                childID: childID,
-                currentParentRunID: UUID(),
-                currentParentConversationID: conversationID
-            )
+        // Two ACTUALLY concurrent begins. A sequential second begin reads
+        // running and is correctly refused by the earlier state guard; only
+        // two interrupted snapshots can exercise losing the atomic lease CAS.
+        await store.gateTwoChildReads(id: childID)
+        let firstAttempt = Task {
+            try await service.begin(childID: childID, currentParentRunID: UUID(),
+                currentParentConversationID: conversationID)
         }
+        let secondAttempt = Task {
+            try await service.begin(childID: childID, currentParentRunID: UUID(),
+                currentParentConversationID: conversationID)
+        }
+        let attempts = [await firstAttempt.result, await secondAttempt.result]
+        var winners: [ChildResumePlan] = []
+        var refusals: [ChildResumeError] = []
+        for attempt in attempts {
+            switch attempt {
+            case .success(let plan): winners.append(plan)
+            case .failure(let error): refusals.append(try #require(error as? ChildResumeError))
+            }
+        }
+        #expect(winners.count == 1)
+        #expect(refusals == [.leaseHeldByOther])
+        let first = try #require(winners.first)
         // The lease binds the ACTUAL resuming parent, not an arbitrary run.
         #expect(await store.resumeParentBound() == first.resumedIdentity.parentRunID)
         // Pre-start cancel restores the honest interrupted state.
@@ -744,13 +773,19 @@ struct ChildRunResumeTests {
         )
         #expect(resumed.status == .completed)
         let request = try #require(resumeAdapter.requests.first)
-        let system = try #require(request.effectiveMessages.first(where: { $0.role == "system" }))
-        let systemText = system.content.compactMap { part -> String? in
+        // Continuation preserves the original base prompt and appends a
+        // separate system note. Inspect the actual full provider request,
+        // never synthesize a note or inspect only the historical first item.
+        let systemMessages = request.effectiveMessages.filter { $0.role == "system" }
+        _ = try #require(systemMessages.first)
+        let systemText = systemMessages.flatMap(\.content).compactMap { part -> String? in
             if case .text(let text) = part { return text }
             return nil
-        }.joined()
+        }.joined(separator: "\n")
+        #expect(systemText.contains("You are a delegated subagent."))
         #expect(systemText.contains("RESUMING"))
         #expect(systemText.contains("Provider/model binding changed"))
+        #expect(request.provider.id == otherProvider.id)
     }
 
     // MARK: - Cancellation
