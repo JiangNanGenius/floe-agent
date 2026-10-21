@@ -33,6 +33,76 @@ protocol BrowserTaskSessionHost: AnyObject {
     func browserSessionRequestedUserControl(_ session: BrowserTaskSession, reason: String)
 }
 
+/// A callback may never arrive after a WebKit process/navigation failure.
+/// Resolve a single Sendable JSON receipt on callback, deadline, cancellation,
+/// or owner release; a late callback cannot resume it twice. No task group
+/// waits for an uncooperative native callback before returning the failure.
+enum BrowserProbeError: Error, Sendable, Equatable {
+    case timedOut
+    case released
+}
+
+@MainActor
+final class BrowserProbeRequest {
+    typealias Completion = @MainActor @Sendable (Result<Any, Error>) -> Void
+    private var continuation: CheckedContinuation<Data, Error>?
+    private var deadlineTask: Task<Void, Never>?
+    private var started = false
+
+    func run(
+        deadline: ContinuousClock.Instant,
+        invoke: (@escaping Completion) -> Void
+    ) async throws -> Data {
+        precondition(!started)
+        started = true
+        try Task.checkCancellation()
+        let bytes = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                guard !Task.isCancelled else {
+                    finish(.failure(CancellationError()))
+                    return
+                }
+                guard ContinuousClock.now < deadline else {
+                    finish(.failure(BrowserProbeError.timedOut))
+                    return
+                }
+                deadlineTask = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(until: deadline, clock: .continuous) }
+                    catch { return }
+                    self?.finish(.failure(BrowserProbeError.timedOut))
+                }
+                invoke { [weak self] result in
+                    guard let self, self.continuation != nil else { return }
+                    do {
+                        // SDK Any stays on MainActor. Only JSON Data crosses
+                        // the continuation; no unchecked Sendable wrapper.
+                        let value = try result.get()
+                        let data = try JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed)
+                        self.finish(.success(data))
+                    } catch {
+                        self.finish(.failure(error))
+                    }
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.finish(.failure(CancellationError())) }
+        }
+        try Task.checkCancellation()
+        return bytes
+    }
+
+    func invalidate() { finish(.failure(BrowserProbeError.released)) }
+
+    private func finish(_ result: Result<Data, Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        deadlineTask?.cancel()
+        deadlineTask = nil
+        continuation.resume(with: result)
+    }
+}
+
 /// A single task's independent browser. All WebKit/UI work is MainActor.
 ///
 /// `generation` is the owner lifecycle generation this session was created
@@ -83,6 +153,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     var isEditingAddress = false
     private(set) var isReleased = false
     private(set) var activeExecutionCount = 0
+    private var pendingProbes: [UUID: BrowserProbeRequest] = [:]
     private(set) var lastActivityAt = Date()
 
     private weak var host: BrowserTaskSessionHost?
@@ -228,6 +299,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     func release() {
         guard !isReleased else { return }
         isReleased = true
+        let probes = Array(pendingProbes.values)
+        pendingProbes.removeAll()
+        probes.forEach { $0.invalidate() }
         isUserControlling = false
         surfaceState = .unbound
         for tab in tabs {
@@ -645,16 +719,27 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         guard let tabID, let tab = tabs.first(where: { $0.id == tabID }) else {
             return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
         }
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(min(30_000, max(250, command.timeoutMilliseconds))))
+        let trace = command.requestID.uuidString
         do {
-            await collectProbeEvents(tabID: tabID)
+            try Task.checkCancellation()
+            FloeLogger(category: .tools).info("Browser observe request=\(trace) phase=drainEvents.begin")
+            await collectProbeEvents(tabID: tabID, deadline: deadline)
+            try Task.checkCancellation()
+            FloeLogger(category: .tools).info("Browser observe request=\(trace) phase=drainEvents.end")
+            FloeLogger(category: .tools).info("Browser observe request=\(trace) phase=snapshot.begin")
             let start = max(0, cursor ?? 0)
             let pageSize = 40
             let probe = try await semanticSnapshot(
                 in: tab.webView,
                 documentID: tab.documentID,
                 cursor: start,
-                limit: pageSize
+                limit: pageSize,
+                deadline: deadline
             )
+            try Task.checkCancellation()
+            guard !isReleased else { throw BrowserProbeError.released }
+            FloeLogger(category: .tools).info("Browser observe request=\(trace) phase=snapshot.end")
             if let index = tabs.firstIndex(where: { $0.id == tabID }) {
                 tabs[index].revision = max(tabs[index].revision, probe.revision)
             }
@@ -674,16 +759,46 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                 screenshotArtifact: nil
             )
             return BrowserResult(requestID: command.requestID, status: .ok, page: snapshot)
+        } catch BrowserProbeError.timedOut {
+            FloeLogger(category: .tools).info("Browser observe request=\(trace) outcome=timeout")
+            return failure(command, status: .timeout, code: "timeout", "Browser page observation timed out")
+        } catch BrowserProbeError.released {
+            return failure(command, status: .stale, code: "released", "This task's browser session was released")
+        } catch is CancellationError {
+            return failure(command, status: .failed, code: "cancelled", "Browser page observation was cancelled")
         } catch {
+            let native = error as NSError
+            FloeLogger(category: .tools).info("Browser observe request=\(trace) errorDomain=\(native.domain) code=\(native.code)")
             return failure(command, status: .failed, code: "observe", error.localizedDescription)
         }
+    }
+
+    private func probeValue(
+        _ script: String,
+        arguments: [String: Any],
+        in webView: WKWebView,
+        deadline: ContinuousClock.Instant
+    ) async throws -> Any? {
+        guard !isReleased else { throw BrowserProbeError.released }
+        let id = UUID()
+        let request = BrowserProbeRequest()
+        pendingProbes[id] = request
+        defer { pendingProbes.removeValue(forKey: id) }
+        let data = try await request.run(deadline: deadline) { completion in
+            webView.callAsyncJavaScript(
+                script, arguments: arguments, in: nil, in: self.contentWorld,
+                completionHandler: completion
+            )
+        }
+        return try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
     }
 
     private func semanticSnapshot(
         in webView: WKWebView,
         documentID: String,
         cursor: Int,
-        limit: Int
+        limit: Int,
+        deadline: ContinuousClock.Instant
     ) async throws -> ProbeSnapshot {
         let script = """
         const protocol = globalThis.__floeProtocol;
@@ -696,11 +811,11 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         };
         return protocol.snapshot(documentID, cursor, limit);
         """
-        let value = try await webView.callAsyncJavaScript(
+        let value = try await probeValue(
             script,
             arguments: ["documentID": documentID, "cursor": cursor, "limit": limit],
-            in: nil,
-            contentWorld: contentWorld
+            in: webView,
+            deadline: deadline
         )
         guard JSONSerialization.isValidJSONObject(value as Any) else {
             return ProbeSnapshot(
@@ -832,14 +947,14 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         return try JSONDecoder().decode(ProbeState.self, from: data)
     }
 
-    private func collectProbeEvents(tabID: UUID) async {
+    private func collectProbeEvents(tabID: UUID, deadline: ContinuousClock.Instant? = nil) async {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
         do {
-            let value = try await tab.webView.callAsyncJavaScript(
+            let value = try await probeValue(
                 "return globalThis.__floeProtocol ? globalThis.__floeProtocol.drainEvents(documentID) : [];",
                 arguments: ["documentID": tab.documentID],
-                in: nil,
-                contentWorld: contentWorld
+                in: tab.webView,
+                deadline: deadline ?? ContinuousClock.now.advanced(by: .seconds(15))
             )
             guard JSONSerialization.isValidJSONObject(value as Any) else { return }
             let data = try JSONSerialization.data(withJSONObject: value as Any)
@@ -853,6 +968,8 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                 )
             }
         } catch {
+            let native = error as NSError
+            FloeLogger(category: .tools).info("Browser probe phase=drainEvents.error errorDomain=\(native.domain) code=\(native.code)")
             // A navigation may replace the JS world between lookup and call.
             // Native lifecycle events still describe that transition.
         }

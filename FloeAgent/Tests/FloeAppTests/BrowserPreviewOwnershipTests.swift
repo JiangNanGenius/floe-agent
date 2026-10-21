@@ -671,6 +671,8 @@ struct BrowserPreviewOwnershipTests {
         let workspaceA = try workspaceWithIndexHTML(marker: "alpha")
         let workspaceB = try workspaceWithIndexHTML(marker: "beta")
         defer {
+            center.discard(conversationID: ownerA)
+            center.discard(conversationID: ownerB)
             try? FileManager.default.removeItem(at: workspaceA)
             try? FileManager.default.removeItem(at: workspaceB)
         }
@@ -680,18 +682,22 @@ struct BrowserPreviewOwnershipTests {
         #expect(coordinator.selectedOwner == ownerA)
         #expect(coordinator.activeURL == nil)
 
+        print("BrowserPreviewProjection start=A.initial phase=begin")
         let initialA = try url(fromStartSummary: try await run(
             registry, "preview.start", "{}",
             as: context(for: ownerA, workspaceRoot: workspaceA)
         ))
+        print("BrowserPreviewProjection start=A.initial phase=end")
         #expect(coordinator.selectedOwner == ownerA)
         #expect(coordinator.activeURL == initialA)
 
         // Starting B in the background neither selects B nor rewrites A's URL.
+        print("BrowserPreviewProjection start=B.initial phase=begin")
         let urlB = try url(fromStartSummary: try await run(
             registry, "preview.start", "{}",
             as: context(for: ownerB, workspaceRoot: workspaceB)
         ))
+        print("BrowserPreviewProjection start=B.initial phase=end")
         #expect(coordinator.selectedOwner == ownerA)
         #expect(coordinator.activeURL == initialA)
 
@@ -699,10 +705,12 @@ struct BrowserPreviewOwnershipTests {
         coordinator.select(ownerB)
         #expect(coordinator.selectedOwner == ownerB)
         #expect(coordinator.activeURL == urlB)
+        print("BrowserPreviewProjection start=A.restart phase=begin")
         let restartedA = try url(fromStartSummary: try await run(
             registry, "preview.start", "{}",
             as: context(for: ownerA, workspaceRoot: workspaceA)
         ))
+        print("BrowserPreviewProjection start=A.restart phase=end")
         #expect(restartedA != initialA)
         #expect(coordinator.selectedOwner == ownerB)
         #expect(coordinator.activeURL == urlB)

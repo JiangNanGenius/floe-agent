@@ -943,5 +943,53 @@ struct BrowserTaskSessionTests {
         await center.recoverHandoff(conversationID: owner, runID: mainRun)
         #expect(attempts == 1)
     }
+
+    @Test("A real browser probe callback preserves its successful JSON receipt")
+    func browserProbeCallbackPreservesSuccess() async throws {
+        let data = try await BrowserProbeRequest().run(deadline: .now.advanced(by: .seconds(1))) {
+            $0(.success(["ok": true]))
+        }
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Bool]
+        #expect(object?["ok"] == true)
+    }
+
+    @Test("A missing native browser callback returns the real probe deadline failure")
+    func missingBrowserProbeCallbackTimesOut() async throws {
+        let request = BrowserProbeRequest()
+        var callback: BrowserProbeRequest.Completion?
+        await #expect(throws: BrowserProbeError.timedOut) {
+            _ = try await request.run(deadline: .now.advanced(by: .milliseconds(250))) { callback = $0 }
+        }
+        #expect(callback != nil)
+        // Native completions after the deadline are retired, never resumed
+        // twice and never reported as a late successful browser operation.
+        callback?(.success(["late": true]))
+        callback?(.failure(CancellationError()))
+    }
+
+    @Test("A pending browser probe retires on cancellation or owner release", arguments: ["cancel", "release"])
+    func pendingBrowserProbeRetires(_ boundary: String) async throws {
+        let request = BrowserProbeRequest()
+        let started = AsyncStream<Void>.makeStream()
+        var callback: BrowserProbeRequest.Completion?
+        let task = Task {
+            try await request.run(deadline: .now.advanced(by: .seconds(30))) { completion in
+                callback = completion
+                started.continuation.yield(())
+                started.continuation.finish()
+            }
+        }
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        if boundary == "cancel" {
+            task.cancel()
+            await #expect(throws: CancellationError.self) { _ = try await task.value }
+        } else {
+            request.invalidate()
+            await #expect(throws: BrowserProbeError.released) { _ = try await task.value }
+        }
+        callback?(.success(["late": true]))
+    }
+
 }
 #endif

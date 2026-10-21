@@ -186,13 +186,13 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
             try verifyStart(operationID: operationID, owner: owner, cancellation: cancellation)
             priorRecord = records[owner]
             priorPageURL = session.activeWebView?.url
-            let result = await browser.execute(
-                BrowserCommand(
-                    sessionID: session.sessionID,
-                    action: .navigate(url: started.1.url.absoluteString)
-                ),
-                in: owner
+            let command = BrowserCommand(
+                sessionID: session.sessionID,
+                action: .navigate(url: started.1.url.absoluteString)
             )
+            FloeLogger(category: .tools).info("Preview navigation operation=\(operationID) request=\(command.requestID.uuidString) phase=begin")
+            let result = await browser.execute(command, in: owner)
+            FloeLogger(category: .tools).info("Preview navigation operation=\(operationID) request=\(command.requestID.uuidString) phase=end status=\(result.status.rawValue)")
             // The load is issued before the protocol observes the page. Ok is
             // conclusive; a failed observe is also a real navigation when the
             // task's page already points at this staging allocation.
