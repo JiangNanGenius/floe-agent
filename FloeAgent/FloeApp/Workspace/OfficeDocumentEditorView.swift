@@ -693,19 +693,118 @@ final class OfficeFileSession: ObservableObject {
         inkApplyOutcome = nil
     }
 
-    /// Commit completed live edits, then freeze the exact saved source for
-    /// the pre-generation options form. No source page setup is rewritten.
+    /// Claims the session's existing external-refresh reservation for one PDF
+    /// preparation and fails closed with the truthful reason. A replaced mounted
+    /// surface (open generation, controller instance or working copy) is a real
+    /// source change; a session that is merely held by another in-flight
+    /// operation is busy and stays retryable — it must never be reported as a
+    /// changed document. Both refusals record the same content-free breadcrumb,
+    /// now with the `claim` discriminator. Nothing here retries, saves, swallows
+    /// a failure or relaxes a generation/owner/CAS/cancellation fence.
+    private func claimPDFExportWindow(fence: PassiveExitFence) throws {
+        guard passiveExitFenceIsCurrent(fence) else {
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "begin", fence: fence)
+                            .merging(["claim": "staleSurface"]) { _, latest in latest })
+            throw OfficePDFExportScreenError.sourceChanged
+        }
+        guard beginExternalRefresh(resigningFirstResponder: false) else {
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "begin", fence: fence)
+                            .merging(["claim": "busy"]) { _, latest in latest })
+            throw OfficePDFExportScreenError.sessionBusy
+        }
+    }
+
+    /// Commit completed live edits, then freeze the exact saved source for the
+    /// pre-generation options form. No source page setup is rewritten.
+    ///
+    /// Reservation order (the Build 32 instrumented traces named both failure
+    /// classes): the readiness proof and the read-only claim share one
+    /// main-actor turn; the editable path runs its serialized save transaction
+    /// BEFORE claiming (the coordinator requires the session to read `.ready`,
+    /// so the reservation is never held across it); the current-part metadata
+    /// read and the frozen byte copy both happen under the one claimed
+    /// reservation, released exactly once at return — including on a refusal or
+    /// a cancellation.
     func preparePDFExport() async throws -> OfficePDFExportPreparation {
+        try Task.checkCancellation()
         guard canAct, documentActionsReady, let controller, let currentSession = session else {
             throw FloeError.validationFailed(OfficeInkText.t("文档尚未就绪，请稍后重试。", "The document is not ready. Try again shortly."))
         }
         let fence = capturePassiveExitFence()
+        // Exactly one reservation for this whole preparation, released once at
+        // return — including on a thrown refusal or a cancellation.
+        var reserved = false
+        defer { if reserved { endExternalRefresh() } }
+        if readOnly {
+            // Read-only preparation takes that reservation in the SAME
+            // main-actor turn as the readiness proof above. Build 32's actual
+            // trace showed this preparation refusing at its own begin guard
+            // with canAct=false/operating=true while genFence=genNow, ctlSame
+            // and pathSame stayed intact: the previous order yielded at the
+            // current-part JavaScript read between the proof and the claim, so
+            // a competing holder could reserve the session inside that window
+            // and the refusal then read as a changed document. Nothing is
+            // awaited between the proof and this claim any more.
+            try Task.checkCancellation()
+            try claimPDFExportWindow(fence: fence)
+            reserved = true
+        }
         let activePen = readOnly ? false : await hasActivePenContact()
         guard !activePen else {
             throw FloeError.validationFailed(OfficeInkText.t("请抬笔后重试。", "Lift the pen and try again."))
         }
-        // Read the editor's own part before saving. A missing current part
-        // hides Current Sheet; it never becomes a first-sheet fallback.
+        if !readOnly {
+            // A cancelled or remounted load must never flush the engine or
+            // dispatch a promotion it will not use.
+            try Task.checkCancellation()
+            if autosaveActive {
+                // The save transaction deliberately runs with NO reservation
+                // held: the coordinator's own serialization requires the session
+                // to read `.ready`, so a reservation here would make every
+                // explicit export save defer.
+                let proof = await requestAutosaveTransaction(reason: "pdfExport")
+                guard proof.isCommittedState, proof.dirtyAfterTransaction == false else {
+                    if proof.outcome == .deferred {
+                        // A deferred transaction never started: another
+                        // operation owns the editor right now, or a pen contact
+                        // is live. Report that truthfully instead of claiming a
+                        // save that failed to finish; the retained dirty state
+                        // stays owned by the coordinator's own recheck. This
+                        // still refuses: no retry, no skipped save.
+                        recordStage("export.prepare.refused",
+                                    exportRefusalFacts(stage: "prepare", guardAt: "autosaveDeferred", fence: fence)
+                                        .merging([
+                                            "claim": "busy",
+                                            "outcome": proof.outcome.rawValue,
+                                            "reason": proof.reason ?? "none",
+                                            "retryScheduled": proof.retryScheduled ? "true" : "false"
+                                        ]) { _, latest in latest })
+                        throw FloeError.validationFailed(proof.error ?? (proof.reason == "autosave.penActive"
+                            ? OfficeInkText.t("请抬笔后重试。", "Lift the pen and try again.")
+                            : OfficeInkText.t("文档正忙，请稍后重试。", "The document is busy. Try again shortly.")))
+                    }
+                    throw FloeError.validationFailed(proof.error ?? OfficeInkText.t("尚未保存完成，请稍后重试。", "Saving has not finished. Try again shortly."))
+                }
+            } else {
+                guard await saveInPlace() else {
+                    throw FloeError.validationFailed(error ?? OfficeInkText.t("未能保存文档，请重试。", "The document could not be saved. Try again."))
+                }
+            }
+            // Claim only after the save settled, so the current-part read and
+            // the frozen byte copy both describe the same committed bytes.
+            try Task.checkCancellation()
+            try claimPDFExportWindow(fence: fence)
+            reserved = true
+        }
+        // Read the editor's own part only now: under the reservation this
+        // preparation already owns, and after any editable save has settled.
+        // The Build 32 editable trace showed this metadata yield running BEFORE
+        // the save transaction, where a competing holder could make that
+        // transaction defer and the options screen then reported a save that had
+        // actually completed. A missing current part hides Current Sheet; it
+        // never becomes a first-sheet fallback.
         var selectedPart: Int?
         if let web = OfficeExplicitSaveBridge.findWebView(in: controller.view) {
             let value = try? await web.evaluateJavaScript("""
@@ -719,24 +818,7 @@ final class OfficeFileSession: ObservableObject {
             """)
             if let number = value as? NSNumber { selectedPart = number.intValue }
         }
-        if !readOnly {
-            if autosaveActive {
-                let proof = await requestAutosaveTransaction(reason: "pdfExport")
-                guard proof.isCommittedState, proof.dirtyAfterTransaction == false else {
-                    throw FloeError.validationFailed(proof.error ?? OfficeInkText.t("尚未保存完成，请稍后重试。", "Saving has not finished. Try again shortly."))
-                }
-            } else {
-                guard await saveInPlace() else {
-                    throw FloeError.validationFailed(error ?? OfficeInkText.t("未能保存文档，请重试。", "The document could not be saved. Try again."))
-                }
-            }
-        }
-        guard passiveExitFenceIsCurrent(fence), beginExternalRefresh(resigningFirstResponder: false) else {
-            recordStage("export.prepare.refused",
-                        exportRefusalFacts(stage: "prepare", guardAt: "begin", fence: fence))
-            throw OfficePDFExportScreenError.sourceChanged
-        }
-        defer { endExternalRefresh() }
+        try Task.checkCancellation()
         let quiescentBefore = readOnly ? true : await verifyQuiescentForExternalRewrite()
         guard quiescentBefore else {
             throw FloeError.validationFailed(OfficeInkText.t("文档仍在编辑，请稍后重试。", "The document is still being edited. Try again shortly."))
@@ -813,11 +895,24 @@ final class OfficeFileSession: ObservableObject {
                 "请检查工作表、单元格区域和 PDF 页码。", "Check the sheet, cell range and PDF pages."))
         }
         try cancellation.throwIfCancelled()
-        guard await source.isCurrent(), let controller,
-              beginExternalRefresh(resigningFirstResponder: false) else {
+        let surfaceCurrent = await source.isCurrent()
+        guard surfaceCurrent, let controller else {
             recordStage("export.generate.refused",
-                        exportRefusalFacts(stage: "generate", guardAt: "begin", fence: lastExportPrepareFence))
+                        exportRefusalFacts(stage: "generate", guardAt: "begin",
+                                           fence: lastExportPrepareFence)
+                            .merging(["claim": "staleSurface"]) { _, latest in latest })
             throw OfficePDFExportScreenError.sourceChanged
+        }
+        guard beginExternalRefresh(resigningFirstResponder: false) else {
+            // The frozen source is still current — the session is only held by
+            // another in-flight operation. This is busy, not a changed
+            // document: the options view keeps the prepared source and a new
+            // generation can be attempted once the holder settles.
+            recordStage("export.generate.refused",
+                        exportRefusalFacts(stage: "generate", guardAt: "begin",
+                                           fence: lastExportPrepareFence)
+                            .merging(["claim": "busy"]) { _, latest in latest })
+            throw OfficePDFExportScreenError.sessionBusy
         }
         defer { endExternalRefresh() }
         do {

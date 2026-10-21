@@ -221,6 +221,80 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         }
     }
 
+    func testPreparationCancellationAndOwnershipRemainFenced() async throws {
+        let (source, sha, root) = try input()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive }))
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        let environment = AppEnvironment.preview()
+        window.rootViewController = UIHostingController(rootView: NavigationStack {
+            OfficeDocumentEditorView(relativePath: "provided.xlsx", session: session,
+                                     onSaved: nil, requestsEditingOnAppear: false)
+                .environmentObject(environment)
+        })
+        window.windowLevel = .normal + 1
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+        do {
+            await session.open(source)
+            try await wait("actual Office document ready") { session.documentActionsReady && session.canAct }
+            let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await wait("actual Office tiles painted") {
+                let facts = OfficeFileSession.hostRenderDiagnostics(native)
+                return facts["stage"] == "visible-render" && facts["docLoaded"] == "1"
+                    && ((Int(facts["decodedTiles"] ?? "") ?? 0) > 0 || facts["vectorRendering"] == "1")
+            }
+
+            // Cancel before the MainActor task starts: no scheduler timing or
+            // non-Sendable result crosses a child-task boundary.
+            let startedAt = Date()
+            let cancelled = Task { @MainActor in
+                do {
+                    _ = try await session.preparePDFExport()
+                    XCTFail("A cancelled load must not prepare an artifact")
+                } catch is CancellationError { }
+                catch { XCTFail("Expected cancellation, received: \(error)") }
+            }
+            cancelled.cancel()
+            await cancelled.value
+            XCTAssertTrue(session.canAct, "Cancellation must leave the session usable")
+            XCTAssertFalse(OfficeStageRecorder.shared.events.contains {
+                $0.session == session.stageTraceSessionID && $0.at >= startedAt
+                    && $0.stage.hasPrefix("export.prepare.")
+            }, "A cancelled load must not claim success or a stale-source refusal")
+
+            // An independently held editor still refuses preparation. It must
+            // not fabricate a source change or steal the holder's reservation.
+            XCTAssertTrue(session.beginExternalRefresh(resigningFirstResponder: false))
+            do {
+                _ = try await session.preparePDFExport()
+                XCTFail("A held session must refuse a new preparation")
+            } catch {
+                XCTAssertTrue(error is FloeError)
+                XCTAssertFalse(error is OfficePDFExportScreenError)
+            }
+            XCTAssertFalse(session.canAct, "The original holder keeps its reservation")
+            session.endExternalRefresh()
+            XCTAssertTrue(session.canAct)
+
+            let prepared = try await session.preparePDFExport()
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: prepared.sourceURL), prepared.sourceSHA256)
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha)
+            let isCurrent = await prepared.isCurrent()
+            XCTAssertTrue(isCurrent)
+            await session.release()
+            let remainsCurrent = await prepared.isCurrent()
+            XCTAssertFalse(remainsCurrent, "A preparation cannot survive release of its exact owner")
+            try FileManager.default.removeItem(at: root)
+        } catch {
+            await session.release()
+            throw error
+        }
+    }
+
     func testAssistantExportToolReturnsActualPDFAndVisibleFileCard() async throws {
         let (source, sha, root) = try input()
         let workspace = root.appendingPathComponent("workspace", isDirectory: true)

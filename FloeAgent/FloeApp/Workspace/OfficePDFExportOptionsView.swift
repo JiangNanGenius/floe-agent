@@ -17,8 +17,18 @@ enum OfficePDFExportPurpose: String, Identifiable {
 
 enum OfficePDFExportScreenError: Error, LocalizedError {
     case sourceChanged
+    /// The mounted session is held by another in-flight operation right now.
+    /// Nothing changed in the document: the same frozen source stays valid and
+    /// the action can be attempted again once the holder settles. Distinct from
+    /// `.sourceChanged`, which means the actual surface or bytes were replaced.
+    case sessionBusy
     var errorDescription: String? {
-        OfficeInkText.t("文档已变化，请刷新后重试。", "The document changed. Refresh and try again.")
+        switch self {
+        case .sourceChanged:
+            return OfficeInkText.t("文档已变化，请刷新后重试。", "The document changed. Refresh and try again.")
+        case .sessionBusy:
+            return OfficeInkText.t("文档正忙，请稍后重试。", "The document is busy. Try again shortly.")
+        }
     }
 }
 
@@ -611,7 +621,17 @@ struct OfficePDFExportOptionsView: View {
     }
 
     private func needsSourceRefresh(_ error: Error) -> Bool {
-        if error is OfficePDFExportScreenError { return true }
+        if let screenError = error as? OfficePDFExportScreenError {
+            // Only a genuinely replaced surface or changed bytes invalidates the
+            // frozen source. A session that is merely held by another in-flight
+            // operation leaves the exact same verified preparation usable, so the
+            // user can start a new generation without re-preparing; the failed
+            // generation itself is still reported and nothing is published.
+            switch screenError {
+            case .sourceChanged: return true
+            case .sessionBusy: return false
+            }
+        }
         #if canImport(FloeOfficeNative)
         if let exportError = error as? OfficePDFExportError {
             switch exportError {
