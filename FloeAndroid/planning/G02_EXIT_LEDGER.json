@@ -1,0 +1,314 @@
+{
+  "schema": "floe.android.g02.exit/1",
+  "date": "2026-10-22",
+  "codeStage": "G02 closed; wider App/device qualification remains open",
+  "sourceCommit": "663b5f4b00cf8e160039aff9391b904b8d094306",
+  "releaseTag": "android/v0.1.0-alpha.7",
+  "apkSha256": "97b209258f055b00e67b8755d7e4667b2195318d62f218d5f0ad42af49fc6058",
+  "canonicalOperationCount": 41,
+  "operations": [
+    {
+      "id": "PRV-CONFIG-VALIDATE",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "本批App代表路径",
+      "scope": "实际本地提供商配置、发现、保存及升级后重开；认证云路径复用既有短回复证据"
+    },
+    {
+      "id": "PRV-STREAM-CHAT",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "本批App代表路径",
+      "scope": "最终APK本地SSE与工具后续回复；不称新的真实云推理"
+    },
+    {
+      "id": "PRV-CANCEL-RETRY",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "历史App代表路径，按未变边界复用",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "PRV-REASONING-EFFORT",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "PRV-CUSTOM-ENDPOINT",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "本批App代表路径",
+      "scope": "实际自定义本地端点、HTTP显式选择、连接与模型发现"
+    },
+    {
+      "id": "PRV-CAPABILITY-ROUTE",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "PRV-TOOL-CALLS",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "本批App代表路径",
+      "scope": "最终APK实际MCP调用及返回值"
+    },
+    {
+      "id": "SET-DEFAULTS-TYPED",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SET-MEMORY-INVENTORY",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SET-MEMORY-SEARCH",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SET-MEMORY-CANDIDATE-REVIEW",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SET-MEMORY-ORGANIZE",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SET-PERSONALIZATION-DOCUMENTS",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SET-PERSONALIZATION-GENERATE",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SET-USAGE-AGGREGATE",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SET-HISTORY-CLEAR",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "本批App代表路径",
+      "scope": "同批先前签名候选的实际非零授权清除及13秒内连接中断；最终包复用未变生命周期边界"
+    },
+    {
+      "id": "SET-MODELCFG-CLEAR",
+      "group": "modelAndSettings (R2)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "历史App代表路径，按未变边界复用",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SKL-DISCOVER-USABLE",
+      "group": "skillsMcpAndCredentials (R3)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SKL-INSTALL-VERSION",
+      "group": "skillsMcpAndCredentials (R3)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SKL-SOURCE-NO-GRANT",
+      "group": "skillsMcpAndCredentials (R3)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "MCP-REMOTE-TOOLS",
+      "group": "skillsMcpAndCredentials (R3)",
+      "codeState": "actual-App-blocker-found",
+      "evidenceLevel": "本批App代表路径",
+      "scope": "无认证配置、重连、工具发现及实际调用；标准兼容握手，不称全部协议版本均已实测"
+    },
+    {
+      "id": "SKL-CANCEL",
+      "group": "skillsMcpAndCredentials (R3)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "GIT-CRED-STORE",
+      "group": "skillsMcpAndCredentials (R3)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "历史App代表路径，按未变边界复用",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "CHA-PLAN-GOAL",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "CHA-FOLLOWUP-HISTORY",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "历史App代表路径，按未变边界复用",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "CHA-SEARCH",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "CHA-ARCHIVE-BULK",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "CHA-RESUME-RUN",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "历史App代表路径，按未变边界复用",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "CHA-DRAFT-KEEP",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "CHA-ATTACH-INGEST-AND",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "actual-App-blocker-found",
+      "evidenceLevel": "本批App代表路径",
+      "scope": "最终APK导入、真实句柄首发、原生提交及首轮附件名称上下文；不称已完成Office或所有格式解析"
+    },
+    {
+      "id": "CHA-ATTACH-LIFECYCLE-AND",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "actual-App-blocker-found",
+      "evidenceLevel": "本批App代表路径",
+      "scope": "同批Ready/移除/源文件保留及最终主页到会话移交；取消与迟到回调另有组件用例"
+    },
+    {
+      "id": "CHA-MANUAL-COMPACT",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "APR-CALL-BOUND",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "本批App代表路径",
+      "scope": "最终APK单次批准；未接入的复用范围不再显示为可操作选项"
+    },
+    {
+      "id": "APR-TOOL-RECORD-OUTPUT",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "本批App代表路径",
+      "scope": "最终APK真实Succeeded、Recorded output及审批卡退休"
+    },
+    {
+      "id": "APR-UNTRUSTED-NO-GRANT",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "APR-DOC-EDIT-PROFILE",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SUB-DELEGATE",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "SUB-CHILD-ISOLATION",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "TMP-TOOL-CEILING",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "源码/组件记录；逐项App联调仍待完成",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "TMP-NAV-DISCARD",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "历史App代表路径，按未变边界复用",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    },
+    {
+      "id": "TMP-KEEP-PROMOTE",
+      "group": "conversationTaskApprovalTemporary (R4)",
+      "codeState": "implemented-reachable",
+      "evidenceLevel": "历史App代表路径，按未变边界复用",
+      "scope": "复用已记录的源绑定组件证据；更深UI、跨模块或设备行为在G12/G13/G14逐项接受。未列为本版逐项App通过。"
+    }
+  ],
+  "g03OwnedAliases": [
+    "JOB-BACKGROUND-LIFECYCLE",
+    "JOB-SHARED-ENV"
+  ],
+  "qualifiedCohorts": {
+    "jvm": 127,
+    "nativeLaunchRepair": 44,
+    "unchangedNativeMcpReused": 30,
+    "all41AppVerified": false
+  },
+  "knownLimits": [
+    "Samsung remains Alpha4; no Alpha7 phone acceptance claim",
+    "Full visual, IME, stylus and multi-device matrix belongs to G12/G13/G14",
+    "Only call-bound approval is currently offered; reusable task/project/host grants require the native authority contract and later permission integration",
+    "Linux, IDE, Office, system control and updater remain later goals"
+  ]
+}
