@@ -48,8 +48,9 @@ try? FileManager.default.createDirectory(at: workspace, withIntermediateDirector
 
 if arguments.contains("--synth-only") {
     do {
-        try Synthesizer.video(url: workRoot.appendingPathComponent("synth-only.mp4"), width: 320, height: 180, fps: 30, seconds: 2)
-        print("SYNTH_OK")
+        let evidence = try await Synthesizer.video(url: workRoot.appendingPathComponent("synth-only.mp4"), width: 320, height: 180, fps: 30, seconds: 2)
+        let json = try JSONEncoder().encode(evidence)
+        print("SYNTH_OK " + String(decoding: json, as: UTF8.self))
         exit(0)
     } catch {
         print("SYNTH_FAIL \(error)")
@@ -74,10 +75,9 @@ func sha256(_ url: URL) -> String { (try? FloeDigest.sha256Hex(ofFileAt: url)) ?
 enum Synthesizer {
     static func makePixelBuffer(width: Int, height: Int, index: Int) throws -> CVPixelBuffer {
         var buffer: CVPixelBuffer?
-        // Deliberately not IOSurface-backed: the harness writer stalls after
-        // ~1.6s when surface-backed source frames are appended while the audio
-        // input has not been fed yet. Production frames are written with the
-        // audio stream running in parallel, so this only affects synthesis.
+        // This small CPU-authored fixture uses ordinary BGRA memory. Audio
+        // and video are cooperatively fed below; surface choice does not
+        // substitute for serving both writer inputs under backpressure.
         guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &buffer) == kCVReturnSuccess,
               let buffer else {
             throw FloeError.internalError("could not allocate a synthesis buffer")
@@ -106,117 +106,188 @@ enum Synthesizer {
         return buffer
     }
 
+    struct VideoEvidence: Codable {
+        var path: String
+        var sha256: String
+        var videoFrames: Int
+        var durationSeconds: Double
+        var audioDecodedSamples: Int
+        var audioDurationSeconds: Double?
+        var rotated: Bool
+    }
+
+    /// Both inputs progress in timestamp order. Never wait on video while an
+    /// unserved audio input can unblock the muxer (or vice versa).
+    @discardableResult
     static func video(
         url: URL, width: Int, height: Int, fps: Double, seconds: Double,
         rotate: Bool = false, withAudio: Bool = true
-    ) throws {
-        try? FileManager.default.removeItem(at: url)
-        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-        let settings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: width,
-            AVVideoHeightKey: height
-        ]
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
-        input.expectsMediaDataInRealTime = false
-        if rotate {
-            input.transform = CGAffineTransform(rotationAngle: .pi / 2)
+    ) async throws -> VideoEvidence {
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            throw FloeError.validationFailed("synthesis requires a fresh destination; existing evidence is preserved")
         }
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: input,
-            sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-        )
-        // The video input must be added before the audio input: AVAssetWriter
-        // holds video readiness until the earliest-added effectful input has
-        // data, and an audio-first order stalls the first video append.
+        let staged = url.deletingLastPathComponent().appendingPathComponent(".synthesis-\(UUID().uuidString).mp4")
+        let writer = try AVAssetWriter(outputURL: staged, fileType: .mp4)
+        var committed = false
+        defer {
+            if writer.status == .writing { writer.cancelWriting() }
+            // Failed staging is retained for diagnosis, but never exposed as
+            // the final fixture that downstream engine cases consume.
+            if !committed { FileHandle.standardError.write(Data("SYNTHESIS_STAGING_RETAINED \(staged.path)\n".utf8)) }
+        }
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: width, AVVideoHeightKey: height
+        ])
+        input.expectsMediaDataInRealTime = false
+        if rotate { input.transform = CGAffineTransform(rotationAngle: .pi / 2) }
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input,
+            sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
         guard writer.canAdd(input) else { throw FloeError.internalError("synthesis writer rejected video input") }
         writer.add(input)
+        let sampleRate = 44_100
+        let audioFormat = withAudio ? AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate), channels: 1) : nil
         var audioInput: AVAssetWriterInput?
-        if withAudio, let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1) {
+        if withAudio {
+            guard audioFormat != nil else { throw FloeError.internalError("synthesis PCM format unavailable") }
             let audio = AVAssetWriterInput(mediaType: .audio, outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 44100.0,
-                AVNumberOfChannelsKey: 1
+                AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: Double(sampleRate), AVNumberOfChannelsKey: 1
             ])
             audio.expectsMediaDataInRealTime = false
-            if writer.canAdd(audio) { writer.add(audio); audioInput = audio }
-            _ = format
+            guard writer.canAdd(audio) else { throw FloeError.internalError("synthesis writer rejected required audio") }
+            writer.add(audio); audioInput = audio
         }
         guard writer.startWriting() else { throw writer.error ?? FloeError.internalError("synthesis writer failed") }
         writer.startSession(atSourceTime: .zero)
-
-        // Audio is written first: a pending audio input with no samples
-        // stalls video readiness after ~1.6s of video in AVAssetWriter.
-        if let audioInput, let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1) {
-            let sampleRate = 44100.0
-            let total = Int(seconds * sampleRate)
-            var written = 0
-            let chunk = 4410
-            while written < total {
-                var spins = 0
-                while !audioInput.isReadyForMoreMediaData {
-                    Thread.sleep(forTimeInterval: 0.002)
-                    spins += 1
-                    if spins > 2500 { throw FloeError.internalError("synthesis audio input never became ready (status \(writer.status.rawValue))") }
-                }
-                let frames = min(chunk, total - written)
-                var samples = [Float](repeating: 0, count: frames)
-                for index in 0..<frames {
-                    samples[index] = Float(sin(2.0 * Double.pi * 440.0 * (Double(written + index) / sampleRate))) * 0.2
-                }
-                let byteCount = frames * MemoryLayout<Float>.size
-                var blockBuffer: CMBlockBuffer?
-                guard CMBlockBufferCreateWithMemoryBlock(
-                    allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: byteCount,
-                    blockAllocator: kCFAllocatorDefault, customBlockSource: nil,
-                    offsetToData: 0, dataLength: byteCount, flags: 0, blockBufferOut: &blockBuffer
-                ) == kCVReturnSuccess, let blockBuffer else {
-                    throw FloeError.internalError("synthesis audio block failed")
-                }
-                samples.withUnsafeBytes { raw in
-                    _ = CMBlockBufferReplaceDataBytes(with: raw.baseAddress!, blockBuffer: blockBuffer, offsetIntoDestination: 0, dataLength: byteCount)
-                }
-                var timing = CMSampleTimingInfo(
-                    duration: CMTime(value: 1, timescale: Int32(sampleRate)),
-                    presentationTimeStamp: CMTime(value: Int64(written), timescale: Int32(sampleRate)),
-                    decodeTimeStamp: .invalid
-                )
-                var sampleBuffer: CMSampleBuffer?
-                guard CMSampleBufferCreateReady(
-                    allocator: kCFAllocatorDefault, dataBuffer: blockBuffer,
-                    formatDescription: format.formatDescription, sampleCount: CMItemCount(frames),
-                    sampleTimingEntryCount: 1, sampleTimingArray: &timing,
-                    sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &sampleBuffer
-                ) == noErr, let sampleBuffer else {
-                    throw FloeError.internalError("synthesis audio sample failed")
-                }
-                guard audioInput.append(sampleBuffer) else {
-                    throw writer.error ?? FloeError.internalError("synthesis audio append failed")
-                }
-                written += frames
-            }
-            audioInput.markAsFinished()
-        }
         let frameCount = Int(seconds * fps)
-        for index in 0..<frameCount {
-            var spins = 0
-            while !input.isReadyForMoreMediaData {
-                Thread.sleep(forTimeInterval: 0.002)
-                spins += 1
-                if spins > 2500 { throw FloeError.internalError("synthesis video input never became ready at frame \(index)/\(frameCount) (status \(writer.status.rawValue), pool=\(adaptor.pixelBufferPool != nil))") }
+        let audioSamples = withAudio ? Int(seconds * Double(sampleRate)) : 0
+        var videoIndex = 0, audioIndex = 0
+        var lastProgress = ProcessInfo.processInfo.systemUptime
+        func videoTime(_ index: Int) -> CMTime {
+            CMTime(value: Int64((Double(index) * 600.0 / fps).rounded()), timescale: 600)
+        }
+        func audioTime(_ index: Int) -> CMTime { CMTime(value: Int64(index), timescale: Int32(sampleRate)) }
+        while videoIndex < frameCount || audioIndex < audioSamples {
+            guard writer.status == .writing else { throw writer.error ?? FloeError.internalError("synthesis writer stopped") }
+            var progressed = false
+            let audioReady = audioIndex < audioSamples && audioInput?.isReadyForMoreMediaData == true
+            if videoIndex < frameCount, input.isReadyForMoreMediaData,
+               audioIndex == audioSamples || CMTimeCompare(videoTime(videoIndex), audioTime(audioIndex)) <= 0 || !audioReady {
+                guard adaptor.append(try makePixelBuffer(width: width, height: height, index: videoIndex),
+                                     withPresentationTime: videoTime(videoIndex)) else {
+                    throw writer.error ?? FloeError.internalError("synthesis video append failed")
+                }
+                videoIndex += 1; progressed = true
+                if videoIndex == frameCount { input.markAsFinished() }
             }
-            let buffer = try makePixelBuffer(width: width, height: height, index: index)
-            let time = CMTime(value: Int64((Double(index) * 600.0 / fps).rounded()), timescale: 600)
-            guard adaptor.append(buffer, withPresentationTime: time) else {
-                throw writer.error ?? FloeError.internalError("synthesis append failed")
+            if audioIndex < audioSamples, let audioInput, let audioFormat, audioInput.isReadyForMoreMediaData,
+               videoIndex == frameCount || CMTimeCompare(audioTime(audioIndex), videoTime(videoIndex)) <= 0 || !input.isReadyForMoreMediaData {
+                let count = min(4_410, audioSamples - audioIndex)
+                let sample = try audioSample(format: audioFormat, start: audioIndex, count: count, rate: sampleRate)
+                guard audioInput.append(sample) else { throw writer.error ?? FloeError.internalError("synthesis audio append failed") }
+                audioIndex += count; progressed = true
+                if audioIndex == audioSamples { audioInput.markAsFinished() }
+            }
+            if progressed { lastProgress = ProcessInfo.processInfo.systemUptime }
+            else {
+                guard ProcessInfo.processInfo.systemUptime - lastProgress < 15 else {
+                    throw FloeError.internalError("synthesis made no progress: video \(videoIndex)/\(frameCount), audio \(audioIndex)/\(audioSamples), status \(writer.status.rawValue)")
+                }
+                try await Task.sleep(for: .milliseconds(2))
             }
         }
+        writer.endSession(atSourceTime: CMTime(seconds: seconds, preferredTimescale: 600_000))
+        try finishSynthesis(writer)
+        // Reopen/decode before committing. A partial or truncated fixture
+        // cannot turn into a downstream engine failure or a false guard pass.
+        var evidence = try await verifyVideo(url: staged, frameCount: frameCount, fps: fps,
+                                             seconds: seconds, rotate: rotate, withAudio: withAudio)
+        evidence.sha256 = try FloeDigest.sha256Hex(ofFileAt: staged)
+        try FileManager.default.moveItem(at: staged, to: url)
+        committed = true
+        evidence.path = url.path
+        return evidence
+    }
+
+    private static func finishSynthesis(_ writer: AVAssetWriter) throws {
         let semaphore = DispatchSemaphore(value: 0)
         writer.finishWriting { semaphore.signal() }
-        semaphore.wait()
-        guard writer.status == .completed else {
-            throw writer.error ?? FloeError.internalError("synthesis finish failed")
+        guard semaphore.wait(timeout: .now() + 30) == .success, writer.status == .completed else {
+            throw writer.error ?? FloeError.internalError("synthesis finish failed or timed out")
         }
+    }
+
+    private static func audioSample(format: AVAudioFormat, start: Int, count: Int, rate: Int) throws -> CMSampleBuffer {
+        var samples = (0..<count).map { Float(sin(2.0 * Double.pi * 440.0 * Double(start + $0) / Double(rate))) * 0.2 }
+        let byteCount = count * MemoryLayout<Float>.size
+        var block: CMBlockBuffer?
+        guard CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: nil,
+            blockLength: byteCount, blockAllocator: kCFAllocatorDefault, customBlockSource: nil,
+            offsetToData: 0, dataLength: byteCount, flags: 0, blockBufferOut: &block) == noErr, let block else {
+            throw FloeError.internalError("synthesis audio block failed")
+        }
+        let copied = samples.withUnsafeBytes {
+            CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: byteCount)
+        }
+        guard copied == noErr else { throw FloeError.internalError("synthesis audio copy failed") }
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: Int32(rate)),
+            presentationTimeStamp: CMTime(value: Int64(start), timescale: Int32(rate)), decodeTimeStamp: .invalid)
+        var sample: CMSampleBuffer?
+        guard CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: block,
+            formatDescription: format.formatDescription, sampleCount: count, sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing, sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &sample) == noErr,
+            let sample else { throw FloeError.internalError("synthesis audio sample failed") }
+        return sample
+    }
+
+    static func verifyVideo(url: URL, frameCount: Int, fps: Double, seconds: Double,
+                            rotate: Bool, withAudio: Bool) async throws -> VideoEvidence {
+        let asset = AVURLAsset(url: url)
+        guard try await asset.load(.isPlayable), let video = try await asset.loadTracks(withMediaType: .video).first else {
+            throw FloeError.validationFailed("synthesis output is not playable")
+        }
+        let duration = try await asset.load(.duration).seconds
+        guard abs(duration - seconds) <= 1.0 / fps else { throw FloeError.validationFailed("synthesis duration changed") }
+        let transform = try await video.load(.preferredTransform)
+        let isRotated = abs(transform.b) > 0.9 && abs(transform.c) > 0.9
+        guard isRotated == rotate else { throw FloeError.validationFailed("synthesis rotation changed") }
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: video, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        reader.add(output)
+        guard reader.startReading() else { throw reader.error ?? FloeError.validationFailed("synthesis video cannot reopen") }
+        defer { reader.cancelReading() }
+        var decoded = 0
+        while let sample = output.copyNextSampleBuffer() {
+            guard CMSampleBufferGetImageBuffer(sample) != nil,
+                  abs(CMSampleBufferGetPresentationTimeStamp(sample).seconds - Double(decoded) / fps) < 0.00001 else {
+                throw FloeError.validationFailed("synthesis decoded video timestamp changed")
+            }
+            decoded += 1
+        }
+        guard reader.status == .completed, decoded == frameCount else {
+            throw reader.error ?? FloeError.validationFailed("synthesis decoded \(decoded), expected \(frameCount) frames")
+        }
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        var audioCount = 0
+        var audioSeconds: Double?
+        if withAudio {
+            guard audioTracks.count == 1, let audio = audioTracks.first else { throw FloeError.validationFailed("synthesis lost required audio") }
+            audioSeconds = try await audio.load(.timeRange).duration.seconds
+            let audioReader = try AVAssetReader(asset: asset)
+            let audioOutput = AVAssetReaderTrackOutput(track: audio, outputSettings: [AVFormatIDKey: kAudioFormatLinearPCM])
+            audioReader.add(audioOutput)
+            guard audioReader.startReading() else { throw audioReader.error ?? FloeError.validationFailed("synthesis audio cannot reopen") }
+            defer { audioReader.cancelReading() }
+            while let sample = audioOutput.copyNextSampleBuffer() { audioCount += CMSampleBufferGetNumSamples(sample) }
+            // AAC can carry one packet of priming/trailing samples; require
+            // the complete requested PCM timeline, within that codec packet.
+            guard audioReader.status == .completed, abs((audioSeconds ?? 0) - seconds) <= 1_024.0 / 44_100,
+                  abs(audioCount - Int(seconds * 44_100)) <= 1_024 else {
+                throw audioReader.error ?? FloeError.validationFailed("synthesis audio is truncated")
+            }
+        } else if !audioTracks.isEmpty { throw FloeError.validationFailed("silent synthesis unexpectedly has audio") }
+        return VideoEvidence(path: url.path, sha256: "", videoFrames: decoded, durationSeconds: duration,
+                             audioDecodedSamples: audioCount, audioDurationSeconds: audioSeconds, rotated: isRotated)
     }
 
     /// Real linear highlights (>1) encoded through a 10-bit PQ YUV buffer.
@@ -470,15 +541,27 @@ do {
 let sourceVideo = workspace.appendingPathComponent("source_320x180_30fps_2s.mp4")
 let rotatedVideo = workspace.appendingPathComponent("source_rotated.mp4")
 let imageSource = workspace.appendingPathComponent("source_256.png")
+var failedBaselineFixtures: Set<String> = []
 do {
-    try Synthesizer.video(url: sourceVideo, width: 320, height: 180, fps: 30, seconds: 2)
-    record("synthesize-video", status: "pass", detail: "320x180@30fps 2s with audio, sha256=\(sha256(sourceVideo).prefix(12))")
-    try Synthesizer.video(url: rotatedVideo, width: 320, height: 180, fps: 30, seconds: 1, rotate: true, withAudio: false)
-    record("synthesize-rotated", status: "pass", detail: "90° rotated 1s clip")
+    let evidence = try await Synthesizer.video(url: sourceVideo, width: 320, height: 180, fps: 30, seconds: 2)
+    record("synthesize-video", status: "pass", detail: "decoded \(evidence.videoFrames) frames / \(evidence.durationSeconds)s with \(evidence.audioDecodedSamples) PCM samples; sha256=\(evidence.sha256)")
+} catch {
+    failedBaselineFixtures.insert(sourceVideo.path)
+    record("synthesize-video", status: "fail", detail: "fixture prerequisite failed: \(error)")
+}
+do {
+    let evidence = try await Synthesizer.video(url: rotatedVideo, width: 320, height: 180, fps: 30, seconds: 1, rotate: true, withAudio: false)
+    record("synthesize-rotated", status: "pass", detail: "decoded \(evidence.videoFrames) frames with verified 90° transform")
+} catch {
+    failedBaselineFixtures.insert(rotatedVideo.path)
+    record("synthesize-rotated", status: "fail", detail: "fixture prerequisite failed: \(error)")
+}
+do {
     try Synthesizer.image(url: imageSource, width: 256, height: 256)
     record("synthesize-image", status: "pass", detail: "256x256 checkerboard PNG")
 } catch {
-    record("synthesize", status: "fail", detail: "synthesis failed: \(error)")
+    failedBaselineFixtures.insert(imageSource.path)
+    record("synthesize-image", status: "fail", detail: "fixture prerequisite failed: \(error)")
 }
 
 // MARK: - Service
@@ -503,6 +586,10 @@ func runCase(
     cancellationAfter: Double? = nil,
     validator: ((MediaEnhancementResult) -> String?)? = nil
 ) async {
+    guard !failedBaselineFixtures.contains(input.path) else {
+        record(name, status: "fail", detail: "blocked by failed synthetic input prerequisite; engine not exercised")
+        return
+    }
     let token = CancellationToken()
     if let cancellationAfter {
         Task {
@@ -910,7 +997,7 @@ do {
 // snapshot even though the "current" workspace differs between the calls.
 do {
     let workspaceB = otherWorkspace
-    try Synthesizer.video(url: workspaceB.appendingPathComponent("source_b.mp4"), width: 160, height: 96, fps: 30, seconds: 1)
+    try await Synthesizer.video(url: workspaceB.appendingPathComponent("source_b.mp4"), width: 160, height: 96, fps: 30, seconds: 1)
     let resultA = try await service.enhance(FrameProcessingRequest(
         operation: .interpolation(targetFPS: 60),
         input: workspace.appendingPathComponent("source_320x180_30fps_2s.mp4"),
