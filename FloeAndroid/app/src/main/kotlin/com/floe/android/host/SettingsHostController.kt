@@ -45,6 +45,7 @@ class SettingsHostController internal constructor(
     val roles = SettingsRoleModelController(host)
 
     private val stateFlow = MutableStateFlow(SettingsHostState())
+    private val stateMutationLock = Any()
     val state: StateFlow<SettingsHostState> = stateFlow
 
     /**
@@ -561,8 +562,16 @@ class SettingsHostController internal constructor(
         val syncRevision: Long? = null,
     )
 
+    /**
+     * True once the one-shot Application-owner start ran. Domain transitions
+     * that arrive before it are not replayed here: start() reads the current
+     * admission snapshot itself, and replaying would only duplicate reads.
+     */
+    private val started = java.util.concurrent.atomic.AtomicBoolean(false)
+
     internal fun start() {
         if (!host.readiness.value.storeReady) return
+        started.set(true)
         refreshDefaults()
         refreshPreferences()
         if (host.readiness.value.providerConfigurationAdmitted) {
@@ -570,24 +579,107 @@ class SettingsHostController internal constructor(
             // role surface alongside the existing default-agent projection.
             roles.refresh()
         }
-        if (host.readiness.value.settingsDomainsAdmitted.isNotEmpty()) {
-            refreshMemory()
-            refreshPersonalization()
-            refreshUsage()
-            refreshPrivacySummary()
-        }
+        // Each settings surface is owned by its OWN settings domain. The
+        // old all-or-nothing bundle (any settings domain -> read all four)
+        // both attempted commands whose native handler was not registered
+        // and permanently skipped a surface that was admitted a moment
+        // later.
+        refreshAdmittedSettingsSurfaces()
     }
 
     internal fun stop() {}
 
     private fun client() = host.commandClient
+
+    /**
+     * A settings surface is admitted ONLY by its exact settings domain.
+     * Provider-configuration admission is a separate domain fact and never
+     * authorizes a settings-domain command: the native command key is
+     * registered by the optional privacy/memory/usage extension, so
+     * `providerConfigurationAdmitted` would dispatch into an unbound key and
+     * leave the surface without data.
+     */
     private fun admitted(label: String): Boolean =
         host.readiness.value.storeReady &&
-            (host.readiness.value.settingsDomainsAdmitted.contains(label) ||
-                host.readiness.value.providerConfigurationAdmitted)
+            host.readiness.value.settingsDomainsAdmitted.contains(label)
+
+    /**
+     * Loads every settings surface whose own domain is currently admitted.
+     * Surfaces that are not yet admitted stay untouched and are recovered by
+     * [onSettingsDomainAvailable] when their domain really becomes ready (or
+     * by the page-open ensure).
+     */
+    private fun refreshAdmittedSettingsSurfaces() {
+        val admitted = host.readiness.value.settingsDomainsAdmitted
+        if ("settings.memory" in admitted) refreshMemory()
+        if ("settings.personalization" in admitted) refreshPersonalization()
+        if ("settings.usage" in admitted) refreshUsage()
+        if ("settings.privacy" in admitted) refreshPrivacySummary()
+    }
+
+    /**
+     * Native settings-domain transition (transition-driven, not polled).
+     * Only a domain that became AVAILABLE for the current generation runs a
+     * read; a blocked/retired transition is not treated as usable and never
+     * clears an existing projection. A new native epoch republishes every
+     * domain, so each surface re-reads against the current root instead of
+     * showing a previous generation's summary.
+     */
+    internal fun onSettingsDomainAvailable(nativeDomain: String) {
+        if (!started.get()) return
+        when (nativeDomain) {
+            "settingsMemory" -> refreshMemory()
+            "settingsPersonalization" -> refreshPersonalization()
+            "settingsUsage" -> refreshUsage()
+            "settingsPrivacy" -> refreshPrivacySummary()
+        }
+    }
+
+    /**
+     * One-shot Settings/Privacy page-open recovery (mirrors DefaultsPage).
+     *
+     * The host start is the normal first reader, but a page open must not
+     * depend on that single process-lifetime attempt: admission can race the
+     * first composition, and a lost terminal must be recoverable without a
+     * process restart. If the privacy domain is not admitted yet, re-read the
+     * REAL native readiness snapshot once and load when it becomes ready;
+     * otherwise settle a typed, retryable unavailable state — never leave the
+     * summary card silently "Loading…" forever.
+     */
+    fun ensurePrivacySummaryLoaded() {
+        // A page open is a RECOVERY for a surface with no settled data, not a
+        // blanket refresh-on-show: real counts already loaded for this
+        // process are left alone. A missing surface starts a newer read;
+        // readGeneration fences any older in-flight reply from winning.
+        // The explicit Retry action also remains available for typed errors.
+        if (stateFlow.value.privacy.summary != null) return
+        if (admitted("settings.privacy")) {
+            refreshPrivacySummary()
+            return
+        }
+        host.scope.launch(host.ioDispatcher) {
+            host.refreshDomainReadiness()
+            if (admitted("settings.privacy")) {
+                refreshPrivacySummary()
+            } else {
+                update { state ->
+                    if (state.privacy.summary == null && state.privacyStatus.error == null) {
+                        state.copy(privacyStatus = SurfaceStatus(error = "unavailable"))
+                    } else {
+                        state
+                    }
+                }
+            }
+        }
+    }
 
     private inline fun update(transform: (SettingsHostState) -> SettingsHostState) {
-        stateFlow.value = transform(stateFlow.value)
+        // Independent IO callbacks must not copy an old aggregate state over
+        // another surface's settled result. Serialize the whole read/copy/write;
+        // transforms are evaluated exactly once (some mint preview epochs).
+        synchronized(stateMutationLock) {
+            stateFlow.value = transform(stateFlow.value)
+        }
     }
 
     // -------------------------------------------------------------- defaults
@@ -2799,21 +2891,40 @@ class SettingsHostController internal constructor(
     // ---------------------------------------------------------------- privacy
 
     fun refreshPrivacySummary() {
-        if (!admitted("settings.privacy")) return
+        if (!admitted("settings.privacy")) {
+            // The privacy domain is not (yet) the owner of this surface.
+            // Settle a typed, retryable state instead of leaving the default
+            // loading flag forever; a real later admission re-reads it.
+            update { state ->
+                if (state.privacy.summary == null && state.privacyStatus.error == null) {
+                    state.copy(privacyStatus = SurfaceStatus(error = "unavailable"))
+                } else {
+                    state
+                }
+            }
+            return
+        }
         update { it.copy(privacyStatus = SurfaceStatus(loading = true)) }
         // Own read generation: a newer refresh supersedes every older reply
         // before any of it may touch the surface.
         val readGeneration = privacyReadGeneration.incrementAndGet()
         host.scope.launch(host.ioDispatcher) {
-            if (!admitted("settings.privacy")) return@launch
+            if (!admitted("settings.privacy")) {
+                if (readGeneration == privacyReadGeneration.get()) {
+                    update { it.copy(privacyStatus = SurfaceStatus(error = "unavailable")) }
+                }
+                return@launch
+            }
             // ACTUAL accepted native Root epoch, captured off-main BEFORE the
             // dispatch and re-checked after the reply. A plain read is never
             // re-routed onto a newer root; a changed root surfaces a typed,
             // retryable error instead of stale counts.
             val rootEpoch = host.nativeRootEpoch()
             if (rootEpoch == null) {
-                update {
-                    it.copy(privacyStatus = SurfaceStatus(error = "rootUnavailable"))
+                if (readGeneration == privacyReadGeneration.get()) {
+                    update {
+                        it.copy(privacyStatus = SurfaceStatus(error = "rootUnavailable"))
+                    }
                 }
                 return@launch
             }
@@ -2845,6 +2956,18 @@ class SettingsHostController internal constructor(
                             return@trackOperation
                         }
                         val root = outcome.value as? JsonObject
+                        if (root == null || !isPrivacySummaryDocument(root)) {
+                            // A completed terminal without the typed summary
+                            // document is a LOST value, not a successful empty
+                            // read. Never clear loading silently (that renders
+                            // "Loading…" forever with no retry).
+                            update {
+                                it.copy(
+                                    privacyStatus = SurfaceStatus(error = "summaryUnavailable"),
+                                )
+                            }
+                            return@trackOperation
+                        }
                         update {
                             it.copy(
                                 privacyStatus = SurfaceStatus(),
@@ -2864,7 +2987,18 @@ class SettingsHostController internal constructor(
                             it.copy(privacyStatus = SurfaceStatus(error = outcome.code))
                         }
                     }
-                    else -> Unit
+                    HostOperationOutcome.Cancelled -> {
+                        if (readGeneration != privacyReadGeneration.get()) return@trackOperation
+                        update {
+                            it.copy(privacyStatus = SurfaceStatus(error = "cancelled"))
+                        }
+                    }
+                    HostOperationOutcome.Superseded -> {
+                        if (readGeneration != privacyReadGeneration.get()) return@trackOperation
+                        update {
+                            it.copy(privacyStatus = SurfaceStatus(error = "superseded"))
+                        }
+                    }
                 }
             }
         }
@@ -3318,6 +3452,17 @@ class SettingsHostController internal constructor(
      * root always starts from empty report slots, never inheriting the old
      * root's report handle or counters.
      */
+    private fun isPrivacySummaryDocument(root: JsonObject): Boolean {
+        val history = root.obj("history") ?: return false
+        val models = root.obj("modelConfiguration") ?: return false
+        return listOf("conversationCount", "runCount", "persistedGrantCount", "inMemoryGrantCount")
+            .all { strictCount(history, it) != null } &&
+            listOf("providerCount", "modelCount", "secretReferenceCount", "preferencesSyncRevision")
+                .all { strictCount(models, it) != null } &&
+            history.string("revision")?.isNotBlank() == true &&
+            models.string("revision")?.isNotBlank() == true
+    }
+
     private fun decodePrivacySummary(
         root: JsonObject?,
         previous: PrivacySurface,

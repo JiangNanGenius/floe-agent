@@ -116,6 +116,8 @@ class SettingsRequiredActionsTest {
         )
         val host = testHost(exchange)
         host.onBootstrapCapability(com.floe.android.RuntimeBootstrapCapability.OwnedStoreReady)
+        // Search belongs to the actual memory extension, not provider readiness.
+        host.onDomainAvailability("settingsMemory", true, emptyList())
         host.settings.searchMemory("hello")
         kotlinx.coroutines.delay(200)
         val projection = host.settings.state.value.memory.searchItems.single()

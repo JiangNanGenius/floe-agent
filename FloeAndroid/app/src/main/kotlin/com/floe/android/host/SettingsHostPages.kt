@@ -1880,6 +1880,13 @@ object SettingsHostPages {
     @Composable
     fun PrivacyPage(settings: SettingsHostController) {
         val state by settings.state.collectAsState()
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            // Idempotent: the host start loads it when admitted; opening the
+            // page must also recover when admission raced the first
+            // composition or a previous read terminal was lost. This is a
+            // user-triggered one-shot, not a poll loop.
+            settings.ensurePrivacySummaryLoaded()
+        }
         val privacy = state.privacy
         val summary = privacy.summary
         val clearStatus = state.privacyClear
@@ -1897,7 +1904,18 @@ object SettingsHostPages {
         ) {
             FloeSettingsSectionCard(title = stringResource(R.string.settings_privacy_history)) {
                 if (summary == null) {
-                    FloeSectionRow(title = { StatusLine(stringResource(R.string.settings_privacy_loading)) })
+                    // A settled unavailable/error state is NOT "still loading":
+                    // show it as unavailable and let the status card below
+                    // offer the real Retry. Only an in-flight read keeps the
+                    // loading label.
+                    FloeSectionRow(title = {
+                        StatusLine(
+                            stringResource(
+                                if (state.privacyStatus.loading) R.string.settings_privacy_loading
+                                else R.string.unavailable,
+                            ),
+                        )
+                    })
                 } else {
                     FloeValueRow(
                         stringResource(R.string.settings_privacy_conversations),

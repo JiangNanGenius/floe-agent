@@ -222,7 +222,28 @@ class RuntimeHost internal constructor(
                     ),
             )
         }
+        // Settings summaries are owned by their OWN settings domain, not by
+        // provider-configuration readiness. A domain that only becomes
+        // available AFTER the one-shot settings.start() must still load its
+        // surface; this transition is the late-admission owner. The adapter
+        // publishes CHANGED states only, so this is not a poll loop.
+        if (available) settings.onSettingsDomainAvailable(domain)
         refreshConfigurationProjections()
+    }
+
+    /**
+     * One-shot re-read of the narrow native domain-readiness snapshot.
+     *
+     * Used by a user-visible Settings page open to recover when the initial
+     * `OwnedStoreReady` snapshot could not be published (JNI/readback race):
+     * the adapter's normal trigger is the bootstrap capability transition, so
+     * a first poll that returned null/unknown would otherwise leave every
+     * settings surface unadmitted for the rest of the process. This performs
+     * exactly one bounded readback and publishes real transitions only; it is
+     * never a timer/poll loop. Must run off the main thread.
+     */
+    internal suspend fun refreshDomainReadiness() {
+        g02ReadinessAdapter.pollAndPublish()
     }
 
     /**
