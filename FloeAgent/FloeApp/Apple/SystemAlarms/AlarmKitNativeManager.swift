@@ -32,6 +32,7 @@ final class AlarmKitNativeManager: SystemAlarmNativeManaging {
         case .notDetermined: return .notDetermined
         case .denied: return .denied
         case .authorized: return .authorized
+        @unknown default: return .unavailable
         }
     }
 
@@ -41,6 +42,7 @@ final class AlarmKitNativeManager: SystemAlarmNativeManaging {
         case .notDetermined: return .notDetermined
         case .denied: return .denied
         case .authorized: return .authorized
+        @unknown default: return .unavailable
         }
     }
 
@@ -136,6 +138,7 @@ final class AlarmKitNativeManager: SystemAlarmNativeManaging {
         case .countdown: return "countdown"
         case .paused: return "paused"
         case .alerting: return "alerting"
+        @unknown default: return "unknown"
         }
     }
 
