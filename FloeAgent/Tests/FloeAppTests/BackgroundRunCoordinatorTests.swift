@@ -1632,9 +1632,16 @@ struct SelectedScheduleRunTests {
             id: target.occurrenceID, runID: expected.runID,
             conversationID: expected.conversationID, at: Date())
         // The run exists but belongs to ANOTHER conversation: owner proof
-        // fails even though the ledger tie matches.
+        // fails even though the ledger tie matches. The foreign conversation
+        // must be a REAL row first: `runs.conversation_id` is foreign-keyed in
+        // the production schema, and an impossible row would abort before the
+        // tested ownership check instead of exercising it.
+        let foreignConversationID = UUID()
+        try await environment.conversationStore.saveConversation(.init(
+            id: foreignConversationID, title: "Unrelated conversation",
+            createdAt: Date(), updatedAt: Date()))
         try await environment.runStore.saveRun(.init(
-            id: expected.runID, conversationID: UUID(),
+            id: expected.runID, conversationID: foreignConversationID,
             state: "preparing", goal: schedule.prompt,
             startedAt: Date(), endedAt: nil))
 

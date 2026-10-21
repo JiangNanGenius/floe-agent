@@ -261,6 +261,21 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// failure so the next caller retries; readiness publishes only on
     /// success.
     private var scheduleOccurrenceReconcileTask: Task<Void, Error>?
+    /// One in-flight explicit selected-schedule launch attempt. The key is
+    /// the ACTUAL occurrence identity, never the schedule: simultaneous
+    /// callbacks for one logical instance await this attempt and share its
+    /// exact run, while two different due instances of the same schedule
+    /// never merge. The creating caller is the only owner that clears its
+    /// entry — identity-checked against `id` so a delayed clearer can never
+    /// delete a newer attempt — on BOTH success and failure. The entry
+    /// therefore lives only for the attempt: no finished receipt is cached,
+    /// and a transient storage/launch failure is retried by the next caller
+    /// instead of replaying the old error.
+    private struct SelectedScheduleAttempt {
+        let id: UUID
+        let task: Task<FloeSelectedScheduleRunReceipt, Error>
+    }
+    private var selectedScheduleAttempts: [UUID: SelectedScheduleAttempt] = [:]
     /// Schedules with a registered insurance reminder right now (diagnostic
     /// only; the system's pending set remains the authority).
     private var scheduleReminderScheduleIDs: Set<UUID> = []
@@ -3763,8 +3778,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// predetermined run identity instead of double-launching, and every
     /// refusal is typed (deleted/disabled/not-due/unavailable/
     /// concurrently-claimed/storage/launch failure) instead of a silent nil.
-    /// Ordinary passes, after-success arming and Run-now semantics are
-    /// untouched: this route never reads another schedule's rows.
+    /// Simultaneous callbacks for the SAME due occurrence coalesce onto one
+    /// bounded in-flight attempt (keyed by occurrence, never by schedule) and
+    /// return its exact run; the atomic SQLite claim still fences every other
+    /// coordinator and process. Ordinary passes, after-success arming and
+    /// Run-now semantics are untouched: this route never reads another
+    /// schedule's rows.
     func runSelectedSchedule(
         scheduleID: UUID
     ) async throws -> FloeSelectedScheduleRunReceipt {
@@ -3792,6 +3811,77 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             throw FloeSelectedScheduleFailure.noDueOccurrence(
                 eventDriven: schedule.cadence == .afterSuccess)
         }
+        // Simultaneous callbacks for this SAME logical occurrence share ONE
+        // in-flight launch attempt instead of one of them losing the durable
+        // claim race and reporting a false concurrency refusal. The attempt
+        // covers enqueue → claim → launch → bind and reuses the exact
+        // existing route; the atomic SQLite claim below remains the
+        // authority across coordinators/processes.
+        return try await coalescedSelectedScheduleAttempt(
+            schedule: schedule, target: target, store: store, now: now)
+    }
+
+    /// Joins the in-flight attempt for `target.occurrenceID`, or starts (and
+    /// owns) the single attempt every simultaneous caller awaits. The
+    /// attempt is an unstructured main-actor task, so one waiter's
+    /// cancellation never cancels the caller-owned launch: awaiting its
+    /// value does not propagate cancellation, and only the creating caller
+    /// removes the entry once the attempt actually finishes. A joiner never
+    /// deletes the entry (the identity check would refuse a newer attempt
+    /// anyway). Failures are evicted exactly like successes, keeping the
+    /// existing storage-fault retry semantics: the next call performs a real
+    /// retry instead of replaying a stale error.
+    private func coalescedSelectedScheduleAttempt(
+        schedule: TaskScheduleRecord,
+        target: (fireTime: Date, dedupeKey: String, occurrenceID: UUID),
+        store: SQLiteTaskScheduleStore,
+        now: Date
+    ) async throws -> FloeSelectedScheduleRunReceipt {
+        let occurrenceID = target.occurrenceID
+        if let inFlight = selectedScheduleAttempts[occurrenceID] {
+            var receipt = try await inFlight.task.value
+            // The run is shared, but THIS call joined another caller's
+            // attempt: it did not launch the task.
+            receipt.freshlyLaunched = false
+            return receipt
+        }
+        let attemptID = UUID()
+        let task = Task { @MainActor in
+            try await self.performSelectedScheduleAttempt(
+                schedule: schedule, target: target, store: store, now: now)
+        }
+        // Registration happens in the same main-actor turn as the emptiness
+        // check above (no suspension between them), so two callers can never
+        // both create an attempt for one occurrence.
+        selectedScheduleAttempts[occurrenceID] = SelectedScheduleAttempt(id: attemptID, task: task)
+        do {
+            let receipt = try await task.value
+            clearSelectedScheduleAttempt(occurrenceID: occurrenceID, attemptID: attemptID)
+            return receipt
+        } catch {
+            clearSelectedScheduleAttempt(occurrenceID: occurrenceID, attemptID: attemptID)
+            throw error
+        }
+    }
+
+    /// Identity-safe ownership of the in-flight table: a clearer only removes
+    /// the attempt it created, never a newer replacement.
+    private func clearSelectedScheduleAttempt(occurrenceID: UUID, attemptID: UUID) {
+        guard selectedScheduleAttempts[occurrenceID]?.id == attemptID else { return }
+        selectedScheduleAttempts[occurrenceID] = nil
+    }
+
+    /// The one mutable attempt behind a selected-schedule call: enqueue the
+    /// coalesced occurrence, recover/bind an already committed run, or run
+    /// the shared atomic claim → revalidate → launch → bind route. It is
+    /// never entered concurrently for the same occurrence inside one
+    /// coordinator; cross-coordinator safety remains the SQLite claim.
+    private func performSelectedScheduleAttempt(
+        schedule: TaskScheduleRecord,
+        target: (fireTime: Date, dedupeKey: String, occurrenceID: UUID),
+        store: SQLiteTaskScheduleStore,
+        now: Date
+    ) async throws -> FloeSelectedScheduleRunReceipt {
         do {
             _ = try await store.enqueueOccurrence(TaskScheduleOccurrence(
                 id: target.occurrenceID,
