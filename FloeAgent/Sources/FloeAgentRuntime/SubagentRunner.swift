@@ -838,7 +838,7 @@ public struct SubagentRunner: Sendable {
                 // The pre-call intent is now resolved: persist the resolution
                 // BEFORE the first resumed provider request so a second crash
                 // never double-executes the reads or re-holds the writes.
-                let resolutionDurable = await persistCheckpoint(Self.captureCheckpoint(
+                let resolutionDurable = await persistCheckpoint(captureCheckpoint(
                     kind: .postCall,
                     identity: checkpointIdentity,
                     request: request,
@@ -1036,7 +1036,7 @@ public struct SubagentRunner: Sendable {
                     // exact loop state plus the pending intent is committed so
                     // an interruption during execution can be resolved by the
                     // recovery-hold contract instead of guessed.
-                    let checkpointDurable = await persistCheckpoint(Self.captureCheckpoint(
+                    let checkpointDurable = await persistCheckpoint(captureCheckpoint(
                         kind: .preCall,
                         identity: checkpointIdentity,
                         request: request,
@@ -1186,7 +1186,7 @@ public struct SubagentRunner: Sendable {
                     // the truncation ledger are committed, so a crash after
                     // this point resumes by FEEDING these real results — the
                     // tools are never re-executed blindly.
-                    let settlementDurable = await persistCheckpoint(Self.captureCheckpoint(
+                    let settlementDurable = await persistCheckpoint(captureCheckpoint(
                         kind: .postCall,
                         identity: checkpointIdentity,
                         request: request,

@@ -69,7 +69,7 @@ struct OfficeFormulaVerificationTests {
                 let url = try workbook([(name: "Sheet1", data:
                     #"<row r="1"><c r="A1"><v>2</v></c><c r="B1"><f>\#(formula)</f><v>\#(saved)</v></c></row>"#)])
                 defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-                let report = OfficeFormulaVerifier.verify(snapshot: OfficeOutputSnapshot.capture(url: url))
+                let report = try OfficeFormulaVerifier.verify(snapshot: OfficeOutputSnapshot.capture(url: url))
                 #expect(report.verifiedCount == (saved == expected ? 1 : 0))
                 #expect(report.staleCount == (saved == expected ? 0 : 1))
             }
