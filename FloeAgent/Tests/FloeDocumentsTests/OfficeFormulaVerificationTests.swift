@@ -219,4 +219,68 @@ struct OfficeFormulaVerificationTests {
         #expect(report.verifiedCount == 0)
         #expect(report.unverifiedCount == 1)
     }
+
+    @Test("AVERAGE ignores boolean references, IF short circuits, ROUND rounds away from zero")
+    func commonFunctionSemantics() throws {
+        let url = try workbook([(name: "Data", data:
+            #"<row r="1"><c r="A1"><v>2</v></c><c r="B1"><f>AVERAGE(A1:A3)</f><v>3</v></c><c r="C1"><f>IF(A1&gt;0,ROUND(-2.55,1),1/0)</f><v>-2.6</v></c></row>"#
+            + #"<row r="2"><c r="A2" t="b"><v>1</v></c></row><row r="3"><c r="A3"><v>4</v></c></row>"#)])
+        let report = OfficeFormulaVerifier.verify(snapshot: try OfficeOutputSnapshot.capture(url: url))
+        #expect(report.verifiedCount == 2)
+        #expect(report.failures.isEmpty)
+    }
+
+    @Test("stale intermediate formula caches cannot certify dependent caches")
+    func recomputesFormulaDependencies() throws {
+        let url = try workbook([(name: "Data", data:
+            #"<row r="1"><c r="A1"><v>2</v></c><c r="B1"><f>A1+1</f><v>90</v></c><c r="C1"><f>B1+1</f><v>91</v></c></row>"#)])
+        let report = OfficeFormulaVerifier.verify(snapshot: try OfficeOutputSnapshot.capture(url: url))
+        #expect(report.staleCount == 2)
+        #expect(!report.isClean)
+    }
+
+    @Test("formula dependencies keep their own sheet and escaped names")
+    func qualifiedDependencyContext() throws {
+        let url = try workbook([
+            (name: "Data's", data: #"<row r="1"><c r="A1"><v>8</v></c><c r="B1"><f>IF(A1&gt;0,A1+1,0)</f><v>9</v></c></row>"#),
+            (name: "Report", data: #"<row r="1"><c r="A1"><v>100</v></c><c r="B1"><f>'Data''s'!B1+1</f><v>10</v></c></row>"#)])
+        let report = OfficeFormulaVerifier.verify(snapshot: try OfficeOutputSnapshot.capture(url: url))
+        #expect(report.verifiedCount == 2)
+    }
+
+    @Test("missing sheets and circular references remain unverified")
+    func refusesUnknownDependencyState() throws {
+        let url = try workbook([(name: "Data", data:
+            #"<row r="1"><c r="A1"><f>Ghost!A1+1</f><v>1</v></c><c r="B1"><f>C1+1</f><v>2</v></c><c r="C1"><f>B1-1</f><v>1</v></c></row>"#)])
+        let report = OfficeFormulaVerifier.verify(snapshot: try OfficeOutputSnapshot.capture(url: url))
+        #expect(report.unverifiedCount == 3)
+        #expect(report.verifiedCount == 0)
+    }
+
+    @Test("literal booleans differ from references and COUNT ignores reference errors")
+    func aggregateTypeSemantics() throws {
+        let url = try workbook([(name: "Data", data:
+            #"<row r="1"><c r="A1" t="b"><v>1</v></c><c r="B1" t="e"><v>#DIV/0!</v></c><c r="C1"><f>SUM(TRUE,A1)</f><v>1</v></c><c r="D1"><f>COUNT(A1:B1)</f><v>0</v></c></row>"#)])
+        let report = OfficeFormulaVerifier.verify(snapshot: try OfficeOutputSnapshot.capture(url: url))
+        #expect(report.verifiedCount == 2)
+    }
+
+    @Test("arithmetic strings, excessive nesting and unsupported formulas are never certified")
+    func boundedUnsupportedGrammar() throws {
+        let url = try workbook([(name: "Data", data:
+            #"<row r="1"><c r="A1" t="str"><f>&quot;a&quot;+&quot;b&quot;</f><v>ab</v></c><c r="B1"><f>ROUND(1,100)</f><v>1</v></c></row>"#)])
+        let snapshot = try OfficeOutputSnapshot.capture(url: url)
+        let report = OfficeFormulaVerifier.verify(snapshot: snapshot)
+        #expect(report.unverifiedCount == 2)
+        var record = try #require(snapshot.formulaCells.first)
+        record.formula = String(repeating: "(", count: 1000) + "1" + String(repeating: ")", count: 1000)
+        if case .unsupported = OfficeFormulaEvaluator(snapshot: snapshot).evaluate(record) {} else {
+            Issue.record("Deep nesting should be refused")
+        }
+        record.formula = "SUM(A1:XFD1048576)"
+        if case .unsupported = OfficeFormulaEvaluator(snapshot: snapshot).evaluate(record) {} else {
+            Issue.record("Huge ranges must fail before materializing their cells")
+        }
+    }
+
 }
