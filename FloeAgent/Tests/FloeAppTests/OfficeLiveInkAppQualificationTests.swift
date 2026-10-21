@@ -239,12 +239,22 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
                 let facts = OfficeFileSession.hostRenderDiagnostics(native)
                 return facts["stage"] == "visible-render" && facts["docLoaded"] == "1"
             }
+            // Opening a workbook may still deliver its initial calculation
+            // and clean-state notifications after first paint. Establish the
+            // baseline only once the real owner/idle-save path proves clean;
+            // do not clear a dirty latch or explicitly save to manufacture it.
+            let startupDeadline = ContinuousClock.now.advanced(by: .seconds(30))
+            var startupDirty = await office.hasLocalEditsToProtect()
+            while startupDirty && ContinuousClock.now < startupDeadline {
+                try await Task.sleep(for: .milliseconds(250))
+                startupDirty = await office.hasLocalEditsToProtect()
+            }
+            try await attachLiveDiagnostics(web, label: "workbook-startup-before-engine-edit")
+            XCTAssertFalse(startupDirty, "The opened workbook must settle clean through its real idle path before typing")
             let originalDocument = try await store.document(document.id)
             let originalRevision = originalDocument.revision
             let originalResource = try await store.resourceURL(try XCTUnwrap(originalDocument.officeResourceID))
             let originalSHA = try FloeDigest.sha256Hex(ofFileAt: originalResource)
-            let cleanBefore = await office.hasLocalEditsToProtect()
-            XCTAssertFalse(cleanBefore, "A freshly opened committed workbook must prove clean")
 
             // Real engine edit stimulus (page-level, not the tool layer):
             // the production UNO dispatcher selects documented cell A3 and
@@ -721,14 +731,14 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
                     mapHook:window.L?.Map?.prototype?.floeExplicitSaveInstalled === true,
                     nativeHandler:!!window.webkit?.messageHandlers?.floeOfficeDocumentModified,
                     page:location.pathname.split('/').pop()},
-                pen:window.__floeOfficePenState(),
+                pen:typeof window.__floeOfficePenState === 'function' ? window.__floeOfficePenState() : null,
                 preview:window.__floeOfficePenPreview ? window.__floeOfficePenPreview() : null,
                 viewport:{width:innerWidth,height:innerHeight,scrollX,scrollY,
                     visualScale:visualViewport?.scale ?? null},
                 canvas:{width:c.width,height:c.height,left:r.left,top:r.top,widthCSS:r.width,heightCSS:r.height},
                 layout:{name:app.activeDocument.activeLayout.constructor.name,
                     zoom:app.map.getZoom(),dpiScale:app.dpiScale,twipsToPixels:app.twipsToPixels,
-                    anchor:a.myTopLeft,size:a.size},
+                    anchor:a?.myTopLeft ?? null,size:a?.size ?? null},
                 paths:svg ? Array.from(svg.children).map(p=>({d:p.getAttribute('d'),
                     color:p.getAttribute('stroke'),width:p.getAttribute('stroke-width'),
                     opacity:p.getAttribute('stroke-opacity')})) : []};
