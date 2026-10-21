@@ -1283,7 +1283,7 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
                     throw SharedDocumentsError.parentNotFound(targetParent)
                 }
             }
-            if targetParent == id || (try Self.isDescendant(db, ancestorID: id, of: targetParent)) {
+            if try (targetParent == id || Self.isDescendant(db, ancestorID: id, of: targetParent)) {
                 throw SharedDocumentsError.storageCorrupted("move would create a folder cycle")
             }
             if try Self.nameCollisionExists(db, parentID: targetParent, name: targetName, excluding: id) {
@@ -1350,7 +1350,7 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
                         throw SharedDocumentsError.parentNotFound(targetParent)
                     }
                 }
-                if targetParent == id || (try Self.isDescendant(db, ancestorID: id, of: targetParent)) {
+                if try (targetParent == id || Self.isDescendant(db, ancestorID: id, of: targetParent)) {
                     throw SharedDocumentsError.storageCorrupted("move would create a folder cycle")
                 }
                 if try Self.nameCollisionExists(db, parentID: targetParent, name: targetName, excluding: id) {
