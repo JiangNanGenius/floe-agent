@@ -794,10 +794,61 @@ struct BrowserPreviewOwnershipTests {
         await #expect(throws: (any Error).self) {
             _ = try await port.capturePage(conversationID: owner, runID: UUID())
         }
-        // A foreign task's capture is refused even though it is now visible.
+        // The newly visible task owns only an initial blank tab. It cannot
+        // stand in for the requesting owner's navigated capture source.
         await #expect(throws: (any Error).self) {
             _ = try await port.capturePage(conversationID: visibleTask, runID: nil)
         }
     }
+    @Test("Page capture rechecks cancellation and owner/run scope after observation", arguments: ["cancel", "supersede", "release"])
+    func captureFencesAfterObservation(_ boundary: String) async throws {
+        let environment = AppEnvironment.preview()
+        let center = environment.browserCenter
+        let owner = UUID()
+        let captureRun = UUID()
+        center.bind(to: owner)
+        center.recordOwnerRun(conversationID: owner, runID: captureRun)
+        defer { center.discard(conversationID: owner) }
+        let session = try #require(center.session(for: owner))
+        let tab = try #require(session.activeTabID)
+        let webView = try #require(session.activeWebView)
+        webView.loadHTMLString(
+            "<!doctype html><html><body>capture-fence</body></html>",
+            baseURL: URL(string: "https://example.com/capture-fence")
+        )
+        let loaded = await center.execute(
+            BrowserCommand(sessionID: session.sessionID, tabID: tab, action: .wait(.load)), in: owner
+        )
+        #expect(loaded.status == .ok)
+
+        let gate = PreviewStartGate()
+        let port = BrowserPageCapturePort(environment: environment, afterObservation: { result in
+            // The race starts only after a real successful owner-page read,
+            // so an unrelated observation error cannot satisfy the refusal.
+            #expect(result.status == .ok)
+            #expect(result.page?.url.contains("example.com/capture-fence") == true)
+            await gate.suspendFirstArrival()
+        })
+        let capture = Task { try await port.capturePage(conversationID: owner, runID: captureRun) }
+        await gate.waitUntilSuspended()
+        switch boundary {
+        case "cancel": capture.cancel()
+        case "supersede": center.recordOwnerRun(conversationID: owner, runID: UUID())
+        case "release":
+            center.discard(conversationID: owner)
+            center.bind(to: owner)
+            #expect(center.session(for: owner) !== session)
+        default: Issue.record("Unknown capture boundary")
+        }
+        let current = center.session(for: owner)
+        gate.release()
+        if boundary == "cancel" {
+            await #expect(throws: CancellationError.self) { _ = try await capture.value }
+        } else {
+            await #expect(throws: (any Error).self) { _ = try await capture.value }
+        }
+        #expect(center.session(for: owner) === current)
+    }
+
 }
 #endif

@@ -845,8 +845,20 @@ struct CanvasCADDesignExportPort: DesignCADExportPort {
 @MainActor
 struct BrowserPageCapturePort: DesignPageCapturePort {
     let environment: AppEnvironment
+    /// A lifecycle observer may suspend after the real browser read. It cannot
+    /// replace that result; final scope/cancellation checks still run afterward.
+    private let afterObservation: (@MainActor (BrowserResult) async -> Void)?
+
+    init(
+        environment: AppEnvironment,
+        afterObservation: (@MainActor (BrowserResult) async -> Void)? = nil
+    ) {
+        self.environment = environment
+        self.afterObservation = afterObservation
+    }
 
     func capturePage(conversationID: UUID, runID: UUID?) async throws -> (snapshotJSON: Data, screenshotPNG: Data?) {
+        try Task.checkCancellation()
         let center = environment.browserCenter
         // Exact task binding: capture only the requesting task's own session,
         // which may be running while another task's panel is visible. There is
@@ -855,16 +867,20 @@ struct BrowserPageCapturePort: DesignPageCapturePort {
         guard let session = center.session(for: conversationID) else {
             throw FloeError.validationFailed("This task's browser has no open page to capture")
         }
-        // Attribute the capture to the actual admitted run. A stale run
-        // identity (an earlier, superseded run of the same task) is refused
-        // instead of silently attaching to the newest run.
-        if let runID, let recorded = center.recordedOwnerRun(for: conversationID), recorded != runID {
-            throw FloeError.validationFailed("Page capture run is not this task's active run")
-        }
+        try validateScope(session, center: center, conversationID: conversationID, runID: runID)
         let command = BrowserCommand(sessionID: session.sessionID, action: .observe(cursor: nil))
         let result = await center.execute(command, in: conversationID)
+        if let afterObservation { await afterObservation(result) }
+        try Task.checkCancellation()
+        // Observation yields to WebKit. Release/recreation or run admission
+        // during that await cannot authorize the old completion.
+        try validateScope(session, center: center, conversationID: conversationID, runID: runID)
         guard result.status == .ok, let page = result.page else {
             throw FloeError.validationFailed("Page capture failed: \(result.status.rawValue)")
+        }
+        let pageURL = page.url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pageURL.isEmpty, pageURL.caseInsensitiveCompare("about:blank") != .orderedSame else {
+            throw FloeError.validationFailed("This task's browser has no open page to capture")
         }
         // Privacy-filtered locator snapshot: url/title/viewport/scroll plus
         // non-form visual text regions. Full DOM nodes (which can carry form
@@ -916,7 +932,25 @@ struct BrowserPageCapturePort: DesignPageCapturePort {
         } else {
             screenshot = nil
         }
+        try Task.checkCancellation()
         return (snapshotJSON, screenshot)
+    }
+
+    private func validateScope(
+        _ session: BrowserTaskSession,
+        center: BrowserSessionCenter,
+        conversationID: UUID,
+        runID: UUID?
+    ) throws {
+        guard center.session(for: conversationID) === session, !session.isReleased else {
+            throw FloeError.validationFailed("This task's browser session was released")
+        }
+        // A supplied runtime run must be the exact admitted run. nil retains
+        // the existing explicit UI/manual capture path; never substitute the
+        // conversation's newest run for a supplied original run.
+        if let runID, center.recordedOwnerRun(for: conversationID) != runID {
+            throw FloeError.validationFailed("Page capture run is not this task's active run")
+        }
     }
 }
 

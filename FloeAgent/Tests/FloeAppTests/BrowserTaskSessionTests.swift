@@ -836,6 +836,17 @@ struct BrowserTaskSessionTests {
         #expect(rerequested.runID == parentRun)
 
         // Durable recovery consumes the exact original run only.
+        // Recovery is valid only after the user returns control. Exercise
+        // the real return transition with an undelivered outbox receipt.
+        center.deliverHandoff = { _, _ in
+            throw FloeError.validationFailed("synthetic return delivery failure")
+        }
+        await center.returnToAgent()
+        let returning = try #require(center.handoff(for: owner))
+        #expect(returning.returning)
+        #expect(returning.id == receipt.id)
+        #expect(center.session(for: owner)?.isUserControlling == true)
+
         var attempts: [BrowserSessionCenter.Handoff] = []
         center.deliverHandoff = { event, _ in
             attempts.append(event)
@@ -910,6 +921,17 @@ struct BrowserTaskSessionTests {
             as: main
         )
         #expect(center.handoff(for: owner)?.runID == mainRun)
+
+        // Recovery is valid only after the user returns control. Exercise
+        // the real return transition with an undelivered outbox receipt.
+        center.deliverHandoff = { _, _ in
+            throw FloeError.validationFailed("synthetic return delivery failure")
+        }
+        await center.returnToAgent()
+        let returning = try #require(center.handoff(for: owner))
+        #expect(returning.returning)
+        #expect(returning.id == receipt.id)
+        #expect(center.session(for: owner)?.isUserControlling == true)
 
         var attempts = 0
         center.deliverHandoff = { _, _ in
