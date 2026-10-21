@@ -14,6 +14,8 @@
 //     NEW file with a matching receipt digest;
 //   * a representative explicit command (Excel row insert) really lands in the
 //     reopened package (row count read back by the bounded OOXML reader);
+//   * exact Excel sort and AutoFilter persist the requested worksheet/range
+//     through the real engine and survive engine reopen;
 //   * `excel.recalculate` verifies persisted cached values through
 //     `OfficeFormulaVerifier` on the reopened copy;
 //   * an existing different output is refused without touching it;
@@ -36,6 +38,7 @@
 #if canImport(UIKit) && canImport(FloeOfficeNative)
 import Foundation
 import Testing
+import ZIPFoundation
 import FloeCore
 import FloeDocuments
 import FloeExecution
@@ -174,6 +177,174 @@ struct OfficeNativeAutomaticExecutionTests {
         #expect(!receipt.verified.isEmpty, "the receipt must carry the verified facts")
     }
 
+
+    private func packageMember(_ url: URL, _ member: String) throws -> Data {
+        let archive = try Archive(url: url, accessMode: .read)
+        let entry = try #require(archive[member])
+        try #require(entry.uncompressedSize <= 16 * 1_024 * 1_024)
+        var bytes = Data()
+        _ = try archive.extract(entry) { bytes.append($0) }
+        return bytes
+    }
+
+    /// Derive only an isolated data-only copy of the real engine-loadable
+    /// budget package. Exact sort rejects formulas and merges anywhere on the
+    /// worksheet. Keep every other package member byte-for-byte; evaluate the
+    /// six existing budget formulas to their actual values and unmerge A1:D1.
+    /// The bundled fixture and the staged original are never rewritten.
+    private func stageSortableSource(_ root: URL, original: URL) throws -> URL {
+        let member = "xl/worksheets/sheet1.xml"
+        var xml = String(decoding: try packageMember(original, member), as: UTF8.self)
+        let replacements = [
+            (#"<mergeCells count="1"><mergeCell ref="A1:D1"/></mergeCells>"#, ""),
+            ("<f>B3*C3</f><v></v>", "<v>600</v>"),
+            ("<f>B4*C4</f><v></v>", "<v>300</v>"),
+            ("<f>B5*C5</f><v></v>", "<v>250</v>"),
+            ("<f>B6*C6</f><v></v>", "<v>200</v>"),
+            ("<f>B7*C7</f><v></v>", "<v>150</v>"),
+            ("<f>SUM(D3:D7)</f><v></v>", "<v>1500</v>")
+        ]
+        for (before, after) in replacements {
+            try #require(xml.components(separatedBy: before).count == 2,
+                         "real budget fixture changed; review the bounded derivation")
+            xml = xml.replacingOccurrences(of: before, with: after)
+        }
+        try #require(!xml.contains("<f>") && !xml.contains("<mergeCells"))
+        let source = root.appendingPathComponent("native-budget-sortable.xlsx")
+        let input = try Archive(url: original, accessMode: .read)
+        let output = try Archive(url: source, accessMode: .create)
+        for entry in input where entry.type == .file {
+            let bytes: Data
+            if entry.path == member { bytes = Data(xml.utf8) }
+            else { bytes = try packageMember(original, entry.path) }
+            try output.addEntry(with: entry.path, type: .file, uncompressedSize: Int64(bytes.count),
+                                compressionMethod: .deflate) { position, size in
+                bytes.subdata(in: Int(position)..<(Int(position) + size))
+            }
+        }
+        return source
+    }
+
+    @Test("exact sort uses the real native engine and persists the requested numeric rectangle")
+    @MainActor
+    func exactSortUsesRealEngine() async throws {
+        let root = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (original, originalSHA) = try stageSource(root)
+        let originalBytes = try Data(contentsOf: original)
+        #expect(originalSHA == "d528d356a062065d0d626927ca78403f1ed492796810e73934db91f3362f40a7")
+        let source = try stageSortableSource(root, original: original)
+        let sourceBytes = try Data(contentsOf: source)
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: source)
+        let originalPackage = try Archive(url: original, accessMode: .read)
+        let derivedPackage = try Archive(url: source, accessMode: .read)
+        #expect(Set(originalPackage.map(\.path)) == Set(derivedPackage.map(\.path)))
+        for entry in originalPackage where entry.type == .file && entry.path != "xl/worksheets/sheet1.xml" {
+            #expect(try packageMember(source, entry.path) == packageMember(original, entry.path))
+        }
+        let manifest = try OfficeExplicitTargets.read(url: source)
+        try #require(manifest.sheets.count == 1)
+        let target = try #require(manifest.sheets.first)
+        #expect(target.member == "xl/worksheets/sheet1.xml")
+        #expect(target.sheetName == "Budget")
+        #expect(target.sheetIndex == 0)
+        #expect(manifest.baseSHA256 == sourceSHA)
+        let before = try OfficeOutputSnapshot.capture(url: source)
+        #expect(before.formulaCells.isEmpty)
+        let beforeCells = try #require(before.cachedCellsBySheet[target.member])
+        #expect((3...7).compactMap { beforeCells["C\($0)"].flatMap { Double($0.value) } }
+                == [600, 15, 12.5, 200, 150])
+
+        // No inferred header: all five rows are data. The first column of
+        // C3:D7 is the unique numeric key; D carries the associated amount.
+        let commands: [OfficeEngineCommand] = [
+            .explicit(.excelSort(target, range: "C3:D7", ascending: false))
+        ]
+        let authorityBinding = binding(document: source.lastPathComponent, root: root)
+        let receipt = try await OfficeCommandCenter().applyAutomatic(
+            proposal: try proposal(document: source.lastPathComponent, sha: manifest.baseSHA256,
+                                   commands: commands),
+            authorization: try await authorization(binding: authorityBinding),
+            relativeOutput: "native-budget-exact-sort.xlsx",
+            requestID: "app-native-exact-sort", access: access(root))
+        let output = root.appendingPathComponent(receipt.outputRelativePath)
+        let after = try OfficeOutputSnapshot.capture(url: output)
+        let cells = try #require(after.cachedCellsBySheet[target.member])
+        let expected: [[Double]] = [[600, 600], [200, 200], [150, 150], [15, 300], [12.5, 250]]
+        for (offset, pair) in expected.enumerated() {
+            for (column, value) in zip(["C", "D"], pair) {
+                let cell = try #require(cells["\(column)\(offset + 3)"])
+                #expect(cell.type == .number)
+                #expect(Double(cell.value) == value)
+            }
+        }
+        #expect(after.sheetNameByMember[target.member] == "Budget")
+        #expect(after.sheetNamesInOrder == ["Budget"])
+        #expect(after.firstSheetColumnA == before.firstSheetColumnA)
+        #expect(cells["B3"] == beforeCells["B3"])
+        #expect(cells["D8"] == beforeCells["D8"])
+        #expect(try Data(contentsOf: source) == sourceBytes)
+        #expect(try Data(contentsOf: original) == originalBytes)
+        #expect(try FloeDigest.sha256Hex(ofFileAt: original) == originalSHA)
+        #expect(receipt.saved && receipt.sourceUnchanged && !receipt.replay)
+        #expect(receipt.baseSHA256 == manifest.baseSHA256)
+        #expect(receipt.sourceSHA256 == manifest.baseSHA256)
+        #expect(receipt.outputSHA256 == after.sha256)
+        #expect(receipt.commands == ["excel.exactSort"])
+        #expect(receipt.operationID == authorityBinding.operationID)
+        #expect(receipt.engineReopen == "engine-opened")
+        #expect(!receipt.sessionEngine.isEmpty)
+        #expect(receipt.verified.contains("saved exact target verified: \(target.member):sort:C3:D7"))
+    }
+
+    @Test("exact AutoFilter uses the real native engine and persists its exact worksheet range")
+    @MainActor
+    func exactAutoFilterUsesRealEngine() async throws {
+        let root = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (source, originalSHA) = try stageSource(root)
+        let originalBytes = try Data(contentsOf: source)
+        let manifest = try OfficeExplicitTargets.read(url: source)
+        try #require(manifest.sheets.count == 1)
+        let target = try #require(manifest.sheets.first)
+        #expect(target.member == "xl/worksheets/sheet1.xml")
+        #expect(target.sheetName == "Budget")
+        #expect(target.sheetIndex == 0)
+        #expect(originalSHA == "d528d356a062065d0d626927ca78403f1ed492796810e73934db91f3362f40a7")
+        let before = try OfficeOutputSnapshot.capture(url: source)
+        #expect(!before.hasAutoFilter)
+        let commands: [OfficeEngineCommand] = [
+            .explicit(.excelAutoFilter(target, range: "B2:C7"))
+        ]
+        let authorityBinding = binding(document: source.lastPathComponent, root: root)
+        let receipt = try await OfficeCommandCenter().applyAutomatic(
+            proposal: try proposal(document: source.lastPathComponent, sha: originalSHA, commands: commands),
+            authorization: try await authorization(binding: authorityBinding),
+            relativeOutput: "native-budget-exact-filter.xlsx",
+            requestID: "app-native-exact-filter", access: access(root))
+        let output = root.appendingPathComponent(receipt.outputRelativePath)
+        let after = try OfficeOutputSnapshot.capture(url: output)
+        let collector = OfficeNativeAutoFilterCollector()
+        let parser = XMLParser(data: try packageMember(output, target.member))
+        parser.shouldProcessNamespaces = true
+        parser.delegate = collector
+        try #require(parser.parse(), "saved worksheet must parse as XML")
+        #expect(collector.references == ["B2:C7"])
+        #expect(after.hasAutoFilter)
+        #expect(after.sheetNameByMember[target.member] == "Budget")
+        #expect(after.sheetNamesInOrder == ["Budget"])
+        #expect(try Data(contentsOf: source) == originalBytes)
+        #expect(try FloeDigest.sha256Hex(ofFileAt: source) == originalSHA)
+        #expect(receipt.saved && receipt.sourceUnchanged && !receipt.replay)
+        #expect(receipt.baseSHA256 == originalSHA && receipt.sourceSHA256 == originalSHA)
+        #expect(receipt.outputSHA256 == after.sha256)
+        #expect(receipt.commands == ["excel.exactAutoFilter"])
+        #expect(receipt.operationID == authorityBinding.operationID)
+        #expect(receipt.engineReopen == "engine-opened")
+        #expect(!receipt.sessionEngine.isEmpty)
+        #expect(receipt.verified.contains("saved exact target verified: \(target.member):filter"))
+    }
+
     @Test("excel.recalculate verifies the real engine's persisted cached values on the reopened copy")
     @MainActor
     func recalculationIsVerifiedByRealEngine() async throws {
@@ -307,6 +478,22 @@ struct OfficeNativeAutomaticExecutionTests {
         }
         #expect(!reason.isEmpty)
         await gate.resetForTesting()
+    }
+}
+
+
+/// Independent read-back of the exact filter ref, rather than the workbook-
+/// wide `hasAutoFilter` flag (which could pass for a filter on another range).
+private final class OfficeNativeAutoFilterCollector: NSObject, XMLParserDelegate {
+    private(set) var references: [String] = []
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?,
+                attributes attributeDict: [String: String]) {
+        if elementName == "autoFilter",
+           namespaceURI == "http://schemas.openxmlformats.org/spreadsheetml/2006/main" {
+            references.append(attributeDict["ref"] ?? "")
+        }
     }
 }
 
