@@ -192,10 +192,20 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             let generation = session.printRequestGeneration
             // This is the exact native message sent by the existing engine's
             // Print toolbar. It must open options BEFORE any PDF is generated.
+            let requestedAt = Date()
             _ = try await web.evaluateJavaScript("(() => { window.webkit.messageHandlers.lok.postMessage('PRINT'); return true; })()")
             try await wait("native PRINT routed to app options") { session.printRequestGeneration == generation + 1 }
             try await wait("options sheet mounted") { window.rootViewController?.presentedViewController != nil }
-            try await Task.sleep(for: .seconds(2))
+            try await wait("first print preparation settled") {
+                OfficeStageRecorder.shared.events.contains {
+                    $0.at >= requestedAt && ($0.stage == "export.prepare.ok" || $0.stage == "export.prepare.refused")
+                }
+            }
+            let firstPreparation = try XCTUnwrap(OfficeStageRecorder.shared.events.first {
+                $0.at >= requestedAt && ($0.stage == "export.prepare.ok" || $0.stage == "export.prepare.refused")
+            })
+            XCTAssertEqual(firstPreparation.stage, "export.prepare.ok",
+                           "The first native Print attempt must prepare its options, without requiring Retry: \(firstPreparation.detail)")
             attachWindow(window, "native-toolbar-print-options-app-window")
             XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha)
             window.rootViewController?.dismiss(animated: false)
