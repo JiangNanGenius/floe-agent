@@ -57,6 +57,25 @@ struct OfficeFormulaVerificationTests {
 
     // MARK: - Evaluator behaviour
 
+    @Test("compound comparisons choose the correct IF branch and reject stale saved results")
+    func compoundComparisonsVerifySavedResults() throws {
+        let cases = [
+            ("IF(A1&lt;=2,10,20)", 10), ("IF(A1&lt;=1,10,20)", 20),
+            ("IF(A1&gt;=2,10,20)", 10), ("IF(A1&gt;=3,10,20)", 20),
+            ("IF(A1&lt;&gt;3,10,20)", 10), ("IF(A1&lt;&gt;2,10,20)", 20),
+        ]
+        for (formula, expected) in cases {
+            for saved in [expected, expected + 1] {
+                let url = try workbook([(name: "Sheet1", data:
+                    #"<row r="1"><c r="A1"><v>2</v></c><c r="B1"><f>\#(formula)</f><v>\#(saved)</v></c></row>"#)])
+                defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+                let report = OfficeFormulaVerifier.verify(snapshot: OfficeOutputSnapshot.capture(url: url))
+                #expect(report.verifiedCount == (saved == expected ? 1 : 0))
+                #expect(report.staleCount == (saved == expected ? 0 : 1))
+            }
+        }
+    }
+
     @Test("SUM over a same-sheet range verifies against the persisted cache")
     func sumVerified() throws {
         let url = try workbook([(name: "Sheet1", data:
