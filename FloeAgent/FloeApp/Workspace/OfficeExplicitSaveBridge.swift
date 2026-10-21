@@ -500,23 +500,7 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
             };
             const stateChanged = proto.onCommandStateChanged;
             if (typeof stateChanged !== 'function') return;
-            window.floeModificationTrackingInstalled = true;
-            window.floeModifiedSinceCommit = false;
             proto.onCommandStateChanged = function (event) {
-                if (event.commandName === '.uno:ModifiedStatus'
-                    && (event.state === true || event.state === 'true')) {
-                    const wasModified = window.floeModifiedSinceCommit === true;
-                    window.floeModifiedSinceCommit = true;
-                    // Emit from the same callback that owns the sticky latch.
-                    // Wrapping this prototype again after instances registered
-                    // their bound listener leaves those listeners on the old
-                    // function and loses the autosave scheduling edge.
-                    if (!wasModified) {
-                        try {
-                            window.webkit.messageHandlers.floeOfficeDocumentModified.postMessage('modified');
-                        } catch (_) {}
-                    }
-                }
                 if (event.commandName === '.uno:CharFontName') {
                     const control = document.getElementById('fontnamecombobox');
                     if (control && typeof control.onSetText === 'function') control.onSetText(event.state);
@@ -539,6 +523,13 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
             if (!proto || typeof proto.fire !== 'function' || proto.floeExplicitSaveInstalled) return;
             proto.floeExplicitSaveInstalled = true;
             const fire = proto.fire;
+            // Track the engine event at its source. Notebookbar UI builders
+            // register their current function as a listener and may already
+            // have done so before the document-end controls script runs.
+            // Their cached state remains readable even when that later
+            // prototype wrapper never sees a modification.
+            window.floeModificationTrackingInstalled = true;
+            window.floeModifiedSinceCommit = false;
             let pendingMap = null;
             let savedStatus = null;
             // Bounded watchdog: if the native handoff is lost (the message is
@@ -565,6 +556,17 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
                     status.showSaveFailedStatus();
             };
             proto.fire = function (type, event) {
+                if (type === 'commandstatechanged' && event
+                    && event.commandName === '.uno:ModifiedStatus'
+                    && (event.state === true || event.state === 'true')) {
+                    const wasModified = window.floeModifiedSinceCommit === true;
+                    window.floeModifiedSinceCommit = true;
+                    if (!wasModified) {
+                        try {
+                            window.webkit.messageHandlers.floeOfficeDocumentModified.postMessage('modified');
+                        } catch (_) {}
+                    }
+                }
                 if (type !== 'postMessage' || !event || event.msgId !== 'UI_Save')
                     return fire.apply(this, arguments);
                 // Every shipped Save entry (toolbar, notebookbar, file menu

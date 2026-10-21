@@ -15,6 +15,7 @@ import FloeTools
 import FloeSecurity
 import FloeAgentRuntime
 import FloePersistence
+import FloeEnvironments
 import FloeDocuments
 import FloeTestSupport
 @testable import FloeApp
@@ -22,13 +23,17 @@ import FloeTestSupport
 @MainActor
 final class FloeRunFileProductionChainTests: XCTestCase {
     func testNativeWordThroughCatalogRuntimeSQLiteAndFilesIntent() async throws {
+        // Tool execution resolves its environment through the process-wide
+        // routing the real app factory installs. Build the preview factory so
+        // this test installs exactly the routing it exercises instead of
+        // depending on another test's global setup.
+        let environment = AppEnvironment.preview()
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
         let conversations = SQLiteConversationStore(database: database)
         let runs = SQLiteRunStore(database: database)
         let conversationID = UUID()
         let runID = UUID()
-        let environmentID = "file-chain-environment"
         let marker = "Verified native file chain " + UUID().uuidString
         try await conversations.saveConversation(.init(
             id: conversationID, title: "File chain qualification",
@@ -45,6 +50,33 @@ final class FloeRunFileProductionChainTests: XCTestCase {
             .appendingPathComponent(runID.uuidString, isDirectory: true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: ownedRunDirectory.path))
         defer { try? FileManager.default.removeItem(at: ownedRunDirectory) }
+
+        // Register this run's OWN session container through the production
+        // run-binding path. It is owned by exactly this conversation and this
+        // workspace root, so it is the only legitimate explicit environment
+        // binding for the run — never a guessed id, another task's container
+        // or a first-project/temporary fallback.
+        let boundEnvironmentID = await ConversationCenter.ensureRunEnvironmentBinding(
+            registry: environment.environmentRegistry,
+            conversationID: conversationID,
+            taskRoot: workspace)
+        let environmentID = try XCTUnwrap(
+            boundEnvironmentID,
+            "the preview environment must register this task's own session container")
+
+        // Await cleanup on success AND failure without capturing the preview
+        // app object; only this registry actor and the exact owned IDs escape.
+        let ownedRegistry = environment.environmentRegistry
+        let registeredWorkspaceID = FloeDigest.sha256Hex(Data(
+            workspace.resolvingSymlinksInPath().standardizedFileURL.path.utf8))
+        addTeardownBlock {
+            _ = try? await ownedRegistry.remove(id: environmentID)
+            let projectContainers = await ownedRegistry
+                .containersOwned(by: registeredWorkspaceID)
+            if let project = projectContainers.first(where: { $0.kind == .project }) {
+                _ = try? await ownedRegistry.remove(id: project.id)
+            }
+        }
 
         let registry = ToolRunnerRegistry()
         registry.register(DocumentCreateWordTool(rootProvider: { workspace }))

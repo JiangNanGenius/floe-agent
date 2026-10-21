@@ -134,6 +134,8 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             XCTAssertTrue(dirtyWithVisibleInk,
                 "Visible accepted ink must read dirty before the idle save; the 282 false-clean regression lives here")
 
+            try await attachLiveDiagnostics(web, label: "word-before-idle-save")
+
             // ONLY wait for the idle debounce/coordinator now. Never call
             // explicitSave/saveInPlace/commitLiveEdits/close in this test.
             let idleDeadline = ContinuousClock.now.advanced(by: .seconds(60))
@@ -712,7 +714,14 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             const app=window.app, c=app.sectionContainer.canvas, r=c.getBoundingClientRect();
             const a=app.sectionContainer.getDocumentAnchorSection();
             const svg=document.querySelector('#floe-ink-live-preview svg');
-            return {pen:window.__floeOfficePenState(),
+            return {modifiedBridge:{
+                    installed:window.floeModificationTrackingInstalled === true,
+                    latch:window.floeModifiedSinceCommit ?? null,
+                    cached:app.map.stateChangeHandler?.getItemValue('.uno:ModifiedStatus') ?? null,
+                    mapHook:window.L?.Map?.prototype?.floeExplicitSaveInstalled === true,
+                    nativeHandler:!!window.webkit?.messageHandlers?.floeOfficeDocumentModified,
+                    page:location.pathname.split('/').pop()},
+                pen:window.__floeOfficePenState(),
                 preview:window.__floeOfficePenPreview ? window.__floeOfficePenPreview() : null,
                 viewport:{width:innerWidth,height:innerHeight,scrollX,scrollY,
                     visualScale:visualViewport?.scale ?? null},
@@ -781,39 +790,92 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
 
     /// Documented-cell engine edit stimulus (page-level, never the tool
     /// layer): the production UNO dispatcher selects a documented cell
-    /// (default A3) and commits the marker string through the engine's own
-    /// input path — an ENGINE edit, not a physical keyboard. Selection and
-    /// acceptance are read back from the engine and returned for assertions;
-    /// nothing here saves.
+    /// (default A3), then the engine's own TextInput seam types the marker
+    /// and a real Return commits the cell edit — the same textinput/key path
+    /// physical or IME typing drives. Selection, edit mode and the resulting
+    /// modified state are read back for assertions; nothing here saves.
     private static let selectCellAndEnterString = #"""
     const map = window.app && window.app.map;
     if (!map || typeof map.sendUnoCommand !== 'function')
         throw new Error('Engine UNO dispatcher unavailable');
+    const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    // The pinned sendUnoCommand silently drops commands unless the engine UI
+    // is in edit mode (control/Toolbar.js:371-379). Wait briefly for the
+    // engine's own edit entry, then fail with evidence instead of pretending
+    // the edit was attempted.
+    let editReady = false;
+    for (let i = 0; i < 60; i++) {
+        if (typeof map.isEditMode === 'function' && map.isEditMode() === true) {
+            editReady = true;
+            break;
+        }
+        await frame();
+    }
+    if (!editReady)
+        throw new Error('Engine UI is not in edit mode');
     const targetCell = (typeof cell === 'string' && /^[A-Z]+[0-9]+$/.test(cell)) ? cell : 'A3';
     const text = (typeof marker === 'string' && marker.length > 0) ? marker : 'IDLE-CELL-7';
-    const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
-    // Production cell-selection dispatch (same route the app's engine
-    // command surface uses for excelGoToCell).
-    map.sendUnoCommand('.uno:GoToCell', { 'ToPoint': { type: 'string', value: targetCell } });    for (let i = 0; i < 6; i++) await frame();
-    // Best-effort engine-side selection readback (diagnostic evidence; the
-    // authoritative cell proof is the reopened package assertion).
-    const layer = map._docLayer || (typeof map.getDocLayer === 'function' ? map.getDocLayer() : null);
-    const cursor = layer ? (layer._cellCursorXY || layer._cellCursor || null) : null;
-    const accepted = () => window.floeModifiedSinceCommit === true
-        || (map.stateChangeHandler && typeof map.stateChangeHandler.getItemValue === 'function'
-            && map.stateChangeHandler.getItemValue('.uno:ModifiedStatus') === true);
-    let path = 'sendUnoCommand:.uno:EnterString';
-    map.sendUnoCommand('.uno:EnterString', { 'String': { type: 'string', value: text } });
-    for (let i = 0; i < 6 && !accepted(); i++) await frame();
-    if (!accepted() && map._textInput && typeof map._textInput.insertText === 'function') {
-        // Engine-own text-input seam (the same input class physical keys
-        // drive); still an engine edit, never the tool layer.
-        path = 'textInput.insertText';
-        map._textInput.insertText(text);
-        for (let i = 0; i < 6 && !accepted(); i++) await frame();
+    const addressOf = () => {
+        try {
+            const address = window.app && window.app.calc && window.app.calc.cellAddress;
+            return address ? { x: address.x, y: address.y } : null;
+        } catch (_) { return null; }
+    };
+    const expected = (() => {
+        const match = /^([A-Z]+)([0-9]+)$/.exec(targetCell);
+        if (!match) return null;
+        let x = 0;
+        for (const letter of match[1])
+            x = x * 26 + (letter.charCodeAt(0) - 64);
+        return { x: x - 1, y: parseInt(match[2], 10) - 1 };
+    })();
+    // Production cell-selection dispatch: control/CalcNotifications.ts:68 in
+    // the pinned browser uses the same .uno:GoToCell/ToPoint route. The real
+    // cellcursor message updates app.calc.cellAddress, so this is an engine
+    // selection readback rather than a guessed property.
+    map.sendUnoCommand('.uno:GoToCell', { 'ToPoint': { type: 'string', value: targetCell } });
+    let address = null;
+    for (let i = 0; i < 120; i++) {
+        address = addressOf();
+        if (address && expected && address.x === expected.x && address.y === expected.y) break;
+        await frame();
     }
-    return { path: path, cell: targetCell, text: text, accepted: accepted() === true,
-        latch: window.floeModifiedSinceCommit === true, cursor: cursor };
+    if (!address || !expected || address.x !== expected.x || address.y !== expected.y)
+        throw new Error('Engine cell selection did not reach ' + targetCell + ': ' + JSON.stringify(address));
+    // Real engine text input: TextInput._sendText posts the pinned 'textinput'
+    // websocket message (layer/marker/TextInput.js:877-905 and 1268-1272),
+    // which kit/ChildSession.cpp:2205-2231 converts to ExtTextInput /
+    // EndExtTextInput. The pinned TextInput has no insertText method, so the
+    // old fallback could never run.
+    const input = map._textInput;
+    if (!input || typeof input._sendText !== 'function' || typeof input.focus !== 'function')
+        throw new Error('Engine TextInput seam unavailable');
+    input.focus(true);
+    input._sendText(text);
+    for (let i = 0; i < 6; i++) await frame();
+    // Commit with the engine's real Return path. _sendText('\n') takes the
+    // pinned _sendNewlineEvent branch, i.e. key type=input char=13 key=1280;
+    // this is the COKit route that publishes the document modified state even
+    // before any save. It is a finished cell edit, not an explicit save.
+    input._sendText('\n');
+    const modified = () => {
+        if (window.floeModifiedSinceCommit === true) return true;
+        const handler = map.stateChangeHandler;
+        if (!handler || typeof handler.getItemValue !== 'function') return false;
+        const value = handler.getItemValue('.uno:ModifiedStatus');
+        return value === true || value === 'true';
+    };
+    let observed = modified();
+    for (let i = 0; i < 120 && !observed; i++) {
+        await frame();
+        observed = modified();
+    }
+    let modifiedState = null;
+    try { modifiedState = map.stateChangeHandler.getItemValue('.uno:ModifiedStatus'); } catch (_) {}
+    return { path: 'textInput._sendText+Return', cell: targetCell, text: text,
+        accepted: observed === true, latch: window.floeModifiedSinceCommit === true,
+        modified: modifiedState, address: address, expected: expected,
+        uiEdit: map.isEditMode() === true };
     """#
 
     /// Synthetic TouchEvents enter the real canvas handlers, beginning with

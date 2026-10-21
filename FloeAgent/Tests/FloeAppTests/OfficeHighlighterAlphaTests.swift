@@ -599,7 +599,6 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
     }
 
     private func coloredRegion(in snapshot: Snapshot, within rect: CGRect?) -> Region? {
-        var minX = Int.max, minY = Int.max, maxX = Int.min, maxY = Int.min
         var scanX0 = 0, scanY0 = 0, scanX1 = snapshot.width, scanY1 = snapshot.height
         if let rect, rect.width > 4, rect.height > 4 {
             scanX0 = max(0, Int(rect.minX.rounded(.down)))
@@ -608,23 +607,52 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
             scanY1 = min(snapshot.height, Int(rect.maxY.rounded(.up)))
         }
         guard scanX1 > scanX0, scanY1 > scanY0 else { return nil }
+        // The bbox of all matches can also capture isolated anti-aliased or
+        // chrome pixels that happen to fall inside the color tolerance, which
+        // inflates the region far beyond the shaded cell. Use the largest
+        // 4-connected matching component so the stroke is localized to the
+        // cell itself.
+        let w = scanX1 - scanX0, h = scanY1 - scanY0
+        var mask = [Bool](repeating: false, count: w * h)
         for y in scanY0..<scanY1 {
             let row = y * snapshot.width
             for x in scanX0..<scanX1 {
                 let i = (row + x) * 4
-                let r = Int(snapshot.pixels[i])
-                let g = Int(snapshot.pixels[i + 1])
-                let b = Int(snapshot.pixels[i + 2])
-                guard Self.isFixtureBlue(r, g, b) else { continue }
-                if x < minX { minX = x }
-                if x > maxX { maxX = x }
-                if y < minY { minY = y }
-                if y > maxY { maxY = y }
+                if Self.isFixtureBlue(Int(snapshot.pixels[i]), Int(snapshot.pixels[i + 1]),
+                                      Int(snapshot.pixels[i + 2])) {
+                    mask[(y - scanY0) * w + (x - scanX0)] = true
+                }
             }
         }
-        guard minX <= maxX, minY <= maxY else { return nil }
-        let region = Region(x: minX, y: minY,
-                            width: maxX - minX + 1, height: maxY - minY + 1)
+        var visited = [Bool](repeating: false, count: w * h)
+        var bestCount = 0, bestX0 = 0, bestY0 = 0, bestX1 = -1, bestY1 = -1
+        var stack: [Int] = []
+        for start in 0..<(w * h) where mask[start] && !visited[start] {
+            visited[start] = true
+            stack.append(start)
+            var count = 0, mnx = Int.max, mny = Int.max, mxx = Int.min, mxy = Int.min
+            while let cur = stack.popLast() {
+                let cy = cur / w, cx = cur % w
+                count += 1
+                mnx = min(mnx, cx); mxx = max(mxx, cx)
+                mny = min(mny, cy); mxy = max(mxy, cy)
+                let left = cx > 0 ? cur - 1 : -1
+                let right = cx + 1 < w ? cur + 1 : -1
+                let up = cy > 0 ? cur - w : -1
+                let down = cy + 1 < h ? cur + w : -1
+                for nb in [left, right, up, down] where nb >= 0 && mask[nb] && !visited[nb] {
+                    visited[nb] = true
+                    stack.append(nb)
+                }
+            }
+            if count > bestCount {
+                bestCount = count
+                bestX0 = mnx; bestY0 = mny; bestX1 = mxx; bestY1 = mxy
+            }
+        }
+        guard bestCount > 0 else { return nil }
+        let region = Region(x: scanX0 + bestX0, y: scanY0 + bestY0,
+                            width: bestX1 - bestX0 + 1, height: bestY1 - bestY0 + 1)
         guard region.area >= 2_500, region.width >= 50, region.height >= 40 else { return nil }
         return region
     }

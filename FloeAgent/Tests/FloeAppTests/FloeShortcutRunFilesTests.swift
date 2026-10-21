@@ -619,24 +619,72 @@ final class FloeShortcutRunFilesTests: XCTestCase {
     }
 
     func testNotesAndTemporaryWorkspacesStayInvisible() async throws {
-        for purpose in [ConversationPurpose.notes, .temporary] {
-            let conversation = UUID()
-            try await seedConversation(conversation, purpose: purpose)
-            let run = UUID()
-            try await seedRun(conversationID: conversation, runID: run,
+        // Notes: a durable conversation row, but never a shortcut file owner.
+        let notesConversation = UUID()
+        try await seedConversation(notesConversation, purpose: .notes)
+        let notesRun = UUID()
+        try await seedRun(conversationID: notesConversation, runID: notesRun,
                           state: "completed", withTerminalProof: "irrelevant")
-            let counters = CallCounters()
-            let service = makeService(counters: counters)
-            do {
-                _ = try await service.fileResult(
-                    runID: run, expectedConversationID: conversation)
-                XCTFail("purpose \(purpose) must stay rejected")
-            } catch let error as FloeRunFilesError {
-                XCTAssertEqual(error, .runUnavailable)
-            }
-            XCTAssertEqual(counters.manifestCalls, 0)
-            XCTAssertEqual(counters.verifyCalls, 0)
+        let notesCounters = CallCounters()
+        let notesService = makeService(counters: notesCounters)
+        do {
+            _ = try await notesService.fileResult(
+                runID: notesRun, expectedConversationID: notesConversation)
+            XCTFail("a notes conversation must stay rejected")
+        } catch let error as FloeRunFilesError {
+            XCTAssertEqual(error, .runUnavailable)
         }
+        XCTAssertEqual(notesCounters.manifestCalls, 0)
+        XCTAssertEqual(notesCounters.verifyCalls, 0)
+
+        // Temporary chat is RAM-only: the production session owns the
+        // conversation/run/event rows in its in-memory stores, and the SQLite
+        // schema CHECK admits only ordinary/notes — nothing temporary may be
+        // persisted. The durable shortcut reader therefore cannot prove the
+        // owner and must refuse before any manifest or snapshot read.
+        let temporaryConversation = UUID()
+        let temporaryRun = UUID()
+        let sessionRecord = ConversationRecord(
+            id: temporaryConversation, title: "Synthetic files task",
+            createdAt: Date(), updatedAt: Date(), purpose: .temporary)
+        let sessionConversations = EphemeralConversationStore(record: sessionRecord)
+        let sessionRuns = EphemeralRunStore(hostedConversationID: temporaryConversation)
+        try await sessionRuns.saveRun(.init(
+            id: temporaryRun, conversationID: temporaryConversation, state: "completed",
+            goal: "Synthetic files goal", startedAt: Date(), endedAt: Date()))
+        let proofMessageID = UUID()
+        try await sessionConversations.appendMessage(.init(
+            id: proofMessageID, conversationID: temporaryConversation, role: "assistant",
+            content: "irrelevant", createdAt: Date(), runID: temporaryRun))
+        _ = try await sessionRuns.appendEvent(
+            runID: temporaryRun, kind: .assistantText,
+            payloadJSON: "{\"text\":\"irrelevant\"}")
+        _ = try await sessionRuns.appendEvent(
+            runID: temporaryRun, kind: .terminal,
+            payloadJSON: "{\"stopReason\":\"endTurn\",\"finalMessageID\":\"\(proofMessageID.uuidString)\"}")
+
+        // The RAM session really owns this completed run…
+        let hostedConversation = try await sessionConversations.conversation(id: temporaryConversation)
+        XCTAssertEqual(hostedConversation?.purpose, .temporary)
+        let hostedRun = try await sessionRuns.run(id: temporaryRun)
+        XCTAssertEqual(hostedRun?.conversationID, temporaryConversation)
+        // …while the durable stores own nothing for it.
+        let durableConversation = try await conversations.conversation(id: temporaryConversation)
+        let durableRun = try await runs.run(id: temporaryRun)
+        XCTAssertNil(durableConversation)
+        XCTAssertNil(durableRun)
+
+        let temporaryCounters = CallCounters()
+        let temporaryService = makeService(counters: temporaryCounters)
+        do {
+            _ = try await temporaryService.fileResult(
+                runID: temporaryRun, expectedConversationID: temporaryConversation)
+            XCTFail("a RAM-only temporary run must never surface as a shortcut result")
+        } catch let error as FloeRunFilesError {
+            XCTAssertEqual(error, .runUnavailable)
+        }
+        XCTAssertEqual(temporaryCounters.manifestCalls, 0)
+        XCTAssertEqual(temporaryCounters.verifyCalls, 0)
     }
 
     // MARK: - Caps and cancellation

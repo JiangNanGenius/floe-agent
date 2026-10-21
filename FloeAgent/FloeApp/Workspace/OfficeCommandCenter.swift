@@ -1065,12 +1065,16 @@ final class OfficeServiceNativeSession: OfficeServiceEngineSession {
     }
 
     private func resolveRender(_ result: Result<Void, Error>) {
+        // A visible-render receipt belongs to the session, not to one waiter.
+        // Opening a presentation can consume the first wait before PDF export
+        // asks again. Retain the first resolution before resuming so the next
+        // consumer observes the same receipt and a late watchdog cannot replace it.
+        guard renderSettled == nil else { return }
+        renderSettled = result
         if let waiter = renderWaiter {
             renderWaiter = nil
             waiter.resume(with: result)
-            return
         }
-        if renderSettled == nil { renderSettled = result }
     }
 
     // MARK: OfficeServiceEngineSession
