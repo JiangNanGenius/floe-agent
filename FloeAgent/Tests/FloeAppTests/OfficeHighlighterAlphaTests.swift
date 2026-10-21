@@ -93,6 +93,96 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
         try await run(.xlsx)
     }
 
+    /// Private, opt-in reproduction input. Attachment bytes are supplied only
+    /// through the local xctestrun environment and never committed as fixtures.
+    /// This captures the real opened/editable/armed document; it is diagnosis,
+    /// not a passing assertion that the reported white rectangle is repaired.
+    func testProvidedWorkbookDisplayDiagnostic() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment[Self.qualificationEnvironment] == "1",
+              let encoded = environment["FLOE_OFFICE_PRIVATE_WORKBOOK_BASE64"],
+              let expected = environment["FLOE_OFFICE_PRIVATE_WORKBOOK_SHA256"] else {
+            throw XCTSkip("Private workbook diagnostic requires explicit local input")
+        }
+        executionTimeAllowance = 420
+        let data = try XCTUnwrap(Data(base64Encoded: encoded))
+        XCTAssertLessThanOrEqual(data.count, 512 * 1024)
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(digest, expected, "Private reproduction input digest mismatch")
+        let fm = FileManager.default
+        let documents = try fm.url(for: .documentDirectory, in: .userDomainMask,
+                                   appropriateFor: nil, create: true)
+        let root = documents.appendingPathComponent(
+            "Qualification/OfficeProvidedWorkbook-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let fixture = root.appendingPathComponent("provided.xlsx")
+        try data.write(to: fixture, options: .atomic)
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }) else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 51, userInfo: [
+                NSLocalizedDescriptionKey: "No foreground scene for private reproduction"])
+        }
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = mount(session, in: scene)
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKey()
+        }
+        var receipt: [String: Any] = [
+            "purpose": "Private actual-workbook display diagnosis; no fix acceptance claim",
+            "inputSHA256": digest,
+            "inputBytes": data.count,
+            "physicalPencil": "not-tested"
+        ]
+        defer { try? writeReceipt(receipt, root: root) }
+        do {
+            await session.open(fixture)
+            try await wait(120, "provided workbook native open") {
+                session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            var native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            var web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            try await Task.sleep(for: .milliseconds(450))
+            _ = try await snapshot(web, root: root, name: "provided-opened")
+            receipt["openedPaint"] = OfficeFileSession.hostRenderDiagnostics(native)
+            if session.readOnly {
+                let accepted = await session.requestEditing()
+                XCTAssertTrue(accepted, "Actual workbook could not enter its isolated editor")
+            }
+            try await wait(150, "provided workbook editable") {
+                !session.readOnly && session.canAct && session.documentActionsReady
+                    && session.controller != nil
+            }
+            native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            try await Task.sleep(for: .milliseconds(450))
+            _ = try await snapshot(web, root: root, name: "provided-editable")
+            session.useInkPreferences(workspaceIdentity: root.path, documentKey: "provided.xlsx")
+            session.inkPreferences.setPreset(.highlighter)
+            session.inkPreferences.setColorHex("#FFCC00")
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode)
+            await session.applyInkPreferences()
+            XCTAssertNil(session.inkError)
+            try await Task.sleep(for: .milliseconds(450))
+            _ = try await snapshot(web, root: root, name: "provided-highlighter-armed")
+            receipt["armedPreview"] = try await currentPreviewState(web)
+            XCTAssertEqual(try hash(fixture), expected, "Diagnostic changed the supplied input copy")
+            receipt["inputUnchanged"] = true
+            receipt["status"] = "display captured; white-box outcome requires visual assessment"
+            await session.release()
+        } catch {
+            receipt["error"] = error.localizedDescription
+            await session.release()
+            throw error
+        }
+    }
+
     private func run(_ format: AlphaFixtureFormat) async throws {
         guard ProcessInfo.processInfo.environment[Self.qualificationEnvironment] == "1" else {
             throw XCTSkip("Opt-in real-App Office highlighter alpha regression; "
