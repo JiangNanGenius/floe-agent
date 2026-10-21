@@ -570,6 +570,8 @@ targets:
       - path: Tests/FloeAppTests/FloeShortcutRunServicePersistenceTests.swift
       - path: Tests/FloeAppTests/FloeShortcutRunIntentTests.swift
       - path: Tests/FloeAppTests/FloeShortcutRunProductionWiringTests.swift
+      - path: Tests/FloeAppTests/SelectedScheduleTerminalRecoveryTests.swift
+      - path: Tests/FloeAppTests/TaskScheduleAutomationTimingTests.swift
       - path: Tests/FloeAppTests/FloeRunFinalReplyProofProductionTests.swift
       - path: Tests/FloePersistenceTests/RunReplyReaderTests.swift
       - path: Tests/FloeAppTests/ShortcutInboxHandoffTests.swift
