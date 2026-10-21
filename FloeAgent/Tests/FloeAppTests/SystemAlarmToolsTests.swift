@@ -468,13 +468,29 @@ struct SystemAlarmToolsTests {
         let ctx = context()
         let args = AppleAlarmScheduleTool.Arguments(
             kind: "alarm", fireAt: futureISO8601(), timezone: "Asia/Shanghai")
-        _ = try await tool.execute(args, context: ctx)
-        _ = try await tool.execute(args, context: ctx)
-        _ = try await tool.execute(args, context: ctx)
+        let first = try await tool.execute(args, context: ctx)
+        try #require(field("status", in: first.summary) == "ok")
+        let id = try #require(field("id", in: first.summary).flatMap(UUID.init(uuidString:)))
+        let second = try await tool.execute(args, context: ctx)
+        let third = try await tool.execute(args, context: ctx)
+        #expect(field("status", in: second.summary) == "ok")
+        #expect(field("status", in: third.summary) == "ok")
+        #expect(field("id", in: second.summary) == id.uuidString)
+        #expect(field("id", in: third.summary) == id.uuidString)
         let records = try await store.records(
             ownerTaskID: ctx.conversationID, ownerRunID: ctx.runID)
         #expect(records.count == 1)
         #expect(native.scheduleCalls.count == 1)
+        #expect(native.scheduleCalls == [id])
+        let stored = try #require(records.first)
+        let plan = try AppleAlarmScheduleTool.plan(args)
+        let intendedDate = try #require(plan.fireDate)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = plan.timezone
+        #expect(stored.repeatHour == calendar.component(.hour, from: intendedDate))
+        #expect(stored.repeatMinute == calendar.component(.minute, from: intendedDate))
+        #expect(stored.intendedFireDate == intendedDate)
+        #expect(stored.nativeScheduleDate == intendedDate)
     }
 
     @Test("Cancel before commit leaves no native side effect")
@@ -576,15 +592,26 @@ struct SystemAlarmToolsTests {
             kind: "timer", timezone: "UTC", durationSeconds: 120), context: ctx)
         // Readback error during schedule already left the row unknown.
         let id = field("id", in: scheduled.summary).flatMap(UUID.init(uuidString:))!
-        #expect(try await store.record(id: id)?.state == .unknown)
+        let before = try await store.record(id: id)
+        #expect(before?.state == .unknown)
 
         let status = AppleAlarmStatusTool(service: service)
         let out = try await status.execute(.init(), context: ctx)
-        #expect(field("status", in: out.summary) == "ok")
-        #expect(field("reconcile", in: out.summary) == "readbackError")
+        // Aggregate status keeps uncertainty in its header and emits the
+        // exact reconciliation verdict on the corresponding per-id line.
+        #expect(field("status", in: out.summary) == "pendingVerification")
+        #expect(out.summary.split(separator: "\n").dropFirst().contains { line in
+            field("id", in: String(line)) == id.uuidString
+                && field("reconcile", in: String(line)) == "readbackError"
+        })
+        let exact = try await status.execute(.init(id: id.uuidString), context: ctx)
+        #expect(field("status", in: exact.summary) == "pendingVerification")
+        #expect(field("reconcile", in: exact.summary) == "readbackError")
         // Unknown readback idempotency: nothing was settled or duplicated.
         let stored = try await store.record(id: id)
         #expect(stored?.state == .unknown)
+        #expect(stored == before)
+        #expect(native.scheduleCalls == [id])
         let records = try await store.records(
             ownerTaskID: ctx.conversationID, ownerRunID: ctx.runID)
         #expect(records.count == 1)

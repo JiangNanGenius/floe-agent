@@ -151,6 +151,21 @@ actor SystemAlarmService {
         defer { activeMutations.remove(alarmID) }
         try Self.checkCancellation(cancellation)
         let receiptID = UUID()
+        // The existing ledger schema requires a wall-clock hour/minute for
+        // every alarm row, including one-shot alarms. Derive those fields
+        // from the exact approved instant in its intended zone; never alter
+        // the absolute native schedule date or the idempotency payload.
+        var repeatHour: Int? = nil
+        var repeatMinute: Int? = nil
+        if kind == .alarm {
+            guard let intendedFireDate, let timezone = TimeZone(identifier: intendedTimezone) else {
+                throw SystemAlarmError.invalidRequest("an alarm requires an absolute date and valid timezone")
+            }
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = timezone
+            repeatHour = calendar.component(.hour, from: intendedFireDate)
+            repeatMinute = calendar.component(.minute, from: intendedFireDate)
+        }
 
         var record = SystemAlarmRecord(
             id: alarmID,
@@ -163,6 +178,8 @@ actor SystemAlarmService {
             intendedTimezone: intendedTimezone,
             intendedFireDate: intendedFireDate,
             nativeScheduleDate: repeatRule == .never ? intendedFireDate : nil,
+            repeatHour: repeatHour,
+            repeatMinute: repeatMinute,
             repeatRule: repeatRule,
             timerDuration: timerDuration,
             labelDigest: SystemAlarmIdentity.labelDigest(label),
