@@ -128,7 +128,7 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             let generation = session.printRequestGeneration
             // This is the exact native message sent by the existing engine's
             // Print toolbar. It must open options BEFORE any PDF is generated.
-            _ = try await web.evaluateJavaScript("window.webkit.messageHandlers.lok.postMessage('PRINT')")
+            _ = try await web.evaluateJavaScript("(() => { window.webkit.messageHandlers.lok.postMessage('PRINT'); return true; })()")
             try await wait("native PRINT routed to app options") { session.printRequestGeneration == generation + 1 }
             try await wait("options sheet mounted") { window.rootViewController?.presentedViewController != nil }
             try await Task.sleep(for: .seconds(2))
@@ -304,8 +304,9 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
                     context.setFillColor(UIColor.white.cgColor)
                     context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-                    context.translateBy(x: 0, y: CGFloat(height))
-                    context.scaleBy(x: CGFloat(width) / bounds.width, y: -CGFloat(width) / bounds.width)
+                    // A raw bitmap CGContext uses PDF coordinates already.
+                    // UIKit's additional Y flip would invert this attachment.
+                    context.scaleBy(x: CGFloat(width) / bounds.width, y: CGFloat(width) / bounds.width)
                     context.translateBy(x: -bounds.minX, y: -bounds.minY)
                     page.draw(with: .cropBox, to: context)
                     let image = try XCTUnwrap(context.makeImage())
