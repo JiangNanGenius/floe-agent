@@ -11,6 +11,34 @@ import org.junit.Test
 /** Authored NOTRUN. Scripted transport double; bounded, typed frames only. */
 class HostEffectPumpTest {
 
+    @Test
+    fun nativeDomainFailureKeepsWireCodeAndAdmissionFailureStaysIntact() = runBlocking {
+        for ((wire, expected) in listOf(
+            "staleRevision" to "staleRevision",
+            "" to "ordinaryRuntimeBlocked",
+            "not a code" to "ordinaryRuntimeBlocked",
+        )) {
+            val client = client { raw ->
+                val correlation = correlationOf(raw)
+                """{"version":3,"requestID":"$correlation","ok":true,"schema":"floe.effect-cursor/3","correlationID":"$correlation","cursor":{"operationReceiptID":"op:v1:domain-error","sequence":1},"effects":[{"sequence":1,"kind":"failed","code":"ordinaryRuntimeBlocked","detail":[{"key":"wire","value":"$wire"}],"value":{"errorCode":"$wire","reason":"revisionResourceMismatch"}}],"hasMore":false,"resyncRequired":false}"""
+            }
+            val captured = Captured()
+            val handle = client.openEffectStream(
+                operationReceiptID = "op:v1:domain-error",
+                configurationScope = "providers",
+                onFrame = captured.frames::add,
+                onTerminal = captured.terminals::add,
+                onFailure = captured.failures::add,
+            )
+            repeat(50) { if (captured.terminals.isEmpty()) delay(10) }
+            handle.close()
+            assertTrue(captured.failures.isEmpty())
+            val failure = captured.terminals.single() as HostEffectTerminal.Failed
+            assertEquals(expected, failure.code)
+            assertEquals("revisionResourceMismatch", failure.reason)
+        }
+    }
+
     private class ScriptedExchange(
         private val script: (String) -> String,
     ) : HostBridgeExchange {

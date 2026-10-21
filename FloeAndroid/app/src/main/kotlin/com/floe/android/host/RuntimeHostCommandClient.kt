@@ -811,12 +811,40 @@ class EffectPumpHandle internal constructor(
         // The typed value/result payload wins when present; `page` remains
         // the backward-compatible carrier for paged reads.
         "accepted" -> HostEffectTerminal.Completed(value ?: page, detail)
-        "rejected" -> HostEffectTerminal.Rejected(code ?: "rejected", detail["reason"] ?: "rejected", detail)
-        "failed" -> HostEffectTerminal.Failed(code ?: "failed", detail["reason"] ?: "failed", detail)
+        "rejected" -> HostEffectTerminal.Rejected(domainCode("rejected"), domainReason("rejected"), detail)
+        "failed" -> HostEffectTerminal.Failed(domainCode("failed"), domainReason("failed"), detail)
         "cancelled" -> HostEffectTerminal.Cancelled(detail)
         "closed" -> HostEffectTerminal.Closed(detail)
         "replaced" -> HostEffectTerminal.Replaced(detail)
         else -> HostEffectTerminal.Failed("unknown", kind, detail)
+    }
+
+    // G02's native binder carries its domain error in detail.wire under the
+    // frozen admission code. Preserve that identifier for field errors and
+    // recovery; a genuine admission failure without a wire code stays intact.
+    private fun HostEffectFrame.domainCode(fallback: String): String {
+        val outer = code ?: fallback
+        if (outer != "ordinaryRuntimeBlocked") return outer
+        return detail["wire"]?.takeIf {
+            it.length in 1..128 && it.first().isLetter() &&
+                it.all { ch -> ch in 'A'..'Z' || ch in 'a'..'z' || ch in '0'..'9' || ch in "_.-" }
+        } ?: outer
+    }
+
+    // Native domain reasons are identifiers, never provider payloads. Keep
+    // them available for recovery without accepting arbitrary diagnostic text.
+    private fun HostEffectFrame.domainReason(fallback: String): String {
+        val reason = if (code == "ordinaryRuntimeBlocked" && detail["wire"] != null) {
+            ((value as? JsonObject)?.get("reason") as? JsonPrimitive)?.contentOrNull
+        } else detail["reason"]
+        return reason?.takeIf {
+            (it.length in 1..128 && it.all { ch ->
+                ch in 'A'..'Z' || ch in 'a'..'z' || ch in '0'..'9' || ch in "_.-"
+            }) || (it.length <= 2048 && it.startsWith("providerValidation[") &&
+                it.endsWith("]") && it.all { ch ->
+                    ch in 'A'..'Z' || ch in 'a'..'z' || ch in '0'..'9' || ch in "_.-[]:;"
+                })
+        } ?: fallback
     }
 
     private fun sanitize(value: String): String {

@@ -43,6 +43,23 @@ import org.junit.Test
  */
 class ProviderConfigurationCompletionTest {
 
+    @Test
+    fun discoveredModelUsesNativeNestedLimitsAndScalarCapabilities() {
+        val rows = ProviderWire.decodeDiscoveredModels(Json.parseToJsonElement("""
+            {"discoveredModels":[
+              {"remoteModelID":"native","limits":{"contextTokens":8192,"maxOutputTokens":1024},"capabilities":5},
+              {"remoteModelID":"legacy","contextTokens":6000,"maxOutputTokens":500,"capabilities":[1,4]},
+              {"remoteModelID":"unspecified"},
+              {"remoteModelID":"invalid","limits":{"contextTokens":0,"maxOutputTokens":-1}}
+            ]}
+        """))
+        assertEquals(listOf(8192, 6000, 128_000, 0), rows.map { it.contextTokens })
+        assertEquals(listOf(1024, 500, 0, -1), rows.map { it.maxOutputTokens })
+        assertEquals(rows[0].capabilities, rows[1].capabilities)
+        assertTrue(rows[0].capabilities.contains(com.floe.android.feature.providers.ModelCapabilityUi.TEXT))
+        assertTrue(rows[0].capabilities.contains(com.floe.android.feature.providers.ModelCapabilityUi.TOOLS))
+    }
+
     private val json = Json { ignoreUnknownKeys = true }
 
     private companion object {

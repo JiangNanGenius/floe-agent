@@ -213,7 +213,8 @@
     <string name="settings_privacy_loading">加载中…</string>
     <string name="settings_privacy_conversations">对话</string>
     <string name="settings_privacy_runs">运行</string>
-    <string name="settings_privacy_grants">授权</string>
+    <string name="settings_privacy_grants">已保存授权</string>
+    <string name="settings_privacy_active_grants">运行授权</string>
     <string name="settings_privacy_remaining">剩余</string>
     <string name="settings_privacy_recount_unavailable">重新统计不可用（%1$s）</string>
     <string name="settings_privacy_model_config">模型配置</string>

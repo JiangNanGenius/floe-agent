@@ -213,7 +213,8 @@
     <string name="settings_privacy_loading">Loading…</string>
     <string name="settings_privacy_conversations">Conversations</string>
     <string name="settings_privacy_runs">Runs</string>
-    <string name="settings_privacy_grants">Grants</string>
+    <string name="settings_privacy_grants">Saved grants</string>
+    <string name="settings_privacy_active_grants">Runtime grants</string>
     <string name="settings_privacy_remaining">Remaining</string>
     <string name="settings_privacy_recount_unavailable">Recount unavailable (%1$s)</string>
     <string name="settings_privacy_model_config">Model Configuration</string>

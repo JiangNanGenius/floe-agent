@@ -924,8 +924,24 @@ class ProviderHostController internal constructor(
                 }
                 is HostOperationOutcome.Rejected ->
                     onSaveFailed(identity, SaveFailurePhaseUi.PREFLIGHT, outcome.code)
-                is HostOperationOutcome.Failed ->
+                is HostOperationOutcome.Failed -> {
+                    // Closed parse/binding identifiers only; no draft or credential data.
+                    val diagnosticReasons = setOf(
+                        "revisionShape", "revisionPresentUnreadable", "revisionResourceMismatch",
+                        "candidateParse", "candidateModelsMissing", "candidateModelFormMixed",
+                        "saveIntentRouteMismatch", "saveIntentSubjectMismatch", "saveIntentDivergence",
+                        "saveIntentCreateConflict", "saveIntentSchema", "createConflict",
+                        "createIntentBaseRevisionDivergence", "createIntentRevisionNonZero",
+                        "candidate.id", "candidate.kind", "candidate.wireProtocol", "candidate.baseURL",
+                        "candidate.displayName", "candidate.presetID", "candidate.headerValue",
+                        "candidate.nonSecretHeaders", "candidate.syncEnabled", "candidate.serviceRole",
+                        "candidate.selectedModels", "candidate.modelSetRef", "candidate.defaultModelID",
+                    )
+                    if (outcome.reason in diagnosticReasons || outcome.reason.startsWith("providerValidation[")) runCatching {
+                        android.util.Log.w("FloeProviders", "save_refused:${outcome.reason}")
+                    }
                     onSaveFailed(identity, SaveFailurePhaseUi.LOCAL_COMMIT, outcome.code)
+                }
                 HostOperationOutcome.Cancelled ->
                     onSaveFailed(identity, SaveFailurePhaseUi.PREFLIGHT, "cancelled")
                 HostOperationOutcome.Superseded -> Unit
@@ -2267,11 +2283,18 @@ internal object ProviderWire {
         return array.mapNotNull { element ->
             val obj = element as? JsonObject ?: return@mapNotNull null
             val remote = obj.string("remoteModelID") ?: obj.string("id") ?: return@mapNotNull null
-            val capabilities = (obj["capabilities"] as? JsonArray)
-                ?.mapNotNull { bit ->
-                    ModelCapabilityUi.entries.firstOrNull { it.swiftBit.toInt() == bit.intValue() }
-                }?.toSet()
-                ?: setOf(ModelCapabilityUi.TEXT, ModelCapabilityUi.TOOLS)
+            // Native discovery returns ModelProfile: nested limits and a
+            // scalar OptionSet. Retain legacy flat/array discovery replies.
+            val limits = obj["limits"] as? JsonObject
+            val capabilities = when (val raw = obj["capabilities"]) {
+                is JsonPrimitive -> raw.longOrNull?.let { bits ->
+                    ModelCapabilityUi.entries.filter { bits and it.swiftBit.toLong() != 0L }.toSet()
+                }
+                is JsonArray -> raw.mapNotNull { bit ->
+                    ModelCapabilityUi.entries.firstOrNull { it.swiftBit == bit.intValue() }
+                }.toSet()
+                else -> null
+            } ?: setOf(ModelCapabilityUi.TEXT, ModelCapabilityUi.TOOLS)
             ModelDraftRowUi(
                 draftModelId = "discovered-$remote",
                 savedModelId = null,
@@ -2279,8 +2302,10 @@ internal object ProviderWire {
                 displayName = obj.string("displayName") ?: remote,
                 enabled = obj.bool("enabled") ?: true,
                 capabilities = capabilities,
-                contextTokens = obj.long("contextTokens")?.toInt() ?: 0,
-                maxOutputTokens = obj.long("maxOutputTokens")?.toInt() ?: 0,
+                contextTokens = (limits?.long("contextTokens") ?: obj.long("contextTokens"))
+                    ?.toInt() ?: 128_000,
+                maxOutputTokens = (limits?.long("maxOutputTokens") ?: obj.long("maxOutputTokens"))
+                    ?.toInt() ?: 0,
                 source = com.floe.android.feature.providers.ModelSourceUi.DISCOVERED,
                 selectedForSave = true,
             )

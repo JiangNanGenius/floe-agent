@@ -316,7 +316,9 @@ fun ProviderEditorPage(
                         monospaced = true,
                         isError = projected.hasIssue(ProviderFieldUi.HEADERS),
                     )
-                    if (draft.supplier?.supportsPlainHttpChoice == true) {
+                    if (draft.supplier?.supportsPlainHttpChoice == true ||
+                        draft.baseUrl.trim().startsWith("http://", ignoreCase = true)
+                    ) {
                         FloeSwitchRow(
                             title = stringResource(R.string.providers_allow_plain_http),
                             checked = draft.allowsPlainHttp,
