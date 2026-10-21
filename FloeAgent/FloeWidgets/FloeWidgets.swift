@@ -260,7 +260,6 @@ struct FloeWidgetView: View {
     }
 }
 
-@main
 struct FloeWidget: Widget {
     let kind = "FloeWidget"
 
@@ -271,5 +270,13 @@ struct FloeWidget: Widget {
         .configurationDisplayName("Floe Agent")
         .description(Text(FloeL10n.l("widget.description")))
         .supportedFamilies([.systemSmall, .systemMedium])
+    }
+}
+
+@main
+struct FloeWidgetBundle: WidgetBundle {
+    var body: some Widget {
+        FloeWidget()
+        FloeSystemAlarmLiveActivityWidget()
     }
 }
