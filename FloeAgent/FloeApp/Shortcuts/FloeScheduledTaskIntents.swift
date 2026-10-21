@@ -58,7 +58,7 @@ struct TaskScheduleEntityQuery: EntityQuery {
     @MainActor
     private func resolvedEnvironment() -> AppEnvironment {
         #if DEBUG
-        if let debugEnvironment { return debugEnvironment }
+        if let debugEnvironment = Self.debugEnvironment { return debugEnvironment }
         #endif
         return environment
     }
@@ -191,7 +191,7 @@ struct RunScheduledTaskIntent: AppIntent {
         let receipt: SelectedScheduleReceipt
         do {
             #if DEBUG
-            if let debugRoute {
+            if let debugRoute = Self.debugRoute {
                 receipt = try await debugRoute(scheduleID)
             } else {
                 receipt = try await FloeScheduledTaskRunner.run(
