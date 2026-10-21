@@ -134,7 +134,7 @@ class IntegrationsHostController internal constructor(
         host = host,
         onGuidance = { guidance -> publishLocalGuidance(guidance) },
         onDeniedTyped = { code ->
-            publishMcpMessage(actionString(
+            publishMcpPermissionDenial(actionString(
                 if (code == LocalNetworkAccessBroker.CODE_RECOVERY)
                     R.string.integrations_local_network_settings
                 else R.string.integrations_local_network_denied,
@@ -258,6 +258,7 @@ class IntegrationsHostController internal constructor(
         skillsSettingsRevision = null
         folderStaging.invalidate()
         localNetwork.invalidate()
+        synchronized(mcpPermissionMessageLock) { mcpPermissionDenial = null }
     }
 
     /** Typed, host-localized hub message channel (folder staging, paging). */
@@ -269,11 +270,41 @@ class IntegrationsHostController internal constructor(
         updateDestination { it.copy(mcp = it.mcp.copy(errorMessage = code)) }
     }
 
+    // The broker owns this typed override until the platform actually grants
+    // LAN access (or the OS does not require it). An older connect callback can
+    // START a new list after denial, so request-generation checks alone cannot
+    // protect this message. Serialize override publication and snapshot writes
+    // to cover the interval before the separate guidance projection arrives.
+    private val mcpPermissionMessageLock = Any()
+    private var mcpPermissionDenial: String? = null
+
+    private fun publishMcpPermissionDenial(code: String) {
+        synchronized(mcpPermissionMessageLock) {
+            mcpPermissionDenial = code
+            updateDestination { it.copy(mcp = it.mcp.copy(errorMessage = code)) }
+        }
+    }
+
+    private fun publishMcpNetworkMessage(code: String, finishList: Boolean = false) {
+        synchronized(mcpPermissionMessageLock) {
+            val message = mcpPermissionDenial ?: code
+            updateDestination {
+                it.copy(mcp = it.mcp.copy(
+                    isLoading = if (finishList) false else it.mcp.isLoading,
+                    errorMessage = message,
+                ))
+            }
+        }
+    }
+
     private fun publishLocalGuidance(
         guidance: com.floe.android.feature.integrations.LocalNetworkGuidanceUi?,
     ) {
-        updateDestination {
-            it.copy(mcp = it.mcp.copy(localNetworkGuidance = guidance))
+        synchronized(mcpPermissionMessageLock) {
+            if (guidance == null) mcpPermissionDenial = null
+            updateDestination {
+                it.copy(mcp = it.mcp.copy(localNetworkGuidance = guidance))
+            }
         }
     }
 
@@ -550,23 +581,23 @@ class IntegrationsHostController internal constructor(
                 is HostOperationOutcome.Completed -> {
                     val page = outcome.value?.let { IntegrationsWire.decodeMcpServersPage(it) }
                     if (page == null) {
-                        updateDestination {
-                            it.copy(mcp = it.mcp.copy(isLoading = false,
-                                errorMessage = "decode_failed"))
-                        }
+                        publishMcpNetworkMessage("decode_failed", finishList = true)
                         return@trackOperation
                     }
                     val carried: List<McpServerRowUi> =
                         if (cursor == null || cursor == "0") emptyList()
                         else destinationState.value.mcp.servers
                     val merged = carried + page.servers
-                    updateDestination { state ->
-                        state.copy(mcp = state.mcp.copy(
-                            isLoading = false,
-                            servers = merged,
-                            errorMessage = if (page.decodeSkippedRows > 0)
-                                "row_decode_skipped" else null,
-                        ))
+                    synchronized(mcpPermissionMessageLock) {
+                        val message = mcpPermissionDenial ?: if (page.decodeSkippedRows > 0)
+                            "row_decode_skipped" else null
+                        updateDestination { state ->
+                            state.copy(mcp = state.mcp.copy(
+                                isLoading = false,
+                                servers = merged,
+                                errorMessage = message,
+                            ))
+                        }
                     }
                     val next = page.nextCursor
                     if (page.hasMore && next != null &&
@@ -574,19 +605,14 @@ class IntegrationsHostController internal constructor(
                     ) {
                         requestMcpListPage(chain, next)
                     } else if (page.hasMore) {
-                        updateDestination {
-                            it.copy(mcp = it.mcp.copy(
-                                errorMessage = actionString(
-                                    R.string.integrations_paging_truncated)))
-                        }
+                        publishMcpNetworkMessage(actionString(
+                            R.string.integrations_paging_truncated))
                     }
                 }
-                is HostOperationOutcome.Rejected -> updateDestination {
-                    it.copy(mcp = it.mcp.copy(isLoading = false, errorMessage = outcome.code))
-                }
-                is HostOperationOutcome.Failed -> updateDestination {
-                    it.copy(mcp = it.mcp.copy(isLoading = false, errorMessage = outcome.code))
-                }
+                is HostOperationOutcome.Rejected ->
+                    publishMcpNetworkMessage(outcome.code, finishList = true)
+                is HostOperationOutcome.Failed ->
+                    publishMcpNetworkMessage(outcome.code, finishList = true)
                 else -> Unit
             }
         }
@@ -1718,6 +1744,15 @@ class IntegrationsHostController internal constructor(
         } else {
             editorRouteTokens.remove(identity.editorId)
         }
+        // R8 Alpha6 repair: the FIRST real open must authoritatively project
+        // this exact identity+epoch into the destination state. Before this
+        // fix the editor projection only existed after a save dispatch, which
+        // the projection-gated module UI can never reach (save stays disabled,
+        // no network request ever leaves the app). The projection carries the
+        // honest admission state, the host-issued seed and the mirrored row
+        // connection state; the module UI then enables Save exactly when the
+        // projection is present and network actions are admitted.
+        publishInitialEditor(identity)
     }
 
     override fun mcpEditorClosed(identity: McpEditorIdentity, discarded: Boolean) {
@@ -1725,10 +1760,88 @@ class IntegrationsHostController internal constructor(
         // admitted may still commit, but its late result is fenced by the
         // identity epoch and cannot touch this closed editor.
         editorRouteTokens.remove(identity.editorId)?.let(authority()::clear)
+        // Drop the projection when it belongs to this exact identity+epoch;
+        // a reopened editor carries a NEW editor id and never reuses the
+        // stale identity, and a leftover projection from a closed session is
+        // never re-read as the current editor.
+        updateDestination { state ->
+            val editor = state.editor
+            if (editor != null && editor.identity.isCurrentFor(identity)) {
+                state.copy(editor = null)
+            } else {
+                state
+            }
+        }
+    }
+
+    /**
+     * Authoritative initial projection for a NEWLY opened editor. The seed is
+     * re-issued by the host (never invented by the module): for an existing
+     * server the REAL saved row fields + its live connection mirror, for a
+     * new server the documented defaults. When the shared runtime admission
+     * has already lapsed the projection still exists, truthfully reporting
+     * the network bridge as unavailable so the UI explains it instead of
+     * showing a forever-disabled Save.
+     */
+    private fun publishInitialEditor(identity: McpEditorIdentity) {
+        updateDestination { state ->
+            // Replace any stale projection owned by another identity (an old
+            // closed editor whose close raced, or a leftover from a canceled
+            // open); never overwrite a projection that is already current.
+            val editor = state.editor
+            if (editor != null && editor.identity.isCurrentFor(identity)) {
+                return@updateDestination state
+            }
+            val admitted = admitted()
+            val row = identity.serverId?.let { id ->
+                destinationState.value.mcp.servers.firstOrNull { it.serverId == id }
+            }
+            val seed = McpEditorSeedUi(
+                serverId = identity.serverId,
+                displayName = row?.displayName ?: "",
+                endpointText = row?.endpointDisplay ?: "",
+                enabled = row?.enabled ?: true,
+                allowInCanvas = row?.allowInCanvas ?: false,
+                allowInsecureHttp = row?.allowInsecureHttp ?: false,
+                authentication = row?.authentication ?: McpAuthenticationUi.NONE,
+                credentialHeaderName = row?.credentialHeaderName
+                    ?.takeIf { it.isNotEmpty() } ?: "Authorization",
+                credentialStored = row?.credentialStored ?: false,
+                timeoutSeconds = row?.timeoutSeconds ?: 30,
+                transport = McpTransportUi.StreamableHttp,
+                tools = row?.tools ?: emptyList(),
+                savedRevision = row?.revision,
+                networkActionsAvailable = admitted,
+                networkActionsUnavailableReason = if (admitted) null else "unavailable",
+            )
+            state.copy(
+                editor = McpEditorUiState(
+                    identity = identity,
+                    seed = seed,
+                    saveInFlight = false,
+                    saveError = null,
+                    saveOutcome = null,
+                    connectionState = row?.state ?: McpConnectionStateUi.Inactive,
+                    tools = row?.tools ?: seed.tools,
+                    credentialStored = seed.credentialStored,
+                    networkActionsAvailable = admitted,
+                    networkActionsUnavailableReason = if (admitted) null else "unavailable",
+                    saveFailureSequence = 0L,
+                ),
+            )
+        }
     }
 
     override fun saveMcpServer(request: McpSaveRequest): Boolean {
         if (!admitted()) return false
+        // Epoch fence at the dispatch layer: a live projection owned by a
+        // DIFFERENT current identity means this save rode a stale editor
+        // session (cancel/reopen raced it). Refuse to start: the late result
+        // can never close or mutate the reopened editor.
+        val current = destinationState.value.editor
+        if (current == null || !current.identity.isCurrentFor(request.identity)) {
+            return false
+        }
         publishEditor(request.identity) { it.copy(saveInFlight = true, saveError = null) }
         val serverID = serverIDForSave(request)
         // F-S3: the create hop is the CANDIDATE's own closed `createIntent`
@@ -1819,6 +1932,11 @@ class IntegrationsHostController internal constructor(
      * with a null new revision (never a coerced old/zero value); the
      * connect sub-result failure only feeds the separate local-network/
      * connection guidance surface, never the save outcome.
+     *
+     * A typed domain refusal completes honestly as the command VALUE (the
+     * service replies with a closed `errorCode`/`reason` body): it is a
+     * failure — never collapsed into "decode_failed", never a success. The
+     * precise closed `reason` is surfaced (never a raw reply or credential).
      */
     private fun onMcpSaveTerminal(
         request: McpSaveRequest,
@@ -1826,6 +1944,11 @@ class IntegrationsHostController internal constructor(
         value: JsonElement?,
     ) {
         val reply = value as? JsonObject
+        val typedReason = reply?.string("reason") ?: reply?.string("errorCode")
+        if (typedReason != null) {
+            onMcpSaveFailed(request.identity, typedReason)
+            return
+        }
         val committed = reply?.string("state") == "committed"
         val pendingSettlement =
             (reply?.get("pendingPhysicalSettlement") as? JsonPrimitive)?.booleanOrNull == true
@@ -2062,9 +2185,7 @@ class IntegrationsHostController internal constructor(
                 ) {
                     localNetwork.noteBlockedConnect(row.serverId, row.endpointDisplay)
                 }
-                updateDestination {
-                    it.copy(mcp = it.mcp.copy(errorMessage = code))
-                }
+                publishMcpNetworkMessage(code)
             }
             refreshMcpServers()
         }
@@ -2130,24 +2251,10 @@ class IntegrationsHostController internal constructor(
     ) {
         updateDestination { state ->
             val editor = state.editor
-            if (editor == null || !editor.identity.isCurrentFor(identity)) {
-                val seed = seedMcpEditor(identity.serverId) ?: return@updateDestination state
-                val seeded = McpEditorUiState(
-                    identity = identity,
-                    seed = seed,
-                    saveInFlight = false,
-                    saveError = null,
-                    saveOutcome = null,
-                    connectionState = McpConnectionStateUi.Inactive,
-                    tools = seed.tools,
-                    credentialStored = seed.credentialStored,
-                    networkActionsAvailable = admitted(),
-                    networkActionsUnavailableReason = if (admitted()) null else "unavailable",
-                )
-                state.copy(editor = transform(seeded))
-            } else {
-                state.copy(editor = transform(editor))
-            }
+            // Only an open, matching editor can receive a terminal. A
+            // late callback after close must not resurrect its projection.
+            if (editor == null || !editor.identity.isCurrentFor(identity)) state
+            else state.copy(editor = transform(editor))
         }
     }
 
@@ -2437,6 +2544,9 @@ internal class LocalNetworkAccessBroker(
     fun blocksConnectHop(endpoint: String): Boolean {
         if (apiLevel() < API_LEVEL_LOCAL_NETWORK) return false
         if (!isLocalLikely(endpoint)) return false
+        // A permission revoked in Settings must be observed at this new tap,
+        // even when the previous connect left a cached Granted projection.
+        refreshCheck()
         return when (state) {
             PermissionState.Granted, PermissionState.NotRequired -> false
             else -> true

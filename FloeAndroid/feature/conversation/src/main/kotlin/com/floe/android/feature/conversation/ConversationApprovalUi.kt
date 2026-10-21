@@ -66,15 +66,18 @@ fun ConversationApprovalRow(
     val skillNote = stringResource(R.string.approval_skill_create_note)
     val tierLabels = listOf(
         stringResource(R.string.approval_scope_once),
-        stringResource(R.string.approval_scope_task),
-        stringResource(R.string.approval_scope_project),
-        stringResource(R.string.approval_scope_host),
     )
     val headerTint = if (gateStopped) colors.destructive else colors.pending
     // One stable resolution lambda: the card NEVER fabricates a decision
     // without a human tap on these two controls.
-    val resolve: (ApprovalCardUi, Boolean) -> Unit =
+    val backendResolve: (ApprovalCardUi, Boolean) -> Unit =
         onResolve ?: { c, allow -> holder.resolveApproval(c, allow) }
+    // The current native decision contract is call-bound. Never promise
+    // task/project/host grants that the producer cannot forward.
+    val resolve: (ApprovalCardUi, Boolean) -> Unit = { c, allow ->
+        if (allow) holder.setApprovalScope(c.key, ApprovalScopeChoiceUi.ONCE)
+        backendResolve(c, allow)
+    }
     val borderTint = headerTint.copy(alpha = 0.6f)
     val shape = RoundedCornerShape(FloeLayout.BubbleCorner)
 
@@ -179,12 +182,11 @@ fun ConversationApprovalRow(
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             FloeText(chooseScopeLabel, style = Floe.typography.metadata, color = colors.secondaryLabel)
-            val choice = holder.approvalScopeChoices.value[card.key] ?: ApprovalScopeChoiceUi.ONCE
             FloeSegmented(
                 options = tierLabels,
-                selectedIndex = ApprovalScopeChoiceUi.entries.indexOf(choice),
-                onSelect = { index ->
-                    holder.setApprovalScope(card.key, ApprovalScopeChoiceUi.entries[index])
+                selectedIndex = 0,
+                onSelect = { _ ->
+                    holder.setApprovalScope(card.key, ApprovalScopeChoiceUi.ONCE)
                 },
             )
         }

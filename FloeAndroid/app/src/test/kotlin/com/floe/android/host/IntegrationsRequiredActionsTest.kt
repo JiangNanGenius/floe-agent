@@ -333,7 +333,7 @@ class IntegrationsRequiredActionsTest {
                 "mcp.servers.list" -> completedFrame(mcpServersPage())
                 "mcp.connect" -> completedFrame(
                     """{"state":"committed","serverID":"$SERVER_ID","secretIntent":"keep",""" +
-                        """"revision":{"resourceID":"$ROW_RESOURCE_ID","version":"ff".repeat(16)},""" +
+                        """"revision":{"resourceID":"$ROW_RESOURCE_ID","version":"${"ff".repeat(16)}"},""" +
                         """"connect":{"connection":{"state":"inactive"}}}""",
                 )
                 else -> null
@@ -346,6 +346,7 @@ class IntegrationsRequiredActionsTest {
         val editor = com.floe.android.feature.integrations.McpEditorIdentity(
             editorId = "editor-1", epoch = 1, serverId = SERVER_ID,
         )
+        host.integrations.mcpEditorOpened(editor)
         val request = com.floe.android.feature.integrations.McpSaveRequest(
             identity = editor,
             serverId = SERVER_ID,
@@ -390,7 +391,7 @@ class IntegrationsRequiredActionsTest {
             when (command) {
                 "mcp.connect" -> completedFrame(
                     """{"state":"committed","serverID":"NEW","secretIntent":"set",""" +
-                        """"revision":{"resourceID":"mcp.NEW","version":"ee".repeat(32)},""" +
+                        """"revision":{"resourceID":"mcp.NEW","version":"${"ee".repeat(32)}"},""" +
                         """"connect":{"state":"connected","generation":"1","toolCount":0}}""",
                 )
                 else -> null
@@ -435,6 +436,60 @@ class IntegrationsRequiredActionsTest {
         val env = exchange.envelopes("mcp.connect").last()
         assertEquals(true, (env["createIntent"] as? JsonPrimitive)?.booleanOrNull)
         assertNull(env["revision"])
+    }
+
+    /** R8 save-terminal honesty: a typed native refusal completes as the
+     *  command VALUE (`errorCode`/`reason` body, no `state`). It must
+     *  surface as the editor failure with the precise closed reason —
+     *  never collapsed into "decode_failed", never a success; the failure
+     *  sequence advances exactly once for this identity+epoch and the
+     *  editor stays open. Authored, NOTRUN. */
+    @Test
+    fun `native typed save rejection surfaces as failure not decode error`() = runBlocking {
+        val exchange = ScriptExchange { command ->
+            when (command) {
+                "mcp.connect" -> completedFrame(
+                    """{"errorCode":"invalidEnvelope","reason":"mcpCreateNeedsSet"}""",
+                )
+                else -> null
+            }
+        }
+        val host = hostWith(exchange)
+        val identity = com.floe.android.feature.integrations.McpEditorIdentity(
+            editorId = "new-2", epoch = 1, serverId = null,
+        )
+        host.integrations.mcpEditorOpened(identity)
+        val request = com.floe.android.feature.integrations.McpSaveRequest(
+            identity = identity,
+            serverId = null,
+            draft = com.floe.android.feature.integrations.McpDraftSnapshot(
+                displayName = "None Hub",
+                endpointText = "http://127.0.0.1:61210/mcp",
+                enabled = true,
+                authentication = com.floe.android.feature.integrations
+                    .McpAuthenticationUi.NONE,
+            ),
+            credentialIntent = com.floe.android.feature.integrations
+                .CredentialDraftIntent.CLEAR,
+            credentialDraft = null,
+            baseRevision = null,
+        )
+        assertTrue(host.integrations.saveMcpServer(request))
+        waitUntil { exchange.envelopes("mcp.connect").isNotEmpty() }
+        waitUntil {
+            val editor = host.integrations.destination.value.editor
+            editor != null && !editor.saveInFlight && editor.saveError != null
+        }
+        val editor = host.integrations.destination.value.editor!!
+        assertEquals("mcpCreateNeedsSet", editor.saveError)
+        val outcome = editor.saveOutcome as?
+            com.floe.android.feature.integrations.McpSaveOutcomeUi.Failed
+        assertNotNull(outcome)
+        assertEquals("mcpCreateNeedsSet", outcome!!.message)
+        assertEquals(1L, editor.saveFailureSequence)
+        // The refusal is not a decode failure and not a success: no
+        // finalize/close, the editor projection stays open and retryable.
+        assertTrue(host.integrations.destination.value.editor != null)
     }
 
     /** F-S4: upgrade.apply sends the REAL staged reviewToken (from the
@@ -688,6 +743,68 @@ class IntegrationsRequiredActionsTest {
         )
     }
 
+    @Test
+    fun `late connect refresh keeps newer permission denial until actual grant`() = runBlocking {
+        val listReads = AtomicInteger(0)
+        val connectReads = AtomicInteger(0)
+        val connectStarted = java.util.concurrent.CountDownLatch(1)
+        val releaseConnect = java.util.concurrent.CountDownLatch(1)
+        val exchange = ScriptExchange { command ->
+            when (command) {
+                "mcp.servers.list" -> completedFrame(mcpServersPage().replace(
+                    "\"Local Hub\"", "\"Refresh ${listReads.incrementAndGet()}\""))
+                "mcp.connect" -> {
+                    if (connectReads.incrementAndGet() == 1) {
+                        connectStarted.countDown()
+                        check(releaseConnect.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    }
+                    completedFrame("""{"state":"connected","serverID":"$SERVER_ID","generation":"8","toolCount":0,"revision":{"resourceID":"$ROW_RESOURCE_ID","version":"$ROW_DIGEST"}}""")
+                }
+                else -> null
+            }
+        }
+        val host = hostWith(exchange)
+        try {
+            host.integrations.refreshMcpServers()
+            waitUntil { host.integrations.destination.value.mcp.servers.isNotEmpty() }
+            val initialReads = listReads.get()
+            val broker = host.integrations.localNetwork
+            broker.apiLevel = { 37 }
+            broker.permissionProbe = { android.content.pm.PackageManager.PERMISSION_GRANTED }
+            assertTrue(host.integrations.refreshMcpServer(SERVER_ID))
+            waitUntil { connectStarted.count == 0L }
+
+            broker.permissionProbe = { android.content.pm.PackageManager.PERMISSION_DENIED }
+            assertTrue(host.integrations.refreshMcpServer(SERVER_ID))
+            val denied = broker.permissionRequest.value!!
+            broker.onPermissionResult(denied, granted = false, rationale = true)
+            val marker = "integrations_action_${com.floe.android.R.string.integrations_local_network_denied}"
+            assertEquals(marker, host.integrations.destination.value.mcp.errorMessage)
+
+            // The old callback starts its list AFTER the newer denial. Merely
+            // capturing a generation at list issue cannot protect this case.
+            releaseConnect.countDown()
+            waitUntil {
+                host.integrations.destination.value.mcp.servers.singleOrNull()?.displayName ==
+                    "Refresh ${initialReads + 1}"
+            }
+            assertEquals(marker, host.integrations.destination.value.mcp.errorMessage)
+            assertNotNull(host.integrations.destination.value.mcp.localNetworkGuidance)
+
+            broker.permissionProbe = { android.content.pm.PackageManager.PERMISSION_GRANTED }
+            assertTrue(host.integrations.refreshMcpServer(SERVER_ID))
+            waitUntil {
+                host.integrations.destination.value.mcp.servers.singleOrNull()?.displayName ==
+                    "Refresh ${initialReads + 2}"
+            }
+            assertNull(host.integrations.destination.value.mcp.errorMessage)
+            assertNull(host.integrations.destination.value.mcp.localNetworkGuidance)
+            assertEquals(2, connectReads.get())
+        } finally {
+            releaseConnect.countDown()
+        }
+    }
+
     /** MAIN_ANDROID37_LAN_PERMISSION_DECISION_20261021: local endpoint on
      *  API 37 without the grant routes the EXPLICIT tap through the broker
      *  (dialog first, captured-hop-only chaining); denial is a typed
@@ -896,6 +1013,176 @@ class IntegrationsRequiredActionsTest {
         val value = Json.parseToJsonElement(commit) as JsonObject
         assertEquals("committed", value.stringOf("state"))
         assertEquals("secretMissing", (value["connect"] as JsonObject).stringOf("reason"))
+    }
+
+    /** R8 (Alpha6 App blocker): the FIRST real open must authoritatively
+     *  project the exact editor identity+epoch (no save dispatch first), with
+     *  an enabled network state, no in-flight save, honest seeded fields and
+     *  the mirrored live connection state. The module UI gates Save on this
+     *  projection; without it Save stays permanently disabled and nothing
+     *  ever reaches the wire. Authored, NOTRUN (Main runs the composed
+     *  JVM batch). */
+    @Test
+    fun `first real mcp editor open projects authoritative editor before save`() = runBlocking {
+        val exchange = ScriptExchange { command ->
+            when (command) {
+                "mcp.servers.list" -> completedFrame(mcpServersPage(state = "ready"))
+                "mcp.connect" -> completedFrame(
+                    """{"state":"committed","serverID":"$SERVER_ID","secretIntent":"keep",""" +
+                        """"revision":{"resourceID":"$ROW_RESOURCE_ID","version":"${"ee".repeat(16)}"},""" +
+                        """"connect":{"connection":{"state":"connected","generation":"9"}}}""",
+                )
+                else -> null
+            }
+        }
+        val host = hostWith(exchange)
+        host.integrations.refreshMcpServers()
+        waitUntil { host.integrations.destination.value.mcp.servers.isNotEmpty() }
+        val row = host.integrations.destination.value.mcp.servers.single()
+
+        // NEW editor (serverId null): the real open path through the holder
+        // is what the Add-MCP sheet drives.
+        val first = host.integrations.flowHolder.openMcpEditor(null)
+        assertTrue(first is com.floe.android.feature.integrations
+            .IntegrationsFlowResult.Accepted)
+        val newIdentity = host.integrations.flowHolder.currentMcpEditorIdentity()!!
+        val projectedNew = host.integrations.destination.value.editor!!
+        assertTrue(projectedNew.identity.isCurrentFor(newIdentity))
+        assertTrue(projectedNew.identity.serverId == null)
+        assertTrue(projectedNew.networkActionsAvailable)
+        assertNull(projectedNew.networkActionsUnavailableReason)
+        assertFalse(projectedNew.saveInFlight)
+        assertNull(projectedNew.saveError)
+        assertNull(projectedNew.saveOutcome)
+        assertEquals(0L, projectedNew.saveFailureSequence)
+        assertEquals(
+            com.floe.android.feature.integrations.McpConnectionStateUi.Inactive,
+            projectedNew.connectionState,
+        )
+        // Honest host defaults for a NEW server:
+        assertEquals("", projectedNew.seed.displayName)
+        assertEquals("", projectedNew.seed.endpointText)
+        assertEquals(true, projectedNew.seed.enabled)
+        assertEquals(com.floe.android.feature.integrations.McpAuthenticationUi.NONE, projectedNew.seed.authentication)
+        assertEquals("Authorization", projectedNew.seed.credentialHeaderName)
+        assertFalse(projectedNew.seed.credentialStored)
+        assertEquals(30, projectedNew.seed.timeoutSeconds)
+        assertNull(projectedNew.seed.savedRevision)
+        assertTrue(projectedNew.tools?.isEmpty() == true)
+
+        // The projected identity is what a first Save would ride:
+        host.integrations.flowHolder.cancelMcpEditor(newIdentity)
+
+        // EXISTING server open: seed must come from the REAL saved row, not
+        // invented defaults, and the live connection state mirrors the row.
+        val second = host.integrations.flowHolder.openMcpEditor(SERVER_ID)
+        assertTrue(second is com.floe.android.feature.integrations
+            .IntegrationsFlowResult.Accepted)
+        val editIdentity = host.integrations.flowHolder.currentMcpEditorIdentity()!!
+        assertTrue(editIdentity.serverId == SERVER_ID)
+        assertTrue(editIdentity.editorId.startsWith("$SERVER_ID-"))
+        val projectedEdit = host.integrations.destination.value.editor!!
+        assertTrue(projectedEdit.identity.isCurrentFor(editIdentity))
+        assertTrue(projectedEdit.networkActionsAvailable)
+        assertFalse(projectedEdit.saveInFlight)
+        assertEquals("Local Hub", projectedEdit.seed.displayName)
+        assertEquals("https://hub.local:8443/mcp", projectedEdit.seed.endpointText)
+        assertEquals(com.floe.android.feature.integrations.McpAuthenticationUi.BEARER_TOKEN, projectedEdit.seed.authentication)
+        assertTrue(projectedEdit.seed.credentialStored)
+        assertEquals(ROW_DIGEST, projectedEdit.seed.savedRevision!!.version)
+        assertEquals(ROW_RESOURCE_ID, projectedEdit.seed.savedRevision!!.resourceID)
+        assertEquals(row.state, projectedEdit.connectionState)
+        assertEquals(row.tools, projectedEdit.tools)
+        assertTrue(projectedEdit.credentialStored)
+
+        // End-to-end reachability: with the projection in place the holder's
+        // Save dispatch reaches the wire (preimage: the envelope never left
+        // the App because Save was permanently disabled).
+        host.integrations.flowHolder.setMcpDisplayName(editIdentity, "Local Hub 2")
+        assertTrue(host.integrations.flowHolder.saveMcpEditor(editIdentity, hostInFlight = false)
+            is com.floe.android.feature.integrations.IntegrationsFlowResult.Accepted)
+        waitUntil { exchange.envelopes("mcp.connect").isNotEmpty() }
+        val env = exchange.envelopes("mcp.connect").last()
+        assertEquals(ROW_DIGEST, (env["revision"] as? JsonObject)?.stringOf("version"))
+        assertEquals("save", (env["payload"] as? JsonObject)?.stringOf("operation"))
+        waitUntil {
+            host.integrations.destination.value.editor == null
+        }
+    }
+
+    /** R8 (close/reopen lifecycle): cancel/reopen NEVER reuses the stale
+     *  identity — the projection is dropped on close, a reopened editor gets
+     *  a NEW editor id, and a save addressed to the OLD identity cannot touch
+     *  the NEW projection. The native route token is minted per open and
+     *  cleared per close. Authored, NOTRUN. */
+    @Test
+    fun `cancel and reopen never reuse stale mcp editor identity`() = runBlocking {
+        val exchange = ScriptExchange { command ->
+            when (command) {
+                "mcp.servers.list" -> completedFrame(mcpServersPage(state = "ready"))
+                else -> null
+            }
+        }
+        val host = hostWith(exchange)
+        val routeAuthority = host.integrations.testRouteAuthority as FakeRouteAuthority
+        host.integrations.refreshMcpServers()
+        waitUntil { host.integrations.destination.value.mcp.servers.isNotEmpty() }
+
+        val firstOpen = host.integrations.flowHolder.openMcpEditor(SERVER_ID)
+        assertTrue(firstOpen is com.floe.android.feature.integrations
+            .IntegrationsFlowResult.Accepted)
+        val firstIdentity = host.integrations.flowHolder.currentMcpEditorIdentity()!!
+        val firstProjection = host.integrations.destination.value.editor!!
+        assertTrue(firstProjection.identity.isCurrentFor(firstIdentity))
+        assertEquals(1, routeAuthority.opened.get())
+
+        // Cancel: the projection is gone; the module can no longer match the
+        // old identity to any projected editor (Save would show its plain
+        // wait state, never a stale success).
+        assertTrue(host.integrations.flowHolder.cancelMcpEditor(firstIdentity)
+            is com.floe.android.feature.integrations.IntegrationsFlowResult.Accepted)
+        assertNull(host.integrations.destination.value.editor)
+        assertEquals(1, routeAuthority.opened.get())
+
+        // Reopen: NEW editor id, projection replaces nothing stale.
+        val secondOpen = host.integrations.flowHolder.openMcpEditor(SERVER_ID)
+        assertTrue(secondOpen is com.floe.android.feature.integrations
+            .IntegrationsFlowResult.Accepted)
+        val secondIdentity = host.integrations.flowHolder.currentMcpEditorIdentity()!!
+        assertTrue(secondIdentity.editorId != firstIdentity.editorId)
+        val secondProjection = host.integrations.destination.value.editor!!
+        assertTrue(secondProjection.identity.isCurrentFor(secondIdentity))
+        assertFalse(secondProjection.identity.isCurrentFor(firstIdentity))
+        assertEquals(2, routeAuthority.opened.get())
+
+        // A late save addressed to the OLD identity must NOT mutate or close
+        // the NEW editor's projection: it is not current for the projection.
+        val staleRequest = com.floe.android.feature.integrations.McpSaveRequest(
+            identity = firstIdentity,
+            serverId = SERVER_ID,
+            draft = com.floe.android.feature.integrations.McpDraftSnapshot(
+                displayName = "Stale",
+                endpointText = "https://stale.example/mcp",
+            ),
+            credentialIntent = com.floe.android.feature.integrations
+                .CredentialDraftIntent.CLEAR,
+            credentialDraft = null,
+            baseRevision = com.floe.android.feature.integrations.McpServerRevisionUi(
+                ROW_RESOURCE_ID, ROW_DIGEST,
+            ),
+        )
+        // The stale save is refused at the dispatch layer: nothing reaches
+        // the wire and the reopened editor's projection is untouched.
+        assertFalse(host.integrations.saveMcpServer(staleRequest))
+        assertTrue(exchange.envelopes("mcp.connect").isEmpty())
+        val afterStale = host.integrations.destination.value.editor!!
+        assertTrue(afterStale.identity.isCurrentFor(secondIdentity))
+        assertFalse(afterStale.saveInFlight)
+        assertEquals("Local Hub", afterStale.seed.displayName)
+        host.integrations.flowHolder.cancelMcpEditor(secondIdentity)
+        assertNull(host.integrations.destination.value.editor)
+        assertFalse(host.integrations.saveMcpServer(staleRequest))
+        assertNull(host.integrations.destination.value.editor)
     }
 
     // ------------------------------------------------------------- helpers

@@ -136,9 +136,15 @@ class SettingsSummaryLifecycleTest {
             """"correlationID":"$correlation","cursor":{"operationReceiptID":"$receipt","sequence":1},""" +
             """"effects":[{"sequence":1,"kind":"cancelled","detail":[]}],"hasMore":false,"resyncRequired":false}"""
 
-    private fun summaryDoc(conversations: Int = 11, runs: Int = 15): String =
+    private fun summaryDoc(
+        conversations: Int = 11,
+        runs: Int = 15,
+        persistedGrants: Int = 0,
+        inMemoryGrants: Int = 0,
+    ): String =
         """{"history":{"conversationCount":$conversations,"runCount":$runs,""" +
-            """"persistedGrantCount":0,"inMemoryGrantCount":0,"revision":"$histRev"},""" +
+            """"persistedGrantCount":$persistedGrants,"inMemoryGrantCount":$inMemoryGrants,""" +
+            """"revision":"$histRev"},""" +
             """"modelConfiguration":{"providerCount":2,"modelCount":2,""" +
             """"secretReferenceCount":2,"preferencesSyncRevision":4,"revision":"$mcfgRev"},""" +
             """"credentialAvailability":"AVAILABLE","snapshot":{"dbSnapshotTransaction":true,""" +
@@ -363,6 +369,113 @@ class SettingsSummaryLifecycleTest {
         host.stop()
     }
 
+    /**
+     * The actual Alpha7 freshness defect: the Privacy card kept showing the
+     * startup-era summary (counts loaded once for the process) no matter how
+     * often the page was opened, because the page-entry ensure returned
+     * early whenever ANY summary had settled. The dynamic counts — above all
+     * the runtime grant array appended by the live actor between visits —
+     * must refresh on EVERY actual page entry: the settled projection stays
+     * on screen while the fresh read is pending, and a late reply from a
+     * superseded read generation can never rewind the fresh counts.
+     */
+    @Test
+    fun pageEntryRefreshesSettledSummaryWithLiveCounts() = runBlocking {
+        val reads = AtomicInteger(0)
+        val staleReplyRelease = java.util.concurrent.CountDownLatch(1)
+        val exchange = ScriptExchange(
+            receiptFor = { command, c ->
+                if (command == "privacy.summary.get") {
+                    "op:v1:privacy-${reads.incrementAndGet()}-$c"
+                } else {
+                    "op:v1:other-$c"
+                }
+            },
+            effectFor = { receipt, correlation ->
+                when {
+                    // Startup read: the process-lifetime first counts, 0
+                    // runtime grants — the values that used to stick forever.
+                    receipt.startsWith("op:v1:privacy-1-") ->
+                        accepted(correlation, receipt, summaryDoc())
+                    // First page-entry read: held so the superseded late
+                    // reply proves the generation fence.
+                    receipt.startsWith("op:v1:privacy-2-") -> {
+                        check(
+                            staleReplyRelease.await(
+                                5, java.util.concurrent.TimeUnit.SECONDS,
+                            ),
+                        )
+                        accepted(
+                            correlation, receipt,
+                            summaryDoc(111, 115, inMemoryGrants = 9),
+                        )
+                    }
+                    // Repeated page-entry read: the fresh authoritative
+                    // backend answer (new task + one live approved grant).
+                    receipt.startsWith("op:v1:privacy-3-") ->
+                        accepted(
+                            correlation, receipt,
+                            summaryDoc(14, 18, inMemoryGrants = 1),
+                        )
+                    else -> closed(correlation, receipt)
+                }
+            },
+        )
+        val host = testHost(exchange)
+        try {
+            host.onBootstrapCapability(com.floe.android.RuntimeBootstrapCapability.OwnedStoreReady)
+            // Simulate the host's explicit startup reader: 11/15, 0 grants.
+            host.onDomainAvailability("settingsPrivacy", true, emptyList())
+            host.settings.refreshPrivacySummary()
+            assertTrue(await { host.settings.state.value.privacy.summary != null })
+            assertEquals(11L, host.settings.state.value.privacy.summary!!.conversationCount)
+            assertEquals(15L, host.settings.state.value.privacy.summary!!.runCount)
+            assertEquals(0L, host.settings.state.value.privacy.summary!!.inMemoryGrantCount)
+
+            // First actual page entry: a fresh read starts even though a
+            // summary settled at startup — the cached 0-grant counts must
+            // not be mistaken as fresh — and the settled projection stays
+            // on screen while the read is pending.
+            host.settings.ensurePrivacySummaryLoaded()
+            assertTrue(
+                "page entry must start a fresh read over a settled summary",
+                await { exchange.count("privacy.summary.get") == 2 },
+            )
+            assertEquals(
+                11L,
+                host.settings.state.value.privacy.summary!!.conversationCount,
+            )
+            assertEquals(
+                0L,
+                host.settings.state.value.privacy.summary!!.inMemoryGrantCount,
+            )
+
+            // A repeated page entry supersedes the held read and lands the
+            // live counts.
+            host.settings.ensurePrivacySummaryLoaded()
+            assertTrue(
+                await {
+                    host.settings.state.value.privacy.summary!!.conversationCount == 14L
+                },
+            )
+            assertEquals(18L, host.settings.state.value.privacy.summary!!.runCount)
+            assertEquals(1L, host.settings.state.value.privacy.summary!!.inMemoryGrantCount)
+            assertNull(host.settings.state.value.privacyStatus.error)
+            assertFalse(host.settings.state.value.privacyStatus.loading)
+
+            // The held older-generation reply can never rewind the fresh
+            // counts.
+            staleReplyRelease.countDown()
+            delay(150)
+            assertEquals(14L, host.settings.state.value.privacy.summary!!.conversationCount)
+            assertEquals(1L, host.settings.state.value.privacy.summary!!.inMemoryGrantCount)
+            assertNull(host.settings.state.value.privacyStatus.error)
+        } finally {
+            staleReplyRelease.countDown()
+            host.stop()
+        }
+    }
+
     @Test
     fun cancelledTerminalSettlesTypedErrorInsteadOfLoadingForever() = runBlocking {
         val exchange = ScriptExchange(
@@ -555,14 +668,26 @@ class SettingsSummaryLifecycleTest {
         assertEquals(before, host.settings.state.value.privacy.summary!!.conversationCount)
         assertNull(host.settings.state.value.privacyStatus.error)
 
-        // 4. Opening Settings/Privacy after the completed-turn exit must NOT
-        //    refresh a surface that already has real settled data; the exit
-        //    itself did not lose the root summary. A missing surface (the
-        //    actual stuck state) is covered by the page-open recovery test.
+        // 4. Opening Settings/Privacy after the completed-turn exit now
+        //    RE-READS the settled surface: the counts are live data, so a
+        //    page entry is a fresh authoritative read, never a
+        //    process-lifetime cache hit. The exit itself did not lose the
+        //    root summary — it stays usable across the refresh (the
+        //    scripted backend still answers 11/15 here; fresh counts
+        //    replacing stale ones are pinned by
+        //    pageEntryRefreshesSettledSummaryWithLiveCounts below).
         val readsBefore = privacyReads.get()
         host.settings.ensurePrivacySummaryLoaded()
-        delay(100)
-        assertEquals(readsBefore, privacyReads.get())
+        assertTrue(
+            "page entry must re-read the settled privacy summary",
+            await { privacyReads.get() > readsBefore },
+        )
+        assertTrue(
+            await {
+                !host.settings.state.value.privacyStatus.loading &&
+                    host.settings.state.value.privacyStatus.error == null
+            },
+        )
         val after = host.settings.state.value
         assertEquals(11L, after.privacy.summary!!.conversationCount)
         assertEquals(15L, after.privacy.summary!!.runCount)

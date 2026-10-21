@@ -849,11 +849,24 @@ public actor MCPDomain {
             return Self.rejection(ConfigDomainError(code: .notFound,
                                                     reason: "mcpServerMissing"))
         case (false, true):
-            guard secretIntent == "set" else {
-                // New identity creation is legitimate ONLY as the Set lease
-                // (candidate + secret frozen together at the save tap).
-                return Self.rejection(ConfigDomainError(code: .invalidEnvelope,
-                                                        reason: "mcpCreateNeedsSet"))
+            // NARROW no-secret create (R8): an explicitly-created NEW
+            // identity whose validated authentication is .none may ride the
+            // CLEAR intent with NO secret bytes. The keep/clear hop
+            // structurally carries no secret (save(candidateJSON:) passes
+            // leaseSecret: nil), and the clear-effect path performs no
+            // secret-store write/delete when no account is bound. Any other
+            // new identity still requires the frozen Set lease.
+            let noneClearCreate = secretIntent == "clear"
+                && configuration.authentication == .none
+                && leaseSecret == nil
+            if !noneClearCreate {
+                guard secretIntent == "set" else {
+                    // New identity creation is legitimate ONLY as the Set
+                    // lease (candidate + secret frozen together at the save
+                    // tap).
+                    return Self.rejection(ConfigDomainError(code: .invalidEnvelope,
+                                                            reason: "mcpCreateNeedsSet"))
+                }
             }
         case (true, false):
             break

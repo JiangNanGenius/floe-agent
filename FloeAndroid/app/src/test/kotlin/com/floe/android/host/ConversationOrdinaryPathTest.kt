@@ -165,6 +165,7 @@ class ConversationOrdinaryPathTest {
         pendingApproval: Boolean = false,
         pendingInputs: String = "[]",
         queueVersion: String = "queue-digest-1",
+        watermark: Long = 4,
     ): String {
         val approval = if (!pendingApproval) "null" else
             """{"callID":"$callId","tool":"workspace.writeFile","reason":"Needs approval",""" +
@@ -178,7 +179,7 @@ class ConversationOrdinaryPathTest {
             """"pendingApproval":$approval,"approvalRevision":$approvalRevision,""" +
             """"pendingInputs":$pendingInputs,""" +
             """"queueRevision":{"resourceID":"pendingQueue.${conversationId.uppercase()}",""" +
-            """"version":"$queueVersion"},"durableWatermark":4}"""
+            """"version":"$queueVersion"},"durableWatermark":$watermark}"""
     }
 
     /**
@@ -194,7 +195,8 @@ class ConversationOrdinaryPathTest {
         var cancelCount = 0
         var extraModelRows = ""
         var pendingInputsJson = "[]"
-        var pendingApproval = false
+        @Volatile var pendingApproval = false
+        var approvalEventWatermark = false
         var archiveAccepted = true
     }
 
@@ -275,16 +277,21 @@ class ConversationOrdinaryPathTest {
                             sequence = 2,
                         ),
                     )
-                    "op:v1:runSnapshot" -> effectPage(
+                    "op:v1:runSnapshot" -> {
+                        val approval = script.pendingApproval
+                        effectPage(
                         correlation, "runSnapshot",
                         accepted(
                             snapshotValue(
                                 script.runState,
-                                pendingApproval = script.pendingApproval,
+                                pendingApproval = approval,
                                 pendingInputs = script.pendingInputsJson,
+                                watermark = if (script.approvalEventWatermark)
+                                    (if (approval) 1L else 0L) else 4L,
                             ),
                         ),
                     )
+                    }
                     "op:v1:cancel" -> {
                         script.cancelCount += 1
                         if (script.cancelRejectOnce && script.cancelCount == 1) {
@@ -607,6 +614,9 @@ class ConversationOrdinaryPathTest {
         val script = LocalScript().apply {
             runState = "waitingApproval"
             pendingInputsJson = "[]"
+            // Before request #1 the snapshot cannot claim watermark #4 with
+            // no approval. Capture pending+watermark as one causal fixture cut.
+            approvalEventWatermark = true
         }
         val exchange = buildExchange(script)
         // The live event channel delivers the durable approval REQUEST once;

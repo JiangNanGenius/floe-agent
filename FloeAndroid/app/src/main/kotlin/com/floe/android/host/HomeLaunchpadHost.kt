@@ -520,6 +520,12 @@ class HomeLaunchpadHost internal constructor(
                             selectionLength = null,
                         ),
                     )
+                    if (!host.attachments.handoffDraftToSession(
+                            draftNonce, holder.session, handoffAttachments.map { it.id })) {
+                        host.conversations.rootWorkspace.restoreHandedOff(draftNonce)
+                        settleOrdinarySend(host.attachments.failureMessage("stage_refused"), onFailure)
+                        return@createConversationForLaunch
+                    }
                     holder.selectAgentMode(parseMode(mode))
                     holder.setDraftTaskApprovalMode(draftApproval)
                     host.conversations.rootWorkspace.clearHandedOff(draftNonce)

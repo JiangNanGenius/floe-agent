@@ -172,4 +172,5 @@
     <string name="mcp_local_network_recovery">Open network settings</string>
     <string name="mcp_local_network_recovery_detail">Local network access is blocked until allowed in system settings. Public internet servers keep working.</string>
 
+    <string name="mcp_save_failed_notice">Couldn\'t save. Your changes are still here. Check the connection settings and try again.</string>
 </resources>

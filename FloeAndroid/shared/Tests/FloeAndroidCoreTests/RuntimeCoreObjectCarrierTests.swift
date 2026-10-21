@@ -8,7 +8,7 @@
 // ACTUAL `AndroidBridge.exchange` canonical Bridge V3 ingress:
 //
 //  * `config.providers.list` / `config.models.list` empty pages complete as
-//    the frozen OBJECT carrier `{"rows":[]}` — the former bare LIST document
+//    the OBJECT carrier with `rows` and the admitted paging metadata — the former bare LIST document
 //    was refused by the OBJECT-only carrier (encodedBytes=Int.max ->
 //    carrier=payloadTooLarge) even though the page was 2 bytes;
 //  * a fresh `conversation.get` completes and carries EXPLICIT JSON null for
@@ -79,7 +79,7 @@ final class RuntimeCoreObjectCarrierTests: XCTestCase {
     private func bootInstalledGeneration(
         file: StaticString = #filePath, line: UInt = #line
     ) async throws -> Boot {
-        let root = NSTemporaryDirectory()
+        let root = (androidTestFixtureDirectory.path + "/")
             .appending("g02-carrier-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(atPath: root,
                                                 withIntermediateDirectories: true)
@@ -296,13 +296,18 @@ final class RuntimeCoreObjectCarrierTests: XCTestCase {
                                          "\(providersValue)")
         XCTAssertEqual(providerRows.count, 0)
         let providersBytes = try XCTUnwrap(providersTerminal["valueBytes"] as? Int)
-        // The EMPTY page is `{"rows":[]}` — ten UTF-8 bytes, far below the
-        // 47,616 item bound. The former carrier refusal was an OBJECT-shape
-        // refusal mislabeled payloadTooLarge, never a size refusal.
+        // The admitted config paging projection retains the OBJECT carrier
+        // and adds nextCursor/hasMore (MAIN_CONFIG_READ_PAGING_DECISION).
+        // Pin the full empty-page shape, exact serialization and budget;
+        // do not mistake that legitimate metadata for a carrier failure.
+        XCTAssertEqual(Set(providersValue.keys), Set(["rows", "nextCursor", "hasMore"]))
+        XCTAssertTrue(providersValue["nextCursor"] is NSNull)
+        XCTAssertEqual(providersValue["hasMore"] as? Bool, false)
         let canonical = try XCTUnwrap(
             FacadeFrameBudget.canonicalSerializedBytes(providersValue))
+        let expected = #"{"hasMore":false,"nextCursor":null,"rows":[]}"#.utf8.count
         XCTAssertEqual(providersBytes, canonical)
-        XCTAssertEqual(canonical, 11, "{\"rows\":[]} must be exactly 11 UTF-8 bytes")
+        XCTAssertEqual(canonical, expected)
 
         let modelsReceipt = try submit(submitEnvelope(
             correlation: "carrier-models-1",

@@ -114,6 +114,14 @@ class AttachmentImportController internal constructor(
         val job = AtomicReference<Job?>(null)
         val ingress = AtomicReference<String?>(null)
         val retrying = AtomicBoolean(false)
+        /** Exactly-once route release. The native `attachment.stage` publish
+         *  requires the ingress AND its route live (native refuses
+         *  `routeStale`, and closeRoute aborts the route's
+         *  finished-but-unpublished ingresses), so the route stays OPEN
+         *  through the whole asynchronous publication and is closed by
+         *  exactly one terminal path: publish terminal, cancel, or a copy
+         *  that never submitted. */
+        val routeClosed = AtomicBoolean(false)
         @Volatile var sourceUri: Uri? = null
         @Volatile var stagingId: String? = null
         @Volatile var rootEpoch: Long? = null
@@ -162,6 +170,64 @@ class AttachmentImportController internal constructor(
     }
 
     internal var channel: StagingChannel = NativeStagingChannel
+
+    /**
+     * One RESOLVED importable content source. This is the pure content-
+     * resolution seam: the production [sourceResolver] reads ONLY through
+     * ContentResolver, while JVM tests substitute in-memory sources (a null
+     * [uri]) so the whole native-producer staging lifecycle — route open →
+     * ingress begin/write/end → asynchronous `attachment.stage` publication
+     * → owned route close — runs without android framework stubs. The
+     * staging authority (route/ingress receipts, staging ids, handles) stays
+     * entirely native; this carrier only describes the picked bytes.
+     */
+    internal class AttachmentSource(
+        /** The platform URI, null ONLY for substituted test sources. */
+        val uri: Uri?,
+        val scheme: String,
+        val authority: String?,
+        val displayName: String,
+        val mimeType: String,
+        /** Declared size from the provider, -1 when unknown. */
+        val declaredSize: Long,
+        val openStream: () -> InputStream?,
+    )
+
+    /** Resolves a platform picker [Uri] into an [AttachmentSource]. Runs on
+     *  the IO copy dispatcher; never mints identity — it only describes
+     *  bytes the native producer then ingests. */
+    internal var sourceResolver: (Uri) -> AttachmentSource = { uri -> resolveSource(uri) }
+
+    private fun resolveSource(uri: Uri): AttachmentSource {
+        val context: Context = host.appContext
+        var displayName = uri.lastPathSegment ?: "attachment"
+        var declaredSize = -1L
+        runCatching {
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (cursor.moveToFirst()) {
+                    if (nameIndex >= 0) cursor.getString(nameIndex)?.let { displayName = it }
+                    if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) {
+                        declaredSize = cursor.getLong(sizeIndex)
+                    }
+                }
+            }
+        }
+        val mimeType = runCatching { context.contentResolver.getType(uri) }
+            .getOrNull() ?: "application/octet-stream"
+        return AttachmentSource(
+            uri = uri,
+            scheme = uri.scheme.orEmpty(),
+            authority = uri.authority,
+            displayName = displayName,
+            mimeType = mimeType,
+            declaredSize = declaredSize,
+            openStream = {
+                runCatching { context.contentResolver.openInputStream(uri) }.getOrNull()
+            },
+        )
+    }
 
     private val pickerRequestFlow = MutableStateFlow<PickerRequest?>(null)
     val pickerRequest: StateFlow<PickerRequest?> = pickerRequestFlow
@@ -262,10 +328,38 @@ class AttachmentImportController internal constructor(
 
     private fun startCopy(owner: StageOwner, uri: Uri, replacingId: String? = null) {
         synchronized(grantLock) { owner.sourceUri = uri; copies[owner] = Unit }
+        // Resolution itself stays on the IO copy dispatcher (deferred through
+        // the provider), never on the picker's calling thread.
+        startCopyCore(owner, replacingId) { sourceResolver(uri) }
+    }
+
+    /** Test seam for one owned staging attempt (mirrors the exact session /
+     *  draft ownership a picker result carries; the picker-capture lane is
+     *  exercised on-device, this drives the producer lifecycle). Stages a
+     *  substituted in-memory source under REAL root ownership without a
+     *  platform picker round or framework types; the native producer
+     *  contract exercised here is byte-for-byte the production one, only
+     *  the byte source differs. */
+    internal fun stageSubstitutedSource(
+        session: ConversationSessionToken?,
+        draftNonce: String?,
+        draftHomeGeneration: Long,
+        source: AttachmentSource,
+    ) {
+        val owner = StageOwner(session, draftNonce, draftHomeGeneration)
+        synchronized(grantLock) { owner.sourceUri = source.uri; copies[owner] = Unit }
+        startCopyCore(owner, null) { source }
+    }
+
+    private fun startCopyCore(
+        owner: StageOwner,
+        replacingId: String?,
+        sourceProvider: () -> AttachmentSource,
+    ) {
         val replacedAttempt = replacingId?.let { entries[it]?.attempt }
         val job = host.scope.launch(host.ioDispatcher, start = CoroutineStart.LAZY) {
             try {
-                when (val result = stageThroughNativeProducer(owner, uri, replacingId)) {
+                when (val result = stageThroughNativeProducer(owner, sourceProvider(), replacingId)) {
                     is StageResult.Failed -> publishCopyFailure(owner, result.reason)
                     is StageResult.Staged -> Unit
                 }
@@ -280,7 +374,7 @@ class AttachmentImportController internal constructor(
                         }
                     }
                 }
-                releaseScopedReadIfUnused(uri)
+                owner.sourceUri?.let(::releaseScopedReadIfUnused)
                 replacedAttempt?.retrying?.set(false)
             }
         }
@@ -388,38 +482,37 @@ class AttachmentImportController internal constructor(
 
     private suspend fun stageThroughNativeProducer(
         owner: StageOwner,
-        uri: Uri,
+        source: AttachmentSource,
         replacingId: String? = null,
     ): StageResult = withContext(Dispatchers.IO) {
-        if (uri.scheme != "content" || uri.authority.isNullOrBlank()) {
+        if (source.scheme != "content" || source.authority.isNullOrBlank()) {
             return@withContext StageResult.Failed("source_unreadable")
         }
         owner.rootEpoch = host.nativeRootEpoch()?.takeIf { it > 0 }
             ?: return@withContext StageResult.Failed("stage_refused")
         ensureOwner(owner)
-        val context: Context = host.appContext
-        var displayName = uri.lastPathSegment ?: "attachment"
-        var declaredSize = -1L
-        runCatching {
-            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-                if (cursor.moveToFirst()) {
-                    if (nameIndex >= 0) cursor.getString(nameIndex)?.let { displayName = it }
-                    if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) declaredSize = cursor.getLong(sizeIndex)
-                }
-            }
-        }
+        val displayName = source.displayName.ifBlank { "attachment" }
+        val declaredSize = source.declaredSize
         ensureOwner(owner)
         if (declaredSize > MAX_STAGING_BYTES) return@withContext StageResult.Failed("attachment_too_large")
-        val mimeType = runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: "application/octet-stream"
+        val mimeType = source.mimeType.ifBlank { "application/octet-stream" }
         var routeReceipt: String? = null
         var ingressReceipt: String? = null
         var submittedForPublication = false
         try {
+            // Home generations legitimately start at zero; the native route
+            // contract requires a strictly positive incarnation. Preserve the
+            // exact Home generation for ownership and map it injectively here.
+            val routeIncarnation = owner.session?.sessionEpoch ?: run {
+                if (owner.draftHomeGeneration == Long.MAX_VALUE) {
+                    return@withContext StageResult.Failed("stage_refused")
+                }
+                owner.draftHomeGeneration + 1L
+            }
+            if (routeIncarnation <= 0L) return@withContext StageResult.Failed("stage_refused")
             routeReceipt = channel.routeOpen(
                 conversationId = owner.session?.conversationId,
-                incarnation = owner.session?.sessionEpoch ?: owner.draftHomeGeneration,
+                incarnation = routeIncarnation,
                 draftRevision = 0L,
                 isTemporary = false,
             )
@@ -441,7 +534,7 @@ class AttachmentImportController internal constructor(
             )
             val initial = StagingEntry(
                 session = owner.session, draftNonce = owner.draftNonce,
-                draftHomeGeneration = owner.draftHomeGeneration, sourceUri = uri,
+                draftHomeGeneration = owner.draftHomeGeneration, sourceUri = source.uri,
                 staged = pending, routeReceipt = routeReceipt,
                 ingressReceipt = ingressReceipt, stagingHandle = null, attempt = owner,
             )
@@ -464,7 +557,7 @@ class AttachmentImportController internal constructor(
             var total = 0L
             var lastPercent = -1
             val buffer = ByteArray(CHUNK_BYTES)
-            context.contentResolver.openInputStream(uri)?.use { input ->
+            source.openStream()?.use { input ->
                 owner.input.set(input)
                 try {
                     while (true) {
@@ -502,14 +595,19 @@ class AttachmentImportController internal constructor(
             channel.end(ingressReceipt, displayName, mimeType)
             ensureOwner(owner)
             // Only release grants actually acquired by this importer, and
-            // only after every row/copy using the URI is gone.
-            synchronized(grantLock) {
-                runCatching {
-                    val alreadyHeld = context.contentResolver.persistedUriPermissions.any {
-                        it.uri == uri && it.isReadPermission
+            // only after every row/copy using the URI is gone. Scoped READ
+            // is taken solely for a REAL platform URI (justified user
+            // import); substituted test sources carry no URI and take none.
+            source.uri?.let { uri ->
+                val context: Context = host.appContext
+                synchronized(grantLock) {
+                    runCatching {
+                        val alreadyHeld = context.contentResolver.persistedUriPermissions.any {
+                            it.uri == uri && it.isReadPermission
+                        }
+                        context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        if (!alreadyHeld) ownedReadGrants[uri] = Unit
                     }
-                    context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    if (!alreadyHeld) ownedReadGrants[uri] = Unit
                 }
             }
             val staged = pending.copy(
@@ -539,11 +637,29 @@ class AttachmentImportController internal constructor(
         } finally {
             // EOF must settle before publication. A failed copy retains only
             // its recoverable source/Failed row; partial ingress is aborted.
+            // ROUTE LIFETIME (R8 real App failure): when publication was
+            // submitted, the route must stay OPEN — the asynchronous native
+            // `attachment.stage` publish refuses a stale route and the
+            // native closeRoute aborts the route's finished-but-unpublished
+            // ingress, so closing here (before the terminal arrives) aborts
+            // the very ingress the publish reads. Route ownership transfers
+            // to the terminal/cancel paths (closeOwnedRoute). Only a copy
+            // that never submitted (or was cancelled inline) closes here.
             if (!submittedForPublication || owner.cancelled.get()) {
                 ingressReceipt?.let { runCatching { channel.abort(it) } }
+                closeOwnedRoute(owner, routeReceipt)
             }
-            routeReceipt?.let { runCatching { channel.routeClose(it) } }
         }
+    }
+
+    /** Release exactly the route this attempt opened. Idempotent across
+     *  every terminal path (publish terminal, cancel, retry replacement,
+     *  host stop); the native close runs off the caller's attempt lock.
+     *  A failed/never-opened route is a no-op. */
+    private fun closeOwnedRoute(owner: StageOwner, routeReceipt: String?) {
+        if (routeReceipt == null) return
+        if (!owner.routeClosed.compareAndSet(false, true)) return
+        launchCleanup { runCatching { channel.routeClose(routeReceipt) } }
     }
 
     private fun kindFor(mimeType: String): AttachmentKindUi = when {
@@ -573,7 +689,9 @@ class AttachmentImportController internal constructor(
         ingressReceipt: String,
         staged: StagedAttachmentUi,
     ) {
-        val owner = entries[stagingId]?.attempt ?: return
+        val submittedEntry = entries[stagingId] ?: return
+        val owner = submittedEntry.attempt
+        val submittedRoute = submittedEntry.routeReceipt
         host.trackOperation(
             HostCommandRequest(
                 command = "attachment.stage",
@@ -587,17 +705,30 @@ class AttachmentImportController internal constructor(
             // publication with removal/cancellation, not with file copying.
             host.scope.launch(host.ioDispatcher) {
                 val sameRoot = host.nativeRootEpoch() == owner.rootEpoch
+                // Attachment commands use the frozen identifier-only detail
+                // carrier, not the object value slot. Bind the returned handle
+                // to this attempt's exact native staging identity.
+                val handle = if (outcome is HostOperationOutcome.Completed &&
+                    outcome.detail["result"] == "accepted" &&
+                    outcome.detail["stagingID"] == stagingId
+                ) {
+                    outcome.detail["stagingHandle"]?.takeIf { it.isNotBlank() }
+                } else null
+                var discardLateHandle = false
                 synchronized(owner) {
                     val entry = entries[stagingId]
-                    if (entry?.attempt !== owner) return@synchronized
-                    if (!sameRoot || !ownerIsCurrent(owner)) {
-                        cancelInternal(session, draftNonce, stagingId)
+                    if (entry?.attempt !== owner) {
+                        // Publication can commit before cancellation while its
+                        // success callback arrives after removal. Cancel-ingress
+                        // cannot release an already published record.
+                        discardLateHandle = sameRoot && handle != null
                         return@synchronized
                     }
-                    val handle = if (outcome is HostOperationOutcome.Completed) {
-                        ((outcome.value as? JsonObject)?.get("stagingHandle") as? JsonPrimitive)
-                            ?.content?.takeIf { it.isNotBlank() }
-                    } else null
+                    if (!sameRoot || !ownerIsCurrent(owner)) {
+                        cancelInternal(session, draftNonce, stagingId)
+                        discardLateHandle = sameRoot && handle != null
+                        return@synchronized
+                    }
                     if (handle != null) {
                         val ready = staged.copy(import = AttachmentImportUi.Ready)
                         entries[stagingId] = entry.copy(stagingHandle = handle, staged = ready)
@@ -606,11 +737,14 @@ class AttachmentImportController internal constructor(
                         val reason = when (outcome) {
                             is HostOperationOutcome.Rejected -> outcome.code
                             is HostOperationOutcome.Failed -> outcome.code
+                            is HostOperationOutcome.Completed -> outcome.detail["code"] ?: "stage_refused"
                             else -> "stage_refused"
                         }
                         publishCopyFailure(owner, reason)
                     }
                 }
+                if (discardLateHandle && handle != null) discardNativeHandle(handle)
+                closeOwnedRoute(owner, submittedRoute)
             }
         }
     }
@@ -688,8 +822,15 @@ class AttachmentImportController internal constructor(
         if (observed.session != session || observed.draftNonce != draftNonce) return false
         synchronized(observed.attempt) {
             val entry = entries[stagingId] ?: return false
-            if (entry.attempt !== observed.attempt) return false
+            if (entry.attempt !== observed.attempt || entry.session != session ||
+                entry.draftNonce != draftNonce) return false
             cancelCopy(entry.attempt)
+            // The row is leaving while its ingress may still be
+            // finished-but-unpublished: release exactly this attempt's
+            // route (the native close drains the ingress). The terminal
+            // handler that may already own this close dedups through the
+            // attempt's routeClosed flag — never a double close.
+            closeOwnedRoute(entry.attempt, entry.routeReceipt)
             entries.remove(stagingId)
             publishRemoved(session, draftNonce, stagingId)
             cancelNativeStaging(stagingId)
@@ -718,39 +859,47 @@ class AttachmentImportController internal constructor(
     fun discard(session: ConversationSessionToken, stagingId: String) {
         val entry = entries[stagingId] ?: return
         if (entry.session != session || entry.draftNonce != null) return
-        discardEntry(stagingId)
+        discardEntry(stagingId, entry)
     }
 
     fun discardDraft(draftNonce: String, stagingId: String) {
         val entry = entries[stagingId] ?: return
         if (entry.draftNonce != draftNonce || entry.session != null) return
-        discardEntry(stagingId)
+        discardEntry(stagingId, entry)
     }
 
     private fun discardEntry(stagingId: String) {
         val entry = entries[stagingId] ?: return
+        discardEntry(stagingId, entry)
+    }
+
+    private fun discardEntry(stagingId: String, entry: StagingEntry) {
+        if (entries[stagingId] !== entry) return
         val handle = entry.stagingHandle
         if (handle == null) {
             cancelInternal(entry.session, entry.draftNonce, stagingId)
             return
         }
         synchronized(entry.attempt) {
-            if (entries[stagingId]?.attempt !== entry.attempt) return
+            if (entries[stagingId] !== entry) return
             entry.attempt.cancelled.set(true)
             entries.remove(stagingId)
             publishRemoved(entry.session, entry.draftNonce, stagingId)
-            host.trackOperation(
-                HostCommandRequest(
-                    command = "attachment.staging.discard",
-                    scope = HostScope.ApplicationConfiguration("attachmentStaging"),
-                    stateful = false,
-                    correlationID = host.commandClient.correlationID("adiscard"),
-                    payload = JsonObject(
-                        mapOf("stagingHandle" to JsonPrimitive(handle))),
-                ),
-            ) { }
+            discardNativeHandle(handle)
         }
         entry.sourceUri?.let(::releaseScopedReadIfUnused)
+    }
+
+    private fun discardNativeHandle(handle: String) {
+        host.trackOperation(
+            HostCommandRequest(
+                command = "attachment.staging.discard",
+                scope = HostScope.ApplicationConfiguration("attachmentStaging"),
+                stateful = false,
+                correlationID = host.commandClient.correlationID("adiscard"),
+                payload = JsonObject(mapOf("stagingHandle" to JsonPrimitive(handle))),
+            ),
+        ) { }
     }
 
     /** Drain EVERY draft-owned row for [draftNonce] (an actual navigation /
@@ -777,7 +926,77 @@ class AttachmentImportController internal constructor(
     internal fun drainSession(session: ConversationSessionToken) {
         copies.keys.filter { it.session == session }.forEach(::cancelCopy)
         entries.entries.filter { it.value.session == session }.map { it.key }
-            .forEach(::discardEntry)
+            .forEach { discard(session, it) }
+    }
+
+    /** Transfer ready Home rows before its route retires. Lock every exact
+     * attempt in stable order, then validate all rows before moving any. */
+    internal fun handoffDraftToSession(
+        nonce: String,
+        session: ConversationSessionToken,
+        stagingIds: List<String>,
+    ): Boolean {
+        if (stagingIds.isEmpty()) return true
+        if (!host.conversations.attachmentSessionIsCurrent(session) ||
+            stagingIds.distinct().size != stagingIds.size) return false
+        val observed = stagingIds.sorted().map { entries[it] ?: return false }
+        fun move(index: Int): Boolean {
+            if (index < observed.size) return synchronized(observed[index].attempt) { move(index + 1) }
+            val epoch = host.nativeRootEpochReader() ?: return false
+            if (host.conversations.rootWorkspace.currentDraftOwner().first != nonce) return false
+            if (observed.any { entries[it.staged.id] !== it || it.draftNonce != nonce ||
+                    it.session != null || !it.staged.isReady || it.stagingHandle == null ||
+                    it.attempt.cancelled.get() || it.attempt.rootEpoch != epoch }) return false
+            observed.forEach { entry ->
+                entries[entry.staged.id] = entry.copy(session = session, draftNonce = null,
+                    staged = entry.staged.copy(ownerConversationId = session.conversationId))
+            }
+            return true
+        }
+        val moved = move(0)
+        if (moved) observed.forEach { entry ->
+            host.conversations.onAttachmentStaged(session,
+                entry.staged.copy(ownerConversationId = session.conversationId))
+        }
+        return moved
+    }
+
+    /** UI row IDs are not native capabilities. Resolve only this live
+     * session's Ready records; never drop unknown/not-ready rows silently. */
+    internal fun launchHandles(
+        session: ConversationSessionToken,
+        rows: List<StagedAttachmentUi>,
+    ): List<String>? {
+        if (rows.isEmpty()) return emptyList()
+        if (!host.conversations.attachmentSessionIsCurrent(session) ||
+            rows.map { it.id }.distinct().size != rows.size) return null
+        val epoch = host.nativeRootEpochReader() ?: return null
+        return rows.map { row ->
+            val entry = entries[row.id] ?: return null
+            synchronized(entry.attempt) {
+                if (entries[row.id] !== entry || entry.session != session ||
+                    entry.draftNonce != null || !row.isReady || !entry.staged.isReady ||
+                    row.sha256 != entry.staged.sha256 || entry.attempt.cancelled.get() ||
+                    entry.attempt.rootEpoch != epoch) return null
+                entry.stagingHandle ?: return null
+            }
+        }
+    }
+
+    /** Native prepared/queue commit now owns the bytes. Release host-only
+     * bookkeeping and the source read grant; never discard committed data. */
+    internal fun consumeSessionRows(session: ConversationSessionToken, ids: List<String>) {
+        ids.forEach { id ->
+            val entry = entries[id] ?: return@forEach
+            var removed = false
+            synchronized(entry.attempt) {
+                if (entry.session == session && entry.draftNonce == null && entries.remove(id, entry)) {
+                    entry.attempt.cancelled.set(true)
+                    removed = true
+                }
+            }
+            if (removed) entry.sourceUri?.let(::releaseScopedReadIfUnused)
+        }
     }
 
     /** The native staging handle minted for a Ready draft row (never a

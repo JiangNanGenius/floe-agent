@@ -11,7 +11,7 @@ review rounds all seven IDs were resolved for the G01 representative foundation
 (`ship`). That acceptance covers those representative pages only. Whole-product
 visual parity and full CJK IME/TalkBack are not claimed. That G01 evidence did not
 cover 16 KiB runtime behavior; the later Alpha3 device coverage is listed below.
-G01 source, handoff and cleanup closure are complete; G02 is the active goal. Current
+G01 and G02 code-stage handoff and cleanup are closed; G03 is next. Current
 public status and limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Workspaces
 shown as being prepared are not implemented product capabilities. Android has no
@@ -19,24 +19,32 @@ local LLM backend.
 
 ## Android Alpha
 
-[Download 0.1.0-alpha.5](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.5)
+[Download 0.1.0-alpha.7](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.7)
 contains one signed ARM64 APK and SHA256SUMS. Install updates manually for now.
-Alpha5 fixes settings result races and privacy-summary recovery, with focused
-local tests and actual API37 / 16 KiB tablet-emulator checks using a local
-provider fixture. Its public APK and checksum were independently downloaded
-and verified. The physical Samsung SM-G9810 remains on Alpha4; Alpha5 phone
-acceptance is not claimed. Earlier Alpha3/4 compatibility evidence is retained
-in [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md).
+Alpha7 fixes attachment publication, real native-handle forwarding and Home-to-thread
+ownership; the first model turn receives committed attachment names without changing
+persisted user text. It also fixes MCP creation/no-auth setup, stale permission messages,
+approval-card retirement and fresh privacy counts. Approval currently offers only the
+call-bound decision that the native producer supports.
 
-G02 remains active. R1–R6 stage deliveries are complete; **G02-R7** is repairing
-managed private-workspace cleanup and recovery of memory, personalization and
-usage settings. The cleanup adapter is already bound: relative-path validation
-and history-clear integration with the existing ownership/retry lifecycle need
-repair. A directory-cleanup failure is not a successful deletion. The current
-code batch will receive focused integrated checks before another stage release.
-See the [current sequential targets](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan).
-Later targets are a backlog, not prequeued worker tasks. Alpha delivery does not
-close the full 41-operation G02 scope.
+127 relevant JVM cases passed across focused source cohorts; 44 affected native
+launch/repair tests passed, with unchanged MCP and other boundaries reused. The exact
+final API37 / 16 KiB APK completed attachment first-send, actual approved MCP output
+and approval retirement. A signed earlier cohort proved positive live-grant clearing
+and connection interruption before client timeout; that unchanged lifecycle evidence
+is retained separately. Original data was restored, then Alpha6-to-final-Alpha7 upgrade
+and fresh-process counts were checked. This App qualification made no paid cloud calls.
+Public tag/source, certificate, APK download hash and the two release assets were read back.
+
+G02 code and representative integration are closed, with every canonical operation
+accounted for in [the exit ledger](planning/G02_EXIT_LEDGER.json). This is not a claim
+that all 41 operations passed individual App acceptance. Samsung remains on Alpha4;
+full device, visual and input qualification stays with G12/G13/G14. Reusable task,
+project and host approval scopes need the native authority contract before being exposed.
+Linux, IDE, Office, system control and automatic updates remain later targets.
+See [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md) and
+[current sequential targets](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan).
+Later targets are a backlog, not prequeued worker tasks.
 
 ## Layout and ownership
 

@@ -295,7 +295,7 @@ fun McpServerEditorPage(
 
             /* ----------------------------- findings ----------------------------- */
             saveError?.let {
-                IntegrationIssueLine(it, modifier = Modifier.testTag("mcp.saveError"))
+                IntegrationIssueLine(stringResource(R.string.mcp_save_failed_notice), modifier = Modifier.testTag("mcp.saveError"))
             }
             val preflight = McpFormPreflight.looksInvalid(draft)
             if (preflight != null && saveError == null) {
