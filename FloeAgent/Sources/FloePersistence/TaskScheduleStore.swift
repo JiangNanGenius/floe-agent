@@ -107,6 +107,31 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
 
     public func save(_ schedule: TaskScheduleRecord) async throws {
         try await database.writer { db in
+            // An edit upsert that puts a paused/retired plan back into live
+            // state is a RE-ARM exactly like `setEnabled(enabled: true)`:
+            // on the disabled→enabled transition its existing monitoring/
+            // open cleanup evidence returns to silent monitoring at a fresh
+            // epoch (best-effort, UPDATE-only — this never creates a row,
+            // so a never-setup plan stays silent forever). Creating a plan
+            // or editing an already-live one changes no evidence here.
+            if schedule.isEnabled {
+                let previousRow = try Row.fetchOne(
+                    db, sql: "SELECT is_enabled FROM task_schedules WHERE id = ?",
+                    arguments: [schedule.id.uuidString]
+                )
+                let previousEnabled: Bool? = previousRow.flatMap { row in
+                    row["is_enabled"] as Bool?
+                }
+                if previousEnabled == false {
+                    do {
+                        try TaskScheduleCleanupReminderSQL.rearm(
+                            db, scheduleID: schedule.id, title: schedule.title,
+                            at: schedule.updatedAt)
+                    } catch {
+                        // Deliberately swallowed: auxiliary evidence only.
+                    }
+                }
+            }
             try db.execute(sql: """
                 INSERT INTO task_schedules (
                     id, title, prompt, workspace_id, cadence, scheduled_at,
@@ -161,10 +186,27 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
                 record.nextExpectedAt = nil
             }
             try Self.writeRecord(db, record)
-            // A disabled schedule's future occurrences are void; pending
-            // instances are cancelled so a re-enable cannot launch stale
-            // intent. History rows stay.
-            if !enabled {
+            if enabled {
+                // Re-arm starts a FRESH live lifecycle: best-effort, the
+                // plan's existing monitoring/open cleanup evidence returns
+                // to silent monitoring with `setup_at` advanced to this
+                // instant, so the PREVIOUS run's historical launch can never
+                // be read as this round's retirement (a reversible pause
+                // after re-enable must not remind). UPDATE-only: a plan with
+                // no actual Shortcut handoff gains no row, and a resolved
+                // row keeps the user's mark. Inside the SAME writer for
+                // atomicity; a reminder failure never blocks the real
+                // enable (same auxiliary policy as `delete`).
+                do {
+                    try TaskScheduleCleanupReminderSQL.rearm(
+                        db, scheduleID: id, title: record.title, at: date)
+                } catch {
+                    // Deliberately swallowed: auxiliary evidence only.
+                }
+            } else {
+                // A disabled schedule's future occurrences are void; pending
+                // instances are cancelled so a re-enable cannot launch stale
+                // intent. History rows stay.
                 try db.execute(sql: """
                     UPDATE task_schedule_occurrences
                     SET state = 'cancelled', finished_at = ?, updated_at = ?,
@@ -551,7 +593,11 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
 
     /// One-shot retirement is proven only when the bound occurrence has
     /// ACTUALLY TERMINATED: the launched plan stays disabled with its
-    /// launch recorded, and no live instance remains. `markStarted` alone
+    /// launch recorded, no live instance remains, AND that launch belongs
+    /// to the CURRENT monitoring lifecycle — its `last_started_at` falls
+    /// at or after the row's latest setup/re-arm epoch (`setup_at`), so a
+    /// historical run can never consume a fresh handoff or a paused
+    /// re-enable before the new round ever starts. `markStarted` alone
     /// is too early — the task may still be running. A recurring
     /// occurrence completing retires nothing, a never-started one-shot
     /// (reversible pause) retires nothing, and reversible pauses of any
@@ -566,6 +612,12 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
                 SELECT s.title FROM task_schedules s
                 WHERE s.id = ? AND s.cadence = 'once' AND s.is_enabled = 0
                   AND s.last_started_at IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1 FROM task_schedule_cleanup_reminders r
+                      WHERE r.schedule_id = s.id
+                        AND r.status IN ('monitoring', 'open')
+                        AND s.last_started_at >= r.setup_at
+                  )
                   AND NOT EXISTS (
                       SELECT 1 FROM task_schedule_occurrences o
                       WHERE o.schedule_id = s.id

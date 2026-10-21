@@ -47,9 +47,7 @@ private func makeModel(
     let model = TaskScheduleShortcutImport(
         templateReader: { templateData },
         tempWriter: tempWriter ?? { data, name in
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("floe-import-test-\(name)")
-            try? data.write(to: url, options: .atomic)
+            guard let url = TaskScheduleShortcutImport.stageTemplate(data, name: name) else { return nil }
             written.urls.append(url)
             return url
         },
@@ -69,7 +67,12 @@ struct TaskScheduleShortcutImportTests {
     }
 
     private func cleanup(_ suite: UserDefaults, _ written: Written) {
-        written.urls.forEach { try? FileManager.default.removeItem(at: $0) }
+        written.urls.forEach { url in
+            let directory = url.deletingLastPathComponent()
+            if directory.lastPathComponent.hasPrefix("FloeShortcutImport-") {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
         suite.removePersistentDomain(forName: suite.suiteName ?? "")
     }
 
@@ -152,6 +155,9 @@ struct TaskScheduleShortcutImportTests {
         await model.presentImport()
         #expect(written.urls.count == 2)
         #expect(written.urls[0].path != written.urls[1].path)
+        #expect(written.urls.allSatisfy { $0.lastPathComponent == "FloeScheduledTask.shortcut" })
+        #expect((try? Data(contentsOf: written.urls[0])) == data)
+        #expect((try? Data(contentsOf: written.urls[1])) == data)
         #expect(model.evidence?.attempt?.templateDigest != nil)
         cleanup(suite, written)
     }

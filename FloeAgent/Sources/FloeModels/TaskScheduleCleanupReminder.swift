@@ -67,8 +67,9 @@ public struct TaskScheduleCleanupReminder: Sendable, Codable, Hashable, Identifi
     /// nil while the row is silent monitoring; always set once visible.
     public var reason: TaskScheduleCleanupReason?
     public var status: TaskScheduleCleanupStatus
-    /// The most recent actual handoff/confirmation, and when it happened.
+    /// The most recent actual handoff/confirmation source.
     public var setupSource: TaskScheduleSetupSource?
+    /// Current monitoring epoch, advanced by setup or an explicit re-arm.
     public var setupAt: Date?
     public var createdAt: Date
     public var updatedAt: Date

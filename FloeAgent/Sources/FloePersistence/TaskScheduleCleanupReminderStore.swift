@@ -4,10 +4,10 @@ import FloeCore
 import FloeModels
 
 /// Shared idempotent SQL used by BOTH the cleanup store's own transactions
-/// and the schedule store's writers (delete / one-shot terminal, inside the
-/// SAME writer for atomicity).
+/// and the schedule store's writers (delete / one-shot terminal / re-arm,
+/// inside the SAME writer for atomicity).
 ///
-/// One row per schedule (unique `schedule_id`) with three honest event
+/// One row per schedule (unique `schedule_id`) with four honest event
 /// classes:
 ///   • `recordSetup` — an ACTUAL Shortcut handoff or explicit user
 ///     confirmation (re)starts silent monitoring. This is the only creation
@@ -16,6 +16,16 @@ import FloeModels
 ///     on delete. A fresh handoff starts a fresh round even after an
 ///     earlier resolved marker — the user's dismissal belonged to the
 ///     previous lifecycle, it does not suppress all future lifecycle.
+///   • `rearm` — a re-enabled plan starts a fresh live lifecycle. Its
+///     existing monitoring/open evidence follows it back into silence and
+///     the row's `setup_at` becomes the CURRENT MONITORING EPOCH: a
+///     retirement then only counts when the plan's `last_started_at` falls
+///     AT OR AFTER that epoch, so the OLD run's historical launch can
+///     never be mistaken for the consumption of the new round (a
+///     reversible pause after re-enable must not remind). Best-effort
+///     UPDATE only: a never-setup plan gains no row, and a user-resolved
+///     ('dismissed'/'removed') row is never rewritten — only a new actual
+///     handoff restarts a round for resolved evidence.
 ///   • `retire` — the permanent delete or the TERMINAL retirement of a
 ///     one-shot. Opens only a row that is already monitoring; an already
 ///     open row keeps its FIRST reason and only advances `last_seen_at`
@@ -62,6 +72,37 @@ enum TaskScheduleCleanupReminderSQL {
                 source.rawValue,
                 encoded,
                 encoded, encoded, encoded
+            ])
+    }
+
+    /// Re-enable (re-arm) of a plan: the existing monitoring/open cleanup
+    /// evidence goes back into silent monitoring FOR THE NEW LIFECYCLE and
+    /// `setup_at` advances to the current monitoring epoch. `setup_source`
+    /// stays untouched — a re-arm is not a new handoff — and no row is
+    /// created: a plan the user never configured through Shortcuts stays
+    /// rowless and reminderless forever. Resolved rows are never rewritten.
+    static func rearm(
+        _ db: Database,
+        scheduleID: UUID,
+        title: String,
+        at date: Date
+    ) throws {
+        let encoded = PersistenceCodec.encode(date)
+        try db.execute(sql: """
+            UPDATE task_schedule_cleanup_reminders
+            SET status = 'monitoring',
+                reason = NULL,
+                title = ?,
+                setup_at = ?,
+                updated_at = ?,
+                last_seen_at = ?
+            WHERE schedule_id = ? AND status IN ('monitoring', 'open')
+            """, arguments: [
+                cleaned(title),
+                encoded,
+                encoded,
+                encoded,
+                scheduleID.uuidString
             ])
     }
 
@@ -135,8 +176,12 @@ enum TaskScheduleCleanupReminderSQL {
     /// Crash / write-loss safety net. Every monitoring row whose plan has
     /// SINCE become retired opens here on the next load/foreground pass:
     /// permanently deleted (the captured title survives — no foreign key),
-    /// or a one-shot left disabled by its launch with no live occurrence
-    /// instance remaining. Reversible pauses (a never-started one-shot or a
+    /// or a one-shot left disabled by ITS CURRENT-LIFECYCLE launch with no
+    /// live occurrence instance remaining. "Current lifecycle" is proven by
+    /// the monitoring epoch: the stored launch must fall AT OR AFTER the
+    /// row's latest setup/re-arm (`setup_at`), so a historical run can never
+    /// consume a round that has not actually started yet. Reversible pauses
+    /// (a never-started one-shot, a paused-after-re-enable one-shot, or a
     /// disabled recurring plan) and live plans are NEVER opened.
     static func reconcileMonitoring(_ db: Database, at date: Date) throws -> Int {
         let encoded = PersistenceCodec.encode(date)
@@ -148,6 +193,7 @@ enum TaskScheduleCleanupReminderSQL {
                     WHERE s.id = task_schedule_cleanup_reminders.schedule_id
                       AND s.cadence = 'once' AND s.is_enabled = 0
                       AND s.last_started_at IS NOT NULL
+                      AND s.last_started_at >= task_schedule_cleanup_reminders.setup_at
                       AND NOT EXISTS (
                           SELECT 1 FROM task_schedule_occurrences o
                           WHERE o.schedule_id = s.id
@@ -167,6 +213,7 @@ enum TaskScheduleCleanupReminderSQL {
                     WHERE s.id = task_schedule_cleanup_reminders.schedule_id
                       AND s.cadence = 'once' AND s.is_enabled = 0
                       AND s.last_started_at IS NOT NULL
+                      AND s.last_started_at >= task_schedule_cleanup_reminders.setup_at
                       AND NOT EXISTS (
                           SELECT 1 FROM task_schedule_occurrences o
                           WHERE o.schedule_id = s.id
@@ -275,8 +322,11 @@ public actor TaskScheduleCleanupReminderStore {
     }
 
     /// Load/foreground safety net: opens monitoring rows whose retirement
-    /// write was lost to a crash or a failed auxiliary write. Returns the
-    /// number of rows opened. Cannot enable, arm or launch anything.
+    /// write was lost to a crash or a failed auxiliary write, judging a
+    /// one-shot's launch against the CURRENT monitoring epoch (a historical
+    /// `last_started_at` older than the row's latest setup/re-arm proves
+    /// nothing about the round that is running now). Returns the number of
+    /// rows opened. Cannot enable, arm or launch anything.
     @discardableResult
     public func reconcileMonitoring() async throws -> Int {
         try await database.writer { db in

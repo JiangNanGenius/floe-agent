@@ -14,7 +14,11 @@ import Testing
 /// to a crash; a fresh handoff after an earlier resolved marker restarts
 /// monitoring; only direct stale-fire evidence may reopen a user-resolved
 /// row — and never a silenced one. Reminder writes can never enable,
-/// re-arm or launch a schedule.
+/// re-arm or launch a schedule. Re-arming an already-run one-shot returns
+/// its monitoring/open evidence to the SILENT current round and advances
+/// the monitoring epoch: a historical `last_started_at` can never consume a
+/// fresh handoff or a paused re-enable (temporary pauses never remind),
+/// while a genuine NEW terminal still opens exactly once.
 @Suite("FloePersistence.TaskScheduleCleanupReminderStore")
 struct TaskScheduleCleanupReminderStoreTests {
 
@@ -497,5 +501,245 @@ struct TaskScheduleCleanupReminderStoreTests {
         let list = try await reminders.openReminders()
         #expect(list.count == 1)
         #expect(list.first?.title == "Real")
+    }
+
+    // MARK: Re-arm epoch (historical-run false positives closed)
+
+    /// Deterministic launch: enqueue → claim → running → `markStarted` at
+    /// `startedAt`; optionally settle the bound occurrence at `finishedAt`.
+    private func launch(
+        _ schedules: SQLiteTaskScheduleStore,
+        scheduleID: UUID,
+        key: String,
+        startedAt: Date,
+        finishedAt: Date? = nil,
+        state: TaskScheduleOccurrenceState = .completed
+    ) async throws {
+        let occurrence = TaskScheduleOccurrence(
+            id: TaskScheduleOccurrence.stableID(scheduleID: scheduleID, dedupeKey: key),
+            scheduleID: scheduleID,
+            scheduledFor: startedAt.addingTimeInterval(-1),
+            dedupeKey: key)
+        _ = try await schedules.enqueueOccurrence(occurrence)
+        _ = try await schedules.claimOccurrence(id: occurrence.id, at: startedAt)
+        _ = try await schedules.markOccurrenceRunning(
+            id: occurrence.id, runID: UUID(), conversationID: UUID(), at: startedAt)
+        try await schedules.markStarted(id: scheduleID, at: startedAt)
+        if let finishedAt {
+            try await schedules.finishOccurrence(
+                id: occurrence.id, state: state, summary: nil, errorText: nil, at: finishedAt)
+        }
+    }
+
+    @Test("Re-enabling a consumed one-shot silences the old event; a reversible pause never reminds")
+    func reEnabledOncePauseNeverReminds() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+        let record = try await makeSchedule(schedules, title: "Rearm once", cadence: .once)
+        try await reminders.recordSetup(
+            scheduleID: record.id, title: record.title,
+            source: .importFlowOpened, at: base)
+        // Round one genuinely finishes: the onceConsumed reminder opens.
+        try await launch(
+            schedules, scheduleID: record.id, key: "calendar:1",
+            startedAt: base.addingTimeInterval(60),
+            finishedAt: base.addingTimeInterval(90))
+        let first = try await reminders.openReminders()
+        #expect(first.count == 1)
+        #expect(first.first?.reason == .onceConsumed)
+
+        // The SAME one-shot is re-enabled for another run: its old-event
+        // evidence returns to silent monitoring for the new lifecycle…
+        try await schedules.setEnabled(
+            id: record.id, enabled: true, at: base.addingTimeInterval(120))
+        let monitoring = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(monitoring.status == .monitoring)
+        #expect(monitoring.reason == nil)
+        // …and then reversibly paused. The OLD run's last_started_at must
+        // not consume this round: reconcile opens nothing, list stays empty.
+        try await schedules.setEnabled(
+            id: record.id, enabled: false, at: base.addingTimeInterval(180))
+        let paused = try #require(try await schedules.schedule(id: record.id))
+        #expect(!paused.isEnabled)
+        // History preserved: the old launch is still stored, not cleared.
+        #expect(paused.lastStartedAt.map {
+            abs($0.timeIntervalSince(base.addingTimeInterval(60))) < 1
+        } == true)
+        #expect(try await reminders.reconcileMonitoring() == 0)
+        #expect(try await reminders.openReminders().isEmpty)
+
+        // A genuine NEW run of the re-armed round still opens exactly once.
+        try await schedules.setEnabled(
+            id: record.id, enabled: true, at: base.addingTimeInterval(210))
+        try await launch(
+            schedules, scheduleID: record.id, key: "calendar:2",
+            startedAt: base.addingTimeInterval(240),
+            finishedAt: base.addingTimeInterval(270))
+        let second = try await reminders.openReminders()
+        #expect(second.count == 1)
+        #expect(second.first?.reason == .onceConsumed)
+        #expect(second.first?.id == first.first?.id)
+        // Safety-net passes on the opened row add nothing further.
+        #expect(try await reminders.reconcileMonitoring() == 0)
+        #expect(try await reminders.openReminders().count == 1)
+        _ = database
+    }
+
+    @Test("A fresh handoff after an old terminal is not consumed by historical evidence")
+    func freshHandoffAfterTerminalIsNotConsumedByHistory() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+        let record = try await makeSchedule(schedules, title: "Handoff twice", cadence: .once)
+        try await reminders.recordSetup(
+            scheduleID: record.id, title: record.title, source: .userConfirmed, at: base)
+        try await launch(
+            schedules, scheduleID: record.id, key: "calendar:1",
+            startedAt: base.addingTimeInterval(60),
+            finishedAt: base.addingTimeInterval(90))
+        #expect(try await reminders.openReminders().count == 1)
+
+        // A NEW actual handoff restarts the round; the plan still carries
+        // the old run's history. Reconciliation must NOT consume the fresh
+        // monitoring row from that historical evidence.
+        try await reminders.recordSetup(
+            scheduleID: record.id, title: record.title,
+            source: .handedOffToUser, at: base.addingTimeInterval(120))
+        let monitoring = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(monitoring.status == .monitoring)
+        #expect(monitoring.reason == nil)
+        #expect(try await reminders.reconcileMonitoring() == 0)
+        #expect(try await reminders.openReminders().isEmpty)
+
+        // Re-enable + pause inside the fresh round: still silent.
+        try await schedules.setEnabled(
+            id: record.id, enabled: true, at: base.addingTimeInterval(150))
+        try await schedules.setEnabled(
+            id: record.id, enabled: false, at: base.addingTimeInterval(160))
+        #expect(try await reminders.reconcileMonitoring() == 0)
+        #expect(try await reminders.openReminders().isEmpty)
+
+        // The genuinely new terminal still opens exactly once.
+        try await schedules.setEnabled(
+            id: record.id, enabled: true, at: base.addingTimeInterval(180))
+        try await launch(
+            schedules, scheduleID: record.id, key: "calendar:2",
+            startedAt: base.addingTimeInterval(240),
+            finishedAt: base.addingTimeInterval(270))
+        let list = try await reminders.openReminders()
+        #expect(list.count == 1)
+        #expect(list.first?.reason == .onceConsumed)
+        _ = database
+    }
+
+    @Test("Re-arm after a lost terminal write stays silent across a pause; a new launch still reconciles open")
+    func lostTerminalWriteThenRearmStaysSilent() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+        let record = try await makeSchedule(schedules, title: "Crash window", cadence: .once)
+        try await reminders.recordSetup(
+            scheduleID: record.id, title: record.title,
+            source: .importFlowOpened, at: base)
+        // The launch happened; the terminal open write is lost (no bound
+        // occurrence settles — the same crash window the reconciliation
+        // safety net exists for).
+        try await schedules.markStarted(id: record.id, at: base.addingTimeInterval(60))
+        // BEFORE the next foreground reconcile, the user re-enables for
+        // another run and pauses again: the safety net must read the old
+        // launch against the NEW epoch and open nothing.
+        try await schedules.setEnabled(
+            id: record.id, enabled: true, at: base.addingTimeInterval(90))
+        try await schedules.setEnabled(
+            id: record.id, enabled: false, at: base.addingTimeInterval(120))
+        #expect(try await reminders.reconcileMonitoring() == 0)
+        #expect(try await reminders.openReminders().isEmpty)
+        // The new round actually starts: the safety net opens exactly once.
+        try await schedules.setEnabled(
+            id: record.id, enabled: true, at: base.addingTimeInterval(150))
+        try await schedules.markStarted(id: record.id, at: base.addingTimeInterval(180))
+        #expect(try await reminders.reconcileMonitoring() == 1)
+        let list = try await reminders.openReminders()
+        #expect(list.count == 1)
+        #expect(list.first?.reason == .onceConsumed)
+        _ = database
+    }
+
+    @Test("Re-arm creates nothing for a never-setup plan (enable toggle and edit upsert)")
+    func reArmNeverRecordsUnmonitoredPlans() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+        let record = try await makeSchedule(schedules, title: "Never monitored", cadence: .once)
+        try await schedules.setEnabled(id: record.id, enabled: false, at: base)
+        // An edit upsert that re-enables the plan (Home sheet / the Apple
+        // automation tools save through here) must also record nothing.
+        var reEnabled = try #require(try await schedules.schedule(id: record.id))
+        reEnabled.isEnabled = true
+        reEnabled.updatedAt = base.addingTimeInterval(30)
+        try await schedules.save(reEnabled)
+        try await schedules.setEnabled(
+            id: record.id, enabled: true, at: base.addingTimeInterval(60))
+        try await schedules.setEnabled(
+            id: record.id, enabled: false, at: base.addingTimeInterval(90))
+        #expect(try await reminders.reconcileMonitoring() == 0)
+        #expect(try await reminders.reminder(scheduleID: record.id) == nil)
+        // And the later delete stays silent too (setup gate intact).
+        try await schedules.delete(id: record.id)
+        #expect(try await reminders.reminder(scheduleID: record.id) == nil)
+        #expect(try await reminders.openReminders().isEmpty)
+        _ = database
+    }
+
+    @Test("Re-arm keeps a resolved mark intact and survives a missing reminders table")
+    func reArmRespectsResolvedRowsAndMissingTable() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+        let record = try await makeSchedule(schedules, title: "Dismissed round", cadence: .once)
+        try await reminders.recordSetup(
+            scheduleID: record.id, title: record.title,
+            source: .importFlowOpened, at: base)
+        try await launch(
+            schedules, scheduleID: record.id, key: "calendar:1",
+            startedAt: base.addingTimeInterval(60),
+            finishedAt: base.addingTimeInterval(90))
+        let open = try await reminders.openReminders()
+        #expect(open.count == 1)
+        try await reminders.dismiss(id: try #require(open.first).id)
+
+        // Re-enabling does NOT rewrite the user's dismissed mark…
+        try await schedules.setEnabled(
+            id: record.id, enabled: true, at: base.addingTimeInterval(120))
+        let resolved = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(resolved.status == .dismissed)
+        #expect(resolved.reason == .onceConsumed)
+        // …and a new terminal without a fresh handoff stays silent (only an
+        // actual setup starts a new round against resolved evidence).
+        try await launch(
+            schedules, scheduleID: record.id, key: "calendar:2",
+            startedAt: base.addingTimeInterval(180),
+            finishedAt: base.addingTimeInterval(210))
+        #expect(try await reminders.openReminders().isEmpty)
+
+        // Re-arm hooks are best-effort like every other reminder write:
+        // with the auxiliary table gone, enable and edit-upsert re-arms
+        // still COMMIT core schedule state.
+        try await database.writer { db in
+            try db.execute(sql: "DROP TABLE task_schedule_cleanup_reminders")
+        }
+        try await schedules.setEnabled(
+            id: record.id, enabled: true, at: base.addingTimeInterval(240))
+        var live = try #require(try await schedules.schedule(id: record.id))
+        #expect(live.isEnabled)
+        live.isEnabled = false
+        live.updatedAt = base.addingTimeInterval(270)
+        try await schedules.save(live)
+        live.isEnabled = true
+        live.updatedAt = base.addingTimeInterval(300)
+        // disabled→enabled upsert: the re-arm auxiliary write throws and is
+        // swallowed; the upsert itself must still land.
+        try await schedules.save(live)
+        live = try #require(try await schedules.schedule(id: record.id))
+        #expect(live.isEnabled)
+        // Historical launch evidence survives every re-arm and pause.
+        #expect(live.lastStartedAt != nil)
+        _ = database
     }
 }

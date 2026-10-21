@@ -196,18 +196,10 @@ final class TaskScheduleShortcutImport: ObservableObject {
             return
         }
         let digest = FloeScheduleShortcutTemplate.digestPrefix(of: data)
-        let write = tempWriter ?? { bytes, name in
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-            do {
-                try bytes.write(to: url, options: .atomic)
-                return url
-            } catch {
-                return nil
-            }
-        }
-        // A fresh unique name per attempt: an earlier handoff is never
-        // replayed, and the system page always receives current bytes.
-        let name = "\(FloeScheduleShortcutTemplate.resourceName)-\(UUID().uuidString)."
+        let write = tempWriter ?? { bytes, name in Self.stageTemplate(bytes, name: name) }
+        // Shortcuts uses the filename as the new shortcut's visible name.
+        // Keep the attempt identity in its directory, not in that title.
+        let name = FloeScheduleShortcutTemplate.resourceName + "."
             + FloeScheduleShortcutTemplate.fileExtension
         guard let tempURL = write(data, name) else {
             record(.failed)
@@ -265,6 +257,23 @@ final class TaskScheduleShortcutImport: ObservableObject {
         record.userConfirmedAt = nil
         evidence = record
         persist(record)
+    }
+
+    /// A new isolated directory prevents retries from overwriting a file
+    /// still owned by the system importer. The readable basename survives
+    /// the handoff as the shortcut title.
+    static func stageTemplate(_ bytes: Data, name: String) -> URL? {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeShortcutImport-\(UUID().uuidString)", isDirectory: true)
+        let url = directory.appendingPathComponent(name)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try bytes.write(to: url, options: .atomic)
+            return url
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            return nil
+        }
     }
 
     // MARK: - Internals
