@@ -3803,7 +3803,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         let occurrence: TaskScheduleOccurrence
         do {
-            occurrence = try await store.occurrence(id: target.occurrenceID)
+            guard let stored = try await store.occurrence(id: target.occurrenceID) else {
+                throw FloeSelectedScheduleFailure.storageUnavailable
+            }
+            occurrence = stored
         } catch {
             throw FloeSelectedScheduleFailure.storageUnavailable
         }
