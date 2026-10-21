@@ -79,7 +79,7 @@ struct NDEFReadToolsTests {
     func textAndURIRecords() {
         let message = NDEFDecoder.decode([
             record(payload: textPayload("Hello", language: "en")),
-            record(payload: uriPayload(0x04, "example.com/path"), type: "U"),
+            record(type: "U", payload: uriPayload(0x04, "example.com/path")),
             record(
                 tnf: 0x03,
                 type: "",
@@ -122,7 +122,7 @@ struct NDEFReadToolsTests {
         #expect(badLanguageLength.records[0].issues.contains("textLanguageLengthExceeded"))
 
         let unknownPrefix = NDEFDecoder.decode([
-            record(payload: uriPayload(0x24, "not-a-uri"), type: "U")
+            record(type: "U", payload: uriPayload(0x24, "not-a-uri"))
         ])
         #expect(unknownPrefix.records[0].uri == nil)
         #expect(unknownPrefix.records[0].issues.contains("uriPrefixUnsupported"))
@@ -165,7 +165,7 @@ struct NDEFReadToolsTests {
     @Test("Record and byte bounds are enforced without silent loss")
     func recordAndByteBounds() {
         let many = (0..<40).map { index in
-            record(payload: textPayload("row-\(index)"), type: "T")
+            record(type: "T", payload: textPayload("row-\(index)"))
         }
         let bounded = NDEFDecoder.decode(many)
         #expect(bounded.reportedRecordCount == 40)
@@ -218,7 +218,7 @@ struct NDEFReadToolsTests {
         let service = FakeNDEFReader()
         let message = NDEFDecoder.decode([
             record(payload: textPayload("Hello")),
-            record(payload: uriPayload(0x04, "example.com"), type: "U")
+            record(type: "U", payload: uriPayload(0x04, "example.com"))
         ])
         await service.setOutcome(.success(message))
         let output = try await tool(service: service).execute(
