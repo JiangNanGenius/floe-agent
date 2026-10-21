@@ -701,6 +701,52 @@ public protocol SharedDocumentsStore: Sendable {
 
 // MARK: - SQLite implementation
 
+/// Owns the injected Foundation manager behind one synchronous I/O boundary.
+/// GRDB transaction closures and the store actor may call this object from
+/// different executors. The manager never escapes, and every call into it is
+/// protected by the same lock; no lock is held across an await or a DB call.
+/// This does not replace the per-item cross-process file lease or SQL CAS.
+final class SharedDocumentsFileIO: @unchecked Sendable {
+    private let manager: FileManager
+    private let lock = NSLock()
+
+    init(manager: FileManager) { self.manager = manager }
+
+    private func synchronized<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock(); defer { lock.unlock() }
+        return try body()
+    }
+
+    func createDirectory(at url: URL, withIntermediateDirectories createIntermediates: Bool) throws {
+        try synchronized { try manager.createDirectory(at: url, withIntermediateDirectories: createIntermediates) }
+    }
+
+    @discardableResult
+    func createFile(atPath path: String, contents: Data?) -> Bool {
+        synchronized { manager.createFile(atPath: path, contents: contents) }
+    }
+
+    func fileExists(atPath path: String) -> Bool {
+        synchronized { manager.fileExists(atPath: path) }
+    }
+
+    func contentsOfDirectory(atPath path: String) throws -> [String] {
+        try synchronized { try manager.contentsOfDirectory(atPath: path) }
+    }
+
+    func moveItem(at source: URL, to destination: URL) throws {
+        try synchronized { try manager.moveItem(at: source, to: destination) }
+    }
+
+    func copyItem(at source: URL, to destination: URL) throws {
+        try synchronized { try manager.copyItem(at: source, to: destination) }
+    }
+
+    func removeItem(at url: URL) throws {
+        try synchronized { try manager.removeItem(at: url) }
+    }
+}
+
 /// Standalone file-backed store. Owns its own `DatabasePool` and schema
 /// (schema version 1, private to this store) — intentionally NOT registered
 /// in the shared `DatabaseManager` migration chain, because the File Provider
@@ -709,7 +755,7 @@ public protocol SharedDocumentsStore: Sendable {
 public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
     public nonisolated let rootURL: URL
     private let pool: DatabasePool
-    nonisolated let fileManager: FileManager
+    private nonisolated let fileManager: SharedDocumentsFileIO
     nonisolated let blobRoot: URL
     nonisolated let stagingRoot: URL
     private var openStages: [UUID: OpenStage] = [:]
@@ -724,13 +770,14 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
 
     public init(root: URL, fileManager: FileManager = .default) throws {
         self.rootURL = root
-        self.fileManager = fileManager
+        let fileIO = SharedDocumentsFileIO(manager: fileManager)
+        self.fileManager = fileIO
         let storeRoot = root.appendingPathComponent("store", isDirectory: true)
         self.blobRoot = SharedDocumentsStoreLayout.blobsURL(root: root)
         self.stagingRoot = SharedDocumentsStoreLayout.stagingURL(root: root)
-        try fileManager.createDirectory(at: storeRoot, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: blobRoot, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+        try fileIO.createDirectory(at: storeRoot, withIntermediateDirectories: true)
+        try fileIO.createDirectory(at: blobRoot, withIntermediateDirectories: true)
+        try fileIO.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
 
         var configuration = Configuration()
         configuration.prepareDatabase { db in

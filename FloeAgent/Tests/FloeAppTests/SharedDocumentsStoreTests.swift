@@ -29,7 +29,7 @@
 import Foundation
 import Testing
 import FloeCore
-import FloePersistence
+@testable import FloePersistence
 
 // MARK: - Fixtures
 
@@ -95,6 +95,93 @@ private struct FlipCancellation: SharedDocumentsOperationCancellation {
 
 private struct AlreadyCancelled: SharedDocumentsOperationCancellation {
     func isCancelled() -> Bool { true }
+}
+
+// The production wrapper, rather than the actor executor or FileManager's
+// undocumented thread safety, owns serialization across GRDB and actor calls.
+private enum InjectedSharedDocumentsIOError: Error { case moveDenied }
+private final class SharedDocumentsIOProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = 0
+    private var maximum = 0
+    private var denyMove = false
+    func armMoveFailure() { lock.lock(); denyMove = true; lock.unlock() }
+    func consumeMoveFailure() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let value = denyMove; denyMove = false; return value
+    }
+    func copy<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock(); active += 1; maximum = max(maximum, active); lock.unlock()
+        defer { lock.lock(); active -= 1; lock.unlock() }
+        // Widen overlap deliberately: concurrent calls without the production
+        // lock must be observed while still performing real file copies.
+        Thread.sleep(forTimeInterval: 0.002)
+        return try body()
+    }
+    var maximumConcurrentCopies: Int { lock.lock(); defer { lock.unlock() }; return maximum }
+}
+private final class ProbedSharedDocumentsFileManager: FileManager {
+    let probe: SharedDocumentsIOProbe
+    init(probe: SharedDocumentsIOProbe) { self.probe = probe; super.init() }
+    override func copyItem(at source: URL, to destination: URL) throws {
+        try probe.copy { try super.copyItem(at: source, to: destination) }
+    }
+    override func moveItem(at source: URL, to destination: URL) throws {
+        if probe.consumeMoveFailure() { throw InjectedSharedDocumentsIOError.moveDenied }
+        try super.moveItem(at: source, to: destination)
+    }
+}
+
+@Suite("SharedDocumentsStore synchronized file I/O")
+struct SharedDocumentsSynchronizedFileIOTests {
+    @Test("the injected manager is serialized across concurrent executors with real copies")
+    func concurrentFileIOUsesOneLock() async throws {
+        let root = makeStoreRoot()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let bytes = Data(repeating: 9, count: 8192)
+        try bytes.write(to: source)
+        let probe = SharedDocumentsIOProbe()
+        let fileIO = SharedDocumentsFileIO(manager: ProbedSharedDocumentsFileManager(probe: probe))
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for index in 0..<16 {
+                group.addTask {
+                    let destination = root.appendingPathComponent("copy-\(index)")
+                    try fileIO.copyItem(at: source, to: destination)
+                    #expect(try Data(contentsOf: destination) == bytes)
+                }
+            }
+            try await group.waitForAll()
+        }
+        #expect(probe.maximumConcurrentCopies == 1)
+        #expect(try fileIO.contentsOfDirectory(atPath: root.path).count == 17)
+    }
+
+    @Test("injected move errors propagate without changing committed CAS, journal or leased bytes")
+    func injectedMoveFailurePreservesCommittedState() async throws {
+        let root = makeStoreRoot(), probe = SharedDocumentsIOProbe()
+        let store = try SQLiteSharedDocumentsStore(root: root, fileManager: ProbedSharedDocumentsFileManager(probe: probe))
+        defer { Task { try? await store.close(); try? FileManager.default.removeItem(at: root) } }
+        let original = Data("committed".utf8)
+        let item = try await store.commitCreate(parentID: SharedDocumentsIdentity.rootItemID,
+            name: "original.txt", kind: .file, stage: stageBytes(original, store: store))
+        let anchor = try await store.currentAnchor()
+        let replacement = try await stageBytes(Data("replacement".utf8), store: store)
+        probe.armMoveFailure()
+        await #expect(throws: InjectedSharedDocumentsIOError.self) {
+            _ = try await store.commitReplace(id: item.id, stage: replacement, expected: item.versions)
+        }
+        #expect(try await store.item(id: item.id) == item)
+        #expect(try await store.currentAnchor() == anchor)
+        let actual = try await store.withLeasedContentSnapshot(id: item.id, cancellation: nil) {
+            try Data(contentsOf: $0.contentURL)
+        }
+        #expect(actual == original)
+        // Failure did not consume the stage or silently retry the mutation.
+        #expect(FileManager.default.fileExists(atPath: replacement.stagedFileURL.path))
+        try await store.discardContentStage(operationID: replacement.operationID)
+    }
 }
 
 // MARK: - CRUD / identity / hierarchy
