@@ -26,6 +26,12 @@ EXTENSIONS = {
 }
 
 
+ICLOUD_SERVICES_KEY = "com.apple.developer.icloud-services"
+# Concrete values documented by Apple's Entitlement Key Reference for a
+# non-App-Clip bundle (CloudKit-Anonymous is App Clip only and refused here).
+ICLOUD_SERVICE_GRANTS = frozenset({"CloudKit", "CloudDocuments"})
+
+
 class SigningInputError(ValueError):
     pass
 
@@ -56,6 +62,24 @@ def allows(granted, requested):
     return type(granted) is type(requested) and granted == requested
 
 
+def profile_allows(granted, requested, key):
+    """Subset check, plus Apple's one documented profile-grant wildcard.
+
+    TN2415 documents that a provisioning profile may carry
+    com.apple.developer.icloud-services as the string "*" while the app must
+    be signed with the concrete source-declared array. This wildcard is
+    honoured for that field only, for recognized concrete service values
+    only, and never expands into the signed entitlements. All other fields
+    keep the fail-closed generic subset rule; identities, App Groups, iCloud
+    containers, keychain scopes and other wildcard-shaped grants stay denied.
+    """
+    if key == ICLOUD_SERVICES_KEY and granted == "*":
+        return (isinstance(requested, list) and bool(requested)
+                and all(isinstance(item, str) and item in ICLOUD_SERVICE_GRANTS
+                        for item in requested))
+    return allows(granted, requested)
+
+
 def validated_entitlements(profile, declared, bundle_id, now=None):
     now = now or datetime.now(timezone.utc)
     expiration = profile.get("ExpirationDate")
@@ -74,7 +98,7 @@ def validated_entitlements(profile, declared, bundle_id, now=None):
     require(declared.get("com.apple.security.application-groups") == ["group." + APP_ID],
             "Source App Group mismatch")
     for key, value in declared.items():
-        require(key in entitlements and allows(entitlements[key], value),
+        require(key in entitlements and profile_allows(entitlements[key], value, key),
                 "Profile does not grant a declared capability")
     signed = dict(declared)
     signed.update({

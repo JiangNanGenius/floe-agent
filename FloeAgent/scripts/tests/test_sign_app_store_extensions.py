@@ -64,6 +64,61 @@ class ExtensionSigningTests(unittest.TestCase):
         self.assertEqual(self.validate(declared=requested)[
             "com.apple.developer.nfc.readersession.formats"], ["NDEF"])
 
+    def test_icloud_service_profile_wildcard_signs_only_declared_concrete_services(self):
+        requested = {**self.declared,
+                     "com.apple.developer.icloud-services": ["CloudKit"],
+                     "com.apple.developer.icloud-container-identifiers": ["iCloud." + APP_ID]}
+        self.profile["Entitlements"].update({
+            "com.apple.developer.icloud-services": "*",
+            "com.apple.developer.icloud-container-identifiers": ["iCloud." + APP_ID],
+            "com.apple.developer.healthkit": True,
+            "com.apple.developer.healthkit.background-delivery-allowed": True,
+            "com.apple.developer.nfc.readersession.formats": ["NDEF", "TAG"],
+        })
+        signed = self.validate(declared=requested)
+        self.assertEqual(signed, {
+            **requested,
+            "application-identifier": TEAM + "." + self.identifier,
+            "com.apple.developer.team-identifier": TEAM,
+            "get-task-allow": False,
+            "beta-reports-active": True,
+            "keychain-access-groups": [TEAM + "." + self.identifier],
+        })
+
+    def test_icloud_wildcard_refuses_unsupported_or_invalid_service_requests(self):
+        self.profile["Entitlements"]["com.apple.developer.icloud-services"] = "*"
+        for value in (["CloudKit", "Bogus"], ["CloudKit-Anonymous"], ["*"],
+                      ["CloudKit", "*"], "CloudKit", [], True):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError): self.validate(declared={
+                    **self.declared, "com.apple.developer.icloud-services": value})
+        profile = deepcopy(self.profile)
+        profile["Entitlements"]["com.apple.developer.icloud-services"] = ["CloudKit"]
+        with self.assertRaises(ValueError): self.validate(
+            profile=profile, declared={**self.declared,
+                                       "com.apple.developer.icloud-services": ["CloudDocuments"]})
+
+    def test_wildcards_outside_the_icloud_services_field_stay_denied(self):
+        base = deepcopy(self.profile)
+        base["Entitlements"].update({
+            "com.apple.developer.icloud-services": "*",
+            "com.apple.developer.icloud-container-identifiers": ["iCloud." + APP_ID],
+            "com.apple.developer.nfc.readersession.formats": ["NDEF"],
+        })
+        requested = {**self.declared,
+                     "com.apple.developer.icloud-services": ["CloudKit"],
+                     "com.apple.developer.icloud-container-identifiers": ["iCloud." + APP_ID],
+                     "com.apple.developer.nfc.readersession.formats": ["NDEF"]}
+        self.validate(base, requested)
+        for key in ("com.apple.developer.icloud-container-identifiers",
+                    "com.apple.security.application-groups",
+                    "com.apple.developer.nfc.readersession.formats",
+                    "keychain-access-groups"):
+            with self.subTest(key=key):
+                profile = deepcopy(base)
+                profile["Entitlements"][key] = "*"
+                with self.assertRaises(ValueError): self.validate(profile, requested)
+
     def test_source_group_is_not_optional_or_foreign(self):
         with self.assertRaises(ValueError): self.validate(declared={"other": True})
         with self.assertRaises(ValueError): self.validate(declared={
