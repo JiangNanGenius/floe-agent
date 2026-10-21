@@ -312,6 +312,19 @@ struct ExternalDocumentIntakeStagingTests {
         }
     }
 
+    @Test func stagingRequiresTheOwnedQueueLayout() async throws {
+        let root = intakeRoot("staging-uninitialized")
+        let sourceRoot = intakeRoot("staging-uninitialized-source")
+        defer { try? FileManager.default.removeItem(at: root) }
+        defer { try? FileManager.default.removeItem(at: sourceRoot) }
+        let source = try intakeFile(intakeBytes(64), name: "Uninitialized.txt", in: sourceRoot)
+        await expectIntakeError(.queueUnavailable) {
+            _ = try await DocumentIntakeStager.stage(
+                source, root: root, limits: .production, request: intakeRequest()
+            )
+        }
+    }
+
     @Test func stagedDigestRejectsChangedOrTruncatedBytes() async throws {
         let root = intakeRoot("staging-digest")
         let sourceRoot = intakeRoot("staging-digest-source")
@@ -319,9 +332,13 @@ struct ExternalDocumentIntakeStagingTests {
         defer { try? FileManager.default.removeItem(at: sourceRoot) }
         let bytes = intakeBytes(8_192)
         let source = try intakeFile(bytes, name: "Digest.txt", in: sourceRoot)
+        // The production queue provisions its owned staging layout. The
+        // stager intentionally refuses an absent/untrusted queue directory.
+        _ = try DocumentIntakeQueue(root: root)
         let staged = try await DocumentIntakeStager.stage(
             source, root: root, limits: .production, request: intakeRequest()
         )
+        defer { staged.activeLock?.close() }
         let intact = try DocumentIntakeStorage.verifySHA256(
             at: staged.payloadURL,
             expectedDigest: staged.record.sha256,
@@ -346,7 +363,6 @@ struct ExternalDocumentIntakeStagingTests {
             expectedByteCount: staged.record.byteCount
         )
         #expect(!afterTruncate)
-        staged.activeLock?.close()
     }
 
     @Test func acceptsCanonicalAndLegacyCanvasExtensionsAndRejectsUnknownTypes() throws {
