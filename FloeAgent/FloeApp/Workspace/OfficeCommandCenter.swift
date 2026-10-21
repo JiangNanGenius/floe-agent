@@ -1132,6 +1132,12 @@ final class OfficeServiceNativeSession: OfficeServiceEngineSession {
             throw OfficeServiceSessionFailure(reason: "the engine session is quarantined")
         }
         if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
+        // Opening the UIDocument and installing the command bridge can finish
+        // before the backend has loaded its LoKit document. PDF export reads
+        // that backend directly, so require the same session's acknowledged
+        // painted document before dispatching the export worker.
+        try await awaitVisibleRender(timeout: min(max(1, timeout), 30))
+        if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
         let receipt = OfficePDFExportReceipt()
         let timeoutTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(max(1, timeout) * 1_000_000_000))

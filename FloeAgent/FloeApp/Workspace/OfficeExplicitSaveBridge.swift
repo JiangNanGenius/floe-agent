@@ -504,8 +504,19 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
             window.floeModifiedSinceCommit = false;
             proto.onCommandStateChanged = function (event) {
                 if (event.commandName === '.uno:ModifiedStatus'
-                    && (event.state === true || event.state === 'true'))
+                    && (event.state === true || event.state === 'true')) {
+                    const wasModified = window.floeModifiedSinceCommit === true;
                     window.floeModifiedSinceCommit = true;
+                    // Emit from the same callback that owns the sticky latch.
+                    // Wrapping this prototype again after instances registered
+                    // their bound listener leaves those listeners on the old
+                    // function and loses the autosave scheduling edge.
+                    if (!wasModified) {
+                        try {
+                            window.webkit.messageHandlers.floeOfficeDocumentModified.postMessage('modified');
+                        } catch (_) {}
+                    }
+                }
                 if (event.commandName === '.uno:CharFontName') {
                     const control = document.getElementById('fontnamecombobox');
                     if (control && typeof control.onSetText === 'function') control.onSetText(event.state);
@@ -524,49 +535,6 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
     static let script = #"""
     (() => {
         const install = () => {
-            // Autosave dirty edge: after the embedded tracker has flipped the
-            // sticky commit latch from clean to modified, post ONE native
-            // message per edge. The coordinator debounces a recheck on it;
-            // this never saves anything by itself. If the tracker is absent
-            // (older host chrome) nothing is emitted and the raw persistence
-            // hint still schedules the truthful recheck.
-            //
-            // Ordering: the embedded sticky
-            // tracker installs from the atDocumentStart script on
-            // DOMContentLoaded. This document-end script runs while
-            // readyState is already 'interactive' but BEFORE DOMContentLoaded
-            // has fired, so checking the installation flag synchronously here
-            // could miss and leave this new autosave signal unwired. This
-            // repairs the new wrapper's installation; it does not establish
-            // the cause of build 282's reported false-clean state. Defer to
-            // the same event:
-            // its listener was registered earlier and therefore runs first;
-            // when the flag is already present (late injection) install
-            // immediately, and once the document is 'complete' the flag is
-            // final so a missing tracker means nothing to wrap.
-            const installDirtySignal = () => {
-                const tracked = window.L && window.L.Control && window.L.Control.NotebookbarBuilder
-                    && window.L.Control.NotebookbarBuilder.prototype;
-                if (window.floeModificationTrackingInstalled === true && tracked
-                    && typeof tracked.onCommandStateChanged === 'function' && !tracked.floeDirtySignalInstalled) {
-                    tracked.floeDirtySignalInstalled = true;
-                    const trackedStateChanged = tracked.onCommandStateChanged;
-                    tracked.onCommandStateChanged = function (event) {
-                        const wasModified = window.floeModifiedSinceCommit === true;
-                        const result = trackedStateChanged.apply(this, arguments);
-                        if (!wasModified && window.floeModifiedSinceCommit === true
-                            && event && event.commandName === '.uno:ModifiedStatus') {
-                            try {
-                                window.webkit.messageHandlers.floeOfficeDocumentModified.postMessage('modified');
-                            } catch (_) {}
-                        }
-                        return result;
-                    };
-                }
-            };
-            if (window.floeModificationTrackingInstalled === true) installDirtySignal();
-            else if (document.readyState !== 'complete')
-                document.addEventListener('DOMContentLoaded', installDirtySignal, { once: true });
             const proto = window.L && window.L.Map && window.L.Map.prototype;
             if (!proto || typeof proto.fire !== 'function' || proto.floeExplicitSaveInstalled) return;
             proto.floeExplicitSaveInstalled = true;

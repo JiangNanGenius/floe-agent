@@ -203,7 +203,7 @@ final class OfficeAutosaveTests: XCTestCase {
         fixture.isCurrent = false
         let refused = await fixture.coordinator.requestTransaction(reason: "staleView")
         XCTAssertEqual(refused.outcome, .refused)
-        XCTAssertEqual(refused.reason, "autosave.staleDocument")
+        XCTAssertEqual(refused.reason, "autosave.staleSessionFence")
         XCTAssertEqual(fixture.promoteCount, 1, "The stale owner must not promote again")
         XCTAssertNil(refused.packageSHA256)
 
@@ -448,13 +448,14 @@ private final class AutosaveFixture {
         try FileManager.default.copyItem(at: resource, to: temp)
         defer { try? FileManager.default.removeItem(at: temp) }
         let snapshot = try OfficeDocumentService.inspect(url: temp)
-        let ordered = snapshot.fields
-            .filter { $0.id.hasSuffix("|c|A") }
-            .sorted {
-                (Int($0.id.drop(while: { !$0.isNumber })) ?? 0)
-                    < (Int($1.id.drop(while: { !$0.isNumber })) ?? 0)
-            }
-        return ordered.isEmpty ? [["AUTOSAVE-SEED"]] : ordered.map { [$0.text] }
+        let cells = snapshot.fields.compactMap { field -> (row: Int, text: String)? in
+            guard let separator = field.id.range(of: "|c|", options: .backwards) else { return nil }
+            let address = field.id[separator.upperBound...]
+            guard address.first == "A", let row = Int(address.dropFirst()), row > 0 else { return nil }
+            return (row, field.text)
+        }.sorted { $0.row < $1.row }
+        guard !cells.isEmpty else { throw CocoaError(.coderInvalidValue) }
+        return cells.map { [$0.text] }
     }
 
     private func makeCoordinator(generation: Int) -> OfficeAutosaveCoordinator {

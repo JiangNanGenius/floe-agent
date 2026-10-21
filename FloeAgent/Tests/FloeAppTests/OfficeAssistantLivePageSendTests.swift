@@ -296,11 +296,11 @@ final class OfficeAssistantLivePageSendTests: XCTestCase {
             XCTAssertNil(viewModel.actionError,
                          "Canonical send failed: \(viewModel.actionError ?? "")")
             XCTAssertTrue(viewModel.draft.isEmpty)
-            // The user's own staged file stays in the composer (never replaced
-            // by an auto-captured Office page); nothing else appears.
-            XCTAssertEqual(viewModel.attachments.count, 1)
-            XCTAssertEqual(viewModel.attachments.first?.id, userAttachment.id,
-                           "Only the user's own staged attachment may remain after the send")
+            // Successful canonical handoff clears the composer. The durable
+            // message and provider assertions below prove the user's exact
+            // attachment was transferred once, without an Office snapshot.
+            XCTAssertTrue(viewModel.attachments.isEmpty,
+                          "Sent attachments must leave the composer after successful handoff")
 
             // Build 283: a default send stages NO Office snapshot file at all.
             resolveStagedAdditions()
