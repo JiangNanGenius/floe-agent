@@ -100,6 +100,14 @@ static NSDictionary<NSString *, id> *FloeOfficeMemoryFacts(void) {
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView;
 @end
 
+// Pinned upstream implements this callback in its .mm, but does not expose
+// the declaration in DocumentViewController.h. Declare it for the subclass's
+// super call; this category deliberately implements no runtime method.
+@interface DocumentViewController (FloePrintForwarding)
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message;
+@end
+
 /// Print-request gating, implemented by the host controller below and
 /// declared here only so the editor subclass can consult it without owning
 /// host close state. Registers no runtime method.
