@@ -359,6 +359,32 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(dispatched["coreEventDelta"] as? Int ?? 0, 80,
                                         "Too few dense samples reached the engine: \(dispatched)")
 
+            if format == .xlsx {
+                // The user observes the white box AFTER lift. Observe the
+                // first available frames before waiting for preview retirement
+                // or the later settled tile; preserve every frame, not just a
+                // successful retry. The runner also records this actual window.
+                let liftedAt = Date()
+                var frames: [[String: Any]] = []
+                for frame in 0..<4 {
+                    if frame > 0 { try await Task.sleep(for: .milliseconds(50)) }
+                    let state = try await currentPreviewState(web)
+                    let image = try await snapshot(web, root: root,
+                        name: "post-lift-\(frame)", afterScreenUpdates: false)
+                    let m = metrics(in: image, region: strokeROI)
+                    let patches = try patchDelta(before: before, after: image, patches: livePatches)
+                    frames.append(["index": frame, "elapsedAfterLiftReturn": Date().timeIntervalSince(liftedAt),
+                        "preview": state, "metrics": m.facts, "patches": patches.facts])
+                    try assertPreserved(before: beforeMetrics, after: m, label: "POST-LIFT \(frame)",
+                        beforeName: "colored cell before stroke", afterName: "first available frame after lift")
+                    XCTAssertLessThanOrEqual(patches.worst, 18.0,
+                        "POST-LIFT \(frame): non-stroke background changed: \(patches.facts)")
+                    XCTAssertGreaterThan(m.yellow, beforeMetrics.yellow + 50,
+                        "POST-LIFT \(frame): highlighter disappeared during handoff")
+                }
+                receipt["postLiftFrames"] = frames
+            }
+
             // The front-end keeps its own SVG preview until the composited
             // document paint is observed. Wait for that retirement first, so
             // the live pixels below are the engine's tile and not only the
@@ -885,9 +911,10 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
         let scale: CGFloat
     }
 
-    private func snapshot(_ web: WKWebView, root: URL, name: String) async throws -> Snapshot {
+    private func snapshot(_ web: WKWebView, root: URL, name: String,
+                          afterScreenUpdates: Bool = true) async throws -> Snapshot {
         let configuration = WKSnapshotConfiguration()
-        configuration.afterScreenUpdates = true
+        configuration.afterScreenUpdates = afterScreenUpdates
         let image = try await web.takeSnapshot(configuration: configuration)
         guard let cg = image.cgImage,
               let bytes = rgbaBytes(cg) else {
