@@ -1286,7 +1286,8 @@ struct NotesOfficeView: View {
     private func refreshGeneratedPreview(sourceID: UUID, revision: Int) async throws {
         guard let store = session.store else { throw NoteError.resourceUnavailable }
         let sourceURL = try await store.resourceURL(sourceID)
-        let pdf = try await office.exportCommittedCoverPDF(expectedSHA256: sourceURL.lastPathComponent)
+        let pdf = try await office.exportCommittedCoverPDF(
+            expectedSHA256: sourceURL.lastPathComponent, savedSourceURL: sourceURL)
         defer { try? FileManager.default.removeItem(at: pdf) }
         let data = try await Task.detached(priority: .utility) {
             try Task.checkCancellation()

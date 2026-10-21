@@ -1064,7 +1064,7 @@ final class OfficeFileSession: ObservableObject {
     /// canvas. Hold the existing input/operation fence through export and
     /// check the working copy and engine before and after. Do not re-save:
     /// another serialization could change the package being identified.
-    func exportCommittedCoverPDF(expectedSHA256: String) async throws -> URL {
+    func exportCommittedCoverPDF(expectedSHA256: String, savedSourceURL: URL? = nil) async throws -> URL {
         guard exportFormats.contains("pdf"), let controller,
               let workingURL = session?.workingURL, beginExternalRefresh(resigningFirstResponder: false) else {
             throw CocoaError(.featureUnsupported)
@@ -1105,8 +1105,32 @@ final class OfficeFileSession: ObservableObject {
             recordStage("cover.refused", ["reason": "source-changed"])
             throw CocoaError(.fileWriteFileExists)
         }
-        let output = try await Self.exportNativeDocument(controller: controller, format: "pdf")
+        try Task.checkCancellation()
+        let output: URL
+        #if canImport(FloeOfficeNative)
+        let ext = workingURL.pathExtension.lowercased()
+        if OfficePDFExportService.capability(forExtension: ext)?.savedIsolatedExport == true {
+            // A committed cover is a saved-file derivative. A temporary print
+            // session can leave the live engine's global focus window disposed;
+            // exporting that live view again can fault inside PDFFilter. Keep
+            // the existing ownership/input fence, but convert an exact saved
+            // copy through the same isolated service as Print/PDF export.
+            recordStage("cover.export.started", ["route": "savedCopy"])
+            output = try await Self.exportSavedCoverPDF(
+                sourceURL: savedSourceURL ?? workingURL, formatExtension: ext,
+                expectedSHA256: expectedSHA256,
+                exportsDirectory: workingURL.deletingLastPathComponent()
+                    .appendingPathComponent("exports", isDirectory: true))
+        } else {
+            // Do not relabel legacy packages as a qualified OOXML input.
+            recordStage("cover.export.started", ["route": "liveLegacy"])
+            output = try await Self.exportNativeDocument(controller: controller, format: "pdf")
+        }
+        #else
+        output = try await Self.exportNativeDocument(controller: controller, format: "pdf")
+        #endif
         do {
+            try Task.checkCancellation()
             let after = try await Task.detached(priority: .userInitiated) {
                 try FloeDigest.sha256Hex(ofFileAt: workingURL)
             }.value
@@ -1117,12 +1141,81 @@ final class OfficeFileSession: ObservableObject {
                                                 "sameBytes": String(after == before)])
                 throw CocoaError(.fileWriteFileExists)
             }
+            recordStage("cover.export.ok")
             return output
         } catch {
             try? FileManager.default.removeItem(at: output)
             throw error
         }
     }
+
+    #if canImport(FloeOfficeNative)
+    /// The Notes resource may have a digest-only filename. Give its verified
+    /// copy the real extension without weakening the export service's identity
+    /// checks. Only the final PDF survives; quarantine retains owned recovery
+    /// inputs when the native service could not close safely.
+    private static func exportSavedCoverPDF(sourceURL: URL, formatExtension: String,
+                                            expectedSHA256: String,
+                                            exportsDirectory: URL) async throws -> URL {
+        try Task.checkCancellation()
+        let identity = UUID().uuidString
+        let owned = exportsDirectory.appendingPathComponent("cover-\(identity)", isDirectory: true)
+        let source = owned.appendingPathComponent("source.\(formatExtension)")
+        let output = exportsDirectory.appendingPathComponent("cover-\(identity).pdf")
+        let cancellation = CancellationToken()
+        var preserveForRecovery = false
+        var completed = false
+        defer {
+            if !preserveForRecovery { try? FileManager.default.removeItem(at: owned) }
+            if !completed { try? FileManager.default.removeItem(at: output) }
+        }
+        do {
+            try await withTaskCancellationHandler {
+                try cancellation.throwIfCancelled()
+                try await Task.detached(priority: .userInitiated) {
+                    try cancellation.throwIfCancelled()
+                    guard try FloeDigest.sha256Hex(ofFileAt: sourceURL) == expectedSHA256 else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                    try FileManager.default.createDirectory(at: owned, withIntermediateDirectories: true)
+                    try FileManager.default.copyItem(at: sourceURL, to: source)
+                    try cancellation.throwIfCancelled()
+                    guard try FloeDigest.sha256Hex(ofFileAt: source) == expectedSHA256 else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                }.value
+                try Task.checkCancellation()
+                let plan = OfficePDFPrintPlan(scope: formatExtension == "xlsx"
+                                              ? .allVisibleSheets : .documentSettings)
+                let result = try await OfficePDFExportService.export(.init(
+                    sourceURL: source, sourceSHA256: expectedSHA256,
+                    formatExtension: formatExtension, plan: plan,
+                    ownedDirectory: owned, cancellation: cancellation))
+                try Task.checkCancellation()
+                let produced = result.pdfURL, digest = result.pdfSHA256
+                try await Task.detached(priority: .userInitiated) {
+                    try cancellation.throwIfCancelled()
+                    guard try FloeDigest.sha256Hex(ofFileAt: sourceURL) == expectedSHA256 else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                    try FileManager.default.copyItem(at: produced, to: output)
+                    try cancellation.throwIfCancelled()
+                    guard try FloeDigest.sha256Hex(ofFileAt: output) == digest else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                }.value
+                try Task.checkCancellation()
+            } onCancel: {
+                cancellation.cancel()
+            }
+            completed = true
+            return output
+        } catch {
+            preserveForRecovery = await OfficeAutomaticExecutionGate.shared.isQuarantined
+            throw error
+        }
+    }
+    #endif
 
     private static func exportNativeDocument(controller: UIViewController, format: String) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
