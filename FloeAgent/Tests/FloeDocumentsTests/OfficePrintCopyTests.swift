@@ -687,12 +687,38 @@ struct OfficePrintCopyTests {
         #expect(copyPlan.madeTargetVisible == false)
         let reopened = try Archive(url: destination, accessMode: .read)
         let workbook = try xmlString(reopened, "xl/workbook.xml")
-        // The requested tabs print; the unrequested visible tab is hidden
-        // inside the copy only, and the already-veryHidden tab is untouched.
-        #expect(workbook.contains("<sheet name=\"Summary\" sheetId=\"1\" r:id=\"rId1\" state=\"hidden\"/>"))
+        // An explicitly chosen, already-visible tab stays printable: both
+        // requested tabs are kept visible inside the copy, the active tab is
+        // the first chosen tab in tab order, and the already-veryHidden tab
+        // is untouched.
+        #expect(workbook.contains("<sheet name=\"Summary\" sheetId=\"1\" r:id=\"rId1\"/>"))
+        #expect(workbook.contains("<sheet name=\"Data\" sheetId=\"2\" r:id=\"rId2\"/>"))
         #expect(workbook.contains("state=\"veryHidden\""))
+        #expect(workbook.contains("activeTab=\"0\""))
         #expect(!workbook.contains("'Data'!$B$2:$C$3"))
         #expect(workbook.contains("'Data'!$1:$1"))
+        // Selection-scoped suppression coverage: choosing only one of the
+        // two previously-visible tabs hides the other inside the copy only,
+        // moves the active tab to the chosen one, and still leaves the
+        // veryHidden tab untouched, print areas cleared and print titles kept.
+        let onlyData = root.appendingPathComponent("copy-only-data.xlsx")
+        let onlyCopy = try OfficePrintCopy.prepare(
+            sourceURL: source, destinationURL: onlyData, expectedSHA256: sourceSHA,
+            plan: OfficePDFPrintPlan(scope: .sheets(names: ["Data"])))
+        #expect(onlyCopy.printedSheetNames == ["Data"])
+        #expect(onlyCopy.suppressedSheetNames == ["Summary", "Hidden"])
+        #expect(onlyCopy.printAreaReference == nil)
+        #expect(onlyCopy.removedPrintAreas == 1)
+        #expect(onlyCopy.preservedPrintTitles == 1)
+        #expect(onlyCopy.madeTargetVisible == false)
+        #expect(onlyCopy.setActiveTab == true)
+        let onlyWorkbook = try xmlString(try Archive(url: onlyData, accessMode: .read),
+                                         "xl/workbook.xml")
+        #expect(onlyWorkbook.contains("<sheet name=\"Summary\" sheetId=\"1\" r:id=\"rId1\" state=\"hidden\"/>"))
+        #expect(onlyWorkbook.contains("state=\"veryHidden\""))
+        #expect(onlyWorkbook.contains("activeTab=\"1\""))
+        #expect(!onlyWorkbook.contains("'Data'!$B$2:$C$3"))
+        #expect(onlyWorkbook.contains("'Data'!$1:$1"))
         // The source is unchanged and the copy keeps the drawing/ink member
         // byte-for-byte (the full-content semantics the pagination fix needs).
         #expect(try Data(contentsOf: source) == sourceBytes)

@@ -11,16 +11,21 @@
 // * Conforming to public.url does NOT mean "web page": a file share's URL
 //   representation points at the source app's transient coordinated
 //   location, which expires around the provider callback. When a provider
-//   advertises a real file representation it wins: the coordinated bytes
-//   are copied INSIDE the provider callback into this process's own
+//   advertises a real CONTENT representation it wins: the coordinated
+//   bytes are copied INSIDE the provider callback into this process's own
 //   temporary directory (later adopted into staging), preserving the
 //   original name, the concrete type and the content digest.
 // * A public.url value delivered as URL/NSURL or as a String/text/UTF-8
 //   representation that resolves to a file: location gets the same
 //   treatment from its FIRST applicable loadItem callback — never a
-//   second provider request as a lifetime workaround. If the bytes cannot
-//   be retained as a regular, readable file the item is rejected
-//   honestly; the transient location is never committed as envelope text.
+//   second provider request as a lifetime workaround. public.file-url is
+//   a url-family LOCATION identifier, not a content type: a lazily
+//   registered item would materialize the location value itself through
+//   loadFileRepresentation, so file-url takes this same single-callback
+//   path and its bytes come from the referenced file, never from a
+//   serialization of the location. If the bytes cannot be retained as a
+//   regular, readable file the item is rejected honestly; the transient
+//   location is never committed as envelope text.
 // * Genuine http/https web page URLs and other non-file URL/text inputs
 //   keep the exact previous behavior. Network locations are never
 //   dereferenced as files.
@@ -143,14 +148,21 @@ enum ShareItemProviderLoader {
     // MARK: public.url providers
 
     /// The URL-provider intake boundary, in order:
-    /// 1. A concrete file representation advertised next to the URL wins:
-    ///    it is loaded through `loadFile` (image types keep the image
-    ///    loader), and the generic public.url representation is never
-    ///    requested afterwards.
-    /// 2. Otherwise the URL representation is loaded exactly ONCE, inside
-    ///    one callback: file: locations (delivered as URL/NSURL or as
-    ///    String/text/UTF-8) retain their bytes before that callback
-    ///    returns; every other value keeps the previous text-URL behavior.
+    /// 1. A concrete NON-URL file representation advertised next to the
+    ///    URL wins: it is loaded through `loadFile` as file content (image
+    ///    types keep the image loader), and the generic public.url
+    ///    representation is never requested afterwards.
+    /// 2. url-family identifiers — public.url and the policy-selected
+    ///    public.file-url — name the file LOCATION, never its content.
+    ///    `loadFileRepresentation` materializes a registered item's VALUE
+    ///    as the vended file, so for a file-url whose value IS the
+    ///    location it can vend a serialization of the location instead of
+    ///    the referenced file's bytes. Location identifiers are therefore
+    ///    loaded through exactly ONE `loadItem` callback: a file: value
+    ///    (delivered as URL/NSURL or as String/text/UTF-8) has its
+    ///    coordinated bytes retained INSIDE that callback before the
+    ///    provider can revoke the transient path; every other value keeps
+    ///    the previous text-URL behavior.
     @MainActor
     private static func loadURLProvider(
         _ provider: NSItemProvider,
@@ -158,19 +170,26 @@ enum ShareItemProviderLoader {
         temporaryRoot: URL,
         limits: ShareInboxLimits
     ) async throws -> ShareItemInput {
+        var locationTypeIdentifier: String?
         if let preferredFileTypeIdentifier {
-            if UTType(preferredFileTypeIdentifier)?.conforms(to: .image) == true {
+            let preferredType = UTType(preferredFileTypeIdentifier)
+            if preferredType?.conforms(to: .image) == true {
                 return try await loadImage(provider, temporaryRoot: temporaryRoot, limits: limits)
             }
-            return try await loadFile(
-                provider,
-                typeIdentifier: preferredFileTypeIdentifier,
-                temporaryRoot: temporaryRoot,
-                limits: limits
-            )
+            if preferredType?.conforms(to: .url) == true {
+                locationTypeIdentifier = preferredFileTypeIdentifier
+            } else {
+                return try await loadFile(
+                    provider,
+                    typeIdentifier: preferredFileTypeIdentifier,
+                    temporaryRoot: temporaryRoot,
+                    limits: limits
+                )
+            }
         }
 
-        let urlTypeIdentifier = preferredTypeIdentifier(provider, conformingTo: .url)
+        let urlTypeIdentifier = locationTypeIdentifier
+            ?? preferredTypeIdentifier(provider, conformingTo: .url)
             ?? UTType.url.identifier
         switch try await loadURLRepresentation(
             provider,

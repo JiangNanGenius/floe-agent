@@ -283,7 +283,9 @@ struct ShareItemProviderLoaderTests {
 
     /// A provider advertising ONLY public.file-url (+ its url supertype) is
     /// still a file share; the concrete type is refined from the retained
-    /// original name.
+    /// original name, and the bytes come from the referenced file through
+    /// the single in-callback loadItem retention — the location is never
+    /// materialized as a content representation.
     @Test("File-URL-only providers are copied and refined to the concrete type")
     func fileURLOnlyRefinesConcreteType() async throws {
         let sources = try makeScratchDirectory("sources")
@@ -293,9 +295,11 @@ struct ShareItemProviderLoaderTests {
             try? FileManager.default.removeItem(at: tempRoot)
         }
         let sourceURL = try writeSyntheticPDF(in: sources)
+        let requests = RepresentationRequests()
         let provider = makePDFProvider(
             sourceURL: sourceURL,
-            advertising: [UTType.fileURL.identifier, UTType.url.identifier]
+            advertising: [UTType.fileURL.identifier, UTType.url.identifier],
+            requests: requests
         )
 
         let inputs = try await ShareItemProviderLoader.loadInputs(
@@ -306,6 +310,10 @@ struct ShareItemProviderLoaderTests {
         #expect(staged.typeIdentifier == syntheticPDFTypeIdentifier)
         #expect(staged.displayName == "Example Domain.pdf")
         #expect(try Data(contentsOf: staged.url) == syntheticPDFBytes)
+        // The file-url LOCATION representation is consulted exactly once;
+        // the generic public.url twin is never loaded as a follow-up.
+        #expect(requests.count(for: UTType.fileURL.identifier) == 1)
+        #expect(requests.count(for: UTType.url.identifier) == 0)
     }
 
     /// The proven defect shape: a bare public.url whose value is a file
