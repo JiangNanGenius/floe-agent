@@ -532,7 +532,8 @@ struct ThreadDetailView: View {
                     : nil,
                 decisionSummary: decisionSummary(for: event),
                 childRun: childRun(for: event),
-                onOpenChild: { openChild($0) }
+                onOpenChild: { openChild($0) },
+                conversationID: viewModel.conversationID
             )
 
         case .stepGroup(let events, let isLatest):
@@ -545,6 +546,7 @@ struct ThreadDetailView: View {
                 decisions: viewModel.decisionAnnotations,
                 childRunRecords: viewModel.childRunRecords,
                 onOpenChild: { openChild($0) },
+                conversationID: viewModel.conversationID,
                 onResolveApproval: { approval, decision in
                     Task { await viewModel.resolve(approval, decision: decision) }
                 }

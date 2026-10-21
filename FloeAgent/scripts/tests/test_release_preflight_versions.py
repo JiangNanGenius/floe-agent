@@ -59,9 +59,12 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
             # imports: pin_office_host_artifact imports office_engine_repair,
             # which imports sim_paths (office_real_simulator) and
             # verify_office_engine/package_office_engine, and both the pin and
-            # bootstrap_office_host import office_compiled_lifecycle. A missing
-            # dependency must fail this fixture loudly, never silently skip the
-            # gate.
+            # bootstrap_office_host import office_compiled_lifecycle. A pinned
+            # browserResources claim also imports office_browser_resources
+            # (with its producer build_office_browser_resources and
+            # qualify_office_mobile -> prepare_office_native_sources). A
+            # missing dependency must fail this fixture loudly, never silently
+            # skip the gate.
             for name in ("project.yml", "scripts/release_preflight.sh",
                          "scripts/validate_localization_catalog.py",
                          "scripts/audit_native_runtime_free.py",
@@ -75,6 +78,10 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
                          "scripts/office_engine_repair.py",
                          "scripts/verify_office_engine.py",
                          "scripts/package_office_engine.py",
+                         "scripts/office_browser_resources.py",
+                         "scripts/build_office_browser_resources.py",
+                         "scripts/qualify_office_mobile.py",
+                         "scripts/prepare_office_native_sources.py",
                          "scripts/office_real_simulator/sim_paths.py",
                          "FloeAgent.xcodeproj/project.pbxproj", "FloeScreenShare/Info.plist",
                          "FloeApp/Resources/Localizable.xcstrings"):
@@ -98,6 +105,17 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
                 files += [office / spec["patch"]
                           for spec in filters.get("headerDependencies", {}).values()
                           if spec.get("patch")]
+            # The pinned host artifact also claims the patched browser
+            # frontend: pin_office_host_artifact.py --check binds the
+            # browserResources claim against the adjacent live
+            # browser.patch.lock.json (engine commit + per-patch digests), so
+            # the fixture must stage that lock and every patch file it names,
+            # exactly as a release checkout carries them.
+            browser_lock_name = office / "browser.patch.lock.json"
+            browser_lock = json.loads((ROOT / browser_lock_name).read_text())
+            files.append(browser_lock_name)
+            files += [office / entry["patch"]
+                      for entry in browser_lock["browserSourcePatches"]]
             # checked_lock validates the pinned compiled lifecycle member
             # against its tracked patch bytes before the version gate runs, so
             # stage the parent overlay and every nested member/archive patch

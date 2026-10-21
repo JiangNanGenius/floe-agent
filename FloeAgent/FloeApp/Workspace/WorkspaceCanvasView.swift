@@ -12477,6 +12477,7 @@ private struct SharedCanvasAgentConversation: View {
                 isLive: viewModel.isRunning && isLatest,
                 hasError: events.contains { $0.kind == .error },
                 pendingApprovals: viewModel.pendingApprovals,
+                conversationID: viewModel.conversationID,
                 onResolveApproval: { approval, decision in
                     Task { await viewModel.resolve(approval, decision: decision) }
                 }
@@ -12485,7 +12486,8 @@ private struct SharedCanvasAgentConversation: View {
             ThreadEventView(
                 event: event,
                 isLive: viewModel.isRunning,
-                hasError: event.kind == .error
+                hasError: event.kind == .error,
+                conversationID: viewModel.conversationID
             )
         case .terminal(let event):
             TerminalEventRow(event: event)

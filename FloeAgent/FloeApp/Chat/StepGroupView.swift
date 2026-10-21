@@ -9,6 +9,7 @@ import SwiftUI
 import FloeModels
 import FloePersistence
 import FloeSecurity
+import FloeTools
 
 import FloeCore
 enum StepGroupDisclosurePolicy {
@@ -35,6 +36,7 @@ struct StepGroupView: View {
     /// match a child whose parent run is the run that rendered the call.
     private let childRunRecords: [ChildRunRecord]
     private let onOpenChild: ((ChildRunRecord?) -> Void)?
+    private let conversationID: UUID?
     let onResolveApproval: (PendingApproval, ApprovalDecision) -> Void
     @StateObject private var projection = StepGroupMetadata()
     private var payloads: [UUID: [String: String]] { projection.read(events).payloads }
@@ -52,6 +54,7 @@ struct StepGroupView: View {
         decisions: [ToolDecisionAnnotation] = [],
         childRunRecords: [ChildRunRecord] = [],
         onOpenChild: ((ChildRunRecord?) -> Void)? = nil,
+        conversationID: UUID? = nil,
         onResolveApproval: @escaping (PendingApproval, ApprovalDecision) -> Void = { _, _ in }
     ) {
         self.events = events
@@ -62,6 +65,7 @@ struct StepGroupView: View {
         self.decisions = decisions
         self.childRunRecords = childRunRecords
         self.onOpenChild = onOpenChild
+        self.conversationID = conversationID
         self.onResolveApproval = onResolveApproval
         // The active/latest group is the user's only view into current tool
         // progress. Historical groups stay compact, while the latest group
@@ -109,7 +113,25 @@ struct StepGroupView: View {
         for event in displayedEvents where decisionSummary(for: event) != nil {
             urgent.insert(event.id)
         }
+        // A completed export is a user result, even after the outer activity
+        // group collapses. Keep its invocation/file row reachable without
+        // exposing unrelated diagnostic events or arbitrary tool paths.
+        for event in displayedEvents where hasOwnedOutputFiles(event) {
+            urgent.insert(event.id)
+        }
         return displayedEvents.filter { urgent.contains($0.id) || pendingApproval(for: $0) != nil }
+    }
+
+    private func hasOwnedOutputFiles(_ event: RunEventRecord) -> Bool {
+        let result = event.kind == .toolRequest ? matchingResult(for: event) : event
+        guard let result, result.kind == .toolResult, result.runID == event.runID else { return false }
+        let values = ConversationCenter.decodePayload(result.payloadJSON)
+        guard let encoded = values["outputFilesJSON"], encoded.utf8.count <= 196_608,
+              let data = encoded.data(using: .utf8),
+              let receipts = try? JSONDecoder().decode([RunOutputFile].self, from: data) else { return false }
+        let context = RunOutputReceiptContext(runID: result.runID, conversationID: conversationID,
+            callID: values["id"], toolName: values["tool"])
+        return receipts.contains { RunOutputReceiptGate.accepts($0, in: context) }
     }
 
     var body: some View {
@@ -145,7 +167,8 @@ struct StepGroupView: View {
                             toolRequestIsWaiting: pendingApproval(for: event) != nil,
                             decisionSummary: decisionSummary(for: event),
                             childRun: childRun(for: event),
-                            onOpenChild: onOpenChild
+                            onOpenChild: onOpenChild,
+                            conversationID: conversationID
                         )
                         .transition(isLive ? FloeTheme.stepTransition(reduceMotion: reduceMotion) : .identity)
                         if event.kind == .toolRequest, let pending = pendingApproval(for: event) {

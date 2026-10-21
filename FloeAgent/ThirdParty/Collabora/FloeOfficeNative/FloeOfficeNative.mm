@@ -12,6 +12,7 @@
 #include <common/LangUtil.hpp>
 #include <rtl/bootstrap.hxx>
 #include <Poco/Util/LayeredConfiguration.h>
+#include <cstdlib>
 #include <exception>
 #include <string>
 #import "ios.h"
@@ -42,6 +43,58 @@ static NSError *OfficeError(NSInteger code, NSString *description) {
     return [NSError errorWithDomain:FloeOfficeNativeErrorDomain code:code
                           userInfo:@{NSLocalizedDescriptionKey: description}];
 }
+
+// FLOE_CALC_BACKGROUND_BEGIN
+// Render the Calc sheet background and gridlines with the mature native
+// renderer instead of the transparent tiled-target optimization.
+// Upstream setupKitEnvironment() (kit/SetupKitEnvironment.hpp, pinned
+// 27b21dc1) defaults SAL_KIT_OPTIONS to
+// "unipoll[:notebookbar]:sc_no_grid_bg:sc_print_twips_msgs"; the engine's
+// first init (engine/desktop/source/lib/init.cxx) turns the sc_no_grid_bg
+// token into Compat::scNoGridBackground, and ScGridWindow::DrawContent
+// (engine/sc/source/ui/view/gridwin4.cxx) then skips the opaque document
+// background and the native grid. The kit client must fake a background
+// instead, and the transparent target mis-composites translucent ink.
+// Build 283 candidate 19 A/B proved the native path keeps 100% of the grid
+// and the exact FFCC00@40% colour when only sc_no_grid_bg is omitted. This
+// host therefore normalizes the environment after the upstream setup and
+// before cok_init_2's first engine init, removing only the exact
+// sc_no_grid_bg token and preserving every other option (upstream parses
+// tokens by exact ':'-split comparison). The selection needs no additional
+// core member; the existing salios.o member keeps only the narrow readback
+// zero-init compile, and no test-only override is required or honoured.
+static bool FloeNormalizeKitOptionsForCalcBackground(void) {
+    const char *kVariable = "SAL_KIT_OPTIONS";
+    const char *kGridToken = "sc_no_grid_bg";
+    const char *existing = ::getenv(kVariable);
+    if (!existing)
+        return true; // Upstream did not apply a default; nothing to normalize.
+    const std::string options(existing);
+    std::string kept;
+    bool removedGridToken = false;
+    size_t start = 0;
+    while (true) {
+        const size_t end = options.find(':', start);
+        const std::string token = options.substr(
+            start, end == std::string::npos ? std::string::npos : end - start);
+        if (token == kGridToken) {
+            removedGridToken = true;
+        } else {
+            if (!kept.empty())
+                kept += ':';
+            kept += token;
+        }
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+    if (!removedGridToken)
+        return true; // No transparent-grid optimization requested; keep as-is.
+    // A failed override would silently keep the transparent-grid token
+    // active; report the failure instead of starting half-configured.
+    return ::setenv(kVariable, kept.c_str(), 1 /* override */) == 0;
+}
+// FLOE_CALC_BACKGROUND_END
 
 // FLOE_OFFICE_LOG_BEGIN
 // Bounded, content-free diagnostics. A report is a single line of engine state
@@ -100,10 +153,56 @@ static NSDictionary<NSString *, id> *FloeOfficeMemoryFacts(void) {
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView;
 @end
 
+// Pinned upstream implements this callback in its .mm, but does not expose
+// the declaration in DocumentViewController.h. Declare it for the subclass's
+// super call; this category deliberately implements no runtime method.
+@interface DocumentViewController (FloePrintForwarding)
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message;
+@end
+
+/// Print-request gating, implemented by the host controller below and
+/// declared here only so the editor subclass can consult it without owning
+/// host close state. Registers no runtime method.
+@interface FloeOfficeNativeViewController (FloePrintRequest)
+/// YES only while the host is live (not closing/closed) and the App has bound
+/// its Print handler for this session.
+- (BOOL)floeAcceptsPrintRequest;
+@end
+
 @interface FloeOfficeDocumentViewController : DocumentViewController
+/// Weak back-reference for Print gating only; the host owns this editor, so
+/// no cycle is created and a dead host simply falls back to upstream.
+@property (nonatomic, weak, nullable) FloeOfficeNativeViewController *floeHost;
 @end
 
 @implementation FloeOfficeDocumentViewController
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message {
+    // Intercept ONLY the editor's own `lok` message whose body is exactly the
+    // NSString "PRINT", and only while the App has bound this session's Print
+    // handler and the host controller is still live. Every other message —
+    // including PRINT before the App binds or after close begins — goes to
+    // the pinned upstream implementation unchanged.
+    if ([message.name isEqualToString:@"lok"]
+        && [message.body isKindOfClass:NSString.class]
+        && [message.body isEqualToString:@"PRINT"]) {
+        FloeOfficeNativeViewController *host = self.floeHost;
+        if (host && [host floeAcceptsPrintRequest]) {
+            __weak FloeOfficeNativeViewController *weakHost = host;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                FloeOfficeNativeViewController *liveHost = weakHost;
+                if (!liveHost || ![liveHost floeAcceptsPrintRequest])
+                    return;
+                void (^handler)(void) = liveHost.onPrintRequested;
+                if (handler)
+                    handler();
+            });
+            return;
+        }
+    }
+    [super userContentController:userContentController didReceiveScriptMessage:message];
+}
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
     // Pinned upstream teardown first: `[self bye]` closes the document,
     // dismisses the dead surface and settles the host's close completion.
@@ -2518,6 +2617,15 @@ static void ServerReady() {
     }
     try {
         setupKitEnvironment(UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? "notebookbar" : "");
+        // Let Calc keep its native opaque background and gridlines (see
+        // FloeNormalizeKitOptionsForCalcBackground above); must run before
+        // cok_init_2's first engine init parses SAL_KIT_OPTIONS. A failed
+        // normalization (SAL_KIT_OPTIONS override rejected) takes the same
+        // generic startup-failure route as the surrounding init steps.
+        if (!FloeNormalizeKitOptionsForCalcBackground()) {
+            [self fail:OfficeError(3, @"Office engine initialization failed.")];
+            return;
+        }
         Log::initialize("FloeOffice", "warning");
         app_locale = FloeEditorLanguage(NSLocale.preferredLanguages);
         app_text_direction = LangUtil::isRtlLanguage(std::string(app_locale.UTF8String)) ? @"rtl" : @"";
@@ -3204,7 +3312,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 @property (nonatomic, readwrite, getter=isReadOnly) BOOL readOnly;
 @property (nonatomic, readwrite) BOOL sessionIsReadOnly;
 @property (nonatomic, copy, readwrite) NSURL *workingFileURL;
-@property DocumentViewController *editor;
+@property FloeOfficeDocumentViewController *editor;
 @property (nonatomic, strong) FloeSaveReceiptJoiner *saveReceipts;
 @property (nonatomic, strong) FloeOfficeEnginePermissionObserver *permissionObserver;
 @property (nonatomic) BOOL closing;
@@ -3330,6 +3438,15 @@ static NSString *FloeSetDrawingModeScript(BOOL enabled) {
 }
 
 @implementation FloeOfficeNativeViewController
+/// Print-request gate consulted by the editor subclass before intercepting a
+/// `lok` PRINT message. The handler is honoured only while the App still has
+/// one bound and the session has not begun closing, so a late engine message
+/// can never re-enter a dead or closing controller.
+- (BOOL)floeAcceptsPrintRequest {
+    NSAssert(NSThread.isMainThread, @"Office controllers are main-queue owned");
+    return self.onPrintRequested != nil && !self.closed && !self.closing;
+}
+
 /// Main-queue accessor for the exact engine document URL the UIDocument
 /// loaded (`copyFileURL`, the `file_path` handed to the bundled editor).
 /// nil whenever the engine document or its copy URL is unavailable; the URL
@@ -3369,6 +3486,8 @@ static NSString *FloeSetDrawingModeScript(BOOL enabled) {
         // The Floe subclass calls the pinned upstream termination callback
         // through and then reports web-content death (see the recovery block).
         _editor = [[FloeOfficeDocumentViewController alloc] initWithNibName:nil bundle:nil];
+        // Weak Print-gating reference only; the host owns the editor.
+        _editor.floeHost = self;
         FloeOfficeDocument *document = [[FloeOfficeDocument alloc] initWithFileURL:file];
         document->readOnly = readOnly;
         document.floeEngineCopyDirectory = [directory URLByAppendingPathComponent:@"engine" isDirectory:YES];

@@ -96,6 +96,13 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 @property (nonatomic, copy, nullable) void (^onWebContentProcessTerminated)(void);
 /// Native close completed. The caller still owns writeback and recovery retention.
 @property (nonatomic, copy, nullable) void (^onClosed)(BOOL success);
+/// App-owned Print action for the editor's own `lok` PRINT command. While
+/// set (and this controller is live), Floe hands each request to the App
+/// exactly once on the main queue instead of running the pinned upstream
+/// AirPrint presenter, so the App can present its own print/export flow for
+/// this session. nil keeps the upstream behavior unchanged. The handler
+/// receives no document data and is not invoked once close begins.
+@property (nonatomic, copy, nullable) void (^onPrintRequested)(void);
 /// Force a normal engine save and wait for this request's native working-file
 /// persistence result. The caller still coordinates original-file writeback.
 /// Only one explicit request is admitted at a time; no autosave can complete it.

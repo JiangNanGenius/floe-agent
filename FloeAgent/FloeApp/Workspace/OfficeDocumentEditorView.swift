@@ -7,6 +7,7 @@ import Combine
 import WebKit
 import FloeDocuments
 import FloeCore
+import FloeTools
 #if canImport(FloeOfficeNative)
 import FloeOfficeNative
 #endif
@@ -283,6 +284,9 @@ final class OfficeFileSession: ObservableObject {
     @Published private(set) var readOnly = true
     @Published private(set) var hasUncommittedChanges = false
     @Published var error: String?
+    /// An actual native toolbar Print request for this mounted generation.
+    /// The view observes the edge and presents the same options as Export PDF.
+    @Published private(set) var printRequestGeneration = 0
     @Published private(set) var hasSaveConflict = false
     @Published private(set) var drawingMode = false
     /// Floe-owned stroke settings for the current document. Independent from
@@ -683,6 +687,174 @@ final class OfficeFileSession: ObservableObject {
     private func invalidateInkApply() {
         inkSequencer.invalidate()
         inkApplyOutcome = nil
+    }
+
+    /// Commit completed live edits, then freeze the exact saved source for
+    /// the pre-generation options form. No source page setup is rewritten.
+    func preparePDFExport() async throws -> OfficePDFExportPreparation {
+        guard canAct, documentActionsReady, let controller, let currentSession = session else {
+            throw FloeError.validationFailed(OfficeInkText.t("文档尚未就绪，请稍后重试。", "The document is not ready. Try again shortly."))
+        }
+        let fence = capturePassiveExitFence()
+        let activePen = readOnly ? false : await hasActivePenContact()
+        guard !activePen else {
+            throw FloeError.validationFailed(OfficeInkText.t("请抬笔后重试。", "Lift the pen and try again."))
+        }
+        // Read the editor's own part before saving. A missing current part
+        // hides Current Sheet; it never becomes a first-sheet fallback.
+        var selectedPart: Int?
+        if let web = OfficeExplicitSaveBridge.findWebView(in: controller.view) {
+            let value = try? await web.evaluateJavaScript("""
+            (() => {
+                const map = window.app && window.app.map;
+                if (!map) return null;
+                const n = typeof map.getCurrentPartNumber === 'function'
+                    ? map.getCurrentPartNumber() : map._docLayer && map._docLayer._selectedPart;
+                return Number.isSafeInteger(n) && n >= 0 ? n : null;
+            })()
+            """)
+            if let number = value as? NSNumber { selectedPart = number.intValue }
+        }
+        if !readOnly {
+            if autosaveActive {
+                let proof = await requestAutosaveTransaction(reason: "pdfExport")
+                guard proof.isCommittedState, proof.dirtyAfterTransaction == false else {
+                    throw FloeError.validationFailed(proof.error ?? OfficeInkText.t("尚未保存完成，请稍后重试。", "Saving has not finished. Try again shortly."))
+                }
+            } else {
+                guard await saveInPlace() else {
+                    throw FloeError.validationFailed(error ?? OfficeInkText.t("未能保存文档，请重试。", "The document could not be saved. Try again."))
+                }
+            }
+        }
+        guard passiveExitFenceIsCurrent(fence), beginExternalRefresh(resigningFirstResponder: false) else {
+            throw OfficePDFExportScreenError.sourceChanged
+        }
+        defer { endExternalRefresh() }
+        let quiescentBefore = readOnly ? true : await verifyQuiescentForExternalRewrite()
+        guard quiescentBefore else {
+            throw FloeError.validationFailed(OfficeInkText.t("文档仍在编辑，请稍后重试。", "The document is still being edited. Try again shortly."))
+        }
+        let sourceURL = currentSession.workingURL
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeOfficePDF-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let lease = OfficePDFExportLease(directory: directory)
+        let ext = sourceURL.pathExtension.lowercased()
+        let copyURL = directory.appendingPathComponent("source").appendingPathExtension(ext)
+        let sha = try await Task.detached(priority: .userInitiated) {
+            let values = try sourceURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                  let size = values.fileSize, size > 0, size <= 128 * 1024 * 1024 else {
+                throw CocoaError(.fileReadTooLarge)
+            }
+            let before = try FloeDigest.sha256Hex(ofFileAt: sourceURL)
+            try FileManager.default.copyItem(at: sourceURL, to: copyURL)
+            guard try FloeDigest.sha256Hex(ofFileAt: copyURL) == before,
+                  try FloeDigest.sha256Hex(ofFileAt: sourceURL) == before else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return before
+        }.value
+        try Task.checkCancellation()
+        let quiescentAfter = readOnly ? true : await verifyQuiescentForExternalRewrite()
+        guard passiveExitFenceIsCurrent(fence), quiescentAfter else {
+            throw OfficePDFExportScreenError.sourceChanged
+        }
+        let sheets: [OfficeRegionWorkbookSheet]
+        if ext == "xlsx" {
+            sheets = try await Task.detached(priority: .userInitiated) {
+                try OfficeRegionExport.workbookSheets(sourceURL: copyURL, expectedSHA256: sha)
+            }.value
+        } else {
+            sheets = []
+        }
+        try Task.checkCancellation()
+        guard passiveExitFenceIsCurrent(fence) else { throw OfficePDFExportScreenError.sourceChanged }
+        let activeName = selectedPart.flatMap { index in sheets.first(where: { $0.index == index && $0.isVisible })?.name }
+        return OfficePDFExportPreparation(
+            sourceURL: copyURL, sourceSHA256: sha, fileExtension: ext,
+            displayName: currentSession.originalURL.deletingPathExtension().lastPathComponent,
+            sheets: sheets, activeSheetName: activeName, lease: lease,
+            isCurrent: { [weak self] in
+                guard let self, self.passiveExitFenceIsCurrent(fence), !self.runtimeFailed else { return false }
+                guard (try? await Task.detached(priority: .userInitiated, operation: {
+                    try FloeDigest.sha256Hex(ofFileAt: sourceURL)
+                }).value) == sha else { return false }
+                if self.readOnly { return true }
+                return await self.verifyQuiescentForExternalRewrite()
+            })
+    }
+
+    func exportConfiguredPDF(_ source: OfficePDFExportPreparation,
+                             choices: OfficePDFExportChoices,
+                             cancellation: CancellationToken) async throws -> OfficePDFPreparedDelivery {
+        #if canImport(FloeOfficeNative)
+        let plan: OfficePDFPrintPlan
+        do {
+            plan = try choices.plan(activeSheetName: source.activeSheetName)
+            try plan.validate(forExtension: source.fileExtension)
+        } catch {
+            throw FloeError.validationFailed(OfficeInkText.t(
+                "请检查工作表、单元格区域和 PDF 页码。", "Check the sheet, cell range and PDF pages."))
+        }
+        try cancellation.throwIfCancelled()
+        guard await source.isCurrent(), let controller,
+              beginExternalRefresh(resigningFirstResponder: false) else {
+            throw OfficePDFExportScreenError.sourceChanged
+        }
+        defer { endExternalRefresh() }
+        do {
+            let result: OfficePDFExportResult
+            if OfficePDFExportService.capability(forExtension: source.fileExtension)?.savedIsolatedExport == true {
+                result = try await OfficePDFExportService.export(.init(
+                    sourceURL: source.sourceURL, sourceSHA256: source.sourceSHA256,
+                    formatExtension: source.fileExtension, plan: plan,
+                    ownedDirectory: source.lease.directory, cancellation: cancellation))
+            } else {
+                // Legacy packages keep the native route that already opens
+                // this exact file; shared validation still applies the final
+                // page selection. Never relabel an ODS/XLS as an XLSX.
+                let nativePDF = try await Self.exportNativeDocument(controller: controller, format: "pdf")
+                defer { try? FileManager.default.removeItem(at: nativePDF) }
+                result = try await OfficePDFExportService.finalizeExistingPDF(.init(
+                    exportedPDFURL: nativePDF, sourceURL: source.sourceURL,
+                    sourceSHA256: source.sourceSHA256, formatExtension: source.fileExtension,
+                    plan: plan, ownedDirectory: source.lease.directory, cancellation: cancellation))
+            }
+            try cancellation.throwIfCancelled()
+            try Task.checkCancellation()
+            guard self.controller === controller, await source.isCurrent() else {
+                throw OfficePDFExportScreenError.sourceChanged
+            }
+            let exportedName = source.displayName.isEmpty ? "Document.pdf" : source.displayName + ".pdf"
+            let delivery = source.lease.directory.appendingPathComponent(exportedName)
+            // Unique leased directory, with the same no-overwrite rule as the
+            // backend. Re-measure after giving the file its user-facing name.
+            let producedURL = result.pdfURL, producedSHA = result.pdfSHA256
+            try await Task.detached(priority: .userInitiated) {
+                try FileManager.default.copyItem(at: producedURL, to: delivery)
+                guard try FloeDigest.sha256Hex(ofFileAt: delivery) == producedSHA else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+            }.value
+            try cancellation.throwIfCancelled()
+            try Task.checkCancellation()
+            guard self.controller === controller, await source.isCurrent() else {
+                throw OfficePDFExportScreenError.sourceChanged
+            }
+            return OfficePDFPreparedDelivery(url: delivery, lease: source.lease)
+        } catch {
+            if await OfficeAutomaticExecutionGate.shared.isQuarantined {
+                // The service retained a native session that did not close.
+                // The outer share lease must not delete that recovery input.
+                source.lease.preserveForRecovery()
+            }
+            throw error
+        }
+        #else
+        throw CocoaError(.featureUnsupported)
+        #endif
     }
 
     func exportDocument(format: String) async throws -> URL {
@@ -2768,6 +2940,20 @@ final class OfficeFileSession: ObservableObject {
             _ = native.perform(NSSelectorFromString("setOnWebContentProcessTerminated:"),
                                with: terminated as AnyObject)
         }
+        if native.responds(to: NSSelectorFromString("setOnPrintRequested:")) {
+            let printRequested: @convention(block) () -> Void = { [weak self, weak native] in
+                Task { @MainActor in
+                    guard let self, let native, self.controller === native,
+                          self.openGeneration.isCurrent(generation), !self.runtimeFailed else { return }
+                    guard self.canAct, self.documentActionsReady else {
+                        self.error = OfficeInkText.t("文档正忙，请稍后重试打印。", "The document is busy. Try printing again shortly.")
+                        return
+                    }
+                    self.printRequestGeneration &+= 1
+                }
+            }
+            _ = native.perform(NSSelectorFromString("setOnPrintRequested:"), with: printRequested as AnyObject)
+        }
         if native.responds(to: NSSelectorFromString("setOnStageEvent:")) {
             // The native breadcrumbs carry the host's own session/generation;
             // this session's trace keeps one App correlation identity and the
@@ -3564,6 +3750,7 @@ struct OfficeDocumentEditorView: View {
     @State private var confirmingClose = false
     @State private var comparingVersions = false
     @State private var convertedExport: OfficeConvertedExport?
+    @State private var pdfExportPurpose: OfficePDFExportPurpose?
     @State private var export: DocumentExportSnapshot?
     @State private var savedCopyNotice = false
     @State private var exportSucceeded = false
@@ -3693,6 +3880,17 @@ struct OfficeDocumentEditorView: View {
                 }
             }
             .sheet(item: $convertedExport) { OfficeConvertedExportShareSheet(url: $0.url) }
+            .sheet(item: $pdfExportPurpose) { purpose in
+                OfficePDFExportOptionsView(purpose: purpose,
+                    prepare: { try await session.preparePDFExport() },
+                    export: { prepared, choices, cancellation in
+                        try await session.exportConfiguredPDF(prepared, choices: choices, cancellation: cancellation)
+                    })
+            }
+            .onChange(of: session.printRequestGeneration) { _, _ in
+                guard pdfExportPurpose == nil else { return }
+                pdfExportPurpose = .printDocument
+            }
             .sheet(isPresented: $comparingVersions) { OfficeConflictReviewView(session: session) }
             .sheet(isPresented: $choosingWorkspaceAttachment) {
                 OfficeWorkspaceAttachmentPicker(environment: environment) { url in
@@ -3895,6 +4093,10 @@ struct OfficeDocumentEditorView: View {
                 Menu("workspace.office_document_editor_view.export_format", systemImage: "square.and.arrow.up") {
                     ForEach(session.exportFormats, id: \.self) { format in
                         Button(format.uppercased()) {
+                            if format == "pdf" {
+                                pdfExportPurpose = .export
+                                return
+                            }
                             Task {
                                 do { convertedExport = .init(url: try await session.exportDocument(format: format)) }
                                 catch { session.error = error.localizedDescription }
@@ -3902,6 +4104,12 @@ struct OfficeDocumentEditorView: View {
                         }
                     }
                 }
+            }
+            if session.exportFormats.contains("pdf") {
+                Button(OfficeInkText.t("打印…", "Print…"), systemImage: "printer") {
+                    pdfExportPurpose = .printDocument
+                }
+                .accessibilityIdentifier("office.editor.print")
             }
             Button("workspace.office_document_editor_view.save_a_copy", systemImage: "doc.on.doc") { Task { export = await session.prepareSaveCopy() } }
             // Explicit share of the current document from every Office

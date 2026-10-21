@@ -93,6 +93,285 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
         try await run(.xlsx)
     }
 
+    /// Private, opt-in reproduction input. Attachment bytes are supplied only
+    /// through the local xctestrun environment and never committed as fixtures.
+    /// This captures the real opened/editable/armed document; it is diagnosis,
+    /// not a passing assertion that the reported white rectangle is repaired.
+    func testProvidedWorkbookDisplayDiagnostic() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment[Self.qualificationEnvironment] == "1",
+              let encoded = environment["FLOE_OFFICE_PRIVATE_WORKBOOK_BASE64"],
+              let expected = environment["FLOE_OFFICE_PRIVATE_WORKBOOK_SHA256"] else {
+            throw XCTSkip("Private workbook diagnostic requires explicit local input")
+        }
+        executionTimeAllowance = 420
+        let data = try XCTUnwrap(Data(base64Encoded: encoded))
+        XCTAssertLessThanOrEqual(data.count, 512 * 1024)
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(digest, expected, "Private reproduction input digest mismatch")
+        let fm = FileManager.default
+        let documents = try fm.url(for: .documentDirectory, in: .userDomainMask,
+                                   appropriateFor: nil, create: true)
+        let root = documents.appendingPathComponent(
+            "Qualification/OfficeProvidedWorkbook-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let fixture = root.appendingPathComponent("provided.xlsx")
+        try data.write(to: fixture, options: .atomic)
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }) else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 51, userInfo: [
+                NSLocalizedDescriptionKey: "No foreground scene for private reproduction"])
+        }
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = mount(session, in: scene)
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKey()
+        }
+        var receipt: [String: Any] = [
+            "purpose": "Private actual-workbook display diagnosis; no fix acceptance claim",
+            "inputSHA256": digest,
+            "inputBytes": data.count,
+            "physicalPencil": "not-tested"
+        ]
+        defer { try? writeReceipt(receipt, root: root) }
+        do {
+            await session.open(fixture)
+            try await wait(120, "provided workbook native open") {
+                session.canAct && session.documentActionsReady && session.controller != nil
+            }
+            var native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            var web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            try await Task.sleep(for: .milliseconds(450))
+            _ = try await snapshot(web, root: root, name: "provided-opened")
+            receipt["openedPaint"] = OfficeFileSession.hostRenderDiagnostics(native)
+            if session.readOnly {
+                let accepted = await session.requestEditing()
+                XCTAssertTrue(accepted, "Actual workbook could not enter its isolated editor")
+            }
+            try await wait(150, "provided workbook editable") {
+                !session.readOnly && session.canAct && session.documentActionsReady
+                    && session.controller != nil
+            }
+            native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await waitForPaint(native)
+            web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            try await Task.sleep(for: .milliseconds(450))
+            _ = try await snapshot(web, root: root, name: "provided-editable")
+            session.useInkPreferences(workspaceIdentity: root.path, documentKey: "provided.xlsx")
+            session.inkPreferences.setPreset(.highlighter)
+            session.inkPreferences.setColorHex("#FFCC00")
+            try await session.toggleDrawing()
+            XCTAssertTrue(session.drawingMode)
+            await session.applyInkPreferences()
+            XCTAssertNil(session.inkError)
+            try await Task.sleep(for: .milliseconds(450))
+            _ = try await snapshot(web, root: root, name: "provided-highlighter-armed")
+            receipt["armedPreview"] = try await currentPreviewState(web)
+            if environment["FLOE_OFFICE_PRIVATE_DRAW_DIAGNOSTIC"] == "1" {
+                let geometry = try await geometryProbe(web)
+                let rect = geometry.canvasRect
+                let fractions: [(Double, Double)] = [
+                    (0.25, 0.64), (0.65, 0.64), (0.65, 0.86),
+                    (0.25, 0.86), (0.25, 0.72)
+                ]
+                let points = fractions.map { point in [
+                    Double(rect.minX) + Double(rect.width) * point.0,
+                    Double(rect.minY) + Double(rect.height) * point.1
+                ] }
+                let dense = try densified(points)
+                receipt["diagnosticPointsCSS"] = points
+                let gridBefore = try await snapshot(web, root: root, name: "provided-grid-before-stroke")
+                receipt["diagnosticBegin"] = try await strokePhase(web, phase: "begin", points: dense)
+                do {
+                    let contact = try await snapshot(web, root: root, name: "provided-grid-contact")
+                    let metrics = try providedGridRetention(before: gridBefore, after: contact, points: points)
+                    receipt["contactGridRetention"] = metrics
+                    XCTAssertGreaterThanOrEqual(metrics["retainedFraction"] as? Double ?? 0, 0.95,
+                                                "Grid lines disappeared during contact")
+                } catch {
+                    _ = try? await strokePhase(web, phase: "cleanup", points: dense)
+                    throw error
+                }
+                let lifted = try await strokePhase(web, phase: "lift", points: dense)
+                receipt["diagnosticLift"] = lifted
+                XCTAssertEqual(lifted["strokeDelta"] as? Int, 1)
+                XCTAssertEqual(lifted["activeAfter"] as? Bool, false)
+                _ = try await snapshot(web, root: root, name: "provided-grid-after-lift",
+                                       afterScreenUpdates: false)
+                let firstRetired = try await waitForPreviewRetirement(web, timeout: 8)
+                receipt["diagnosticSettledPreview"] = firstRetired
+                XCTAssertEqual(firstRetired["livePreview"] as? Bool, false)
+                XCTAssertEqual(firstRetired["lastPreviewClear"] as? String, "painted")
+                let settled = try await snapshot(web, root: root, name: "provided-grid-settled")
+                let retention = try providedGridRetention(before: gridBefore, after: settled, points: points)
+                receipt["settledGridRetention"] = retention
+                XCTAssertGreaterThanOrEqual(retention["retainedFraction"] as? Double ?? 0, 0.95,
+                                            "Post-lift repaint erased the empty-cell grid")
+                let firstYellow = providedNewHighlighterPixels(before: gridBefore, after: settled, points: points)
+                receipt["firstNewHighlighterPixels"] = firstYellow
+                XCTAssertGreaterThan(firstYellow, 300, "The engine must actually display the committed stroke")
+                let firstColor = try providedCommittedColor(before: gridBefore, after: settled, points: points)
+                receipt["firstCommittedColor"] = firstColor
+                XCTAssertLessThanOrEqual(firstColor["maximumChannelError"] as? Int ?? 255, 8,
+                                         "Native paint must preserve the selected color and opacity")
+                // A second equal-sized group in another row band must not
+                // inherit the first buffer's alpha or erase either region.
+                let secondPoints = points.map { [$0[0], $0[1] - Double(rect.height) * 0.28] }
+                let secondDense = try densified(secondPoints)
+                let secondBefore = try await snapshot(web, root: root, name: "provided-grid-second-before")
+                receipt["secondDiagnosticPointsCSS"] = secondPoints
+                receipt["secondDiagnosticBegin"] = try await strokePhase(web, phase: "begin", points: secondDense)
+                do {
+                    let secondContact = try await snapshot(web, root: root, name: "provided-grid-second-contact")
+                    let contactRetention = try providedGridRetention(before: secondBefore, after: secondContact, points: secondPoints)
+                    receipt["secondContactGridRetention"] = contactRetention
+                    XCTAssertGreaterThanOrEqual(contactRetention["retainedFraction"] as? Double ?? 0, 0.95)
+                } catch {
+                    _ = try? await strokePhase(web, phase: "cleanup", points: secondDense)
+                    throw error
+                }
+                let secondLift = try await strokePhase(web, phase: "lift", points: secondDense)
+                receipt["secondDiagnosticLift"] = secondLift
+                XCTAssertEqual(secondLift["strokeDelta"] as? Int, 1)
+                XCTAssertEqual(secondLift["activeAfter"] as? Bool, false)
+                let secondRetired = try await waitForPreviewRetirement(web, timeout: 8)
+                receipt["secondSettledPreview"] = secondRetired
+                XCTAssertEqual(secondRetired["livePreview"] as? Bool, false)
+                XCTAssertEqual(secondRetired["lastPreviewClear"] as? String, "painted")
+                let secondSettled = try await snapshot(web, root: root, name: "provided-grid-second-settled")
+                let secondRetention = try providedGridRetention(before: secondBefore, after: secondSettled, points: secondPoints)
+                receipt["secondSettledGridRetention"] = secondRetention
+                XCTAssertGreaterThanOrEqual(secondRetention["retainedFraction"] as? Double ?? 0, 0.95)
+                let secondYellow = providedNewHighlighterPixels(before: secondBefore, after: secondSettled, points: secondPoints)
+                receipt["secondNewHighlighterPixels"] = secondYellow
+                XCTAssertGreaterThan(secondYellow, 300, "The second committed stroke must remain visible")
+                let secondColor = try providedCommittedColor(before: secondBefore, after: secondSettled, points: secondPoints)
+                receipt["secondCommittedColor"] = secondColor
+                XCTAssertLessThanOrEqual(secondColor["maximumChannelError"] as? Int ?? 255, 8)
+                let firstStillRetained = try providedGridRetention(before: gridBefore, after: secondSettled, points: points)
+                receipt["firstGridAfterSecondStroke"] = firstStillRetained
+                XCTAssertGreaterThanOrEqual(firstStillRetained["retainedFraction"] as? Double ?? 0, 0.95)
+                try await session.toggleDrawing()
+                let exported = try await session.exportDocument(format: "xlsx")
+                let copy = root.appendingPathComponent("provided-with-diagnostic-stroke.xlsx")
+                try fm.copyItem(at: exported, to: copy)
+                attach(copy, name: "provided-with-diagnostic-stroke")
+                receipt["diagnosticExportSHA256"] = try hash(copy)
+            }
+            XCTAssertEqual(try hash(fixture), expected, "Diagnostic changed the supplied input copy")
+            receipt["inputUnchanged"] = true
+            receipt["status"] = "actual display and optional grid-retention assertions recorded"
+            await session.release()
+        } catch {
+            receipt["error"] = error.localizedDescription
+            await session.release()
+            throw error
+        }
+    }
+
+    /// Require committed yellow ink on previously neutral pixels, so a blank
+    /// canvas cannot pass the independent grid-preservation oracle.
+    private func providedNewHighlighterPixels(before: Snapshot, after: Snapshot,
+                                             points: [[Double]]) -> Int {
+        guard before.width == after.width, before.height == after.height,
+              let minX = points.map({ $0[0] }).min(), let maxX = points.map({ $0[0] }).max(),
+              let minY = points.map({ $0[1] }).min(), let maxY = points.map({ $0[1] }).max() else { return 0 }
+        let scale = Double(before.scale)
+        let left = max(0, Int(minX * scale) - 24), right = min(before.width, Int(maxX * scale) + 24)
+        let top = max(0, Int(minY * scale) - 24), bottom = min(before.height, Int(maxY * scale) + 24)
+        var count = 0
+        for y in top..<bottom { for x in left..<right {
+            let i = (y * before.width + x) * 4
+            let r = Int(before.pixels[i]), g = Int(before.pixels[i + 1]), b = Int(before.pixels[i + 2])
+            guard min(r,g,b) >= 170, max(r,g,b) - min(r,g,b) <= 8 else { continue }
+            let ar = Int(after.pixels[i]), ag = Int(after.pixels[i + 1]), ab = Int(after.pixels[i + 2])
+            if ar >= 240, ag >= 200, ab <= 220, ag - ab >= 20 { count += 1 }
+        } }
+        return count
+    }
+
+    /// Sample a geometric band inside the straight first segment, selecting
+    /// only white BEFORE pixels. The AFTER image never selects the probes.
+    /// FFCC00 at 40% opacity over white rounds to RGB(255,235,153).
+    private func providedCommittedColor(before: Snapshot, after: Snapshot,
+                                        points: [[Double]]) throws -> [String: Any] {
+        guard before.width == after.width, before.height == after.height,
+              before.scale == after.scale, points.count >= 2,
+              points[0][1] == points[1][1], points[1][0] > points[0][0] else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 55)
+        }
+        let scale = Double(before.scale), span = points[1][0] - points[0][0]
+        let left = max(0, Int((points[0][0] + span * 0.2) * scale))
+        let right = min(before.width, Int((points[1][0] - span * 0.2) * scale))
+        let center = Int(points[0][1] * scale)
+        guard left < right, center >= 2, center + 2 < before.height else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 56)
+        }
+        var channels = [[Int](), [Int](), [Int]()]
+        for y in (center - 2)...(center + 2) { for x in left..<right {
+            let i = (y * before.width + x) * 4
+            guard (0..<3).allSatisfy({ before.pixels[i + $0] >= 250 }) else { continue }
+            for channel in 0..<3 { channels[channel].append(Int(after.pixels[i + channel])) }
+        } }
+        guard channels[0].count >= 100 else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 57)
+        }
+        let median = channels.map { values in values.sorted()[values.count / 2] }
+        let expected = [255, 235, 153]
+        let error = zip(median, expected).map { abs($0.0 - $0.1) }.max() ?? 255
+        return ["sampleCount": channels[0].count, "medianRGB": median,
+                "expectedRGB": expected, "maximumChannelError": error]
+    }
+
+    /// Neutral grid pixels selected only from the BEFORE image, in the inner
+    /// 60% of the bounds and away from every U segment.
+    private func providedGridRetention(before: Snapshot, after: Snapshot,
+                                       points: [[Double]]) throws -> [String: Any] {
+        guard before.width == after.width, before.height == after.height,
+              before.scale == after.scale,
+              let minX = points.map({ $0[0] }).min(), let maxX = points.map({ $0[0] }).max(),
+              let minY = points.map({ $0[1] }).min(), let maxY = points.map({ $0[1] }).max() else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 52, userInfo: [
+                NSLocalizedDescriptionKey: "Grid comparison geometry changed"])
+        }
+        let scale = Double(before.scale)
+        let left = Int((minX + (maxX - minX) * 0.20) * scale)
+        let right = Int((maxX - (maxX - minX) * 0.20) * scale)
+        let top = Int((minY + (maxY - minY) * 0.20) * scale)
+        let bottom = Int((maxY - (maxY - minY) * 0.20) * scale)
+        guard left >= 0, top >= 0, right < before.width, bottom < before.height,
+              right > left, bottom > top else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 53, userInfo: [
+                NSLocalizedDescriptionKey: "Grid oracle is outside the actual snapshot"])
+        }
+        var baseline = 0, retained = 0, whitened = 0
+        for y in top..<bottom {
+            for x in left..<right {
+                let index = (y * before.width + x) * 4
+                let original = (0..<3).map { Int(before.pixels[index + $0]) }
+                guard let low = original.min(), let high = original.max(),
+                      low >= 170, high <= 245, high - low <= 8 else { continue }
+                baseline += 1
+                let current = (0..<3).map { Int(after.pixels[index + $0]) }
+                if zip(original, current).allSatisfy({ abs($0.0 - $0.1) <= 18 }) { retained += 1 }
+                if current.allSatisfy({ $0 >= 250 }) { whitened += 1 }
+            }
+        }
+        guard baseline >= 100 else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 54, userInfo: [
+                NSLocalizedDescriptionKey: "The pre-stroke area contains too few visible grid pixels"])
+        }
+        return ["baselineGridPixels": baseline, "retainedGridPixels": retained,
+                "whitenedGridPixels": whitened,
+                "retainedFraction": Double(retained) / Double(baseline),
+                "roiPixels": [left, top, right, bottom]]
+    }
+
     private func run(_ format: AlphaFixtureFormat) async throws {
         guard ProcessInfo.processInfo.environment[Self.qualificationEnvironment] == "1" else {
             throw XCTSkip("Opt-in real-App Office highlighter alpha regression; "
