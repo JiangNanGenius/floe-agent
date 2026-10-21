@@ -263,7 +263,18 @@ enum Synthesizer {
             let pq = CGColorSpace(name: CGColorSpace.itur_2100_PQ)!
             let context = CIContext(options: [.workingColorSpace: linear])
             let extent = CGRect(x: 0, y: 0, width: width, height: height)
-            let image = CIImage(color: CIColor(red: 4, green: 2, blue: 1, alpha: 1)).cropped(to: extent)
+            guard let color = CIColor(red: 4, green: 2, blue: 1, alpha: 1, colorSpace: linear), color.red > 3.5 else {
+                throw FloeError.validationFailed("HDR fixture source color was clipped before encoding")
+            }
+            let image = CIImage(color: color).cropped(to: extent)
+            var sourcePixels = [Float](repeating: 0, count: 4)
+            sourcePixels.withUnsafeMutableBytes { raw in
+                context.render(image, toBitmap: raw.baseAddress!, rowBytes: 16,
+                    bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf, colorSpace: linear)
+            }
+            guard sourcePixels[0] > 3.5 else {
+                throw FloeError.validationFailed("HDR fixture source image did not retain real highlights")
+            }
             CVBufferSetAttachment(buffer, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_2020, .shouldPropagate)
             CVBufferSetAttachment(buffer, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ, .shouldPropagate)
             CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)

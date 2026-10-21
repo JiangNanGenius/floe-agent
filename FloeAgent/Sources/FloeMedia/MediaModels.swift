@@ -420,13 +420,18 @@ public actor ModelArtifactStore {
     /// Checks the downloadable layout before it becomes a registered install.
     /// This proves identity and bytes; runtime inference readiness is separate.
     private func validateEnhancementBundle(at root: URL, id: String, version: String, capability: String) throws {
+        // Foundation may enumerate /var URLs as /private/var. Use the same
+        // canonical root for reads, enumeration and membership; never infer a
+        // relative member by subtracting an unresolved path's character count.
+        let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        let rootComponents = canonicalRoot.pathComponents
         struct Contract: Decodable { var id: String; var version: String; var capability: String; var kind: String; var tileSize: Int }
         struct Manifest: Decodable {
             struct File: Decodable { var path: String; var sha256: String; var sizeBytes: Int64 }
             var id: String; var version: String; var capability: String; var files: [File]
         }
-        let contract = try JSONDecoder().decode(Contract.self, from: Data(floeContentsOf: safePath("contract.json", beneath: root)))
-        let manifest = try JSONDecoder().decode(Manifest.self, from: Data(floeContentsOf: safePath("manifest.json", beneath: root)))
+        let contract = try JSONDecoder().decode(Contract.self, from: Data(floeContentsOf: safePath("contract.json", beneath: canonicalRoot)))
+        let manifest = try JSONDecoder().decode(Manifest.self, from: Data(floeContentsOf: safePath("manifest.json", beneath: canonicalRoot)))
         guard contract.id == id, contract.version == version, contract.capability == capability,
               contract.kind == "coreml", contract.tileSize > 0,
               manifest.id == id, manifest.version == version, manifest.capability == capability,
@@ -439,7 +444,7 @@ public actor ModelArtifactStore {
             throw FloeError.validationFailed("Model bundle is missing runtime files or required notices")
         }
         for file in manifest.files {
-            let url = try safePath(file.path, beneath: root)
+            let url = try safePath(file.path, beneath: canonicalRoot)
             let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
             guard file.sha256.count == 64, file.sha256.allSatisfy(\.isHexDigit),
                   size.map(Int64.init) == file.sizeBytes,
@@ -447,14 +452,18 @@ public actor ModelArtifactStore {
                 throw FloeError.validationFailed("Model bundle byte mismatch: \(file.path)")
             }
         }
-        guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else {
+        guard let enumerator = fileManager.enumerator(at: canonicalRoot, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else {
             throw FloeError.validationFailed("Model bundle cannot be enumerated")
         }
         for case let url as URL in enumerator {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             guard values.isSymbolicLink != true else { throw FloeError.validationFailed("Model bundle contains a symbolic link") }
             if values.isRegularFile == true {
-                let relative = String(url.path.dropFirst(root.path.count + 1))
+                let components = url.standardizedFileURL.pathComponents
+                guard components.starts(with: rootComponents), components.count > rootComponents.count else {
+                    throw FloeError.validationFailed("Model bundle member is outside its canonical root")
+                }
+                let relative = components.dropFirst(rootComponents.count).joined(separator: "/")
                 guard relative == "manifest.json" || relative == ".floe-readiness.json" || paths.contains(relative) else {
                     throw FloeError.validationFailed("Unlisted model bundle member: \(relative)")
                 }

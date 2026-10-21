@@ -467,7 +467,12 @@ struct MediaEnhancementPixelContractTests {
         let bridge = MediaImageBridge(colorSpace: format.workingSpace)
         let store = MediaPixelBufferStore()
         let half = try store.makeBuffer(format: format.workingPixelFormat, width: 64, height: 64)
-        let light = CIImage(color: CIColor(red: 4, green: 2, blue: 1, alpha: 1)).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+        let sourceColor = try #require(CIColor(red: 4, green: 2, blue: 1, alpha: 1, colorSpace: format.workingSpace))
+        let light = CIImage(color: sourceColor).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+        // Verify generation separately: the default sRGB CIColor initializer
+        // clamps values before the production bridge ever receives an image.
+        try #require(sourceColor.red > 3.5)
+        try #require(MediaPixelEvidence.capture(light, bridge: bridge).maximumLinearRGB > 3.5)
         try bridge.render(image: light, destination: half)
         let original = try MediaPixelEvidence.capture(half, bridge: bridge)
         #expect(original.maximumLinearRGB > 3.5)
@@ -490,7 +495,10 @@ struct MediaEnhancementPixelContractTests {
         let url = root.appendingPathComponent("out.tiff")
         let format = try MediaEnhancementFormat(source: source(hdr: true, image: true), mode: .quality, output: url)
         let bridge = MediaImageBridge(colorSpace: format.workingSpace)
-        let image = CIImage(color: CIColor(red: 4, green: 2, blue: 1, alpha: 1)).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+        let sourceColor = try #require(CIColor(red: 4, green: 2, blue: 1, alpha: 1, colorSpace: format.workingSpace))
+        let image = CIImage(color: sourceColor).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+        try #require(sourceColor.red > 3.5)
+        try #require(MediaPixelEvidence.capture(image, bridge: bridge).maximumLinearRGB > 3.5)
         let bytes = try #require(bridge.cicontext.tiffRepresentation(of: image, format: .RGBAh, colorSpace: format.workingSpace, options: [:]))
         try bytes.write(to: url)
         let evidence = try MediaPixelEvidence.capture(image, bridge: bridge)
@@ -584,6 +592,44 @@ struct MediaModelDownloadLayoutTests {
         let corrupt = ModelArtifactStore(rootURL: root.appendingPathComponent("corrupt")) { _, _ in Data([0]) }
         await #expect(throws: (any Error).self) { try await corrupt.install(artifact, scope: .shared, cancellation: nil) }
         #expect(await corrupt.installed().isEmpty)
+    }
+
+    @Test func canonicalRootAliasesDoNotRelaxMemberIntegrity() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("floe-model-alias-\(UUID().uuidString)")
+        let actual = root.appendingPathComponent("actual-store")
+        let alias = root.appendingPathComponent("store-alias")
+        try FileManager.default.createDirectory(at: actual, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: actual)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (artifact, bytes) = try fixture()
+        let downloads = Dictionary(uniqueKeysWithValues: artifact.files.map { ($0.url, bytes[$0.path]!) })
+        let store = ModelArtifactStore(rootURL: alias) { url, _ in try #require(downloads[url.absoluteString]) }
+        let installed = try await store.install(artifact, scope: .shared, cancellation: nil)
+        #expect(URL(fileURLWithPath: installed.rootPath).resolvingSymlinksInPath().path.hasPrefix(actual.resolvingSymlinksInPath().path + "/"))
+        var extra = artifact
+        let rogue = Data("not in the bundle manifest".utf8)
+        extra.files.append(.init(path: "rogue.bin", url: "https://example.invalid/rogue.bin", sha256: FloeDigest.sha256Hex(rogue), sizeBytes: Int64(rogue.count)))
+        let extraStore = ModelArtifactStore(rootURL: root.appendingPathComponent("extra-store")) { url, _ in
+            if url.lastPathComponent == "rogue.bin" { return rogue }
+            return try #require(downloads[url.absoluteString])
+        }
+        let extraArtifact = extra
+        await #expect(throws: (any Error).self) { try await extraStore.install(extraArtifact, scope: .shared, cancellation: nil) }
+        #expect(await extraStore.installed().isEmpty)
+        let localBundle = root.appendingPathComponent("local-bundle")
+        for (relative, data) in bytes {
+            let target = localBundle.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: target)
+        }
+        let outsideNotice = root.appendingPathComponent("outside-license.txt")
+        try bytes["LICENSE.txt"]!.write(to: outsideNotice)
+        let notice = localBundle.appendingPathComponent("LICENSE.txt")
+        try FileManager.default.removeItem(at: notice)
+        try FileManager.default.createSymbolicLink(at: notice, withDestinationURL: outsideNotice)
+        let localStore = ModelArtifactStore(rootURL: root.appendingPathComponent("local-store")) { _, _ in Data() }
+        await #expect(throws: (any Error).self) { try await localStore.installLocalBundle(at: localBundle, scope: .shared) }
+        #expect(await localStore.installed().isEmpty)
     }
 
     @Test func preparedCatalogBytesRemainUnavailable() throws {
