@@ -215,6 +215,10 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
                 let firstYellow = providedNewHighlighterPixels(before: gridBefore, after: settled, points: points)
                 receipt["firstNewHighlighterPixels"] = firstYellow
                 XCTAssertGreaterThan(firstYellow, 300, "The engine must actually display the committed stroke")
+                let firstColor = try providedCommittedColor(before: gridBefore, after: settled, points: points)
+                receipt["firstCommittedColor"] = firstColor
+                XCTAssertLessThanOrEqual(firstColor["maximumChannelError"] as? Int ?? 255, 8,
+                                         "Native paint must preserve the selected color and opacity")
                 // A second equal-sized group in another row band must not
                 // inherit the first buffer's alpha or erase either region.
                 let secondPoints = points.map { [$0[0], $0[1] - Double(rect.height) * 0.28] }
@@ -246,6 +250,9 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
                 let secondYellow = providedNewHighlighterPixels(before: secondBefore, after: secondSettled, points: secondPoints)
                 receipt["secondNewHighlighterPixels"] = secondYellow
                 XCTAssertGreaterThan(secondYellow, 300, "The second committed stroke must remain visible")
+                let secondColor = try providedCommittedColor(before: secondBefore, after: secondSettled, points: secondPoints)
+                receipt["secondCommittedColor"] = secondColor
+                XCTAssertLessThanOrEqual(secondColor["maximumChannelError"] as? Int ?? 255, 8)
                 let firstStillRetained = try providedGridRetention(before: gridBefore, after: secondSettled, points: points)
                 receipt["firstGridAfterSecondStroke"] = firstStillRetained
                 XCTAssertGreaterThanOrEqual(firstStillRetained["retainedFraction"] as? Double ?? 0, 0.95)
@@ -267,9 +274,8 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
         }
     }
 
-    /// Sample only neutral grid pixels selected from the BEFORE image in
-    /// the inner 60% of the actual stroke bounds, away from every U segment.
-    /// The AFTER image cannot change which pixels participate in the oracle.
+    /// Require committed yellow ink on previously neutral pixels, so a blank
+    /// canvas cannot pass the independent grid-preservation oracle.
     private func providedNewHighlighterPixels(before: Snapshot, after: Snapshot,
                                              points: [[Double]]) -> Int {
         guard before.width == after.width, before.height == after.height,
@@ -289,6 +295,41 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
         return count
     }
 
+    /// Sample a geometric band inside the straight first segment, selecting
+    /// only white BEFORE pixels. The AFTER image never selects the probes.
+    /// FFCC00 at 40% opacity over white rounds to RGB(255,235,153).
+    private func providedCommittedColor(before: Snapshot, after: Snapshot,
+                                        points: [[Double]]) throws -> [String: Any] {
+        guard before.width == after.width, before.height == after.height,
+              before.scale == after.scale, points.count >= 2,
+              points[0][1] == points[1][1], points[1][0] > points[0][0] else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 55)
+        }
+        let scale = Double(before.scale), span = points[1][0] - points[0][0]
+        let left = max(0, Int((points[0][0] + span * 0.2) * scale))
+        let right = min(before.width, Int((points[1][0] - span * 0.2) * scale))
+        let center = Int(points[0][1] * scale)
+        guard left < right, center >= 2, center + 2 < before.height else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 56)
+        }
+        var channels = [[Int](), [Int](), [Int]()]
+        for y in (center - 2)...(center + 2) { for x in left..<right {
+            let i = (y * before.width + x) * 4
+            guard (0..<3).allSatisfy({ before.pixels[i + $0] >= 250 }) else { continue }
+            for channel in 0..<3 { channels[channel].append(Int(after.pixels[i + channel])) }
+        } }
+        guard channels[0].count >= 100 else {
+            throw NSError(domain: "OfficeHighlighterAlpha", code: 57)
+        }
+        let median = channels.map { values in values.sorted()[values.count / 2] }
+        let expected = [255, 235, 153]
+        let error = zip(median, expected).map { abs($0.0 - $0.1) }.max() ?? 255
+        return ["sampleCount": channels[0].count, "medianRGB": median,
+                "expectedRGB": expected, "maximumChannelError": error]
+    }
+
+    /// Neutral grid pixels selected only from the BEFORE image, in the inner
+    /// 60% of the bounds and away from every U segment.
     private func providedGridRetention(before: Snapshot, after: Snapshot,
                                        points: [[Double]]) throws -> [String: Any] {
         guard before.width == after.width, before.height == after.height,
