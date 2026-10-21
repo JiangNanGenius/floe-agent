@@ -374,7 +374,9 @@ private struct UnavailableSharedDocumentsStore: SharedDocumentsStore {
     func withLeasedContentSnapshot<T: Sendable>(
         id: String,
         cancellation: (any SharedDocumentsOperationCancellation)?,
-        _ body: @Sendable (SharedDocumentsLeasedContentSnapshot) async throws -> T
+        // Match the imported Persistence contract without changing this
+        // extension target's default executor behavior for unrelated tasks.
+        _ body: nonisolated(nonsending) @Sendable (SharedDocumentsLeasedContentSnapshot) async throws -> T
     ) async throws -> T { throw unavailable() }
     func currentAnchor() async throws -> Data { throw unavailable() }
     func changes(anchor: Data, limit: Int) async throws -> (changes: [SharedDocumentsChange], nextAnchor: Data, more: Bool) { throw unavailable() }
