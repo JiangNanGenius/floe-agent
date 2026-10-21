@@ -40,6 +40,10 @@ private actor FakeSoftRestartTransport: LinuxGuestSoftRestartTransport {
     /// honest guest behavior.
     var nonceScript: String??
     private var seenFlushNonce: String?
+    /// Manager tests must advance the controller's authoritative instance,
+    /// not only the transport's scripted receipt. Standalone transport tests
+    /// keep their explicit postBoot scripts and negative cases unchanged.
+    private var lifecycleController: SoftRestartLifecycleFake?
     var startReplacementError: Error?
     var flushError: Error?
     /// Deterministic interleave hook: runs inside the flush stage AFTER the
@@ -86,6 +90,9 @@ private actor FakeSoftRestartTransport: LinuxGuestSoftRestartTransport {
 
     func captureExitedGuest(_ transaction: LinuxGuestLifecycleTransaction) async {
         calls.append(.init(name: "capture", detail: transaction.environmentID))
+        if let lifecycleController {
+            await lifecycleController.stopForLifecycleTransaction(transaction)
+        }
     }
 
     func startReplacement(
@@ -100,6 +107,18 @@ private actor FakeSoftRestartTransport: LinuxGuestSoftRestartTransport {
             detail: "\(shape?.vcpus.count ?? -1)/\(shape?.memory.mb ?? -1)"
         ))
         if let startReplacementError { throw startReplacementError }
+        if let lifecycleController {
+            guard try await lifecycleController.startForLifecycleTransaction(
+                transaction, taskID: taskID, shape: shape
+            ) else { throw LinuxGuestError.notOwned(environmentID: transaction.environmentID) }
+            let states = await lifecycleController.runtimeStates()
+                .filter { $0.environmentID == transaction.environmentID }
+            guard states.count == 1, let state = states.first, state.running else {
+                throw LinuxGuestError.notRunning(environmentID: transaction.environmentID)
+            }
+            return LinuxGuestSoftRestartPostBoot(vcpus: state.vcpus, ramMB: state.ramMB,
+                launchGeneration: state.identity.launchGeneration, imageID: "floe-image")
+        }
         return postBoot
     }
 
@@ -115,6 +134,7 @@ private actor FakeSoftRestartTransport: LinuxGuestSoftRestartTransport {
     }
 
     // test controls
+    func setLifecycleController(_ controller: SoftRestartLifecycleFake) { lifecycleController = controller }
     func setProbe(_ probe: LinuxGuestSoftRestartBootProbe) { probeResult = probe }
     func setFlush(_ result: Result<LinuxCommandResult, Error>) { flushResult = result }
     func setPoweroff(_ outcome: LinuxGuestSoftRestartPoweroffOutcome) { poweroffOutcome = outcome }
@@ -322,7 +342,7 @@ private actor SoftRestartLifecycleFake: LinuxGuestControlling {
         active.map { entry in
             LinuxGuestActivityDetail(
                 environmentID: entry.key,
-                ownerRunID: "run-1",
+                ownerRunID: "task-1", // same trusted owner used by the manager fixture
                 running: true,
                 activeTerminalCount: entry.value.terminals,
                 activeServiceCount: entry.value.services
@@ -806,6 +826,9 @@ final class LinuxSoftRestartTests: XCTestCase {
         let store = FakeSoftRestartStore()
         await store.seed(makePendingOperation(progress: .poweroffSubmitted, preGeneration: 1))
         await transport.setProbe(LinuxGuestSoftRestartBootProbe(running: false))
+        // This recovery fixture starts after flush: the captured disk must
+        // already contain the original operation's nonce, not a fresh flush.
+        await transport.setNonce("op-1")
         let orchestrator = makeOrchestrator(transport: transport, store: store)
 
         let receipt = try await orchestrator.perform(makeRequest(preBoot: nil))
@@ -853,6 +876,9 @@ final class LinuxSoftRestartTests: XCTestCase {
         // The machine is down; the capture is durable. The retry must boot
         // the recorded shape WITHOUT re-running any guest stage.
         await transport.setProbe(LinuxGuestSoftRestartBootProbe(running: false))
+        // This recovery fixture starts after flush: the captured disk must
+        // already contain the original operation's nonce, not a fresh flush.
+        await transport.setNonce("op-1")
         let orchestrator = makeOrchestrator(transport: transport, store: store)
 
         let receipt = try await orchestrator.perform(makeRequest(preBoot: nil))
@@ -869,6 +895,9 @@ final class LinuxSoftRestartTests: XCTestCase {
         let store = FakeSoftRestartStore()
         await store.seed(makePendingOperation(progress: .guestExitObserved, preGeneration: 1))
         await transport.setProbe(LinuxGuestSoftRestartBootProbe(running: false))
+        // This recovery fixture starts after flush: the captured disk must
+        // already contain the original operation's nonce, not a fresh flush.
+        await transport.setNonce("op-1")
         let orchestrator = makeOrchestrator(transport: transport, store: store)
 
         let receipt = try await orchestrator.perform(makeRequest(preBoot: nil))
@@ -917,7 +946,8 @@ final class LinuxSoftRestartManagerTests: XCTestCase {
         return LinuxGuestLifecycleManager(
             controller: controller,
             softRestartPerformer: { request in
-                try await orchestrator.perform(request)
+                await transport.setLifecycleController(controller)
+                return try await orchestrator.perform(request)
             },
             stopVerificationTimeout: 0.2
         )
@@ -1009,12 +1039,19 @@ final class LinuxSoftRestartManagerTests: XCTestCase {
     func testManagerPostVerificationCatchesADishonestReceipt() async throws {
         let controller = SoftRestartLifecycleFake()
         await controller.own("env-mgr", vcpus: 1, ramMB: 256)
-        // The transport claims 1/256 (its scripted postBoot) while the
-        // controller's runtime truth reports a different granted shape.
-        await controller.setLieAboutGrantedShape(true)
-        let transport = FakeSoftRestartTransport()
-        let store = FakeSoftRestartStore()
-        let manager = makeManager(controller: controller, transport: transport, store: store)
+        // Keep admission/preBoot truthful. Inject the dishonest performer
+        // exactly at the manager seam, AFTER it captured the 1/256 request.
+        // Otherwise the orchestrator correctly rejects the already-wrong
+        // preBoot shape before the manager post-verification can be tested.
+        let manager = LinuxGuestLifecycleManager(controller: controller,
+            softRestartPerformer: { request in
+                await controller.setLieAboutGrantedShape(true)
+                return LinuxGuestLifecycleReceipt(phase: .running,
+                    environmentID: request.environmentID, actualVCPUs: 1,
+                    actualMemoryMB: 256, reused: false, launchGeneration: 1,
+                    capability: "scripted dishonest performer",
+                    detail: "deliberately disagrees with the controller's post-operation shape")
+            }, stopVerificationTimeout: 0.2)
 
         do {
             _ = try await manager.softRestart(environmentID: "env-mgr", config: nil)
@@ -1086,6 +1123,8 @@ final class LinuxSoftRestartManagerTests: XCTestCase {
             preLaunchGeneration: 1, preVCPUs: 1, preMemoryMB: 256,
             progress: .poweroffSubmitted, status: .pending
         ))
+        // Model the replacement that already booted before this retry.
+        await controller.own("env-mgr") // authoritative generation 2
         // The earlier reboot completed: the probe shows the rotated
         // generation and the nonce readback. The retry must return the
         // ORIGINAL operation's receipt without rebooting again.
@@ -1339,15 +1378,20 @@ final class LinuxSoftRestartDedupTests: XCTestCase {
         let record = try await store.load(environmentID: "env-soft")
         XCTAssertEqual(record?.status, .pending, "the unremovable record stays pending for reconciliation")
         XCTAssertEqual(record?.progress, .recorded)
+        let failedAttemptCalls = await transport.calls
+        XCTAssertEqual(failedAttemptCalls.map(\.name), ["flush"], "the original failed flush must remain observable")
 
         // The next call reconciles the stale record (machine alive, never
         // submitted) to failed and proceeds with a fresh attempt.
         await store.setRemoveError(nil)
         await transport.setFlushError(nil)
+        await transport.setProbe(LinuxGuestSoftRestartBootProbe(running: true,
+            vcpus: 1, ramMB: 256, launchGeneration: 1, imageID: "floe-image"))
         let receipt = try await orchestrator.perform(makeRequest())
         XCTAssertEqual(receipt.phase, .running)
         let calls = await transport.calls
-        XCTAssertEqual(calls.map(\.name), ["probe", "flush", "poweroff", "capture", "start", "readNonce"])
+        XCTAssertEqual(calls.map(\.name), ["flush", "probe", "flush", "poweroff", "capture", "start", "readNonce"],
+            "preserve the failed attempt, then reconcile before the one fresh ordered operation")
     }
 }
 
@@ -1651,21 +1695,35 @@ final class LinuxSoftRestartFileStoreTests: XCTestCase {
 private final class PoweroffRaceEngine: @unchecked Sendable {
     private let lock = NSLock()
     private var running = false
-    var powerDownOnNextCommand = false
+    private var powerDownOnNextCommand = false
+    private var holdOnNextCommand = false
+    private var issuedCount = 0
+    enum CommandBehavior { case poweredOff, held, complete }
+
+    func armPowerDown() { lock.withLock { powerDownOnNextCommand = true } }
+    func armHold() { lock.withLock { holdOnNextCommand = true } }
+    var commandsIssued: Int { lock.withLock { issuedCount } }
 
     func start() { lock.withLock { running = true } }
     func stop() { lock.withLock { running = false } }
     var isRunning: Bool { lock.withLock { running } }
 
-    /// Called by the scripted console when a command RUN frame is written.
-    /// Returns true when this command powered the machine down.
-    func commandIssued() -> Bool {
+    /// Called once per inline EXEC or completed chunked RUN. A held
+    /// command emits BEGIN but no END until the real channel interrupts it.
+    func commandIssued() -> CommandBehavior {
         lock.lock()
         defer { lock.unlock() }
-        guard powerDownOnNextCommand else { return false }
-        powerDownOnNextCommand = false
-        running = false
-        return true
+        issuedCount += 1
+        if powerDownOnNextCommand {
+            powerDownOnNextCommand = false
+            running = false
+            return .poweredOff
+        }
+        if holdOnNextCommand {
+            holdOnNextCommand = false
+            return .held
+        }
+        return .complete
     }
 }
 
@@ -1700,20 +1758,34 @@ private final class PoweroffRaceConsole: LinuxGuestConsoleTransport, @unchecked 
             if let token = Self.token(in: text, name: "SIGNAL") {
                 // The interrupted command is reaped: END it so the channel's
                 // bounded interrupt machinery completes (no poison).
-                return Self.end(token, exit: 0)
+                return Self.end(token, exit: 130)
             }
-            if let token = Self.token(in: text, name: "RUN"), !answeredRuns.contains(token) {
+            if let token = Self.commandToken(in: text), !answeredRuns.contains(token) {
                 answeredRuns.insert(token)
-                if engine.commandIssued() {
-                    // The machine powered down mid-command: BEGIN, then
-                    // silence forever (no END can arrive from a dead VM).
+                switch engine.commandIssued() {
+                case .poweredOff, .held:
+                    // BEGIN then silence: either the machine exited, or it
+                    // remains live with a submitted command still in flight.
                     return Self.begin(token)
+                case .complete:
+                    return Self.begin(token) + Self.out(token, "ok") + Self.end(token, exit: 0)
                 }
-                return Self.begin(token) + Self.out(token, "ok") + Self.end(token, exit: 0)
             }
             return []
         }
         for response in responses { continuation.yield(response) }
+    }
+
+    private static func commandToken(in text: String) -> String? {
+        if let token = token(in: text, name: "RUN") { return token }
+        // Small production commands use the inline EXEC fast path, without
+        // a later RUN. A chunked EXEC header must wait for its RUN instead.
+        guard let range = text.range(of: "\u{1e}FLOE-EXEC ") else { return nil }
+        let fields = text[range.upperBound...].split { character in
+            character == " " || character == "\n" || character == "\r" || character == "\u{1e}"
+        }
+        guard fields.count == 2, Data(base64Encoded: String(fields[1])) != nil else { return nil }
+        return String(fields[0])
     }
 
     private static func token(in text: String, name: String) -> String? {
@@ -1814,20 +1886,26 @@ final class LinuxSoftRestartRegistryRaceTests: XCTestCase {
         let registry = makeRegistry(engine: engine, environmentID: environmentID)
         let service = TinyEMULinuxCommandService(registry: registry)
         _ = try await registry.start(environmentID: environmentID, taskID: nil)
-        engine.powerDownOnNextCommand = true
+        engine.armPowerDown()
         let token = try await registry.beginLifecycleTransaction(environmentID: environmentID)
-
-        let outcome = try await service.requestOrderlyPoweroffForLifecycleTransaction(
-            LinuxGuestLifecycleTransaction(environmentID: environmentID, token: token),
-            poweroffPath: "/sbin/poweroff",
-            deadline: 5,
-            cancellation: nil
-        )
-        guard case .poweredOff = outcome else {
-            return XCTFail("expected .poweredOff, got \(outcome)")
+        func cleanup() async {
+            await registry.endLifecycleTransaction(environmentID: environmentID, token: token)
+            await registry.stop(environmentID: environmentID)
         }
-        await registry.endLifecycleTransaction(environmentID: environmentID, token: token)
-        XCTAssertFalse(engine.isRunning)
+        do {
+            let outcome = try await service.requestOrderlyPoweroffForLifecycleTransaction(
+                LinuxGuestLifecycleTransaction(environmentID: environmentID, token: token),
+                poweroffPath: "/sbin/poweroff", deadline: 5, cancellation: nil)
+            if case .poweredOff = outcome {} else {
+                XCTFail("expected .poweredOff, got \(outcome)")
+            }
+            XCTAssertEqual(engine.commandsIssued, 1, "the real channel must dispatch exactly one command")
+            XCTAssertFalse(engine.isRunning)
+            await cleanup()
+        } catch {
+            await cleanup()
+            throw error
+        }
     }
 
     /// The machine stays alive and the poweroff command never answers: the
@@ -1840,30 +1918,33 @@ final class LinuxSoftRestartRegistryRaceTests: XCTestCase {
         let registry = makeRegistry(engine: engine, environmentID: environmentID)
         let service = TinyEMULinuxCommandService(registry: registry)
         _ = try await registry.start(environmentID: environmentID, taskID: nil)
+        // This case needs a live SUBMITTED command, not an immediate END 0.
+        engine.armHold()
         let token = try await registry.beginLifecycleTransaction(environmentID: environmentID)
         let transaction = LinuxGuestLifecycleTransaction(environmentID: environmentID, token: token)
-
-        let outcome = try await service.requestOrderlyPoweroffForLifecycleTransaction(
-            transaction,
-            poweroffPath: "/sbin/poweroff",
-            deadline: 0.3,
-            cancellation: nil
-        )
-        guard case .unconfirmed = outcome else {
-            return XCTFail("expected .unconfirmed, got \(outcome)")
+        func cleanup() async {
+            await registry.endLifecycleTransaction(environmentID: environmentID, token: token)
+            await registry.stop(environmentID: environmentID)
         }
-        XCTAssertTrue(engine.isRunning, "an unconfirmed outcome must never stop the live machine")
-
-        // The same live channel still executes a normal command: it was
-        // never closed, reset or poisoned to finish the race.
-        let result = try await service.runForLifecycleTransaction(
-            transaction,
-            argv: ["/bin/echo", "still-alive"],
-            timeout: 5,
-            cancellation: nil
-        )
-        XCTAssertEqual(result.exitCode, 0)
-        XCTAssertEqual(result.stdout, "ok")
-        await registry.endLifecycleTransaction(environmentID: environmentID, token: token)
+        do {
+            let outcome = try await service.requestOrderlyPoweroffForLifecycleTransaction(
+                transaction, poweroffPath: "/sbin/poweroff", deadline: 0.3, cancellation: nil)
+            if case .unconfirmed = outcome {} else {
+                XCTFail("expected .unconfirmed, got \(outcome)")
+            }
+            XCTAssertEqual(engine.commandsIssued, 1, "unknown requires an actually dispatched command")
+            XCTAssertTrue(engine.isRunning, "an unconfirmed outcome must never stop the live machine")
+            // Still the same live real channel; no reset, close or poison.
+            let result = try await service.runForLifecycleTransaction(transaction,
+                argv: ["/bin/echo", "still-alive"], timeout: 5, cancellation: nil)
+            XCTAssertEqual(result.exitCode, 0)
+            XCTAssertEqual(result.stdout, "ok")
+            XCTAssertEqual(engine.commandsIssued, 2)
+            await cleanup()
+        } catch {
+            await cleanup()
+            throw error
+        }
     }
+
 }
